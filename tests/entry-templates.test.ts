@@ -129,6 +129,51 @@ const minimalAppRoutes: AppRoute[] = [
 // ── App Router manifest construction ─────────────────────────────────
 
 describe("App Router generated manifest construction", () => {
+  it("isolates edge route modules from the nodejs user module graph", () => {
+    // Ported from Next.js: test/e2e/app-dir/next-after-app-deploy/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/next-after-app-deploy/index.test.ts
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-route-runtime-"));
+    const sharedPage = path.join(tmpDir, "shared-page.tsx");
+    const edgeLayout = path.join(tmpDir, "edge-layout.tsx");
+    const nodeLayout = path.join(tmpDir, "node-layout.tsx");
+    fs.writeFileSync(sharedPage, "export default function Page() { return null }");
+    fs.writeFileSync(
+      edgeLayout,
+      'export const runtime = "experimental-edge"; export default function Layout({ children }) { return children }',
+    );
+    fs.writeFileSync(
+      nodeLayout,
+      'export const runtime = "nodejs"; export default function Layout({ children }) { return children }',
+    );
+
+    const route = (pattern: string, layoutPath: string): AppRoute => ({
+      ...minimalAppRoutes[0]!,
+      pattern,
+      patternParts: [pattern.slice(1)],
+      pagePath: sharedPage,
+      layouts: [layoutPath],
+      routeSegments: [pattern.slice(1)],
+    });
+
+    try {
+      const manifest = buildAppRscManifestCode({
+        routes: [route("/edge", edgeLayout), route("/nodejs", nodeLayout)],
+      });
+      const imports = manifest.imports.join("\n");
+
+      expect(imports).toContain(
+        `import(${JSON.stringify(`${sharedPage}?vinext-route-runtime=edge`)})`,
+      );
+      expect(imports).toContain(`import(${JSON.stringify(sharedPage)})`);
+      expect(imports).toContain(
+        `import(${JSON.stringify(`${edgeLayout}?vinext-route-runtime=edge`)})`,
+      );
+      expect(imports).toContain(`import(${JSON.stringify(nodeLayout)})`);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("registers the host React instance before the App Router browser runtime", () => {
     const code = generateBrowserEntry();
     const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");

@@ -1,4 +1,10 @@
+import fs from "node:fs";
 import { toSlash } from "pathslash";
+import { extractExportConstString } from "../build/report.js";
+import {
+  type IsolatedRouteRuntime,
+  withIsolatedRouteRuntime,
+} from "../plugins/route-runtime-isolation.js";
 import {
   computeAppRouteStaticSiblings,
   convertSegmentsToRouteParts,
@@ -83,14 +89,14 @@ function rootRouteBoundaryPath(
 }
 
 type ImportAllocator = {
-  getImportVar(filePath: string): string;
+  getImportVar(filePath: string, runtime?: IsolatedRouteRuntime | null): string;
   /**
    * Emit a `const load_N = () => import(path)` lazy loader thunk for a module
    * that should be code-split out of the RSC entry's top-level evaluation
    * (page modules of static routes, and all route-handler modules). Returns the
    * loader variable name. Deduplicated independently of eager imports.
    */
-  getLazyLoaderVar(filePath: string): string;
+  getLazyLoaderVar(filePath: string, runtime?: IsolatedRouteRuntime | null): string;
   importMap: ReadonlyMap<string, string>;
   imports: string[];
 };
@@ -105,106 +111,169 @@ function createImportAllocator(): ImportAllocator {
   return {
     importMap,
     imports,
-    getImportVar(filePath) {
-      const existing = importMap.get(filePath);
+    getImportVar(filePath, runtime = null) {
+      const importId = withIsolatedRouteRuntime(toSlash(filePath), runtime);
+      // External manifest builders look up ordinary imports by the scanner's
+      // original native path. Runtime variants are internal-only and use the
+      // full query-qualified module id as their key.
+      const importKey = runtime ? importId : filePath;
+      const existing = importMap.get(importKey);
       if (existing) return existing;
 
       const varName = `mod_${importIdx++}`;
-      const absPath = toSlash(filePath);
-      imports.push(`import * as ${varName} from ${JSON.stringify(absPath)};`);
-      importMap.set(filePath, varName);
+      imports.push(`import * as ${varName} from ${JSON.stringify(importId)};`);
+      importMap.set(importKey, varName);
       return varName;
     },
-    getLazyLoaderVar(filePath) {
-      const existing = lazyMap.get(filePath);
+    getLazyLoaderVar(filePath, runtime = null) {
+      const importId = withIsolatedRouteRuntime(toSlash(filePath), runtime);
+      const existing = lazyMap.get(importId);
       if (existing) return existing;
 
       const varName = `load_${lazyIdx++}`;
-      const absPath = toSlash(filePath);
       // `filePath` is a trusted filesystem-scan result (route.pagePath /
       // route.routePath), the same input and trust model as the eager
       // `import * as ${var} from ${JSON.stringify(absPath)}` in getImportVar
       // above. CodeQL flags the `import()` form as dynamic code construction,
       // but this is a build-time codegen template with a JSON-encoded absolute
       // path, not runtime-attacker-controlled input — a false positive.
-      imports.push(`const ${varName} = () => import(${JSON.stringify(absPath)});`);
-      lazyMap.set(filePath, varName);
+      imports.push(`const ${varName} = () => import(${JSON.stringify(importId)});`);
+      lazyMap.set(importId, varName);
       return varName;
     },
   };
 }
 
-function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): void {
+type StaticRouteRuntimeResolver = (route: AppRoute) => IsolatedRouteRuntime | null;
+
+function createStaticRouteRuntimeResolver(): StaticRouteRuntimeResolver {
+  const runtimeByPath = new Map<string, "edge" | "nodejs" | null>();
+
+  function readRuntime(filePath: string | null | undefined): "edge" | "nodejs" | null {
+    if (!filePath) return null;
+    const cached = runtimeByPath.get(filePath);
+    if (cached !== undefined) return cached;
+
+    let runtime: "edge" | "nodejs" | null = null;
+    try {
+      const source = fs.readFileSync(filePath, "utf8");
+      // Most route modules do not configure a runtime. Avoid parsing those
+      // modules while still using the shared AST analyzer for real candidates.
+      if (!source.includes("runtime")) {
+        runtimeByPath.set(filePath, null);
+        return null;
+      }
+      const value = extractExportConstString(source, "runtime");
+      if (value === "edge" || value === "experimental-edge") runtime = "edge";
+      else if (value === "nodejs") runtime = "nodejs";
+    } catch {
+      // The route scanner can race with an editor deleting or renaming a file.
+    }
+    runtimeByPath.set(filePath, runtime);
+    return runtime;
+  }
+
+  return (route) => {
+    let runtime: "edge" | "nodejs" | null = null;
+    for (const filePath of [...route.layouts, route.pagePath, route.routePath]) {
+      runtime = readRuntime(filePath) ?? runtime;
+    }
+
+    // Primary-chain config wins. A slot-only runtime defines the route only
+    // when no layout/page/handler on the primary chain selected one.
+    if (runtime === null) {
+      for (const slot of route.parallelSlots) {
+        for (const filePath of [
+          ...(slot.configLayoutPaths ?? []),
+          slot.layoutPath,
+          slot.pagePath,
+          slot.defaultPath,
+        ]) {
+          runtime = readRuntime(filePath) ?? runtime;
+        }
+      }
+    }
+
+    return runtime === "edge" ? "edge" : null;
+  };
+}
+
+function registerRouteModules(
+  routes: AppRoute[],
+  imports: ImportAllocator,
+  resolveRuntime: StaticRouteRuntimeResolver,
+): void {
   for (const route of routes) {
+    const runtime = resolveRuntime(route);
     // All page modules are lazy-loaded so route modules — including dynamic
     // routes and routes nested under a dynamic segment — stay out of the RSC
     // entry's top-level evaluation. Their generateStaticParams (if any) is
     // reached via lazy `{ load }` sources in generateStaticParamsMap, resolved
     // on demand at prerender time.
-    if (route.pagePath) imports.getLazyLoaderVar(route.pagePath);
+    if (route.pagePath) imports.getLazyLoaderVar(route.pagePath, runtime);
     // Route handlers are always lazy: they are never referenced by
     // generateStaticParamsMap (buildGenerateStaticParamsEntries sources only
     // from layouts + page, never route.routePath), so unlike dynamic-route
     // pages they have no module-load-time consumer. (Next.js route handlers can
     // export generateStaticParams for prerendering, but vinext does not wire
     // that into the map yet — a separate gap, unaffected by lazy loading.)
-    if (route.routePath) imports.getLazyLoaderVar(route.routePath);
-    for (const layout of route.layouts) imports.getLazyLoaderVar(layout);
-    for (const tmpl of route.templates) imports.getLazyLoaderVar(tmpl);
-    if (route.loadingPath) imports.getLazyLoaderVar(route.loadingPath);
+    if (route.routePath) imports.getLazyLoaderVar(route.routePath, runtime);
+    for (const layout of route.layouts) imports.getLazyLoaderVar(layout, runtime);
+    for (const tmpl of route.templates) imports.getLazyLoaderVar(tmpl, runtime);
+    if (route.loadingPath) imports.getLazyLoaderVar(route.loadingPath, runtime);
     for (const loadingPath of route.loadingPaths ?? []) {
-      imports.getLazyLoaderVar(loadingPath);
+      imports.getLazyLoaderVar(loadingPath, runtime);
     }
-    if (route.errorPath) imports.getLazyLoaderVar(route.errorPath);
+    if (route.errorPath) imports.getLazyLoaderVar(route.errorPath, runtime);
     if (route.layoutErrorPaths) {
       for (const ep of route.layoutErrorPaths) {
-        if (ep) imports.getLazyLoaderVar(ep);
+        if (ep) imports.getLazyLoaderVar(ep, runtime);
       }
     }
     if (route.errorPaths) {
       for (const ep of route.errorPaths) {
-        imports.getLazyLoaderVar(ep);
+        imports.getLazyLoaderVar(ep, runtime);
       }
     }
-    if (route.notFoundPath) imports.getLazyLoaderVar(route.notFoundPath);
+    if (route.notFoundPath) imports.getLazyLoaderVar(route.notFoundPath, runtime);
     if (route.notFoundPaths) {
       for (const nfp of route.notFoundPaths) {
-        if (nfp) imports.getLazyLoaderVar(nfp);
+        if (nfp) imports.getLazyLoaderVar(nfp, runtime);
       }
     }
-    if (route.forbiddenPath) imports.getLazyLoaderVar(route.forbiddenPath);
+    if (route.forbiddenPath) imports.getLazyLoaderVar(route.forbiddenPath, runtime);
     if (route.forbiddenPaths) {
       for (const fp of route.forbiddenPaths) {
-        if (fp) imports.getLazyLoaderVar(fp);
+        if (fp) imports.getLazyLoaderVar(fp, runtime);
       }
     }
-    if (route.unauthorizedPath) imports.getLazyLoaderVar(route.unauthorizedPath);
+    if (route.unauthorizedPath) imports.getLazyLoaderVar(route.unauthorizedPath, runtime);
     if (route.unauthorizedPaths) {
       for (const up of route.unauthorizedPaths) {
-        if (up) imports.getLazyLoaderVar(up);
+        if (up) imports.getLazyLoaderVar(up, runtime);
       }
     }
     for (const slot of route.parallelSlots) {
-      if (slot.pagePath) imports.getLazyLoaderVar(slot.pagePath);
-      if (slot.defaultPath) imports.getLazyLoaderVar(slot.defaultPath);
-      if (slot.layoutPath) imports.getLazyLoaderVar(slot.layoutPath);
+      if (slot.pagePath) imports.getLazyLoaderVar(slot.pagePath, runtime);
+      if (slot.defaultPath) imports.getLazyLoaderVar(slot.defaultPath, runtime);
+      if (slot.layoutPath) imports.getLazyLoaderVar(slot.layoutPath, runtime);
       for (const layoutPath of slot.configLayoutPaths ?? []) {
-        imports.getLazyLoaderVar(layoutPath);
+        imports.getLazyLoaderVar(layoutPath, runtime);
       }
-      if (slot.loadingPath) imports.getLazyLoaderVar(slot.loadingPath);
+      if (slot.loadingPath) imports.getLazyLoaderVar(slot.loadingPath, runtime);
       for (const loadingPath of slot.loadingPaths ?? []) {
-        imports.getLazyLoaderVar(loadingPath);
+        imports.getLazyLoaderVar(loadingPath, runtime);
       }
-      if (slot.errorPath) imports.getLazyLoaderVar(slot.errorPath);
-      if (slot.notFoundPath) imports.getLazyLoaderVar(slot.notFoundPath);
+      if (slot.errorPath) imports.getLazyLoaderVar(slot.errorPath, runtime);
+      if (slot.notFoundPath) imports.getLazyLoaderVar(slot.notFoundPath, runtime);
       for (const ir of slot.interceptingRoutes) {
-        imports.getLazyLoaderVar(ir.pagePath);
-        if (ir.notFoundPath) imports.getLazyLoaderVar(ir.notFoundPath);
+        imports.getLazyLoaderVar(ir.pagePath, runtime);
+        if (ir.notFoundPath) imports.getLazyLoaderVar(ir.notFoundPath, runtime);
         for (const layoutPath of ir.layoutPaths) {
-          imports.getLazyLoaderVar(layoutPath);
+          imports.getLazyLoaderVar(layoutPath, runtime);
         }
         for (const loadingPath of ir.loadingPaths ?? []) {
-          imports.getLazyLoaderVar(loadingPath);
+          imports.getLazyLoaderVar(loadingPath, runtime);
         }
       }
     }
@@ -212,13 +281,13 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       // Lazy-load sibling intercept modules like slot intercept modules so
       // their CSS chunks stay isolated in production (#1738) without pulling
       // their layout chains into the entry's top-level evaluation.
-      imports.getLazyLoaderVar(ir.pagePath);
-      if (ir.notFoundPath) imports.getLazyLoaderVar(ir.notFoundPath);
+      imports.getLazyLoaderVar(ir.pagePath, runtime);
+      if (ir.notFoundPath) imports.getLazyLoaderVar(ir.notFoundPath, runtime);
       for (const layoutPath of ir.layoutPaths) {
-        imports.getLazyLoaderVar(layoutPath);
+        imports.getLazyLoaderVar(layoutPath, runtime);
       }
       for (const loadingPath of ir.loadingPaths ?? []) {
-        imports.getLazyLoaderVar(loadingPath);
+        imports.getLazyLoaderVar(loadingPath, runtime);
       }
     }
   }
@@ -231,12 +300,18 @@ function moduleArray(length: number): string {
 function lazyLoaderArray(
   filePaths: readonly (string | null | undefined)[],
   imports: ImportAllocator,
+  runtime: IsolatedRouteRuntime | null = null,
 ): string {
-  return `[${filePaths.map((filePath) => (filePath ? imports.getLazyLoaderVar(filePath) : "null")).join(", ")}]`;
+  return `[${filePaths.map((filePath) => (filePath ? imports.getLazyLoaderVar(filePath, runtime) : "null")).join(", ")}]`;
 }
 
-function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string[] {
+function buildRouteEntries(
+  routes: AppRoute[],
+  imports: ImportAllocator,
+  resolveRuntime: StaticRouteRuntimeResolver,
+): string[] {
   return routes.map((route, routeIdx) => {
+    const runtime = resolveRuntime(route);
     // Pre-compute static-sibling segment names for the matched route's
     // dynamic URL levels. The client router uses this to decide if a cached
     // dynamic-route prefetch can be reused when navigating to a static
@@ -247,16 +322,16 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
     // rendering. Keep them in this positional loader array too so matched-route
     // hydration has one uniform path; their dynamic import resolves from the
     // module cache after the eager import rather than evaluating them twice.
-    const layoutLoaders = lazyLoaderArray(route.layouts, imports);
-    const templateLoaders = lazyLoaderArray(route.templates, imports);
+    const layoutLoaders = lazyLoaderArray(route.layouts, imports, runtime);
+    const templateLoaders = lazyLoaderArray(route.templates, imports, runtime);
     const loadingPaths = route.loadingPaths ?? [];
     const notFoundPaths = route.notFoundPaths ?? [];
     const forbiddenPaths = route.forbiddenPaths ?? [];
     const unauthorizedPaths = route.unauthorizedPaths ?? [];
-    const notFoundLoaders = lazyLoaderArray(notFoundPaths, imports);
-    const loadingLoaders = lazyLoaderArray(loadingPaths, imports);
-    const forbiddenLoaders = lazyLoaderArray(forbiddenPaths, imports);
-    const unauthorizedLoaders = lazyLoaderArray(unauthorizedPaths, imports);
+    const notFoundLoaders = lazyLoaderArray(notFoundPaths, imports, runtime);
+    const loadingLoaders = lazyLoaderArray(loadingPaths, imports, runtime);
+    const forbiddenLoaders = lazyLoaderArray(forbiddenPaths, imports, runtime);
+    const unauthorizedLoaders = lazyLoaderArray(unauthorizedPaths, imports, runtime);
     const siblingInterceptEntries = (route.siblingIntercepts ?? []).map(
       (ir) => `    {
       id: ${JSON.stringify(ir.id ?? null)},
@@ -266,17 +341,17 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
       sourcePageSegments: ${JSON.stringify(ir.sourcePageSegments)},
       slotId: ${JSON.stringify(ir.slotId ?? null)},
       interceptLayouts: ${moduleArray(ir.layoutPaths.length)},
-      __loadInterceptLayouts: ${lazyLoaderArray(ir.layoutPaths, imports)},
+      __loadInterceptLayouts: ${lazyLoaderArray(ir.layoutPaths, imports, runtime)},
       interceptLayoutSegments: ${JSON.stringify(ir.layoutSegments ?? [])},
       interceptBranchSegments: ${JSON.stringify(ir.branchSegments ?? [])},
       interceptLoadings: ${moduleArray(ir.loadingPaths?.length ?? 0)},
-      __loadInterceptLoadings: ${lazyLoaderArray(ir.loadingPaths ?? [], imports)},
+      __loadInterceptLoadings: ${lazyLoaderArray(ir.loadingPaths ?? [], imports, runtime)},
       interceptLoadingTreePositions: ${JSON.stringify(ir.loadingTreePositions ?? [])},
       interceptNotFoundBranchSegments: ${JSON.stringify(ir.notFoundBranchSegments ?? ir.branchSegments ?? [])},
       page: null,
-      __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
+      __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath, runtime)},
       notFound: null,
-      __loadNotFound: ${ir.notFoundPath ? imports.getLazyLoaderVar(ir.notFoundPath) : "null"},
+      __loadNotFound: ${ir.notFoundPath ? imports.getLazyLoaderVar(ir.notFoundPath, runtime) : "null"},
       notFoundTreePosition: ${ir.notFoundTreePosition ?? "null"},
       params: ${JSON.stringify(ir.params)},
     }`,
@@ -289,17 +364,17 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
           sourceMatchPattern: ${JSON.stringify(ir.sourceMatchPattern)},
           sourcePageSegments: ${JSON.stringify(ir.sourcePageSegments)},
           interceptLayouts: ${moduleArray(ir.layoutPaths.length)},
-          __loadInterceptLayouts: ${lazyLoaderArray(ir.layoutPaths, imports)},
+          __loadInterceptLayouts: ${lazyLoaderArray(ir.layoutPaths, imports, runtime)},
           interceptLayoutSegments: ${JSON.stringify(ir.layoutSegments ?? [])},
           interceptBranchSegments: ${JSON.stringify(ir.branchSegments ?? [])},
           interceptLoadings: ${moduleArray(ir.loadingPaths?.length ?? 0)},
-          __loadInterceptLoadings: ${lazyLoaderArray(ir.loadingPaths ?? [], imports)},
+          __loadInterceptLoadings: ${lazyLoaderArray(ir.loadingPaths ?? [], imports, runtime)},
           interceptLoadingTreePositions: ${JSON.stringify(ir.loadingTreePositions ?? [])},
           interceptNotFoundBranchSegments: ${JSON.stringify(ir.notFoundBranchSegments ?? ir.branchSegments ?? [])},
           page: null,
-          __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath)},
+          __pageLoader: ${imports.getLazyLoaderVar(ir.pagePath, runtime)},
           notFound: null,
-          __loadNotFound: ${ir.notFoundPath ? imports.getLazyLoaderVar(ir.notFoundPath) : "null"},
+          __loadNotFound: ${ir.notFoundPath ? imports.getLazyLoaderVar(ir.notFoundPath, runtime) : "null"},
           notFoundTreePosition: ${ir.notFoundTreePosition ?? "null"},
           params: ${JSON.stringify(ir.params)},
         }`,
@@ -309,23 +384,23 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         name: ${JSON.stringify(slot.name)},
         ownerTreePosition: ${slot.ownerTreePosition ?? "null"},
         page: null,
-        __loadPage: ${slot.pagePath ? imports.getLazyLoaderVar(slot.pagePath) : "null"},
+        __loadPage: ${slot.pagePath ? imports.getLazyLoaderVar(slot.pagePath, runtime) : "null"},
         default: null,
-        __loadDefault: ${slot.defaultPath ? imports.getLazyLoaderVar(slot.defaultPath) : "null"},
+        __loadDefault: ${slot.defaultPath ? imports.getLazyLoaderVar(slot.defaultPath, runtime) : "null"},
         layout: null,
-        __loadLayout: ${slot.layoutPath ? imports.getLazyLoaderVar(slot.layoutPath) : "null"},
+        __loadLayout: ${slot.layoutPath ? imports.getLazyLoaderVar(slot.layoutPath, runtime) : "null"},
         configLayouts: ${moduleArray(slot.configLayoutPaths?.length ?? 0)},
-        __loadConfigLayouts: ${lazyLoaderArray(slot.configLayoutPaths ?? [], imports)},
+        __loadConfigLayouts: ${lazyLoaderArray(slot.configLayoutPaths ?? [], imports, runtime)},
         configLayoutTreePositions: ${JSON.stringify(slot.configLayoutTreePositions ?? [])},
         loading: null,
-        __loadLoading: ${slot.loadingPath ? imports.getLazyLoaderVar(slot.loadingPath) : "null"},
+        __loadLoading: ${slot.loadingPath ? imports.getLazyLoaderVar(slot.loadingPath, runtime) : "null"},
         loadings: ${moduleArray(slot.loadingPaths?.length ?? 0)},
-        __loadLoadings: ${lazyLoaderArray(slot.loadingPaths ?? [], imports)},
+        __loadLoadings: ${lazyLoaderArray(slot.loadingPaths ?? [], imports, runtime)},
         loadingTreePositions: ${JSON.stringify(slot.loadingTreePositions ?? [])},
         error: null,
-        __loadError: ${slot.errorPath ? imports.getLazyLoaderVar(slot.errorPath) : "null"},
+        __loadError: ${slot.errorPath ? imports.getLazyLoaderVar(slot.errorPath, runtime) : "null"},
         notFound: null,
-        __loadNotFound: ${slot.notFoundPath ? imports.getLazyLoaderVar(slot.notFoundPath) : "null"},
+        __loadNotFound: ${slot.notFoundPath ? imports.getLazyLoaderVar(slot.notFoundPath, runtime) : "null"},
         notFoundTreePosition: ${slot.notFoundTreePosition ?? "null"},
         layoutIndex: ${slot.layoutIndex},
         routeSegments: ${JSON.stringify(slot.routeSegments)},
@@ -338,13 +413,15 @@ ${interceptEntries.join(",\n")}
     });
     const layoutErrorPaths = route.layoutErrorPaths ?? [];
     const errorPaths = route.errorPaths ?? [];
-    const layoutErrorLoaders = lazyLoaderArray(layoutErrorPaths, imports);
-    const errorLoaders = lazyLoaderArray(errorPaths, imports);
+    const layoutErrorLoaders = lazyLoaderArray(layoutErrorPaths, imports, runtime);
+    const errorLoaders = lazyLoaderArray(errorPaths, imports, runtime);
     // Page and route handler are always lazy-loaded; hydrated onto route.page /
     // route.routeHandler by ensureAppRouteModulesLoaded before any read.
-    const loadPageField = route.pagePath ? imports.getLazyLoaderVar(route.pagePath) : "null";
+    const loadPageField = route.pagePath
+      ? imports.getLazyLoaderVar(route.pagePath, runtime)
+      : "null";
     const loadRouteHandlerField = route.routePath
-      ? imports.getLazyLoaderVar(route.routePath)
+      ? imports.getLazyLoaderVar(route.routePath, runtime)
       : "null";
     return `  {
     __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
@@ -384,21 +461,21 @@ ${slotEntries.join(",\n")}
 ${siblingInterceptEntries.join(",\n")}
     ],
     loading: null,
-    __loadLoading: ${route.loadingPath ? imports.getLazyLoaderVar(route.loadingPath) : "null"},
+    __loadLoading: ${route.loadingPath ? imports.getLazyLoaderVar(route.loadingPath, runtime) : "null"},
     error: null,
-    __loadError: ${route.errorPath ? imports.getLazyLoaderVar(route.errorPath) : "null"},
+    __loadError: ${route.errorPath ? imports.getLazyLoaderVar(route.errorPath, runtime) : "null"},
     notFound: null,
-    __loadNotFound: ${route.notFoundPath ? imports.getLazyLoaderVar(route.notFoundPath) : "null"},
+    __loadNotFound: ${route.notFoundPath ? imports.getLazyLoaderVar(route.notFoundPath, runtime) : "null"},
     notFoundTreePosition: ${route.notFoundTreePosition ?? "null"},
     notFounds: ${moduleArray(notFoundPaths.length)},
     __loadNotFounds: ${notFoundLoaders},
     forbidden: null,
-    __loadForbidden: ${route.forbiddenPath ? imports.getLazyLoaderVar(route.forbiddenPath) : "null"},
+    __loadForbidden: ${route.forbiddenPath ? imports.getLazyLoaderVar(route.forbiddenPath, runtime) : "null"},
     forbiddenTreePosition: ${route.forbiddenTreePosition ?? "null"},
     forbiddens: ${moduleArray(forbiddenPaths.length)},
     __loadForbiddens: ${forbiddenLoaders},
     unauthorized: null,
-    __loadUnauthorized: ${route.unauthorizedPath ? imports.getLazyLoaderVar(route.unauthorizedPath) : "null"},
+    __loadUnauthorized: ${route.unauthorizedPath ? imports.getLazyLoaderVar(route.unauthorizedPath, runtime) : "null"},
     unauthorizedTreePosition: ${route.unauthorizedTreePosition ?? "null"},
     unauthorizeds: ${moduleArray(unauthorizedPaths.length)},
     __loadUnauthorizeds: ${unauthorizedLoaders},
@@ -475,18 +552,20 @@ function buildGenerateStaticParamsEntries(
   routes: AppRoute[],
   imports: ImportAllocator,
   namesByPattern: Map<string, string[]>,
+  resolveRuntime: StaticRouteRuntimeResolver,
 ): string[] {
   const sourcesByPattern = new Map<string, string[]>();
 
   for (const route of routes) {
     if (!route.isDynamic) continue;
+    const runtime = resolveRuntime(route);
 
     for (const [index, layoutPath] of route.layouts.entries()) {
       appendStaticParamSource(
         sourcesByPattern,
         createRoutePatternPrefix(route.routeSegments, route.layoutTreePositions[index] ?? 0)
           ?.pattern ?? null,
-        `{ load: ${imports.getLazyLoaderVar(layoutPath)} }`,
+        `{ load: ${imports.getLazyLoaderVar(layoutPath, runtime)} }`,
       );
     }
 
@@ -497,7 +576,7 @@ function buildGenerateStaticParamsEntries(
       appendStaticParamSource(
         sourcesByPattern,
         route.pattern,
-        `{ load: ${imports.getLazyLoaderVar(route.pagePath)} }`,
+        `{ load: ${imports.getLazyLoaderVar(route.pagePath, runtime)} }`,
       );
     }
   }
@@ -521,9 +600,10 @@ export function buildAppRscManifestCode(
 ): AppRscManifestCode {
   const imports = createImportAllocator();
   const metadataRoutes = options.metadataRoutes ?? [];
+  const resolveRuntime = createStaticRouteRuntimeResolver();
 
-  registerRouteModules(options.routes, imports);
-  const routeEntries = buildRouteEntries(options.routes, imports);
+  registerRouteModules(options.routes, imports, resolveRuntime);
+  const routeEntries = buildRouteEntries(options.routes, imports, resolveRuntime);
 
   const rootRoute = findRootBoundaryRoute(options.routes);
   const rootNotFoundPath = rootRouteBoundaryPath(
@@ -574,6 +654,7 @@ export function buildAppRscManifestCode(
       options.routes,
       imports,
       namesByPattern,
+      resolveRuntime,
     ),
     rootParamNameEntries: buildRootParamNameEntries(namesByPattern),
     rootNotFoundVar,
