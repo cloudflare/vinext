@@ -17981,7 +17981,11 @@ describe("Pages Router concurrent navigation", () => {
       (...args: unknown[]) =>
         events.push([name, ...args]);
     const onStart = recordEvent("routeChangeStart");
-    const onBefore = recordEvent("beforeHistoryChange");
+    const locationsAtBeforeHistoryChange: string[] = [];
+    const onBefore = (...args: unknown[]) => {
+      locationsAtBeforeHistoryChange.push(win.location.pathname);
+      events.push(["beforeHistoryChange", ...args]);
+    };
     const onComplete = recordEvent("routeChangeComplete");
 
     try {
@@ -17998,6 +18002,8 @@ describe("Pages Router concurrent navigation", () => {
         ["beforeHistoryChange", "/docs/other-page", { shallow: false }],
         ["routeChangeComplete", "/docs/other-page", { shallow: false }],
       ]);
+      expect(locationsAtBeforeHistoryChange).toEqual(["/docs/hello"]);
+      expect(win.location.pathname).toBe("/docs/other-page");
     } finally {
       const { default: Router } = await import("../packages/vinext/src/shims/router.js");
       Router.events.off("routeChangeStart", onStart);
@@ -18018,7 +18024,7 @@ describe("Pages Router concurrent navigation", () => {
     const previousWindow = (globalThis as any).window;
     const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
     const originalFetch = globalThis.fetch;
-    const { win } = createNavWindow();
+    const { win, pushState } = createNavWindow();
     const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
     Object.assign(win.location, {
       pathname: "/docs/hello",
@@ -18078,6 +18084,9 @@ describe("Pages Router concurrent navigation", () => {
         ["beforeHistoryChange", "/docs/other-page", { shallow: false }],
         ["routeChangeComplete", "/docs/other-page", { shallow: false }],
       ]);
+      expect(pushState).toHaveBeenCalledTimes(1);
+      expect(pushState.mock.calls[0]![2]).toBe("/docs/other-page");
+      expect(win.location.pathname).toBe("/docs/other-page");
     } finally {
       const { default: Router } = await import("../packages/vinext/src/shims/router.js");
       Router.events.off("routeChangeStart", onStart);
@@ -18151,6 +18160,8 @@ describe("Pages Router concurrent navigation", () => {
           { shallow: false },
         ],
       ]);
+      expect(win.history.pushState).not.toHaveBeenCalled();
+      expect(win.location.pathname).toBe("/docs/hello");
     } finally {
       const { default: Router } = await import("../packages/vinext/src/shims/router.js");
       Router.events.off("routeChangeStart", onStart);
@@ -18169,7 +18180,7 @@ describe("Pages Router concurrent navigation", () => {
     const previousWindow = (globalThis as any).window;
     const previousDocument = (globalThis as any).document;
     const originalFetch = globalThis.fetch;
-    const { win, render } = createNavWindow();
+    const { win, pushState, render } = createNavWindow();
     const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
     const response = createDeferred<Response>();
     let fetchSignal: AbortSignal | undefined;
@@ -18211,8 +18222,12 @@ describe("Pages Router concurrent navigation", () => {
       expect(events.slice(0, 3)).toEqual([
         ["routeChangeStart", "/page-a"],
         ["routeChangeError", "/page-a"],
-        ["hashChangeStart", "/page-a#section"],
+        ["hashChangeStart", "/#section"],
       ]);
+      expect(pushState).toHaveBeenCalledTimes(1);
+      expect(pushState.mock.calls[0]![2]).toBe("#section");
+      expect(win.location.pathname).toBe("/");
+      expect(win.location.hash).toBe("#section");
 
       response.resolve(new Response(buildNavHtml("/page-a", pageModuleUrl)));
       await pendingNavigation;
@@ -18251,12 +18266,16 @@ describe("Pages Router concurrent navigation", () => {
     };
 
     const events: Array<[string, string]> = [];
+    const cancelledRouteProps: unknown[] = [];
     const record = (name: string, urlIndex = 0) =>
       function (...args: unknown[]) {
         events.push([name, String(args[urlIndex])]);
       };
     const onStart = record("routeChangeStart");
-    const onError = record("routeChangeError", 1);
+    const onError = (...args: unknown[]) => {
+      events.push(["routeChangeError", String(args[1])]);
+      cancelledRouteProps.push(args[2]);
+    };
     const onComplete = record("routeChangeComplete");
 
     try {
@@ -18276,6 +18295,7 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(fetchSignal?.aborted).toBe(true);
       expect(events).toContainEqual(["routeChangeError", "/page-a"]);
+      expect(cancelledRouteProps).toEqual([{ shallow: true }]);
       expect(events).not.toContainEqual(["routeChangeComplete", "/page-a"]);
       expect(events).toContainEqual(["routeChangeComplete", "/page-b"]);
     } finally {
@@ -18619,10 +18639,8 @@ describe("Pages Router concurrent navigation", () => {
       const Router = routerModule.default;
 
       const result = await Router.push("/failing-page");
-      // Distinguish the history update from the hard-navigation fallback:
-      // pushState writes the absolute browser URL, while the fallback helper
-      // writes the raw app-relative URL. The guard is correct only if each
-      // happens exactly once.
+      // Failed route loads never enter history; only the hard-navigation
+      // fallback writes the raw app-relative URL.
       const fallbackAssignments = hrefAssignments.filter((value) => value === "/failing-page");
       const pushStateAssignments = hrefAssignments.filter(
         (value) => value === "http://localhost/failing-page",
@@ -18630,9 +18648,8 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(result).toBe(false);
       expect(fallbackAssignments).toHaveLength(1);
-      expect(pushStateAssignments).toHaveLength(1);
-      // Catch-all: exactly one history write plus exactly one hard-nav fallback.
-      expect(hrefAssignments).toHaveLength(2);
+      expect(pushStateAssignments).toHaveLength(0);
+      expect(hrefAssignments).toHaveLength(1);
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -19756,10 +19773,7 @@ describe("Pages Router concurrent navigation", () => {
       expect(fetch).toHaveBeenCalledOnce();
       expect(sourceLoader).not.toHaveBeenCalled();
       expect(render).not.toHaveBeenCalled();
-      expect(hrefAssignments).toEqual([
-        "http://localhost/exists-but-not-routed",
-        "/exists-but-not-routed",
-      ]);
+      expect(hrefAssignments).toEqual(["/exists-but-not-routed"]);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -19819,7 +19833,7 @@ describe("Pages Router concurrent navigation", () => {
       expect(fetch).toHaveBeenCalledOnce();
       expect(sourceLoader).not.toHaveBeenCalled();
       expect(render).not.toHaveBeenCalled();
-      expect(hrefAssignments).toEqual(["http://localhost/rewrite-to-app", "/rewrite-to-app"]);
+      expect(hrefAssignments).toEqual(["/rewrite-to-app"]);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -20003,7 +20017,7 @@ describe("Pages Router concurrent navigation", () => {
           headers: expect.objectContaining({ "x-nextjs-data": "1" }),
         }),
       );
-      expect(hrefAssignments).toContain("http://localhost/nl/to?pathname=/api/ok");
+      expect(hrefAssignments).not.toContain("http://localhost/nl/to?pathname=/api/ok");
       expect(hrefAssignments).toContain("/api/ok");
       expect(hrefAssignments).not.toContain("/nl/api/ok");
     } finally {
@@ -20661,46 +20675,38 @@ describe("Pages Router concurrent navigation", () => {
     (globalThis as any).window = win;
     vi.resetModules();
 
-    // Capture router state mid-navigation, after pushState has updated
-    // window.location but before navigateClient's dynamic import runs (which
-    // would fail in this test env). useRouter() reads from window.location
-    // and window.__NEXT_DATA__ at provider-mount time, so rendering a Probe
-    // inside the mocked fetch handler observes the post-pushState state —
-    // exactly the code path that #1196 corrupts in Next.js.
+    // Capture router state both while route data is loading and after the
+    // successful transition. Next.js keeps the current URL/query visible until
+    // route info is ready, then changes history immediately after
+    // beforeHistoryChange.
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const routerModule = await import("../packages/vinext/src/shims/router.js");
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
 
-    let capturedRouter: any;
+    const capturedRouters: any[] = [];
     function Probe() {
-      capturedRouter = routerModule.useRouter();
+      capturedRouters.push(routerModule.useRouter());
       return React.createElement("span", null, "ok");
     }
 
     globalThis.fetch = async (_url: any, _init: any) => {
       renderToStaticMarkup(routerModule.wrapWithRouterContext(React.createElement(Probe)));
-      // Return HTML containing the destination's __NEXT_DATA__. The dynamic
-      // import of the page module fails in this test env, which is fine — the
-      // assertion above has already captured router.query.
-      return new Response(
-        buildNavHtml("/[...path]", "/@fs/pages/catchall.js", { path: ["second"] }),
-      );
+      return new Response(buildNavHtml("/[...path]", pageModuleUrl, { path: ["second"] }));
     };
-
-    // Silence the expected routeChangeError from the page-module import failure.
-    const onRouteChangeError = vi.fn();
 
     try {
       const Router = routerModule.default;
-      Router.events.on("routeChangeError", onRouteChangeError);
 
       // Router.push() takes an app-relative path; basePath is added internally
-      // by performNavigation → toBrowserNavigationHref before pushState.
+      // by performNavigation → toBrowserNavigationHref before the deferred
+      // history change.
       await Router.push("/second");
+      renderToStaticMarkup(routerModule.wrapWithRouterContext(React.createElement(Probe)));
 
-      // pushState has fired, so location.pathname is "/docs/second".
-      // stripBasePath() removes "/docs", and the catch-all pattern
-      // "/[...path]" from __NEXT_DATA__.page extracts { path: ["second"] }.
+      expect(capturedRouters[0].asPath).toBe("/first");
+      expect(capturedRouters[0].query.path).toEqual(["first"]);
+      const capturedRouter = capturedRouters[1];
       expect(capturedRouter.pathname).toBe("/[...path]");
       expect(capturedRouter.asPath).toBe("/second");
       expect(capturedRouter.query.path).toEqual(["second"]);
@@ -20709,7 +20715,6 @@ describe("Pages Router concurrent navigation", () => {
       expect(capturedRouter.query.path).not.toContain("_next");
       expect(capturedRouter.query.path).not.toContain("data");
     } finally {
-      routerModule.default.events.off("routeChangeError", onRouteChangeError);
       globalThis.fetch = originalFetch;
       if (previousBasePath === undefined) {
         delete process.env.__NEXT_ROUTER_BASEPATH;
@@ -21819,6 +21824,8 @@ describe("Pages Router _next/data client navigation", () => {
       const Router = routerModule.default;
 
       const rootPushPromise = Router.push({ query: { param: 1 } });
+      expect(pushState).not.toHaveBeenCalled();
+      await expect(rootPushPromise).resolves.toBe(true);
       expect(pushState).toHaveBeenLastCalledWith(
         expect.objectContaining({
           as: "/?param=1",
@@ -21827,7 +21834,6 @@ describe("Pages Router _next/data client navigation", () => {
         "",
         "/?param=1",
       );
-      await expect(rootPushPromise).resolves.toBe(true);
       expect(rootDestinationLoader).toHaveBeenCalledTimes(1);
 
       win.history.replaceState({}, "", "/rewrite-to-another-segment/0");
@@ -21838,14 +21844,6 @@ describe("Pages Router _next/data client navigation", () => {
       };
 
       const pushPromise = Router.push({ query: { id: 1 } });
-      expect(pushState).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          as: "/rewrite-to-another-segment/0?id=1",
-          url: "/rewrite-to-another-segment/0?id=1",
-        }),
-        "",
-        "/rewrite-to-another-segment/0?id=1",
-      );
       await expect(pushPromise).resolves.toBe(true);
       expect(fetchMock).not.toHaveBeenCalled();
       expect(sourceLoader).not.toHaveBeenCalled();
@@ -22140,7 +22138,7 @@ describe("Pages Router _next/data client navigation", () => {
       const secondPush = Router.push("/slow?value=one");
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(pushState).toHaveBeenCalledTimes(2);
+      expect(pushState).not.toHaveBeenCalled();
 
       resolveFetch(
         new Response(JSON.stringify({ pageProps: { hit: 1 } }), {
@@ -22153,6 +22151,7 @@ describe("Pages Router _next/data client navigation", () => {
       expect(routeChangeErrors).toHaveLength(1);
       expect(routeChangeErrors[0]).toMatchObject({ cancelled: true });
       expect(routeChangeComplete).toHaveBeenCalledTimes(1);
+      expect(pushState).toHaveBeenCalledTimes(1);
       expect(slowLoader).toHaveBeenCalledTimes(1);
       expect(render).toHaveBeenCalledTimes(1);
       expect(win.__NEXT_DATA__).toMatchObject({
