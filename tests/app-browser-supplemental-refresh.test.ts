@@ -93,6 +93,32 @@ describe("parallel route supplemental refreshes", () => {
     ).toEqual([]);
   });
 
+  it("does not refresh a retained descendant after navigating back to its ancestor", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        basePath: "",
+        refreshUrl: new URL("https://example.com/client-cache"),
+        state: {
+          previousNextUrl: null,
+          slotBindings: [
+            {
+              activeRouteId: "route:/client-cache",
+              ownerLayoutId: "layout:/client-cache",
+              slotId: "slot:breadcrumbs:/client-cache",
+              state: "active",
+            },
+            {
+              activeRouteId: "route:/client-cache/2",
+              ownerLayoutId: "layout:/client-cache",
+              slotId: "slot:children:/client-cache",
+              state: "active",
+            },
+          ],
+        },
+      }),
+    ).toEqual([]);
+  });
+
   it("merges every active slot from a supplemental route response", () => {
     const current: AppElements = {
       ...AppElementsWire.createMetadataEntries({

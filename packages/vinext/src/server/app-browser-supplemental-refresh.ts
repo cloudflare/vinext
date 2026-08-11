@@ -8,7 +8,7 @@ import {
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import type { AppRouterState } from "./app-browser-state.js";
-import { addBasePathToPathname } from "../utils/base-path.js";
+import { addBasePathToPathname, stripBasePath } from "../utils/base-path.js";
 
 const SUPPLEMENTAL_REFRESH_TIMEOUT_MS = 10_000;
 
@@ -203,6 +203,7 @@ export function resolvePersistedSourcePageRefreshes(options: {
   state: Pick<AppRouterState, "previousNextUrl" | "slotBindings">;
 }): string[] {
   const sourceUrlsByPathname = new Map<string, URL>();
+  const refreshRoutePathname = stripBasePath(options.refreshUrl.pathname, options.basePath);
   if (options.state.previousNextUrl !== null) {
     const sourceUrl = new URL(options.state.previousNextUrl, options.refreshUrl);
     sourceUrlsByPathname.set(sourceUrl.pathname, sourceUrl);
@@ -218,6 +219,17 @@ export function resolvePersistedSourcePageRefreshes(options: {
         : [];
     });
   for (const activeRoutePath of activeRoutePaths) {
+    // A deeper children route can remain in the merged client tree after the
+    // user navigates back to its ancestor for cache reuse. It is not a visible
+    // parallel branch of that ancestor, so refreshing it would hold the real
+    // refresh open and repeatedly replace the ancestor DOM. Persisted visible
+    // branches are ancestors or siblings of the current route instead.
+    if (
+      activeRoutePath !== refreshRoutePathname &&
+      (refreshRoutePathname === "/" || activeRoutePath.startsWith(refreshRoutePathname + "/"))
+    ) {
+      continue;
+    }
     const pathname = addBasePathToPathname(activeRoutePath, options.basePath);
     if (sourceUrlsByPathname.has(pathname)) continue;
     const sourceUrl = new URL(pathname, options.refreshUrl);
