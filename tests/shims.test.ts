@@ -18044,6 +18044,7 @@ describe("Pages Router concurrent navigation", () => {
     const onError = (error: unknown, ...args: unknown[]) =>
       events.push([
         "routeChangeError",
+        error instanceof Error ? error.name : null,
         error instanceof Error ? error.message : String(error),
         (error as { cancelled?: unknown })?.cancelled,
         ...args,
@@ -18065,7 +18066,14 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(events).toEqual([
         ["routeChangeStart", "/docs/slow-route", { shallow: false }],
-        ["routeChangeError", "Route Cancelled", true, "/docs/slow-route", { shallow: false }],
+        [
+          "routeChangeError",
+          "Error",
+          "Route Cancelled",
+          true,
+          "/docs/slow-route",
+          { shallow: false },
+        ],
         ["routeChangeStart", "/docs/other-page", { shallow: false }],
         ["beforeHistoryChange", "/docs/other-page", { shallow: false }],
         ["routeChangeComplete", "/docs/other-page", { shallow: false }],
@@ -18615,8 +18623,40 @@ describe("Pages Router concurrent navigation", () => {
       constructor(public type: string) {}
     } as any;
 
-    const fetch = vi.fn(
-      async () =>
+    const response = createDeferred<Response>();
+    const fetch = vi.fn(async () => response.promise);
+    globalThis.fetch = fetch;
+
+    const events: Array<[string, string]> = [];
+    const onStart = (...args: unknown[]) => {
+      events.push(["routeChangeStart", String(args[0])]);
+    };
+    const onBefore = (...args: unknown[]) => {
+      events.push(["beforeHistoryChange", String(args[0])]);
+    };
+    const onComplete = (...args: unknown[]) => {
+      events.push(["routeChangeComplete", String(args[0])]);
+    };
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.on("routeChangeStart", onStart);
+      Router.events.on("beforeHistoryChange", onBefore);
+      Router.events.on("routeChangeComplete", onComplete);
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+
+      const popstateHandler = listeners.get("popstate");
+      expect(popstateHandler).toBeDefined();
+
+      win.location.pathname = "/";
+      win.location.href = "http://localhost/";
+      popstateHandler!({ state: null });
+
+      expect(events).toEqual([["routeChangeStart", "/"]]);
+      response.resolve(
         new Response(
           buildNavHtml(
             "/",
@@ -18630,28 +18670,22 @@ describe("Pages Router concurrent navigation", () => {
           ),
           { status: 200 },
         ),
-    );
-    globalThis.fetch = fetch;
-
-    try {
-      vi.resetModules();
-      await import("../packages/vinext/src/shims/router.js");
-      const { installPagesRouterRuntime } =
-        await import("../packages/vinext/src/shims/pages-router-runtime.js");
-      installPagesRouterRuntime();
-
-      const popstateHandler = listeners.get("popstate");
-      expect(popstateHandler).toBeDefined();
-
-      win.location.pathname = "/";
-      win.location.href = "http://localhost/";
-      popstateHandler!({ state: null });
+      );
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(fetch).toHaveBeenCalledWith("/en", expect.any(Object));
       expect(win.location.href).toBe("http://localhost/");
       expect(win.__VINEXT_LOCALE__).toBe("en");
+      expect(events).toEqual([
+        ["routeChangeStart", "/"],
+        ["beforeHistoryChange", "/"],
+        ["routeChangeComplete", "/"],
+      ]);
     } finally {
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.off("routeChangeStart", onStart);
+      Router.events.off("beforeHistoryChange", onBefore);
+      Router.events.off("routeChangeComplete", onComplete);
       vi.resetModules();
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -20000,9 +20034,23 @@ describe("Pages Router concurrent navigation", () => {
     globalThis.fetch = async (_url: any, _init: any) =>
       new Response("Internal Server Error", { status: 500 });
 
+    const events: Array<[string, string]> = [];
+    const onStart = (...args: unknown[]) => {
+      events.push(["routeChangeStart", String(args[0])]);
+    };
+    const onBefore = (...args: unknown[]) => {
+      events.push(["beforeHistoryChange", String(args[0])]);
+    };
+    const onError = (...args: unknown[]) => {
+      events.push(["routeChangeError", String(args[1])]);
+    };
+
     try {
       vi.resetModules();
-      await import("../packages/vinext/src/shims/router.js");
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.on("routeChangeStart", onStart);
+      Router.events.on("beforeHistoryChange", onBefore);
+      Router.events.on("routeChangeError", onError);
       const { installPagesRouterRuntime } =
         await import("../packages/vinext/src/shims/pages-router-runtime.js");
       installPagesRouterRuntime();
@@ -20021,7 +20069,15 @@ describe("Pages Router concurrent navigation", () => {
 
       expect(hrefAssignments.filter((value) => value === "/failing-page")).toHaveLength(1);
       expect(hrefAssignments).toHaveLength(1);
+      expect(events).toEqual([
+        ["routeChangeStart", "/failing-page"],
+        ["routeChangeError", "/failing-page"],
+      ]);
     } finally {
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.off("routeChangeStart", onStart);
+      Router.events.off("beforeHistoryChange", onBefore);
+      Router.events.off("routeChangeError", onError);
       vi.resetModules();
       if (previousWindow === undefined) {
         delete (globalThis as any).window;

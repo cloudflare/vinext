@@ -1483,7 +1483,6 @@ class NavigationCancelledError extends Error {
   cancelled = true;
   constructor(_route: string) {
     super("Route Cancelled");
-    this.name = "NavigationCancelledError";
   }
 }
 
@@ -3701,12 +3700,12 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
 
   const fullEventUrl = browserUrl + window.location.hash;
   routerEvents.emit("routeChangeStart", fullEventUrl, { shallow: false });
-  // Note: The browser has already updated window.location by the time popstate
-  // fires, so this is not truly "before" the URL change. In Next.js the popstate
-  // handler calls replaceState to store history metadata — beforeHistoryChange
-  // precedes that call, not the URL change itself. We emit it here for API
-  // compatibility.
-  routerEvents.emit("beforeHistoryChange", fullEventUrl, { shallow: false });
+  let beforeHistoryChangeEmitted = false;
+  const emitBeforeHistoryChange = () => {
+    if (beforeHistoryChangeEmitted) return;
+    beforeHistoryChangeEmitted = true;
+    routerEvents.emit("beforeHistoryChange", fullEventUrl, { shallow: false });
+  };
   void (async () => {
     // When manual scroll restoration is enabled we drive the position from the
     // sessionStorage snapshot keyed by history key. When it is disabled we
@@ -3746,7 +3745,7 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
       browserUrl,
       fullEventUrl,
       getPagesHtmlFetchUrl(stateRouteUrl, effectiveLocale),
-      { scroll: scrollTarget },
+      { scroll: scrollTarget, beforeHistoryChange: emitBeforeHistoryChange },
       stateRouteUrl,
     );
     if (result === "completed") {
