@@ -216,17 +216,21 @@ export function createStyledJsxPlugin(
         }
       },
     },
-    load(id) {
-      if (id === STYLED_JSX_RUNTIME_RESOLVED_ID) {
-        const runtimeDistPath = getRuntimeDistPath();
-        if (!runtimeDistPath) return STYLED_JSX_FALLBACK_RUNTIME;
-        this.addWatchFile(runtimeDistPath);
-        return convertStyledJsxRuntimeToEsm(readFileSync(runtimeDistPath, "utf8"));
-      }
-      if (id === STYLED_JSX_STYLE_FACADE_ID) {
-        return `export { style as default } from ${JSON.stringify(STYLED_JSX_RUNTIME_PUBLIC_ID)};`;
-      }
-      return null;
+    load: {
+      // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
+      filter: { id: /^\u0000vinext-styled-jsx-(?:runtime|style)$/ },
+      handler(id) {
+        if (id === STYLED_JSX_RUNTIME_RESOLVED_ID) {
+          const runtimeDistPath = getRuntimeDistPath();
+          if (!runtimeDistPath) return STYLED_JSX_FALLBACK_RUNTIME;
+          this.addWatchFile(runtimeDistPath);
+          return convertStyledJsxRuntimeToEsm(readFileSync(runtimeDistPath, "utf8"));
+        }
+        if (id === STYLED_JSX_STYLE_FACADE_ID) {
+          return `export { style as default } from ${JSON.stringify(STYLED_JSX_RUNTIME_PUBLIC_ID)};`;
+        }
+        return null;
+      },
     },
     transform: {
       filter: {

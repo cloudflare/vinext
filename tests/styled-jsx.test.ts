@@ -105,8 +105,17 @@ describe("styled-jsx compatibility plugin", () => {
     expect(runtimeId).toBe("\0vinext-styled-jsx-runtime");
 
     const watched: string[] = [];
-    const load = plugin.load as (this: { addWatchFile(path: string): void }, id: string) => string;
-    const runtime = load.call({ addWatchFile: (filePath) => watched.push(filePath) }, runtimeId!);
+    const load = plugin.load as {
+      filter: { id: RegExp };
+      handler(this: { addWatchFile(path: string): void }, id: string): string;
+    };
+    expect(load.filter.id.test(runtimeId!)).toBe(true);
+    expect(load.filter.id.test("\0vinext-styled-jsx-style")).toBe(true);
+    expect(load.filter.id.test("/app/page.tsx")).toBe(false);
+    const runtime = load.handler.call(
+      { addWatchFile: (filePath) => watched.push(filePath) },
+      runtimeId!,
+    );
     expect(runtime).toContain('import * as React from "react"');
     expect(runtime).toContain("export { StyleRegistry, createStyleRegistry, JSXStyle as style");
     expect(runtime).not.toContain("module.exports");
@@ -138,11 +147,15 @@ describe("styled-jsx compatibility plugin", () => {
     fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
     const plugin = createStyledJsxPlugin(root);
     const resolveId = plugin.resolveId as { handler(source: string): string | null };
-    const load = plugin.load as (this: { addWatchFile(path: string): void }, id: string) => string;
+    const load = plugin.load as {
+      handler(this: { addWatchFile(path: string): void }, id: string): string;
+    };
 
     const runtimeId = resolveId.handler("styled-jsx");
     expect(runtimeId).toBe("\0vinext-styled-jsx-runtime");
-    expect(load.call({ addWatchFile: vi.fn() }, runtimeId!)).toContain("styles() { return []; }");
+    expect(load.handler.call({ addWatchFile: vi.fn() }, runtimeId!)).toContain(
+      "styles() { return []; }",
+    );
     expect(resolveId.handler("styled-jsx/style")).toBeNull();
   });
 
