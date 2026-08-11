@@ -121,17 +121,28 @@ function commitVisibleRouterState(
 function mergeSlotBindings(
   previousBindings: readonly AppElementsSlotBinding[],
   nextBindings: readonly AppElementsSlotBinding[],
+  nextElements: AppElements,
   layoutIds: readonly string[],
+  preserveAbsentSlots: boolean,
   preservePreviousSlotIds: readonly string[],
 ): readonly AppElementsSlotBinding[] {
-  if (preservePreviousSlotIds.length === 0) return nextBindings;
-
   const preservedSlotIds = new Set(preservePreviousSlotIds);
   const previousBindingsBySlotId = new Map<string, AppElementsSlotBinding>();
   for (const binding of previousBindings) {
-    if (!preservedSlotIds.has(binding.slotId)) continue;
+    if (
+      !preservedSlotIds.has(binding.slotId) &&
+      !(
+        preserveAbsentSlots &&
+        binding.state === "active" &&
+        !Object.hasOwn(nextElements, binding.slotId)
+      )
+    ) {
+      continue;
+    }
     previousBindingsBySlotId.set(binding.slotId, binding);
   }
+
+  if (previousBindingsBySlotId.size === 0) return nextBindings;
 
   const mergedBindings: AppElementsSlotBinding[] = [];
   const seenSlotIds = new Set<string>();
@@ -167,7 +178,9 @@ function reduceApprovedVisibleCommitState(
       const preservedSlotOwnerElementIdSet = new Set(bfcacheCompatiblePreserveElementIds);
       const preservePreviousSlotIds = action.reuseCurrentBfcacheIds
         ? commit.decision.preservePreviousSlotIds.filter((slotId) => {
-            const targetBinding = action.slotBindings.find((binding) => binding.slotId === slotId);
+            const targetBinding =
+              action.slotBindings.find((binding) => binding.slotId === slotId) ??
+              state.slotBindings.find((binding) => binding.slotId === slotId);
             return (
               targetBinding?.ownerLayoutId !== null &&
               targetBinding?.ownerLayoutId !== undefined &&
@@ -175,16 +188,33 @@ function reduceApprovedVisibleCommitState(
             );
           })
         : [];
+      // A refresh fan-out supplies fresh active content for every mounted
+      // branch. Those authoritative slot values must win over ordinary
+      // default/unmatched preservation from the primary response.
+      const suppliedActiveSlotIds =
+        action.operation.lane === "refresh"
+          ? new Set(
+              action.slotBindings
+                .filter(
+                  (binding) =>
+                    binding.state === "active" && Object.hasOwn(action.elements, binding.slotId),
+                )
+                .map((binding) => binding.slotId),
+            )
+          : new Set<string>();
+      const effectivePreservePreviousSlotIds = preservePreviousSlotIds.filter(
+        (slotId) => !suppliedActiveSlotIds.has(slotId),
+      );
       const previousBfcacheIdentities = createBfcacheSegmentIdentityMap({
         elements: state.elements,
       });
-      const preservePreviousBfcacheIdIds = preservePreviousSlotIds.filter(
+      const preservePreviousBfcacheIdIds = effectivePreservePreviousSlotIds.filter(
         (id) => previousBfcacheIdentities[id] !== undefined,
       );
       const hmrPreservedSlotOwnerLayoutIds =
         action.operation.lane === "hmr"
           ? bfcacheCompatiblePreserveElementIds.filter((id) =>
-              preservePreviousSlotIds.some((slotId) => {
+              effectivePreservePreviousSlotIds.some((slotId) => {
                 const targetBinding = action.slotBindings.find(
                   (binding) => binding.slotId === slotId,
                 );
@@ -210,7 +240,7 @@ function reduceApprovedVisibleCommitState(
         clearAbsentSlots: action.type === "traverse" || !action.reuseCurrentBfcacheIds,
         preserveAbsentSlots: action.reuseCurrentBfcacheIds && commit.decision.preserveAbsentSlots,
         preserveElementIds,
-        preservePreviousSlotIds,
+        preservePreviousSlotIds: effectivePreservePreviousSlotIds,
       });
       return commitVisibleRouterState(
         state,
@@ -219,7 +249,7 @@ function reduceApprovedVisibleCommitState(
             elements: mergedElements,
             next: action.bfcacheIds,
             previous: action.reuseCurrentBfcacheIds ? state.bfcacheIds : {},
-            preservedElementIds: preservePreviousSlotIds,
+            preservedElementIds: effectivePreservePreviousSlotIds,
             preservePreviousIds: preservePreviousBfcacheIdIds,
           }),
           elements: mergedElements,
@@ -235,8 +265,10 @@ function reduceApprovedVisibleCommitState(
           slotBindings: mergeSlotBindings(
             state.slotBindings,
             action.slotBindings,
+            action.elements,
             action.layoutIds,
-            preservePreviousSlotIds,
+            action.reuseCurrentBfcacheIds && commit.decision.preserveAbsentSlots,
+            effectivePreservePreviousSlotIds,
           ),
         },
         action.operation,

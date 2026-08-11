@@ -1317,6 +1317,7 @@ describe("navigationPlanner root-boundary decisions", () => {
   });
 
   it("uses manifest target slot bindings while keeping visible snapshot as content proof", () => {
+    const childrenSlot = "slot:children:/dashboard";
     const modalSlot = "slot:modal:/dashboard";
     const staleSlot = "slot:stale:/dashboard";
     const routeManifest = createTestRouteManifest([
@@ -1338,6 +1339,7 @@ describe("navigationPlanner root-boundary decisions", () => {
         [],
         [],
         [
+          createSlotBinding(childrenSlot, "layout:/dashboard", "active"),
           createSlotBinding(modalSlot, "layout:/dashboard", "active"),
           createSlotBinding(staleSlot, "layout:/dashboard", "active"),
         ],
@@ -1367,7 +1369,7 @@ describe("navigationPlanner root-boundary decisions", () => {
     if (decision.kind !== "proposeCommit") {
       throw new Error("Expected proposeCommit decision");
     }
-    expect(decision.proposal.preservePreviousSlotIds).toEqual([modalSlot]);
+    expect(decision.proposal.preservePreviousSlotIds).toEqual([childrenSlot, modalSlot]);
   });
 
   it("does not use manifest current slots as visible content proof", () => {

@@ -10,7 +10,11 @@ import type {
   RouteManifestInterception,
   RouteManifestRoute,
 } from "../routing/app-route-graph.js";
-import { compareAppElementsSlotIds, type AppElementsSlotBinding } from "./app-elements.js";
+import {
+  AppElementsWire,
+  compareAppElementsSlotIds,
+  type AppElementsSlotBinding,
+} from "./app-elements.js";
 import {
   resolveRscRedirectLifecycleHop,
   resolveStreamedRscRedirectLifecycleHop,
@@ -1119,11 +1123,42 @@ function resolveCurrentRootBoundaryCommitSlotPersistence(options: {
   );
   if (preservedLayoutIds.length === 0) return [];
 
-  return resolveDefaultOrUnmatchedSlotPersistenceForLayouts({
+  const defaultOrUnmatchedSlotIds = resolveDefaultOrUnmatchedSlotPersistenceForLayouts({
     currentSlotBindings: options.currentTopology.slotBindings,
     preservedLayoutIds,
     targetSlotBindings: options.targetTopology.slotBindings,
   });
+  const absentActiveSlotIds = resolveAbsentActiveSlotPersistenceForLayouts({
+    currentSlotBindings: options.currentTopology.slotBindings,
+    preservedLayoutIds,
+    targetSlotBindings: options.targetTopology.slotBindings,
+  });
+  return [...new Set([...defaultOrUnmatchedSlotIds, ...absentActiveSlotIds])].sort(
+    compareAppElementsSlotIds,
+  );
+}
+
+function resolveAbsentActiveSlotPersistenceForLayouts(options: {
+  currentSlotBindings: readonly ParallelSlotBindingSnapshot[];
+  preservedLayoutIds: readonly string[];
+  targetSlotBindings: readonly ParallelSlotBindingSnapshot[];
+}): readonly string[] {
+  const preservedLayoutIdSet = new Set(options.preservedLayoutIds);
+  const targetSlotIds = new Set(options.targetSlotBindings.map((binding) => binding.slotId));
+  return options.currentSlotBindings
+    .filter((binding) => {
+      const parsedSlot = AppElementsWire.parseElementKey(binding.slotId);
+      return (
+        binding.state === "active" &&
+        binding.ownerLayoutId !== null &&
+        preservedLayoutIdSet.has(binding.ownerLayoutId) &&
+        parsedSlot?.kind === "slot" &&
+        parsedSlot.name === "children" &&
+        !targetSlotIds.has(binding.slotId)
+      );
+    })
+    .map((binding) => binding.slotId)
+    .sort(compareAppElementsSlotIds);
 }
 
 /**
@@ -1160,6 +1195,39 @@ export function resolveDefaultOrUnmatchedSlotPersistenceForLayouts(options: {
     preservedSlotIds.push(binding.slotId);
     seenSlotIds.add(binding.slotId);
   }
+  return preservedSlotIds.sort(compareAppElementsSlotIds);
+}
+
+function resolveInterceptedSourceSlotPersistenceForLayouts(options: {
+  currentSlotBindings: readonly ParallelSlotBindingSnapshot[];
+  preservedLayoutIds: readonly string[];
+  targetInterceptionSlotId: string;
+  targetSlotBindings: readonly ParallelSlotBindingSnapshot[];
+}): readonly string[] {
+  const currentBindings = new Map(
+    options.currentSlotBindings.map((binding) => [binding.slotId, binding]),
+  );
+  const preservedLayoutIdSet = new Set(options.preservedLayoutIds);
+  const preservedSlotIds: string[] = [];
+
+  for (const targetBinding of options.targetSlotBindings) {
+    if (targetBinding.slotId === options.targetInterceptionSlotId) continue;
+    if (targetBinding.state !== "active" || targetBinding.ownerLayoutId === null) continue;
+    if (!preservedLayoutIdSet.has(targetBinding.ownerLayoutId)) continue;
+
+    const currentBinding = currentBindings.get(targetBinding.slotId);
+    if (currentBinding?.state !== "active") continue;
+    if (currentBinding.ownerLayoutId !== targetBinding.ownerLayoutId) continue;
+    if (
+      currentBinding.activeRouteId &&
+      targetBinding.activeRouteId &&
+      currentBinding.activeRouteId !== targetBinding.activeRouteId
+    ) {
+      continue;
+    }
+    preservedSlotIds.push(targetBinding.slotId);
+  }
+
   return preservedSlotIds.sort(compareAppElementsSlotIds);
 }
 
@@ -1320,6 +1388,7 @@ function createCacheEntryProposalFields(
 function validateInterceptedPreservation(options: {
   currentSnapshot: RouteSnapshot;
   currentTopology: RouteTopologySnapshot;
+  lane: OperationLane;
   restoredHistorySnapshot: boolean;
   routeManifest: RouteManifest | null;
   targetSnapshot: RouteSnapshot;
@@ -1399,11 +1468,23 @@ function validateInterceptedPreservation(options: {
     };
   }
 
-  const preservePreviousSlotIds = resolveDefaultOrUnmatchedSlotPersistenceForLayouts({
+  const preserveDefaultOrUnmatchedSlotIds = resolveDefaultOrUnmatchedSlotPersistenceForLayouts({
     currentSlotBindings: options.currentTopology.slotBindings,
     preservedLayoutIds,
     targetSlotBindings: options.targetTopology.slotBindings,
   }).filter((slotId) => slotId !== proof.slotId);
+  const preserveSourceSlotIds =
+    options.lane === "navigation"
+      ? resolveInterceptedSourceSlotPersistenceForLayouts({
+          currentSlotBindings: options.currentTopology.slotBindings,
+          preservedLayoutIds,
+          targetInterceptionSlotId: proof.slotId,
+          targetSlotBindings: options.targetTopology.slotBindings,
+        })
+      : [];
+  const preservePreviousSlotIds = [
+    ...new Set([...preserveDefaultOrUnmatchedSlotIds, ...preserveSourceSlotIds]),
+  ].sort(compareAppElementsSlotIds);
 
   return {
     kind: "approved",
@@ -1502,6 +1583,7 @@ function planFlightResponseArrived(options: {
     const validation = validateInterceptedPreservation({
       currentSnapshot: options.state.visibleSnapshot,
       currentTopology: currentTopology.topology,
+      lane: options.event.token.lane,
       restoredHistorySnapshot: options.event.result.restoredHistorySnapshot === true,
       routeManifest: options.routeManifest,
       targetSnapshot,

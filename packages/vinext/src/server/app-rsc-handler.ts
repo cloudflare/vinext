@@ -210,6 +210,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   actionFailed?: boolean;
   handlerStart: number;
   interceptionContext: string | null;
+  interceptionId: string | null;
   interceptionPathname: string;
   isProgressiveActionRender: boolean;
   isRscRequest: boolean;
@@ -383,6 +384,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   matchInterceptRoute?: (
     pathname: string,
     sourcePathname: string,
+    interceptionId?: string | null,
   ) => AppRscRouteMatch<TRoute> | null;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   matchRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
@@ -590,6 +592,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     url,
     isRscRequest,
     interceptionContextHeader,
+    interceptionIdHeader,
     mountedSlotsHeader,
     renderMode,
     clientReuseManifest,
@@ -992,7 +995,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
   const interceptionSourceMatch =
     interceptionSourcePathname !== null && interceptionContextHeader !== null
-      ? (options.matchInterceptRoute?.(preActionRoutePathname, interceptionContextHeader) ?? null)
+      ? (options.matchInterceptRoute?.(
+          preActionRoutePathname,
+          interceptionContextHeader,
+          interceptionIdHeader,
+        ) ?? null)
       : null;
   if (
     interceptionSourceMatch !== null &&
@@ -1536,6 +1543,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     actionFailed,
     handlerStart,
     interceptionContext: interceptionContextHeader,
+    interceptionId: interceptionIdHeader,
     interceptionPathname: cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
     isProgressiveActionRender,
     isRscRequest,

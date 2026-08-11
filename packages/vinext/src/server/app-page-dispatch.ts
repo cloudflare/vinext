@@ -114,6 +114,7 @@ type AppPageBackgroundRegenerator = (
 ) => void;
 
 type AppPageDispatchIntercept<TPage = unknown> = {
+  interceptionId?: string | null;
   interceptionGraphId?: string | null;
   // Lazy-loaded layout modules: typed `unknown` because they arrive as
   // dynamically-imported modules (read sites cast to AppPageModule). Matches the
@@ -139,6 +140,7 @@ type AppPageDispatchIntercept<TPage = unknown> = {
 };
 
 type AppPageDispatchInterceptOptions<TPage = unknown> = {
+  interceptionId?: string | null;
   interceptGraphId?: string | null;
   interceptionContext: string | null;
   interceptLayouts?: readonly unknown[] | null;
@@ -586,6 +588,7 @@ function toInterceptOptions(
   intercept: AppPageDispatchIntercept,
 ): AppPageDispatchInterceptOptions {
   return {
+    interceptionId: intercept.interceptionId ?? null,
     interceptGraphId: intercept.interceptionGraphId ?? null,
     interceptionContext,
     interceptLayouts: intercept.interceptLayouts,

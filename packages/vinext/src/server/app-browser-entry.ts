@@ -99,6 +99,12 @@ import {
   type AppBrowserServerActionResult,
 } from "./app-browser-action-result.js";
 import {
+  createSupplementalRefreshCoordinator,
+  mergeRefreshedParallelSlot,
+  resolvePersistedSourcePageRefreshes,
+  resolveSupplementalRefreshes,
+} from "./app-browser-supplemental-refresh.js";
+import {
   consumeInitialFormState,
   createVinextHydrateRootOptions,
   hydrateRootInTransition,
@@ -145,7 +151,10 @@ import {
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/slot";
-import type { RouteManifest } from "../routing/app-route-graph.js";
+import type { RouteManifest, RouteManifestInterception } from "../routing/app-route-graph.js";
+import { matchRoutePattern } from "../routing/route-pattern.js";
+import { splitPathnameForRouteMatch } from "../routing/utils.js";
+import { addBasePathToPathname, stripBasePath } from "../utils/base-path.js";
 import {
   createDevOnCaughtError,
   createOnUncaughtError,
@@ -296,6 +305,7 @@ const discardedServerActionRefreshScheduler = hasServerActions
       markNavigationStart() {},
       schedule() {},
     };
+const serverActionSupplementalRefreshCoordinator = createSupplementalRefreshCoordinator();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
 const ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR = "data-vinext-action-http-fallback";
 
@@ -440,6 +450,101 @@ function clearClientNavigationCaches(): void {
   clearVisitedResponseCache();
   clearPrefetchState();
   historyController.invalidateRestorableClientState();
+}
+
+type PersistedRefreshInterception = {
+  interception: RouteManifestInterception;
+  interceptionContext: string;
+  targetPathname: string;
+};
+
+function getMatchedUrlPathname(matchedUrl: string): string {
+  return new URL(matchedUrl, "https://vinext.local").pathname;
+}
+
+function resolvePersistedRefreshInterceptions(
+  state: AppRouterState,
+  routeManifest: RouteManifest | null,
+  refreshUrl: URL,
+  requestInterceptionContext: string | null,
+): PersistedRefreshInterception[] {
+  if (routeManifest === null) return [];
+
+  const refreshPathname = stripBasePath(refreshUrl.pathname, __basePath);
+  const refreshPathParts = splitPathnameForRouteMatch(refreshPathname);
+  const resolved: PersistedRefreshInterception[] = [];
+
+  for (const binding of state.slotBindings) {
+    if (binding.state !== "active" || !binding.activeRouteId) continue;
+    if (!binding.interceptionId || !binding.interceptionSourceMatchedUrl) continue;
+    const activeRoute = AppElementsWire.parseElementKey(binding.activeRouteId);
+    if (activeRoute?.kind !== "route") continue;
+    const match = routeManifest.segmentGraph.interceptions.get(binding.interceptionId);
+    if (!match) continue;
+
+    const retainedInterception =
+      state.interception?.slotId === binding.slotId &&
+      matchRoutePattern(
+        splitPathnameForRouteMatch(getMatchedUrlPathname(state.interception.targetMatchedUrl)),
+        match.targetPatternParts,
+      ) !== null
+        ? state.interception
+        : null;
+    const targetPathname = retainedInterception?.targetMatchedUrl ?? activeRoute.path;
+    const targetParts = splitPathnameForRouteMatch(getMatchedUrlPathname(targetPathname));
+    const isPrimaryRefreshInterception =
+      requestInterceptionContext !== null &&
+      state.interception?.slotId === binding.slotId &&
+      matchRoutePattern(refreshPathParts, match.targetPatternParts) !== null &&
+      matchRoutePattern(targetParts, match.targetPatternParts) !== null;
+    if (isPrimaryRefreshInterception) continue;
+
+    const targetUrl = new URL(targetPathname, refreshUrl);
+    targetUrl.pathname = addBasePathToPathname(targetUrl.pathname, __basePath);
+    targetUrl.search = refreshUrl.search;
+    resolved.push({
+      interception: match,
+      interceptionContext:
+        retainedInterception?.sourceMatchedUrl ?? binding.interceptionSourceMatchedUrl,
+      targetPathname: `${targetUrl.pathname}${targetUrl.search}`,
+    });
+  }
+
+  return resolved;
+}
+
+async function fetchPersistedInterceptedSlotRefresh(options: {
+  interceptionId: string;
+  interceptionContext: string;
+  mountedSlotsHeader: string | null;
+  signal: AbortSignal;
+  targetPathname: string;
+}): Promise<AppElements> {
+  const headers = createRscRequestHeaders({
+    interceptionContext: options.interceptionContext,
+    interceptionId: options.interceptionId,
+    mountedSlotsHeader: options.mountedSlotsHeader,
+  });
+  const response = await fetch(await createRscRequestUrl(options.targetPathname, headers), {
+    credentials: "include",
+    headers,
+    signal: options.signal,
+  });
+  return decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response)));
+}
+
+async function fetchPersistedSourcePageRefresh(options: {
+  mountedSlotsHeader: string | null;
+  signal: AbortSignal;
+  targetPathname: string;
+}): Promise<AppElements> {
+  const headers = createRscRequestHeaders({ mountedSlotsHeader: options.mountedSlotsHeader });
+  const response = await fetch(await createRscRequestUrl(options.targetPathname, headers), {
+    credentials: "include",
+    headers,
+    signal: options.signal,
+  });
+  return decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response)));
 }
 
 function isSettledPrefetchCacheEntry(
@@ -654,24 +759,86 @@ async function commitSameUrlNavigatePayload(
   returnValue?: ServerActionResult["returnValue"],
   revalidation: ServerActionRevalidationKind = "none",
 ): Promise<unknown> {
+  let supplementalHandle: ReturnType<
+    typeof serverActionSupplementalRefreshCoordinator.begin
+  > | null = null;
+  if (revalidation !== "none") {
+    const refreshUrl = new URL(actionInitiation.href);
+    const requestInterceptionContext = resolveInterceptionContextFromPreviousNextUrl(
+      actionInitiation.routerState.previousNextUrl,
+      __basePath,
+    );
+    const persistedInterceptions = resolvePersistedRefreshInterceptions(
+      actionInitiation.routerState,
+      getBrowserRouteManifest(),
+      refreshUrl,
+      requestInterceptionContext,
+    );
+    const sourcePageRefreshes = resolvePersistedSourcePageRefreshes({
+      basePath: __basePath,
+      refreshUrl,
+      state: actionInitiation.routerState,
+    }).filter(
+      (sourcePathname) =>
+        !persistedInterceptions.some(
+          (interception) => interception.targetPathname === sourcePathname,
+        ),
+    );
+    if (persistedInterceptions.length > 0 || sourcePageRefreshes.length > 0) {
+      supplementalHandle = serverActionSupplementalRefreshCoordinator.begin({
+        activeNavigationId: browserNavigationController.getActiveNavigationId(),
+        startedNavigationId: actionInitiation.navigationId,
+      });
+      const mountedSlotsHeader = getMountedSlotIdsHeader(actionInitiation.routerState.elements);
+      const supplemental = persistedInterceptions.map(
+        (interception) => (signal: AbortSignal) =>
+          fetchPersistedInterceptedSlotRefresh({
+            interceptionContext: interception.interceptionContext,
+            interceptionId: interception.interception.id,
+            mountedSlotsHeader,
+            signal,
+            targetPathname: interception.targetPathname,
+          }),
+      );
+      for (const sourcePageRefresh of sourcePageRefreshes) {
+        supplemental.push((signal) =>
+          fetchPersistedSourcePageRefresh({
+            mountedSlotsHeader,
+            signal,
+            targetPathname: sourcePageRefresh,
+          }),
+        );
+      }
+      nextElements = resolveSupplementalRefreshes({
+        merge: mergeRefreshedParallelSlot,
+        primary: nextElements,
+        signal: supplementalHandle.signal,
+        supplemental,
+      }).then((result) => result.value);
+    }
+  }
   const navigationSnapshot = createClientNavigationRenderSnapshot(
     actionInitiation.href,
     actionInitiation.routerState.navigationSnapshot.params,
   );
-  return browserNavigationController.commitSameUrlNavigatePayload(
-    nextElements,
-    navigationSnapshot,
-    returnValue,
-    actionInitiation.routerState,
-    {
-      onDiscardedRevalidation() {
-        discardedServerActionRefreshScheduler.schedule();
+  try {
+    return await browserNavigationController.commitSameUrlNavigatePayload(
+      nextElements,
+      navigationSnapshot,
+      returnValue,
+      actionInitiation.routerState,
+      {
+        onDiscardedRevalidation() {
+          discardedServerActionRefreshScheduler.schedule();
+        },
+        revalidation,
+        startedNavigationId: actionInitiation.navigationId,
+        targetHref: actionInitiation.href,
       },
-      revalidation,
-      startedNavigationId: actionInitiation.navigationId,
-      targetHref: actionInitiation.href,
-    },
-  );
+    );
+  } finally {
+    supplementalHandle?.finish();
+  }
 }
 
 function evictVisitedResponseCacheIfNeeded(): void {
@@ -1656,6 +1823,7 @@ function bootstrapHydration(
     scrollIntent?: AppRouterScrollIntent | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
   ): Promise<void> {
+    serverActionSupplementalRefreshCoordinator.abortAll();
     abortSupersededNavigation();
     const navigationAbortController = new AbortController();
     activeNavigationAbortController = navigationAbortController;
@@ -1739,6 +1907,38 @@ function bootstrapHydration(
         );
         const requestInterceptionContext = requestState.interceptionContext;
         const requestPreviousNextUrl = requestState.previousNextUrl;
+        const shouldSupplementVisibleBranches =
+          navigationKind === "refresh" ||
+          (navigationKind === "traverse" && !reuseCurrentBfcacheIds);
+        const persistedRefreshInterceptions =
+          navigationKind === "refresh"
+            ? resolvePersistedRefreshInterceptions(
+                navigationInitiationState,
+                getBrowserRouteManifest(),
+                url,
+                requestInterceptionContext,
+              )
+            : [];
+        const persistedSourcePageRefreshes = shouldSupplementVisibleBranches
+          ? resolvePersistedSourcePageRefreshes({
+              basePath: __basePath,
+              refreshUrl: url,
+              state: navigationInitiationState,
+            }).filter((sourcePathAndSearch) => {
+              if (
+                persistedRefreshInterceptions.some(
+                  (interception) => interception.targetPathname === sourcePathAndSearch,
+                )
+              ) {
+                return false;
+              }
+              if (navigationKind !== "traverse") return true;
+              return (
+                new URL(sourcePathAndSearch, url).pathname !==
+                navigationInitiationState.navigationSnapshot.pathname
+              );
+            })
+          : [];
         if (navigationKind === "refresh") {
           historyController.syncCurrentHistoryStatePreviousNextUrl(
             requestPreviousNextUrl,
@@ -2212,11 +2412,40 @@ function bootstrapHydration(
         if (prefetchedElements) {
           void reactResponse.body?.cancel().catch(() => {});
         }
-        const rscPayload = prefetchedElements
+        let rscPayload = prefetchedElements
           ? prefetchedElements
           : decodeAppElementsPromise(
               createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
             );
+        const hasSupplementalRefresh =
+          persistedRefreshInterceptions.length > 0 || persistedSourcePageRefreshes.length > 0;
+        if (hasSupplementalRefresh) {
+          const supplemental = persistedRefreshInterceptions.map(
+            (interception) => (signal: AbortSignal) =>
+              fetchPersistedInterceptedSlotRefresh({
+                interceptionContext: interception.interceptionContext,
+                interceptionId: interception.interception.id,
+                mountedSlotsHeader,
+                signal,
+                targetPathname: interception.targetPathname,
+              }),
+          );
+          for (const persistedSourcePageRefresh of persistedSourcePageRefreshes) {
+            supplemental.push((signal) =>
+              fetchPersistedSourcePageRefresh({
+                mountedSlotsHeader,
+                signal,
+                targetPathname: persistedSourcePageRefresh,
+              }),
+            );
+          }
+          rscPayload = resolveSupplementalRefreshes({
+            merge: mergeRefreshedParallelSlot,
+            primary: Promise.resolve(rscPayload),
+            signal: navigationAbortController.signal,
+            supplemental,
+          }).then((result) => result.value);
+        }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
@@ -2255,6 +2484,10 @@ function bootstrapHydration(
           visibleCommitMode: prefetchedElements ? "synchronous" : visibleCommitMode,
         });
         if (renderOutcome !== "committed") return;
+        if (hasSupplementalRefresh) {
+          clearVisitedResponseCache();
+          return;
+        }
         // A transition commit can settle its layout-effect acknowledgement
         // before the optional state observer is delivered. The committed
         // outcome still guarantees that the controller's current state is the

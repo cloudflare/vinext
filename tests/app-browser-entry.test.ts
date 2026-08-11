@@ -6475,6 +6475,55 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(nextState.slotBindings).toEqual([modalSlotBinding]);
   });
 
+  it("preserves an active children branch omitted by a nested parallel route payload", async () => {
+    const childrenSlotId = AppElementsWire.encodeSlotId("children", "/");
+    const childrenSlot = React.createElement("main", null, "underlying page");
+    const childrenBinding = {
+      activeRouteId: "route:/nested",
+      ownerLayoutId: "layout:/",
+      slotId: childrenSlotId,
+      state: "active",
+    } satisfies AppElementsSlotBinding;
+    const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        [childrenSlotId]: "_b_5_",
+      },
+      elements: createResolvedElements(
+        "route:/nested",
+        "/",
+        null,
+        {
+          "layout:/": React.createElement("div", null, "root layout"),
+          [childrenSlotId]: childrenSlot,
+        },
+        ["layout:/"],
+        [childrenBinding],
+      ),
+      layoutIds: ["layout:/"],
+      routeId: "route:/nested",
+      slotBindings: [childrenBinding],
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        "page:/nested/modal": React.createElement("aside", null, "modal"),
+      },
+      layoutIds: ["layout:/"],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/nested/modal",
+        {},
+      ),
+      rootLayoutTreePath: "/",
+      routeId: "route:/nested/modal",
+      slotBindings: [],
+      targetHref: "https://example.com/nested/modal",
+    });
+
+    expect(nextState.elements[childrenSlotId]).toBe(childrenSlot);
+    expect(nextState.slotBindings).toEqual([childrenBinding]);
+  });
+
   it("preserves bfcache ids for planner-approved default parallel slots", async () => {
     const modalSlotId = AppElementsWire.encodeSlotId("modal", "/feed");
     const mountedSlot = React.createElement("div", null, "modal");
