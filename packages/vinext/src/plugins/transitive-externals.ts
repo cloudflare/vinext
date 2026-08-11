@@ -1,0 +1,154 @@
+import fs from "node:fs";
+import { createRequire } from "node:module";
+import path from "pathslash";
+import { createIdResolver, type Plugin, type Rollup } from "vite";
+
+type ExternalModuleMode = "import" | "require";
+
+function realpath(resolvedPath: string): string {
+  try {
+    return fs.realpathSync(resolvedPath);
+  } catch {
+    return resolvedPath;
+  }
+}
+
+function packageNameFromSpecifier(specifier: string): string | null {
+  if (specifier.startsWith("@")) {
+    const parts = specifier.split("/");
+    return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
+  }
+  return specifier.split("/")[0] || null;
+}
+
+function moduleMode(kind: Rollup.ImportKind | undefined): ExternalModuleMode {
+  return kind === "require-call" ? "require" : "import";
+}
+
+/**
+ * Compare the package instance selected from an importer with the instance
+ * selected from the project root. A differing importer resolution must be
+ * bundled so relocating the server output cannot collapse both imports to the
+ * same root-level package.
+ */
+export function compareTransitiveExternalResolutions(
+  importerResolution: string,
+  rootResolution: string | null,
+): string | null {
+  const importerRealpath = realpath(importerResolution);
+  if (!rootResolution) return importerRealpath;
+  return importerRealpath === realpath(rootResolution) ? null : importerRealpath;
+}
+
+/**
+ * CommonJS fallback used when Vite cannot resolve a require-call with its
+ * conditions-aware resolver.
+ */
+export function resolveTransitiveExternal(
+  request: string,
+  importer: string,
+  rootResolver: NodeRequire,
+): string | null {
+  let importerResolution: string;
+  try {
+    importerResolution = createRequire(importer).resolve(request);
+  } catch {
+    return null;
+  }
+
+  let rootResolution: string | null = null;
+  try {
+    rootResolution = rootResolver.resolve(request);
+  } catch {
+    // The importer-only package must be bundled or it will not exist beside a
+    // relocated server bundle at runtime.
+  }
+
+  return compareTransitiveExternalResolutions(importerResolution, rootResolution);
+}
+
+/**
+ * Mirrors Next.js's `baseResolveCheck` for `serverExternalPackages`.
+ *
+ * A bare external imported by a dependency is only safe to leave external
+ * when resolving it from the dependency selects the same installed package as
+ * resolving it from the project root. Otherwise this hook returns the
+ * importer's absolute resolution, forcing Vite to bundle that nested copy.
+ *
+ * Reference: packages/next/src/build/handle-externals.ts in Next.js.
+ */
+export function createTransitiveExternalsPlugin(options: {
+  getRoot: () => string | undefined;
+  getExternalPackages: () => readonly string[];
+}): Plugin {
+  let externalPackages: Set<string> | undefined;
+  let rootImporter: string | undefined;
+  let rootResolver: NodeRequire | undefined;
+  let importResolver: ReturnType<typeof createIdResolver> | undefined;
+  let requireResolver: ReturnType<typeof createIdResolver> | undefined;
+
+  return {
+    name: "vinext:transitive-externals",
+    enforce: "pre",
+
+    configResolved(config) {
+      const root = options.getRoot();
+      if (!root) return;
+      externalPackages = new Set(options.getExternalPackages());
+      rootImporter = path.join(root, "package.json");
+      rootResolver = createRequire(rootImporter);
+      importResolver = createIdResolver(config, {
+        external: [],
+        isRequire: false,
+        noExternal: true,
+      });
+      requireResolver = createIdResolver(config, {
+        external: [],
+        isRequire: true,
+        noExternal: true,
+      });
+    },
+
+    resolveId(source, importer, resolveOptions) {
+      if (this.environment?.name === "client" || this.environment?.config.consumer === "client") {
+        return null;
+      }
+      if (
+        !importer ||
+        !externalPackages ||
+        externalPackages.size === 0 ||
+        !rootImporter ||
+        !rootResolver ||
+        !importResolver ||
+        !requireResolver
+      ) {
+        return null;
+      }
+
+      const packageName = packageNameFromSpecifier(source);
+      if (!packageName || !externalPackages.has(packageName)) return null;
+      if (importer.startsWith("\0") || importer.includes("?") || !path.isAbsolute(importer)) {
+        return null;
+      }
+
+      const mode = moduleMode(resolveOptions.kind);
+      const resolver = mode === "require" ? requireResolver : importResolver;
+      return (async () => {
+        const importerResolution = await resolver(this.environment, source, importer);
+        if (!importerResolution || !path.isAbsolute(importerResolution)) {
+          // Node's resolver models require() accurately, but must not be used
+          // for ESM imports because doing so can select a require-only export.
+          return mode === "require"
+            ? resolveTransitiveExternal(source, importer, rootResolver)
+            : null;
+        }
+
+        const rootResolution = await resolver(this.environment, source, rootImporter);
+        return compareTransitiveExternalResolutions(
+          importerResolution,
+          rootResolution && path.isAbsolute(rootResolution) ? rootResolution : null,
+        );
+      })();
+    },
+  };
+}
