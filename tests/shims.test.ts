@@ -18863,6 +18863,10 @@ describe("Pages Router concurrent navigation", () => {
     globalThis.fetch = fetch;
 
     const events: Array<[string, string]> = [];
+    let resolveComplete!: () => void;
+    const completed = new Promise<void>((resolve) => {
+      resolveComplete = resolve;
+    });
     const onStart = (...args: unknown[]) => {
       events.push(["routeChangeStart", String(args[0])]);
     };
@@ -18871,6 +18875,7 @@ describe("Pages Router concurrent navigation", () => {
     };
     const onComplete = (...args: unknown[]) => {
       events.push(["routeChangeComplete", String(args[0])]);
+      if (args[0] === "/") resolveComplete();
     };
 
     try {
@@ -18906,7 +18911,7 @@ describe("Pages Router concurrent navigation", () => {
           { status: 200 },
         ),
       );
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await completed;
 
       expect(fetch).toHaveBeenCalledWith("/en", expect.any(Object));
       expect(win.location.href).toBe("http://localhost/");
