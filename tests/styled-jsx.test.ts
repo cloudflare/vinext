@@ -132,6 +132,20 @@ describe("styled-jsx compatibility plugin", () => {
     expect(importModule).not.toHaveBeenCalled();
   });
 
+  it("loads a no-op registry runtime when Next is not installed", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-next-"));
+    temporaryDirectories.push(root);
+    fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+    const plugin = createStyledJsxPlugin(root);
+    const resolveId = plugin.resolveId as { handler(source: string): string | null };
+    const load = plugin.load as (this: { addWatchFile(path: string): void }, id: string) => string;
+
+    const runtimeId = resolveId.handler("styled-jsx");
+    expect(runtimeId).toBe("\0vinext-styled-jsx-runtime");
+    expect(load.call({ addWatchFile: vi.fn() }, runtimeId!)).toContain("styles() { return []; }");
+    expect(resolveId.handler("styled-jsx/style")).toBeNull();
+  });
+
   it("rejects styled-jsx tags when Next is not installed", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-next-"));
     temporaryDirectories.push(root);

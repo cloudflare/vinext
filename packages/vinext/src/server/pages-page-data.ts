@@ -1075,6 +1075,19 @@ const SSR_HEAD_TAG_PATTERN =
 const HEAD_TEXT_ELEMENT_PATTERN = /<(script|style|title|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi;
 const STYLED_JSX_STYLE_PATTERN = /<style\b(?=[^>]*\bid=["']__jsx-)[^>]*>[\s\S]*?<\/style>/gi;
 
+function removeStyledJsxStyles(html: string): string {
+  const chunks: string[] = [];
+  let cursor = 0;
+  for (const match of html.matchAll(STYLED_JSX_STYLE_PATTERN)) {
+    if (match.index === undefined) continue;
+    chunks.push(html.slice(cursor, match.index));
+    cursor = match.index + match[0].length;
+  }
+  if (cursor === 0) return html;
+  chunks.push(html.slice(cursor));
+  return chunks.join("");
+}
+
 /**
  * Replace the `next/head` region of a cached shell with a freshly collected
  * one.
@@ -1103,7 +1116,7 @@ function refreshCachedHeadTags(
   // styled-jsx styles are request-derived just like next/head. Remove both
   // initial head styles and any late-Suspense styles emitted before </body>
   // on every regeneration, including when the fresh render has no styles.
-  cachedHtml = cachedHtml.replace(STYLED_JSX_STYLE_PATTERN, "");
+  cachedHtml = removeStyledJsxStyles(cachedHtml);
 
   // An empty next/head collection leaves the cached metadata run intact. It
   // must not prevent the independently collected styled-jsx run from being

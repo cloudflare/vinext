@@ -21,6 +21,27 @@ const STYLED_JSX_STYLE_ID = "styled-jsx/style";
 const STYLED_JSX_RUNTIME_PUBLIC_ID = "virtual:vinext-styled-jsx-runtime";
 const STYLED_JSX_RUNTIME_RESOLVED_ID = "\0vinext-styled-jsx-runtime";
 const STYLED_JSX_STYLE_FACADE_ID = "\0vinext-styled-jsx-style";
+const STYLED_JSX_FALLBACK_RUNTIME = `
+function StyleRegistry({ children }) {
+  return children;
+}
+function createStyleRegistry() {
+  return {
+    add() {},
+    remove() {},
+    update() {},
+    styles() { return []; },
+    flush() {},
+  };
+}
+function style() {
+  return null;
+}
+function useStyleRegistry() {
+  return createStyleRegistry();
+}
+export { StyleRegistry, createStyleRegistry, style, useStyleRegistry };
+`;
 const NODE_MODULES_RE = /[\\/]node_modules[\\/]/;
 const STYLED_JSX_SOURCE_RE =
   /(?:<style\b|from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
@@ -142,8 +163,12 @@ export function createStyledJsxPlugin(
   function getRuntimeDistPath(): string | null {
     const requireFromNext = getNextRequire();
     if (!requireFromNext) return null;
-    const runtimePath = toSlash(requireFromNext.resolve(STYLED_JSX_RUNTIME_ID));
-    return path.join(path.dirname(runtimePath), "dist/index/index.js");
+    try {
+      const runtimePath = toSlash(requireFromNext.resolve(STYLED_JSX_RUNTIME_ID));
+      return path.join(path.dirname(runtimePath), "dist/index/index.js");
+    } catch {
+      return null;
+    }
   }
 
   async function getCompiler(): Promise<NextSwcModule> {
@@ -181,7 +206,9 @@ export function createStyledJsxPlugin(
         if (source === STYLED_JSX_RUNTIME_ID || source === STYLED_JSX_RUNTIME_PUBLIC_ID) {
           return STYLED_JSX_RUNTIME_RESOLVED_ID;
         }
-        if (source === STYLED_JSX_STYLE_ID) return STYLED_JSX_STYLE_FACADE_ID;
+        if (source === STYLED_JSX_STYLE_ID) {
+          return getRuntimeDistPath() ? STYLED_JSX_STYLE_FACADE_ID : null;
+        }
         try {
           return getNextRequire()?.resolve(source) ?? null;
         } catch {
@@ -192,7 +219,7 @@ export function createStyledJsxPlugin(
     load(id) {
       if (id === STYLED_JSX_RUNTIME_RESOLVED_ID) {
         const runtimeDistPath = getRuntimeDistPath();
-        if (!runtimeDistPath) return null;
+        if (!runtimeDistPath) return STYLED_JSX_FALLBACK_RUNTIME;
         this.addWatchFile(runtimeDistPath);
         return convertStyledJsxRuntimeToEsm(readFileSync(runtimeDistPath, "utf8"));
       }
