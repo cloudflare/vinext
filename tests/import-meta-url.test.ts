@@ -34,6 +34,18 @@ function countTransformHandlerCalls(plugin: Plugin): () => number {
   return () => calls;
 }
 
+function getTransformCodeFilter(plugin: Plugin): RegExp {
+  const transform = plugin.transform;
+  if (
+    !transform ||
+    typeof transform === "function" ||
+    !(transform.filter?.code instanceof RegExp)
+  ) {
+    throw new Error("Expected a RegExp transform code filter");
+  }
+  return transform.filter.code;
+}
+
 describe("vinext:import-meta-url plugin", () => {
   let tmpDir: string;
   let realRoot: string;
@@ -226,6 +238,13 @@ describe("vinext:import-meta-url plugin", () => {
 
     expect(output).toContain("loaded");
     expect(getTransformCalls()).toBe(0);
+  });
+
+  it("keeps adversarial comment candidates on the bounded prefix-filter path", () => {
+    const codeFilter = getTransformCodeFilter(createDynamicImportUrlPlugin());
+
+    expect(codeFilter.test(`import(/${"\r\n//".repeat(500_000)}`)).toBe(true);
+    expect(codeFilter.test(`import("${"x".repeat(2_000_000)}`)).toBe(false);
   });
 
   it("only parses commented ordinary dynamic imports for AST validation", async () => {
