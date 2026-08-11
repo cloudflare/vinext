@@ -129,8 +129,10 @@ import {
 import { AppBrowserHistoryController } from "./app-browser-history-controller.js";
 import {
   createVisitedResponseCacheEntry,
+  deleteInvalidatedHistoryRestoreEntries,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
+  hasNavigationResponseHistoryLifetime,
   isVisitedResponseCacheEntryFresh,
   type VisitedResponseCacheEntry,
 } from "./app-visited-response-cache.js";
@@ -392,12 +394,13 @@ function restoreHistoryStateSnapshot(
   if (!restored) return false;
 
   // History entries restore their own visible tree, but a later Link click is
-  // a new navigation. Drop response snapshots published by the route we just
-  // left while retaining explicit prefetches. Advance the generation first so
-  // an async publication already waiting on a response body cannot repopulate
-  // the departed response after the maps are cleared.
+  // a new navigation. Demote unbounded response snapshots published by the
+  // route we just left while retaining explicit prefetches and responses whose
+  // segment-cache lifetime licenses reuse. Advance the generation first so an
+  // async publication already waiting on a response body cannot repopulate a
+  // departed unbounded response after the caches are pruned.
   clientNavigationCacheGeneration += 1;
-  clearVisitedResponseCache();
+  deleteInvalidatedHistoryRestoreEntries(visitedResponseCache);
   disableNavigationResponsePrefetchCacheReuse();
   commitClientNavigationState(navId, { releaseSnapshot: false });
   return true;
@@ -778,6 +781,7 @@ function storeVisitedResponseSnapshot(
   elements?: AppElements,
   seedPrefetchCache: boolean = true,
   prefetchSnapshot: CachedRscResponse = snapshot,
+  reuseAfterHistoryRestore: boolean = false,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   visitedResponseCache.delete(cacheKey);
@@ -790,6 +794,7 @@ function storeVisitedResponseSnapshot(
     mountedSlotsHeader: requestMountedSlotsHeader,
     params,
     response: snapshot,
+    reuseAfterHistoryRestore,
   });
   visitedResponseCache.set(cacheKey, entry);
   if (seedPrefetchCache) {
@@ -799,6 +804,7 @@ function storeVisitedResponseSnapshot(
       interceptionContext,
       requestMountedSlotsHeader,
       prefetchFallbackTtlMs,
+      reuseAfterHistoryRestore,
     );
   }
   return () => {
@@ -1578,6 +1584,9 @@ function bootstrapHydration(
           mountedSlotsHeader,
           elements,
           false,
+          snapshot,
+          initialRscBootstrap?.initialCacheKind === "static" ||
+            metadata.interceptionContext !== null,
         );
       });
     })
@@ -2334,6 +2343,7 @@ function bootstrapHydration(
               undefined,
               true,
               prefetchSnapshot,
+              true,
             );
           } else {
             const state = committedState;
@@ -2358,6 +2368,7 @@ function bootstrapHydration(
               committedElements,
               true,
               prefetchSnapshot,
+              interceptionContext !== null || hasNavigationResponseHistoryLifetime(snapshot),
             );
           }
         } catch {

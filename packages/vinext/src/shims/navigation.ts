@@ -340,6 +340,7 @@ export type PrefetchCacheEntry = {
   pending?: Promise<void>;
   preparedElements?: AppElements;
   prefetchKind?: PrefetchCacheKind;
+  reuseAfterHistoryRestore?: boolean;
   searchAgnosticShell?: boolean;
   size?: number;
   timestamp: number;
@@ -1102,16 +1103,18 @@ export function invalidatePrefetchCache(): void {
 /**
  * Prevent completed navigation responses from becoming authoritative again
  * after restoring a history snapshot. Explicit Link/router prefetches remain
- * consumable, and the demoted responses remain available as optimistic route
- * template sources.
+ * consumable. Responses with a positive cache lifetime and interception
+ * responses retain the cache reuse licensed by Next's segment cache.
  */
 export function disableNavigationResponsePrefetchCacheReuse(): void {
+  let didDemote = false;
   for (const entry of new Set(getPrefetchCache().values())) {
-    if (entry.prefetchKind === undefined) {
+    if (entry.prefetchKind === undefined && entry.reuseAfterHistoryRestore !== true) {
+      didDemote ||= entry.cacheForNavigation !== false;
       entry.cacheForNavigation = false;
     }
   }
-  if (!isServer) {
+  if (didDemote && !isServer) {
     getNavigationRuntime()?.functions.pingVisibleLinks?.();
   }
 }
@@ -1122,6 +1125,7 @@ export function seedPrefetchResponseSnapshot(
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
   fallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
+  reuseAfterHistoryRestore: boolean = false,
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -1136,6 +1140,7 @@ export function seedPrefetchResponseSnapshot(
     expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
     mountedSlotsHeader,
     outcome: "cache-seeded",
+    reuseAfterHistoryRestore,
     size: snapshot.buffer.byteLength,
     snapshot,
     timestamp,

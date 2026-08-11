@@ -258,6 +258,9 @@ describe("prefetch cache eviction", () => {
     const prefetched = getPrefetchedUrls();
     const navigationKey = "/departed.rsc";
     const prefetchKey = "/prefetched.rsc";
+    const staticKey = "/static.rsc";
+    const dynamicKey = "/dynamic.rsc";
+    const interceptedKey = "/intercepted.rsc\0/";
     const snapshot = {
       buffer: new TextEncoder().encode("flight").buffer,
       contentType: "text/x-component",
@@ -279,14 +282,49 @@ describe("prefetch cache eviction", () => {
       snapshot: { ...snapshot, url: prefetchKey },
       timestamp: Date.now(),
     });
+    cache.set(staticKey, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      reuseAfterHistoryRestore: true,
+      snapshot: { ...snapshot, url: staticKey },
+      timestamp: Date.now(),
+    });
+    cache.set(dynamicKey, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      reuseAfterHistoryRestore: true,
+      snapshot: { ...snapshot, dynamicStaleTimeSeconds: 30, url: dynamicKey },
+      timestamp: Date.now(),
+    });
+    cache.set(interceptedKey, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      reuseAfterHistoryRestore: true,
+      snapshot: { ...snapshot, url: "/intercepted.rsc" },
+      timestamp: Date.now(),
+    });
     prefetched.add(navigationKey);
     prefetched.add(prefetchKey);
+    const pingVisibleLinks = vi.fn();
+    Reflect.set(globalThis.window, Symbol.for("vinext.navigationRuntime"), {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { pingVisibleLinks },
+    });
 
     disableNavigationResponsePrefetchCacheReuse();
 
     expect(cache.get(navigationKey)?.cacheForNavigation).toBe(false);
     expect(cache.get(prefetchKey)?.cacheForNavigation).toBe(true);
+    expect(cache.get(staticKey)?.cacheForNavigation).toBe(true);
+    expect(cache.get(dynamicKey)?.cacheForNavigation).toBe(true);
+    expect(cache.get(interceptedKey)?.cacheForNavigation).toBe(true);
     expect(prefetched).toEqual(new Set([navigationKey, prefetchKey]));
+    expect(pingVisibleLinks).toHaveBeenCalledTimes(1);
+
+    cache.delete(navigationKey);
+    pingVisibleLinks.mockClear();
+    disableNavigationResponsePrefetchCacheReuse();
+    expect(pingVisibleLinks).not.toHaveBeenCalled();
   });
 
   it("reuses a prefetched response only when mounted-slot context matches", () => {
