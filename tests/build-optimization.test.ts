@@ -928,6 +928,25 @@ describe("process.env.NODE_ENV define", () => {
   }, 15000);
 });
 
+// Ported from Next.js: test/unit/next-babel-loader-prod.test.ts
+// https://github.com/vercel/next.js/blob/v16.2.6/test/unit/next-babel-loader-prod.test.ts
+describe("process.browser define", () => {
+  it("sets client and server values in the matching environments and optimizers", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = vinext().find(
+      (candidate: any) => candidate.name === "vinext:process-browser-define",
+    ) as any;
+    expect(plugin).toBeDefined();
+
+    const client = plugin.configEnvironment("client", { consumer: "client" });
+    const server = plugin.configEnvironment("ssr", { consumer: "server" });
+    expect(client.define["process.browser"]).toBe("true");
+    expect(client.optimizeDeps.rolldownOptions.transform.define["process.browser"]).toBe("true");
+    expect(server.define["process.browser"]).toBe("false");
+    expect(server.optimizeDeps.rolldownOptions.transform.define["process.browser"]).toBe("false");
+  });
+});
+
 // ─── Treeshake config applied to Vite builds ──────────────────────────────────
 
 // Ported from Next.js: test/unit/next-babel-loader-prod.test.ts

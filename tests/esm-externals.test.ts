@@ -1,0 +1,244 @@
+/**
+ * Ported from Next.js: test/e2e/esm-externals/esm-externals.test.ts
+ * https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/esm-externals/esm-externals.test.ts
+ */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterAll, describe, expect, it } from "vite-plus/test";
+import { createBuilder } from "vite";
+import vinext from "../packages/vinext/src/index.js";
+import { startProdServer } from "../packages/vinext/src/server/prod-server.js";
+
+const WORKSPACE_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
+const fixtureRoots: string[] = [];
+
+afterAll(() => {
+  for (const root of fixtureRoots) fs.rmSync(root, { recursive: true, force: true });
+});
+
+function writeFile(root: string, name: string, contents: string): void {
+  const file = path.join(root, name);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, contents);
+}
+
+function writePackage(
+  root: string,
+  name: string,
+  manifest: object,
+  files: Record<string, string>,
+): void {
+  writeFile(root, `node_modules/${name}/package.json`, JSON.stringify({ name, ...manifest }));
+  for (const [file, contents] of Object.entries(files)) {
+    writeFile(root, `node_modules/${name}/${file}`, contents);
+  }
+}
+
+function createFixture(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-esm-externals-"));
+  fixtureRoots.push(root);
+  writeFile(root, "package.json", JSON.stringify({ type: "module" }));
+  fs.mkdirSync(path.join(root, "node_modules"));
+  for (const dependency of ["react", "react-dom", "styled-jsx"]) {
+    fs.symlinkSync(
+      path.join(WORKSPACE_NODE_MODULES, dependency),
+      path.join(root, "node_modules", dependency),
+      "junction",
+    );
+  }
+
+  for (const prefix of ["", "app-"]) {
+    writePackage(
+      root,
+      `${prefix}esm-package1`,
+      {
+        exports: {
+          "./entry": {
+            browser: "./browser.mjs",
+            import: "./correct.mjs",
+            require: "./wrong.js",
+          },
+        },
+      },
+      {
+        "browser.mjs":
+          'export default "World"; if (!process.browser) throw new Error("Browser only");',
+        "correct.mjs": 'export default "World"; if (Math.random() < 0) import("fail");',
+        "wrong.js": 'module.exports = "Wrong";',
+      },
+    );
+    writePackage(
+      root,
+      `${prefix}esm-package2`,
+      {
+        type: "module",
+        exports: {
+          "./entry": {
+            browser: "./browser.mjs",
+            import: "./correct.js",
+            require: "./wrong.cjs",
+          },
+        },
+      },
+      {
+        "browser.mjs":
+          'export default "World"; if (!process.browser) throw new Error("Browser only");',
+        "correct.js": 'await 1; export default "World"; if (Math.random() < 0) import("fail");',
+        "wrong.cjs": 'module.exports = "Wrong";',
+      },
+    );
+  }
+
+  writePackage(
+    root,
+    "invalid-esm-package",
+    {
+      exports: {
+        "./entry": {
+          browser: "./browser.js",
+          import: "./correct.js",
+          require: "./alternative.js",
+        },
+      },
+    },
+    {
+      "browser.js":
+        'export default "World"; if (!process.browser) throw new Error("Browser only");',
+      "correct.js": 'export default "World";',
+      "alternative.js": 'module.exports = "Alternative";',
+    },
+  );
+  writePackage(
+    root,
+    "app-cjs-esm-package",
+    {
+      exports: {
+        "./entry": {
+          browser: "./browser.js",
+          import: "./correct.js",
+          require: "./alternative.js",
+        },
+      },
+    },
+    {
+      "browser.js":
+        'export default "World"; if (!process.browser) throw new Error("Browser only");',
+      "correct.js": 'module.exports = "World"; if (Math.random() < 0) require("fail");',
+      "alternative.js": 'module.exports = "Alternative";',
+    },
+  );
+
+  writeFile(
+    root,
+    "next.config.mjs",
+    `export default {
+  serverExternalPackages: ["app-esm-package1", "app-esm-package2", "app-cjs-esm-package"],
+  turbopack: { resolveAlias: { "preact/compat": "react" } },
+  webpack(config) {
+    config.resolve.alias = { ...config.resolve.alias, "preact/compat": "react" };
+    return config;
+  },
+};`,
+  );
+  writeFile(
+    root,
+    "app/layout.js",
+    "export default function Layout({ children }) { return <html><body>{children}</body></html>; }",
+  );
+  const appImports = `import World1 from "app-esm-package1/entry";
+import World2 from "app-esm-package2/entry";
+import World3 from "app-cjs-esm-package/entry";`;
+  for (const [route, directive] of [
+    ["server", ""],
+    ["client", '"use client";'],
+  ]) {
+    writeFile(
+      root,
+      `app/${route}/page.js`,
+      `${directive}\n${appImports}\nexport default function Page() { return <p>Hello {World1}+{World2}+{World3}</p>; }`,
+    );
+  }
+
+  writeFile(
+    root,
+    "lib/pages-worlds.js",
+    `import World1 from "esm-package1/entry";
+import World2 from "esm-package2/entry";
+import World3 from "invalid-esm-package/entry";
+export { World1, World2, World3 };`,
+  );
+  const pagesImports = `import React from "preact/compat";
+import { World1, World2, World3 } from "../lib/pages-worlds.js";`;
+  writeFile(
+    root,
+    "pages/static.js",
+    `${pagesImports}\nexport default function Page() { return <p>Hello {World1}+{World2}+{World3}+World+World+World</p>; }`,
+  );
+  for (const [route, loader] of [
+    ["ssr", "getServerSideProps"],
+    ["ssg", "getStaticProps"],
+  ]) {
+    writeFile(
+      root,
+      `pages/${route}.js`,
+      `${pagesImports}
+export function ${loader}() { return { props: { worlds: [World1, World2, World3].join("+") } }; }
+export default function Page({ worlds }) { return <p>Hello {World1}+{World2}+{World3}+{worlds}</p>; }`,
+    );
+  }
+  return root;
+}
+
+describe("ESM externals", () => {
+  it("builds and renders the mixed App and Pages Router fixture with import conditions", async () => {
+    const root = createFixture();
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext({ appDir: root })],
+    });
+    await builder.buildApp();
+
+    const result = await startProdServer({
+      host: "127.0.0.1",
+      port: 0,
+      outDir: path.join(root, "dist"),
+    });
+    const server = "server" in result ? result.server : result;
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing server address");
+      for (const route of ["static", "ssr", "ssg"]) {
+        const html = (
+          await (await fetch(`http://127.0.0.1:${address.port}/${route}`)).text()
+        ).replaceAll("<!-- -->", "");
+        expect(html).toContain("Hello World+World+World+World+World+World");
+      }
+      for (const route of ["server", "client"]) {
+        const html = (
+          await (await fetch(`http://127.0.0.1:${address.port}/${route}`)).text()
+        ).replaceAll("<!-- -->", "");
+        expect(html).toContain("Hello World+World+World");
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+
+    const clientCode = fs
+      .readdirSync(path.join(root, "dist", "client", "_next", "static", "chunks"))
+      .filter((file) => file.endsWith(".js"))
+      .map((file) =>
+        fs.readFileSync(
+          path.join(root, "dist", "client", "_next", "static", "chunks", file),
+          "utf8",
+        ),
+      )
+      .join("\n");
+    expect(clientCode).not.toContain("process.browser");
+    expect(clientCode).not.toContain("Browser only");
+  }, 60_000);
+});

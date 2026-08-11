@@ -167,6 +167,7 @@ import {
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
+import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
@@ -1941,6 +1942,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         return isWithinPagesDirectory(canonicalId) && isApiPage(canonicalId);
       },
       serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
+    }),
+    createPagesNodeExternalsPlugin({
+      getRoot: () => root,
+      getPagesDir: () => (hasPagesDir ? pagesDir : null),
+      getAliases: () => nextConfig?.aliases ?? {},
+      getTranspilePackages: () => nextConfig?.transpilePackages ?? [],
+      // Workers and Nitro need a self-contained server bundle. Their runtime
+      // builds intentionally keep package code inside the graph.
+      isEnabled: () => !hasCloudflarePlugin && !hasNitroPlugin,
     }),
     // Resolve `data:text/css[+module],...` imports into virtual CSS files so
     // Vite's CSS pipeline (LightningCSS, CSS modules) processes them instead
@@ -5980,6 +5990,21 @@ export const loadServerActionClient = ${
               transform: { define: { "process.browser": processBrowser } },
             },
           },
+        };
+      },
+    },
+    // Next.js replaces process.browser in every compilation target. Keep the
+    // define environment-scoped so browser-only branches disappear from both
+    // application code and optimized dependencies without leaking `true` into
+    // RSC/SSR builds.
+    {
+      name: "vinext:process-browser-define",
+      configEnvironment(_name, environment) {
+        const value = environment.consumer === "client" ? "true" : "false";
+        const define = { "process.browser": value };
+        return {
+          define,
+          optimizeDeps: { rolldownOptions: { transform: { define } } },
         };
       },
     },
