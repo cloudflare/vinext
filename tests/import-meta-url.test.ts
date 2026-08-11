@@ -139,7 +139,7 @@ describe("vinext:import-meta-url plugin", () => {
     );
     await fsp.writeFile(
       packageEntry,
-      `export const dependency = import(new URL("./dependency.js", import.meta.url).href);`,
+      `export const dependency = import(/* webpackMode: "eager" */ new URL("./dependency.js", import.meta.url).href);`,
     );
     await fsp.writeFile(path.join(packageRoot, "dependency.js"), `export default "loaded";`);
 
