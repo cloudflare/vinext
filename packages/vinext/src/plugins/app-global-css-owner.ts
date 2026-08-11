@@ -151,18 +151,49 @@ export function createAppGlobalCssOwnerPlugin(getAppDir: () => string | null): P
           };
           const chunkModuleIds = Object.keys(chunk.modules ?? {});
           const chunkModuleSet = new Set(chunkModuleIds);
-          const importedWithinChunk = new Set<string>();
+          const chunkImports = new Map<string, string[]>();
           for (const moduleId of chunkModuleIds) {
-            for (const importedId of this.getModuleInfo(moduleId)?.importedIds ?? []) {
-              if (chunkModuleSet.has(importedId)) importedWithinChunk.add(importedId);
+            chunkImports.set(
+              moduleId,
+              (this.getModuleInfo(moduleId)?.importedIds ?? []).filter((importedId) =>
+                chunkModuleSet.has(importedId),
+              ),
+            );
+          }
+
+          // Condense cycles before selecting roots. A strongly connected
+          // component has no ordinary in-chunk root, so starting from Rollup's
+          // chunk.modules render order can reverse ESM evaluation order. Pick
+          // the SCC member imported from outside this chunk instead, then let
+          // the normal source-order DFS walk the cycle from that entry point.
+          const components = stronglyConnectedComponents(chunkModuleIds, chunkImports);
+          const componentByModule = new Map<string, number>();
+          components.forEach((component, index) => {
+            for (const moduleId of component) componentByModule.set(moduleId, index);
+          });
+          const componentIndegree = components.map(() => 0);
+          for (const [moduleId, importedIds] of chunkImports) {
+            const from = componentByModule.get(moduleId);
+            for (const importedId of importedIds) {
+              const to = componentByModule.get(importedId);
+              if (from !== undefined && to !== undefined && from !== to) componentIndegree[to]++;
             }
           }
-          for (const moduleId of chunkModuleIds) {
-            if (!importedWithinChunk.has(moduleId)) collectModuleCss(moduleId);
+          const componentEntries = components.map((component) => {
+            const externalEntries = component.filter((moduleId) =>
+              (this.getModuleInfo(moduleId)?.importers ?? []).some(
+                (importer) => !chunkModuleSet.has(importer),
+              ),
+            );
+            return [...(externalEntries.length > 0 ? externalEntries : component)].sort()[0];
+          });
+          const rootComponents = components
+            .map((_, index) => index)
+            .filter((index) => componentIndegree[index] === 0)
+            .sort((a, b) => componentEntries[a].localeCompare(componentEntries[b]));
+          for (const componentIndex of rootComponents) {
+            collectModuleCss(componentEntries[componentIndex]);
           }
-          // Cyclic components have no graph root. Walk any unvisited modules
-          // afterward so their CSS is retained with the bundle's stable order.
-          for (const moduleId of chunkModuleIds) collectModuleCss(moduleId);
           if (orderedCss.length === 0) continue;
           add(currentCss);
           metadata.importedCss = new Set(orderedCss);
@@ -170,4 +201,48 @@ export function createAppGlobalCssOwnerPlugin(getAppDir: () => string | null): P
       },
     },
   };
+}
+
+function stronglyConnectedComponents(
+  moduleIds: string[],
+  imports: ReadonlyMap<string, readonly string[]>,
+): string[][] {
+  let nextIndex = 0;
+  const indices = new Map<string, number>();
+  const lowLinks = new Map<string, number>();
+  const stack: string[] = [];
+  const onStack = new Set<string>();
+  const components: string[][] = [];
+
+  const visit = (moduleId: string) => {
+    const index = nextIndex++;
+    indices.set(moduleId, index);
+    lowLinks.set(moduleId, index);
+    stack.push(moduleId);
+    onStack.add(moduleId);
+
+    for (const importedId of imports.get(moduleId) ?? []) {
+      if (!indices.has(importedId)) {
+        visit(importedId);
+        lowLinks.set(moduleId, Math.min(lowLinks.get(moduleId)!, lowLinks.get(importedId)!));
+      } else if (onStack.has(importedId)) {
+        lowLinks.set(moduleId, Math.min(lowLinks.get(moduleId)!, indices.get(importedId)!));
+      }
+    }
+
+    if (lowLinks.get(moduleId) !== index) return;
+    const component: string[] = [];
+    while (stack.length > 0) {
+      const member = stack.pop()!;
+      onStack.delete(member);
+      component.push(member);
+      if (member === moduleId) break;
+    }
+    components.push(component);
+  };
+
+  for (const moduleId of [...moduleIds].sort()) {
+    if (!indices.has(moduleId)) visit(moduleId);
+  }
+  return components;
 }

@@ -148,6 +148,21 @@ describe("App Router: next/dynamic CSS order (production)", () => {
     await page.close();
   });
 
+  browserIt("preserves CSS evaluation order in a cyclic chunk shared by routes", async () => {
+    for (const route of ["cycle-one", "cycle-two"]) {
+      const page = await browser!.newPage();
+      await page.goto(`${baseUrl}/${route}`, { waitUntil: "networkidle" });
+
+      await expect
+        .poll(() =>
+          page.locator("#cycle-shared").evaluate((element) => getComputedStyle(element).color),
+        )
+        .toBe("rgb(255, 0, 0)");
+      await expect(page.locator("#cycle-shared").getAttribute("data-marker")).resolves.toBe("b-a");
+      await page.close();
+    }
+  });
+
   it("records resolved and transitive stylesheet resources in cascade order", () => {
     const manifestSource = fs.readFileSync(
       path.join(DIST_DIR, "server", "__vite_rsc_assets_manifest.js"),
@@ -174,6 +189,7 @@ describe("App Router: next/dynamic CSS order (production)", () => {
       "red",
       "blue",
     ]);
+    expect(resourceColors("app/cycle-shared/a.tsx").map(cssColor)).toEqual(["green", "red"]);
   });
 
   it("gives relative and extensionless alias imports of one global CSS file one owner", () => {
