@@ -149,7 +149,20 @@ export function createAppGlobalCssOwnerPlugin(getAppDir: () => string | null): P
               collectModuleCss(importedId);
             }
           };
-          for (const moduleId of Object.keys(chunk.modules ?? {})) collectModuleCss(moduleId);
+          const chunkModuleIds = Object.keys(chunk.modules ?? {});
+          const chunkModuleSet = new Set(chunkModuleIds);
+          const importedWithinChunk = new Set<string>();
+          for (const moduleId of chunkModuleIds) {
+            for (const importedId of this.getModuleInfo(moduleId)?.importedIds ?? []) {
+              if (chunkModuleSet.has(importedId)) importedWithinChunk.add(importedId);
+            }
+          }
+          for (const moduleId of chunkModuleIds) {
+            if (!importedWithinChunk.has(moduleId)) collectModuleCss(moduleId);
+          }
+          // Cyclic components have no graph root. Walk any unvisited modules
+          // afterward so their CSS is retained with the bundle's stable order.
+          for (const moduleId of chunkModuleIds) collectModuleCss(moduleId);
           if (orderedCss.length === 0) continue;
           add(currentCss);
           metadata.importedCss = new Set(orderedCss);

@@ -1654,8 +1654,8 @@ describe("computeDynamicImportPreloads", () => {
 
     expect(computeDynamicImportPreloads(manifest)).toEqual({
       "app/dynamic/widget.tsx": [
-        "_next/static/widget-helper.js",
         "_next/static/widget.js",
+        "_next/static/widget-helper.js",
         "_next/static/widget.css",
       ],
     });

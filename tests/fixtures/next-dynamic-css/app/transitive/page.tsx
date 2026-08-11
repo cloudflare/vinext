@@ -6,8 +6,11 @@ export default function TransitiveOrderPage() {
   return (
     <>
       <Intermediate />
-      <p id="transitive-order" className={`${a.class} transitive-order ${b.class}`}>
-        Transitive global imports retain total order
+      <p id="transitive-before" className={`${a.class} transitive-order`}>
+        Transitive global imports follow earlier modules
+      </p>
+      <p id="transitive-after" className={`transitive-order ${b.class}`}>
+        Later modules follow transitive global imports
       </p>
     </>
   );

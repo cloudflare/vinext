@@ -109,16 +109,17 @@ function collectStaticChunkFiles(
   const chunk = buildManifest[key];
   if (!chunk) return;
 
-  // Static dependencies execute before the importing chunk. Preserve that
-  // order for their stylesheets too: a shared base module must precede the
-  // next/dynamic component CSS that intentionally overrides it.
+  // Keep the boundary's JS first, matching react-loadable/Vite preload
+  // metadata. Stylesheets follow dependency order below so a shared base CSS
+  // module precedes the next/dynamic component CSS that overrides it.
+  if (chunk.file.endsWith(".js")) {
+    addFile(files, seenFiles, chunk.file);
+  }
+
   for (const importedKey of chunk.imports ?? []) {
     collectStaticChunkFiles(buildManifest, importedKey, files, seenFiles, visitedChunks);
   }
 
-  if (chunk.file.endsWith(".js")) {
-    addFile(files, seenFiles, chunk.file);
-  }
   for (const cssFile of chunk.css ?? []) {
     addFile(files, seenFiles, cssFile);
   }

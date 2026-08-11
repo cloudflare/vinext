@@ -15,6 +15,8 @@ import vinext from "../packages/vinext/src/index.js";
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/next-dynamic-css");
 const DIST_DIR = path.join(FIXTURE_DIR, "dist");
 const GLOBAL_CSS_ALIAS = "fixture-global-css";
+const HAS_CHROMIUM = fs.existsSync(chromium.executablePath());
+const browserIt = it.runIf(HAS_CHROMIUM);
 
 function fixtureConfig() {
   return {
@@ -34,7 +36,7 @@ function fixtureConfig() {
 
 describe("App Router: next/dynamic CSS order (production)", () => {
   let server: Awaited<ReturnType<typeof preview>>;
-  let browser: Browser;
+  let browser: Browser | undefined;
   let baseUrl: string;
 
   beforeAll(async () => {
@@ -48,7 +50,7 @@ describe("App Router: next/dynamic CSS order (production)", () => {
     const address = server.httpServer.address();
     baseUrl = address && typeof address === "object" ? `http://localhost:${address.port}` : "";
     expect(baseUrl).not.toBe("");
-    browser = await chromium.launch({ headless: true });
+    if (HAS_CHROMIUM) browser = await chromium.launch({ headless: true });
   }, 120_000);
 
   afterAll(async () => {
@@ -57,8 +59,8 @@ describe("App Router: next/dynamic CSS order (production)", () => {
     fs.rmSync(DIST_DIR, { recursive: true, force: true });
   });
 
-  it("keeps Next.js cascade order across an SSR bailout and next/dynamic", async () => {
-    const page = await browser.newPage();
+  browserIt("keeps Next.js cascade order across an SSR bailout and next/dynamic", async () => {
+    const page = await browser!.newPage();
     await page.goto(`${baseUrl}/page`, { waitUntil: "networkidle" });
 
     await expect.poll(() => page.locator("#component").count()).toBe(1);
@@ -86,21 +88,24 @@ describe("App Router: next/dynamic CSS order (production)", () => {
     await page.close();
   });
 
-  it("preserves declaration order when a global stylesheet follows a CSS module", async () => {
-    const page = await browser.newPage();
-    await page.goto(`${baseUrl}/reverse`, { waitUntil: "networkidle" });
+  browserIt(
+    "preserves declaration order when a global stylesheet follows a CSS module",
+    async () => {
+      const page = await browser!.newPage();
+      await page.goto(`${baseUrl}/reverse`, { waitUntil: "networkidle" });
 
-    await expect
-      .poll(() =>
-        page.locator("#reverse-order").evaluate((element) => getComputedStyle(element).color),
-      )
-      .toBe("rgb(255, 0, 0)");
+      await expect
+        .poll(() =>
+          page.locator("#reverse-order").evaluate((element) => getComputedStyle(element).color),
+        )
+        .toBe("rgb(255, 0, 0)");
 
-    await page.close();
-  });
+      await page.close();
+    },
+  );
 
-  it("preserves a CSS module imported after a global owner boundary", async () => {
-    const page = await browser.newPage();
+  browserIt("preserves a CSS module imported after a global owner boundary", async () => {
+    const page = await browser!.newPage();
     await page.goto(`${baseUrl}/straddled`, { waitUntil: "networkidle" });
 
     await expect
@@ -112,8 +117,8 @@ describe("App Router: next/dynamic CSS order (production)", () => {
     await page.close();
   });
 
-  it("classifies extensionless CSS module aliases by their resolved target", async () => {
-    const page = await browser.newPage();
+  browserIt("classifies extensionless CSS module aliases by their resolved target", async () => {
+    const page = await browser!.newPage();
     await page.goto(`${baseUrl}/alias-module`, { waitUntil: "networkidle" });
 
     await expect
@@ -125,17 +130,50 @@ describe("App Router: next/dynamic CSS order (production)", () => {
     await page.close();
   });
 
-  it("preserves CSS order through an intermediate JavaScript module", async () => {
-    const page = await browser.newPage();
+  browserIt("preserves CSS order through an intermediate JavaScript module", async () => {
+    const page = await browser!.newPage();
     await page.goto(`${baseUrl}/transitive`, { waitUntil: "networkidle" });
 
     await expect
       .poll(() =>
-        page.locator("#transitive-order").evaluate((element) => getComputedStyle(element).color),
+        page.locator("#transitive-before").evaluate((element) => getComputedStyle(element).color),
+      )
+      .toBe("rgb(255, 0, 0)");
+    await expect
+      .poll(() =>
+        page.locator("#transitive-after").evaluate((element) => getComputedStyle(element).color),
       )
       .toBe("rgb(0, 0, 255)");
 
     await page.close();
+  });
+
+  it("records resolved and transitive stylesheet resources in cascade order", () => {
+    const manifestSource = fs.readFileSync(
+      path.join(DIST_DIR, "server", "__vite_rsc_assets_manifest.js"),
+      "utf8",
+    );
+    const manifest = JSON.parse(manifestSource.slice("export default ".length)) as {
+      serverResources: Record<string, { css: string[] }>;
+    };
+    const cssDir = path.join(DIST_DIR, "client");
+    const resourceColors = (resource: string) =>
+      manifest.serverResources[resource].css.map((href) =>
+        fs.readFileSync(path.join(cssDir, href), "utf8"),
+      );
+
+    expect(resourceColors("app/reverse/page.tsx").map(cssColor)).toEqual(["green", "red"]);
+    expect(resourceColors("app/straddled/page.tsx").map(cssColor)).toEqual([
+      "green",
+      "red",
+      "blue",
+    ]);
+    expect(resourceColors("app/alias-module/page.tsx").map(cssColor)).toEqual(["green", "red"]);
+    expect(resourceColors("app/transitive/page.tsx").map(cssColor)).toEqual([
+      "green",
+      "red",
+      "blue",
+    ]);
   });
 
   it("gives relative and extensionless alias imports of one global CSS file one owner", () => {
@@ -158,3 +196,10 @@ describe("App Router: next/dynamic CSS order (production)", () => {
     expect(aliasOnlyAssets[0]).toMatch(/^app-global-css-/);
   });
 });
+
+function cssColor(source: string): "blue" | "green" | "red" {
+  if (source.includes("color:blue") || source.includes("color:#00f")) return "blue";
+  if (source.includes("color:green") || source.includes("color:#008000")) return "green";
+  if (source.includes("color:red") || source.includes("color:#f00")) return "red";
+  throw new Error(`Expected CSS fixture color in ${source}`);
+}
