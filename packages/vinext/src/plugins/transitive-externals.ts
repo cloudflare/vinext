@@ -5,6 +5,9 @@ import { createIdResolver, type Plugin, type Rollup } from "vite";
 
 type ExternalModuleMode = "import" | "require";
 
+const BARE_PACKAGE_SPECIFIER_RE =
+  /^(?:@[A-Za-z0-9._~-]+\/[A-Za-z0-9._~-]+|[A-Za-z0-9_~-][A-Za-z0-9._~-]*)(?:\/[^?#]*)?$/;
+
 function realpath(resolvedPath: string): string {
   try {
     return fs.realpathSync(resolvedPath);
@@ -90,6 +93,9 @@ export function createTransitiveExternalsPlugin(options: {
   return {
     name: "vinext:transitive-externals",
     enforce: "pre",
+    applyToEnvironment(environment) {
+      return environment.name !== "client" && environment.config.consumer !== "client";
+    },
 
     configResolved(config) {
       const root = options.getRoot();
@@ -109,46 +115,46 @@ export function createTransitiveExternalsPlugin(options: {
       });
     },
 
-    resolveId(source, importer, resolveOptions) {
-      if (this.environment?.name === "client" || this.environment?.config.consumer === "client") {
-        return null;
-      }
-      if (
-        !importer ||
-        !externalPackages ||
-        externalPackages.size === 0 ||
-        !rootImporter ||
-        !rootResolver ||
-        !importResolver ||
-        !requireResolver
-      ) {
-        return null;
-      }
-
-      const packageName = packageNameFromSpecifier(source);
-      if (!packageName || !externalPackages.has(packageName)) return null;
-      if (importer.startsWith("\0") || importer.includes("?") || !path.isAbsolute(importer)) {
-        return null;
-      }
-
-      const mode = moduleMode(resolveOptions.kind);
-      const resolver = mode === "require" ? requireResolver : importResolver;
-      return (async () => {
-        const importerResolution = await resolver(this.environment, source, importer);
-        if (!importerResolution || !path.isAbsolute(importerResolution)) {
-          // Node's resolver models require() accurately, but must not be used
-          // for ESM imports because doing so can select a require-only export.
-          return mode === "require"
-            ? resolveTransitiveExternal(source, importer, rootResolver)
-            : null;
+    resolveId: {
+      filter: { id: BARE_PACKAGE_SPECIFIER_RE },
+      handler(source, importer, resolveOptions) {
+        if (
+          !importer ||
+          !externalPackages ||
+          externalPackages.size === 0 ||
+          !rootImporter ||
+          !rootResolver ||
+          !importResolver ||
+          !requireResolver
+        ) {
+          return null;
         }
 
-        const rootResolution = await resolver(this.environment, source, rootImporter);
-        return compareTransitiveExternalResolutions(
-          importerResolution,
-          rootResolution && path.isAbsolute(rootResolution) ? rootResolution : null,
-        );
-      })();
+        const packageName = packageNameFromSpecifier(source);
+        if (!packageName || !externalPackages.has(packageName)) return null;
+        if (importer.startsWith("\0") || importer.includes("?") || !path.isAbsolute(importer)) {
+          return null;
+        }
+
+        const mode = moduleMode(resolveOptions.kind);
+        const resolver = mode === "require" ? requireResolver : importResolver;
+        return (async () => {
+          const importerResolution = await resolver(this.environment, source, importer);
+          if (!importerResolution || !path.isAbsolute(importerResolution)) {
+            // Node's resolver models require() accurately, but must not be used
+            // for ESM imports because doing so can select a require-only export.
+            return mode === "require"
+              ? resolveTransitiveExternal(source, importer, rootResolver)
+              : null;
+          }
+
+          const rootResolution = await resolver(this.environment, source, rootImporter);
+          return compareTransitiveExternalResolutions(
+            importerResolution,
+            rootResolution && path.isAbsolute(rootResolution) ? rootResolution : null,
+          );
+        })();
+      },
     },
   };
 }
