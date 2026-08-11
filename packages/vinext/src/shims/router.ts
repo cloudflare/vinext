@@ -1485,6 +1485,12 @@ class NavigationCancelledError extends Error {
   }
 }
 
+class InternalNavigationRedirect extends Error {
+  constructor(readonly destination: string) {
+    super("Internal navigation redirect");
+  }
+}
+
 function cancelActiveNavigationEvent(routeProps: { shallow: boolean }): void {
   const active = routerRuntimeState.activeNavigationEvent;
   if (active === null || active.cancellationEmitted) return;
@@ -1554,7 +1560,6 @@ type NavigateClientOptions = {
   mode?: "push" | "replace";
   scroll?: ScrollPosition | null;
   beforeHistoryChange?: () => void;
-  pendingRedirectHistoryUrl?: string;
 };
 
 /** Wire format of `/_next/data/<id>/<page>.json` response bodies. */
@@ -1640,14 +1645,10 @@ function resolveLocalRedirectUrl(location: string): string | null {
   if (appPath.startsWith("//")) {
     return normalizePathTrailingSlash(location, __trailingSlash);
   }
-  return normalizePathTrailingSlash(
-    toBrowserNavigationHref(
-      stripLocalePrefixForApiRedirect(appPath),
-      window.location.href,
-      __basePath,
-    ),
-    __trailingSlash,
-  );
+  // Internal redirects are re-dispatched through performNavigation(), whose
+  // input contract is app-relative. Keep basePath stripped here so the fresh
+  // navigation applies it exactly once when deriving its browser URL.
+  return normalizePathTrailingSlash(stripLocalePrefixForApiRedirect(appPath), __trailingSlash);
 }
 
 function hasClientRewriteRules(): boolean {
@@ -1977,19 +1978,15 @@ async function resolveMiddlewareDataEffect(
  * Internal destinations (absolute paths, unless the redirect opted out of
  * basePath via `__N_REDIRECT_BASE_PATH === false`) are followed with a fresh
  * client-side navigation that preserves the originating push/replace mode. The
- * fresh navigation increments the navigation id, so the navigation that
- * produced this redirect is superseded and never commits the intermediate
- * page. External (or non-absolute) destinations fall back to a hard navigation.
+ * caller unwinds the source navigation and re-dispatches the destination,
+ * so only the destination commits history state. External (or non-absolute)
+ * destinations fall back to a hard navigation.
  *
  * Ported from Next.js: packages/next/src/shared/lib/router/router.ts
  * (`pageProps.__N_REDIRECT` handling — internal `this.change` vs
  * `handleHardNavigation`).
  */
-function handleDataRedirect(
-  destination: string,
-  redirectBasePath: unknown,
-  mode: "push" | "replace" = "push",
-): void {
+function handleDataRedirect(destination: string, redirectBasePath: unknown): never {
   const isInternal = destination.startsWith("/") && redirectBasePath !== false;
   if (!isInternal) {
     // External or basePath-less redirect — hard navigate to the redirect
@@ -1997,9 +1994,7 @@ function handleDataRedirect(
     scheduleHardNavigationAndThrow(destination, "Navigation redirected externally");
   }
 
-  // Re-dispatch as a fresh navigation. `locale: false` matches Next.js, which
-  // does not re-apply the locale prefix to a redirect destination.
-  void performNavigation(destination, undefined, { locale: false }, mode);
+  throw new InternalNavigationRedirect(destination);
 }
 
 async function loadTargetPageModule(
@@ -2283,16 +2278,7 @@ async function navigateClientData(
       scheduleHardNavigationAndThrow(softRedirect, "Navigation redirected externally");
     }
 
-    options.pendingRedirectHistoryUrl = redirectedUrl;
-    await navigateClientHtml(
-      redirectedUrl,
-      redirectedUrl,
-      controller,
-      navId,
-      assertStillCurrent,
-      options,
-    );
-    return;
+    throw new InternalNavigationRedirect(redirectedUrl);
   }
 
   if (!res.ok) {
@@ -2350,8 +2336,7 @@ async function navigateClientData(
   // packages/next/src/shared/lib/router/router.ts (`this.change(method, ...)`).
   const redirectDestination = pageProps.__N_REDIRECT;
   if (typeof redirectDestination === "string") {
-    handleDataRedirect(redirectDestination, pageProps.__N_REDIRECT_BASE_PATH, options.mode);
-    throw new NavigationCancelledError(url);
+    handleDataRedirect(redirectDestination, pageProps.__N_REDIRECT_BASE_PATH);
   }
 
   await renderPagesNavigationTarget(url, target, props, options, assertStillCurrent);
@@ -2376,9 +2361,6 @@ async function navigateClientHtml(
   options: NavigateClientOptions = {},
 ): Promise<void> {
   let browserUrl = url;
-  if (options.pendingRedirectHistoryUrl === undefined && fetchUrl !== url) {
-    options.pendingRedirectHistoryUrl = url;
-  }
   const root = window.__VINEXT_ROOT__;
   if (!root) {
     // No React root yet — fall back to hard navigation
@@ -2405,8 +2387,7 @@ async function navigateClientHtml(
   if (res.redirected && res.url) {
     const redirectedUrl = resolveSameOriginRedirectedUrl(res.url);
     if (redirectedUrl) {
-      browserUrl = redirectedUrl;
-      options.pendingRedirectHistoryUrl = redirectedUrl;
+      throw new InternalNavigationRedirect(redirectedUrl);
     }
   }
 
@@ -2605,11 +2586,9 @@ async function navigateClient(
         if (!redirectedUrl) {
           scheduleHardNavigationAndThrow(configRedirect, "Navigation redirected externally");
         }
-        options.pendingRedirectHistoryUrl = redirectedUrl;
-        browserUrl = redirectedUrl;
-        htmlFetchUrl = redirectedUrl;
+        throw new InternalNavigationRedirect(redirectedUrl);
       }
-      let routeLookupUrl = configRedirect ? browserUrl : routeUrl;
+      let routeLookupUrl = routeUrl;
       if (routeUrl === url && hasClientRewriteRules()) {
         const syncConfigRewrite = hasClientAppRouteManifest()
           ? undefined
@@ -2683,9 +2662,7 @@ async function navigateClient(
         if (!redirectedUrl) {
           scheduleHardNavigationAndThrow(redirectLocation, "Navigation redirected externally");
         }
-        options.pendingRedirectHistoryUrl = redirectedUrl;
-        browserUrl = redirectedUrl;
-        htmlFetchUrl = redirectedUrl;
+        throw new InternalNavigationRedirect(redirectedUrl);
       } else if (middlewareEffect) {
         // A masked navigation probes middleware using the browser-visible URL but must fetch page
         // data using the route URL. Without a rewrite header those are different requests, so do
@@ -2779,13 +2756,16 @@ async function runNavigateClient(
    */
   routeUrl: string = fullUrl,
   eventContext?: PagesNavigationEventContext,
-): Promise<"completed" | "cancelled" | "failed"> {
+): Promise<"completed" | "cancelled" | "failed" | { redirectDestination: string }> {
   try {
     await navigateClient(fullUrl, fetchUrl, options, routeUrl);
     return "completed";
   } catch (err: unknown) {
     if (eventContext?.cancellationEmitted) {
       return "cancelled";
+    }
+    if (err instanceof InternalNavigationRedirect) {
+      return { redirectDestination: err.destination };
     }
     routerEvents.emit("routeChangeError", err, resolvedUrl, { shallow: false });
     if (eventContext) clearActiveNavigationEvent(eventContext);
@@ -2977,6 +2957,11 @@ async function performNavigation(
   options: TransitionOptions | undefined,
   mode: "push" | "replace",
   onStateUpdate?: () => void,
+  // A validated same-origin absolute redirect whose app pathname starts with
+  // `//` must stay absolute when written to history. Its app-relative form is
+  // still used for route state and fetching so the leading slashes remain a
+  // pathname rather than being reinterpreted as a protocol-relative host.
+  redirectHistoryHref?: string,
 ): Promise<boolean> {
   // SSR / prerender guard. Calling Router.push or Router.replace from a
   // Pages Router component during server rendering would otherwise crash
@@ -3312,16 +3297,7 @@ async function performNavigation(
     if (beforeHistoryChangeEmitted) return;
     beforeHistoryChangeEmitted = true;
     routerEvents.emit("beforeHistoryChange", full, { shallow });
-    updateHistory(mode, full, navState);
-    if (navigateOptions.pendingRedirectHistoryUrl !== undefined) {
-      window.history.replaceState(
-        window.history.state ?? {},
-        "",
-        navigateOptions.pendingRedirectHistoryUrl,
-      );
-      routerRuntimeState.lastPathnameAndSearch = window.location.pathname + window.location.search;
-      routerRuntimeState.lastHash = window.location.hash;
-    }
+    updateHistory(mode, redirectHistoryHref ?? full, navState);
   };
   if (!shallow) {
     navigateOptions.beforeHistoryChange = emitBeforeHistoryChange;
@@ -3337,6 +3313,19 @@ async function performNavigation(
       fullRouteUrl,
       eventContext,
     );
+    if (typeof result === "object") {
+      if (eventContext) clearActiveNavigationEvent(eventContext);
+      return performNavigation(
+        result.redirectDestination,
+        undefined,
+        { ...options, locale: false },
+        mode,
+        onStateUpdate,
+        isAbsoluteOrProtocolRelativeUrl(result.redirectDestination)
+          ? result.redirectDestination
+          : undefined,
+      );
+    }
     if (result === "cancelled") return true;
     if (result === "failed") return false;
   } else {
