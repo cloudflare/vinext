@@ -751,6 +751,17 @@ describe("Pages Router integration", () => {
     expect(html).toContain("This is the about page.");
   });
 
+  it("renders styled-jsx styles during streaming SSR", async () => {
+    // Ported from Next.js: test/e2e/streaming-ssr/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr/index.test.ts
+    const res = await fetch(`${baseUrl}/styled-jsx-streaming`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("styled-jsx streaming");
+    expect(html).toMatch(/color:\s*(?:blue|#00f)/);
+  });
+
   // Refs #1463: Pages Router should reject non-GET/HEAD methods to static
   // (no `getServerSideProps`) pages with a 405 + `Allow: GET, HEAD`.
   // Ported from Next.js: test/e2e/prerender.test.ts
@@ -8131,6 +8142,17 @@ describe("Production Pages Router SSR streaming", () => {
     if (outDir) {
       fs.rmSync(outDir, { recursive: true, force: true });
     }
+  });
+
+  it("renders styled-jsx styles during streaming SSR in production", async () => {
+    // Ported from Next.js: test/e2e/streaming-ssr/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr/index.test.ts
+    const res = await fetch(`${prodUrl}/styled-jsx-streaming`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("styled-jsx streaming");
+    expect(html).toMatch(/color:\s*(?:blue|#00f)/);
   });
 
   it("streams Pages SSR responses incrementally in production with br compression", async () => {

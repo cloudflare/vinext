@@ -120,11 +120,19 @@ type PagesStreamedHtmlResponse = {
   __vinextStreamedHtmlResponse?: boolean;
 } & Response;
 
+export type PagesStyleRegistry = {
+  wrap(element: ReactNode): ReactNode;
+  styles(options?: { nonce?: string }): ReactNode;
+  flush(): void;
+};
+
 type RenderPagesPageResponseOptions = {
   assetTags: string;
   buildId: string | null;
   clearSsrContext: () => void;
   createPageElement: (pageProps: Record<string, unknown>) => ReactNode;
+  /** Create the request-local styled-jsx registry used by the Pages renderer. */
+  createStyleRegistry?: (() => PagesStyleRegistry) | undefined;
   /**
    * Build the page React tree with optional App/Component enhancers applied,
    * supporting the Pages Router `_document.getInitialProps` contract:
@@ -495,6 +503,9 @@ export async function renderPagesPageResponse(
   options: RenderPagesPageResponseOptions,
 ): Promise<Response> {
   const renderProps = options.props ?? { pageProps: options.pageProps };
+  const styleRegistry = options.createStyleRegistry?.();
+  const wrapWithStyleRegistry = (element: ReactNode): ReactNode =>
+    styleRegistry ? styleRegistry.wrap(element) : element;
   options.resetSSRHead?.();
   await options.flushPreloads?.();
 
@@ -530,7 +541,9 @@ export async function renderPagesPageResponse(
   // prod and dev stay in lockstep.
   const documentRenderPage = await runDocumentRenderPage({
     DocumentComponent: options.DocumentComponent,
-    enhancePageElement: options.enhancePageElement,
+    enhancePageElement: options.enhancePageElement
+      ? (renderPageOptions) => wrapWithStyleRegistry(options.enhancePageElement!(renderPageOptions))
+      : undefined,
     renderToReadableStream: options.renderToReadableStream,
     // Render the collected `styles` fragment with the plain stream renderer
     // rather than the full `<Document>` shell renderer — the styles tree is a
@@ -570,11 +583,20 @@ export async function renderPagesPageResponse(
     // Built lazily here: when the renderPage contract produced the body
     // (`rendered`), this element is never used, so there's no point
     // constructing the tree on that path.
-    const pageElement = withScriptNonce(
-      React.createElement(React.Fragment, null, options.createPageElement(renderProps)),
-      options.scriptNonce,
+    const pageElement = wrapWithStyleRegistry(
+      withScriptNonce(
+        React.createElement(React.Fragment, null, options.createPageElement(renderProps)),
+        options.scriptNonce,
+      ),
     );
     bodyStream = await options.renderToReadableStream(pageElement);
+  }
+
+  let styledJsxHTML = "";
+  if (styleRegistry) {
+    const styles = styleRegistry.styles({ nonce: options.scriptNonce });
+    styleRegistry.flush();
+    styledJsxHTML = await readStreamAsText(await options.renderToReadableStream(styles));
   }
 
   // Fold any head tags returned by `_document.getInitialProps()` into the
@@ -598,6 +620,7 @@ export async function renderPagesPageResponse(
   const traceMetaHTML = getClientTraceMetadataHTML(options.clientTraceMetadata);
   let ssrHeadHTML = headFromShim;
   if (traceMetaHTML) ssrHeadHTML += `\n  ${traceMetaHTML}`;
+  if (styledJsxHTML) ssrHeadHTML += `\n  ${styledJsxHTML}`;
   // `styles` returned by `_document.getInitialProps()` (e.g. collected
   // styled-components / emotion <style> tags) is already rendered to a string
   // by the shared helper, ready to merge into the SSR head.

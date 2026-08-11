@@ -272,6 +272,7 @@ async function streamPageToResponse(
   options: {
     url: string;
     server: ViteDevServer;
+    moduleImporter: ModuleImporter;
     fontHeadHTML: string;
     assetHeadHTML?: string;
     scripts: string;
@@ -315,6 +316,7 @@ async function streamPageToResponse(
   const {
     url,
     server,
+    moduleImporter,
     fontHeadHTML,
     assetHeadHTML = "",
     scripts,
@@ -331,6 +333,32 @@ async function streamPageToResponse(
     preserveExistingContentType = false,
   } = options;
 
+  let jsxStyleRegistry:
+    | {
+        styles(options?: { nonce?: string }): React.ReactNode;
+        flush(): void;
+      }
+    | undefined;
+  let wrapWithStyleRegistry = (pageElement: React.ReactElement): React.ReactElement => pageElement;
+  try {
+    const styledJsxModule = await importModule(moduleImporter, "styled-jsx");
+    const styledJsxRuntime = styledJsxModule.default ?? styledJsxModule;
+    if (
+      typeof styledJsxRuntime.createStyleRegistry === "function" &&
+      typeof styledJsxRuntime.StyleRegistry === "function"
+    ) {
+      jsxStyleRegistry = styledJsxRuntime.createStyleRegistry();
+      wrapWithStyleRegistry = (pageElement) =>
+        React.createElement(
+          styledJsxRuntime.StyleRegistry,
+          { registry: jsxStyleRegistry },
+          pageElement,
+        );
+    }
+  } catch {
+    // styled-jsx is optional. Pages without the dependency render normally.
+  }
+
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
   // via `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. styled-
   // components / emotion style collection). When that contract is in use the
@@ -340,7 +368,9 @@ async function streamPageToResponse(
   // helper so dev and prod stay in lockstep.
   const documentRenderPage = await runDocumentRenderPage({
     DocumentComponent,
-    enhancePageElement,
+    enhancePageElement: enhancePageElement
+      ? (renderPageOptions) => wrapWithStyleRegistry(enhancePageElement(renderPageOptions))
+      : undefined,
     renderToReadableStream,
     renderStylesToString: renderToStringAsync,
     scriptNonce,
@@ -361,7 +391,14 @@ async function streamPageToResponse(
     // Start the React body stream FIRST — the promise resolves when the
     // shell is ready (synchronous content outside Suspense boundaries).
     // This triggers the render which populates <Head> tags.
-    bodyStream = await renderToReadableStream(element);
+    bodyStream = await renderToReadableStream(wrapWithStyleRegistry(element));
+  }
+
+  let styledJsxHTML = "";
+  if (jsxStyleRegistry) {
+    const styles = jsxStyleRegistry.styles({ nonce: scriptNonce });
+    jsxStyleRegistry.flush();
+    styledJsxHTML = await renderToStringAsync(React.createElement(React.Fragment, null, styles));
   }
 
   // Fold any head tags returned by `_document.getInitialProps()` into the same
@@ -383,6 +420,7 @@ async function streamPageToResponse(
   // Now that the shell has rendered (and any _document.getInitialProps
   // has injected its tags), collect head HTML.
   let headHTML = getHeadHTML();
+  if (styledJsxHTML) headHTML += `\n  ${styledJsxHTML}`;
   if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
     headHTML += `\n  ${documentRenderPage.stylesHTML}`;
   }
@@ -1594,6 +1632,7 @@ export function createSSRHandler(
         await streamPageToResponse(res, withScriptNonce(element, scriptNonce), {
           url,
           server,
+          moduleImporter: runner,
           fontHeadHTML,
           assetHeadHTML,
           scripts: allScripts,
@@ -1957,6 +1996,7 @@ async function renderErrorPage(
         await streamPageToResponse(res, element, {
           url,
           server,
+          moduleImporter: runner,
           fontHeadHTML: "",
           assetHeadHTML,
           scripts: errorScripts,

@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { parseAst, type Plugin } from "vite";
 
@@ -121,10 +121,52 @@ export function createStyledJsxPlugin(
   return {
     name: "vinext:styled-jsx",
     enforce: "pre",
+    config(config) {
+      const configRoot = config.root ? toSlash(config.root) : undefined;
+      if (configRoot && configRoot !== projectRoot) {
+        projectRoot = configRoot;
+        nextRequire = undefined;
+        compilerPromise = null;
+      }
+      try {
+        const requireFromNext = getNextRequire();
+        const runtimePath = requireFromNext?.resolve("styled-jsx");
+        const stylePath = requireFromNext?.resolve("styled-jsx/style");
+        if (!runtimePath || !stylePath) return;
+        return {
+          optimizeDeps: {
+            include: ["styled-jsx", "styled-jsx/style"],
+          },
+          resolve: {
+            alias: [
+              { find: /^styled-jsx\/style$/, replacement: stylePath },
+              { find: /^styled-jsx$/, replacement: runtimePath },
+            ],
+          },
+          ssr: {
+            optimizeDeps: {
+              exclude: [
+                "react",
+                "react-dom",
+                "react-dom/server.edge",
+                "react-dom/static.edge",
+                "react/jsx-runtime",
+                "react/jsx-dev-runtime",
+                "react-server-dom-webpack/client.edge",
+              ],
+              include: ["styled-jsx", "styled-jsx/style"],
+            },
+          },
+        };
+      } catch {
+        return;
+      }
+    },
     configResolved(config) {
       development = config.command === "serve";
-      if (config.root !== projectRoot) {
-        projectRoot = config.root;
+      const configRoot = toSlash(config.root);
+      if (configRoot !== projectRoot) {
+        projectRoot = configRoot;
         nextRequire = undefined;
         compilerPromise = null;
       }

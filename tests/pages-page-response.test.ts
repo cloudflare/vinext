@@ -80,7 +80,9 @@ function createCommonOptions() {
       '<!DOCTYPE html><html><head></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>',
   );
   const renderIsrPassToStringAsync = vi.fn(async () => "<div>cached-body</div>");
-  const renderToReadableStream = vi.fn(async () => createStream(["<div>live-body</div>"]));
+  const renderToReadableStream = vi.fn(async (_element: React.ReactNode) =>
+    createStream(["<div>live-body</div>"]),
+  );
 
   return {
     clearSsrContext,
@@ -506,6 +508,38 @@ describe("pages page response", () => {
     await renderPagesPageResponse(common.options);
 
     expect(callOrder).toEqual(["render", "head"]);
+  });
+
+  it("collects request-local styled-jsx styles after rendering and flushes the registry", async () => {
+    // Ported from Next.js: test/e2e/streaming-ssr/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr/index.test.ts
+    const common = createCommonOptions();
+    const wrap = vi.fn((element: React.ReactNode) =>
+      React.createElement("style-registry", null, element),
+    );
+    const styles = vi.fn(() => React.createElement("style", { id: "__jsx-123" }, "p{color:blue}"));
+    const flush = vi.fn();
+    const createStyleRegistry = vi.fn(() => ({ wrap, styles, flush }));
+    common.renderToReadableStream.mockImplementation(async (element: React.ReactNode) => {
+      if (React.isValidElement(element) && element.type === "style") {
+        return createStream(['<style id="__jsx-123">p{color:blue}</style>']);
+      }
+      expect(React.isValidElement(element) && element.type).toBe("style-registry");
+      return createStream(["<div>live-body</div>"]);
+    });
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      createStyleRegistry,
+      scriptNonce: "style-nonce",
+    });
+    const html = await response.text();
+
+    expect(wrap).toHaveBeenCalledTimes(1);
+    expect(styles).toHaveBeenCalledWith({ nonce: "style-nonce" });
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(html).toContain('<style id="__jsx-123">p{color:blue}</style>');
+    expect(html.indexOf("p{color:blue}")).toBeLessThan(html.indexOf("live-body"));
   });
 
   it("clears SSR context only after rendering, not before", async () => {

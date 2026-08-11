@@ -209,6 +209,7 @@ export async function runMiddleware(request) {
 import ${JSON.stringify(_serverGlobalsPath)};
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
+import { StyleRegistry as __StyleRegistry, createStyleRegistry as __createStyleRegistry } from "styled-jsx";
 import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import Router, { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReadyFromSerializedState } from "next/router";
@@ -456,6 +457,20 @@ const _renderPage = __createPagesPageHandler({
           router: Router,
         })
       : React.createElement(PageComponent, pageProps);
+  },
+  createStyleRegistry() {
+    const registry = __createStyleRegistry();
+    return {
+      wrap(element) {
+        return React.createElement(__StyleRegistry, { registry }, element);
+      },
+      styles(options) {
+        return registry.styles(options);
+      },
+      flush() {
+        registry.flush();
+      },
+    };
   },
   enhancePageElement(PageComponent, AppComponent, props, opts) {
     const rawPageProps = props?.pageProps;
