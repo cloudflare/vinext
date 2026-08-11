@@ -19,6 +19,7 @@ import {
   isNestedBfcacheSlotSegmentIdFor,
 } from "../server/bfcache-identity.js";
 import type { CacheEntryReuseProof } from "../server/cache-proof.js";
+import type { CachedNavigationWireData } from "./ppr-fallback-shell.js";
 import {
   getBfcacheIdMapContext,
   getBfcacheSegmentIdContext,
@@ -235,10 +236,12 @@ function isTransportMetadataValue(
   | AppElementsBfcacheSegmentIdentities
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
+  | CachedNavigationWireData
   | AppElementsInterception
   | readonly string[]
   | readonly AppElementsSlotBinding[] {
   return (
+    id === AppElementsWire.keys.cachedNavigation ||
     isLayoutFlagsValue(value) ||
     isBfcacheSegmentIdentitiesMetadataValue(id, value) ||
     isArtifactCompatibilityEnvelopeValue(value) ||

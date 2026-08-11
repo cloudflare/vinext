@@ -412,6 +412,8 @@ export type ResolvedNextConfig = {
   serverResolveExtensions: string[] | null;
   instrumentationClientInject: string[];
   cacheComponents: boolean;
+  /** Cache static/runtime stages learned from completed navigations. */
+  cachedNavigations: boolean;
   appNavFailHandling: boolean;
   /**
    * Enables the experimental App Router gesture transition API:
@@ -940,6 +942,10 @@ function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
     [
       "experimental.instrumentationHook",
       `\`experimental.instrumentationHook\` is no longer needed, because \`instrumentation.js\` is available by default. You can remove it from ${configFileName}.`,
+    ],
+    [
+      "experimental.cacheComponents",
+      `\`experimental.cacheComponents\` has been moved to \`cacheComponents\`. Please update your ${configFileName} file accordingly.`,
     ],
   ] as const;
 
@@ -1586,6 +1592,7 @@ export async function resolveNextConfig(
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -1759,16 +1766,23 @@ export async function resolveNextConfig(
   const inlineCss = experimental?.inlineCss === true;
   const globalNotFound = experimental?.globalNotFound === true;
   const prefetchInlining = normalizePrefetchInliningConfig(experimental?.prefetchInlining);
+  // Next.js still accepts the deprecated experimental location and moves it
+  // onto the top-level config, overriding that value when both are present.
+  const cacheComponents =
+    typeof experimental?.cacheComponents === "boolean"
+      ? experimental.cacheComponents
+      : (config.cacheComponents ?? false);
+  const cachedNavigations = cacheComponents && experimental?.cachedNavigations === true;
 
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
   //   cacheComponents, prefetchInlining, varyParams, optimisticRouting, cachedNavigations
-  // vinext does not yet implement varyParams, optimisticRouting, or cachedNavigations,
-  // so we warn when appShells is enabled and explain which co-flags are missing.
+  // vinext does not yet implement the combined appShells feature, so we warn
+  // when it is enabled and explain which required co-flags are missing.
   const appShells = experimental?.appShells === true;
   if (appShells) {
     const missingCoFlags: string[] = [];
-    if (!config.cacheComponents) {
+    if (!cacheComponents) {
       missingCoFlags.push("cacheComponents");
     }
     if (!prefetchInlining) {
@@ -1780,7 +1794,7 @@ export async function resolveNextConfig(
     if (experimental?.optimisticRouting !== true) {
       missingCoFlags.push("experimental.optimisticRouting");
     }
-    if (experimental?.cachedNavigations !== true) {
+    if (!cachedNavigations) {
       missingCoFlags.push("experimental.cachedNavigations");
     }
     if (missingCoFlags.length > 0) {
@@ -1840,12 +1854,11 @@ export async function resolveNextConfig(
     );
   }
 
-  // Warn when experimental.cachedNavigations is set without cacheComponents.
-  // Next.js throws in this case; vinext warns because the feature is a no-op without it.
-  if (experimental?.cachedNavigations === true && !config.cacheComponents) {
-    console.warn(
-      "[vinext] `experimental.cachedNavigations` requires `cacheComponents: true` to have any effect. " +
-        "Set `cacheComponents: true` in your next.config, or remove `experimental.cachedNavigations`.",
+  // Next.js rejects cached navigations unless cache components are enabled.
+  if (experimental?.cachedNavigations === true && !cacheComponents) {
+    throw new Error(
+      "`experimental.cachedNavigations` requires `cacheComponents` to be enabled. " +
+        "Please update your next.config accordingly.",
     );
   }
 
@@ -1950,7 +1963,8 @@ export async function resolveNextConfig(
           (x): x is string => typeof x === "string",
         )
       : [],
-    cacheComponents: config.cacheComponents ?? false,
+    cacheComponents,
+    cachedNavigations,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,

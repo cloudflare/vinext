@@ -1280,6 +1280,16 @@ export async function connection(): Promise<void> {
   const pendingProbe = suspendConnectionProbe();
   if (pendingProbe) {
     await pendingProbe;
+    return;
+  }
+  const { delayPprFallbackShellRequestApi } = await import("./ppr-fallback-shell.js");
+  const stagedConnection = delayPprFallbackShellRequestApi(
+    "connection",
+    "`connection()`",
+    () => undefined,
+  );
+  if (stagedConnection) {
+    await stagedConnection;
   }
 }
 

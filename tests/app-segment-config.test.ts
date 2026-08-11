@@ -4,6 +4,7 @@ import {
   resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig,
   resolveAppRouteHandlerFetchCacheMode,
+  validateAppRouteSegmentConfig,
 } from "../packages/vinext/src/server/app-segment-config.js";
 
 describe("resolveAppPageSegmentConfig", () => {
@@ -499,6 +500,93 @@ describe("resolveAppRouteHandlerFetchCacheMode", () => {
     expect(resolveAppRouteHandlerFetchCacheMode({})).toBeNull();
     expect(resolveAppRouteHandlerFetchCacheMode({ fetchCache: "bogus" })).toBeNull();
     expect(resolveAppRouteHandlerFetchCacheMode({ fetchCache: 42 })).toBeNull();
+  });
+});
+
+describe("validateAppRouteSegmentConfig", () => {
+  const options = { cacheComponents: true, route: "/instant/page" };
+
+  it("accepts Next-compatible static and runtime instant configs", () => {
+    expect(() => validateAppRouteSegmentConfig({ unstable_instant: false }, options)).not.toThrow();
+    expect(() =>
+      validateAppRouteSegmentConfig(
+        {
+          unstable_instant: {
+            prefetch: "static",
+            from: ["/feed"],
+            unstable_disableBuildValidation: true,
+          },
+        },
+        options,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateAppRouteSegmentConfig(
+        {
+          unstable_instant: {
+            prefetch: "runtime",
+            samples: [
+              {
+                cookies: [{ name: "session", value: null }],
+                headers: [["x-tenant", "acme"]],
+                params: { slug: "one", rest: ["a", "b"] },
+                searchParams: { q: "term", tags: ["a"], missing: null },
+              },
+            ],
+          },
+        },
+        options,
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects empty or missing runtime samples and unknown nested fields", () => {
+    for (const unstable_instant of [
+      { prefetch: "runtime" },
+      { prefetch: "runtime", samples: [] },
+      { prefetch: "static", samples: [] },
+      { prefetch: "runtime", samples: [{ extra: true }] },
+      { prefetch: "runtime", samples: [{ cookies: [{ name: "a", value: null, extra: 1 }] }] },
+      { prefetch: "runtime", samples: [{ headers: [["x-only-one"]] }] },
+      { prefetch: "runtime", samples: [{}], extra: true },
+      { prefetch: "runtime", samples: [{}], unstable_disableValidation: false },
+    ]) {
+      expect(() => validateAppRouteSegmentConfig({ unstable_instant }, options)).toThrow(
+        /Invalid unstable_instant value/,
+      );
+    }
+  });
+
+  it("enforces Cache Components, client-module, and stale-time incompatibilities", () => {
+    expect(() =>
+      validateAppRouteSegmentConfig(
+        { unstable_instant: false },
+        { cacheComponents: false, route: "/instant/page" },
+      ),
+    ).toThrow(/without enabling `cacheComponents`/);
+    expect(() =>
+      validateAppRouteSegmentConfig(
+        { unstable_instant: false },
+        { cacheComponents: true, isClientModule: true, route: "/instant/page" },
+      ),
+    ).toThrow(/Client Component module/);
+    expect(() =>
+      validateAppRouteSegmentConfig(
+        { unstable_dynamicStaleTime: 30, unstable_instant: false },
+        options,
+      ),
+    ).toThrow(/cannot use both/);
+  });
+
+  it("validates every active primary and parallel segment during resolution", () => {
+    expect(() =>
+      resolveAppPageSegmentConfig({
+        cacheComponents: true,
+        page: {},
+        parallelSegments: [{ unstable_instant: { prefetch: "runtime", samples: [] } }],
+        route: "/parallel",
+      }),
+    ).toThrow(/Invalid unstable_instant value/);
   });
 });
 

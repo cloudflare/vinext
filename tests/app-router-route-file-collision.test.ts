@@ -9,6 +9,9 @@ import {
 import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-route-file-collision");
+// The first request waits for all three App Router environments to compile.
+// Under a loaded CI shard, that cold start can exceed Vitest's 5s default.
+const COLD_START_TIMEOUT_MS = 30_000;
 
 describe("App Router route and project file collisions", () => {
   let server: ViteDevServer;
@@ -25,15 +28,19 @@ describe("App Router route and project file collisions", () => {
     if (fixtureDir) await fs.rm(fixtureDir, { recursive: true, force: true });
   });
 
-  it("does not let a custom page extension shadow an HTML route request", async () => {
-    const response = await fetch(`${baseUrl}/agents`);
-    const body = await response.text();
+  it(
+    "does not let a custom page extension shadow an HTML route request",
+    async () => {
+      const response = await fetch(`${baseUrl}/agents`);
+      const body = await response.text();
 
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toContain("text/html");
-    expect(body).toContain("Agents route response");
-    expect(body).not.toContain("root-agents-markdown");
-  });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/html");
+      expect(body).toContain("Agents route response");
+      expect(body).not.toContain("root-agents-markdown");
+    },
+    COLD_START_TIMEOUT_MS,
+  );
 
   it("does not let a custom page extension shadow an RSC route request", async () => {
     const headers = createRscRequestHeaders();

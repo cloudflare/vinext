@@ -29,6 +29,7 @@ export function createAppPageSearchParamsObserver(
   options: AppPageSearchParamsObservationOptions = {},
 ): ThenableParamsObserver {
   return {
+    requestApiKind: "searchParams",
     observeParamAccess() {
       markAppPageSearchParamsAccess(options.markDynamic !== false);
     },

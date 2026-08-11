@@ -103,7 +103,12 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
   beginFinalRender: beginPprFallbackShellFinalRender,
   getState: getPprFallbackShellState,
   run(shell, fn) {
-    return runWithPprFallbackShellState(createPprFallbackShellState(shell), fn);
+    const state = createPprFallbackShellState({
+      ...shell,
+      cachedNavigationStage: shell.cachedNavigationStage ?? null,
+      requestApiStage: shell.cachedNavigationStage === "runtime" ? "runtime" : "static",
+    });
+    return runWithPprFallbackShellState(state, fn);
   },
   async tryServe(options, currentRevalidateSeconds, isDraftMode, isForceStatic, isForceDynamic) {
     const decision = classifyPprFallbackShellEligibility(

@@ -30,7 +30,18 @@ import {
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_CACHED_NAVIGATION_RUNTIME_STAGE,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  beginPprFallbackShellFinalRender,
+  createPprFallbackShellState,
+  createPprFallbackShellSuspensePromise,
+  preparePprFallbackShellFinalRender,
+  runWithPprFallbackShellState,
+  trackPprFallbackShellCacheTask,
+} from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -147,14 +158,24 @@ async function resetUseCacheRuntime(): Promise<void> {
   setCacheHandler(new MemoryCacheHandler());
 }
 
-async function renderNode(node: React.ReactNode): Promise<string> {
+async function renderNode(node: React.ReactNode, signal?: AbortSignal): Promise<string> {
   const { renderToReadableStream } = await import("react-dom/server.edge");
   const stream = await renderToReadableStream(node, {
     onError(error: unknown) {
+      if (signal?.aborted) return;
       throw error instanceof Error ? error : new Error(String(error));
     },
+    signal,
   });
   return readStreamAsText(stream);
+}
+
+async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > 200) throw new Error(message);
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
 }
 
 async function renderRouteEntry(elements: AppElements, routeId: string): Promise<string> {
@@ -177,7 +198,11 @@ async function renderRouteEntry(elements: AppElements, routeId: string): Promise
   );
 }
 
-async function renderElementEntry(elements: AppElements, elementId: string): Promise<string> {
+async function renderElementEntry(
+  elements: AppElements,
+  elementId: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const record = elements as Record<string, React.ReactNode>;
   const element = record[elementId];
   if (!React.isValidElement(element)) {
@@ -185,14 +210,14 @@ async function renderElementEntry(elements: AppElements, elementId: string): Pro
   }
 
   if (elementId.startsWith("page:")) {
-    return renderNode(element);
+    return renderNode(element, signal);
   }
 
   // Production Flight serialization starts every flat entry concurrently.
   // Rendering the primary page beside a dependent slot lets its invocation
   // release the page-initialization barrier just as production does.
   const pageEntry = Object.entries(record).find(([key]) => key.startsWith("page:"))?.[1];
-  return renderNode(React.createElement(React.Fragment, null, pageEntry, element));
+  return renderNode(React.createElement(React.Fragment, null, pageEntry, element), signal);
 }
 
 async function buildAndRenderElement(
@@ -455,6 +480,285 @@ describe("buildPageElements", () => {
     expect(html).toContain("layout:de");
     expect(html).toContain("page:de");
     expect(html).not.toContain("layout:en");
+  });
+
+  it("keeps an ordinary async runtime page discoverable across sequential private cache tasks", async () => {
+    let markFirstCacheComplete!: () => void;
+    const firstCacheComplete = new Promise<void>((resolve) => (markFirstCacheComplete = resolve));
+    let continueToSecondCache!: () => void;
+    const secondCacheGate = new Promise<void>((resolve) => (continueToSecondCache = resolve));
+    let markSecondCacheStarted!: () => void;
+    const secondCacheStarted = new Promise<void>((resolve) => (markSecondCacheStarted = resolve));
+    let finishSecondCache!: () => void;
+
+    async function RuntimePage() {
+      await trackPprFallbackShellCacheTask(() => Promise.resolve(), "private");
+      markFirstCacheComplete();
+      await secondCacheGate;
+      await trackPprFallbackShellCacheTask(
+        () =>
+          new Promise<void>((resolve) => {
+            finishSecondCache = resolve;
+            markSecondCacheStarted();
+          }),
+        "private",
+      );
+      return React.createElement("main", null, "runtime page");
+    }
+
+    const route = createSyntheticRoute({
+      page: {
+        default: RuntimePage,
+        unstable_instant: { prefetch: "runtime" },
+      } as AppPageModule,
+      pattern: "/runtime-page",
+      routeSegments: ["runtime-page"],
+    });
+    const options = createBaseOptions({ route, routePath: "/runtime-page" });
+    const elements = await buildPageElements({
+      ...options,
+      pageRequest: {
+        ...options.pageRequest,
+        isRscRequest: true,
+        renderMode: APP_RSC_RENDER_MODE_CACHED_NAVIGATION_RUNTIME_STAGE,
+      },
+    });
+    const pageId = AppElementsWire.encodePageId("/runtime-page", null);
+    const state = createPprFallbackShellState({
+      cachedNavigationStage: "runtime",
+      fallbackParamNames: [],
+      requestApiStage: "runtime",
+      routePattern: "/runtime-page",
+    });
+    preparePprFallbackShellFinalRender(state);
+
+    let htmlPromise!: Promise<string>;
+    runWithPprFallbackShellState(state, () => {
+      void createPprFallbackShellSuspensePromise("another branch's `connection()`");
+      htmlPromise = renderElementEntry(elements, pageId, state.reactAbortController.signal);
+      beginPprFallbackShellFinalRender(state);
+    });
+
+    await firstCacheComplete;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(state.pendingRuntimeDiscoveryScopes).toBe(1);
+    expect(state.reactAbortController.signal.aborted).toBe(false);
+
+    continueToSecondCache();
+    await secondCacheStarted;
+    expect(state.pendingCacheTasks).toBe(1);
+    expect(state.reactAbortController.signal.aborted).toBe(false);
+
+    finishSecondCache();
+    await expect(htmlPromise).resolves.toContain("runtime page");
+    await waitForCondition(
+      () => state.reactAbortController.signal.aborted,
+      "Timed out waiting for runtime page discovery to release after its second cache task",
+    );
+  });
+
+  it("keeps iterable nested runtime children discoverable beside connection", async () => {
+    let markFirstCacheComplete!: () => void;
+    const firstCacheComplete = new Promise<void>((resolve) => (markFirstCacheComplete = resolve));
+    let continueToSecondCache!: () => void;
+    const secondCacheGate = new Promise<void>((resolve) => (continueToSecondCache = resolve));
+    let markSecondCacheStarted!: () => void;
+    const secondCacheStarted = new Promise<void>((resolve) => (markSecondCacheStarted = resolve));
+    let finishSecondCache!: () => void;
+
+    async function NestedPrivateContent() {
+      await trackPprFallbackShellCacheTask(() => Promise.resolve(), "private");
+      markFirstCacheComplete();
+      await secondCacheGate;
+      await trackPprFallbackShellCacheTask(
+        () =>
+          new Promise<void>((resolve) => {
+            finishSecondCache = resolve;
+            markSecondCacheStarted();
+          }),
+        "private",
+      );
+      return React.createElement("p", null, "nested runtime content");
+    }
+
+    async function ConnectionContent() {
+      await createPprFallbackShellSuspensePromise<void>("`connection()`");
+      return React.createElement("p", null, "unreachable");
+    }
+
+    async function RuntimePage() {
+      return new Set([
+        React.createElement(
+          React.Suspense,
+          { fallback: React.createElement("p", null, "private fallback"), key: "private" },
+          React.createElement(NestedPrivateContent),
+        ),
+        React.createElement(
+          React.Suspense,
+          { fallback: React.createElement("p", null, "connection fallback"), key: "connection" },
+          React.createElement(ConnectionContent),
+        ),
+      ]);
+    }
+
+    const route = createSyntheticRoute({
+      page: {
+        default: RuntimePage,
+        unstable_instant: { prefetch: "runtime" },
+      } as AppPageModule,
+      pattern: "/runtime-nested",
+      routeSegments: ["runtime-nested"],
+    });
+    const options = createBaseOptions({ route, routePath: "/runtime-nested" });
+    const elements = await buildPageElements({
+      ...options,
+      pageRequest: {
+        ...options.pageRequest,
+        isRscRequest: true,
+        renderMode: APP_RSC_RENDER_MODE_CACHED_NAVIGATION_RUNTIME_STAGE,
+      },
+    });
+    const pageId = AppElementsWire.encodePageId("/runtime-nested", null);
+    const state = createPprFallbackShellState({
+      cachedNavigationStage: "runtime",
+      fallbackParamNames: [],
+      requestApiStage: "runtime",
+      routePattern: "/runtime-nested",
+    });
+    preparePprFallbackShellFinalRender(state);
+
+    let htmlPromise!: Promise<string>;
+    runWithPprFallbackShellState(state, () => {
+      htmlPromise = renderElementEntry(elements, pageId, state.reactAbortController.signal);
+      void htmlPromise.catch(() => {});
+      beginPprFallbackShellFinalRender(state);
+    });
+
+    await firstCacheComplete;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(state.pendingRuntimeDiscoveryScopes).toBe(1);
+    expect(state.reactAbortController.signal.aborted).toBe(false);
+
+    continueToSecondCache();
+    await secondCacheStarted;
+    expect(state.pendingCacheTasks).toBe(1);
+    expect(state.reactAbortController.signal.aborted).toBe(false);
+
+    finishSecondCache();
+    await waitForCondition(
+      () => state.reactAbortController.signal.aborted,
+      "Timed out waiting for nested runtime discovery to release after its second cache task",
+    );
+    await htmlPromise.catch(() => "");
+  });
+
+  it("preserves element-valued context data during runtime discovery", async () => {
+    function DataComponent() {
+      return React.createElement("span", null, "data");
+    }
+    const ElementContext = React.createContext<React.ReactElement | null>(null);
+
+    function ContextInspector() {
+      const value = React.useContext(ElementContext);
+      return React.createElement(
+        "p",
+        null,
+        value?.type === DataComponent ? "original element" : "rewritten element",
+      );
+    }
+
+    function RuntimePage() {
+      return React.createElement(
+        ElementContext.Provider,
+        { value: React.createElement(DataComponent) },
+        React.createElement(ContextInspector),
+      );
+    }
+
+    const route = createSyntheticRoute({
+      page: {
+        default: RuntimePage,
+        unstable_instant: { prefetch: "runtime" },
+      } as AppPageModule,
+      pattern: "/runtime-context-data",
+      routeSegments: ["runtime-context-data"],
+    });
+    const options = createBaseOptions({ route, routePath: "/runtime-context-data" });
+    const elements = await buildPageElements({
+      ...options,
+      pageRequest: {
+        ...options.pageRequest,
+        isRscRequest: true,
+        renderMode: APP_RSC_RENDER_MODE_CACHED_NAVIGATION_RUNTIME_STAGE,
+      },
+    });
+    const state = createPprFallbackShellState({
+      cachedNavigationStage: "runtime",
+      fallbackParamNames: [],
+      requestApiStage: "runtime",
+      routePattern: "/runtime-context-data",
+    });
+    preparePprFallbackShellFinalRender(state);
+
+    const html = await runWithPprFallbackShellState(state, () =>
+      renderElementEntry(elements, AppElementsWire.encodePageId("/runtime-context-data", null)),
+    );
+
+    expect(html).toContain("original element");
+    expect(html).not.toContain("rewritten element");
+  });
+
+  it("lets an ordinary async runtime page reach connection after private cache work", async () => {
+    async function RuntimePage() {
+      await trackPprFallbackShellCacheTask(() => Promise.resolve(), "private");
+      await createPprFallbackShellSuspensePromise<void>("`connection()`");
+      return React.createElement("main", null, "unreachable");
+    }
+
+    const route = createSyntheticRoute({
+      page: {
+        default: RuntimePage,
+        unstable_instant: { prefetch: "runtime" },
+      } as AppPageModule,
+      pattern: "/runtime-connection",
+      routeSegments: ["runtime-connection"],
+    });
+    const options = createBaseOptions({ route, routePath: "/runtime-connection" });
+    const elements = await buildPageElements({
+      ...options,
+      pageRequest: {
+        ...options.pageRequest,
+        isRscRequest: true,
+        renderMode: APP_RSC_RENDER_MODE_CACHED_NAVIGATION_RUNTIME_STAGE,
+      },
+    });
+    const pageId = AppElementsWire.encodePageId("/runtime-connection", null);
+    const pageElement = elements[pageId];
+    if (!React.isValidElement(pageElement) || typeof pageElement.type !== "function") {
+      throw new Error("Expected ordinary page invoker element");
+    }
+    const invokePage = pageElement.type as (props: Record<string, unknown>) => unknown;
+    const state = createPprFallbackShellState({
+      cachedNavigationStage: "runtime",
+      fallbackParamNames: [],
+      requestApiStage: "runtime",
+      routePattern: "/runtime-connection",
+    });
+    preparePprFallbackShellFinalRender(state);
+
+    let pagePromise!: Promise<unknown>;
+    runWithPprFallbackShellState(state, () => {
+      pagePromise = Promise.resolve(invokePage(pageElement.props as Record<string, unknown>));
+      void pagePromise.catch(() => {});
+      beginPprFallbackShellFinalRender(state);
+    });
+
+    await waitForCondition(
+      () => state.reactAbortController.signal.aborted,
+      "Timed out waiting for runtime page connection boundary to abort",
+    );
+    expect(state.pendingRuntimeDiscoveryScopes).toBe(0);
+    await expect(pagePromise).rejects.toMatchObject({ name: expect.any(String) });
   });
 
   it("waits for a sync use() page before a synchronous layout without loading UI", async () => {

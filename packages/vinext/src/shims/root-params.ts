@@ -5,6 +5,11 @@ import {
   isInsideUnifiedScope,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
+import {
+  createPprFallbackShellSuspensePromiseForState,
+  delayCachedNavigationValue,
+  getPprFallbackShellState,
+} from "./ppr-fallback-shell.js";
 
 export type RootParams = Record<string, string | string[] | undefined>;
 
@@ -73,7 +78,22 @@ export function getRootParam(name: string): Promise<string | string[] | undefine
     );
   }
   _recordUseCacheRootParamRead(name);
-  return Promise.resolve(getState().rootParams?.[name]);
+  const value = getState().rootParams?.[name];
+  const fallbackShellState = getPprFallbackShellState();
+  if (fallbackShellState?.fallbackParamNames.has(name)) {
+    const stagedValue = delayCachedNavigationValue(() => value);
+    if (stagedValue) return stagedValue;
+  }
+  if (
+    fallbackShellState?.requestApiStage === "static" &&
+    fallbackShellState.fallbackParamNames.has(name)
+  ) {
+    return createPprFallbackShellSuspensePromiseForState(
+      fallbackShellState,
+      `\`import('next/root-params').${name}()\``,
+    );
+  }
+  return Promise.resolve(value);
 }
 
 /** @internal Current route root params for `"use cache"` key derivation. */

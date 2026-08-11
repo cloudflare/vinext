@@ -1,11 +1,16 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   MAX_TRAVERSAL_CACHE_TTL,
   VISITED_RESPONSE_CACHE_TTL,
+  cancelCachedNavigationRuntimeStage,
+  canPublishCachedNavigationRuntimeStage,
+  createCachedNavigationStageCacheKey,
   createVisitedResponseCacheEntry,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
+  isCachedNavigationStagePairFresh,
   isVisitedResponseCacheEntryFresh,
+  startAuthoritativeCachedNavigationResponse,
 } from "../packages/vinext/src/server/app-visited-response-cache.js";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
 import type { CachedRscResponse } from "../packages/vinext/src/shims/navigation.js";
@@ -23,6 +28,51 @@ function createCachedResponse(overrides: Partial<CachedRscResponse> = {}): Cache
 }
 
 describe("visited response cache freshness", () => {
+  it("cancels a discarded cached-navigation runtime stream", async () => {
+    let canceled = false;
+    const readable = new ReadableStream<Uint8Array>({
+      cancel() {
+        canceled = true;
+      },
+    });
+
+    cancelCachedNavigationRuntimeStage({ readable });
+
+    await vi.waitFor(() => expect(canceled).toBe(true));
+  });
+
+  it("scopes cached-navigation fills to mounted parallel-slot topology", () => {
+    const base = createCachedNavigationStageCacheKey("/target", null, null);
+    const modal = createCachedNavigationStageCacheKey("/target", null, "slot:modal:/target");
+    const modalAndSidebar = createCachedNavigationStageCacheKey(
+      "/target",
+      null,
+      "slot:sidebar:/target slot:modal:/target",
+    );
+
+    expect(new Set([base, modal, modalAndSidebar])).toHaveLength(3);
+    expect(modalAndSidebar).toBe(
+      createCachedNavigationStageCacheKey(
+        "/target",
+        null,
+        "slot:modal:/target slot:sidebar:/target",
+      ),
+    );
+  });
+
+  it("does not gate the authoritative response on hanging cached-stage work", async () => {
+    const hangingRuntimeFill = new Promise<void>(() => {});
+    const hangingDetachedShellCommit = new Promise<void>(() => {});
+
+    await expect(
+      startAuthoritativeCachedNavigationResponse(
+        () => Promise.resolve("authoritative"),
+        hangingRuntimeFill,
+        hangingDetachedShellCommit,
+      ),
+    ).resolves.toBe("authoritative");
+  });
+
   it("uses per-response dynamic stale time for regular navigations", () => {
     // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
     const now = 1_000_000;
@@ -170,6 +220,131 @@ describe("visited response cache freshness", () => {
         }),
       }).expiresAt,
     ).toBe(now + 10_000);
+  });
+
+  it("keeps the cached-navigation static stage alive past the runtime stage", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/cached-navigations/cached-navigations.test.ts
+    // The route's runtime-prefetchable content is stale after 30s, while its
+    // public `use cache` subtree remains reusable for 120s. A static-stage
+    // entry must not inherit the shorter completed-navigation bound.
+    const now = 1_000_000;
+    const entry = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: createCachedResponse({
+        dynamicStaleTimeSeconds: 30,
+        serverStaleTime: { kind: "resolved", seconds: 120 },
+      }),
+      stage: "static",
+      stageGeneration: 1,
+    });
+
+    expect(entry.expiresAt).toBe(now + 120_000);
+    expect(
+      isVisitedResponseCacheEntryFresh(entry, {
+        navigationKind: "navigate",
+        now: now + 60_000,
+      }),
+    ).toBe(true);
+  });
+
+  it("preserves the static stage lifetime while its runtime replacement is still pending", () => {
+    const now = 1_000_000;
+    const entry = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: createCachedResponse({
+        serverStaleTime: { kind: "resolved", seconds: 120 },
+      }),
+      stage: "static",
+      stageGeneration: 1,
+    });
+
+    expect(entry.expiresAt).toBe(now + 120_000);
+  });
+
+  it("expires the published stage pair when its completed runtime refinement is stale", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/cached-navigations/cached-navigations.test.ts
+    const now = 1_000_000;
+    const staticStage = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: createCachedResponse({
+        serverStaleTime: { kind: "resolved", seconds: 120 },
+      }),
+      stage: "static",
+      stageGeneration: 1,
+    });
+    const runtimeStage = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: createCachedResponse({
+        serverStaleTime: { kind: "resolved", seconds: 30 },
+      }),
+      stage: "runtime",
+      stageGeneration: 1,
+    });
+
+    expect(
+      isCachedNavigationStagePairFresh(staticStage, undefined, {
+        navigationKind: "navigate",
+        now: now + 60_000,
+      }),
+    ).toBe(true);
+    expect(
+      isCachedNavigationStagePairFresh(staticStage, runtimeStage, {
+        navigationKind: "navigate",
+        now: now + 60_000,
+      }),
+    ).toBe(false);
+  });
+
+  it("never pairs a runtime stage from another fill generation", () => {
+    const now = 1_000_000;
+    const staticStage = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: createCachedResponse({
+        serverStaleTime: { kind: "resolved", seconds: 120 },
+      }),
+      stage: "static",
+      stageGeneration: 2,
+    });
+    const staleRuntimeStage = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: createCachedResponse({
+        serverStaleTime: { kind: "resolved", seconds: 30 },
+      }),
+      stage: "runtime",
+      stageGeneration: 1,
+    });
+
+    expect(canPublishCachedNavigationRuntimeStage(staticStage, 1)).toBe(false);
+    expect(canPublishCachedNavigationRuntimeStage(staticStage, 2)).toBe(true);
+    expect(
+      isCachedNavigationStagePairFresh(staticStage, staleRuntimeStage, {
+        navigationKind: "navigate",
+        now: now + 60_000,
+      }),
+    ).toBe(true);
+  });
+
+  it("uses the completed cacheLife claim for a runtime stage instead of dynamic stale time", () => {
+    const now = 1_000_000;
+    const entry = createVisitedResponseCacheEntry({
+      now,
+      params: {},
+      response: createCachedResponse({
+        dynamicStaleTimeSeconds: 0,
+        serverStaleTime: { kind: "resolved", seconds: 30 },
+      }),
+      stage: "runtime",
+    });
+
+    expect(entry.expiresAt).toBe(now + 30_000);
   });
 
   it("keeps the configured fallback when the resolved cacheLife declares no stale time", () => {

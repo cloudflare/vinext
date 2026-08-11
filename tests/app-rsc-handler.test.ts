@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { APP_RSC_RENDER_MODE_CACHED_NAVIGATION_STATIC_STAGE } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   computeRscCacheBustingSearchParam,
   createRscRequestHeaders,
@@ -9,6 +10,10 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
+import {
+  addPregeneratedConcretePath,
+  clearPregeneratedConcretePaths,
+} from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
@@ -44,12 +49,25 @@ type TestRoute = {
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
   params?: readonly string[];
-  page?: { default?: unknown } | null;
+  page?: { default?: unknown; generateStaticParams?: unknown } | null;
   pattern: string;
   rootParamNames?: readonly string[];
   routeHandler?: { GET?: () => Response; runtime?: string } | null;
   routeSegments: readonly string[];
-  slots?: AppRouteTreePrefetchRoute["slots"];
+  siblingIntercepts?: readonly TestIntercept[];
+  slots?: Readonly<
+    Record<
+      string,
+      NonNullable<AppRouteTreePrefetchRoute["slots"]>[string] & {
+        intercepts?: readonly TestIntercept[];
+      }
+    >
+  > | null;
+};
+
+type TestIntercept = {
+  interceptLayouts?: readonly unknown[] | null;
+  page?: unknown;
 };
 
 type HandlerOptions = Parameters<typeof createAppRscHandler<TestRoute>>[0];
@@ -165,7 +183,166 @@ function prerenderRouteParamsHeader(payload: unknown): string {
   return encodeURIComponent(JSON.stringify(payload));
 }
 
+async function withCachedNavigationRendering<T>(fn: () => Promise<T>): Promise<T> {
+  const previousCacheComponents = process.env.__NEXT_CACHE_COMPONENTS;
+  const previousCachedNavigations = process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS;
+  process.env.__NEXT_CACHE_COMPONENTS = "true";
+  process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS = "1";
+  try {
+    return await fn();
+  } finally {
+    if (previousCacheComponents === undefined) delete process.env.__NEXT_CACHE_COMPONENTS;
+    else process.env.__NEXT_CACHE_COMPONENTS = previousCacheComponents;
+    if (previousCachedNavigations === undefined) {
+      delete process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS;
+    } else {
+      process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS = previousCachedNavigations;
+    }
+  }
+}
+
 describe("createAppRscHandler", () => {
+  it("keeps unknown generateStaticParams values in the cached-navigation runtime stage", () =>
+    withCachedNavigationRendering(async () => {
+      const route = createPageRoute({
+        isDynamic: true,
+        page: {
+          default() {},
+          generateStaticParams() {
+            return [{ slug: "known" }];
+          },
+        },
+        params: ["slug"],
+        pattern: "/blog/:slug",
+        routeSegments: ["blog", ":slug"],
+      });
+      let pageOptions: Parameters<HandlerOptions["dispatchMatchedPage"]>[0] | undefined;
+      clearPregeneratedConcretePaths();
+      addPregeneratedConcretePath(route.pattern, "/blog/known");
+      try {
+        const handler = createHandler({
+          configHeaders: [],
+          dispatchMatchedPage: async (options) => {
+            pageOptions = options;
+            return new Response("page");
+          },
+          matchRoute(pathname) {
+            const slug = pathname.startsWith("/blog/") ? pathname.slice("/blog/".length) : null;
+            return slug ? { params: { slug }, route } : null;
+          },
+          staticParamsMap: {
+            [route.pattern]: async () => [{ slug: "known" }],
+          },
+        });
+        const headers = createRscRequestHeaders({
+          renderMode: APP_RSC_RENDER_MODE_CACHED_NAVIGATION_STATIC_STAGE,
+        });
+        const rscUrl = await createRscRequestUrl("/docs/blog/unknown", headers);
+
+        await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+        expect(pageOptions?.renderMode).toBe(APP_RSC_RENDER_MODE_CACHED_NAVIGATION_STATIC_STAGE);
+        expect(pageOptions?.pprFallbackShell).toEqual({
+          cachedNavigationStage: "static",
+          fallbackParamNames: ["slug"],
+          routePattern: "/blog/:slug",
+        });
+        expect(pageOptions?.skipStaticParamsValidation).toBe(true);
+
+        const knownHeaders = createRscRequestHeaders({
+          renderMode: APP_RSC_RENDER_MODE_CACHED_NAVIGATION_STATIC_STAGE,
+        });
+        const knownRscUrl = await createRscRequestUrl("/docs/blog/known", knownHeaders);
+        await handler(
+          new Request(`https://example.test${knownRscUrl}`, { headers: knownHeaders }),
+          null,
+        );
+        expect(pageOptions?.pprFallbackShell).toEqual({
+          cachedNavigationStage: "static",
+          fallbackParamNames: [],
+          routePattern: "/blog/:slug",
+        });
+        expect(pageOptions?.skipStaticParamsValidation).toBe(false);
+      } finally {
+        clearPregeneratedConcretePaths();
+      }
+    }));
+
+  it("keeps omitted generated param keys in the cached-navigation runtime stage", () =>
+    withCachedNavigationRendering(async () => {
+      const route = createPageRoute({
+        isDynamic: true,
+        params: ["locale", "slug"],
+        pattern: "/:locale/:slug",
+        routeSegments: [":locale", ":slug"],
+      });
+      let pageOptions: Parameters<HandlerOptions["dispatchMatchedPage"]>[0] | undefined;
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage: async (options) => {
+          pageOptions = options;
+          return new Response("page");
+        },
+        matchRoute(pathname) {
+          const [locale, slug] = pathname.split("/").filter(Boolean);
+          return locale && slug ? { params: { locale, slug }, route } : null;
+        },
+        staticParamsMap: {
+          [route.pattern]: async () => [{ locale: "en" }],
+        },
+      });
+      const headers = createRscRequestHeaders({
+        renderMode: APP_RSC_RENDER_MODE_CACHED_NAVIGATION_STATIC_STAGE,
+      });
+      const rscUrl = await createRscRequestUrl("/docs/en/foo", headers);
+
+      await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+      expect(pageOptions?.pprFallbackShell).toEqual({
+        cachedNavigationStage: "static",
+        fallbackParamNames: ["slug"],
+        routePattern: "/:locale/:slug",
+      });
+      expect(pageOptions?.skipStaticParamsValidation).toBe(true);
+    }));
+
+  it("keeps generated child params dynamic behind an unknown parent prefix", () =>
+    withCachedNavigationRendering(async () => {
+      const route = createPageRoute({
+        isDynamic: true,
+        params: ["locale", "slug"],
+        pattern: "/:locale/:slug",
+        routeSegments: [":locale", ":slug"],
+      });
+      let pageOptions: Parameters<HandlerOptions["dispatchMatchedPage"]>[0] | undefined;
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage: async (options) => {
+          pageOptions = options;
+          return new Response("page");
+        },
+        matchRoute(pathname) {
+          const [locale, slug] = pathname.split("/").filter(Boolean);
+          return locale && slug ? { params: { locale, slug }, route } : null;
+        },
+        staticParamsMap: {
+          [route.pattern]: async () => [{ slug: "foo" }],
+        },
+      });
+      const headers = createRscRequestHeaders({
+        renderMode: APP_RSC_RENDER_MODE_CACHED_NAVIGATION_STATIC_STAGE,
+      });
+      const rscUrl = await createRscRequestUrl("/docs/en/foo", headers);
+
+      await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+      expect(pageOptions?.pprFallbackShell).toEqual({
+        cachedNavigationStage: "static",
+        fallbackParamNames: ["locale", "slug"],
+        routePattern: "/:locale/:slug",
+      });
+    }));
+
   // Ported from Next.js: test/e2e/app-dir/app-basepath/index.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-basepath/index.test.ts
   it("applies basePath: false rewrites outside the App Router basePath", async () => {

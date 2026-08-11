@@ -79,7 +79,12 @@ import {
 } from "./image-optimization.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_CACHED_NAVIGATION_RUNTIME_STAGE,
+  APP_RSC_RENDER_MODE_CACHED_NAVIGATION_STATIC_STAGE,
+  APP_RSC_RENDER_MODE_NAVIGATION,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import {
@@ -125,6 +130,12 @@ function haveSameRequestCookies(
     if (second.get(name) !== value) return false;
   }
   return true;
+}
+
+function isCachedNavigationRenderingEnabled(): boolean {
+  const cacheComponents = String(process.env.__NEXT_CACHE_COMPONENTS) === "true";
+  const cachedNavigations = String(process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS);
+  return cacheComponents && (cachedNavigations === "true" || cachedNavigations === "1");
 }
 
 function haveSamePageParams(first: AppPageParams, second: AppPageParams): boolean {
@@ -180,6 +191,82 @@ type AppRscRouteMatch<TRoute> = {
   route: TRoute;
 };
 
+function generatedParamValueMatches(
+  generated: unknown,
+  requested: string | string[] | undefined,
+): boolean {
+  if (typeof generated === "string") return generated === requested;
+  if (!Array.isArray(generated) || !Array.isArray(requested)) return false;
+  return (
+    generated.length === requested.length &&
+    generated.every((value, index) => value === requested[index])
+  );
+}
+
+function generatedCandidateMatchesRequestedParams(
+  candidate: Record<string, unknown>,
+  requested: AppPageParams,
+  paramNames: readonly string[],
+): boolean {
+  return paramNames.every(
+    (name) =>
+      !Object.hasOwn(candidate, name) ||
+      generatedParamValueMatches(candidate[name], requested[name]),
+  );
+}
+
+async function getCachedNavigationFallbackParamNames(
+  route: AppRscHandlerRoute,
+  params: AppPageParams,
+  staticParamsMap: StaticParamsMap,
+): Promise<readonly string[]> {
+  const paramNames = route.params ?? [];
+  if (paramNames.length === 0) return [];
+
+  let candidates: Record<string, string | string[]>[] = [{}];
+  let prefixPattern = "";
+  for (const part of route.pattern.split("/").filter(Boolean)) {
+    prefixPattern += `/${part}`;
+    if (!part.startsWith(":")) continue;
+    const generateStaticParams = staticParamsMap[prefixPattern];
+    if (typeof generateStaticParams !== "function") continue;
+
+    const nextCandidates: Record<string, string | string[]>[] = [];
+    let resolvedThisPrefix = false;
+    for (const parentParams of candidates) {
+      const generated = await generateStaticParams({ params: parentParams });
+      // The discovery proxy returns null when this prefix has no provider.
+      if (generated === null) continue;
+      if (!Array.isArray(generated)) return paramNames;
+      resolvedThisPrefix = true;
+      for (const generatedParams of generated) {
+        if (typeof generatedParams !== "object" || generatedParams === null) continue;
+        const merged = {
+          ...parentParams,
+          ...(generatedParams as Record<string, string | string[]>),
+        };
+        if (generatedCandidateMatchesRequestedParams(merged, params, paramNames)) {
+          nextCandidates.push(merged);
+        }
+      }
+    }
+    if (resolvedThisPrefix) candidates = nextCandidates;
+  }
+
+  const knownParamNames = new Set<string>();
+  for (const candidate of candidates) {
+    if (!generatedCandidateMatchesRequestedParams(candidate, params, paramNames)) continue;
+    for (const name of paramNames) {
+      if (Object.hasOwn(candidate, name)) knownParamNames.add(name);
+    }
+  }
+  let hasUnknownPrefix = false;
+  return paramNames.filter((name) => {
+    hasUnknownPrefix ||= !knownParamNames.has(name);
+    return hasUnknownPrefix;
+  });
+}
+
 function applyMiddlewareContextToResponse(
   response: Response,
   middlewareContext: AppRscMiddlewareContext,
@@ -224,6 +311,7 @@ type DispatchMatchedPageOptions<TRoute> = {
       }[]
     | null;
   pprFallbackShell?: {
+    cachedNavigationStage?: "navigation" | "runtime" | "static";
     fallbackParamNames: readonly string[];
     routePattern: string;
   };
@@ -591,10 +679,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     isRscRequest,
     interceptionContextHeader,
     mountedSlotsHeader,
-    renderMode,
+    renderMode: requestedRenderMode,
     clientReuseManifest,
     hadBasePath,
   } = normalized;
+  const cachedNavigationRenderingEnabled = isCachedNavigationRenderingEnabled();
+  const renderMode =
+    !cachedNavigationRenderingEnabled &&
+    (requestedRenderMode === APP_RSC_RENDER_MODE_CACHED_NAVIGATION_STATIC_STAGE ||
+      requestedRenderMode === APP_RSC_RENDER_MODE_CACHED_NAVIGATION_RUNTIME_STAGE)
+      ? APP_RSC_RENDER_MODE_NAVIGATION
+      : requestedRenderMode;
   const { requestCleanPathname } = normalized;
   let { pathname, cleanPathname } = normalized;
   let resolvedUrl = cleanPathname + url.search;
@@ -1527,6 +1622,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     });
   }
 
+  const renderedConcreteUrlPaths = getRenderedConcreteUrlPathsForRoute(route.pattern);
+  const cachedNavigationStage =
+    renderMode === APP_RSC_RENDER_MODE_CACHED_NAVIGATION_STATIC_STAGE
+      ? "static"
+      : renderMode === APP_RSC_RENDER_MODE_CACHED_NAVIGATION_RUNTIME_STAGE
+        ? "runtime"
+        : null;
+  const isCachedNavigationLearningRender =
+    cachedNavigationRenderingEnabled &&
+    renderMode === APP_RSC_RENDER_MODE_NAVIGATION &&
+    request.method === "GET" &&
+    !isProgressiveActionRender &&
+    !isPrerenderFallbackShell;
+  const cachedNavigationFallbackParamNames =
+    (cachedNavigationStage !== null || isCachedNavigationLearningRender) &&
+    route.isDynamic &&
+    renderedConcreteUrlPaths?.has(cleanPathname) !== true
+      ? await getCachedNavigationFallbackParamNames(route, params, options.staticParamsMap)
+      : [];
   const pageResponse = await options.dispatchMatchedPage({
     clientReuseManifest,
     cleanPathname,
@@ -1548,9 +1662,22 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           fallbackParamNames: prerenderRouteParamsMatch.fallbackParamNames,
           routePattern: route.pattern,
         }
-      : undefined,
-    renderedConcreteUrlPaths: getRenderedConcreteUrlPathsForRoute(route.pattern),
-    skipStaticParamsValidation: isPrerenderFallbackShell,
+      : cachedNavigationStage !== null
+        ? {
+            cachedNavigationStage,
+            fallbackParamNames: cachedNavigationFallbackParamNames,
+            routePattern: route.pattern,
+          }
+        : isCachedNavigationLearningRender
+          ? {
+              cachedNavigationStage: "navigation",
+              fallbackParamNames: cachedNavigationFallbackParamNames,
+              routePattern: route.pattern,
+            }
+          : undefined,
+    renderedConcreteUrlPaths,
+    skipStaticParamsValidation:
+      isPrerenderFallbackShell || cachedNavigationFallbackParamNames.length > 0,
     staticParamsValidationParams:
       prerenderRouteParams === null || isPrerenderFallbackShell ? undefined : params,
     rootParams,

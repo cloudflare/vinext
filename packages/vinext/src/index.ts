@@ -84,6 +84,7 @@ import {
 } from "./config/next-config.js";
 import { loadDotenv } from "./config/dotenv.js";
 import { mergeServerExternalPackages } from "./config/server-external-packages.js";
+import { validateAppSegmentConfigSource } from "./plugins/app-segment-config-validation.js";
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import { validateMiddlewareMatcherPatterns } from "./server/middleware-matcher-pattern.js";
@@ -289,6 +290,12 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react/jsx-runtime",
   "react/jsx-dev-runtime",
   "use-sync-external-store/with-selector",
+]);
+
+const RSC_VENDOR_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
+  "@vitejs/plugin-rsc/vendor/react-server-dom/server.edge",
+  "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge",
+  "@vitejs/plugin-rsc/vendor/react-server-dom/client.edge",
 ]);
 
 const OPTIONAL_OPTIMIZE_DEPS_WARNING_RE =
@@ -1829,6 +1836,34 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       filter: skipCommonjsForLocalCjs,
     }),
     {
+      name: "vinext:app-segment-config-validation",
+      enforce: "pre" as const,
+      transform: {
+        filter: {
+          id: /\.[cm]?[jt]sx?(?:\?.*)?$/,
+          code: /unstable_(?:instant|dynamicStaleTime)/,
+        },
+        handler(code: string, id: string) {
+          const cleanId = toSlash(stripViteModuleQuery(id));
+          if (!fileMatcher.isPageFile(cleanId)) return null;
+          if (!isInsideDirectory(canonicalize(appDir), canonicalize(cleanId))) return null;
+
+          const segmentName = fileMatcher.stripExtension(path.basename(cleanId));
+          if (segmentName !== "page" && segmentName !== "layout" && segmentName !== "default") {
+            return null;
+          }
+
+          const route = `/${fileMatcher.stripExtension(path.relative(appDir, cleanId))}`;
+          validateAppSegmentConfigSource(code, {
+            cacheComponents: nextConfig.cacheComponents === true,
+            isClientModule: getLeadingReactDirective(code) === "use client",
+            route,
+          });
+          return null;
+        },
+      },
+    } satisfies Plugin,
+    {
       name: "vinext:global-not-found-css-isolation",
       apply: "build",
       enforce: "pre",
@@ -2360,6 +2395,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // See: packages/next/src/build/define-env.ts
         defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(
           nextConfig.cacheComponents ?? false,
+        );
+        defines["process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS"] = JSON.stringify(
+          nextConfig.cachedNavigations,
         );
 
         // User-defined compile-time constants from `compiler.define` in
@@ -3160,11 +3198,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               optimizeDeps: {
                 exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
                 entries: optimizeEntries,
-                // plugin-rsc pre-includes server.edge, but not its vendored
-                // static.edge import, which it rewrites to this package specifier.
-                // Prebundle both so they share the large development renderer
-                // instead of transforming its raw CJS source on the first request.
-                include: [...new Set([...incomingInclude, "react-server-dom-webpack/static.edge"])],
+                // plugin-rsc pre-includes the react-server-dom package entries,
+                // but its runtime imports them through vendored specifiers that
+                // are aliased back to the installed package. Prebundle those
+                // exact import sources so the first RSC request cannot discover
+                // a second optimizer entry and invalidate an in-flight response.
+                include: [
+                  ...new Set([
+                    ...incomingInclude,
+                    "react-server-dom-webpack/static.edge",
+                    ...RSC_VENDOR_OPTIMIZE_DEPS_INCLUDE,
+                  ]),
+                ],
                 ...depOptimizeNodeEnvOptions,
               },
               build: {

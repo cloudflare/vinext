@@ -2148,6 +2148,7 @@ describe("detectNextIntlConfig", () => {
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -2605,31 +2606,23 @@ describe("resolveNextConfig swcEnvOptions warning", () => {
   });
 });
 
-describe("resolveNextConfig cachedNavigations warning", () => {
+describe("resolveNextConfig cachedNavigations validation", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("emits a warning when experimental.cachedNavigations is set without cacheComponents", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await resolveNextConfig({
-      experimental: { cachedNavigations: true },
-    });
-
-    const cachedNavigationsWarning = warn.mock.calls.find(
-      (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
-    );
-
-    expect(cachedNavigationsWarning).toBeDefined();
-    expect(cachedNavigationsWarning![0]).toContain("experimental.cachedNavigations");
-    expect(cachedNavigationsWarning![0]).toContain("cacheComponents: true");
+  it("throws when experimental.cachedNavigations is set without cacheComponents", async () => {
+    await expect(
+      resolveNextConfig({
+        experimental: { cachedNavigations: true },
+      }),
+    ).rejects.toThrow("`experimental.cachedNavigations` requires `cacheComponents` to be enabled");
   });
 
   it("does not warn when experimental.cachedNavigations is set with cacheComponents", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await resolveNextConfig({
+    const config = await resolveNextConfig({
       cacheComponents: true,
       experimental: { cachedNavigations: true },
     });
@@ -2638,6 +2631,22 @@ describe("resolveNextConfig cachedNavigations warning", () => {
       (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
     );
     expect(cachedNavigationsWarning).toBeUndefined();
+    expect(config.cachedNavigations).toBe(true);
+  });
+
+  it("moves deprecated experimental.cacheComponents before validating cachedNavigations", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const config = await resolveNextConfig({
+      cacheComponents: false,
+      experimental: { cacheComponents: true, cachedNavigations: true },
+    });
+
+    expect(config.cacheComponents).toBe(true);
+    expect(config.cachedNavigations).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      "`experimental.cacheComponents` has been moved to `cacheComponents`. Please update your next.config.js file accordingly.",
+    );
   });
 
   it("does not warn when experimental.cachedNavigations is not set", async () => {
@@ -2653,10 +2662,19 @@ describe("resolveNextConfig cachedNavigations warning", () => {
     expect(cachedNavigationsWarning).toBeUndefined();
   });
 
-  it("does not warn when experimental.cachedNavigations is false", async () => {
+  // Next.js keeps cached navigations opt-in even when Cache Components are enabled:
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/config-shared.ts#L1739
+  it("does not enable cachedNavigations by default with cacheComponents", async () => {
+    const config = await resolveNextConfig({ cacheComponents: true });
+
+    expect(config.cachedNavigations).toBe(false);
+  });
+
+  it("allows cacheComponents projects to opt out of cachedNavigations", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await resolveNextConfig({
+    const config = await resolveNextConfig({
+      cacheComponents: true,
       experimental: { cachedNavigations: false },
     });
 
@@ -2664,6 +2682,7 @@ describe("resolveNextConfig cachedNavigations warning", () => {
       (call) => typeof call[0] === "string" && call[0].includes("cachedNavigations"),
     );
     expect(cachedNavigationsWarning).toBeUndefined();
+    expect(config.cachedNavigations).toBe(false);
   });
 });
 
@@ -2892,13 +2911,14 @@ describe("resolveNextConfig appShells", () => {
       cacheComponents: true,
       experimental: {
         appShells: true,
+        cachedNavigations: true,
         prefetchInlining: true,
         varyParams: true,
         optimisticRouting: true,
-        cachedNavigations: true,
       },
     });
     expect(resolved.appShells).toBe(true);
+    expect(resolved.cachedNavigations).toBe(true);
     // The warning should NOT contain the appShells co-flags message
     const appShellsWarnings = warnSpy.mock.calls.filter(
       (call) =>

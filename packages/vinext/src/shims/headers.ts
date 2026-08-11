@@ -23,7 +23,7 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
-import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
+import { delayPprFallbackShellRequestApi } from "./ppr-fallback-shell.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 import type { ReadonlyRequestCookies } from "@vinext/types/next/upstream/dist/server/web/spec-extension/adapters/request-cookies";
 import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@edge-runtime/cookies/index";
@@ -985,13 +985,17 @@ export function headers(): Promise<Headers> & Headers {
   }
 
   markDynamicUsage();
-  const fallbackShellPromise = createPprFallbackShellSuspensePromise<Headers>("`headers()`");
+  const headersContext = state.headersContext;
+  let readonlyHeaders: Headers | undefined;
+  const getReadonlyHeaders = () => (readonlyHeaders ??= _getReadonlyHeaders(headersContext));
+  const fallbackShellPromise = !headersContext.forceStatic
+    ? delayPprFallbackShellRequestApi("headers", "`headers()`", getReadonlyHeaders)
+    : null;
   if (fallbackShellPromise) {
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
   }
 
-  const readonlyHeaders = _getReadonlyHeaders(state.headersContext);
-  return _getOrCreateDecoratedRequestApiPromise(_decoratedHeadersPromises, readonlyHeaders);
+  return _getOrCreateDecoratedRequestApiPromise(_decoratedHeadersPromises, getReadonlyHeaders());
 }
 
 /**
@@ -1020,16 +1024,21 @@ function cookiesImpl(): Promise<RequestCookies> & RequestCookies {
   }
 
   markDynamicUsage();
-  const fallbackShellPromise = createPprFallbackShellSuspensePromise<RequestCookies>("`cookies()`");
+  const headersContext = state.headersContext;
+  const cookiesAreMutable = _areCookiesMutableInCurrentPhase();
+  let cookieStore: RequestCookies | undefined;
+  const getCookieStore = () =>
+    (cookieStore ??= cookiesAreMutable
+      ? _getMutableCookies(headersContext)
+      : _getReadonlyCookies(headersContext));
+  const fallbackShellPromise = !headersContext.forceStatic
+    ? delayPprFallbackShellRequestApi("cookies", "`cookies()`", getCookieStore)
+    : null;
   if (fallbackShellPromise) {
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
   }
 
-  const cookieStore = _areCookiesMutableInCurrentPhase()
-    ? _getMutableCookies(state.headersContext)
-    : _getReadonlyCookies(state.headersContext);
-
-  return _getOrCreateDecoratedRequestApiPromise(_decoratedCookiesPromises, cookieStore);
+  return _getOrCreateDecoratedRequestApiPromise(_decoratedCookiesPromises, getCookieStore());
 }
 
 type VinextReadonlyRequestCookies = Omit<ReadonlyRequestCookies, keyof RequestCookies> &
