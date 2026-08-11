@@ -1,7 +1,7 @@
 import MagicString from "magic-string";
 import { readFile } from "node:fs/promises";
 import path from "pathslash";
-import { parseAst, type Plugin } from "vite";
+import { createIdResolver, parseAst, type Plugin } from "vite";
 import {
   collectBindingNames,
   forEachAstChild,
@@ -195,14 +195,26 @@ function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
  * Resolve literal package `require()` calls while Vite still knows they are
  * CommonJS references. `vite-plugin-commonjs` subsequently hoists each call
  * into a static import; without this pre-resolution, Vite sees an
- * `import-statement` and selects the package's `import` export condition.
+ * `import-statement` and selects the package's `import` export condition. Use
+ * Vite's explicit `isRequire` resolver because the dev plugin container does
+ * not preserve a synthetic `kind: "require-call"` passed through `this.resolve`.
  */
-export function createRequireConditionResolutionPlugin(): Plugin {
+type IdResolverFactory = typeof createIdResolver;
+
+export function createRequireConditionResolutionPlugin(
+  createResolver: IdResolverFactory = createIdResolver,
+): Plugin {
   const virtualTargets = new Map<string, string>();
+  let resolveImport: ReturnType<IdResolverFactory> | undefined;
+  let resolveRequire: ReturnType<IdResolverFactory> | undefined;
 
   return {
     name: "vinext:require-condition-resolution",
     enforce: "pre",
+    configResolved(config) {
+      resolveImport = createResolver(config, { isRequire: false });
+      resolveRequire = createResolver(config, { isRequire: true });
+    },
     resolveId(source) {
       if (virtualTargets.has(source)) return source;
     },
@@ -217,26 +229,25 @@ export function createRequireConditionResolutionPlugin(): Plugin {
       filter: { id: TRANSFORMABLE_ID_RE, code: LITERAL_REQUIRE_RE },
       async handler(code, id) {
         const requires = collectLiteralRequires(code, id);
-        if (requires.length === 0) return null;
+        if (requires.length === 0 || !resolveImport || !resolveRequire) return null;
 
         const output = new MagicString(code);
         let changed = false;
         for (const { argument, specifier } of requires) {
           const [requireResolution, importResolution] = await Promise.all([
-            this.resolve(specifier, id, { kind: "require-call" }),
-            this.resolve(specifier, id, { kind: "import-statement" }),
+            resolveRequire(this.environment, specifier, id),
+            resolveImport(this.environment, specifier, id),
           ]);
           if (
             !requireResolution ||
-            requireResolution.external ||
-            requireResolution.id === specifier ||
-            requireResolution.id === importResolution?.id ||
-            !path.isAbsolute(requireResolution.id.split("?", 1)[0])
+            requireResolution === specifier ||
+            requireResolution === importResolution ||
+            !path.isAbsolute(requireResolution.split("?", 1)[0])
           ) {
             continue;
           }
-          const virtualId = `${requireResolution.id.split("?", 1)[0]}${CONDITIONAL_REQUIRE_SUFFIX}`;
-          virtualTargets.set(virtualId, requireResolution.id);
+          const virtualId = `${requireResolution.split("?", 1)[0]}${CONDITIONAL_REQUIRE_SUFFIX}`;
+          virtualTargets.set(virtualId, requireResolution);
           output.overwrite(argument.start, argument.end, JSON.stringify(virtualId));
           changed = true;
         }
