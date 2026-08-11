@@ -245,7 +245,7 @@ function writeGsspRedirect(
   res.end(location);
 }
 
-/** Body placeholder used to split the document shell for streaming. */
+/** Body placeholder used to assemble the document shell around the rendered page. */
 const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
 
 type DevPagesStyleRegistry = {
@@ -280,17 +280,10 @@ function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
 }
 
 /**
- * Stream a Pages Router page response using progressive SSR.
+ * Render a Pages Router response and buffer it until React's `allReady`.
  *
- * Sends the HTML shell (head, layout, Suspense fallbacks) immediately
- * when the React shell is ready, then streams Suspense content as it
- * resolves. This gives the browser content to render while slow data
- * loads are still in flight.
- *
- * `__NEXT_DATA__` and the hydration script are appended after the body
- * stream completes (the data is known before rendering starts, but
- * deferring them reduces TTFB and lets the browser start parsing the
- * shell sooner).
+ * `__NEXT_DATA__` and the hydration script are appended after the complete
+ * body together with any styled-jsx rules collected from Suspense content.
  */
 async function streamPageToResponse(
   res: ServerResponse,
@@ -333,8 +326,6 @@ async function streamPageToResponse(
      */
     setDocumentInitialHead?: (head: React.ReactNode[]) => void;
     crossOrigin?: string;
-    /** Buffer the body before writing headers so error-page fallback remains safe. */
-    bufferBodyBeforeHeaders?: boolean;
     /** Keep a response Content-Type set before rendering a notFound page. */
     preserveExistingContentType?: boolean;
   },
@@ -355,7 +346,6 @@ async function streamPageToResponse(
     documentContext,
     setDocumentInitialHead,
     crossOrigin,
-    bufferBodyBeforeHeaders = false,
     preserveExistingContentType = false,
   } = options;
 
@@ -384,9 +374,8 @@ async function streamPageToResponse(
   // via `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. styled-
   // components / emotion style collection). When that contract is in use the
   // body must be a single complete string before `_document` renders. The
-  // streaming path stays as the default for the common case. The contract
-  // (including `withScriptNonce` and `styles` rendering) lives in the shared
-  // helper so dev and prod stay in lockstep.
+  // contract (including `withScriptNonce` and `styles` rendering) lives in the
+  // shared helper so dev and prod stay in lockstep.
   const documentRenderPage = await runDocumentRenderPage({
     DocumentComponent,
     enhancePageElement: enhancePageElement
@@ -417,18 +406,15 @@ async function streamPageToResponse(
 
   const bodyAllReady = (bodyStream as DevPagesRenderStream).allReady ?? Promise.resolve();
   const activeStyleRegistry = jsxStyleRegistry;
+  try {
+    await bodyAllReady;
+  } catch (error) {
+    activeStyleRegistry?.flush();
+    throw error;
+  }
   const styledJsxHTML = activeStyleRegistry
     ? await collectDevPagesStyleRegistryHtml(activeStyleRegistry, scriptNonce)
     : "";
-  const lateStyledJsxHTML = activeStyleRegistry
-    ? bodyAllReady.then(
-        () => collectDevPagesStyleRegistryHtml(activeStyleRegistry, scriptNonce),
-        () => {
-          activeStyleRegistry.flush();
-          return "";
-        },
-      )
-    : Promise.resolve("");
 
   // Fold any head tags returned by `_document.getInitialProps()` into the same
   // dedupe pipeline as user `next/head` tags. Matches Next.js's `_document`
@@ -449,7 +435,6 @@ async function streamPageToResponse(
   // Now that the shell has rendered (and any _document.getInitialProps
   // has injected its tags), collect head HTML.
   let headHTML = getHeadHTML();
-  if (styledJsxHTML) headHTML += `\n  ${styledJsxHTML}`;
   if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
     headHTML += `\n  ${documentRenderPage.stylesHTML}`;
   }
@@ -545,12 +530,13 @@ async function streamPageToResponse(
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
-  const finalSuffix = lateStyledJsxHTML.then((stylesHTML) =>
-    injectDevPagesLateStyles(suffix, stylesHTML),
-  );
-  const bufferedBody = bufferBodyBeforeHeaders ? await new Response(bodyStream).text() : null;
+  const finalSuffix = injectDevPagesLateStyles(suffix, styledJsxHTML);
+  // Next.js Pages rendering awaits renderStream.allReady before exposing HTML.
+  // Buffer the complete body so CSS-in-JS registry output and Suspense content
+  // are present before the response is emitted.
+  const bufferedBody = await new Response(bodyStream).text();
 
-  // Send headers and start streaming.
+  // Send headers and the completed document.
   // Set array-valued headers (e.g. Set-Cookie from gSSP) via setHeader()
   // before writeHead(), since writeHead()'s headers object doesn't handle
   // arrays portably. Then writeHead() merges with any setHeader() calls.
@@ -572,25 +558,7 @@ async function streamPageToResponse(
   // Write the document prefix (head, opening body)
   res.write(prefix);
 
-  if (bufferedBody !== null) {
-    res.end(bufferedBody + (await finalSuffix));
-    return;
-  }
-
-  // Pipe the React body stream through (Suspense content streams progressively)
-  const reader = bodyStream.getReader();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  // Write the document suffix (closing tags, scripts)
-  res.end(await finalSuffix);
+  res.end(bufferedBody + finalSuffix);
 }
 
 /**
@@ -1658,9 +1626,7 @@ export function createSSRHandler(
             .join(", ");
         }
 
-        // Stream the page using progressive SSR.
-        // The shell (layouts, non-suspended content) arrives immediately.
-        // Suspense content streams in as it resolves.
+        // Buffer the complete Pages response through React's allReady boundary.
         await streamPageToResponse(res, withScriptNonce(element, scriptNonce), {
           url,
           server,
@@ -1683,7 +1649,7 @@ export function createSSRHandler(
           },
           // Used by `_document.getInitialProps` -> `ctx.renderPage` to wrap
           // App/Component with user enhancers (e.g. styled-components,
-          // emotion). The streaming path otherwise renders `element` as-is.
+          // emotion). The normal path otherwise renders `element` as-is.
           // Returns the bare enhanced tree — nonce is applied by the helper.
           // `pageProps` is captured from the closure (mirrors the prod entry's
           // `enhancePageElement`) — this closure is only ever invoked for this
@@ -1733,7 +1699,6 @@ export function createSSRHandler(
               ? headShim.setDocumentInitialHead
               : undefined,
           crossOrigin,
-          bufferBodyBeforeHeaders: true,
         });
         _renderEnd = now();
 

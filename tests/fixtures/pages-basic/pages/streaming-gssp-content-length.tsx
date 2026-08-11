@@ -20,7 +20,7 @@ export async function getServerSideProps({
 }: {
   res: { setHeader: (key: string, value: string) => void };
 }) {
-  // Simulate a userland length that would be stale once the streamed HTML starts flowing.
+  // Simulate a userland length that cannot describe the final assembled Pages HTML.
   res.setHeader("Content-Length", "1");
   return { props: {} };
 }

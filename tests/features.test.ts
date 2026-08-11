@@ -4722,33 +4722,6 @@ describe("Set-Cookie header preservation in prod-server", () => {
     expect(canceled).toBe(true);
   });
 
-  it("mergeWebResponse strips stale content-length only for tagged streamed Pages HTML", async () => {
-    const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
-
-    const response = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode("hello"));
-          controller.close();
-        },
-      }),
-      {
-        status: 200,
-        headers: {
-          "content-type": "text/html; charset=utf-8",
-          "content-length": "1",
-        },
-      },
-    ) as Response & { __vinextStreamedHtmlResponse?: boolean };
-    response.__vinextStreamedHtmlResponse = true;
-
-    const merged = mergeWebResponse({}, response);
-
-    expect(merged.headers.get("content-length")).toBeNull();
-    expect(merged.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    expect(await merged.text()).toBe("hello");
-  });
-
   it("mergeWebResponse preserves content-length for untagged custom responses", async () => {
     const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
 

@@ -2602,12 +2602,9 @@ export default class CustomDocument extends Document {
     expect(scriptContent).toContain("__NEXT_DATA__");
   });
 
-  it("renders Suspense + React.lazy content via streaming SSR", async () => {
-    // With progressive streaming SSR (onShellReady), if the Suspense
-    // content resolves before the shell finishes, React inlines it
-    // directly (no fallback in the wire HTML). If it resolves after,
-    // the fallback appears with streaming replacement scripts.
-    // Our lazy component resolves synchronously in tests.
+  it("renders Suspense + React.lazy content in buffered Pages SSR", async () => {
+    // Pages responses wait for allReady, so the resolved lazy content is
+    // present before any body bytes are exposed.
     const res = await fetch(`${baseUrl}/suspense-test`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -8152,7 +8149,7 @@ export default class CustomDocument extends Document {
   );
 });
 
-describe("Production Pages Router SSR streaming", () => {
+describe("Production Pages Router SSR responses", () => {
   let outDir: string;
   let prodServer: import("node:http").Server;
   let prodUrl: string;
@@ -8220,7 +8217,7 @@ describe("Production Pages Router SSR streaming", () => {
     }
   });
 
-  it("renders styled-jsx styles during streaming SSR in production", async () => {
+  it("renders styled-jsx styles during SSR in production", async () => {
     // Ported from Next.js: test/e2e/streaming-ssr/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr/index.test.ts
     const res = await fetch(`${prodUrl}/styled-jsx-streaming`);
@@ -8247,12 +8244,9 @@ describe("Production Pages Router SSR streaming", () => {
     expect(html).toMatch(/color:\s*rgb\(4,\s*5,\s*6\)/);
   });
 
-  it("streams Pages SSR responses incrementally in production with br compression", async () => {
-    // Parity target: Next.js streams Node responses via sendResponse() ->
-    // pipeToNodeResponse() instead of buffering the full HTML first, while
-    // still leaving compression enabled under next start.
-    // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/send-response.ts
-    // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/pipe-readable.ts
+  it("buffers Pages SSR responses to allReady in production with br compression", async () => {
+    // Next.js Pages rendering awaits renderStream.allReady before exposing
+    // the HTML response. Compression remains enabled after buffering.
     const response = await captureStreamedResponse(`${prodUrl}/streaming-ssr`, {
       headers: { "accept-encoding": "br" },
     });
@@ -8269,22 +8263,20 @@ describe("Production Pages Router SSR streaming", () => {
     expect(String(middlewareHeader)).toBe("active");
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(transferEncoding)).toBe("chunked");
-    expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(response.firstChunkMs).toBeGreaterThanOrEqual(400);
     expect(response.endMs).toBeGreaterThanOrEqual(400);
     expect(response.rawBody.byteLength).toBeGreaterThan(0);
     expect(response.rawSnapshot.byteLength).toBeGreaterThan(0);
 
     expect(partialHtml).toContain("Streaming SSR Test");
-    expect(partialHtml).toContain("Loading delayed chunk...");
-    expect(partialHtml).not.toContain("Delayed stream content loaded");
+    expect(partialHtml).toContain("Delayed stream content loaded");
 
     expect(finalHtml).toContain("Streaming SSR Test");
     expect(finalHtml).toContain("Delayed stream content loaded");
     expect(finalHtml).toContain("__NEXT_DATA__");
   });
 
-  it("streams Pages SSR responses incrementally in production with gzip compression", async () => {
+  it("buffers Pages SSR responses to allReady in production with gzip compression", async () => {
     const response = await withFreshStreamingProdServer((freshProdUrl) =>
       captureStreamedResponse(`${freshProdUrl}/streaming-ssr`, {
         headers: { "accept-encoding": "gzip" },
@@ -8297,15 +8289,13 @@ describe("Production Pages Router SSR streaming", () => {
     expect(String(response.headers["content-encoding"])).toBe("gzip");
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(response.headers["transfer-encoding"])).toBe("chunked");
-    expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(response.firstChunkMs).toBeGreaterThanOrEqual(400);
     expect(response.endMs).toBeGreaterThanOrEqual(400);
-    expect(partialHtml).toContain("Loading delayed chunk...");
-    expect(partialHtml).not.toContain("Delayed stream content loaded");
+    expect(partialHtml).toContain("Delayed stream content loaded");
     expect(finalHtml).toContain("Delayed stream content loaded");
   });
 
-  it("preserves streamed SSR bodies when middleware rewrites are merged into the response", async () => {
+  it("preserves buffered SSR bodies when middleware rewrites are merged into the response", async () => {
     const res = await fetch(`${prodUrl}/streaming-ssr`);
     expect(res.status).toBe(200);
     expect(res.headers.get("x-custom-middleware")).toBe("active");
@@ -8314,7 +8304,7 @@ describe("Production Pages Router SSR streaming", () => {
     expect(html).toContain("Delayed stream content loaded");
   });
 
-  it("serves streamed Pages SSR HEAD requests as headers-only responses in production", async () => {
+  it("serves Pages SSR HEAD requests through the headers-only fast path in production", async () => {
     const startedAt = Date.now();
     const res = await fetch(`${prodUrl}/streaming-ssr`, {
       method: "HEAD",
@@ -8329,15 +8319,12 @@ describe("Production Pages Router SSR streaming", () => {
   });
 
   it("serves bot-buffered Pages SSR HEAD requests as headers-only responses in production", async () => {
-    // Crawlers get the *buffered* (non-streamed) HTML path, which routes through
-    // sendCompressed rather than sendWebResponse. Regression for #1980: HEAD must
-    // return the status + headers with an empty body (RFC 9110), like the
-    // streamed path already does.
+    // Crawlers additionally receive an ETag. Regression for #1980: HEAD must
+    // return the status + headers with an empty body (RFC 9110).
     const userAgent = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
 
     // Sanity anchor: a bot GET buffers the full HTML and returns a body. The
-    // ETag is set only on the buffered bot path, so its presence confirms we
-    // exercised sendCompressed and not the streamed sender.
+    // ETag is set only on the bot path.
     const getRes = await fetch(`${prodUrl}/streaming-ssr`, {
       method: "GET",
       headers: { "user-agent": userAgent },
@@ -8367,10 +8354,9 @@ describe("Production Pages Router SSR streaming", () => {
     expect(await res.text()).toBe("");
   });
 
-  it("strips stale content-length from streamed Pages SSR responses when gSSP sets one", async () => {
-    // Parity target: Next.js only sets Content-Length for unchunked render
-    // payloads; streamed HTML is sent without one.
-    // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/send-payload.ts
+  it("strips stale content-length from buffered Pages SSR responses when gSSP sets one", async () => {
+    // The compressed payload length is not known up front, so a stale
+    // application-provided Content-Length must not be forwarded.
     const response = await captureStreamedResponse(`${prodUrl}/streaming-gssp-content-length`, {
       headers: { "accept-encoding": "br" },
     });
@@ -8381,15 +8367,13 @@ describe("Production Pages Router SSR streaming", () => {
     expect(String(response.headers["content-encoding"])).toBe("br");
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(response.headers["transfer-encoding"])).toBe("chunked");
-    expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
-    expect(partialHtml).toContain("Loading delayed gSSP chunk...");
-    expect(partialHtml).not.toContain("Delayed gSSP stream content loaded");
+    expect(response.firstChunkMs).toBeGreaterThanOrEqual(400);
+    expect(partialHtml).toContain("Delayed gSSP stream content loaded");
     expect(finalHtml).toContain("Streaming gSSP Content-Length Test");
     expect(finalHtml).toContain("Delayed gSSP stream content loaded");
   });
 
-  it("strips middleware-provided content-length when rewriting to a streamed Pages SSR response", async () => {
+  it("strips middleware-provided content-length when rewriting to a buffered Pages SSR response", async () => {
     // Parity target: Next.js route resolution explicitly skips forwarding
     // middleware content-length headers.
     // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
@@ -8405,8 +8389,7 @@ describe("Production Pages Router SSR streaming", () => {
     expect(String(response.headers["content-encoding"])).toBe("br");
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(response.headers["transfer-encoding"])).toBe("chunked");
-    expect(partialHtml).toContain("Loading delayed chunk...");
-    expect(partialHtml).not.toContain("Delayed stream content loaded");
+    expect(partialHtml).toContain("Delayed stream content loaded");
     expect(finalHtml).toContain("Streaming SSR Test");
     expect(finalHtml).toContain("Delayed stream content loaded");
   });

@@ -1073,13 +1073,16 @@ const SSR_HEAD_TAG_PATTERN =
  * `</head>` intact in any of them.
  */
 const HEAD_TEXT_ELEMENT_PATTERN = /<(script|style|title|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi;
-const STYLED_JSX_STYLE_PATTERN = /<style\b(?=[^>]*\bid=["']__jsx-)[^>]*>[\s\S]*?<\/style>/gi;
+const HTML_RAW_TEXT_ELEMENT_PATTERN =
+  /<(script|style|title|textarea|noscript|iframe|xmp|noembed|noframes)\b[^>]*>[\s\S]*?<\/\1>|<plaintext\b[^>]*>[\s\S]*$/gi;
+const STYLED_JSX_STYLE_OPEN_PATTERN = /^<style\b(?=[^>]*\bid=["']__jsx-)[^>]*>/i;
 
 function removeStyledJsxStyles(html: string): string {
   const chunks: string[] = [];
   let cursor = 0;
-  for (const match of html.matchAll(STYLED_JSX_STYLE_PATTERN)) {
+  for (const match of html.matchAll(HTML_RAW_TEXT_ELEMENT_PATTERN)) {
     if (match.index === undefined) continue;
+    if (!STYLED_JSX_STYLE_OPEN_PATTERN.test(match[0])) continue;
     chunks.push(html.slice(cursor, match.index));
     cursor = match.index + match[0].length;
   }
@@ -1142,11 +1145,12 @@ function refreshCachedHeadTags(
   }
 
   if (!freshStyledJsxHTML) return cachedHtml;
-  const headEnd = cachedHtml
-    .replace(HEAD_TEXT_ELEMENT_PATTERN, (element) => " ".repeat(element.length))
-    .indexOf("</head>");
-  if (headEnd < 0) return cachedHtml;
-  return `${cachedHtml.slice(0, headEnd)}  ${freshStyledJsxHTML}\n${cachedHtml.slice(headEnd)}`;
+  const bodyEnd = cachedHtml.toLowerCase().lastIndexOf("</body>");
+  if (bodyEnd < 0) return cachedHtml;
+  // React can emit stylesheet resources at the start of the streamed body.
+  // Keep regenerated styled-jsx rules after that body/resource run so their
+  // page-local cascade stays consistent with a fresh render.
+  return `${cachedHtml.slice(0, bodyEnd)}  ${freshStyledJsxHTML}\n${cachedHtml.slice(bodyEnd)}`;
 }
 
 function rewritePagesCachedHtml(

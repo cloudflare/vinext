@@ -37,16 +37,15 @@ import { NEXTJS_CACHE_HEADER } from "./headers.js";
 import { matchesIfNoneMatch } from "./http-conditional.js";
 
 // ---------------------------------------------------------------------------
-// Bot / crawler detection for Pages Router edge-runtime SSR
+// Bot / crawler detection for Pages Router SSR ETag handling.
 //
-// These bots cannot parse streamed HTML correctly (they may read metadata
-// only from the initial <head> flush), so we buffer the full response and emit
-// it in a single chunk, identical to the Node.js path.
+// Pages HTML is buffered for every User-Agent. Bots additionally receive a
+// strong ETag so crawlers can revalidate the complete document.
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true when the User-Agent belongs to a bot or crawler that cannot
- * reliably consume a streamed HTML response.
+ * Returns true when the User-Agent belongs to a bot or crawler that should
+ * receive Pages HTML ETag handling.
  */
 export function isPagesStreamingBot(userAgent: string): boolean {
   return isBotUserAgent(userAgent);
@@ -115,10 +114,6 @@ type PagesDocumentReqRes = {
   res: PagesGsspResponse;
   responsePromise?: Promise<Response>;
 };
-
-type PagesStreamedHtmlResponse = {
-  __vinextStreamedHtmlResponse?: boolean;
-} & Response;
 
 type PagesRenderStream = ReadableStream<Uint8Array> & {
   allReady?: Promise<void>;
@@ -201,10 +196,9 @@ type RenderPagesPageResponseOptions = {
   nextData?: PagesNextDataExtras;
   /**
    * The request's User-Agent string (from `request.headers.get('user-agent')`).
-   * When this matches a known crawler / bot pattern, the response is fully
-   * buffered before sending so bots receive a single complete HTML chunk with
-   * an ETag header. Omitting this field disables bot-detection (streaming as
-   * normal), which is the correct behaviour for non-HTML requests and tests.
+   * Pages HTML is always buffered to `allReady`, matching Next.js. When this
+   * matches a known crawler / bot pattern the complete response also receives
+   * an ETag. Omitting the field disables only bot-specific ETag handling.
    */
   userAgent?: string;
   /**
@@ -557,10 +551,9 @@ export async function renderPagesPageResponse(
   // styled-components / emotion style collection). When that contract is in
   // use the body must be a single complete string before `_document` renders
   // — Next.js does this in `loadDocumentInitialProps` and we mirror it here.
-  // The streaming path stays as the default for the common case where the
-  // user does not define `getInitialProps`. The contract (including
-  // `withScriptNonce` and `styles` rendering) lives in the shared helper so
-  // prod and dev stay in lockstep.
+  // The normal render-to-stream path still buffers below at `allReady`. The
+  // contract (including `withScriptNonce` and `styles` rendering) lives in the
+  // shared helper so prod and dev stay in lockstep.
   const documentRenderPage = await runDocumentRenderPage({
     DocumentComponent: options.DocumentComponent,
     enhancePageElement: options.enhancePageElement
@@ -615,6 +608,12 @@ export async function renderPagesPageResponse(
   }
 
   const bodyAllReady = (bodyStream as PagesRenderStream).allReady ?? Promise.resolve();
+  try {
+    await bodyAllReady;
+  } catch (error) {
+    styleRegistry?.flush();
+    throw error;
+  }
   const styledJsxHTML = styleRegistry
     ? await collectPagesStyleRegistryHtml(
         styleRegistry,
@@ -622,25 +621,10 @@ export async function renderPagesPageResponse(
         options.scriptNonce,
       )
     : "";
-  // Keep the request-local registry alive while Suspense boundaries finish.
-  // Late styles cannot be moved back into an already-streamed <head>, so add
-  // them outside the React root immediately before </body>. This preserves
-  // progressive body streaming while keeping styled-jsx hydration discovery
-  // (`[id^="__jsx-"]`) and ISR cache contents complete.
-  const lateStyledJsxHTML = styleRegistry
-    ? bodyAllReady.then(
-        () =>
-          collectPagesStyleRegistryHtml(
-            styleRegistry,
-            options.renderToReadableStream,
-            options.scriptNonce,
-          ),
-        () => {
-          styleRegistry.flush();
-          return "";
-        },
-      )
-    : Promise.resolve("");
+  // Collect and flush exactly once after all Suspense boundaries settle. This
+  // preserves styled-jsx's instance deduplication when the same rule appears
+  // in both the shell and suspended content. Emit the result after React's body
+  // stylesheet resources so the page-local cascade remains stable.
 
   // Fold any head tags returned by `_document.getInitialProps()` into the
   // dedupe pipeline before getSSRHeadHTML serialises the final <head>. Mirrors
@@ -663,7 +647,6 @@ export async function renderPagesPageResponse(
   const traceMetaHTML = getClientTraceMetadataHTML(options.clientTraceMetadata);
   let ssrHeadHTML = headFromShim;
   if (traceMetaHTML) ssrHeadHTML += `\n  ${traceMetaHTML}`;
-  if (styledJsxHTML) ssrHeadHTML += `\n  ${styledJsxHTML}`;
   // `styles` returned by `_document.getInitialProps()` (e.g. collected
   // styled-components / emotion <style> tags) is already rendered to a string
   // by the shared helper, ready to merge into the SSR head.
@@ -688,15 +671,18 @@ export async function renderPagesPageResponse(
   const markerIndex = shellHtml.indexOf(bodyMarker);
   const shellPrefix = shellHtml.slice(0, markerIndex);
   const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
-  const finalShellSuffix = lateStyledJsxHTML.then((stylesHTML) =>
-    injectPagesLateStyles(shellSuffix, stylesHTML),
-  );
+  const finalShellSuffix = Promise.resolve(injectPagesLateStyles(shellSuffix, styledJsxHTML));
   const responseHeaders = new Headers({ "Content-Type": "text/html; charset=utf-8" });
   const finalStatus = applyGsspHeaders(
     responseHeaders,
     options.gsspRes ?? options.documentReqRes?.res ?? null,
     options.statusCode,
   );
+  // The final Pages document is assembled after getServerSideProps returns,
+  // so an application-provided Content-Length describes neither the React
+  // stream nor the HTML suffixes we append. Node recomputes framing in
+  // sendCompressed; remove the stale value here as well for Worker adapters.
+  responseHeaders.delete("Content-Length");
 
   let responseBodyStream = bodyStream;
   if (
@@ -743,6 +729,12 @@ export async function renderPagesPageResponse(
     finalShellSuffix,
   );
 
+  // Next.js Pages rendering awaits renderStream.allReady before exposing HTML.
+  // Buffer the complete document so CSS-in-JS registry output and Suspense
+  // content are present before the response is emitted. App Router streaming
+  // is handled separately and remains progressive.
+  const bufferedFullHtml = await readStreamAsText(compositeStream);
+
   // Capture user-set Cache-Control (from getServerSideProps's res.setHeader)
   // so a downstream user override survives the gssp default below, and only
   // the default, never ISR/nonce Cache-Control which the runtime owns. Matches
@@ -780,19 +772,14 @@ export async function renderPagesPageResponse(
     responseHeaders.set("Link", options.fontLinkHeader);
   }
 
-  // Bot / crawler path: buffer the complete HTML, emit as a single chunk, and
-  // attach an ETag. Bots (Googlebot, Google-PageRenderer, etc.) cannot parse
-  // incrementally-streamed HTML — metadata tags pushed after the initial <head>
-  // flush are invisible to them.
+  // Bot / crawler path: attach an ETag to the complete buffered HTML.
   //
   // INTENTIONAL DIVERGENCE FROM NEXT.JS: Next.js gates this buffering/ETag on
   // `!result.isDynamic` (i.e., only static/ISR pages get it, not GSSP pages).
-  // Vinext instead gates on the crawler User-Agent — buffering ALL bot requests
-  // regardless of whether the route uses getServerSideProps or getStaticProps.
-  // This is deliberate: edge-runtime streaming is unreliable for bots on any
-  // route type, so the UA check is the correct signal here. See also the ISR
-  // cache-HIT path in `pages-page-data.ts` which applies the same UA gate for
-  // consistent ETag coverage on cached responses.
+  // Vinext instead gates ETag handling on the crawler User-Agent regardless of
+  // whether the route uses getServerSideProps or getStaticProps. See also the
+  // ISR cache-HIT path in `pages-page-data.ts`, which applies the same UA gate
+  // for consistent ETag coverage on cached responses.
   //
   // A consequence of UA-gating is that the ETag/304 path below can also fire
   // for dynamic (GSSP) responses, which Next.js never 304s (`isDynamic` renders
@@ -810,7 +797,7 @@ export async function renderPagesPageResponse(
   // NOTE: This check is intentionally placed after the Cache-Control / header
   // setup above so bot responses still carry the correct cache semantics.
   if (options.userAgent && isPagesStreamingBot(options.userAgent)) {
-    const fullHtml = await readStreamAsText(compositeStream);
+    const fullHtml = bufferedFullHtml;
     const etag = generatePagesETag(fullHtml);
     responseHeaders.set("ETag", etag);
     const noCacheRequested = requestsNoCache(options.requestCacheControl);
@@ -826,16 +813,8 @@ export async function renderPagesPageResponse(
     });
   }
 
-  const response: PagesStreamedHtmlResponse = Object.assign(
-    new Response(compositeStream, {
-      status: finalStatus,
-      headers: responseHeaders,
-    }),
-    {
-      __vinextStreamedHtmlResponse: true,
-    },
-  );
-  // Mark the normal streamed HTML render so the Node prod server can strip
-  // stale Content-Length only for this path, not for custom gSSP responses.
-  return response;
+  return new Response(bufferedFullHtml, {
+    status: finalStatus,
+    headers: responseHeaders,
+  });
 }

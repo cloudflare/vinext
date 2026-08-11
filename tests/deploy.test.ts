@@ -1592,32 +1592,6 @@ describe("readPagesRouterEntrySource", () => {
     expect(canceled).toBe(true);
   });
 
-  it("mergeHeaders strips stale content-length only for tagged streamed Pages HTML", async () => {
-    const response = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode("hello"));
-          controller.close();
-        },
-      }),
-      {
-        status: 200,
-        headers: {
-          "content-type": "text/html; charset=utf-8",
-          "content-length": "1",
-        },
-      },
-    ) as Response & { __vinextStreamedHtmlResponse?: boolean };
-    response.__vinextStreamedHtmlResponse = true;
-
-    const merged = mergeHeaders(response, { "x-custom": "from-middleware" });
-
-    expect(merged.headers.get("content-length")).toBeNull();
-    expect(merged.headers.get("content-type")).toBe("text/html; charset=utf-8");
-    expect(merged.headers.get("x-custom")).toBe("from-middleware");
-    expect(await merged.text()).toBe("hello");
-  });
-
   it("mergeHeaders strips middleware-provided content-length for untagged responses", async () => {
     const response = new Response("body", {
       status: 200,

@@ -496,13 +496,8 @@ function cancelResponseBody(response: Response): void {
 }
 
 type ResponseWithVinextStreamingMetadata = Response & {
-  __vinextStreamedHtmlResponse?: boolean;
   __vinextStreamedApiResponse?: boolean;
 };
-
-function isVinextStreamedHtmlResponse(response: Response): boolean {
-  return (response as ResponseWithVinextStreamingMetadata).__vinextStreamedHtmlResponse === true;
-}
 
 // Set by the Pages API bridge (pages-node-compat.ts) when the Response was
 // resolved while the handler was still writing (streaming/piping). Buffering
@@ -2315,7 +2310,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           return;
         }
         const streamedApi = isVinextStreamedApiResponse(response);
-        const shouldStream = isVinextStreamedHtmlResponse(response) || streamedApi;
         // Passthrough responses (middleware short-circuits, external proxies, redirects)
         // carry no defaultContentType — send them verbatim without injecting a
         // Content-Type, matching the pre-refactor behavior. Buffered render/api
@@ -2323,7 +2317,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // apply the same fallback here since they skip the buffered path. Live
         // API bodies also cannot use the buffered path's size threshold without
         // defeating streaming, so sendWebResponse chooses compression up front.
-        if (shouldStream || !response.body || result.defaultContentType === undefined) {
+        if (streamedApi || !response.body || result.defaultContentType === undefined) {
           if (
             streamedApi &&
             result.defaultContentType !== undefined &&

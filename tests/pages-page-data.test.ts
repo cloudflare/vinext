@@ -201,14 +201,24 @@ describe("pages page data", () => {
 
   it("replaces stale styled-jsx rules when regenerating an ISR shell", async () => {
     const freshStyle = '<style id="__jsx-fresh">p{z-index:2}</style>';
+    const scriptLiteral =
+      "<script>window.template = '<style id=\"__jsx-script\">keep me</style>';</script>";
+    const legacyRawTextLiterals = ["iframe", "xmp", "noembed", "noframes"]
+      .map((tag) => `<${tag}><style id="__jsx-${tag}">keep me</style></${tag}>`)
+      .join("");
+    const plaintextLiteral = '<plaintext><style id="__jsx-plaintext">keep me</style>';
     const html = await renderPagesIsrHtml({
       buildId: "build-123",
       cachedHtml:
         '<!DOCTYPE html><html><head><meta charSet="utf-8" data-next-head="" />' +
+        scriptLiteral +
+        legacyRawTextLiterals +
         '<style id="__jsx-stale-head">p{z-index:1}</style></head>' +
         '<body><div id="__next"><p>stale-body</p></div>' +
+        '<link rel="stylesheet" href="/global.css" data-precedence="next" />' +
         '<style id="__jsx-stale-late">span{color:red}</style>' +
-        '<script>window.__NEXT_DATA__ = {"old":1}</script></body></html>',
+        '<script>window.__NEXT_DATA__ = {"old":1}</script></body></html>' +
+        plaintextLiteral,
       collectIsrHeadHTML: vi.fn(() => ""),
       createPageElement() {
         return "page";
@@ -230,7 +240,12 @@ describe("pages page data", () => {
     expect(html).toContain('<meta charSet="utf-8" data-next-head="" />');
     expect(html).not.toContain("__jsx-stale-head");
     expect(html).not.toContain("__jsx-stale-late");
+    expect(html).toContain(scriptLiteral);
+    expect(html).toContain(legacyRawTextLiterals);
+    expect(html).toContain(plaintextLiteral);
     expect(html).toContain("<p>fresh-body</p>");
+    expect(html.indexOf("global.css")).toBeLessThan(html.indexOf("__jsx-fresh"));
+    expect(html.indexOf("__jsx-fresh")).toBeLessThan(html.indexOf("</body>"));
   });
 
   it("leaves the cached head alone when the regeneration collects no head", async () => {
