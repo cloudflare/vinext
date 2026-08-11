@@ -19191,6 +19191,92 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("soft-renders a middleware SSG notFound response with the registered error page", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    const pageLoader = vi.fn(async () => ({ default: () => null }));
+    const getErrorInitialProps = vi.fn((ctx: { pathname: string; query: unknown }) => ({
+      fromCustomError: true,
+      pathname: ctx.pathname,
+      query: ctx.query,
+      statusCode: 404,
+    }));
+    const CustomError = Object.assign(() => null, { getInitialProps: getErrorInitialProps });
+    const errorLoader = vi.fn(async () => ({ default: CustomError }));
+    Object.assign(win.location, { origin: "http://localhost" });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    Object.assign(win, {
+      __VINEXT_PAGE_PATTERNS__: ["/ssg/[slug]"],
+      __VINEXT_PAGE_LOADERS__: {
+        "/ssg/[slug]": pageLoader,
+        "/_error": errorLoader,
+      },
+      __VINEXT_PAGES_SSG_PATTERNS__: ["/ssg/[slug]"],
+      __VINEXT_PAGES_SSP_PATTERNS__: [],
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/_next/data/build-1/ssg/not-found-1.json") {
+        return new Response('{"notFound":true}', { status: 404 });
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      await expect(Router.push("/ssg/not-found-1")).resolves.toBe(true);
+
+      expect(fetch).toHaveBeenNthCalledWith(
+        1,
+        "/_next/data/build-1/ssg/not-found-1.json",
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-nextjs-data": "1" }),
+        }),
+      );
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(pageLoader).not.toHaveBeenCalled();
+      expect(errorLoader).toHaveBeenCalledOnce();
+      expect(getErrorInitialProps).toHaveBeenCalledWith(
+        expect.objectContaining({
+          asPath: "/ssg/not-found-1",
+          pathname: "/_error",
+          query: { slug: "not-found-1" },
+        }),
+      );
+      expect(render).toHaveBeenCalledOnce();
+      expect(treeContainsReactType(render.mock.calls[0]?.[0], CustomError)).toBe(true);
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/ssg/[slug]",
+        query: { slug: "not-found-1" },
+        props: {
+          pageProps: {
+            fromCustomError: true,
+            pathname: "/_error",
+            query: { slug: "not-found-1" },
+            statusCode: 404,
+          },
+        },
+      });
+      expect(win.location.href).toBe("http://localhost/ssg/not-found-1");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("preserves the origin for same-host double-slash middleware data redirects", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;

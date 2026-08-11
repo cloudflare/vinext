@@ -2270,6 +2270,40 @@ async function navigateClientData(
     }
 
     if (isNotFound) {
+      const customNotFoundLoader = window.__VINEXT_PAGE_LOADERS__?.["/404"];
+      if (!customNotFoundLoader) {
+        // Fetching /404 is not safe when the app has no custom 404 page: a
+        // dynamic Pages route (for example /[id]) can claim that URL. Load the
+        // registered /_error component instead, then retain the requested
+        // route state when committing it. The generated loader map points to
+        // either the app's custom _error or vinext's built-in error page.
+        const errorLoader = window.__VINEXT_PAGE_LOADERS__?.["/_error"];
+        const errorTarget: PagesDataTarget = {
+          ...initialTarget,
+          pattern: "/_error",
+          pagePath: "/_error",
+          dataKind: "none",
+          loader: errorLoader ?? (() => import("next/error")),
+        };
+        const pageModule = await loadTargetPageModule(errorTarget, url, "Data navigation failed");
+        assertStillCurrent();
+        const PageComponent = pageModule.default;
+        if (!isPageComponent(PageComponent)) {
+          scheduleHardNavigationAndThrow(
+            url,
+            "Data navigation failed: error page default export is not a component",
+          );
+        }
+        const appComponent = await loadPagesAppComponent();
+        assertStillCurrent();
+        const props = await loadComponentOnlyProps(PageComponent, appComponent, errorTarget, url);
+        assertStillCurrent();
+        await renderPagesNavigationTarget(url, initialTarget, props, options, assertStillCurrent, {
+          appComponent,
+          pageModule,
+        });
+        return;
+      }
       const notFoundFetchUrl = resolvePagesErrorHtmlFetchUrl("/404", initialTarget.locale);
       if (!notFoundFetchUrl) {
         scheduleHardNavigationAndThrow(url, "Data navigation failed: no 404 route available");
