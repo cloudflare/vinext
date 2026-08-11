@@ -19947,6 +19947,75 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("does not double-prefix basePath for followed HTML redirects", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const { win, pushState, render } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    Object.assign(win.location, {
+      origin: "http://localhost",
+      pathname: "/docs",
+      href: "http://localhost/docs",
+    });
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = win;
+
+    const followedRedirect = new Response("", { status: 200 });
+    Object.defineProperties(followedRedirect, {
+      redirected: { value: true },
+      url: { value: "http://localhost/docs/new-home" },
+    });
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/docs/old-home") return followedRedirect;
+      if (href === "/docs/new-home") {
+        return new Response(buildNavHtml("/new-home", pageModuleUrl));
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/old-home", undefined, { scroll: false });
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenNthCalledWith(1, "/docs/old-home", expect.any(Object));
+      expect(fetch).toHaveBeenNthCalledWith(2, "/docs/new-home", expect.any(Object));
+      expect(fetch).not.toHaveBeenCalledWith("/docs/docs/new-home", expect.any(Object));
+      expect(pushState).toHaveBeenCalledTimes(1);
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "/new-home", as: "/new-home", __N: true }),
+        "",
+        "/docs/new-home",
+      );
+      expect(win.history.state).toMatchObject({
+        url: "/new-home",
+        as: "/new-home",
+        __N: true,
+      });
+      expect(win.location.href).toBe("http://localhost/docs/new-home");
+      expect(render).toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("falls through to normal page navigation when the middleware data probe fails", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;

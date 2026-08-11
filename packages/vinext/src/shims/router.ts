@@ -1595,10 +1595,15 @@ function isAppComponent(value: unknown): value is NonNullable<Window["__VINEXT_A
 function resolveSameOriginRedirectedUrl(responseUrl: string): string | null {
   const appPath = toSameOriginAppPath(responseUrl, __basePath);
   if (appPath === null) return null;
-  return normalizePathTrailingSlash(
-    toBrowserNavigationHref(appPath, window.location.href, __basePath),
-    __trailingSlash,
-  );
+  // Keep a same-origin absolute URL when stripping its origin/basePath would
+  // expose a leading `//`; performNavigation uses that absolute form for the
+  // history URL while retaining the app path for route state and fetching.
+  if (appPath.startsWith("//")) {
+    return normalizePathTrailingSlash(responseUrl, __trailingSlash);
+  }
+  // Followed HTML redirects re-enter performNavigation(), so return its
+  // app-relative input rather than a browser URL that already has basePath.
+  return normalizePathTrailingSlash(appPath, __trailingSlash);
 }
 
 function stripLocalePrefixForApiRedirect(appPath: string): string {
