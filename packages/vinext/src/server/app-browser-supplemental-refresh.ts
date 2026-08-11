@@ -8,7 +8,9 @@ import {
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import type { AppRouterState } from "./app-browser-state.js";
-import { addBasePathToPathname, stripBasePath } from "../utils/base-path.js";
+import { normalizePathnameForRouteMatch } from "../routing/utils.js";
+import { addBasePathToPathname, removeTrailingSlash, stripBasePath } from "../utils/base-path.js";
+import { normalizePath } from "./normalize-path.js";
 
 const SUPPLEMENTAL_REFRESH_TIMEOUT_MS = 10_000;
 
@@ -203,7 +205,11 @@ export function resolvePersistedSourcePageRefreshes(options: {
   state: Pick<AppRouterState, "previousNextUrl" | "slotBindings">;
 }): string[] {
   const sourceUrlsByPathname = new Map<string, URL>();
-  const refreshRoutePathname = stripBasePath(options.refreshUrl.pathname, options.basePath);
+  const refreshRoutePathname = removeTrailingSlash(
+    normalizePath(
+      normalizePathnameForRouteMatch(stripBasePath(options.refreshUrl.pathname, options.basePath)),
+    ),
+  );
   if (options.state.previousNextUrl !== null) {
     const sourceUrl = new URL(options.state.previousNextUrl, options.refreshUrl);
     sourceUrlsByPathname.set(sourceUrl.pathname, sourceUrl);

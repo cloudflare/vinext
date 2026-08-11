@@ -119,6 +119,53 @@ describe("parallel route supplemental refreshes", () => {
     ).toEqual([]);
   });
 
+  it.each([
+    {
+      name: "a trailing-slash route",
+      activeRoutePaths: ["/foo/bar"],
+      basePath: "",
+      refreshUrl: "https://example.com/foo/",
+    },
+    {
+      name: "a trailing-slash route under basePath",
+      activeRoutePaths: ["/foo/bar"],
+      basePath: "/docs",
+      refreshUrl: "https://example.com/docs/foo/",
+    },
+    {
+      name: "an encoded Unicode route",
+      activeRoutePaths: ["/café/bar"],
+      basePath: "",
+      refreshUrl: "https://example.com/caf%C3%A9",
+    },
+  ])("does not refresh a retained descendant of $name", (testCase) => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        activeRoutePaths: testCase.activeRoutePaths,
+        basePath: testCase.basePath,
+        refreshUrl: new URL(testCase.refreshUrl),
+        state: {
+          previousNextUrl: null,
+          slotBindings: [],
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  it("does not treat a shared pathname prefix as a descendant", () => {
+    expect(
+      resolvePersistedSourcePageRefreshes({
+        activeRoutePaths: ["/foobar"],
+        basePath: "",
+        refreshUrl: new URL("https://example.com/foo"),
+        state: {
+          previousNextUrl: null,
+          slotBindings: [],
+        },
+      }),
+    ).toEqual(["/foobar"]);
+  });
+
   it("merges every active slot from a supplemental route response", () => {
     const current: AppElements = {
       ...AppElementsWire.createMetadataEntries({
