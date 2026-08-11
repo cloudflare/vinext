@@ -34,7 +34,7 @@ function moduleMode(kind: Rollup.ImportKind | undefined): ExternalModuleMode {
  * bundled so relocating the server output cannot collapse both imports to the
  * same root-level package.
  */
-export function compareTransitiveExternalResolutions(
+function compareTransitiveExternalResolutions(
   importerResolution: string,
   rootResolution: string | null,
 ): string | null {
@@ -47,7 +47,7 @@ export function compareTransitiveExternalResolutions(
  * CommonJS fallback used when Vite cannot resolve a require-call with its
  * conditions-aware resolver.
  */
-export function resolveTransitiveExternal(
+function resolveTransitiveExternal(
   request: string,
   importer: string,
   rootResolver: NodeRequire,
