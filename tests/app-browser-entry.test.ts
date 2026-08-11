@@ -145,6 +145,7 @@ import {
   ACTION_REVALIDATED_HEADER,
   ACTION_REDIRECT_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
+  VINEXT_MOUNTED_SLOT_ACTIVE_ROUTES_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -1441,7 +1442,7 @@ describe("app browser entry navigation scheduling", () => {
         },
         "dynamicOnly",
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("schedules discarded action refreshes only for revalidated actions", () => {
@@ -8975,6 +8976,31 @@ describe("resolveServerActionRequestState", () => {
     });
 
     expect(headers.get("X-Vinext-Mounted-Slots")).toBe(getMountedSlotIdsHeader(elements));
+  });
+
+  it("includes mounted active route identities on server action rerenders", () => {
+    const elements: AppElements = createResolvedElements("route:/dashboard/analytics", "/", null, {
+      "slot:navbar:/dashboard": React.createElement("div", null, "navbar"),
+    });
+
+    const { headers } = resolveServerActionRequestState({
+      actionId: "refresh-dashboard",
+      basePath: "",
+      elements,
+      previousNextUrl: null,
+      slotBindings: [
+        {
+          activeRouteId: "route:/dashboard",
+          ownerLayoutId: "layout:/dashboard",
+          slotId: "slot:navbar:/dashboard",
+          state: "active",
+        },
+      ],
+    });
+
+    expect(headers.get(VINEXT_MOUNTED_SLOT_ACTIVE_ROUTES_HEADER)).toBe(
+      "slot%3Anavbar%3A%2Fdashboard=route%3A%2Fdashboard",
+    );
   });
 
   it("omits headers whose derived values are null", () => {

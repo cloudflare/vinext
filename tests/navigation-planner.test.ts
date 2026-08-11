@@ -98,8 +98,9 @@ function createSlotBinding(
   slotId: string,
   ownerLayoutId: string,
   state: ParallelSlotBindingSnapshot["state"] = "active",
+  activeRouteId?: string,
 ): ParallelSlotBindingSnapshot {
-  return { ownerLayoutId, slotId, state };
+  return { ...(activeRouteId ? { activeRouteId } : {}), ownerLayoutId, slotId, state };
 }
 
 function createTestRouteManifest(routes: readonly TestManifestRoute[]): RouteManifest {
@@ -1096,6 +1097,107 @@ describe("navigationPlanner root-boundary decisions", () => {
     }
     expect(decision.proposal.preservePreviousSlotIds).toEqual([]);
   });
+
+  it("preserves an active slot when its mounted route identity is unchanged", () => {
+    const slotId = "slot:navbar:/dashboard";
+    const currentSnapshot = createRouteSnapshot(
+      "/",
+      ["layout:/", "layout:/dashboard"],
+      [],
+      [createSlotBinding(slotId, "layout:/dashboard", "active", "route:/dashboard")],
+    );
+    const targetSnapshot = createRouteSnapshot(
+      "/",
+      ["layout:/", "layout:/dashboard", "layout:/dashboard/settings"],
+      [],
+      [createSlotBinding(slotId, "layout:/dashboard", "active", "route:/dashboard")],
+    );
+
+    const decision = planFlightResponseFromSnapshots({ currentSnapshot, targetSnapshot });
+
+    expect(decision.kind).toBe("proposeCommit");
+    if (decision.kind !== "proposeCommit") throw new Error("Expected proposeCommit decision");
+    expect(decision.proposal.preservePreviousSlotIds).toEqual([slotId]);
+  });
+
+  it("replaces an active slot when its mounted route identity changes", () => {
+    const slotId = "slot:navbar:/dashboard";
+    const currentSnapshot = createRouteSnapshot(
+      "/",
+      ["layout:/", "layout:/dashboard"],
+      [],
+      [createSlotBinding(slotId, "layout:/dashboard", "active", "route:/dashboard")],
+    );
+    const targetSnapshot = {
+      ...createRouteSnapshot(
+        "/",
+        ["layout:/", "layout:/dashboard", "layout:/dashboard/settings"],
+        [],
+        [createSlotBinding(slotId, "layout:/dashboard", "active", "route:/settings")],
+      ),
+      displayUrl: "https://example.com/settings",
+      matchedUrl: "/settings",
+      routeId: "route:/settings",
+    };
+
+    const decision = planFlightResponseFromSnapshots({ currentSnapshot, targetSnapshot });
+
+    expect(decision.kind).toBe("proposeCommit");
+    if (decision.kind !== "proposeCommit") throw new Error("Expected proposeCommit decision");
+    expect(decision.proposal.preservePreviousSlotIds).toEqual([]);
+  });
+
+  it.each([
+    { targetId: "123", expectedPreserved: true },
+    { targetId: "456", expectedPreserved: false },
+  ])(
+    "uses the concrete dynamic target identity when target params are $targetId",
+    ({ targetId, expectedPreserved }) => {
+      const slotId = "slot:navbar:/dashboard";
+      const currentSnapshot: RouteSnapshot = {
+        ...createRouteSnapshot(
+          "/",
+          ["layout:/", "layout:/dashboard"],
+          [],
+          [createSlotBinding(slotId, "layout:/dashboard", "active", "route:/dashboard/123")],
+        ),
+        displayUrl: "https://example.com/other",
+        matchedUrl: "/other",
+        routeId: "route:/other",
+      };
+      const targetSnapshot: RouteSnapshot = {
+        ...createRouteSnapshot("/", ["layout:/", "layout:/dashboard"], [], []),
+        displayUrl: `https://example.com/dashboard/${targetId}`,
+        matchedUrl: `/dashboard/${targetId}`,
+        routeId: `route:/dashboard/${targetId}`,
+      };
+      const routeManifest = createTestRouteManifest([
+        {
+          layoutIds: ["layout:/", "layout:/dashboard"],
+          pattern: "/other",
+          rootBoundaryId: "root-boundary:/",
+        },
+        {
+          id: "route:/dashboard/:id",
+          layoutIds: ["layout:/", "layout:/dashboard"],
+          pattern: "/dashboard/:id",
+          patternParts: ["dashboard", ":id"],
+          rootBoundaryId: "root-boundary:/",
+          slotBindings: [createSlotBinding(slotId, "layout:/dashboard", "active")],
+        },
+      ]);
+
+      const decision = planFlightResponseFromSnapshots({
+        currentSnapshot,
+        routeManifest,
+        targetSnapshot,
+      });
+
+      expect(decision.kind).toBe("proposeCommit");
+      if (decision.kind !== "proposeCommit") throw new Error("Expected proposeCommit decision");
+      expect(decision.proposal.preservePreviousSlotIds).toEqual(expectedPreserved ? [slotId] : []);
+    },
+  );
 
   it("uses RouteManifest root boundaries instead of stale snapshot roots", () => {
     const routeManifest = createTestRouteManifest([

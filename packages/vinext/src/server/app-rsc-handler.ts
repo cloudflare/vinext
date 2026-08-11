@@ -214,6 +214,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   isProgressiveActionRender: boolean;
   isRscRequest: boolean;
   middlewareContext: AppRscMiddlewareContext;
+  mountedSlotActiveRoutesHeader: string | null;
   mountedSlotsHeader: string | null;
   params: AppPageParams;
   pprFallbackCacheShells?:
@@ -295,6 +296,7 @@ type HandleServerActionRequestOptions<TRoute> = {
   interceptionContext: string | null;
   isRscRequest: boolean;
   middlewareContext: AppRscMiddlewareContext;
+  mountedSlotActiveRoutesHeader: string | null;
   mountedSlotsHeader: string | null;
   request: Request;
   scriptNonce?: string;
@@ -590,6 +592,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     url,
     isRscRequest,
     interceptionContextHeader,
+    mountedSlotActiveRoutesHeader,
     mountedSlotsHeader,
     renderMode,
     clientReuseManifest,
@@ -1247,6 +1250,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           interceptionContext: interceptionContextHeader,
           isRscRequest,
           middlewareContext,
+          mountedSlotActiveRoutesHeader,
           mountedSlotsHeader,
           request,
           scriptNonce,
@@ -1540,6 +1544,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     isProgressiveActionRender,
     isRscRequest,
     middlewareContext,
+    mountedSlotActiveRoutesHeader,
     mountedSlotsHeader,
     params: renderParams,
     pprFallbackCacheShells: runtimeFallbackShells,

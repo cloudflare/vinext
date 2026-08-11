@@ -11,7 +11,10 @@ import {
   AppElementsWire,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
-import type { AppPageModule } from "../packages/vinext/src/server/app-page-route-wiring.js";
+import type {
+  AppPageErrorModule,
+  AppPageModule,
+} from "../packages/vinext/src/server/app-page-route-wiring.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
@@ -72,6 +75,12 @@ function createSyntheticPageModule(defaultExport?: unknown): AppPageModule {
   return {} as AppPageModule;
 }
 
+function createSyntheticErrorModule(
+  defaultExport: AppPageErrorModule["default"],
+): AppPageErrorModule {
+  return { default: defaultExport };
+}
+
 function createSyntheticPageModuleWithoutDefault(): AppPageModule {
   return { generateMetadata: vi.fn() } as AppPageModule;
 }
@@ -82,7 +91,10 @@ function createBaseOptions(overrides?: {
   routePath?: string;
   opts?: Record<string, unknown> | null;
   searchParams?: URLSearchParams | null;
+  isRscRequest?: boolean;
   mountedSlotsHeader?: string | null;
+  mountedSlotActiveRoutesHeader?: string | null;
+  resolveRouteById?: Parameters<typeof buildPageElements>[0]["resolveRouteById"];
 }) {
   return {
     route:
@@ -92,15 +104,17 @@ function createBaseOptions(overrides?: {
     pageRequest: {
       opts: overrides?.opts ?? null,
       searchParams: overrides?.searchParams ?? null,
-      isRscRequest: false,
+      isRscRequest: overrides?.isRscRequest ?? false,
       request: new Request("http://localhost/test"),
       mountedSlotsHeader: overrides?.mountedSlotsHeader ?? null,
+      mountedSlotActiveRoutesHeader: overrides?.mountedSlotActiveRoutesHeader ?? null,
     },
     globalErrorModule: null,
     rootNotFoundModule: null,
     rootForbiddenModule: null,
     rootUnauthorizedModule: null,
     metadataRoutes: [],
+    resolveRouteById: overrides?.resolveRouteById,
   };
 }
 
@@ -1129,11 +1143,16 @@ describe("buildPageElements", () => {
         },
       },
     });
+    const resolveRouteById = vi.fn(async () => null);
 
     const result = await buildPageElements(
       createBaseOptions({
         route,
         routePath: "/photos/42",
+        isRscRequest: true,
+        mountedSlotsHeader: "slot:modal:/feed",
+        mountedSlotActiveRoutesHeader: "slot%3Amodal%3A%2Ffeed=route%3A%2Fother",
+        resolveRouteById,
         opts: {
           interceptionContext: "/feed",
           interceptSlotKey: "modal@feed/@modal",
@@ -1146,6 +1165,7 @@ describe("buildPageElements", () => {
     );
     const record = result as Record<string, unknown>;
 
+    expect(resolveRouteById).not.toHaveBeenCalled();
     expect(record[APP_SLOT_BINDINGS_KEY]).toEqual([
       {
         activeRouteId: "route:/photos/42",
@@ -2428,6 +2448,163 @@ describe("buildPageElements", () => {
     return thenable.then((resolved: AppPageParams) => {
       expect(resolved).toEqual(plainParams);
     });
+  });
+  it("rerenders a mounted active slot from its original route during refresh", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/refresh/segment-cache-refresh.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/refresh/segment-cache-refresh.test.ts
+    function Page(): React.ReactNode {
+      return React.createElement("div", null, "Page");
+    }
+    function Layout({
+      children,
+      navbar,
+    }: {
+      children?: React.ReactNode;
+      navbar?: React.ReactNode;
+    }): React.ReactNode {
+      return React.createElement("section", null, navbar, children);
+    }
+    function ActiveNavbar(): React.ReactNode {
+      return React.createElement("nav", null, "Active navbar");
+    }
+    function ActiveNavbarLayout({ children }: { children?: React.ReactNode }): React.ReactNode {
+      return React.createElement("aside", { "data-active-navbar-layout": true }, children);
+    }
+    function ActiveNavbarRootLayout({ children }: { children?: React.ReactNode }): React.ReactNode {
+      return React.createElement("div", { "data-active-navbar-root": true }, children);
+    }
+    function ActiveNavbarLoading(): React.ReactNode {
+      return React.createElement("div", null, "Active navbar loading");
+    }
+    function ActiveNavbarError(): React.ReactNode {
+      return React.createElement("div", null, "Active navbar error");
+    }
+    function ActiveNavbarNotFound(): React.ReactNode {
+      return React.createElement("div", null, "Active navbar not found");
+    }
+    function DefaultNavbar(): React.ReactNode {
+      return React.createElement("nav", null, "Default navbar");
+    }
+
+    const activeRoute = createSyntheticRoute({
+      page: createSyntheticPageModule(Page),
+      layouts: [createSyntheticPageModule(Layout), createSyntheticPageModule(Layout)],
+      layoutTreePositions: [0, 1],
+      routeSegments: ["dashboard"],
+      pattern: "/dashboard",
+      slots: {
+        navbar: {
+          id: "slot:navbar:/dashboard",
+          name: "navbar",
+          configLayouts: [createSyntheticPageModule(ActiveNavbarLayout)],
+          configLayoutTreePositions: [1],
+          error: createSyntheticErrorModule(ActiveNavbarError),
+          layout: createSyntheticPageModule(ActiveNavbarRootLayout),
+          layoutIndex: 1,
+          loading: createSyntheticPageModule(ActiveNavbarLoading),
+          notFound: createSyntheticPageModule(ActiveNavbarNotFound),
+          notFoundTreePosition: 1,
+          page: createSyntheticPageModule(ActiveNavbar),
+          routeSegments: ["dashboard"],
+        },
+      },
+    });
+    const targetRoute = createSyntheticRoute({
+      page: createSyntheticPageModule(Page),
+      layouts: [createSyntheticPageModule(Layout), createSyntheticPageModule(Layout)],
+      layoutTreePositions: [0, 1],
+      routeSegments: ["dashboard", "analytics"],
+      pattern: "/dashboard/analytics",
+      slots: {
+        navbar: {
+          id: "slot:navbar:/dashboard",
+          name: "navbar",
+          default: createSyntheticPageModule(DefaultNavbar),
+          layoutIndex: 1,
+          routeSegments: null,
+        },
+      },
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({
+        route: targetRoute,
+        routePath: "/dashboard/analytics",
+        isRscRequest: true,
+        mountedSlotsHeader: "slot:navbar:/dashboard",
+        mountedSlotActiveRoutesHeader: "slot%3Anavbar%3A%2Fdashboard=route%3A%2Fdashboard",
+        async resolveRouteById(routeId, slotId) {
+          expect(slotId).toBe("slot:navbar:/dashboard");
+          return routeId === "route:/dashboard"
+            ? { route: activeRoute, params: {}, routePath: "/dashboard" }
+            : null;
+        },
+      }),
+    );
+
+    const html = await renderRouteEntry(result, "route:/dashboard/analytics");
+    expect(html).toContain("Active navbar");
+    expect(html).toContain("data-active-navbar-layout");
+    expect(html).toContain("data-active-navbar-root");
+    expect(html).not.toContain("Default navbar");
+    expect((result as Record<string, unknown>)[APP_SLOT_BINDINGS_KEY]).toContainEqual({
+      activeRouteId: "route:/dashboard",
+      ownerLayoutId: "layout:/dashboard",
+      slotId: "slot:navbar:/dashboard",
+      state: "active",
+    });
+  });
+
+  it("does not restore an active route unless the slot is proven mounted", async () => {
+    function Page(): React.ReactNode {
+      return React.createElement("div", null, "Page");
+    }
+    function Layout({
+      children,
+      navbar,
+    }: {
+      children?: React.ReactNode;
+      navbar?: React.ReactNode;
+    }) {
+      return React.createElement("section", null, navbar, children);
+    }
+    function DefaultNavbar(): React.ReactNode {
+      return React.createElement("nav", null, "Default navbar");
+    }
+    const targetRoute = createSyntheticRoute({
+      page: createSyntheticPageModule(Page),
+      layouts: [createSyntheticPageModule(Layout), createSyntheticPageModule(Layout)],
+      layoutTreePositions: [0, 1],
+      routeSegments: ["dashboard", "analytics"],
+      pattern: "/dashboard/analytics",
+      slots: {
+        navbar: {
+          id: "slot:navbar:/dashboard",
+          name: "navbar",
+          default: createSyntheticPageModule(DefaultNavbar),
+          layoutIndex: 1,
+          routeSegments: null,
+        },
+      },
+    });
+    const resolveRouteById = vi.fn(async () => null);
+
+    const result = await buildPageElements(
+      createBaseOptions({
+        route: targetRoute,
+        routePath: "/dashboard/analytics",
+        isRscRequest: true,
+        mountedSlotsHeader: null,
+        mountedSlotActiveRoutesHeader: "slot%3Anavbar%3A%2Fdashboard=route%3A%2Fdashboard",
+        resolveRouteById,
+      }),
+    );
+
+    expect(resolveRouteById).not.toHaveBeenCalled();
+    await expect(renderRouteEntry(result, "route:/dashboard/analytics")).resolves.toContain(
+      "Default navbar",
+    );
   });
 });
 

@@ -285,6 +285,7 @@ function createRscOptions(
         cleanPathname: url.pathname,
         interceptOpts: undefined,
         isRscRequest: true,
+        mountedSlotActiveRoutesHeader: null,
         mountedSlotsHeader: null,
         params: matched.params,
         request,
@@ -320,6 +321,7 @@ function createRscOptions(
     middlewareHeaders: null,
     middlewareRequestHeaders: null,
     middlewareStatus: null,
+    mountedSlotActiveRoutesHeader: null,
     mountedSlotsHeader: null,
     readBodyWithLimit() {
       return Promise.resolve("encoded-flight-body");

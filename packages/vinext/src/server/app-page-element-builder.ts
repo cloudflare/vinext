@@ -27,6 +27,7 @@ import {
   type AppPageSemanticSegment,
 } from "./app-page-segment-state.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
+import { parseMountedSlotActiveRoutesHeader } from "./app-mounted-slot-active-routes-header.js";
 import { resolveAppPageParentHttpAccessBoundary, type AppPageParams } from "./app-page-boundary.js";
 import { resolveAppPageSpecialError } from "./app-page-execution.js";
 import { sanitizeErrorForClient } from "./app-rsc-errors.js";
@@ -111,6 +112,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   request: Request;
   /** Normalized x-vinext-mounted-slots header value. */
   mountedSlotsHeader: string | null;
+  /** Active route ids for mounted slots that must be rerendered. */
+  mountedSlotActiveRoutesHeader?: string | null;
   /** Semantic RSC payload mode for this page render. */
   renderMode?: AppRscRenderMode;
   /** Observe page `searchParams` access for cache-safety classification. */
@@ -153,6 +156,14 @@ export type BuildPageElementsOptions<
   trailingSlash?: boolean;
   /** Serialized next.config `htmlLimitedBots` regexp source. */
   htmlLimitedBots?: string;
+  resolveRouteById?: (
+    routeId: string,
+    slotId: string,
+  ) => Promise<{
+    params: AppPageParams;
+    route: AppPageBuildRoute<TModule, TErrorModule>;
+    routePath: string;
+  } | null>;
   scriptNonce?: string;
 };
 
@@ -161,14 +172,29 @@ type AppPageNavigationParamModule = {
 };
 
 type AppPageNavigationParamSlot = {
+  configLayouts?: readonly (AppPageNavigationParamModule | null | undefined)[] | null;
+  configLayoutTreePositions?: readonly number[] | null;
   default?: AppPageNavigationParamModule | null;
+  error?: AppPageErrorModule | null;
+  id?: string | null;
+  layoutIndex?: number | null;
+  layout?: AppPageNavigationParamModule | null;
+  loading?: AppPageNavigationParamModule | null;
+  loadings?: readonly (AppPageNavigationParamModule | null | undefined)[] | null;
+  loadingTreePositions?: readonly number[] | null;
+  name?: string | null;
+  notFound?: AppPageNavigationParamModule | null;
+  notFoundTreePosition?: number | null;
   page?: AppPageNavigationParamModule | null;
+  routeSegments?: readonly string[] | null;
   slotPatternParts?: readonly string[] | null;
   slotParamNames?: readonly string[] | null;
 };
 
 type AppPageNavigationParamRoute = {
+  layoutTreePositions?: readonly number[] | null;
   params?: readonly string[] | null;
+  routeSegments?: readonly string[] | null;
   slots?: Readonly<Record<string, AppPageNavigationParamSlot>> | null;
 };
 
@@ -215,6 +241,7 @@ export async function buildPageElements<
     opts,
     searchParams,
     isRscRequest,
+    mountedSlotActiveRoutesHeader,
     mountedSlotsHeader,
     renderMode = APP_RSC_RENDER_MODE_NAVIGATION,
     observeMetadataSearchParamsAccess = false,
@@ -582,7 +609,15 @@ export async function buildPageElements<
 
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
 
-  const slotOverrides = buildSlotOverrides(route, params, routePath, opts);
+  const slotOverrides = await buildSlotOverrides(
+    route,
+    params,
+    routePath,
+    opts,
+    mountedSlotActiveRoutesHeader,
+    mountedSlotIds,
+    options.resolveRouteById,
+  );
   // For sibling intercepts, wrap the intercepting page in any layouts that
   // live under the interception marker directory (interceptLayouts). In Next.js
   // the intercepting route's segment layouts wrap the intercepting page; the
@@ -703,12 +738,25 @@ export async function buildPageElements<
  * RSC suffix removed). Re-parsing `request.url` here would re-introduce the
  * basePath and silently break the match for any app that configures one.
  */
-function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends AppPageErrorModule>(
+async function buildSlotOverrides<
+  TModule extends AppPageModule,
+  TErrorModule extends AppPageErrorModule,
+>(
   route: AppPageBuildRoute<TModule, TErrorModule>,
   routeParams: AppPageParams,
   routePath: string,
   opts?: AppPageInterceptOptions<TModule> | null,
-): Readonly<Record<string, AppPageSlotOverride<TModule>>> | null {
+  mountedSlotActiveRoutesHeader?: string | null,
+  mountedSlotIds?: ReadonlySet<string> | null,
+  resolveRouteById?: (
+    routeId: string,
+    slotId: string,
+  ) => Promise<{
+    params: AppPageParams;
+    route: AppPageBuildRoute<TModule, TErrorModule>;
+    routePath: string;
+  } | null>,
+): Promise<Readonly<Record<string, AppPageSlotOverride<TModule>>> | null> {
   const overrides: Record<string, AppPageSlotOverride<TModule>> = {};
 
   if (
@@ -742,7 +790,94 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
     overrides[slotKey] = existing ? { ...existing, params: existing.params ?? params } : { params };
   }
 
+  const activeSlotRoutes = parseMountedSlotActiveRoutesHeader(mountedSlotActiveRoutesHeader);
+  if (activeSlotRoutes !== null && resolveRouteById) {
+    for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
+      const slotId = resolveRouteSlotId(route, slot);
+      if (!mountedSlotIds?.has(slotId)) continue;
+      // A matched interception is server-owned route state and already carries
+      // its complete branch. A client restoration hint must never replace or
+      // relabel that branch.
+      if (overrides[slotKey]?.pageModule) continue;
+      const activeRouteId = activeSlotRoutes.get(slotId);
+      if (!activeRouteId) continue;
+
+      const activeRouteMatch = await resolveRouteById(activeRouteId, slotId);
+      if (activeRouteMatch === null) continue;
+      const activeSlot = findRouteSlotById(activeRouteMatch.route, slotId);
+      if (!activeSlot?.slot.page) continue;
+
+      const activeSlotParams =
+        resolveSlotParamOverrides(activeRouteMatch.route, activeRouteMatch.routePath)?.[
+          activeSlot.slotKey
+        ] ?? activeRouteMatch.params;
+      const hasActiveLoadingChain = (activeSlot.slot.loadings?.length ?? 0) > 0;
+      const activeLoadingModules = hasActiveLoadingChain
+        ? activeSlot.slot.loadings
+        : activeSlot.slot.loading
+          ? [activeSlot.slot.loading]
+          : [];
+      const activeLoadingTreePositions = hasActiveLoadingChain
+        ? (activeSlot.slot.loadingTreePositions ?? [])
+        : activeSlot.slot.loading
+          ? [0]
+          : [];
+      const existing = overrides[slotKey];
+      overrides[slotKey] = {
+        ...existing,
+        activeRouteId: existing?.activeRouteId ?? activeRouteId,
+        branchSegments:
+          existing?.branchSegments ??
+          activeSlot.slot.routeSegments ??
+          activeRouteMatch.route.routeSegments,
+        errorModule: existing?.errorModule ?? activeSlot.slot.error ?? null,
+        layoutModules: existing?.layoutModules ?? activeSlot.slot.configLayouts ?? [],
+        layoutTreePositions:
+          existing?.layoutTreePositions ?? activeSlot.slot.configLayoutTreePositions ?? [],
+        loadingModules: existing?.loadingModules ?? activeLoadingModules,
+        loadingTreePositions: existing?.loadingTreePositions ?? activeLoadingTreePositions,
+        notFoundModule: existing?.notFoundModule ?? activeSlot.slot.notFound ?? null,
+        notFoundTreePosition:
+          existing?.notFoundTreePosition ?? activeSlot.slot.notFoundTreePosition ?? null,
+        pageModule: existing?.pageModule ?? activeSlot.slot.page,
+        params: existing?.params ?? activeSlotParams,
+        routeSegments: existing?.routeSegments ?? activeSlot.slot.routeSegments ?? null,
+        slotLayoutModule: existing?.slotLayoutModule ?? activeSlot.slot.layout ?? null,
+      };
+    }
+  }
+
   return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+function resolveRouteSlotId(
+  route: AppPageNavigationParamRoute,
+  slot: AppPageNavigationParamSlot,
+): string {
+  if (slot.id) return slot.id;
+  const layoutPositions = route.layoutTreePositions;
+  const layoutIndex =
+    typeof slot.layoutIndex === "number" && slot.layoutIndex >= 0
+      ? slot.layoutIndex
+      : Math.max((layoutPositions?.length ?? 1) - 1, 0);
+  const treePosition = layoutPositions?.[layoutIndex] ?? layoutPositions?.at(-1) ?? 0;
+  return AppElementsWire.encodeSlotId(
+    slot.name ?? "",
+    createAppPageTreePath(route.routeSegments, treePosition),
+  );
+}
+
+function findRouteSlotById<TModule extends AppPageModule, TErrorModule extends AppPageErrorModule>(
+  route: AppPageBuildRoute<TModule, TErrorModule>,
+  slotId: string,
+): {
+  slot: NonNullable<AppPageBuildRoute<TModule, TErrorModule>["slots"]>[string];
+  slotKey: string;
+} | null {
+  for (const [slotKey, slot] of Object.entries(route.slots ?? {})) {
+    if (resolveRouteSlotId(route, slot) === slotId) return { slot, slotKey };
+  }
+  return null;
 }
 
 export const APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS = [

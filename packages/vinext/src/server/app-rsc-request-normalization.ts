@@ -10,6 +10,7 @@ import {
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_MOUNTED_SLOT_ACTIVE_ROUTES_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "./headers.js";
@@ -18,6 +19,7 @@ import {
   type ClientReuseManifestParseResult,
 } from "./client-reuse-manifest.js";
 import { normalizeInterceptionContextHeader } from "./app-interception-context-header.js";
+import { normalizeMountedSlotActiveRoutesHeader } from "./app-mounted-slot-active-routes-header.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import { stripRscSuffix, VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM } from "./app-rsc-cache-busting.js";
 import {
@@ -137,6 +139,8 @@ export type NormalizedRscRequest = {
   interceptionContextHeader: string | null;
   /** Normalized x-vinext-mounted-slots header (deduplicated, sorted). null when absent or blank. */
   mountedSlotsHeader: string | null;
+  /** Normalized active route ids for mounted slots. */
+  mountedSlotActiveRoutesHeader: string | null;
   /** Semantic RSC payload mode. HTML requests always normalize to "navigation". */
   renderMode: AppRscRenderMode;
   /** Parsed ClientReuseManifest hint. Verification and skip authorization happen later. */
@@ -237,6 +241,9 @@ export function normalizeRscRequest(
   const mountedSlotsHeader = normalizeMountedSlotsHeader(
     request.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
   );
+  const mountedSlotActiveRoutesHeader = normalizeMountedSlotActiveRoutesHeader(
+    request.headers.get(VINEXT_MOUNTED_SLOT_ACTIVE_ROUTES_HEADER),
+  );
   let renderMode = isRscRequest
     ? parseAppRscRenderMode(request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER))
     : APP_RSC_RENDER_MODE_NAVIGATION;
@@ -286,6 +293,7 @@ export function normalizeRscRequest(
     isRscRequest,
     interceptionContextHeader,
     mountedSlotsHeader,
+    mountedSlotActiveRoutesHeader,
     renderMode,
   };
 }

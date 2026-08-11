@@ -182,6 +182,7 @@ type BuildServerActionPageElementOptions<TRoute extends AppServerActionRoute, TI
   cleanPathname: string;
   interceptOpts: TInterceptOpts | undefined;
   isRscRequest: boolean;
+  mountedSlotActiveRoutesHeader: string | null;
   mountedSlotsHeader: string | null;
   params: AppPageParams;
   request: Request;
@@ -313,6 +314,7 @@ export type HandleServerActionRscRequestOptions<
   dispatchRedirectTargetRequest: (request: Request) => Promise<Response>;
   /** next.config headers matched on the action source path, before middleware. */
   sourceConfigHeaders?: Headers | null;
+  mountedSlotActiveRoutesHeader: string | null;
   mountedSlotsHeader: string | null;
   readBodyWithLimit: ReadBodyWithLimit;
   readFormDataWithLimit: ReadFormDataWithLimit;
@@ -1678,6 +1680,7 @@ export async function handleServerActionRscRequest<
           cleanPathname: options.cleanPathname,
           interceptOpts: actionRerenderTarget.interceptOpts,
           isRscRequest: actionRerenderIsRscRequest,
+          mountedSlotActiveRoutesHeader: options.mountedSlotActiveRoutesHeader,
           mountedSlotsHeader: options.mountedSlotsHeader,
           params: actionRerenderTarget.params,
           request: options.request,

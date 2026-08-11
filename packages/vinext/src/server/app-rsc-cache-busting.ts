@@ -12,6 +12,7 @@ import {
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_MOUNTED_SLOT_ACTIVE_ROUTES_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
@@ -39,6 +40,7 @@ export const VINEXT_RSC_VARY_HEADER = [
   NEXT_URL_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_MOUNTED_SLOT_ACTIVE_ROUTES_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 ].join(", ");
 
@@ -48,6 +50,7 @@ const textEncoder = new TextEncoder();
 type CreateRscRequestHeadersOptions = {
   clientReuseManifestHeader?: string | null;
   interceptionContext?: string | null;
+  mountedSlotActiveRoutesHeader?: string | null;
   mountedSlotsHeader?: string | null;
   includePrefetchHeader?: boolean;
   renderMode?: AppRscRenderMode;
@@ -174,6 +177,7 @@ function normalizeRenderModeHeaderValue(value: string | null): string | null {
 }
 
 type CreateCacheBustingInputOptions = {
+  includeMountedSlotActiveRoutesHeader?: boolean;
   includeRenderModeHeader?: boolean;
 };
 
@@ -190,6 +194,9 @@ function createCacheBustingInput(
     headers.get(NEXT_URL_HEADER),
     headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
     headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
+    ...(options.includeMountedSlotActiveRoutesHeader === false
+      ? []
+      : [headers.get(VINEXT_MOUNTED_SLOT_ACTIVE_ROUTES_HEADER)]),
     ...(options.includeRenderModeHeader === false
       ? []
       : [normalizeRenderModeHeaderValue(headers.get(VINEXT_RSC_RENDER_MODE_HEADER))]),
@@ -213,7 +220,10 @@ function computeLegacyRscCacheBustingSearchParam(headers: Headers): string {
 }
 
 async function computePreviousRscCacheBustingSearchParam(headers: Headers): Promise<string | null> {
-  const input = createCacheBustingInput(headers, { includeRenderModeHeader: false });
+  const input = createCacheBustingInput(headers, {
+    includeMountedSlotActiveRoutesHeader: false,
+    includeRenderModeHeader: false,
+  });
   if (input === null) {
     return null;
   }
@@ -222,7 +232,28 @@ async function computePreviousRscCacheBustingSearchParam(headers: Headers): Prom
 }
 
 function computePreviousLegacyRscCacheBustingSearchParam(headers: Headers): string | null {
-  const input = createCacheBustingInput(headers, { includeRenderModeHeader: false });
+  const input = createCacheBustingInput(headers, {
+    includeMountedSlotActiveRoutesHeader: false,
+    includeRenderModeHeader: false,
+  });
+  return input === null ? null : fnv1a64(input);
+}
+
+async function computePreActiveRouteHeaderRscCacheBustingSearchParam(
+  headers: Headers,
+): Promise<string | null> {
+  const input = createCacheBustingInput(headers, {
+    includeMountedSlotActiveRoutesHeader: false,
+  });
+  return input === null ? null : sha256CacheBustingHash(input);
+}
+
+function computePreActiveRouteHeaderLegacyRscCacheBustingSearchParam(
+  headers: Headers,
+): string | null {
+  const input = createCacheBustingInput(headers, {
+    includeMountedSlotActiveRoutesHeader: false,
+  });
   return input === null ? null : fnv1a64(input);
 }
 
@@ -325,6 +356,13 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
   }
 
   if (
+    options.mountedSlotActiveRoutesHeader !== undefined &&
+    options.mountedSlotActiveRoutesHeader !== null
+  ) {
+    headers.set(VINEXT_MOUNTED_SLOT_ACTIVE_ROUTES_HEADER, options.mountedSlotActiveRoutesHeader);
+  }
+
+  if (
     options.clientReuseManifestHeader !== undefined &&
     options.clientReuseManifestHeader !== null
   ) {
@@ -398,6 +436,15 @@ export async function resolveInvalidRscCacheBustingRequest(
   const acceptedHashes = new Set<string>([expectedHash]);
   if (actualHash !== null && actualHash !== expectedHash) {
     acceptedHashes.add(computeLegacyRscCacheBustingSearchParam(options.request.headers));
+    const preActiveRouteHeaderHash = await computePreActiveRouteHeaderRscCacheBustingSearchParam(
+      options.request.headers,
+    );
+    const preActiveRouteHeaderLegacyHash =
+      computePreActiveRouteHeaderLegacyRscCacheBustingSearchParam(options.request.headers);
+    if (preActiveRouteHeaderHash !== null) acceptedHashes.add(preActiveRouteHeaderHash);
+    if (preActiveRouteHeaderLegacyHash !== null) {
+      acceptedHashes.add(preActiveRouteHeaderLegacyHash);
+    }
     if (
       normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
       null
