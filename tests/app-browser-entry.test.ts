@@ -111,6 +111,7 @@ import {
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
   resolveInterceptionContextFromPreviousNextUrl,
+  resolveActiveRoutePaths,
   resolveHistoryTraversalIntent,
   resolveServerActionRequestState,
   resolvePendingNavigationCommitDispositionDecision,
@@ -3502,6 +3503,92 @@ describe("app browser navigation controller", () => {
       expect(createNavigationCommitEffect).toHaveBeenCalledTimes(1);
       expect(commitEffect).not.toHaveBeenCalled();
       expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
+    } finally {
+      detach();
+    }
+  });
+
+  it("writes history metadata from the approved merged visible state", async () => {
+    const sourceSlotId = "slot:children:/";
+    const rootLayout = React.createElement("div", null, "root layout");
+    const sourceBinding: AppElementsSlotBinding = {
+      activeRouteId: "route:/nested",
+      ownerLayoutId: "layout:/",
+      slotId: sourceSlotId,
+      state: "active",
+    };
+    const initialElements = createResolvedElements(
+      "route:/nested",
+      "/",
+      null,
+      {
+        "layout:/": rootLayout,
+        [sourceSlotId]: React.createElement("main", null, "source"),
+      },
+      ["layout:/"],
+      [sourceBinding],
+    );
+    const initialState = createState({
+      bfcacheIds: { "layout:/": "layout-bfcache", [sourceSlotId]: "source-bfcache" },
+      elements: initialElements,
+      routeId: "route:/nested",
+      slotBindings: [sourceBinding],
+    });
+    const routeManifest = createTestRouteManifest([
+      {
+        id: "route:/nested",
+        layoutIds: ["layout:/"],
+        pattern: "/nested",
+        rootBoundaryId: "root-boundary:/",
+        slotBindings: [sourceBinding],
+      },
+      {
+        id: "route:/nested/drawer",
+        layoutIds: ["layout:/"],
+        pattern: "/nested/drawer",
+        rootBoundaryId: "root-boundary:/",
+      },
+    ]);
+    const { controller, detach, stateRef } = createControllerHarness(initialState, {
+      getRouteManifest: () => routeManifest,
+    });
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+    const createNavigationCommitEffect = vi.fn(() => vi.fn());
+
+    try {
+      void renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            "route:/nested/drawer",
+            "/",
+            null,
+            {
+              "layout:/": rootLayout,
+              "page:/nested/drawer": React.createElement("aside", null, "drawer"),
+            },
+            ["layout:/"],
+          ),
+        ),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/nested/drawer",
+        navId: controller.beginNavigation(),
+      });
+
+      const committedState = await pendingRouterState.promise;
+      expect(createNavigationCommitEffect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          activeRoutePaths: resolveActiveRoutePaths(committedState.slotBindings),
+          bfcacheIds: committedState.bfcacheIds,
+        }),
+      );
     } finally {
       detach();
     }

@@ -156,6 +156,86 @@ describe("parallel route supplemental refreshes", () => {
     ]);
   });
 
+  it("promotes a supplemental source page into the mounted nested children slot", () => {
+    const primary: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/nested"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/nested/modal",
+        slotBindings: [
+          {
+            ownerLayoutId: "layout:/nested",
+            slotId: "slot:children:/nested",
+            state: "unmatched",
+          },
+          {
+            activeRouteId: "route:/nested/modal",
+            ownerLayoutId: "layout:/nested",
+            slotId: "slot:modal:/nested",
+            state: "active",
+          },
+        ],
+      }),
+      "slot:children:/nested": AppElementsWire.unmatchedSlotValue,
+      "slot:modal:/nested": "fresh modal",
+    };
+    const sourcePage: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/nested"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/nested",
+        slotBindings: [
+          {
+            activeRouteId: "route:/nested",
+            ownerLayoutId: "layout:/",
+            slotId: "slot:children:/",
+            state: "active",
+          },
+        ],
+      }),
+      "slot:children:/": "fresh parent tree",
+    };
+    const drawer: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/nested"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/nested/drawer",
+        slotBindings: [
+          {
+            ownerLayoutId: "layout:/nested",
+            slotId: "slot:children:/nested",
+            state: "unmatched",
+          },
+          {
+            activeRouteId: "route:/nested/drawer",
+            ownerLayoutId: "layout:/nested",
+            slotId: "slot:drawer:/nested",
+            state: "active",
+          },
+        ],
+      }),
+      "slot:children:/nested": AppElementsWire.unmatchedSlotValue,
+      "slot:drawer:/nested": "fresh drawer",
+    };
+
+    const sourceResult = mergeRefreshedParallelSlot(primary, sourcePage);
+    expect(sourceResult["slot:children:/nested"]).toBe("fresh parent tree");
+    const result = mergeRefreshedParallelSlot(sourceResult, drawer);
+
+    expect(result["slot:children:/nested"]).toBe("fresh parent tree");
+    expect(result["slot:modal:/nested"]).toBe("fresh modal");
+    expect(result["slot:drawer:/nested"]).toBe("fresh drawer");
+    expect(AppElementsWire.readMetadata(result).slotBindings).toEqual([
+      expect.objectContaining({ slotId: "slot:children:/", state: "active" }),
+      expect.objectContaining({ slotId: "slot:children:/nested", state: "active" }),
+      expect.objectContaining({ slotId: "slot:drawer:/nested", state: "active" }),
+      expect.objectContaining({ slotId: "slot:modal:/nested", state: "active" }),
+    ]);
+  });
+
   it("replaces only the refreshed slot and its binding", () => {
     const current: AppElements = {
       ...AppElementsWire.createMetadataEntries({

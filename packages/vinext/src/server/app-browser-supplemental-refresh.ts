@@ -72,21 +72,51 @@ export function mergeRefreshedParallelSlot(
     });
     if (suppliesSourceTree) {
       const refreshedSlotIds = new Set(refreshedBindings.map((binding) => binding.slotId));
+      const refreshedChildrenBindings = refreshedBindings.filter((binding) => {
+        const parsedSlot = AppElementsWire.parseElementKey(binding.slotId);
+        return parsedSlot?.kind === "slot" && parsedSlot.name === "children";
+      });
       const retainedBindings = currentMetadata.slotBindings.filter((binding) => {
         const parsedSlot = AppElementsWire.parseElementKey(binding.slotId);
         return (
           binding.state === "active" &&
           parsedSlot?.kind === "slot" &&
-          parsedSlot.name !== "children" &&
           !refreshedSlotIds.has(binding.slotId) &&
           Object.hasOwn(currentElements, binding.slotId)
         );
       });
-      const retainedSlotIds = new Set(retainedBindings.map((binding) => binding.slotId));
+      // A route reached through a named parallel slot can describe its source
+      // page as an unmatched children slot at a deeper layout address, while
+      // the supplemental source response carries the same page at the root
+      // children address. Promote that single unambiguous carrier so the
+      // mounted layout reads the fresh source page rather than the unmatched
+      // marker.
+      const promotableChildrenBindings = currentMetadata.slotBindings.filter((binding) => {
+        const parsedSlot = AppElementsWire.parseElementKey(binding.slotId);
+        return (
+          binding.state === "unmatched" &&
+          parsedSlot?.kind === "slot" &&
+          parsedSlot.name === "children" &&
+          !refreshedSlotIds.has(binding.slotId)
+        );
+      });
+      const promotedBindings: AppElementsSlotBinding[] =
+        refreshedChildrenBindings.length === 1 && promotableChildrenBindings.length === 1
+          ? [
+              {
+                ...promotableChildrenBindings[0],
+                activeRouteId: refreshedChildrenBindings[0].activeRouteId,
+                state: "active",
+              },
+            ]
+          : [];
+      const retainedSlotIds = new Set(
+        [...retainedBindings, ...promotedBindings].map((binding) => binding.slotId),
+      );
       const slotBindings = refreshedMetadata.slotBindings.filter(
         (binding) => !retainedSlotIds.has(binding.slotId),
       );
-      slotBindings.push(...retainedBindings);
+      slotBindings.push(...retainedBindings, ...promotedBindings);
       const merged: Record<string, AppElements[keyof AppElements]> = {
         ...refreshedElements,
         ...(currentMetadata.interception === null
@@ -101,6 +131,9 @@ export function mergeRefreshedParallelSlot(
       };
       for (const binding of retainedBindings) {
         merged[binding.slotId] = currentElements[binding.slotId];
+      }
+      if (promotedBindings.length === 1) {
+        merged[promotedBindings[0].slotId] = refreshedElements[refreshedChildrenBindings[0].slotId];
       }
       copyRefreshedBranchElements(merged, currentElements, { overwrite: false });
       return merged;
