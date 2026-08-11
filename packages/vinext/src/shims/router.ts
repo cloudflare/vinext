@@ -1560,6 +1560,8 @@ type NavigateClientOptions = {
   mode?: "push" | "replace";
   scroll?: ScrollPosition | null;
   beforeHistoryChange?: () => void;
+  /** Validated same-origin browser URL for a redirect with a leading-`//` app path. */
+  redirectBrowserHref?: string;
 };
 
 /** Wire format of `/_next/data/<id>/<page>.json` response bodies. */
@@ -2365,7 +2367,7 @@ async function navigateClientHtml(
   assertStillCurrent: () => void,
   options: NavigateClientOptions = {},
 ): Promise<void> {
-  let browserUrl = url;
+  const browserUrl = options.redirectBrowserHref ?? url;
   const root = window.__VINEXT_ROOT__;
   if (!root) {
     // No React root yet — fall back to hard navigation
@@ -2782,7 +2784,7 @@ async function runNavigateClient(
     // throw HardNavigationScheduledError, and this guard skips those; only
     // unexpected failures (parse, import, render) need recovery here.
     if (typeof window !== "undefined" && !(err instanceof HardNavigationScheduledError)) {
-      window.location.href = fullUrl;
+      window.location.href = options.redirectBrowserHref ?? fullUrl;
     }
     return "failed";
   }
@@ -2963,10 +2965,10 @@ async function performNavigation(
   mode: "push" | "replace",
   onStateUpdate?: () => void,
   // A validated same-origin absolute redirect whose app pathname starts with
-  // `//` must stay absolute when written to history. Its app-relative form is
-  // still used for route state and fetching so the leading slashes remain a
-  // pathname rather than being reinterpreted as a protocol-relative host.
-  redirectHistoryHref?: string,
+  // `//` must stay absolute for browser-facing fetch/history operations. Its
+  // app-relative form remains the route/event state so the leading slashes
+  // cannot be reinterpreted as a protocol-relative host.
+  redirectBrowserHref?: string,
 ): Promise<boolean> {
   // SSR / prerender guard. Calling Router.push or Router.replace from a
   // Pages Router component during server rendering would otherwise crash
@@ -3169,6 +3171,9 @@ async function performNavigation(
         scroll: scrollTarget,
         isHydrationQueryUpdate: options?._h === 1,
       };
+  if (redirectBrowserHref !== undefined) {
+    navigateOptions.redirectBrowserHref = redirectBrowserHref;
+  }
 
   // Next.js push→replace coercion (narrowed): when the display URL (asPath)
   // doesn't change AND the route URL DOES change AND the locale doesn't
@@ -3262,8 +3267,8 @@ async function performNavigation(
   const hasAppRouteMarker =
     appPathEntry !== undefined && "__appRouter" in appPathEntry && appPathEntry.__appRouter;
   if (hasAppRouteMarker) {
-    if (mode === "push") window.location.assign(full);
-    else window.location.replace(full);
+    if (mode === "push") window.location.assign(redirectBrowserHref ?? full);
+    else window.location.replace(redirectBrowserHref ?? full);
     return new Promise<boolean>(() => {});
   }
   const rewrites = window.__VINEXT_CLIENT_REWRITES__;
@@ -3280,8 +3285,8 @@ async function performNavigation(
         )
       : resolveDirectHybridClientRouteOwner(resolved, __basePath);
   if (["app", "document"].includes(hybridOwner ?? "")) {
-    if (mode === "push") window.location.assign(full);
-    else window.location.replace(full);
+    if (mode === "push") window.location.assign(redirectBrowserHref ?? full);
+    else window.location.replace(redirectBrowserHref ?? full);
     return new Promise<boolean>(() => {});
   }
 
@@ -3302,14 +3307,14 @@ async function performNavigation(
     if (beforeHistoryChangeEmitted) return;
     beforeHistoryChangeEmitted = true;
     routerEvents.emit("beforeHistoryChange", full, { shallow });
-    updateHistory(mode, redirectHistoryHref ?? full, navState);
+    updateHistory(mode, redirectBrowserHref ?? full, navState);
   };
   if (!shallow) {
     navigateOptions.beforeHistoryChange = emitBeforeHistoryChange;
     const result = await runNavigateClient(
       full,
       full,
-      htmlFetchUrl,
+      redirectBrowserHref ?? htmlFetchUrl,
       navigateOptions,
       // When href and as differ, the data fetch must target the route URL
       // (the module that actually renders), not the masked display URL.

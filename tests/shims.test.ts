@@ -19577,7 +19577,7 @@ describe("Pages Router concurrent navigation", () => {
           status: 200,
         });
       }
-      if (href === "//evil.example/steal?token=secret#fragment") {
+      if (href === target) {
         return new Response(buildNavHtml("//evil.example/steal", pageModuleUrl));
       }
       throw new Error(`Unexpected fetch: ${href}`);
@@ -19592,7 +19592,7 @@ describe("Pages Router concurrent navigation", () => {
       const result = await Router.push("/old-home", undefined, { scroll: false });
 
       expect(result).toBe(true);
-      expect(fetch.mock.calls.at(-1)?.[0]).toBe("//evil.example/steal?token=secret#fragment");
+      expect(fetch.mock.calls.at(-1)?.[0]).toBe(target);
       expect(pushState).toHaveBeenCalledTimes(1);
       expect(win.history.state).toMatchObject({
         url: "//evil.example/steal?token=secret",
@@ -19999,6 +19999,72 @@ describe("Pages Router concurrent navigation", () => {
         __N: true,
       });
       expect(win.location.href).toBe("http://localhost/docs/new-home");
+      expect(render).toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("preserves the origin for followed HTML redirects with double-slash paths", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const { win, pushState, render } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    const target = "http://localhost/docs//evil.example/steal?token=secret#fragment";
+    Object.assign(win.location, {
+      origin: "http://localhost",
+      pathname: "/docs",
+      href: "http://localhost/docs",
+    });
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = win;
+
+    const followedRedirect = new Response("", { status: 200 });
+    Object.defineProperties(followedRedirect, {
+      redirected: { value: true },
+      url: { value: target },
+    });
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/docs/old-home") return followedRedirect;
+      if (href === target) {
+        return new Response(buildNavHtml("//evil.example/steal", pageModuleUrl));
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      const Router = routerModule.default;
+
+      const result = await Router.push("/old-home", undefined, { scroll: false });
+
+      expect(result).toBe(true);
+      expect(fetch).toHaveBeenNthCalledWith(1, "/docs/old-home", expect.any(Object));
+      expect(fetch).toHaveBeenNthCalledWith(2, target, expect.any(Object));
+      expect(pushState).toHaveBeenCalledTimes(1);
+      expect(pushState).toHaveBeenCalledWith(expect.any(Object), "", target);
+      expect(win.history.state).toMatchObject({
+        url: "//evil.example/steal?token=secret",
+        as: "//evil.example/steal?token=secret",
+        __N: true,
+      });
+      expect(win.location.href).toBe(target);
+      expect(win.location.assign).not.toHaveBeenCalled();
       expect(render).toHaveBeenCalled();
     } finally {
       vi.resetModules();
