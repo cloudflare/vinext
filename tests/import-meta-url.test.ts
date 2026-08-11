@@ -228,6 +228,41 @@ describe("vinext:import-meta-url plugin", () => {
     expect(getTransformCalls()).toBe(0);
   });
 
+  it("only parses commented ordinary dynamic imports for AST validation", async () => {
+    const packageRoot = path.join(realRoot, "node_modules", "commented-dynamic-import");
+    const packageEntry = path.join(packageRoot, "index.js");
+    await fsp.mkdir(packageRoot, { recursive: true });
+    await fsp.writeFile(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "commented-dynamic-import", type: "module" }),
+    );
+    await fsp.writeFile(
+      packageEntry,
+      `export const dependency = import(/* webpackChunkName: "dependency" */ "./dependency.js");`,
+    );
+    await fsp.writeFile(path.join(packageRoot, "dependency.js"), `export default "loaded";`);
+
+    const dynamicImportUrlPlugin = createDynamicImportUrlPlugin();
+    const getTransformCalls = countTransformHandlerCalls(dynamicImportUrlPlugin);
+    const result = await build({
+      root: realRoot,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [dynamicImportUrlPlugin, createIgnoreDynamicRequestsPlugin()],
+      build: { write: false, ssr: packageEntry },
+    });
+    if (Array.isArray(result) || !("output" in result)) {
+      throw new Error("Expected a single build output");
+    }
+    const output = result.output
+      .filter((entry) => entry.type === "chunk")
+      .map((entry) => entry.code)
+      .join("\n");
+
+    expect(output).toContain("loaded");
+    expect(getTransformCalls()).toBe(1);
+  });
+
   it("rewrites optional chained import.meta.url reads", () => {
     const result = rewriteImportMetaUrl(
       `export const url = import.meta?.url;\n`,
