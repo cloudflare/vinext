@@ -25,10 +25,18 @@ export function createPagesDevHydrationScript(options: PagesDevHydrationOptions)
     options.normalizePageProps === false
       ? "const pageProps = rawPageProps ?? {};"
       : 'const pageProps = rawPageProps && typeof rawPageProps === "object" ? rawPageProps : {};';
-  const fallbackReplacement = options.replaceFallbackRoute
+  const hydrationQueryUpdate = options.replaceFallbackRoute
     ? `
-  if (nextData.isFallback) {
-    await Router.replace(window.location.pathname + window.location.search + window.location.hash, undefined, { _h: 1, scroll: false });
+  const shouldHydrateQuery =
+    nextData.isFallback ||
+    (nextData.gsp === true &&
+      (nextData.__vinext?.hasMiddleware === true ||
+        nextData.__vinext?.hasRewrites === true ||
+        window.location.search !== ""));
+  if (shouldHydrateQuery) {
+    const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+    const routeUrl = nextData.isFallback ? nextData.__vinext?.routeUrl : undefined;
+    await Router.replace(routeUrl || currentUrl, routeUrl ? currentUrl : undefined, { _h: 1, scroll: false, shallow: false });
   }`
     : "";
   const createElement = options.appModuleSource
@@ -99,7 +107,7 @@ async function hydrate() {
   window.__VINEXT_HYDRATED_AT = hydratedAt;
   window.__NEXT_HYDRATED = true;
   window.__NEXT_HYDRATED_AT = hydratedAt;
-  window.__NEXT_HYDRATED_CB?.();${fallbackReplacement}
+  window.__NEXT_HYDRATED_CB?.();${hydrationQueryUpdate}
 }
 hydrate();
 </script>`;

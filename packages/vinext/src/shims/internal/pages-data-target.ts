@@ -15,6 +15,8 @@ import { fetchStaticPagesData, fetchUncachedPagesData } from "./pages-data-fetch
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../../utils/deployment-id.js";
 import { isUnknownRecord } from "../../utils/record.js";
 
+const routerBasePath = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+
 export type PagesDataTarget = {
   /** Final fetch URL for the data endpoint, including basePath and search. */
   dataHref: string;
@@ -132,7 +134,11 @@ function clientMiddlewareMatcherMatches(pathname: string, matcher: unknown): boo
   return false;
 }
 
-export function getPagesMiddlewareDataHref(browserUrl: string, basePath: string): string | null {
+export function getPagesMiddlewareDataHref(
+  browserUrl: string,
+  basePath: string,
+  options: PagesDataNavigationTargetOptions = {},
+): string | null {
   const nextData = window.__NEXT_DATA__;
   if (!nextData || !hasVinextMiddleware(nextData)) return null;
   const buildId = nextData.buildId;
@@ -151,7 +157,15 @@ export function getPagesMiddlewareDataHref(browserUrl: string, basePath: string)
     return null;
   }
 
-  return buildPagesDataHref(basePath, buildId, pathname, parsed.search);
+  const pathnameLocale = getLocalePathPrefix(pathname, window.__VINEXT_LOCALES__);
+  const explicitLocale =
+    options.locale === false ? window.__VINEXT_DEFAULT_LOCALE__ : options.locale;
+  const currentLocale = pathnameLocale ?? explicitLocale ?? window.__VINEXT_LOCALE__;
+  const dataPathname =
+    pathnameLocale || !currentLocale || !window.__VINEXT_LOCALES__?.includes(currentLocale)
+      ? pathname
+      : `/${currentLocale}${pathname === "/" ? "" : pathname}`;
+  return buildPagesDataHref(basePath, buildId, dataPathname, parsed.search);
 }
 
 /**
@@ -237,7 +251,7 @@ export function resolvePagesDataNavigationTarget(
     params: match.params,
     loader,
     dataKind,
-    middlewareDataHref: getPagesMiddlewareDataHref(browserUrl, basePath) ?? undefined,
+    middlewareDataHref: getPagesMiddlewareDataHref(browserUrl, basePath, options) ?? undefined,
     buildId,
     pagePath,
     search: parsed.search,
@@ -281,12 +295,25 @@ export function prefetchPagesData(target: PagesDataTarget): void {
         ? target.middlewareDataHref
         : (target.prefetchDataHref ?? target.middlewareDataHref ?? target.dataHref);
     void fetchStaticPagesData(dataHref, { headers })
-      .then((response) => response.arrayBuffer())
+      .then(async (response) => {
+        prefetchMiddlewareRewriteLoader(response);
+        await response.arrayBuffer();
+      })
       .catch(() => {});
     return;
   }
 
   if (target.middlewareDataHref) {
-    void fetchUncachedPagesData(target.middlewareDataHref, { headers }).catch(() => {});
+    void fetchUncachedPagesData(target.middlewareDataHref, { headers })
+      .then(prefetchMiddlewareRewriteLoader)
+      .catch(() => {});
   }
+}
+
+function prefetchMiddlewareRewriteLoader(response: Response): void {
+  const rewriteTarget = response.headers.get("x-nextjs-rewrite");
+  if (!rewriteTarget) return;
+
+  const target = resolvePagesDataNavigationTarget(rewriteTarget, routerBasePath);
+  if (target) void target.loader().catch(() => {});
 }

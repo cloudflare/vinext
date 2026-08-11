@@ -1329,7 +1329,14 @@ function getPathnameAndQuery(): {
   for (const [key, value] of params) {
     addQueryParam(searchQuery, key, value);
   }
-  const query = { ...searchQuery, ...routeQuery };
+  // Rewrites leave the browser on their source pathname. Preserve target
+  // params from __NEXT_DATA__, but let a later shallow navigation's visible
+  // search string replace stale same-key rewrite query state. A normal route
+  // match keeps route params authoritative over same-key search values.
+  const query =
+    extractRouteParamsFromPath(nextData?.page ?? pathname, resolvedPath) === null
+      ? { ...routeQuery, ...searchQuery }
+      : { ...searchQuery, ...routeQuery };
   // asPath uses the resolved browser path, not the route pattern
   const asPath =
     getCurrentHistoryAsPath() ??
@@ -1519,6 +1526,7 @@ type NavigateClientOptions = {
    */
   mode?: "push" | "replace";
   scroll?: ScrollPosition | null;
+  beforeRender?: () => void;
 };
 
 /** Wire format of `/_next/data/<id>/<page>.json` response bodies. */
@@ -1866,7 +1874,11 @@ function getMiddlewarePagesDataFetchUrl(
   browserUrl: string,
   dataTarget?: PagesDataTarget | null,
 ): string | null {
-  const middlewareDataHref = getPagesMiddlewareDataHref(browserUrl, __basePath);
+  const middlewareDataHref = getPagesMiddlewareDataHref(
+    browserUrl,
+    __basePath,
+    dataTarget?.prefetchLocale ? { locale: dataTarget.prefetchLocale } : undefined,
+  );
   if (!middlewareDataHref) return null;
   if (
     dataTarget?.dataKind === "static" &&
@@ -2091,6 +2103,8 @@ async function renderPagesNavigationTarget(
 
   const React = (await import("react")).default;
   assertStillCurrent();
+  options.beforeRender?.();
+  options.beforeRender = undefined;
 
   // Next.js normalizes every successful client transition through
   // `Object.assign({}, props.pageProps)`. Besides ensuring an own pageProps
@@ -2447,6 +2461,8 @@ async function navigateClientHtml(
   // Import React for createElement
   const React = (await import("react")).default;
   assertStillCurrent();
+  options.beforeRender?.();
+  options.beforeRender = undefined;
 
   // Re-render with the new page, loading _app if needed
   let AppComponent = window.__VINEXT_APP__;
@@ -2565,6 +2581,8 @@ async function navigateClient(
         if (!redirectedUrl) {
           scheduleHardNavigationAndThrow(configRedirect, "Navigation redirected externally");
         }
+        options.beforeRender?.();
+        options.beforeRender = undefined;
         window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
         routerRuntimeState.lastPathnameAndSearch =
           window.location.pathname + window.location.search;
@@ -2646,6 +2664,8 @@ async function navigateClient(
         if (!redirectedUrl) {
           scheduleHardNavigationAndThrow(redirectLocation, "Navigation redirected externally");
         }
+        options.beforeRender?.();
+        options.beforeRender = undefined;
         window.history.replaceState(window.history.state ?? {}, "", redirectedUrl);
         routerRuntimeState.lastPathnameAndSearch =
           window.location.pathname + window.location.search;
@@ -2665,6 +2685,8 @@ async function navigateClient(
             __basePath,
           );
           if (rewrittenOwner === "app" || rewrittenOwner === "document") {
+            options.beforeRender?.();
+            options.beforeRender = undefined;
             scheduleHardNavigationAndThrow(browserUrl, "Navigation rewritten to a non-Pages route");
           }
           const rewrittenTarget =
@@ -2675,6 +2697,8 @@ async function navigateClient(
               pagesDataTargetOptions,
             );
           if (!rewrittenTarget) {
+            options.beforeRender?.();
+            options.beforeRender = undefined;
             scheduleHardNavigationAndThrow(browserUrl, "Navigation rewritten to a non-Pages route");
           }
           dataTarget = rewrittenTarget;
@@ -3078,7 +3102,8 @@ async function performNavigation(
         : [];
       const hasExplicitHrefPathname = typeof url === "string" || url.pathname !== undefined;
       const isMiddlewareMatch =
-        options?.shallow !== true && getPagesMiddlewareDataHref(resolved, __basePath) !== null;
+        options?.shallow !== true &&
+        getPagesMiddlewareDataHref(resolved, __basePath, { locale: navigationLocale }) !== null;
       if (missingParams.length > 0 && hasExplicitHrefPathname && !isMiddlewareMatch) {
         const asPathname = stripHash(resolved).split("?", 1)[0];
         const routePathname =
@@ -3259,8 +3284,18 @@ async function performNavigation(
   if (!isQueryUpdating) {
     routerEvents.emit("routeChangeStart", resolved, { shallow });
   }
-  routerEvents.emit("beforeHistoryChange", resolved, { shallow });
-  updateHistory(mode, full, navState);
+  const delayHistoryForMiddleware =
+    !shallow &&
+    getPagesMiddlewareDataHref(resolved, __basePath, { locale: navigationLocale }) !== null;
+  if (delayHistoryForMiddleware) {
+    navigateOptions.beforeRender = () => {
+      routerEvents.emit("beforeHistoryChange", resolved, { shallow });
+      updateHistory(mode, full, navState);
+    };
+  } else {
+    routerEvents.emit("beforeHistoryChange", resolved, { shallow });
+    updateHistory(mode, full, navState);
+  }
   if (!shallow) {
     const result = await runNavigateClient(
       full,

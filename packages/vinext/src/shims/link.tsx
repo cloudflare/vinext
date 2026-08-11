@@ -741,7 +741,7 @@ function prefetchUrl(
           const middlewareDataHref =
             fullRouteHref === fullHref
               ? dataTarget.middlewareDataHref
-              : (getPagesMiddlewareDataHref(fullHref, __basePath) ?? undefined);
+              : (getPagesMiddlewareDataHref(fullHref, __basePath, { locale }) ?? undefined);
           prefetchPagesData({ ...dataTarget, middlewareDataHref });
         } else {
           // The target is not a Pages Router route — mark it on the Pages
@@ -1163,6 +1163,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Track pending state for useLinkStatus()
   const [pending, setPending] = useState(false);
   const mountedRef = useRef(true);
+  const pendingPagesIntentPrefetchRef = useRef<(() => void) | null>(null);
   // Stable setter so the global navigation registry can reset this link's
   // pending state from another navigation without depending on render identity.
   const setPendingRef = useRef<PendingLinkSetter | null>(null);
@@ -1176,6 +1177,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     const setter = setPendingRef.current;
     return () => {
       mountedRef.current = false;
+      pendingPagesIntentPrefetchRef.current?.();
+      pendingPagesIntentPrefetchRef.current = null;
       // Drop our setter from the global registry on unmount so a later
       // navigation never calls into an unmounted component.
       if (setter) clearLinkForCurrentNavigation(setter);
@@ -1186,10 +1189,15 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // In App Router, null/undefined/"auto" is automatic prefetch and true opts
   // into a full RSC prefetch, matching Next.js's public prefetch contract.
   const internalRef = useRef<HTMLAnchorElement | null>(null);
-  const prefetchMode = resolveLinkPrefetchMode(prefetchProp, isDangerous);
+  // A shallow Pages navigation only mutates the current route's visible URL;
+  // it must not issue a data prefetch for that URL. Besides wasting a request,
+  // such a prefetch would run middleware/getServerSideProps even though the
+  // shallow transition itself deliberately skips them.
+  const effectivePrefetchProp = HAS_PAGES_ROUTER && shallow ? false : prefetchProp;
+  const prefetchMode = resolveLinkPrefetchMode(effectivePrefetchProp, isDangerous);
   const shouldViewportPrefetch = canLinkPrefetch({
     nodeEnv: process.env.NODE_ENV,
-    prefetch: prefetchProp,
+    prefetch: effectivePrefetchProp,
     isDangerous,
   });
 
@@ -1249,9 +1257,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
   const prefetchOnIntent = useCallback(() => {
     if (
+      (HAS_PAGES_ROUTER && shallow) ||
       !canLinkIntentPrefetch({
         nodeEnv: process.env.NODE_ENV,
-        prefetch: prefetchProp,
+        prefetch: effectivePrefetchProp,
         isDangerous,
         routerMode: getLinkPrefetchRouterMode(),
       })
@@ -1274,8 +1283,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       locale,
     );
   }, [
-    prefetchProp,
+    effectivePrefetchProp,
     isDangerous,
+    shallow,
     prefetchMode,
     normalizedHref,
     normalizedRouteHref,
@@ -1283,26 +1293,42 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     unstable_dynamicOnHover,
   ]);
 
+  const schedulePrefetchOnIntent = useCallback(() => {
+    if (!HAS_PAGES_ROUTER || typeof window.requestAnimationFrame !== "function") {
+      prefetchOnIntent();
+      return;
+    }
+
+    pendingPagesIntentPrefetchRef.current?.();
+    const frame = window.requestAnimationFrame(() => {
+      pendingPagesIntentPrefetchRef.current = null;
+      prefetchOnIntent();
+    });
+    pendingPagesIntentPrefetchRef.current = () => window.cancelAnimationFrame(frame);
+  }, [prefetchOnIntent]);
+
   const handleMouseEnter = useCallback(
     (e: MouseEvent<HTMLAnchorElement>) => {
       onMouseEnter?.(e);
-      prefetchOnIntent();
+      schedulePrefetchOnIntent();
     },
-    [onMouseEnter, prefetchOnIntent],
+    [onMouseEnter, schedulePrefetchOnIntent],
   );
 
   const handleTouchStart = useCallback(
     (e: TouchEvent<HTMLAnchorElement>) => {
       onTouchStart?.(e);
-      prefetchOnIntent();
+      schedulePrefetchOnIntent();
     },
-    [onTouchStart, prefetchOnIntent],
+    [onTouchStart, schedulePrefetchOnIntent],
   );
 
   const handleClick = async (
     e: MouseEvent<HTMLAnchorElement>,
     options: { skipLinkOnClick?: boolean } = {},
   ) => {
+    pendingPagesIntentPrefetchRef.current?.();
+    pendingPagesIntentPrefetchRef.current = null;
     // In legacyBehavior, the onClick prop on <Link> itself is ignored — the
     // child's onClick is the one that runs (and Next.js even warns when
     // `onClick` is passed to <Link> alongside `legacyBehavior`). Skip the
