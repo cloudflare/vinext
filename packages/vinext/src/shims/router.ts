@@ -2403,7 +2403,14 @@ async function navigateClientHtml(
     }
   }
 
-  if (!res.ok && !(options.allowNotFoundResponse === true && res.status === 404)) {
+  // A development notFound render needs its __NEXT_DATA__.notFoundSrcPage
+  // marker before we can distinguish it from an ordinary route-miss 404.
+  // Keep rejecting every other non-OK response before reading its body.
+  if (
+    !res.ok &&
+    res.status !== 404 &&
+    !(options.allowNotFoundResponse === true && res.status === 404)
+  ) {
     // Set window.location.href first so the browser navigates to the correct
     // page even if the caller suppresses the error.  The assignment schedules
     // the navigation asynchronously (as a task), so synchronous routeChangeError
@@ -2425,10 +2432,57 @@ async function navigateClientHtml(
   // Extract __NEXT_DATA__ from the HTML
   const nextDataJson = extractVinextNextDataJson(html);
   if (!nextDataJson) {
+    if (!res.ok && options.allowNotFoundResponse !== true) {
+      scheduleHardNavigationAndThrow(
+        browserUrl,
+        `Navigation failed: ${res.status} ${res.statusText}`,
+      );
+    }
     scheduleHardNavigationAndThrow(url, "Navigation failed: missing __NEXT_DATA__ in response");
   }
 
   const nextData = parseVinextNextDataJson(nextDataJson);
+  let nextDataRouteState = options.nextDataRouteState;
+  let isDevelopmentNotFound = false;
+  if (
+    res.status === 404 &&
+    options.allowNotFoundResponse !== true &&
+    (nextData.page === "/404" || nextData.page === "/_error") &&
+    typeof nextData.notFoundSrcPage === "string"
+  ) {
+    const requestedPathname = getLocalPathname(browserUrl);
+    let requestedUrl: URL | null = null;
+    try {
+      requestedUrl = new URL(browserUrl, window.location.href);
+    } catch {
+      // Invalid local URLs retain the normal hard-navigation fallback below.
+    }
+    const sourcePathname = requestedPathname
+      ? removeNavigationLocalePrefix(requestedPathname)
+      : null;
+    const routeParams = sourcePathname
+      ? extractRouteParamsFromPath(nextData.notFoundSrcPage, sourcePathname)
+      : null;
+    if (requestedUrl && routeParams !== null) {
+      isDevelopmentNotFound = true;
+      nextDataRouteState = {
+        page: nextData.notFoundSrcPage,
+        query: mergeRouteParamsIntoQuery(parseQueryString(requestedUrl.search), routeParams),
+      };
+    }
+  }
+
+  if (
+    !res.ok &&
+    !(options.allowNotFoundResponse === true && res.status === 404) &&
+    !isDevelopmentNotFound
+  ) {
+    scheduleHardNavigationAndThrow(
+      browserUrl,
+      `Navigation failed: ${res.status} ${res.statusText}`,
+    );
+  }
+
   const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};
   // Keep the HTML fallback transport aligned with the manifest/data paths.
   // Next.js installs this cloned object into routeInfo.props before rendering.
@@ -2458,6 +2512,11 @@ async function navigateClientHtml(
     // the extracted chunk URL directly can evaluate a duplicate module when
     // the router runtime is split across entry and page chunks.
     pageModule = await loader();
+  } else if (!pageModuleUrl && isDevelopmentNotFound) {
+    // A project without a custom 404 has no filesystem module URL to expose.
+    // Keep the default error shim lazy so ordinary Pages navigations do not
+    // pull it into the common client path.
+    pageModule = await import("next/error");
   } else if (!pageModuleUrl) {
     scheduleHardNavigationAndThrow(browserUrl, "Navigation failed: no page module URL found");
   } else {
@@ -2526,9 +2585,7 @@ async function navigateClientHtml(
     routerRuntimeState.lastPathnameAndSearch = window.location.pathname + window.location.search;
     routerRuntimeState.lastHash = window.location.hash;
   }
-  const committedNextData = options.nextDataRouteState
-    ? { ...nextData, ...options.nextDataRouteState }
-    : nextData;
+  const committedNextData = nextDataRouteState ? { ...nextData, ...nextDataRouteState } : nextData;
   window.__NEXT_DATA__ = committedNextData;
   applyVinextLocaleGlobals(window, committedNextData);
   await renderPagesRouterElement(element, options.scroll);
