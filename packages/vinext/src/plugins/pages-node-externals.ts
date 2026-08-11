@@ -48,7 +48,10 @@ function canonicalFile(id: string): string {
 
 function isInsideDirectory(directory: string, file: string): boolean {
   const relative = path.relative(canonicalFile(directory), canonicalFile(file));
-  return relative === "" || (!relative.startsWith("../") && relative !== "..");
+  return (
+    relative === "" ||
+    (!relative.startsWith("../") && relative !== ".." && !path.isAbsolute(relative))
+  );
 }
 
 function findPackageJson(file: string): string | null {
