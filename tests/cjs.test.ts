@@ -14,6 +14,24 @@ async function writeFixtureFile(
   await writeFile(file, contents);
 }
 
+function visibleTextByTestId(html: string, testId: string): string {
+  const attribute = `data-testid="${testId}"`;
+  const attributeIndex = html.indexOf(attribute);
+  if (attributeIndex === -1) throw new Error(`Missing ${attribute}`);
+  const contentStart = html.indexOf(">", attributeIndex);
+  const contentEnd = html.indexOf("</", contentStart);
+  if (contentStart === -1 || contentEnd === -1) {
+    throw new Error(`Missing element content for ${attribute}`);
+  }
+  return html
+    .slice(contentStart + 1, contentEnd)
+    .replaceAll("<!-- -->", "")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
 describe("CJS interop (App Router)", () => {
   let server: ViteDevServer;
   let baseUrl: string;
@@ -128,7 +146,7 @@ describe("conditional package exports in dev", () => {
         writeFixtureFile(
           root,
           `app/${route}/page.tsx`,
-          `${declaration}\nexport default function Page() { return <p>${label}: <Library /></p>; }`,
+          `${declaration}\nexport default function Page() { return <p data-testid="conditional-result">${label}: <Library /></p>; }`,
         ),
       ),
     ]);
@@ -148,6 +166,6 @@ describe("conditional package exports in dev", () => {
   ])("renders %s from the correct export condition", async (route, label, expected) => {
     const { res, html } = await fetchHtml(baseUrl, route);
     expect(res.status).toBe(200);
-    expect(html).toMatch(new RegExp(`${label}:[\\s\\S]*${expected}`));
+    expect(visibleTextByTestId(html, "conditional-result")).toBe(`${label}: ${expected}`);
   });
 });
