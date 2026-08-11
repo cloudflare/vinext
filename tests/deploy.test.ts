@@ -1707,6 +1707,15 @@ describe("readPagesRouterEntrySource", () => {
     expect(finalizeMissingStaticAssetResponse(regular404, false)).toBe(regular404);
   });
 
+  it("finalizes missing build-asset 404s in both Node production routers", () => {
+    const content = fs.readFileSync(
+      path.join(import.meta.dirname, "../packages/vinext/src/server/prod-server.ts"),
+      "utf8",
+    );
+
+    expect(content.match(/finalizeMissingStaticAssetResponse\(/g)).toHaveLength(2);
+  });
+
   it("resolveStaticAssetSignal fetches and merges static asset responses with middleware status", async () => {
     const signalResponse = new Response(null, {
       status: 403,

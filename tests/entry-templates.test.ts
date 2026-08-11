@@ -1906,6 +1906,7 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
       expect(code).toContain("await hydrationCommitted;");
       expect(code).toContain("const shouldHydrateQuery =");
+      expect(code).toContain("const initialMatchesMiddleware =");
       expect(code).toContain("nextData.__vinext?.hasMiddleware === true");
       expect(code).toContain("nextData.__vinext?.hasRewrites === true");
       expect(code).toContain(
@@ -1914,7 +1915,9 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("await Router.replace(");
       expect(code).toContain("routeUrl || currentUrl,");
       expect(code).toContain("routeUrl ? currentUrl : undefined,");
-      expect(code).toContain("{ _h: 1, scroll: false, shallow: false },");
+      expect(code).toContain(
+        "{ _h: 1, scroll: false, shallow: !nextData.isFallback && !initialMatchesMiddleware },",
+      );
       expect(code).not.toContain("function VinextHydrationMarker");
       expect(code).not.toContain("React.createElement(VinextHydrationMarker");
       expect(code).toContain("hydrateRoot(container, element, hydrateRootOptions)");

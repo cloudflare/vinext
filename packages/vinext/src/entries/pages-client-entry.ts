@@ -306,19 +306,18 @@ async function hydrate() {
   window.__NEXT_HYDRATED_AT = hydratedAt;
   window.__NEXT_HYDRATED_CB?.();
 
+  const initialMatchesMiddleware =
+    nextData.__vinext?.hasMiddleware === true || nextData.__vinext?.hasRewrites === true;
   const shouldHydrateQuery =
     nextData.isFallback ||
-    (nextData.gsp === true &&
-      (nextData.__vinext?.hasMiddleware === true ||
-        nextData.__vinext?.hasRewrites === true ||
-        window.location.search !== ""));
+    (nextData.gsp === true && (initialMatchesMiddleware || window.location.search !== ""));
   if (shouldHydrateQuery) {
     const currentUrl = window.location.pathname + window.location.search + window.location.hash;
     const routeUrl = nextData.isFallback ? nextData.__vinext?.routeUrl : undefined;
     await Router.replace(
       routeUrl || currentUrl,
       routeUrl ? currentUrl : undefined,
-      { _h: 1, scroll: false, shallow: false },
+      { _h: 1, scroll: false, shallow: !nextData.isFallback && !initialMatchesMiddleware },
     );
   }
 }
