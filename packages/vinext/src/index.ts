@@ -248,7 +248,7 @@ import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import {
   createRequireConditionResolutionPlugin,
-  isConditionalRequireModuleId,
+  isConditionalRequireScriptModuleId,
 } from "./plugins/require-condition-resolution.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
@@ -530,7 +530,7 @@ function isScriptModuleId(id: string): boolean {
 
 function commonjsTransformFilter(id: string): boolean | undefined {
   const cleanId = toSlash(stripViteModuleQuery(id));
-  if (isConditionalRequireModuleId(cleanId)) return true;
+  if (isConditionalRequireScriptModuleId(cleanId)) return true;
   return /\.c[jt]s$/i.test(cleanId) && !cleanId.includes("node_modules") ? false : undefined;
 }
 

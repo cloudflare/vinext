@@ -112,6 +112,19 @@ describe("vinext:require-condition-resolution", () => {
     expect(result).toBeNull();
   });
 
+  it("ignores query-only differences for the same resolved entry", async () => {
+    const resolve = vi.fn(async (_specifier: string, _importer: string, isRequire: boolean) =>
+      isRequire
+        ? "/app/node_modules/library/index.js?require"
+        : "/app/node_modules/library/index.js?import",
+    );
+    const transform = createTransform(resolve);
+
+    const result = await transform(`require("library");`, "/app/page.js");
+
+    expect(result).toBeNull();
+  });
+
   it("loads the selected CJS source through its synthetic JavaScript identity", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "vinext-require-condition-"));
     try {
@@ -147,6 +160,73 @@ describe("vinext:require-condition-resolution", () => {
         moduleType: "js",
       });
       expect(addWatchFile).toHaveBeenCalledWith(target);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves JSON module typing for a conditional require target", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-require-condition-json-"));
+    try {
+      const target = path.join(root, "data.json");
+      await writeFile(target, `{"condition":"require"}\n`);
+      const plugin = createPlugin(
+        vi.fn(async (_specifier: string, _importer: string, isRequire: boolean) =>
+          isRequire ? target : path.join(root, "data.js"),
+        ),
+      );
+      const transformHook = plugin.transform;
+      const transformHandler =
+        typeof transformHook === "function" ? transformHook : transformHook?.handler;
+      if (!transformHandler) throw new Error("missing transform hook");
+      const transformed = await transformHandler.call(
+        { environment: {} } as never,
+        `require("library");`,
+        path.join(root, "page.tsx"),
+      );
+      const virtualId = `${target}.vinext-require.json`;
+      const transformedCode =
+        typeof transformed === "string" ? transformed : (transformed?.code ?? "");
+      expect(transformedCode).toContain(JSON.stringify(virtualId));
+
+      const load = plugin.load;
+      expect(typeof load).toBe("function");
+      expect(await (load as Function).call({ addWatchFile: vi.fn() } as never, virtualId)).toEqual({
+        code: `{"condition":"require"}\n`,
+        moduleType: "json",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("defers stale synthetic targets to Vite's contextual load error", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-require-condition-stale-"));
+    try {
+      const target = path.join(root, "missing.cjs");
+      const plugin = createPlugin(
+        vi.fn(async (_specifier: string, _importer: string, isRequire: boolean) =>
+          isRequire ? target : path.join(root, "index.mjs"),
+        ),
+      );
+      const transformHook = plugin.transform;
+      const transformHandler =
+        typeof transformHook === "function" ? transformHook : transformHook?.handler;
+      if (!transformHandler) throw new Error("missing transform hook");
+      await transformHandler.call(
+        { environment: {} } as never,
+        `require("library");`,
+        path.join(root, "page.tsx"),
+      );
+
+      const load = plugin.load;
+      expect(typeof load).toBe("function");
+      expect(
+        await (load as Function).call(
+          { addWatchFile: vi.fn() } as never,
+          `${target}.vinext-require.js`,
+        ),
+      ).toBeUndefined();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

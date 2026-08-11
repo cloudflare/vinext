@@ -21,10 +21,11 @@ import {
   isFunctionNode,
   type AstScope,
 } from "./ast-scope.js";
+import { stripViteModuleQuery } from "../utils/path.js";
 
 const TRANSFORMABLE_ID_RE = /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/i;
 const LITERAL_REQUIRE_RE = /\brequire\s*\(/;
-const CONDITIONAL_REQUIRE_SUFFIX = ".vinext-require.js";
+const CONDITIONAL_REQUIRE_SCRIPT_ID_RE = /\.vinext-require\.(?:js|jsx|ts|tsx)$/i;
 const TRANSPARENT_EXPRESSIONS = new Set([
   "ChainExpression",
   "ParenthesizedExpression",
@@ -40,8 +41,19 @@ type LiteralRequire = {
   specifier: string;
 };
 
-export function isConditionalRequireModuleId(id: string): boolean {
-  return id.split("?", 1)[0].endsWith(CONDITIONAL_REQUIRE_SUFFIX);
+type SyntheticModuleType = "js" | "jsx" | "json" | "ts" | "tsx";
+
+export function isConditionalRequireScriptModuleId(id: string): boolean {
+  return CONDITIONAL_REQUIRE_SCRIPT_ID_RE.test(stripViteModuleQuery(id));
+}
+
+function syntheticModuleType(id: string): SyntheticModuleType {
+  const extension = path.extname(stripViteModuleQuery(id)).toLowerCase();
+  if (extension === ".json") return "json";
+  if (extension === ".jsx") return "jsx";
+  if (extension === ".tsx") return "tsx";
+  if (extension === ".ts" || extension === ".mts" || extension === ".cts") return "ts";
+  return "js";
 }
 
 function parserLanguage(id: string): "js" | "jsx" | "ts" | "tsx" {
@@ -204,7 +216,11 @@ type IdResolverFactory = typeof createIdResolver;
 export function createRequireConditionResolutionPlugin(
   createResolver: IdResolverFactory = createIdResolver,
 ): Plugin {
-  const virtualTargets = new Map<string, string>();
+  // Vite reuses this plugin instance across its RSC, SSR, and client
+  // environments, so the synthetic identity has to resolve in each graph.
+  // Entries are keyed by the query-free resolved file path and are therefore
+  // bounded by the distinct conditional package targets seen by the app.
+  const virtualTargets = new Map<string, { file: string; moduleType: SyntheticModuleType }>();
   let resolveImport: ReturnType<IdResolverFactory> | undefined;
   let resolveRequire: ReturnType<IdResolverFactory> | undefined;
 
@@ -221,9 +237,22 @@ export function createRequireConditionResolutionPlugin(
     async load(id) {
       const target = virtualTargets.get(id);
       if (!target) return;
-      const file = target.split("?", 1)[0];
-      this.addWatchFile(file);
-      return { code: await readFile(file, "utf8"), moduleType: "js" };
+      this.addWatchFile(target.file);
+      try {
+        return {
+          code: await readFile(target.file, "utf8"),
+          moduleType: target.moduleType,
+        };
+      } catch (error) {
+        const code =
+          typeof error === "object" && error !== null && "code" in error
+            ? Reflect.get(error, "code")
+            : undefined;
+        // Match Vite's filesystem loader: allow the normal load pipeline to
+        // produce its contextual missing-file error for stale or proxy ids.
+        if (code === "ENOENT" || code === "EISDIR") return;
+        throw error;
+      }
     },
     transform: {
       filter: { id: TRANSFORMABLE_ID_RE, code: LITERAL_REQUIRE_RE },
@@ -233,6 +262,8 @@ export function createRequireConditionResolutionPlugin(
 
         const output = new MagicString(code);
         let changed = false;
+        // Synthetic script modules intentionally pass through this transform
+        // again so nested package require() calls retain their own conditions.
         for (const { argument, specifier } of requires) {
           const [requireResolution, importResolution] = await Promise.all([
             resolveRequire(this.environment, specifier, id),
@@ -241,13 +272,19 @@ export function createRequireConditionResolutionPlugin(
           if (
             !requireResolution ||
             requireResolution === specifier ||
-            requireResolution === importResolution ||
-            !path.isAbsolute(requireResolution.split("?", 1)[0])
+            !path.isAbsolute(stripViteModuleQuery(requireResolution))
           ) {
             continue;
           }
-          const virtualId = `${requireResolution.split("?", 1)[0]}${CONDITIONAL_REQUIRE_SUFFIX}`;
-          virtualTargets.set(virtualId, requireResolution);
+          const requirePath = stripViteModuleQuery(requireResolution);
+          const importPath = importResolution
+            ? stripViteModuleQuery(importResolution)
+            : importResolution;
+          if (requirePath === importPath) continue;
+
+          const moduleType = syntheticModuleType(requirePath);
+          const virtualId = `${requirePath}.vinext-require.${moduleType}`;
+          virtualTargets.set(virtualId, { file: requirePath, moduleType });
           output.overwrite(argument.start, argument.end, JSON.stringify(virtualId));
           changed = true;
         }

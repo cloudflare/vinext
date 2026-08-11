@@ -1,8 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
+import type { Server } from "node:http";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { APP_FIXTURE_DIR, PAGES_FIXTURE_DIR, startFixtureServer, fetchHtml } from "./helpers.js";
+import {
+  APP_FIXTURE_DIR,
+  PAGES_FIXTURE_DIR,
+  buildAppFixture,
+  startFixtureServer,
+  fetchHtml,
+} from "./helpers.js";
 
 async function writeFixtureFile(
   root: string,
@@ -85,10 +92,31 @@ describe("CJS interop (Pages Router)", () => {
 
 // Ported from Next.js: test/e2e/app-dir/client-module-with-package-type/index.test.ts
 // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/client-module-with-package-type/index.test.ts
-describe("conditional package exports in dev", () => {
+const CONDITIONAL_EXPORT_CASES = [
+  ["/import-cjs", "lib-cjs", "esm"],
+  ["/require-cjs", "lib-cjs", "cjs"],
+  ["/import-esm", "lib-esm", "esm"],
+  ["/require-esm", "lib-esm", "cjs"],
+] as const;
+
+async function expectConditionalExport(
+  baseUrl: string,
+  route: string,
+  label: string,
+  expected: string,
+): Promise<void> {
+  const { res, html } = await fetchHtml(baseUrl, route);
+  expect(res.status).toBe(200);
+  expect(visibleTextByTestId(html, "conditional-result")).toBe(`${label}: ${expected}`);
+}
+
+describe("conditional package exports", () => {
   let root: string;
   let server: ViteDevServer;
-  let baseUrl: string;
+  let devBaseUrl: string;
+  let prodServer: Server;
+  let prodBaseUrl: string;
+  let buildOutDir: string;
 
   beforeAll(async () => {
     root = await mkdtemp(path.join(import.meta.dirname, ".require-condition-"));
@@ -150,22 +178,45 @@ describe("conditional package exports in dev", () => {
         ),
       ),
     ]);
-    ({ server, baseUrl } = await startFixtureServer(root));
-  }, 30000);
+    ({ server, baseUrl: devBaseUrl } = await startFixtureServer(root));
+
+    const rscBundlePath = await buildAppFixture(root);
+    buildOutDir = path.dirname(path.dirname(rscBundlePath));
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    ({ server: prodServer } = await startProdServer({
+      port: 0,
+      outDir: buildOutDir,
+      noCompression: true,
+      silent: true,
+    }));
+    const address = prodServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Production server did not bind");
+    }
+    prodBaseUrl = `http://localhost:${address.port}`;
+  }, 120000);
 
   afterAll(async () => {
     await server?.close();
+    await new Promise<void>((resolve, reject) => {
+      if (!prodServer) return resolve();
+      prodServer.close((error) => (error ? reject(error) : resolve()));
+    });
+    await rm(buildOutDir, { recursive: true, force: true });
     await rm(root, { recursive: true, force: true });
   });
 
-  it.each([
-    ["/import-cjs", "lib-cjs", "esm"],
-    ["/require-cjs", "lib-cjs", "cjs"],
-    ["/import-esm", "lib-esm", "esm"],
-    ["/require-esm", "lib-esm", "cjs"],
-  ])("renders %s from the correct export condition", async (route, label, expected) => {
-    const { res, html } = await fetchHtml(baseUrl, route);
-    expect(res.status).toBe(200);
-    expect(visibleTextByTestId(html, "conditional-result")).toBe(`${label}: ${expected}`);
-  });
+  it.each(CONDITIONAL_EXPORT_CASES)(
+    "renders %s from the correct export condition in dev",
+    async (route, label, expected) => {
+      await expectConditionalExport(devBaseUrl, route, label, expected);
+    },
+  );
+
+  it.each(CONDITIONAL_EXPORT_CASES)(
+    "renders %s from the correct export condition in production",
+    async (route, label, expected) => {
+      await expectConditionalExport(prodBaseUrl, route, label, expected);
+    },
+  );
 });
