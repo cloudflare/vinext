@@ -5,6 +5,7 @@ import {
   forEachAstChild,
   isAstRecord,
   mayContainDynamicImport,
+  nodeArray,
   type AstRecord,
 } from "./ast-utils.js";
 import { stripViteModuleQuery } from "../utils/path.js";
@@ -100,17 +101,30 @@ function moduleDependencySpecifiers(code: string, id: string): string[] {
 
   const specifiers: string[] = [];
   const seen = new Set<string>();
-  const addLiteralSource = (source: unknown): void => {
-    if (
-      !isAstRecord(source) ||
-      source.type !== "Literal" ||
-      typeof source.value !== "string" ||
-      seen.has(source.value)
-    ) {
-      return;
+  const sourceSpecifier = (source: unknown): string | null => {
+    if (!isAstRecord(source)) return null;
+    if (source.type === "Literal") {
+      return typeof source.value === "string" ? source.value : null;
     }
-    seen.add(source.value);
-    specifiers.push(source.value);
+    if (source.type !== "TemplateLiteral" || nodeArray(source.expressions).length !== 0) {
+      return null;
+    }
+
+    const quasis = nodeArray(source.quasis);
+    if (quasis.length !== 1 || !isAstRecord(quasis[0]) || quasis[0].type !== "TemplateElement") {
+      return null;
+    }
+    const value = quasis[0].value;
+    if (typeof value !== "object" || value === null) return null;
+    const cooked = Reflect.get(value, "cooked");
+    const raw = Reflect.get(value, "raw");
+    return typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : null;
+  };
+  const addStaticSource = (source: unknown): void => {
+    const specifier = sourceSpecifier(source);
+    if (specifier === null || seen.has(specifier)) return;
+    seen.add(specifier);
+    specifiers.push(specifier);
   };
 
   for (const statement of ast.body) {
@@ -121,7 +135,7 @@ function moduleDependencySpecifiers(code: string, id: string): string[] {
       statement.type === "ExportAllDeclaration"
     ) {
       if (statement.importKind !== "type" && statement.exportKind !== "type") {
-        addLiteralSource(statement.source);
+        addStaticSource(statement.source);
       }
     }
   }
@@ -132,7 +146,7 @@ function moduleDependencySpecifiers(code: string, id: string): string[] {
     if (node.type === "ImportExpression") {
       // Only statically known requests participate in the build graph. Never
       // guess at variable or interpolated dynamic imports.
-      addLiteralSource(node.source);
+      addStaticSource(node.source);
     }
 
     forEachAstChild(node, visitDynamicImports);
