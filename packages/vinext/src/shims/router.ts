@@ -1322,7 +1322,7 @@ function getPathnameAndQuery(): {
         canonicalResolvedPath + window.location.search + window.location.hash,
     };
   }
-  const routeQuery = getRouteQueryFromNextData(nextData, resolvedPath);
+  const routeQuery = getRouteQueryFromNextData(nextData, canonicalResolvedPath);
   // URL search params always reflect the current URL
   const searchQuery: Record<string, string | string[]> = {};
   const params = new URLSearchParams(window.location.search);
@@ -1334,7 +1334,7 @@ function getPathnameAndQuery(): {
   // search string replace stale same-key rewrite query state. A normal route
   // match keeps route params authoritative over same-key search values.
   const query =
-    extractRouteParamsFromPath(nextData?.page ?? pathname, resolvedPath) === null
+    extractRouteParamsFromPath(nextData?.page ?? pathname, canonicalResolvedPath) === null
       ? { ...routeQuery, ...searchQuery }
       : { ...searchQuery, ...routeQuery };
   // asPath uses the resolved browser path, not the route pattern
