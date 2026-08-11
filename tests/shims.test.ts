@@ -17958,6 +17958,205 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/basepath/router-events.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/router-events.test.ts
+  it("includes basePath in successful Pages Router event URLs", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    Object.assign(win.location, {
+      pathname: "/docs/hello",
+      href: "http://localhost/docs/hello",
+      origin: "http://localhost",
+    });
+    (globalThis as any).window = win;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    globalThis.fetch = async () => new Response(buildNavHtml("/other-page", pageModuleUrl));
+
+    const events: unknown[][] = [];
+    const recordEvent =
+      (name: string) =>
+      (...args: unknown[]) =>
+        events.push([name, ...args]);
+    const onStart = recordEvent("routeChangeStart");
+    const onBefore = recordEvent("beforeHistoryChange");
+    const onComplete = recordEvent("routeChangeComplete");
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.on("routeChangeStart", onStart);
+      Router.events.on("beforeHistoryChange", onBefore);
+      Router.events.on("routeChangeComplete", onComplete);
+
+      await Router.push("/other-page");
+
+      expect(events).toEqual([
+        ["routeChangeStart", "/docs/other-page", { shallow: false }],
+        ["beforeHistoryChange", "/docs/other-page", { shallow: false }],
+        ["routeChangeComplete", "/docs/other-page", { shallow: false }],
+      ]);
+    } finally {
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.off("routeChangeStart", onStart);
+      Router.events.off("beforeHistoryChange", onBefore);
+      Router.events.off("routeChangeComplete", onComplete);
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  // Ported from Next.js: test/e2e/basepath/router-events.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/router-events.test.ts
+  it("orders a basePath cancellation before the superseding route events", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    Object.assign(win.location, {
+      pathname: "/docs/hello",
+      href: "http://localhost/docs/hello",
+    });
+    (globalThis as any).window = win;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+
+    const slowFetch = createDeferred<Response>();
+    globalThis.fetch = async (url: RequestInfo | URL) =>
+      getFetchHref(url).includes("slow-route")
+        ? slowFetch.promise
+        : new Response(buildNavHtml("/other-page", pageModuleUrl));
+
+    const events: unknown[][] = [];
+    const recordEvent =
+      (name: string) =>
+      (...args: unknown[]) =>
+        events.push([name, ...args]);
+    const onStart = recordEvent("routeChangeStart");
+    const onBefore = recordEvent("beforeHistoryChange");
+    const onComplete = recordEvent("routeChangeComplete");
+    const onError = (error: unknown, ...args: unknown[]) =>
+      events.push([
+        "routeChangeError",
+        error instanceof Error ? error.message : String(error),
+        (error as { cancelled?: unknown })?.cancelled,
+        ...args,
+      ]);
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.on("routeChangeStart", onStart);
+      Router.events.on("beforeHistoryChange", onBefore);
+      Router.events.on("routeChangeComplete", onComplete);
+      Router.events.on("routeChangeError", onError);
+
+      const slowNavigation = Router.push("/slow-route");
+      await Promise.resolve();
+      const winningNavigation = Router.push("/other-page");
+      slowFetch.resolve(new Response(buildNavHtml("/slow-route", pageModuleUrl)));
+      await Promise.allSettled([slowNavigation, winningNavigation]);
+
+      expect(events).toEqual([
+        ["routeChangeStart", "/docs/slow-route", { shallow: false }],
+        ["routeChangeError", "Route Cancelled", true, "/docs/slow-route", { shallow: false }],
+        ["routeChangeStart", "/docs/other-page", { shallow: false }],
+        ["beforeHistoryChange", "/docs/other-page", { shallow: false }],
+        ["routeChangeComplete", "/docs/other-page", { shallow: false }],
+      ]);
+    } finally {
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.off("routeChangeStart", onStart);
+      Router.events.off("beforeHistoryChange", onBefore);
+      Router.events.off("routeChangeComplete", onComplete);
+      Router.events.off("routeChangeError", onError);
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  // Ported from Next.js: test/e2e/basepath/router-events.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/router-events.test.ts
+  it("emits only start and the canonical error when basePath data loading fails", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    Object.assign(win.location, {
+      pathname: "/docs/hello",
+      href: "http://localhost/docs/hello",
+      origin: "http://localhost",
+    });
+    Object.assign(win, {
+      __VINEXT_PAGE_LOADERS__: {
+        "/error-route": async () => ({ default: () => null }),
+      },
+      __VINEXT_PAGE_PATTERNS__: ["/error-route"],
+      __VINEXT_PAGES_SSP_PATTERNS__: ["/error-route"],
+    });
+    Object.assign(win.__NEXT_DATA__, { buildId: "build-1" });
+    (globalThis as any).window = win;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    globalThis.fetch = async () => new Response("Internal Server Error", { status: 500 });
+
+    const events: unknown[][] = [];
+    const recordEvent =
+      (name: string) =>
+      (...args: unknown[]) =>
+        events.push([name, ...args]);
+    const onStart = recordEvent("routeChangeStart");
+    const onBefore = recordEvent("beforeHistoryChange");
+    const onError = (error: unknown, ...args: unknown[]) =>
+      events.push([
+        "routeChangeError",
+        error instanceof Error ? error.message : String(error),
+        (error as { cancelled?: unknown })?.cancelled ?? null,
+        ...args,
+      ]);
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.on("routeChangeStart", onStart);
+      Router.events.on("beforeHistoryChange", onBefore);
+      Router.events.on("routeChangeError", onError);
+
+      await Router.push("/error-route");
+
+      expect(events).toEqual([
+        ["routeChangeStart", "/docs/error-route", { shallow: false }],
+        [
+          "routeChangeError",
+          "Failed to load static props",
+          null,
+          "/docs/error-route",
+          { shallow: false },
+        ],
+      ]);
+    } finally {
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      Router.events.off("routeChangeStart", onStart);
+      Router.events.off("beforeHistoryChange", onBefore);
+      Router.events.off("routeChangeError", onError);
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("last push() wins when two overlap — superseded navigation does not render", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -19644,7 +19843,7 @@ describe("Pages Router concurrent navigation", () => {
       browserPath: "/app/router-events-test",
       target: "/router-events-test#section-1",
       expectedBrowserUrl: "/app/router-events-test#section-1",
-      expectedEventUrl: "/router-events-test#section-1",
+      expectedEventUrl: "/app/router-events-test#section-1",
     });
   });
 
@@ -19779,7 +19978,7 @@ describe("Pages Router concurrent navigation", () => {
       browserPath: "/app/app/foo",
       target: "/app/foo#section-1",
       expectedBrowserUrl: "/app/app/foo#section-1",
-      expectedEventUrl: "/app/foo#section-1",
+      expectedEventUrl: "/app/app/foo#section-1",
     });
   });
 

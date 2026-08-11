@@ -406,6 +406,12 @@ type RouterEvents = {
   emit(event: string, ...args: unknown[]): void;
 };
 
+type PagesNavigationEventContext = {
+  cancellationEmitted: boolean;
+  routeProps: { shallow: boolean };
+  url: string;
+};
+
 function createRouterEvents(): RouterEvents {
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 
@@ -430,6 +436,7 @@ type PagesRouterRuntimeState = {
   historyKeyCounter: number;
   navigationId: number;
   activeAbortController: AbortController | null;
+  activeNavigationEvent: PagesNavigationEventContext | null;
   cancelPendingRenderCommit: (() => void) | null;
   beforePopStateCb?: BeforePopStateCallback;
   lastPathnameAndSearch: string;
@@ -458,6 +465,7 @@ function createPagesRouterRuntimeState(): PagesRouterRuntimeState {
     historyKeyCounter: 0,
     navigationId: 0,
     activeAbortController: null,
+    activeNavigationEvent: null,
     cancelPendingRenderCommit: null,
     lastPathnameAndSearch:
       typeof window !== "undefined" ? window.location.pathname + window.location.search : "",
@@ -797,15 +805,13 @@ function getPagesHtmlFetchUrl(browserUrl: string, locale: string | undefined): s
 
 export { isExternalUrl };
 
-/** Resolve a hash URL to a basePath-stripped app URL for event payloads */
+/** Resolve a hash URL to the browser-visible URL used by Next.js router events. */
 function resolveHashUrl(url: string): string {
   if (typeof window === "undefined") return url;
-  if (url.startsWith("#"))
-    return stripBasePath(window.location.pathname, __basePath) + window.location.search + url;
-  // Full-path hash URL — strip basePath for consistency with other events
+  if (url.startsWith("#")) return window.location.pathname + window.location.search + url;
   try {
     const parsed = new URL(url, window.location.href);
-    return stripBasePath(parsed.pathname, __basePath) + parsed.search + parsed.hash;
+    return parsed.pathname + parsed.search + parsed.hash;
   } catch {
     return url;
   }
@@ -1475,9 +1481,31 @@ function notifyNextNavigationPagesContext(): void {
  */
 class NavigationCancelledError extends Error {
   cancelled = true;
-  constructor(route: string) {
-    super(`Abort fetching component for route: "${route}"`);
+  constructor(_route: string) {
+    super("Route Cancelled");
     this.name = "NavigationCancelledError";
+  }
+}
+
+function cancelActiveNavigationEvent(): void {
+  const active = routerRuntimeState.activeNavigationEvent;
+  if (active === null || active.cancellationEmitted) return;
+
+  active.cancellationEmitted = true;
+  routerEvents.emit(
+    "routeChangeError",
+    new NavigationCancelledError(active.url),
+    active.url,
+    active.routeProps,
+  );
+  if (routerRuntimeState.activeNavigationEvent === active) {
+    routerRuntimeState.activeNavigationEvent = null;
+  }
+}
+
+function clearActiveNavigationEvent(context: PagesNavigationEventContext): void {
+  if (routerRuntimeState.activeNavigationEvent === context) {
+    routerRuntimeState.activeNavigationEvent = null;
   }
 }
 
@@ -1519,6 +1547,7 @@ type NavigateClientOptions = {
    */
   mode?: "push" | "replace";
   scroll?: ScrollPosition | null;
+  beforeHistoryChange?: () => void;
 };
 
 /** Wire format of `/_next/data/<id>/<page>.json` response bodies. */
@@ -2111,6 +2140,7 @@ async function renderPagesNavigationTarget(
   }
 
   const nextData = buildPagesNavigationNextData(target, props);
+  options.beforeHistoryChange?.();
   window.__NEXT_DATA__ = nextData;
   applyVinextLocaleGlobals(window, nextData);
   await renderPagesRouterElement(element, options.scroll);
@@ -2261,7 +2291,7 @@ async function navigateClientData(
     // reload to land on the new build's HTML. Any other non-OK status is
     // treated the same way per the user-configured "always hard reload"
     // fallback policy.
-    scheduleHardNavigationAndThrow(url, `Data navigation failed: ${res.status} ${res.statusText}`);
+    scheduleHardNavigationAndThrow(url, "Failed to load static props");
   }
 
   const rewriteTarget = res.headers.get("x-nextjs-rewrite");
@@ -2484,6 +2514,7 @@ async function navigateClientHtml(
   // has passed assertStillCurrent(). The post-render await below waits for the
   // stable Pages Router commit boundary before routeChangeComplete, matching
   // Next.js's client Root callback without remounting the page tree.
+  options.beforeHistoryChange?.();
   if (pendingRedirectHistoryUrl) {
     window.history.replaceState(window.history.state ?? {}, "", pendingRedirectHistoryUrl);
     routerRuntimeState.lastPathnameAndSearch = window.location.pathname + window.location.search;
@@ -2744,12 +2775,17 @@ async function runNavigateClient(
    * Defaults to `fullUrl`, making this a no-op for callers without a mask.
    */
   routeUrl: string = fullUrl,
+  eventContext?: PagesNavigationEventContext,
 ): Promise<"completed" | "cancelled" | "failed"> {
   try {
     await navigateClient(fullUrl, fetchUrl, options, routeUrl);
     return "completed";
   } catch (err: unknown) {
+    if (eventContext?.cancellationEmitted) {
+      return "cancelled";
+    }
     routerEvents.emit("routeChangeError", err, resolvedUrl, { shallow: false });
+    if (eventContext) clearActiveNavigationEvent(eventContext);
     if (err instanceof NavigationCancelledError) {
       return "cancelled";
     }
@@ -3185,6 +3221,8 @@ async function performNavigation(
     options: navStateOptions,
   };
 
+  if (options?._h !== 1) cancelActiveNavigationEvent();
+
   // Hash-only change — no page fetch needed.
   // Guard: when the route URL differs from the display URL (i.e. href and as
   // disagree), the underlying page module changes even if the address bar
@@ -3256,15 +3294,29 @@ async function performNavigation(
 
   if (mode === "push") saveScrollPosition();
   const isQueryUpdating = options?._h === 1;
+  const eventContext: PagesNavigationEventContext | undefined = isQueryUpdating
+    ? undefined
+    : {
+        cancellationEmitted: false,
+        routeProps: { shallow },
+        url: full,
+      };
+  if (eventContext) routerRuntimeState.activeNavigationEvent = eventContext;
   if (!isQueryUpdating) {
-    routerEvents.emit("routeChangeStart", resolved, { shallow });
+    routerEvents.emit("routeChangeStart", full, { shallow });
   }
-  routerEvents.emit("beforeHistoryChange", resolved, { shallow });
   updateHistory(mode, full, navState);
+  let beforeHistoryChangeEmitted = false;
+  const emitBeforeHistoryChange = () => {
+    if (beforeHistoryChangeEmitted) return;
+    beforeHistoryChangeEmitted = true;
+    routerEvents.emit("beforeHistoryChange", full, { shallow });
+  };
   if (!shallow) {
+    navigateOptions.beforeHistoryChange = emitBeforeHistoryChange;
     const result = await runNavigateClient(
       full,
-      resolved,
+      full,
       htmlFetchUrl,
       navigateOptions,
       // When href and as differ, the data fetch must target the route URL
@@ -3272,10 +3324,12 @@ async function performNavigation(
       // fullRouteUrl === full when there is no mask, so this is a no-op
       // for the dominant case.
       fullRouteUrl,
+      eventContext,
     );
     if (result === "cancelled") return true;
     if (result === "failed") return false;
   } else {
+    emitBeforeHistoryChange();
     // Shallow navigations skip the render-commit path, so apply the scroll
     // reset synchronously here — before routeChangeComplete. This matches the
     // non-shallow path, where the x/y reset runs inside the render-commit
@@ -3288,7 +3342,8 @@ async function performNavigation(
   }
   onStateUpdate?.();
   if (!isQueryUpdating) {
-    routerEvents.emit("routeChangeComplete", resolved, { shallow });
+    routerEvents.emit("routeChangeComplete", full, { shallow });
+    if (eventContext) clearActiveNavigationEvent(eventContext);
   }
   // Hash scrolling after routeChangeComplete, matching Next.js ordering:
   // x/y restoration happens during the render commit, then hash scrolling
@@ -3630,7 +3685,7 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     // path (.nextjs-ref/packages/next/src/shared/lib/router/router.ts around
     // L1381-1403 and L1780). The snapshot stays in sessionStorage, so a later
     // non-hash popstate to this entry still restores the saved position.
-    const hashUrl = appUrl + window.location.hash;
+    const hashUrl = browserUrl + window.location.hash;
     routerEvents.emit("hashChangeStart", hashUrl, { shallow: false });
     scrollToHashTarget(window.location.hash);
     routerEvents.emit("hashChangeComplete", hashUrl, { shallow: false });
@@ -3644,14 +3699,14 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
   const stateLocale = isNextRouterState(state) ? state.options?.locale : undefined;
   const effectiveLocale = typeof stateLocale === "string" ? stateLocale : window.__VINEXT_LOCALE__;
 
-  const fullAppUrl = appUrl + window.location.hash;
-  routerEvents.emit("routeChangeStart", fullAppUrl, { shallow: false });
+  const fullEventUrl = browserUrl + window.location.hash;
+  routerEvents.emit("routeChangeStart", fullEventUrl, { shallow: false });
   // Note: The browser has already updated window.location by the time popstate
   // fires, so this is not truly "before" the URL change. In Next.js the popstate
   // handler calls replaceState to store history metadata — beforeHistoryChange
   // precedes that call, not the URL change itself. We emit it here for API
   // compatibility.
-  routerEvents.emit("beforeHistoryChange", fullAppUrl, { shallow: false });
+  routerEvents.emit("beforeHistoryChange", fullEventUrl, { shallow: false });
   void (async () => {
     // When manual scroll restoration is enabled we drive the position from the
     // sessionStorage snapshot keyed by history key. When it is disabled we
@@ -3689,13 +3744,13 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
     })();
     const result = await runNavigateClient(
       browserUrl,
-      fullAppUrl,
+      fullEventUrl,
       getPagesHtmlFetchUrl(stateRouteUrl, effectiveLocale),
       { scroll: scrollTarget },
       stateRouteUrl,
     );
     if (result === "completed") {
-      routerEvents.emit("routeChangeComplete", fullAppUrl, { shallow: false });
+      routerEvents.emit("routeChangeComplete", fullEventUrl, { shallow: false });
       dispatchNavigateEvent();
     }
     // "cancelled": superseded by a newer navigation, so this popstate no longer wins.
