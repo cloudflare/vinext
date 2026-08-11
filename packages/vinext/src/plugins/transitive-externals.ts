@@ -98,6 +98,7 @@ export function createTransitiveExternalsPlugin(options: {
 
   return {
     name: "vinext:transitive-externals",
+    apply: "build",
     enforce: "pre",
     applyToEnvironment(environment) {
       return environment.name !== "client" && environment.config.consumer !== "client";
