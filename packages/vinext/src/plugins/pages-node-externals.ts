@@ -181,6 +181,10 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
 
   return {
     name: "vinext:pages-node-externals",
+    // Vite's dev module runner resolves dependencies itself. Marking native
+    // ESM packages external there bypasses its fixture/project resolver and
+    // produces ERR_LOAD_URL; only production bundles need this external seam.
+    apply: "build",
     enforce: "pre",
     transform: {
       // Alias plugins resolve before user resolveId hooks, so follow static
