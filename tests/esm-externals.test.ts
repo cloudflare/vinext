@@ -149,6 +149,15 @@ function createFixture(): string {
       "default.mjs": 'export default "DEFAULT";',
     },
   );
+  writePackage(
+    root,
+    "dynamic-esm-package",
+    { exports: { "./entry": { import: "./entry.mjs" } } },
+    {
+      "entry.mjs":
+        'export default "DYNAMIC"; if (Math.random() < 0) import("dynamic-import-fail");',
+    },
+  );
   for (const [name, value] of [
     ["geist", "DEFAULT_TRANSPILED"],
     ["optimized-esm-package", "OPTIMIZED"],
@@ -201,6 +210,11 @@ import World3 from "app-cjs-esm-package/entry";`;
   );
   writeFile(
     root,
+    "lib/dynamic-world.js",
+    'import value from "dynamic-esm-package/entry"; export default value;',
+  );
+  writeFile(
+    root,
     "app/app-shared/page.js",
     'import value from "../../lib/shared-condition.js"; export default function Page() { return <p>App:{value}</p>; }',
   );
@@ -236,6 +250,15 @@ export default function Page({ worlds }) { return <p>Hello {World1}+{World2}+{Wo
     root,
     "pages/pages-shared.js",
     'import value from "@shared/shared-condition.js"; export default function Page() { return <p>Pages:{value}</p>; }',
+  );
+  writeFile(
+    root,
+    "pages/dynamic.js",
+    `export async function getServerSideProps() {
+  const { default: value } = await import("@shared/dynamic-world.js");
+  return { props: { value } };
+}
+export default function Page({ value }) { return <p>Dynamic:{value}</p>; }`,
   );
   writeFile(
     root,
@@ -286,6 +309,8 @@ describe("ESM externals", () => {
         await fetch(`http://127.0.0.1:${address.port}/pages-shared`)
       ).text();
       expect(pagesShared.replaceAll("<!-- -->", "")).toContain("Pages:DEFAULT");
+      const dynamic = await (await fetch(`http://127.0.0.1:${address.port}/dynamic`)).text();
+      expect(dynamic.replaceAll("<!-- -->", "")).toContain("Dynamic:DYNAMIC");
       const bundledPackages = await (
         await fetch(`http://127.0.0.1:${address.port}/bundled-packages`)
       ).text();
@@ -314,6 +339,7 @@ describe("ESM externals", () => {
     const externals = JSON.parse(
       fs.readFileSync(path.join(root, "dist", "server", "vinext-externals.json"), "utf8"),
     ) as string[];
+    expect(externals).toContain("dynamic-esm-package");
     expect(externals).not.toContain("geist");
     expect(externals).not.toContain("optimized-esm-package");
     expect(externals).not.toContain("explicit-esm-package");

@@ -1,6 +1,12 @@
 import fs from "node:fs";
 import path, { toSlash } from "pathslash";
 import { parseAst, type Plugin } from "vite";
+import {
+  forEachAstChild,
+  isAstRecord,
+  mayContainDynamicImport,
+  type AstRecord,
+} from "./ast-utils.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 
 type PagesNodeExternalsOptions = {
@@ -75,13 +81,6 @@ function matchesAlias(id: string, aliases: Readonly<Record<string, string>>): bo
   return Object.keys(aliases).some((alias) => id === alias || id.startsWith(`${alias}/`));
 }
 
-type StaticImportStatement = {
-  type?: string;
-  importKind?: string;
-  exportKind?: string;
-  source?: { value?: unknown } | null;
-};
-
 function parserLanguage(id: string): "js" | "jsx" | "ts" | "tsx" {
   const cleanId = stripViteModuleQuery(id).toLowerCase();
   if (cleanId.endsWith(".tsx")) return "tsx";
@@ -91,7 +90,7 @@ function parserLanguage(id: string): "js" | "jsx" | "ts" | "tsx" {
   return "jsx";
 }
 
-function staticImportSpecifiers(code: string, id: string): string[] {
+function moduleDependencySpecifiers(code: string, id: string): string[] {
   let ast: ReturnType<typeof parseAst>;
   try {
     ast = parseAst(code, { lang: parserLanguage(id) });
@@ -100,16 +99,47 @@ function staticImportSpecifiers(code: string, id: string): string[] {
   }
 
   const specifiers: string[] = [];
-  for (const statement of ast.body as StaticImportStatement[]) {
+  const seen = new Set<string>();
+  const addLiteralSource = (source: unknown): void => {
     if (
-      statement.type !== "ImportDeclaration" &&
-      statement.type !== "ExportNamedDeclaration" &&
-      statement.type !== "ExportAllDeclaration"
+      !isAstRecord(source) ||
+      source.type !== "Literal" ||
+      typeof source.value !== "string" ||
+      seen.has(source.value)
     ) {
-      continue;
+      return;
     }
-    if (statement.importKind === "type" || statement.exportKind === "type") continue;
-    if (typeof statement.source?.value === "string") specifiers.push(statement.source.value);
+    seen.add(source.value);
+    specifiers.push(source.value);
+  };
+
+  for (const statement of ast.body) {
+    if (!isAstRecord(statement)) continue;
+    if (
+      statement.type === "ImportDeclaration" ||
+      statement.type === "ExportNamedDeclaration" ||
+      statement.type === "ExportAllDeclaration"
+    ) {
+      if (statement.importKind !== "type" && statement.exportKind !== "type") {
+        addLiteralSource(statement.source);
+      }
+    }
+  }
+
+  if (!mayContainDynamicImport(code)) return specifiers;
+
+  const visitDynamicImports = (node: AstRecord): void => {
+    if (node.type === "ImportExpression") {
+      // Only statically known requests participate in the build graph. Never
+      // guess at variable or interpolated dynamic imports.
+      addLiteralSource(node.source);
+    }
+
+    forEachAstChild(node, visitDynamicImports);
+  };
+
+  for (const statement of ast.body) {
+    if (isAstRecord(statement)) visitDynamicImports(statement);
   }
   return specifiers;
 }
@@ -165,7 +195,7 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
         }
 
         pagesOwnedModules.add(cleanId);
-        for (const specifier of staticImportSpecifiers(code, cleanId)) {
+        for (const specifier of moduleDependencySpecifiers(code, cleanId)) {
           const resolved = await this.resolve(specifier, id, { skipSelf: true });
           if (!resolved || resolved.external) continue;
           const resolvedFile = canonicalFile(resolved.id);
