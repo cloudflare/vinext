@@ -935,9 +935,15 @@ function getRequestState(
 // rsc:update fetches the right payload after the bug is fixed.
 function handleDevRecoveryBoundaryCatch(resetKey: number): void {
   // React's onCaughtError option already routes the error to the dev overlay.
-  // Our job here is purely to drive the URL update for the in-flight
-  // navigation that this failed render belonged to.
+  // Drive the URL update for the in-flight navigation that this failed render
+  // belonged to...
   browserNavigationController.drainPrePaintEffects(resetKey);
+  // ...and settle its pending commit. Because the signal never mounted, neither
+  // its useLayoutEffect nor that effect's cleanup runs, so without this the
+  // navigation promise hangs forever and permanently leaks the active-navigation
+  // counter — blocking later server-action refreshes (#1986). This mirrors the
+  // unmount cleanup inside NavigationCommitSignal.
+  browserNavigationController.resolveCommittedNavigations(resetKey);
 }
 
 function isMpaNavigationState(

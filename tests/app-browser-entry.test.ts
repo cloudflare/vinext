@@ -3882,6 +3882,63 @@ describe("app browser navigation controller", () => {
     }
   });
 
+  it("resolveCommittedNavigations settles a pending commit when NavigationCommitSignal never mounts (#1986)", async () => {
+    // Regression for #1986: when a render error makes the dev recovery boundary
+    // replace the subtree, NavigationCommitSignal's useLayoutEffect never fires
+    // (no mount → no cleanup), so the in-flight commit is never resolved and the
+    // navigation promise hangs (leaking activeNavigationCount). The recovery
+    // path must be able to settle the commit directly, mirroring the signal's
+    // unmount cleanup.
+    const { controller, detach, stateRef } = createControllerHarness();
+    const nextElements = Promise.resolve(
+      createResolvedElements("route:/dashboard", "/", null, {
+        "page:/dashboard": React.createElement("main", null, "dashboard"),
+      }),
+    );
+
+    try {
+      const navId = controller.beginNavigation();
+      const renderPromise = controller.renderNavigationPayload({
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => vi.fn(),
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements,
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // Signal never mounted: the commit is stuck pending.
+      const stuck = await Promise.race([
+        renderPromise.then(() => true),
+        Promise.resolve().then(() => false),
+      ]);
+      expect(stuck).toBe(false);
+
+      // The dev recovery boundary settles it directly.
+      controller.resolveCommittedNavigations(Number.MAX_SAFE_INTEGER);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const settled = await Promise.race([
+        renderPromise.then(() => true),
+        Promise.resolve().then(() => false),
+      ]);
+      expect(settled).toBe(true);
+    } finally {
+      detach();
+    }
+  });
+
   it("does not clear a newer navigation failure target when an older render commits", async () => {
     const { controller, detach, stateRef } = createControllerHarness();
     vi.stubEnv("__NEXT_APP_NAV_FAIL_HANDLING", "true");

@@ -159,6 +159,16 @@ type BrowserNavigationController = {
    * navigation would otherwise be lost.
    */
   drainPrePaintEffects(renderId: number): void;
+  /**
+   * Resolve all pending navigation commits with renderId <= the given id without
+   * waiting for NavigationCommitSignal to commit. The signal's useLayoutEffect
+   * already does this on unmount, but when a render error replaces the subtree
+   * before the signal ever mounts (dev recovery boundary), neither the mount
+   * effect nor its cleanup runs — so the in-flight navigation promise would hang
+   * and leak the active-navigation counter. The recovery path calls this to
+   * settle it (#1986).
+   */
+  resolveCommittedNavigations(renderId: number): void;
   clearCommittedNavigationFailureTargets(renderId: number): void;
   NavigationCommitSignal(
     this: void,
@@ -998,6 +1008,7 @@ export function createAppBrowserNavigationController(
     commitSameUrlNavigatePayload,
     hmrReplaceTree,
     drainPrePaintEffects,
+    resolveCommittedNavigations,
     clearCommittedNavigationFailureTargets,
     NavigationCommitSignal,
   };
