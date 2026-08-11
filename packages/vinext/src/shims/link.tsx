@@ -1193,7 +1193,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // it must not issue a data prefetch for that URL. Besides wasting a request,
   // such a prefetch would run middleware/getServerSideProps even though the
   // shallow transition itself deliberately skips them.
-  const effectivePrefetchProp = HAS_PAGES_ROUTER && shallow ? false : prefetchProp;
+  const prefetchRouterMode = getLinkPrefetchRouterMode();
+  const isShallowPagesLink = prefetchRouterMode === "pages" && shallow;
+  const effectivePrefetchProp = isShallowPagesLink ? false : prefetchProp;
   const prefetchMode = resolveLinkPrefetchMode(effectivePrefetchProp, isDangerous);
   const shouldViewportPrefetch = canLinkPrefetch({
     nodeEnv: process.env.NODE_ENV,
@@ -1241,7 +1243,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
               currentOrigin: window.location.origin,
             }) ?? undefined),
       queuedViewportPrefetch: false,
-      routerMode: getLinkPrefetchRouterMode(),
+      routerMode: prefetchRouterMode,
       viewportPrefetched: false,
     };
     observedLinkPrefetches.set(node, instance);
@@ -1253,16 +1255,23 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       visibleLinkPrefetches.delete(instance);
       instance.isVisible = false;
     };
-  }, [shouldViewportPrefetch, prefetchMode, normalizedHref, normalizedRouteHref, locale]);
+  }, [
+    shouldViewportPrefetch,
+    prefetchMode,
+    prefetchRouterMode,
+    normalizedHref,
+    normalizedRouteHref,
+    locale,
+  ]);
 
   const prefetchOnIntent = useCallback(() => {
     if (
-      (HAS_PAGES_ROUTER && shallow) ||
+      isShallowPagesLink ||
       !canLinkIntentPrefetch({
         nodeEnv: process.env.NODE_ENV,
         prefetch: effectivePrefetchProp,
         isDangerous,
-        routerMode: getLinkPrefetchRouterMode(),
+        routerMode: prefetchRouterMode,
       })
     ) {
       return;
@@ -1285,8 +1294,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   }, [
     effectivePrefetchProp,
     isDangerous,
-    shallow,
+    isShallowPagesLink,
     prefetchMode,
+    prefetchRouterMode,
     normalizedHref,
     normalizedRouteHref,
     locale,
@@ -1294,7 +1304,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   ]);
 
   const schedulePrefetchOnIntent = useCallback(() => {
-    if (!HAS_PAGES_ROUTER || typeof window.requestAnimationFrame !== "function") {
+    if (prefetchRouterMode !== "pages" || typeof window.requestAnimationFrame !== "function") {
       prefetchOnIntent();
       return;
     }
@@ -1305,7 +1315,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       prefetchOnIntent();
     });
     pendingPagesIntentPrefetchRef.current = () => window.cancelAnimationFrame(frame);
-  }, [prefetchOnIntent]);
+  }, [prefetchOnIntent, prefetchRouterMode]);
 
   const handleMouseEnter = useCallback(
     (e: MouseEvent<HTMLAnchorElement>) => {

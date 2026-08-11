@@ -1562,6 +1562,55 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("keeps shallow hybrid App Router links eligible for viewport prefetch", async () => {
+    vi.stubEnv("__VINEXT_HAS_PAGES_ROUTER", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      props: { shallow: true },
+    });
+
+    try {
+      expect(observer.observe).toHaveBeenCalledWith(result.anchor);
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/viewport-prefetch-target",
+        expect.objectContaining({ priority: "low" }),
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps shallow hybrid App Router links eligible for immediate intent prefetch", async () => {
+    vi.stubEnv("__VINEXT_HAS_PAGES_ROUTER", "true");
+    const requestAnimationFrame = vi.fn(() => 1);
+    const result = await renderIsolatedLink({
+      href: "/intent-prefetch-target",
+      nodeEnv: "production",
+      props: { shallow: true },
+      windowOverrides: { requestAnimationFrame },
+    });
+
+    try {
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(requestAnimationFrame).not.toHaveBeenCalled();
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/intent-prefetch-target",
+        expect.objectContaining({ priority: "high" }),
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("prefetches visible links in production with low priority", async () => {
     const observer = stubIntersectionObserver();
 
