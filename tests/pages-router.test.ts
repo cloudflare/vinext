@@ -8671,6 +8671,19 @@ describe("Static export (Pages Router)", () => {
     expect(result.files).toContain("about.html");
     const aboutHtml = fs.readFileSync(path.join(exportDir, "about.html"), "utf-8");
     expect(aboutHtml).toContain("About");
+
+    // styled-jsx pages must remain renderable after the standalone server
+    // bundle is relocated into the static export's temporary directory.
+    expect(result.files).toContain("styled-jsx-static-props.html");
+    const styledJsxHtml = fs.readFileSync(
+      path.join(exportDir, "styled-jsx-static-props.html"),
+      "utf-8",
+    );
+    expect(styledJsxHtml).toMatch(
+      /data-testid="styled-jsx-static-data-source"[^>]*>getStaticProps</,
+    );
+    expect(styledJsxHtml).toMatch(/<style id="__jsx-[^"]+">/);
+    expect(styledJsxHtml).toContain("color:rgb(4,5,6)");
   });
 
   it("pre-renders dynamic routes from getStaticPaths", async () => {
