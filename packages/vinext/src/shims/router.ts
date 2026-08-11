@@ -2342,10 +2342,10 @@ async function navigateClientData(
   // gSSP/gSP redirect marker. When getServerSideProps/getStaticProps returns
   // `{ redirect }`, the data endpoint replies 200 with `__N_REDIRECT` /
   // `__N_REDIRECT_STATUS` inside pageProps (rather than an HTTP redirect, which
-  // fetch would transparently follow to non-JSON HTML). Re-enter a fresh
-  // navigation to the destination — this increments the navigation id, which
-  // supersedes (cancels) the current navigation so the intermediate page is
-  // never committed. Mirrors Next.js's `pageProps.__N_REDIRECT` handling in
+  // fetch would transparently follow to non-JSON HTML). Throw an internal
+  // redirect signal so the caller unwinds this source navigation and
+  // re-dispatches the destination; only the destination commits history.
+  // Mirrors Next.js's `pageProps.__N_REDIRECT` handling in
   // packages/next/src/shared/lib/router/router.ts (`this.change(method, ...)`).
   const redirectDestination = pageProps.__N_REDIRECT;
   if (typeof redirectDestination === "string") {
