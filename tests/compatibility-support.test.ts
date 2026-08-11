@@ -45,6 +45,15 @@ describe("compatibility suite support policy", () => {
       expect(getSuiteSupport(suite).reason).toBeTruthy();
     }
   });
+
+  it("classifies the Next.js deployment-token worker hook as non-portable", () => {
+    expect(getSuiteSupport("test/e2e/app-dir/worker/worker.test.ts")).toEqual({
+      status: "needs-vite-equivalent",
+      feature: "Browser Web Workers and emitted worker assets",
+      reason:
+        "Portable worker behavior is covered with Vite and Rolldown; the Next.js suite-wide ?dpl asset-token hook is not portable.",
+    });
+  });
 });
 
 describe("compatibility rate buckets", () => {

@@ -458,6 +458,48 @@ describe("static image import production emission", () => {
     expect(serverJavaScript).not.toMatch(/\/_next\/static\/client-[\w-]+\.png/);
   }, 60_000);
 
+  // Ported from Next.js: test/e2e/app-dir/worker/worker.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/worker/worker.test.ts
+  it("emits StaticImageData for dynamic image imports inside Vite workers", async () => {
+    const root = await createFixture("app");
+    writeFixtureFile(root, "worker-image.png", PNG_4X3);
+    writeFixtureFile(
+      root,
+      "app/image-worker.ts",
+      `import("../worker-image.png").then(({ default: image }) => self.postMessage(image));\n`,
+    );
+    writeFixtureFile(
+      root,
+      "app/client-image.tsx",
+      `"use client";
+import Image from "next/image";
+import staticImage from "@/client.png";
+
+export default function ClientImage() {
+  return <>
+    <Image id="client-static-image" alt="client static import" src={staticImage} quality={85} />
+    <button onClick={() => new Worker(new URL("./image-worker.ts", import.meta.url), { type: "module" })}>
+      Start image worker
+    </button>
+  </>;
+}
+`,
+    );
+
+    await buildFixture(root, "app");
+
+    const clientJavaScript = await readBuiltJavaScript(path.join(root, "dist/client"));
+    expect(clientJavaScript).toContain("worker-image");
+    const emittedImage = await findEmittedImage(root, "", "worker-image");
+    expect(await readFile(path.join(root, "dist/client/_next/static/media", emittedImage))).toEqual(
+      PNG_4X3,
+    );
+    expect(clientJavaScript).toContain(`/_next/static/media/${emittedImage}`);
+    expect(clientJavaScript).toMatch(/width:4[,}]|"width":4/);
+    expect(clientJavaScript).toMatch(/height:3[,}]|"height":3/);
+    expect(clientJavaScript).not.toContain("file:///_next/static/");
+  }, 60_000);
+
   it("recomputes changed images and removes deleted imports during watch rebuilds", async () => {
     const root = await mkdtemp(path.join(import.meta.dirname, ".tmp-static-image-watch-"));
     tempDirs.push(root);

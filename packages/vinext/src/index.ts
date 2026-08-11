@@ -172,6 +172,7 @@ import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
+import { forEachAstChild, isAstRecord } from "./plugins/ast-utils.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
@@ -1797,6 +1798,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     ReturnType<typeof getTypeofWindowReplacement>,
     ReturnType<typeof replaceTypeofWindow>
   >();
+  let imageImportsPlugin: Plugin;
 
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
@@ -2631,6 +2633,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
+          worker: {
+            ...config.worker,
+            plugins: () => [...(config.worker?.plugins?.() ?? []), { ...imageImportsPlugin }],
+          },
           build: {
             // Emit asset files (CSS, etc.) referenced by SSR JS chunks.
             //
@@ -6076,7 +6082,7 @@ export const loadServerActionClient = ${
     // Vite's default image import returns a URL string. We intercept this by
     // adding a `?vinext-meta` suffix: the original import gets the URL from Vite,
     // and we resolve the `?vinext-meta` virtual module to provide dimensions.
-    {
+    (imageImportsPlugin = {
       name: "vinext:image-imports",
       enforce: "pre",
 
@@ -6099,8 +6105,11 @@ export const loadServerActionClient = ${
       },
 
       resolveId: {
-        filter: { id: /\?vinext-(?:image-url|meta)$/ },
+        filter: { id: /\?vinext-(?:dynamic-image|image-url|meta)$/ },
         handler(source, _importer) {
+          if (source.endsWith("?vinext-dynamic-image")) {
+            return `\0vinext-dynamic-image:${source.slice(0, -"?vinext-dynamic-image".length)}`;
+          }
           if (source.endsWith("?vinext-image-url")) {
             return `\0vinext-image-url:${source.slice(0, -"?vinext-image-url".length)}`;
           }
@@ -6112,6 +6121,14 @@ export const loadServerActionClient = ${
       },
 
       async load(id) {
+        if (id.startsWith("\0vinext-dynamic-image:")) {
+          const imagePath = id.replace("\0vinext-dynamic-image:", "");
+          return (
+            `import url from ${JSON.stringify(imagePath + "?vinext-image-url")};\n` +
+            `import meta from ${JSON.stringify(imagePath + "?vinext-meta")};\n` +
+            `export default { src: url, width: meta.width, height: meta.height };`
+          );
+        }
         if (id.startsWith("\0vinext-image-url:")) {
           const imagePath = id.replace("\0vinext-image-url:", "");
           this.addWatchFile(imagePath);
@@ -6123,6 +6140,16 @@ export const loadServerActionClient = ${
           staticImageAssets.set(imagePath, asset);
 
           const builtFileName = `${resolveAssetsDir(nextConfig.assetPrefix)}/${asset.fileName}`;
+          if (this.environment.config.isWorker) {
+            this.emitFile({
+              type: "asset",
+              fileName: builtFileName,
+              source: asset.source,
+            });
+            return `export default ${JSON.stringify(
+              renderVinextBuiltUrl(builtFileName, nextConfig.assetPrefix, nextConfig.deploymentId),
+            )};`;
+          }
           return `export default ${JSON.stringify(
             renderVinextBuiltUrl(builtFileName, nextConfig.assetPrefix, nextConfig.deploymentId),
           )};`;
@@ -6157,7 +6184,9 @@ export const loadServerActionClient = ${
             include: /\.(tsx?|jsx?|mjs)$/,
             exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
           },
-          code: new RegExp(`import\\s+\\w+\\s+from\\s+['"][^'"]+\\.(${IMAGE_EXTS})['"]`),
+          code: new RegExp(
+            `import(?:\\s+\\w+\\s+from\\s+|\\s*\\(\\s*)['"][^'"]+\\.(${IMAGE_EXTS})['"]`,
+          ),
         },
         async handler(code, id) {
           // The `code` filter above (a regex) only decides whether to invoke
@@ -6260,6 +6289,51 @@ export const loadServerActionClient = ${
             hasChanges = true;
           }
 
+          const dynamicImports: Array<{
+            start: number;
+            end: number;
+            importPath: string;
+          }> = [];
+          const collectDynamicImageImports = (node: unknown): void => {
+            if (!isAstRecord(node)) return;
+            if (
+              node.type === "ImportExpression" &&
+              isAstRecord(node.source) &&
+              node.source.type === "Literal" &&
+              typeof node.source.value === "string" &&
+              typeof node.source.start === "number" &&
+              typeof node.source.end === "number" &&
+              IMAGE_EXT_RE.test(node.source.value)
+            ) {
+              dynamicImports.push({
+                start: node.source.start,
+                end: node.source.end,
+                importPath: node.source.value,
+              });
+              return;
+            }
+            forEachAstChild(node, collectDynamicImageImports);
+          };
+          collectDynamicImageImports(ast);
+
+          for (const dynamicImport of dynamicImports) {
+            const dir = path.dirname(id);
+            const resolvedImage = dynamicImport.importPath.startsWith(".")
+              ? path.resolve(dir, dynamicImport.importPath)
+              : (await this.resolve(dynamicImport.importPath, id, { skipSelf: true }))?.id;
+            if (!resolvedImage) continue;
+            const absImagePath = toSlash(resolvedImage.split("?", 1)[0]);
+            if (!fs.existsSync(absImagePath)) continue;
+
+            imageImports.add(absImagePath);
+            s.overwrite(
+              dynamicImport.start,
+              dynamicImport.end,
+              JSON.stringify(absImagePath + "?vinext-dynamic-image"),
+            );
+            hasChanges = true;
+          }
+
           if (!hasChanges) {
             staticImageImportsByModule.delete(id);
             return null;
@@ -6301,7 +6375,7 @@ export const loadServerActionClient = ${
           for (const outputPath of nextWrittenFiles) writtenStaticImageFiles.add(outputPath);
         },
       },
-    } as Plugin & { _dimCache: Map<string, { width: number; height: number }> },
+    } as Plugin & { _dimCache: Map<string, { width: number; height: number }> }),
     // Google Fonts import rewrite + self-hosting — see src/plugins/fonts.ts
     createGoogleFontsPlugin(_fontGoogleShimPath, _shimsDir),
     // Local font path resolution — see src/plugins/fonts.ts

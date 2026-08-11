@@ -108,7 +108,7 @@ export const SUITE_SUPPORT_POLICY = {
     status: "needs-vite-equivalent",
     feature: "Browser Web Workers and emitted worker assets",
     reason:
-      "Web Worker behavior needs Vite and Rolldown coverage; Next.js deployment-token assertions are not portable.",
+      "Portable worker behavior is covered with Vite and Rolldown; the Next.js suite-wide ?dpl asset-token hook is not portable.",
   },
   "test/e2e/babel/index.test.ts": NEXT_BUNDLER_SPECIFIC,
   "test/e2e/import-conditions/import-conditions.test.ts": VITE_RUNTIME_CONDITIONS,
