@@ -246,6 +246,10 @@ import {
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
+import {
+  createRequireConditionResolutionPlugin,
+  isConditionalRequireModuleId,
+} from "./plugins/require-condition-resolution.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
 import { getTypeofWindowReplacement, replaceTypeofWindow } from "./plugins/typeof-window.js";
@@ -524,8 +528,9 @@ function isScriptModuleId(id: string): boolean {
   return SCRIPT_IMPORT_RE.test(stripViteModuleQuery(id).toLowerCase());
 }
 
-function skipCommonjsForLocalCjs(id: string): false | undefined {
+function commonjsTransformFilter(id: string): boolean | undefined {
   const cleanId = toSlash(stripViteModuleQuery(id));
+  if (isConditionalRequireModuleId(cleanId)) return true;
   return /\.c[jt]s$/i.test(cleanId) && !cleanId.includes("node_modules") ? false : undefined;
 }
 
@@ -1811,6 +1816,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Next.js ignores requests without any statically known path component
     // during graph analysis and leaves a deterministic runtime failure.
     createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
+    // Preserve the `require` package-export condition before the CommonJS
+    // transform below turns literal require() calls into static imports.
+    createRequireConditionResolutionPlugin(),
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     //
@@ -1823,10 +1831,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // rewritten output as CommonJS, failing with "Cannot use export statement
     // outside a module". Returning `false` makes vite-plugin-commonjs skip these
     // project-local files so rolldown's own CJS interop bundles them instead.
-    // For everything else we return `undefined` to preserve the plugin's
-    // defaults — including its existing skip of node_modules `.cjs` files.
+    // Conditional `require` targets use a synthetic `.js` identity so their
+    // CJS source can be converted before plugin-rsc injects ESM proxy imports.
+    // Ordinary node_modules `.cjs` files retain the plugin's default skip.
     commonjs({
-      filter: skipCommonjsForLocalCjs,
+      filter: commonjsTransformFilter,
     }),
     {
       name: "vinext:global-not-found-css-isolation",
