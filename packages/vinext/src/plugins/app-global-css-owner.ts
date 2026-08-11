@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
 import path, { toSlash } from "pathslash";
 import type { Plugin } from "vite";
+import type { BundleBackfillChunk } from "../build/ssr-manifest.js";
 
 const APP_GLOBAL_CSS_OWNER_PREFIX = "\0vinext:app-global-css:";
 const APP_GLOBAL_CSS_OWNER_SUFFIX = ".js";
 const APP_GLOBAL_CSS_SOURCE_QUERY = "vinext-app-global-css-source";
 const GLOBAL_STYLESHEET_RE = /\.(?:css|scss|sass)$/i;
+const GLOBAL_STYLESHEET_CANDIDATE_RE =
+  /(?:\.(?:css|scss|sass)(?:\?|$)|^[^?]*\/(?:[^./?]+)$|^[^./?]+$)/i;
 
 function cleanModuleId(id: string): string {
   return toSlash(id.split("?", 1)[0] ?? id);
@@ -59,11 +62,13 @@ export function createAppGlobalCssOwnerPlugin(getAppDir: () => string | null): P
     apply: "build",
     enforce: "pre",
     resolveId: {
-      filter: { id: /\.(?:css|scss|sass)(?:\?|$)/i },
+      // Extensionless aliases and package exports can resolve to CSS, so let
+      // those candidates reach Vite's resolver before deciding whether they
+      // need an owner. The native filter still excludes explicit non-CSS file
+      // extensions from this build-only hook.
+      filter: { id: GLOBAL_STYLESHEET_CANDIDATE_RE },
       async handler(source, importer) {
         if (!importer) return null;
-        const cleanSource = cleanModuleId(source);
-        if (!GLOBAL_STYLESHEET_RE.test(cleanSource)) return null;
         if (source.includes("?") && !/[?&]vite-rsc-css-export(?:[=&]|$)/.test(source)) return null;
 
         const appDir = getAppDir();
@@ -86,6 +91,60 @@ export function createAppGlobalCssOwnerPlugin(getAppDir: () => string | null): P
         const owner = decodeOwnerId(id);
         if (!owner) return null;
         return `import ${JSON.stringify(appendSourceQuery(owner.source))};\nglobalThis[Symbol.for("vinext.css.owner")];`;
+      },
+    },
+    generateBundle: {
+      order: "pre",
+      handler(_options, bundle) {
+        if (this.environment?.name !== "rsc") return;
+
+        const chunks = Object.values(bundle).filter(
+          (output): output is typeof output & BundleBackfillChunk => output.type === "chunk",
+        );
+        const ownerCss = new Map<string, string[]>();
+        for (const chunk of chunks) {
+          const css = [...(chunk.viteMetadata?.importedCss ?? [])];
+          if (css.length === 0) continue;
+          for (const moduleId of Object.keys(chunk.modules ?? {})) {
+            if (decodeOwnerId(moduleId)) ownerCss.set(moduleId, css);
+          }
+        }
+
+        for (const chunk of chunks) {
+          const metadata = chunk.viteMetadata;
+          if (!metadata) continue;
+          const currentCss = [...(metadata.importedCss ?? [])];
+          const orderedCss: string[] = [];
+          const seen = new Set<string>();
+          const add = (files: Iterable<string>) => {
+            for (const file of files) {
+              if (seen.has(file)) continue;
+              seen.add(file);
+              orderedCss.push(file);
+            }
+          };
+
+          let hasOwnerImport = false;
+          let addedLocalCss = false;
+          for (const moduleId of Object.keys(chunk.modules ?? {})) {
+            const importedIds = this.getModuleInfo(moduleId)?.importedIds ?? [];
+            for (const importedId of importedIds) {
+              const importedOwnerCss = ownerCss.get(importedId);
+              if (importedOwnerCss) {
+                hasOwnerImport = true;
+                add(importedOwnerCss);
+                continue;
+              }
+              if (!addedLocalCss && GLOBAL_STYLESHEET_RE.test(cleanModuleId(importedId))) {
+                add(currentCss);
+                addedLocalCss = true;
+              }
+            }
+          }
+          if (!hasOwnerImport) continue;
+          add(currentCss);
+          metadata.importedCss = new Set(orderedCss);
+        }
       },
     },
   };

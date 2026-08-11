@@ -14,6 +14,22 @@ import vinext from "../packages/vinext/src/index.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/next-dynamic-css");
 const DIST_DIR = path.join(FIXTURE_DIR, "dist");
+const GLOBAL_CSS_ALIAS = "fixture-global-css";
+
+function fixtureConfig() {
+  return {
+    root: FIXTURE_DIR,
+    configFile: false as const,
+    resolve: {
+      alias: {
+        [GLOBAL_CSS_ALIAS]: path.join(FIXTURE_DIR, "app/page/global2.css"),
+        "fixture-alias-only-css": path.join(FIXTURE_DIR, "app/alias-only.css"),
+      },
+    },
+    plugins: [vinext({ appDir: FIXTURE_DIR })],
+    logLevel: "silent" as const,
+  };
+}
 
 describe("App Router: next/dynamic CSS order (production)", () => {
   let server: Awaited<ReturnType<typeof preview>>;
@@ -21,20 +37,12 @@ describe("App Router: next/dynamic CSS order (production)", () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    const builder = await createBuilder({
-      root: FIXTURE_DIR,
-      configFile: false,
-      plugins: [vinext({ appDir: FIXTURE_DIR })],
-      logLevel: "silent",
-    });
+    const builder = await createBuilder(fixtureConfig());
     await builder.buildApp();
 
     server = await preview({
-      root: FIXTURE_DIR,
-      configFile: false,
-      plugins: [vinext({ appDir: FIXTURE_DIR })],
+      ...fixtureConfig(),
       preview: { port: 0 },
-      logLevel: "silent",
     });
     const address = server.httpServer.address();
     baseUrl = address && typeof address === "object" ? `http://localhost:${address.port}` : "";
@@ -75,5 +83,38 @@ describe("App Router: next/dynamic CSS order (production)", () => {
       .toBe("rgb(255, 255, 255)");
 
     await page.close();
+  });
+
+  it("preserves declaration order when a global stylesheet follows a CSS module", async () => {
+    const page = await browser.newPage();
+    await page.goto(`${baseUrl}/reverse`, { waitUntil: "networkidle" });
+
+    await expect
+      .poll(() =>
+        page.locator("#reverse-order").evaluate((element) => getComputedStyle(element).color),
+      )
+      .toBe("rgb(255, 0, 0)");
+
+    await page.close();
+  });
+
+  it("gives relative and extensionless alias imports of one global CSS file one owner", () => {
+    const cssDir = path.join(DIST_DIR, "client", "_next", "static", "css");
+    const matchingAssets = fs.readdirSync(cssDir).filter((file) => {
+      if (!file.endsWith(".css")) return false;
+      return fs.readFileSync(path.join(cssDir, file), "utf8").includes("next-dynamic-css-page");
+    });
+
+    expect(matchingAssets).toHaveLength(1);
+    expect(matchingAssets[0]).toMatch(/^app-global-css-/);
+
+    const aliasOnlyAssets = fs.readdirSync(cssDir).filter((file) => {
+      if (!file.endsWith(".css")) return false;
+      return fs
+        .readFileSync(path.join(cssDir, file), "utf8")
+        .includes("next-dynamic-css-alias-only");
+    });
+    expect(aliasOnlyAssets).toHaveLength(1);
+    expect(aliasOnlyAssets[0]).toMatch(/^app-global-css-/);
   });
 });

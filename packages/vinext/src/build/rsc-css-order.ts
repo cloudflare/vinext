@@ -1,6 +1,5 @@
 import fs from "node:fs";
 
-const APP_GLOBAL_CSS_ASSET = "/app-global-css-";
 const EXPORT_DEFAULT_PREFIX = "export default ";
 
 type AssetDeps = { css: string[]; js?: string[] };
@@ -88,16 +87,6 @@ export function normalizeRscAssetsManifestCssOrderSource(
 
   for (const deps of Object.values(manifest.clientReferenceDeps ?? {})) {
     deps.css = reorderClientReferenceCss(deps.css, clientManifest);
-  }
-
-  // plugin-rsc collects each RSC chunk's own CSS before the CSS of its
-  // imports. Global stylesheets live in stable owner chunks, so put those
-  // imported assets before route-local CSS modules while preserving the
-  // relative order within both groups.
-  for (const deps of Object.values(manifest.serverResources ?? {})) {
-    const globalCss = deps.css.filter((href) => href.includes(APP_GLOBAL_CSS_ASSET));
-    const otherCss = deps.css.filter((href) => !href.includes(APP_GLOBAL_CSS_ASSET));
-    deps.css = [...globalCss, ...otherCss];
   }
 
   return `${EXPORT_DEFAULT_PREFIX}${JSON.stringify(manifest, null, 2)}`;
