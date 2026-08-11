@@ -100,9 +100,9 @@ export function createAppGlobalCssOwnerPlugin(getAppDir: () => string | null): P
         if (!owner) return null;
         if (owner.kind === "module") {
           const source = JSON.stringify(appendSourceQuery(owner.source));
-          return `export { default } from ${source};\nexport * from ${source};\nglobalThis[Symbol.for("vinext.css.owner")];`;
+          return `export { default } from ${source};\nexport * from ${source};\n// Keep this module as the stylesheet's stable chunk owner.\nglobalThis[Symbol.for("vinext.css.owner")];`;
         }
-        return `import ${JSON.stringify(appendSourceQuery(owner.source))};\nglobalThis[Symbol.for("vinext.css.owner")];`;
+        return `import ${JSON.stringify(appendSourceQuery(owner.source))};\n// Keep this module as the stylesheet's stable chunk owner.\nglobalThis[Symbol.for("vinext.css.owner")];`;
       },
     },
     generateBundle: {

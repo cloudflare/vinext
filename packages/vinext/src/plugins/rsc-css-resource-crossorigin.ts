@@ -1,7 +1,16 @@
 import type { Plugin } from "vite";
 
 const RSC_CSS_VIRTUAL_MODULE_RE = /virtual:vite-rsc\/css\?/;
-const RESOURCE_LINK_HREF = '"data-rsc-css-href": href';
+const RESOURCE_LINK_HREF_RE = /(["']data-rsc-css-href["']\s*:\s*[A-Za-z_$][\w$]*)/;
+
+export function addRscCssResourceCrossOrigin(code: string): string {
+  if (!RESOURCE_LINK_HREF_RE.test(code)) {
+    throw new Error(
+      "@vitejs/plugin-rsc changed its CSS resource module shape; vinext could not add crossOrigin",
+    );
+  }
+  return code.replace(RESOURCE_LINK_HREF_RE, `crossOrigin: "",\n        $1`);
+}
 
 /**
  * Keep server-rendered RSC stylesheet resources compatible with React's
@@ -21,8 +30,7 @@ export function createRscCssResourceCrossOriginPlugin(): Plugin {
     transform: {
       filter: { id: RSC_CSS_VIRTUAL_MODULE_RE },
       handler(code) {
-        if (!code.includes(RESOURCE_LINK_HREF)) return null;
-        return code.replace(RESOURCE_LINK_HREF, `crossOrigin: "",\n        ${RESOURCE_LINK_HREF}`);
+        return addRscCssResourceCrossOrigin(code);
       },
     },
   };

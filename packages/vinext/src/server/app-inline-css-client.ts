@@ -5,7 +5,7 @@ type InlineCssStylesheetLinkElement = Pick<HTMLLinkElement, "getAttribute" | "ha
 const GLOBAL_CSS_OWNER_ASSET = "/app-global-css-";
 const GLOBAL_CSS_OWNER_DEDUPE = Symbol.for("vinext.globalCssOwnerDedupe");
 
-function inlineStyleCoversStylesheetHref(styleHref: string, linkHref: string): boolean {
+export function inlineStyleCoversStylesheetHref(styleHref: string, linkHref: string): boolean {
   for (const candidate of styleHref.split(/\s+/)) {
     if (candidate === linkHref) return true;
     try {
@@ -52,7 +52,7 @@ export function removeStylesheetLinksCoveredByInlineCss(): void {
   }
 }
 
-function dedupeGlobalCssOwnerStylesheetLinks(): void {
+export function dedupeGlobalCssOwnerStylesheetLinks(): void {
   const owners = new Map<string, HTMLLinkElement>();
   const links = document.head.querySelectorAll<HTMLLinkElement>("link[rel~='stylesheet'][href]");
 
@@ -84,6 +84,7 @@ function dedupeGlobalCssOwnerStylesheetLinks(): void {
 
 /** Keep Vite's late dynamic CSS loader from duplicating an RSC global owner. */
 export function installGlobalCssOwnerStylesheetDedupe(): void {
+  if (typeof document === "undefined" || typeof MutationObserver === "undefined") return;
   if (Reflect.get(globalThis, GLOBAL_CSS_OWNER_DEDUPE)) return;
 
   dedupeGlobalCssOwnerStylesheetLinks();
