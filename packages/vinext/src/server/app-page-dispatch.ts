@@ -34,7 +34,12 @@ import {
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
 } from "vinext/shims/fetch-cache";
-import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
+import {
+  APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  AppElementsWire,
+  isAppElementsRecord,
+  type AppOutgoingElements,
+} from "./app-elements.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { WarmPprFallbackShellCachesOptions } from "./app-ppr-fallback-shell-render.js";
 import {
@@ -76,13 +81,17 @@ import {
 } from "./app-rsc-cache-busting.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_NAVIGATION,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
+import {
+  VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
@@ -112,6 +121,15 @@ type AppPageBackgroundRegenerator = (
   renderFn: () => Promise<void>,
   errorContext?: AppPageBackgroundRegenerationErrorContext,
 ) => void;
+
+function removePrefetchLoadingShellMarker<TElement>(element: TElement | null): TElement | null {
+  if (!isAppElementsRecord(element) || !(APP_PREFETCH_LOADING_SHELL_MARKER_KEY in element)) {
+    return element;
+  }
+  const next: Record<string, unknown> = { ...element };
+  delete next[APP_PREFETCH_LOADING_SHELL_MARKER_KEY];
+  return next as TElement;
+}
 
 type AppPageDispatchIntercept<TPage = unknown> = {
   interceptionGraphId?: string | null;
@@ -262,7 +280,7 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     isForceStatic: boolean,
     isForceDynamic: boolean,
   ): Promise<Response | null>;
-  warm(options: WarmPprFallbackShellCachesOptions): Promise<void>;
+  warm(options: WarmPprFallbackShellCachesOptions): Promise<boolean>;
 };
 
 export type AppPagePprState = PprFallbackShellState;
@@ -340,6 +358,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
     interceptionContext?: string | null,
+    mismatchRecoveryPrefetch?: boolean,
   ) => string;
   isrSet: AppPageCacheSetter;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
@@ -349,6 +368,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   pprFallbackCacheShells?: readonly AppPagePprFallbackCacheShell[] | null;
   pprFallbackShell?: {
     fallbackParamNames: readonly string[];
+    preserveDynamicMetadata?: boolean;
     routePattern: string;
   };
   pprRuntime?: AppPagePprRuntime<TRoute>;
@@ -611,11 +631,22 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
   const dispatch = () => runWithFetchDedupe(() => dispatchAppPageInner(options));
-  if (!options.pprFallbackShell || !options.pprRuntime) {
+  if (!options.pprRuntime) {
     return await dispatch();
   }
 
-  return await options.pprRuntime.run(options.pprFallbackShell, dispatch);
+  const fallbackShell =
+    options.pprFallbackShell ??
+    (options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL &&
+    options.isRscRequest &&
+    options.request.headers.get(VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER) === "1"
+      ? {
+          fallbackParamNames: [],
+          preserveDynamicMetadata: true,
+          routePattern: options.route.pattern,
+        }
+      : null);
+  return fallbackShell ? await options.pprRuntime.run(fallbackShell, dispatch) : await dispatch();
 }
 
 async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
@@ -628,6 +659,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
   const isPrerender = process.env.VINEXT_PRERENDER === "1";
+  const mismatchRecoveryPrefetch =
+    options.isRscRequest &&
+    options.request.headers.get(VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER) === "1";
   const serveStreamingMetadata = shouldServeStreamingMetadata(
     options.request.headers.get("user-agent") ?? "",
     options.htmlLimitedBots,
@@ -722,6 +756,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       interceptionContext: options.interceptionContext,
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
+      mismatchRecoveryPrefetch,
       mountedSlotsHeader: options.mountedSlotsHeader,
       renderMode: options.renderMode,
       expireSeconds: options.expireSeconds,
@@ -1044,12 +1079,20 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     });
 
   const fallbackShellState = options.pprRuntime?.getState() ?? null;
-  if (fallbackShellState && process.env.VINEXT_PRERENDER === "1" && !options.isRscRequest) {
+  const isPageLocalPrefetchShell =
+    options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL &&
+    mismatchRecoveryPrefetch &&
+    !hasActiveLoadingBoundary;
+  let pageLocalPrefetchHasDynamicBoundary = false;
+  if (
+    fallbackShellState &&
+    ((process.env.VINEXT_PRERENDER === "1" && !options.isRscRequest) || isPageLocalPrefetchShell)
+  ) {
     const warmupBuildResult = await buildCurrentPageElement();
     if (warmupBuildResult.response) {
       return warmupBuildResult.response;
     }
-    await options.pprRuntime!.warm({
+    pageLocalPrefetchHasDynamicBoundary = await options.pprRuntime!.warm({
       element: warmupBuildResult.element,
       onError: options.createRscOnErrorHandler(options.cleanPathname, route.pattern),
       renderToReadableStream: options.renderToReadableStream,
@@ -1061,6 +1104,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const pageBuildResult = await buildCurrentPageElement();
   if (pageBuildResult.response) {
     return pageBuildResult.response;
+  }
+  if (isPageLocalPrefetchShell && !pageLocalPrefetchHasDynamicBoundary) {
+    pageBuildResult.element = removePrefetchLoadingShellMarker(pageBuildResult.element);
   }
 
   const navigationParams = resolveAppPageNavigationParams(
@@ -1134,6 +1180,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isrRscKey: options.isrRscKey,
     isrSet: options.isrSet,
     interceptionContext: options.interceptionContext,
+    mismatchRecoveryPrefetch,
     expireSeconds: options.expireSeconds,
     // A loading convention at tree position N wraps descendants, but not a
     // layout co-located at N. Probing any deeper async layout before creating

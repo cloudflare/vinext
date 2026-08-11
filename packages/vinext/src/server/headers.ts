@@ -87,6 +87,9 @@ export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context
 /** RSC render mode (e.g. "navigation", "prefetch"). */
 export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
 
+/** Requests the page-local fallback used to recover a mismatched automatic prefetch. */
+export const VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER = "X-Vinext-Mismatch-Recovery-Prefetch";
+
 /** Disabled-by-default client hint describing already-held App Router payload entries. */
 export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";
 

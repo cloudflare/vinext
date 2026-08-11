@@ -70,6 +70,7 @@ import {
 } from "./internal/link-status-registry.js";
 import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
 import { scheduleAppPrefetchFetch } from "./internal/app-prefetch-fetch-queue.js";
+import { stripBasePath } from "../utils/base-path.js";
 
 type NavigateEvent = {
   url: URL;
@@ -338,6 +339,224 @@ export function resolveLinkPrefetchMode(
 // policy helpers moved to internal/app-route-prefetch-policy.ts.
 export { canAutoPrefetchFullAppRoute, resolveAutoAppRoutePrefetch };
 
+type ClientMiddlewareMatcherObject = {
+  source: string;
+  locale?: false;
+  has?: unknown[];
+  missing?: unknown[];
+};
+
+type ClientMiddlewareMatcherCondition = {
+  type: "header" | "cookie" | "query" | "host";
+  key?: string;
+  value?: string;
+};
+
+const INVARIANT_APP_RSC_REQUEST_HEADERS = new Set(["accept", "rsc"]);
+
+function isClientMiddlewareMatcherObject(value: unknown): value is ClientMiddlewareMatcherObject {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.source !== "string") return false;
+  if (record.locale !== undefined && record.locale !== false) return false;
+  if (record.has !== undefined && !Array.isArray(record.has)) return false;
+  if (record.missing !== undefined && !Array.isArray(record.missing)) return false;
+  return true;
+}
+
+function isClientMiddlewareMatcherCondition(
+  condition: unknown,
+): condition is ClientMiddlewareMatcherCondition {
+  if (!condition || typeof condition !== "object" || Array.isArray(condition)) return false;
+  const record = condition as Record<string, unknown>;
+  if (
+    record.type !== "header" &&
+    record.type !== "cookie" &&
+    record.type !== "query" &&
+    record.type !== "host"
+  ) {
+    return false;
+  }
+  if (record.key !== undefined && typeof record.key !== "string") return false;
+  if (record.value !== undefined && typeof record.value !== "string") return false;
+  return true;
+}
+
+function conditionValueMatches(value: string, pattern: string | undefined): boolean {
+  if (pattern === undefined || pattern === "") return value !== "";
+  try {
+    return new RegExp(`^${pattern}$`).test(value);
+  } catch {
+    return false;
+  }
+}
+
+function clientMatcherConditionMatches(
+  condition: ClientMiddlewareMatcherCondition,
+  target: URL,
+): boolean | "unknown" {
+  switch (condition.type) {
+    case "query": {
+      if (!condition.key) return false;
+      const values = target.searchParams.getAll(condition.key);
+      if (values.length === 0) return false;
+      if (condition.value === undefined || condition.value === "") {
+        return values.length > 1 || values[0] !== "";
+      }
+      return conditionValueMatches(values[values.length - 1] ?? "", condition.value);
+    }
+    case "host": {
+      const hostname = target.host.split(":", 1)[0]?.toLowerCase() ?? "";
+      return conditionValueMatches(hostname, condition.value);
+    }
+    case "header": {
+      return "unknown";
+    }
+    case "cookie": {
+      // document.cookie cannot observe HttpOnly cookies and does not preserve
+      // the server Cookie header's duplicate-name/path ordering. A visible
+      // value therefore cannot prove whether the server matcher will match.
+      return "unknown";
+    }
+  }
+}
+
+function stripLocaleForMiddlewareMatcher(pathname: string): string {
+  const locales = window.__VINEXT_LOCALES__;
+  if (!locales || locales.length === 0 || pathname === "/") return pathname;
+  const firstSegment = pathname.split("/")[1];
+  if (
+    !firstSegment ||
+    !locales.some((locale) => locale.toLowerCase() === firstSegment.toLowerCase())
+  ) {
+    return pathname;
+  }
+  return "/" + pathname.split("/").slice(2).join("/");
+}
+
+function decodeMiddlewarePathname(pathname: string): string | null {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+}
+
+function clientMiddlewareSourceMatches(pathname: string, source: string): boolean | "unknown" {
+  if (/[\\()[\]{}|^$?]/.test(source)) return "unknown";
+  if (!/[\\():*+?]/.test(source)) {
+    return (
+      normalizePathTrailingSlash(pathname, false) === normalizePathTrailingSlash(source, false)
+    );
+  }
+  const sourceParts = source.split("/").filter(Boolean);
+  const pathParts = pathname.split("/").filter(Boolean);
+  let pathIndex = 0;
+  for (const sourcePart of sourceParts) {
+    if (sourcePart.startsWith(":")) {
+      if (!/^:[A-Za-z0-9_]+[+*]?$/.test(sourcePart)) return "unknown";
+      if (sourcePart.endsWith("*")) return true;
+      if (sourcePart.endsWith("+")) return pathIndex < pathParts.length;
+      if (pathIndex >= pathParts.length) return false;
+      pathIndex++;
+      continue;
+    }
+    if (/[:*+]/.test(sourcePart)) return "unknown";
+    if (pathParts[pathIndex] !== sourcePart) return false;
+    pathIndex++;
+  }
+  return pathIndex === pathParts.length;
+}
+
+function middlewareMatcherConditionsMayMatchNavigation(
+  matcher: ClientMiddlewareMatcherObject,
+  target: URL,
+): boolean {
+  for (const rawCondition of matcher.has ?? []) {
+    if (!isClientMiddlewareMatcherCondition(rawCondition)) return true;
+    if (clientMatcherConditionMatches(rawCondition, target) === false) return false;
+  }
+  for (const rawCondition of matcher.missing ?? []) {
+    if (!isClientMiddlewareMatcherCondition(rawCondition)) return true;
+    if (clientMatcherConditionMatches(rawCondition, target) === true) return false;
+  }
+  return true;
+}
+
+function middlewareMatcherMayDifferBetweenPrefetchAndNavigation(
+  matcher: ClientMiddlewareMatcherObject,
+): boolean {
+  for (const rawCondition of [...(matcher.has ?? []), ...(matcher.missing ?? [])]) {
+    if (!isClientMiddlewareMatcherCondition(rawCondition)) return true;
+    // Query, host, and cookie values are identical for the prefetch and its
+    // navigation. Some request headers are invariant too: every App Router
+    // flight request carries the same RSC and Accept values. Other headers can
+    // differ, most importantly Next-Router-Prefetch.
+    if (
+      rawCondition.type === "header" &&
+      (!rawCondition.key || !INVARIANT_APP_RSC_REQUEST_HEADERS.has(rawCondition.key.toLowerCase()))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function middlewareMayAffectNavigation(target: URL, matcher: unknown): boolean {
+  if (matcher === undefined || matcher === null) return false;
+  const matchers = typeof matcher === "string" ? [matcher] : matcher;
+  if (!Array.isArray(matchers)) return true;
+  const pathname = stripBasePath(target.pathname, __basePath);
+  const decodedPathname = decodeMiddlewarePathname(pathname);
+  const pathnames =
+    decodedPathname !== null && decodedPathname !== pathname
+      ? [pathname, decodedPathname]
+      : [pathname];
+  for (const item of matchers) {
+    const normalized =
+      typeof item === "string"
+        ? ({ source: item } satisfies ClientMiddlewareMatcherObject)
+        : isClientMiddlewareMatcherObject(item)
+          ? item
+          : null;
+    if (normalized === null) return true;
+    const sourceMayMatch = pathnames.some((candidatePathname) => {
+      if (normalized.locale !== false) {
+        return (
+          clientMiddlewareSourceMatches(
+            stripLocaleForMiddlewareMatcher(candidatePathname),
+            normalized.source,
+          ) !== false
+        );
+      }
+
+      const candidates = [candidatePathname];
+      const defaultLocale = window.__VINEXT_DEFAULT_LOCALE__;
+      if (
+        defaultLocale &&
+        stripLocaleForMiddlewareMatcher(candidatePathname) === candidatePathname
+      ) {
+        candidates.push(`/${defaultLocale}${candidatePathname === "/" ? "" : candidatePathname}`);
+      }
+      return candidates.some(
+        (candidate) => clientMiddlewareSourceMatches(candidate, normalized.source) !== false,
+      );
+    });
+    if (!sourceMayMatch) continue;
+    if (
+      middlewareMatcherMayDifferBetweenPrefetchAndNavigation(normalized) &&
+      middlewareMatcherConditionsMayMatchNavigation(normalized, target)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function automaticPrefetchMayMismatchNavigation(target: URL): boolean {
+  return middlewareMayAffectNavigation(target, window.__VINEXT_MIDDLEWARE_MATCHER__);
+}
+
 function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
   return hasAppNavigationRuntime() ? "app" : "pages";
 }
@@ -458,6 +677,7 @@ function prefetchUrl(
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
           NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+          VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER,
           VINEXT_MOUNTED_SLOTS_HEADER,
         } = headersModule;
         // Hybrid ownership: skip the App RSC prefetch when Pages owns the
@@ -485,7 +705,10 @@ function prefetchUrl(
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
-        const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
+        const mayMismatchNavigation =
+          mode === "auto" && automaticPrefetchMayMismatchNavigation(target);
+        const cacheForNavigation = autoPrefetch.cacheForNavigation && !mayMismatchNavigation;
+        const isOptimisticRouteShellPrefetch = !cacheForNavigation;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
           mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
@@ -503,13 +726,18 @@ function prefetchUrl(
           renderMode: isOptimisticRouteShellPrefetch
             ? hasSearchAgnosticShell
               ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
-              : isAutomaticSearchParamShell
-                ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
-                : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+              : mayMismatchNavigation
+                ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+                : isAutomaticSearchParamShell
+                  ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
+                  : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
             : undefined,
         });
         if (mountedSlotsHeader) {
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+        }
+        if (mayMismatchNavigation) {
+          headers.set(VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER, "1");
         }
         const shouldSendSegmentPrefetchHeaders = isOptimisticRouteShellPrefetch || mode === "auto";
         const requiresRouteTreePrefetch = autoPrefetch.requiresRouteTreePrefetch === true;
@@ -533,11 +761,11 @@ function prefetchUrl(
             : [];
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
-        if (autoPrefetch.cacheForNavigation) {
+        if (cacheForNavigation) {
           discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
         }
         if (
-          !autoPrefetch.cacheForNavigation &&
+          !cacheForNavigation &&
           hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)
         ) {
           return;
@@ -621,11 +849,11 @@ function prefetchUrl(
           });
         };
         const hasExactNavigationCacheEntry =
-          autoPrefetch.cacheForNavigation &&
+          cacheForNavigation &&
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader);
         const hasNavigationCacheEntry =
           hasExactNavigationCacheEntry ||
-          (autoPrefetch.cacheForNavigation &&
+          (cacheForNavigation &&
             hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
               additionalRscUrls,
             }));
@@ -666,7 +894,7 @@ function prefetchUrl(
           (mode === "full-after-shell" || gateViaExplicitSearchShell) &&
           autoPrefetch.prefetchShellFirst;
         const fetchPromise =
-          autoPrefetch.cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
+          cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
             ? (async () => {
                 if (gateViaLoadingShell) {
                   await fetchLoadingShellForReuse();
@@ -697,7 +925,7 @@ function prefetchUrl(
         if (
           !__prefetchInlining &&
           mode === "full" &&
-          autoPrefetch.cacheForNavigation &&
+          cacheForNavigation &&
           autoPrefetch.prefetchShellFirst &&
           mountedSlotsHeader === null &&
           !gateViaExplicitSearchShell
@@ -711,7 +939,7 @@ function prefetchUrl(
           mountedSlotsHeader,
           undefined,
           {
-            cacheForNavigation: autoPrefetch.cacheForNavigation,
+            cacheForNavigation,
             fallbackTtlMs:
               autoPrefetch.fallbackTtl === "dynamic"
                 ? DYNAMIC_NAVIGATION_CACHE_TTL
@@ -719,10 +947,9 @@ function prefetchUrl(
             honorDynamicStaleTime: autoPrefetch.honorDynamicStaleTime,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
             prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
-            prepareSnapshot: autoPrefetch.cacheForNavigation
-              ? prepareNavigationPrefetchSnapshot
-              : undefined,
-            searchAgnosticShell: isAutomaticSearchParamShell && !hasSearchAgnosticShell,
+            prepareSnapshot: cacheForNavigation ? prepareNavigationPrefetchSnapshot : undefined,
+            searchAgnosticShell:
+              isAutomaticSearchParamShell && !hasSearchAgnosticShell && !mayMismatchNavigation,
           },
         );
       } else if (HAS_PAGES_ROUTER && window.__NEXT_DATA__) {

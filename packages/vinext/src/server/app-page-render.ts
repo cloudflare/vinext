@@ -151,6 +151,7 @@ type RenderAppPageLifecycleOptions = {
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
     interceptionContext?: string | null,
+    mismatchRecoveryPrefetch?: boolean,
   ) => string;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
@@ -191,6 +192,7 @@ type RenderAppPageLifecycleOptions = {
   scriptNonce?: string;
   clientReuseManifest?: ClientReuseManifestParseResult;
   skipDisposition?: ClientReuseManifestSkipDisposition;
+  mismatchRecoveryPrefetch?: boolean;
   mountedSlotsHeader?: string | null;
   renderedPathAndSearch?: string | null;
   renderMode?: AppRscRenderMode;
@@ -757,7 +759,9 @@ export async function renderAppPageLifecycle(
 
   let pprFallbackShellRsc: Uint8Array | null = null;
   if (options.pprFallbackShellSignal) {
-    pprFallbackShellRsc = new Uint8Array(await readAppPageBinaryStream(rscStream));
+    const bytes = new Uint8Array(await readAppPageBinaryStream(rscStream));
+    const { invalidateIncompletePageSuspenseShell } = await import("./app-page-loading-shell.js");
+    pprFallbackShellRsc = invalidateIncompletePageSuspenseShell(bytes);
   }
 
   let revalidateSeconds = options.revalidateSeconds;
@@ -786,7 +790,10 @@ export async function renderAppPageLifecycle(
     });
   const rscCapture = pprFallbackShellRsc
     ? {
-        ssrStream: createBufferedRscStream(false),
+        // HTML SSR keeps this open until the embed transform appends its done
+        // frame. A direct RSC loading-shell response has no downstream writer,
+        // so its buffered prerender prelude must close here.
+        ssrStream: createBufferedRscStream(options.isRscRequest),
         ...(shouldCaptureRscForCacheMetadata ? { sideStream: createBufferedRscStream(true) } : {}),
       }
     : teeAppPageRscStreamForCapture(rscStream, shouldCaptureRscForCacheMetadata);
@@ -955,6 +962,7 @@ export async function renderAppPageLifecycle(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
+      mismatchRecoveryPrefetch: options.mismatchRecoveryPrefetch,
       mountedSlotsHeader: options.mountedSlotsHeader,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       renderMode: options.renderMode,
@@ -1268,6 +1276,7 @@ export async function renderAppPageLifecycle(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
+      mismatchRecoveryPrefetch: options.mismatchRecoveryPrefetch,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
       expireSeconds,

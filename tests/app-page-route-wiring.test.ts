@@ -5,6 +5,7 @@ import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
   APP_ROOT_LAYOUT_KEY,
   APP_SOURCE_PAGE_SEGMENTS_KEY,
   AppElementsWire,
@@ -1528,38 +1529,53 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Slot page");
   });
 
-  it("does not render page content for loading-shell prefetches without a route loading boundary", async () => {
-    const elements = buildAppPageElements({
-      element: createElement(PageProbe),
-      makeThenableParams(params) {
-        return Promise.resolve(params);
-      },
-      matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
-      route: {
-        error: null,
-        errors: [null],
-        layoutTreePositions: [0],
-        layouts: [{ default: RootLayout }],
-        loading: null,
-        notFound: null,
-        notFounds: [null],
-        routeSegments: ["dashboard"],
-        templateTreePositions: [],
-        templates: [],
-      },
-      routePath: "/dashboard",
-      rootNotFoundModule: null,
-      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-    });
+  it.each([
+    {
+      allowPageLocalPrefetchShell: false,
+      expectedMarker: undefined,
+      expectedPage: false,
+    },
+    {
+      allowPageLocalPrefetchShell: true,
+      expectedMarker: APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
+      expectedPage: true,
+    },
+  ])(
+    "scopes page-local loading shells to mismatch recovery ($allowPageLocalPrefetchShell)",
+    async ({ allowPageLocalPrefetchShell, expectedMarker, expectedPage }) => {
+      const elements = buildAppPageElements({
+        allowPageLocalPrefetchShell,
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        resolvedMetadata: null,
+        resolvedViewport: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["dashboard"],
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/dashboard",
+        rootNotFoundModule: null,
+        renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      });
 
-    expect(elements["page:/dashboard"]).toBeNull();
-    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
-    const html = await renderRouteEntry(elements, "route:/dashboard");
+      expect(elements["page:/dashboard"] !== null).toBe(expectedPage);
+      expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe(expectedMarker);
+      const html = await renderRouteEntry(elements, "route:/dashboard");
 
-    expect(html).not.toContain("Page");
-  });
+      expect(html.includes("Page")).toBe(expectedPage);
+    },
+  );
 
   it("omits page, layout, and loading content for empty Next prefetch payloads", async () => {
     const elements = buildAppPageElements({

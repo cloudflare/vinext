@@ -324,6 +324,7 @@ export async function applyAppMiddleware(
         isDataRequest: options.isDataRequest,
         isProxy: options.isProxy,
         module: options.module,
+        matcherRequest: options.request,
         normalizedPathname: cleanPathname,
         requestBodyAlreadyIsolated: true,
         request: middlewareRequest,

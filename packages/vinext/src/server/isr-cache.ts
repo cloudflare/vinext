@@ -468,15 +468,17 @@ function normalizeInterceptionContextForCacheKey(interceptionContext: string): s
  * Variants are sequenced in order: `source:<hash>` (intercepted source context,
  * only when an interception context is present), `slots:<hash>` (mounted parallel
  * route slots), and optionally `<render-mode-variant>` (for example,
- * `prefetch-loading-shell`). Existing cached entries under the old format will
- * become unreachable after deployment. This is acceptable because ISR entries
- * have TTLs and will be regenerated on the next request.
+ * `prefetch-loading-shell`) and `mismatch-recovery-prefetch`. Existing cached
+ * entries under the old format will become unreachable after deployment. This
+ * is acceptable because ISR entries have TTLs and will be regenerated on the
+ * next request.
  */
 export function appIsrRscKey(
   pathname: string,
   mountedSlotsHeader?: string | null,
   renderMode: AppRscRenderMode = APP_RSC_RENDER_MODE_NAVIGATION,
   interceptionContext?: string | null,
+  mismatchRecoveryPrefetch = false,
 ): string {
   const normalizedMountedSlotsHeader = normalizeMountedSlotsHeader(mountedSlotsHeader);
   const sourceVariant =
@@ -487,6 +489,7 @@ export function appIsrRscKey(
     sourceVariant ? `source:${fnv1a64(sourceVariant)}` : null,
     normalizedMountedSlotsHeader ? `slots:${fnv1a64(normalizedMountedSlotsHeader)}` : null,
     getRscRenderModeCacheVariant(renderMode),
+    mismatchRecoveryPrefetch ? "mismatch-recovery-prefetch" : null,
   ]
     .filter((part) => part !== null)
     .join(":");

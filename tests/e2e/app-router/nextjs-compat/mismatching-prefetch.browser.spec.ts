@@ -3,7 +3,7 @@ import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Route } from "@playwright/test";
 import { waitForAppRouterHydration } from "../../helpers";
 
 type ProductionApp = {
@@ -38,12 +38,23 @@ async function writeFixture(fixtureRoot: string): Promise<void> {
   const appDir = path.join(fixtureRoot, "app");
   const sourceDir = path.join(appDir, "mismatching-prefetch");
   const dynamicDir = path.join(sourceDir, "dynamic-page", "[param]");
-  await fs.mkdir(dynamicDir, { recursive: true });
+  const noSuspenseConnectionDir = path.join(appDir, "no-suspense-connection");
+  const noSuspenseHeadersDir = path.join(appDir, "no-suspense-headers");
+  const noSuspenseCookiesDir = path.join(appDir, "no-suspense-cookies");
+  await Promise.all(
+    [dynamicDir, noSuspenseConnectionDir, noSuspenseHeadersDir, noSuspenseCookiesDir].map((dir) =>
+      fs.mkdir(dir, { recursive: true }),
+    ),
+  );
   await linkFixtureNodeModules(fixtureRoot);
 
   await fs.writeFile(
     path.join(fixtureRoot, "package.json"),
     `${JSON.stringify({ type: "module", dependencies: {} }, null, 2)}\n`,
+  );
+  await fs.writeFile(
+    path.join(fixtureRoot, "next.config.js"),
+    `export default { cacheComponents: true };\n`,
   );
   await fs.writeFile(
     path.join(appDir, "layout.tsx"),
@@ -73,41 +84,80 @@ export default function Page() {
 `,
   );
   await fs.writeFile(
-    path.join(dynamicDir, "loading.tsx"),
-    `export default function Loading() {
-  return <div id="dynamic-page-loading-a">Loading a...</div>;
-}
-`,
-  );
-  await fs.writeFile(
     path.join(dynamicDir, "page.tsx"),
     `import { connection } from "next/server";
+import { Suspense, type ReactNode } from "react";
 
-export function generateStaticParams() {
+export async function generateStaticParams() {
   return [{ param: "a" }, { param: "b" }];
 }
 
-export default async function Page({ params }: { params: Promise<{ param: string }> }) {
+async function DynamicContent({ children }: { children: ReactNode }) {
   await connection();
+  return children;
+}
+
+export default async function Page({ params }: { params: Promise<{ param: string }> }) {
   const { param } = await params;
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  return <div id={\`dynamic-page-content-\${param}\`}>{\`Dynamic page \${param}\`}</div>;
+  return <>
+    <div id={\`dynamic-page-static-\${param}\`}>{\`Static sibling \${param}\`}</div>
+    <Suspense fallback={<div id={\`dynamic-page-wrong-loading-\${param}\`}>{\`Wrong loading \${param}\`}</div>}>
+      <div id={\`dynamic-page-static-boundary-\${param}\`}>{\`Static boundary \${param}\`}</div>
+    </Suspense>
+    <Suspense fallback={<div id={\`dynamic-page-loading-\${param}\`}>{\`Loading \${param}...\`}</div>}>
+      <DynamicContent>
+        <div id={\`dynamic-page-content-\${param}\`}>{\`Dynamic page \${param}\`}</div>
+      </DynamicContent>
+    </Suspense>
+  </>;
 }
 `,
   );
   await fs.writeFile(
-    path.join(fixtureRoot, "middleware.ts"),
+    path.join(noSuspenseConnectionDir, "page.tsx"),
+    `import { connection } from "next/server";
+
+export default async function Page() {
+  await connection();
+  return <div>Bare connection content</div>;
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(noSuspenseHeadersDir, "page.tsx"),
+    `import { headers } from "next/headers";
+
+export default async function Page() {
+  await headers();
+  return <div>Bare headers content</div>;
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(noSuspenseCookiesDir, "page.tsx"),
+    `import { cookies } from "next/headers";
+
+export default async function Page() {
+  await cookies();
+  return <div>Bare cookies content</div>;
+}
+`,
+  );
+  await fs.writeFile(
+    path.join(fixtureRoot, "proxy.ts"),
     `import { NextResponse, type NextRequest } from "next/server";
 
-export function middleware(request: NextRequest) {
-  if (request.headers.get("x-vinext-rsc-render-mode") === "prefetch-loading-shell") {
-    return NextResponse.next();
-  }
+export default function proxy(request: NextRequest) {
   const destination = request.nextUrl.searchParams.get("mismatch-rewrite");
   return destination ? NextResponse.rewrite(new URL(destination, request.url)) : NextResponse.next();
 }
 
-export const config = { matcher: "/mismatching-prefetch/:path*" };
+export const config = {
+  matcher: [{
+    source: "/:path*",
+    missing: [{ type: "header", key: "Next-Router-Prefetch" }],
+  }],
+};
 `,
   );
 
@@ -169,6 +219,30 @@ test("recovers when navigation middleware rewrites away from the prefetched rout
   try {
     await page.goto(`${app.baseUrl}/mismatching-prefetch`);
     await waitForAppRouterHydration(page);
+    expect(await page.evaluate(() => window.__VINEXT_MIDDLEWARE_MATCHER__)).toEqual([
+      {
+        missing: [{ key: "Next-Router-Prefetch", type: "header" }],
+        source: "/:path*",
+      },
+    ]);
+
+    for (const route of [
+      "/no-suspense-connection",
+      "/no-suspense-headers",
+      "/no-suspense-cookies",
+    ]) {
+      const shell = await page.evaluate(async (pathname) => {
+        const response = await fetch(`${pathname}.rsc`, {
+          headers: {
+            RSC: "1",
+            "x-vinext-rsc-render-mode": "prefetch-loading-shell",
+          },
+        });
+        return { body: await response.text(), status: response.status };
+      }, route);
+      expect(shell.status).toBe(200);
+      expect(shell.body).not.toContain('"__prefetchLoadingShell":"PageSuspense"');
+    }
 
     const prefetchResponse = page.waitForResponse((response) => {
       const request = response.request();
@@ -179,7 +253,10 @@ test("recovers when navigation middleware rewrites away from the prefetched rout
     });
     await page.click("#reveal-link");
     await page.hover("#mismatch-link");
-    expect((await prefetchResponse).ok()).toBe(true);
+    const prefetched = await prefetchResponse;
+    expect(prefetched.ok()).toBe(true);
+    const prefetchBody = await prefetched.text();
+    expect(prefetchBody).toContain("Loading a...");
 
     await page.evaluate(() => {
       (window as Window & { __MISMATCH_PREFETCH_MARKER__?: boolean }).__MISMATCH_PREFETCH_MARKER__ =
@@ -192,8 +269,33 @@ test("recovers when navigation middleware rewrites away from the prefetched rout
       }
     });
 
-    await page.click("#mismatch-link");
-    await expect(page.locator("#dynamic-page-content-b")).toHaveText("Dynamic page b");
+    let releaseDynamicRequest = () => {};
+    const dynamicRequestReleased = new Promise<void>((resolve) => {
+      releaseDynamicRequest = resolve;
+    });
+    const holdDynamicRequest = async (route: Route) => {
+      const request = route.request();
+      if (
+        request.headers().rsc === "1" &&
+        request.url().includes("/mismatching-prefetch/dynamic-page/a")
+      ) {
+        await dynamicRequestReleased;
+      }
+      await route.continue();
+    };
+    await page.route("**/mismatching-prefetch/dynamic-page/a**", holdDynamicRequest);
+
+    try {
+      await page.click("#mismatch-link");
+      await expect(page.locator("#dynamic-page-static-a")).toHaveText("Static sibling a");
+      await expect(page.locator("#dynamic-page-static-boundary-a")).toHaveText("Static boundary a");
+      await expect(page.locator("#dynamic-page-loading-a")).toHaveText("Loading a...");
+      await expect(page.locator("#dynamic-page-wrong-loading-a")).toHaveCount(0);
+      releaseDynamicRequest();
+      await expect(page.locator("#dynamic-page-content-b")).toHaveText("Dynamic page b");
+    } finally {
+      releaseDynamicRequest();
+    }
     expect(new URL(page.url()).pathname).toBe("/mismatching-prefetch/dynamic-page/a");
     expect(new URL(page.url()).search).toBe("?mismatch-rewrite=./b");
     expect(documentRequests).toEqual([]);

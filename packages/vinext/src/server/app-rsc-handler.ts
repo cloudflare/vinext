@@ -225,6 +225,7 @@ type DispatchMatchedPageOptions<TRoute> = {
     | null;
   pprFallbackShell?: {
     fallbackParamNames: readonly string[];
+    preserveDynamicMetadata?: boolean;
     routePattern: string;
   };
   renderedConcreteUrlPaths?: ReadonlySet<string>;

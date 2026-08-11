@@ -17,11 +17,13 @@ export type PprFallbackShellState = {
   pendingCacheReadyCleanup: (() => void) | null;
   pendingCacheTasks: number;
   phase: "warmup" | "final";
+  preserveDynamicMetadata: boolean;
   routePattern: string;
 };
 
 type CreatePprFallbackShellStateOptions = {
   fallbackParamNames: readonly string[];
+  preserveDynamicMetadata?: boolean;
   routePattern: string;
 };
 
@@ -36,6 +38,9 @@ type PprFallbackShellCacheTask = {
 const pprFallbackShellAls = getOrCreateAls<PprFallbackShellState>("vinext.pprFallbackShell.als");
 const pprFallbackShellCacheTaskStackAls = getOrCreateAls<PprFallbackShellCacheTask[]>(
   "vinext.pprFallbackShell.cacheTaskStack.als",
+);
+const pprFallbackShellMetadataResolutionAls = getOrCreateAls<boolean>(
+  "vinext.pprFallbackShell.metadataResolution.als",
 );
 
 function noop(): void {}
@@ -155,6 +160,7 @@ export function createPprFallbackShellState(
     pendingCacheReadyCleanup: null,
     pendingCacheTasks: 0,
     phase: "warmup",
+    preserveDynamicMetadata: options.preserveDynamicMetadata === true,
     routePattern: options.routePattern,
   };
 }
@@ -164,7 +170,18 @@ export function runWithPprFallbackShellState<T>(state: PprFallbackShellState, fn
 }
 
 export function getPprFallbackShellState(): PprFallbackShellState | null {
-  return pprFallbackShellAls.getStore() ?? null;
+  const state = pprFallbackShellAls.getStore() ?? null;
+  if (
+    state?.preserveDynamicMetadata === true &&
+    pprFallbackShellMetadataResolutionAls.getStore() === true
+  ) {
+    return null;
+  }
+  return state;
+}
+
+export function runWithPprFallbackShellMetadataResolution<T>(fn: () => T): T {
+  return pprFallbackShellMetadataResolutionAls.run(true, fn);
 }
 
 export function trackPprFallbackShellCacheTask<T>(

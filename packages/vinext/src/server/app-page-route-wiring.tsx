@@ -3,6 +3,8 @@ import {
   AppElementsWire,
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_LOADING_SHELL_MARKER_VALUE,
+  APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
   APP_ROOT_LAYOUT_KEY,
   APP_STATIC_SIBLINGS_KEY,
   normalizeAppElementsSlotBindings,
@@ -254,6 +256,7 @@ type BuildAppPageElementsOptions<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = BuildAppPageRouteElementOptions<TModule, TErrorModule> & {
+  allowPageLocalPrefetchShell?: boolean;
   interception?: AppElementsInterception | null;
   interceptionContext?: string | null;
   isRscRequest?: boolean;
@@ -1060,15 +1063,25 @@ export function buildAppPageElements<
 
   const routeLoadingComponent = getDefaultExport(options.route.loading);
   const prefetchLoadingComponent = getDefaultExport(prefetchLoadingEntry?.loadingModule);
+  const shouldProbePageLocalFallback =
+    isPrefetchLoadingShell &&
+    options.allowPageLocalPrefetchShell === true &&
+    prefetchLoadingComponent === null &&
+    prefetchSlotLoadingEntries.length === 0;
   const shouldRenderPrefetchLoadingShell =
     isPrefetchLoadingShell &&
-    (prefetchLoadingComponent !== null || prefetchSlotLoadingEntries.length > 0);
+    (shouldProbePageLocalFallback ||
+      prefetchLoadingComponent !== null ||
+      prefetchSlotLoadingEntries.length > 0);
+  const prefetchLoadingShellMarker = shouldProbePageLocalFallback
+    ? APP_PREFETCH_PAGE_SHELL_MARKER_VALUE
+    : APP_PREFETCH_LOADING_SHELL_MARKER_VALUE;
   if (shouldRenderPrefetchLoadingShell) {
     // Client loading components serialize as module references in Flight. Keep
     // a durable marker in the shell payload so external router tests and
     // diagnostics can recognize this as a loading-boundary response without
     // requiring source text to appear in client component references.
-    elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
+    elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = prefetchLoadingShellMarker;
   }
 
   const pageLoadingModule = resolveAppPageLoadingModuleAtOrAbove(
@@ -1089,11 +1102,12 @@ export function buildAppPageElements<
   ) : (
     options.element
   );
-  elements[pageElementId] = isPrefetchLoadingShell
-    ? null
-    : pageRenderDependency
-      ? pageElement
-      : renderAfterAppDependencies(pageElement, pageDependencies);
+  elements[pageElementId] =
+    isPrefetchLoadingShell && !shouldProbePageLocalFallback
+      ? null
+      : pageRenderDependency
+        ? pageElement
+        : renderAfterAppDependencies(pageElement, pageDependencies);
 
   for (const templateEntry of templateEntries) {
     if (isPrefetchLoadingShell && !includesPrefetchTreePosition(templateEntry.treePosition)) {
@@ -1483,7 +1497,14 @@ export function buildAppPageElements<
     // effect belongs to the real render that replaces this shell (handled in the
     // else branch below).
     if (prefetchLoadingComponent === null) {
-      routeChildren = null;
+      routeChildren = shouldProbePageLocalFallback ? (
+        <LayoutSegmentProvider
+          providerId={pageElementId}
+          segmentMap={{ children: [APP_PAGE_SEGMENT_KEY] }}
+        >
+          <Slot id={pageElementId} />
+        </LayoutSegmentProvider>
+      ) : null;
     } else {
       const PrefetchLoadingComponent = prefetchLoadingComponent;
       routeChildren = <PrefetchLoadingComponent />;
@@ -1794,7 +1815,7 @@ export function buildAppPageElements<
           // a durable marker in the shell payload so external router tests and
           // diagnostics can recognize this as a loading-boundary response without
           // requiring source text to appear in client component references.
-          [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+          [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: prefetchLoadingShellMarker,
         }
       : {},
   );

@@ -2,6 +2,8 @@ import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import { AppElementsWire, UNMATCHED_SLOT, type AppElements } from "./app-elements-wire.js";
 
 export const APP_PREFETCH_LOADING_SHELL_MARKER_KEY = "__prefetchLoadingShell";
+export const APP_PREFETCH_LOADING_SHELL_MARKER_VALUE = "LoadingBoundary";
+export const APP_PREFETCH_PAGE_SHELL_MARKER_VALUE = "PageSuspense";
 
 export {
   AppElementsWire,

@@ -18,6 +18,7 @@ type AppPageRscCacheKeyBuilder = (
   mountedSlotsHeader?: string | null,
   renderMode?: AppRscRenderMode,
   interceptionContext?: string | null,
+  mismatchRecoveryPrefetch?: boolean,
 ) => string;
 type AppPageRequestCacheLife = {
   revalidate?: number;
@@ -44,6 +45,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
+  mismatchRecoveryPrefetch?: boolean;
   omitPendingDynamicCacheState?: boolean;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
@@ -64,6 +66,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
+  mismatchRecoveryPrefetch?: boolean;
   mountedSlotsHeader?: string | null;
   omitPendingDynamicCacheState?: boolean;
   renderMode?: AppRscRenderMode;
@@ -167,6 +170,7 @@ export function finalizeAppPageHtmlCacheResponse(
     null,
     undefined,
     options.interceptionContext,
+    options.mismatchRecoveryPrefetch,
   );
   const clientHeaders = new Headers(response.headers);
   if (options.preserveClientResponseHeaders !== true) {
@@ -298,6 +302,7 @@ export function scheduleAppPageRscCacheWrite(
     null,
     options.renderMode,
     options.interceptionContext,
+    options.mismatchRecoveryPrefetch,
   );
   const cachePromise = (async () => {
     try {

@@ -17,6 +17,7 @@ import {
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import type { VinextLinkPrefetchRoute } from "../packages/vinext/src/client/vinext-next-data.js";
@@ -52,6 +53,11 @@ type CapturedPrefetchLinkElement = {
 
 const linkPrefetchRoutes = [
   { canPrefetchLoadingShell: false, patternParts: ["viewport-prefetch-target"], isDynamic: false },
+  {
+    canPrefetchLoadingShell: false,
+    patternParts: ["EN", "viewport-prefetch-target"],
+    isDynamic: false,
+  },
   { canPrefetchLoadingShell: false, patternParts: ["intent-prefetch-target"], isDynamic: false },
   { canPrefetchLoadingShell: false, patternParts: ["touch-prefetch-target"], isDynamic: false },
   {
@@ -1344,6 +1350,7 @@ describe("Pages Router Link onClick semantics", () => {
 
 async function renderIsolatedLink(options: {
   appNavigation?: boolean;
+  documentCookie?: string;
   href: string;
   nodeEnv: string;
   props?: Record<string, unknown>;
@@ -1392,6 +1399,7 @@ async function renderIsolatedLink(options: {
 
   vi.stubGlobal("fetch", fetch);
   vi.stubGlobal("document", {
+    cookie: options.documentCookie ?? "",
     createElement: vi.fn(() => ({})),
     getElementById: vi.fn(() => null),
     getElementsByName: vi.fn(() => []),
@@ -1921,6 +1929,206 @@ describe("Link prefetch scheduling", () => {
       result.restoreNodeEnv();
     }
   });
+
+  it("preserves search-agnostic shell reuse when middleware matches both prefetch and navigation", async () => {
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target?searchParam=a_PPR",
+      nodeEnv: "production",
+      windowOverrides: {
+        __VINEXT_MIDDLEWARE_MATCHER__: ["/:path*"],
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      // Ported from Next.js:
+      // test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
+      // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      const headers = fetchInit?.headers as Headers | undefined;
+      expect(headers?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+      );
+      expect(headers?.get(VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER)).toBeNull();
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entry = Array.from(getPrefetchCache().values())[0];
+      expect(entry?.cacheForNavigation).toBe(false);
+      expect(entry?.searchAgnosticShell).toBe(true);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it.each([
+    {
+      name: "prefetch-only missing header matcher",
+      href: "/viewport-prefetch-target?mismatch-rewrite=./other",
+      locales: undefined,
+      matcher: {
+        source: "/:path*",
+        missing: [{ type: "header", key: "Next-Router-Prefetch" }],
+      },
+    },
+    {
+      name: "prefetch-only present header matcher",
+      href: "/viewport-prefetch-target?mismatch-rewrite=./other",
+      locales: undefined,
+      matcher: {
+        source: "/:path*",
+        has: [{ type: "header", key: "Next-Router-Prefetch" }],
+      },
+    },
+    {
+      name: "unknown header and HttpOnly cookie conditions",
+      href: "/viewport-prefetch-target",
+      locales: undefined,
+      matcher: {
+        source: "/:path*",
+        has: [
+          { type: "header", key: "x-rewrite-target" },
+          { type: "cookie", key: "http-only-rewrite" },
+        ],
+      },
+    },
+  ])(
+    "prefetches a loading shell when middleware may affect $name",
+    async ({ href, locales, matcher }) => {
+      // Ported from Next.js:
+      // test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
+      const observer = stubIntersectionObserver();
+      const result = await renderIsolatedLink({
+        documentCookie: "http-only-rewrite=visible-nonmatch",
+        href,
+        nodeEnv: "production",
+        windowOverrides: {
+          __VINEXT_DEFAULT_LOCALE__: locales?.[0],
+          __VINEXT_LOCALES__: locales,
+          __VINEXT_MIDDLEWARE_MATCHER__: [matcher],
+        },
+      });
+
+      try {
+        observer.dispatchIntersectingEntry(result.anchor);
+        await waitForFetchCalls(result.fetch, 1);
+
+        const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+        expect(
+          (fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER),
+        ).toBe(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+        expect(
+          (fetchInit?.headers as Headers | undefined)?.get(
+            VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER,
+          ),
+        ).toBe("1");
+        const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+        const entry = Array.from(getPrefetchCache().values())[0];
+        expect(entry?.cacheForNavigation).toBe(false);
+        expect(entry?.optimisticRouteShell).toBe(true);
+        expect(entry?.searchAgnosticShell).not.toBe(true);
+      } finally {
+        result.restoreNodeEnv();
+      }
+    },
+  );
+
+  it.each([
+    {
+      name: "queryless navigation",
+      href: "/viewport-prefetch-target",
+      locales: undefined,
+      matcher: { source: "/:path*" },
+    },
+    {
+      name: "complex negative-lookahead source",
+      href: "/viewport-prefetch-target",
+      locales: undefined,
+      matcher: { source: "/((?!api|_next/static).*)" },
+    },
+    {
+      name: "optional path parameter",
+      href: "/viewport-prefetch-target",
+      locales: undefined,
+      matcher: { source: "/viewport-prefetch-target/:path?" },
+    },
+    {
+      name: "decoded pathname",
+      href: "/viewport-prefetch%2Dtarget",
+      locales: undefined,
+      matcher: { source: "/viewport-prefetch-target" },
+    },
+    {
+      name: "case-insensitive locale prefix",
+      href: "/EN/viewport-prefetch-target",
+      locales: ["en"],
+      matcher: { source: "/viewport-prefetch-target" },
+    },
+    {
+      name: "locale-false default-locale prefix",
+      href: "/viewport-prefetch-target",
+      locales: ["en"],
+      matcher: { locale: false, source: "/en/viewport-prefetch-target" },
+    },
+    {
+      name: "duplicate empty query presence",
+      href: "/viewport-prefetch-target?flag=&flag=",
+      locales: undefined,
+      matcher: {
+        source: "/viewport-prefetch-target",
+        has: [{ type: "query", key: "flag" }],
+      },
+    },
+    {
+      name: "invariant RSC header",
+      href: "/viewport-prefetch-target?searchParam=a_PPR",
+      locales: undefined,
+      matcher: {
+        source: "/viewport-prefetch-target",
+        has: [{ type: "header", key: "RSC", value: "1" }],
+      },
+    },
+    {
+      name: "invariant Accept header",
+      href: "/viewport-prefetch-target?searchParam=a_PPR",
+      locales: undefined,
+      matcher: {
+        source: "/viewport-prefetch-target",
+        has: [{ type: "header", key: "Accept", value: "text/x-component" }],
+      },
+    },
+  ])(
+    "does not force mismatch recovery when middleware matches both requests for $name",
+    async ({ href, locales, matcher }) => {
+      const observer = stubIntersectionObserver();
+      const result = await renderIsolatedLink({
+        href,
+        nodeEnv: "production",
+        windowOverrides: {
+          __VINEXT_DEFAULT_LOCALE__: locales?.[0],
+          __VINEXT_LOCALES__: locales,
+          __VINEXT_MIDDLEWARE_MATCHER__: [matcher],
+        },
+      });
+
+      try {
+        observer.dispatchIntersectingEntry(result.anchor);
+        await waitForFetchCalls(result.fetch, 1);
+
+        const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+        expect(
+          (fetchInit?.headers as Headers | undefined)?.get(
+            VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER,
+          ),
+        ).toBeNull();
+      } finally {
+        result.restoreNodeEnv();
+      }
+    },
+  );
 
   it("prefetches a loading shell when a search-agnostic shell already covers another query", async () => {
     const observer = stubIntersectionObserver();

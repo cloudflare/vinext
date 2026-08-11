@@ -242,11 +242,16 @@ function extractStringFromConstInitializer(initializer: Expression | null): stri
   return null;
 }
 
-export function extractMiddlewareMatcherConfig(
-  filePath: string,
-): StaticMiddlewareMatcher | undefined {
+function extractMiddlewareMatcherConfig(filePath: string): StaticMiddlewareMatcher | undefined {
   const value = extractMiddlewareMatcherConfigValue(filePath);
   return isStaticMiddlewareMatcher(value) ? value : undefined;
+}
+
+export function resolveClientMiddlewareMatcherConfig(
+  filePath: string | null | undefined,
+): StaticMiddlewareMatcher | undefined {
+  if (!filePath) return undefined;
+  return extractMiddlewareMatcherConfig(filePath) ?? ["/:path*"];
 }
 
 /**

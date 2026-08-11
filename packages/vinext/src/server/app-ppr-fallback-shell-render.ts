@@ -27,7 +27,7 @@ export type WarmPprFallbackShellCachesOptions = {
 
 export async function warmPprFallbackShellCaches(
   options: WarmPprFallbackShellCachesOptions,
-): Promise<void> {
+): Promise<boolean> {
   let warmupError: unknown = null;
   const warmupStream = options.renderToReadableStream(options.element, {
     signal: options.state.abortController.signal,
@@ -46,9 +46,11 @@ export async function warmPprFallbackShellCaches(
     warmupError = error;
   });
 
+  let hasDynamicBoundary = false;
   try {
     await waitForPprFallbackShellCacheReady(options.state);
   } finally {
+    hasDynamicBoundary = options.state.hasDynamicBoundary;
     options.state.abortController.abort();
     await warmupDrain;
     preparePprFallbackShellFinalRender(options.state);
@@ -57,4 +59,5 @@ export async function warmPprFallbackShellCaches(
   if (warmupError) {
     throw warmupError;
   }
+  return hasDynamicBoundary;
 }

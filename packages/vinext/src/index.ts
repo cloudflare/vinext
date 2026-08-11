@@ -64,9 +64,9 @@ import {
   type RouteClassificationManifest,
 } from "./build/route-classification-manifest.js";
 import {
-  extractMiddlewareMatcherConfig,
   extractMiddlewareMatcherConfigValue,
   hasExportedName,
+  resolveClientMiddlewareMatcherConfig,
 } from "./build/report.js";
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
@@ -1524,9 +1524,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
       appPrefetchRoutes,
       instrumentationClientPath,
-      middlewareMatcher: middlewarePath
-        ? extractMiddlewareMatcherConfig(middlewarePath)
-        : undefined,
+      middlewareMatcher: resolveClientMiddlewareMatcherConfig(middlewarePath),
       reactPreamble: options.react !== false,
     });
   }
@@ -3888,6 +3886,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               graph.routeManifest,
               pagesPrefetchRoutes,
               nextConfig.rewrites,
+              resolveClientMiddlewareMatcherConfig(middlewarePath),
             );
           }
           if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {

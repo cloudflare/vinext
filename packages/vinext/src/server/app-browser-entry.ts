@@ -105,6 +105,8 @@ import {
 } from "./app-browser-hydration.js";
 import {
   AppElementsWire,
+  APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
   getMountedSlotIdsHeader,
   resolveVisitedResponseInterceptionContext,
   type AppElements,
@@ -169,6 +171,7 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
 import { blockDangerousStreamedRscRedirect } from "./app-browser-rsc-redirect.js";
+import { isPromiseLike } from "../utils/promise.js";
 import {
   peekSettledPrefetchResponseForNavigation,
   preserveCommittedPrefetchExpiry,
@@ -176,6 +179,7 @@ import {
   resolvePrefetchNavigationResponseUrl,
 } from "./app-browser-prefetch-response.js";
 import {
+  createOptimisticRouteElements,
   createOptimisticRouteTemplate,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
@@ -464,6 +468,30 @@ function parsePrefetchCacheKey(cacheKey: string): {
   };
 }
 
+function createOpenRscReplay(snapshot: CachedRscResponse): {
+  close(): void;
+  response: Response;
+} {
+  const restored = restoreRscResponse(snapshot, false);
+  let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+  const body = new ReadableStream<Uint8Array>({
+    start(nextController) {
+      controller = nextController;
+      nextController.enqueue(new Uint8Array(snapshot.buffer.slice(0)));
+    },
+  });
+  return {
+    close() {
+      try {
+        controller?.close();
+      } catch {
+        // The Flight reader may already have canceled after a terminal error.
+      }
+    },
+    response: new Response(body, { headers: restored.headers }),
+  };
+}
+
 async function learnOptimisticRouteTemplateFromPrefetch(options: {
   cacheKey: string;
   entry: PrefetchCacheEntry & { snapshot: CachedRscResponse };
@@ -478,29 +506,66 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   }
   if (options.interceptionContext !== null) return false;
 
-  const elements = await decodeAppElementsPromise(
-    createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
-  );
-  const template = createOptimisticRouteTemplate({
-    allowLoadingShell: options.entry.optimisticRouteShell === true,
-    basePath: __basePath,
-    elements,
-    href: options.entry.snapshot.url || source.rscUrl,
-    interceptionContext: options.interceptionContext,
-    mountedSlotsHeader: options.mountedSlotsHeader,
-    routeManifest: options.routeManifest,
-  });
-  if (template === null) return false;
-
-  optimisticRouteTemplates.set(
-    getOptimisticRouteTemplateKey({
+  const replay = createOpenRscReplay(options.entry.snapshot);
+  try {
+    let elements = await decodeAppElementsPromise(
+      createFromFetch<AppWireElements>(Promise.resolve(replay.response)),
+    );
+    if (elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === APP_PREFETCH_PAGE_SHELL_MARKER_VALUE) {
+      const resolvedElements: Record<string, unknown> = { ...elements };
+      for (const [key, value] of Object.entries(elements)) {
+        const parsed = AppElementsWire.parseElementKey(key);
+        if (parsed?.kind !== "page" && !(parsed?.kind === "slot" && parsed.name === "children")) {
+          continue;
+        }
+        if (
+          (typeof value === "object" || typeof value === "function") &&
+          value !== null &&
+          Reflect.get(value, "$$typeof") === Symbol.for("react.lazy")
+        ) {
+          const init = Reflect.get(value, "_init");
+          if (typeof init !== "function") continue;
+          const payload = Reflect.get(value, "_payload");
+          try {
+            resolvedElements[key] = Reflect.apply(init, undefined, [payload]);
+          } catch (error) {
+            // A selected root that is still pending cannot yield a complete
+            // optimistic shell. Never await it here: a missing Flight record
+            // stays pending for the lifetime of this intentionally-open replay.
+            if (isPromiseLike(error)) return false;
+            // Terminal E rows must remain lazy so React can deliver them to the
+            // route error boundary when the optimistic tree renders.
+          }
+        }
+      }
+      elements = resolvedElements as AppElements;
+    }
+    let template = createOptimisticRouteTemplate({
+      allowLoadingShell: options.entry.optimisticRouteShell === true,
+      basePath: __basePath,
+      elements,
+      href: options.entry.snapshot.url || source.rscUrl,
       interceptionContext: options.interceptionContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
-      routeId: template.routeId,
-    }),
-    template,
-  );
-  return true;
+      routeManifest: options.routeManifest,
+    });
+    if (template === null) return false;
+    if (template.pageLoadingShell) {
+      template = { ...template, elements: createOptimisticRouteElements(template) };
+    }
+
+    optimisticRouteTemplates.set(
+      getOptimisticRouteTemplateKey({
+        interceptionContext: options.interceptionContext,
+        mountedSlotsHeader: options.mountedSlotsHeader,
+        routeId: template.routeId,
+      }),
+      template,
+    );
+    return true;
+  } finally {
+    replay.close();
+  }
 }
 
 async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {

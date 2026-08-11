@@ -3,8 +3,10 @@ import {
   beginPprFallbackShellFinalRender,
   createPprFallbackShellState,
   createPprFallbackShellSuspensePromise,
+  getPprFallbackShellState,
   isPprFallbackShellAbortError,
   preparePprFallbackShellFinalRender,
+  runWithPprFallbackShellMetadataResolution,
   runWithPprFallbackShellState,
   trackPprFallbackShellCacheTask,
   waitForPprFallbackShellCacheReady,
@@ -122,6 +124,42 @@ describe("ppr fallback shell cache task tracking", () => {
 });
 
 describe("ppr fallback shell render lifecycle", () => {
+  it("keeps dynamic metadata live for page-local prefetch shells", () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      preserveDynamicMetadata: true,
+      routePattern: "/target",
+    });
+
+    runWithPprFallbackShellState(state, () => {
+      expect(getPprFallbackShellState()).toBe(state);
+      runWithPprFallbackShellMetadataResolution(() => {
+        expect(getPprFallbackShellState()).toBeNull();
+        expect(createPprFallbackShellSuspensePromise("connection()")).toBeNull();
+      });
+      expect(getPprFallbackShellState()).toBe(state);
+    });
+
+    expect(state.hasDynamicBoundary).toBe(false);
+  });
+
+  it("continues deferring metadata in build fallback shells", () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/blog/:slug",
+    });
+
+    runWithPprFallbackShellState(state, () => {
+      runWithPprFallbackShellMetadataResolution(() => {
+        expect(getPprFallbackShellState()).toBe(state);
+        expect(createPprFallbackShellSuspensePromise("params")).not.toBeNull();
+      });
+    });
+
+    expect(state.hasDynamicBoundary).toBe(true);
+    state.abortController.abort();
+  });
+
   it("createPprFallbackShellSuspensePromise returns a promise for params expression", () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],

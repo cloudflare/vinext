@@ -31,7 +31,10 @@ import {
   buildRenderRequestApiObservations,
   type RenderObservation,
 } from "../packages/vinext/src/server/cache-proof.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import { after, connection } from "../packages/vinext/src/shims/server.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
@@ -59,6 +62,7 @@ import {
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
+import { VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER } from "../packages/vinext/src/server/headers.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -585,6 +589,41 @@ function createLayoutParamProbe(
 }
 
 describe("app page dispatch", () => {
+  it.each([
+    { expectedRun: false, mismatchRecovery: false },
+    { expectedRun: true, mismatchRecovery: true },
+  ])(
+    "scopes page-local fallback rendering to mismatch recovery requests ($mismatchRecovery)",
+    async ({ expectedRun, mismatchRecovery }) => {
+      const run = vi.fn();
+      const requestHeaders = new Headers();
+      if (mismatchRecovery) {
+        requestHeaders.set(VINEXT_MISMATCH_RECOVERY_PREFETCH_HEADER, "1");
+      }
+      const { options } = createDispatchOptions({
+        isRscRequest: true,
+        pprRuntime: {
+          beginFinalRender() {},
+          getState() {
+            return null;
+          },
+          run<T>(_shell: unknown, dispatch: () => T): T {
+            run();
+            return dispatch();
+          },
+          tryServe: async () => null,
+          warm: async () => false,
+        },
+        renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        request: new Request("https://example.test/posts/hello", { headers: requestHeaders }),
+      });
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(200);
+      expect(run).toHaveBeenCalledTimes(expectedRun ? 1 : 0);
+    },
+  );
   it("does not probe layouts below an active ancestor loading boundary", async () => {
     const probeLayoutAt = vi.fn((_layoutIndex: number) => null);
     const probePage = vi.fn(() => null);

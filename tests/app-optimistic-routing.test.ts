@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createElement, Suspense } from "react";
+import {
+  createElement,
+  Fragment,
+  isValidElement,
+  Suspense,
+  type ReactElement,
+  type ReactNode,
+} from "react";
+import { renderToString } from "react-dom/server";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
@@ -14,6 +23,10 @@ import {
   resolveOptimisticNavigationPayload,
   type OptimisticRouteTemplate,
 } from "../packages/vinext/src/server/app-optimistic-routing.js";
+import {
+  hasCompletedPageSuspenseShell,
+  invalidateIncompletePageSuspenseShell,
+} from "../packages/vinext/src/server/app-page-loading-shell.js";
 import type {
   GraphVersion,
   RouteManifest,
@@ -474,6 +487,230 @@ describe("App Router optimistic routing", () => {
       pageElementIds: [AppElementsWire.encodePageId("/blog/post-1", null)],
       routeId: "route:/blog/:slug",
     });
+  });
+
+  it("rejects page-local loading-shell markers without a Suspense boundary", () => {
+    const routeManifest = blogManifest();
+    const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
+    const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
+      [pageId]: createElement("article", null, "Aborted dynamic page"),
+      [routeId]: createElement("main", null, "Route wrapper"),
+    };
+
+    expect(
+      createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements,
+        href: "/blog/post-1.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+      }),
+    ).toBeNull();
+  });
+
+  it("preserves static siblings and only suspends unresolved page-shell holes", () => {
+    const routeManifest = blogManifest();
+    const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
+    const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+    const pendingChunk = Object.assign(new Promise<never>(() => {}), { status: "pending" });
+    const unresolvedFlightChunk = {
+      $$typeof: Symbol.for("react.lazy"),
+      _init(payload: Promise<never>) {
+        throw payload;
+      },
+      _payload: pendingChunk,
+    };
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
+      [pageId]: [
+        createElement("div", { id: "static-sibling", key: "static-sibling" }, "Static sibling"),
+        createElement(
+          Suspense,
+          {
+            fallback: createElement("div", { id: "wrong-loading" }, "Wrong loading"),
+            key: "static-boundary",
+          },
+          createElement("div", { id: "static-boundary" }, "Static boundary"),
+        ),
+        createElement(
+          Suspense,
+          {
+            fallback: createElement("div", { id: "right-loading" }, "Right loading"),
+            key: "dynamic-boundary",
+          },
+          unresolvedFlightChunk as unknown as ReactNode,
+        ),
+      ],
+      [routeId]: createElement("main", null, "Route wrapper"),
+    };
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+
+    const optimisticElements = createOptimisticRouteElements(template);
+    const html = renderToString(
+      createElement(Fragment, null, optimisticElements[pageId] as ReactNode),
+    );
+
+    expect(html).toContain("Static sibling");
+    expect(html).toContain("Static boundary");
+    expect(html).toContain("Right loading");
+    expect(html).not.toContain("Wrong loading");
+  });
+
+  it("preserves terminal Flight errors alongside unresolved page-shell holes", () => {
+    const routeManifest = blogManifest();
+    const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
+    const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+    const pendingChunk = Object.assign(new Promise<never>(() => {}), { status: "pending" });
+    const unresolvedFlightChunk = {
+      $$typeof: Symbol.for("react.lazy"),
+      _init(payload: Promise<never>) {
+        throw payload;
+      },
+      _payload: pendingChunk,
+    };
+    const terminalError = new Error("serialized user error");
+    const terminalFlightChunk = {
+      $$typeof: Symbol.for("react.lazy"),
+      _init(payload: { reason: Error }) {
+        throw payload.reason;
+      },
+      _payload: { reason: terminalError, status: "rejected" },
+    };
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: APP_PREFETCH_PAGE_SHELL_MARKER_VALUE,
+      [pageId]: [
+        createElement(
+          Suspense,
+          { fallback: "Loading", key: "pending" },
+          unresolvedFlightChunk as unknown as ReactNode,
+        ),
+        createElement(
+          Suspense,
+          { fallback: "Error fallback", key: "error" },
+          terminalFlightChunk as unknown as ReactNode,
+        ),
+      ],
+      [routeId]: createElement("main", null, "Route wrapper"),
+    };
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/blog/post-1.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+
+    const optimisticElements = createOptimisticRouteElements(template);
+    const [, errorBoundary] = optimisticElements[pageId] as ReactNode[];
+    expect(isValidElement(errorBoundary)).toBe(true);
+    expect((errorBoundary as ReactElement<{ children: ReactNode }>).props.children).toBe(
+      terminalFlightChunk,
+    );
+    expect(() => terminalFlightChunk._init(terminalFlightChunk._payload)).toThrow(terminalError);
+  });
+
+  it("publishes PageSuspense only for completed page fallbacks with postponed children", () => {
+    const encodeFlight = (...records: string[]) =>
+      new TextEncoder().encode(`${records.join("\n")}\n`);
+    const validShell = encodeFlight(
+      '0:{"__prefetchLoadingShell":"PageSuspense","page:/blog/post-1":"$L1"}',
+      '2:"$Sreact.suspense"',
+      '1:[["$","div",null,{"children":"Static sibling"}],["$","$2",null,{"fallback":["$","div",null,{"children":"Loading"}],"children":"$La"}]]',
+    );
+    expect(hasCompletedPageSuspenseShell(validShell)).toBe(true);
+    expect(invalidateIncompletePageSuspenseShell(validShell)).toBe(validShell);
+    const mixedShell = encodeFlight(
+      '0:{"__prefetchLoadingShell":"PageSuspense","page:/blog/post-1":"$L1"}',
+      '2:"$Sreact.suspense"',
+      '1:[["$","$2",null,{"fallback":"Loading","children":"$La"}],["$","$2",null,{"fallback":"Error fallback","children":"$Lb"}]]',
+      'b:E{"digest":"user-error"}',
+    );
+    expect(hasCompletedPageSuspenseShell(mixedShell)).toBe(true);
+    expect(invalidateIncompletePageSuspenseShell(mixedShell)).toBe(mixedShell);
+    const mixedBoundedAndUnboundedShell = encodeFlight(
+      '0:{"__prefetchLoadingShell":"PageSuspense","page:/blog/post-1":"$L1"}',
+      '2:"$Sreact.suspense"',
+      '1:[["$","div",null,{"children":"$Lb"}],["$","$2",null,{"fallback":"Loading","children":"$La"}]]',
+    );
+    expect(hasCompletedPageSuspenseShell(mixedBoundedAndUnboundedShell)).toBe(false);
+    expect(
+      new TextDecoder().decode(
+        invalidateIncompletePageSuspenseShell(mixedBoundedAndUnboundedShell),
+      ),
+    ).toContain('"__prefetchLoadingShell":"NotSuspended"');
+    const missingModalRoot = encodeFlight(
+      '0:{"__prefetchLoadingShell":"PageSuspense","page:/blog/post-1":"$L1","slot:children:/modal":"$Lc"}',
+      '2:"$Sreact.suspense"',
+      '1:["$","$2",null,{"fallback":"Loading","children":"$La"}]',
+    );
+    expect(hasCompletedPageSuspenseShell(missingModalRoot)).toBe(false);
+    expect(
+      new TextDecoder().decode(invalidateIncompletePageSuspenseShell(missingModalRoot)),
+    ).toContain('"__prefetchLoadingShell":"NotSuspended"');
+    const terminalModalRoot = encodeFlight(
+      '0:{"__prefetchLoadingShell":"PageSuspense","page:/blog/post-1":"$L1","slot:children:/modal":"$Lc"}',
+      '2:"$Sreact.suspense"',
+      '1:["$","$2",null,{"fallback":"Loading","children":"$La"}]',
+      'c:E{"digest":"modal-error"}',
+    );
+    expect(hasCompletedPageSuspenseShell(terminalModalRoot)).toBe(true);
+    expect(invalidateIncompletePageSuspenseShell(terminalModalRoot)).toBe(terminalModalRoot);
+
+    const invalidShells = [
+      encodeFlight('0:{"__prefetchLoadingShell":"PageSuspense","page:/blog/post-1":"$L1"}'),
+      encodeFlight(
+        '0:{"__prefetchLoadingShell":"PageSuspense","page:/blog/post-1":"$L1"}',
+        '1:["$","div",null,{"children":"$La"}]',
+      ),
+      encodeFlight(
+        '0:{"__prefetchLoadingShell":"PageSuspense","page:/blog/post-1":"$L1"}',
+        '2:"$Sreact.suspense"',
+        '1:["$","$2",null,{"fallback":["$","div",null,{"children":"Loading"}],"children":"$La"}]',
+        'a:E{"digest":"user-error"}',
+      ),
+    ];
+    for (const invalidShell of invalidShells) {
+      expect(hasCompletedPageSuspenseShell(invalidShell)).toBe(false);
+      const invalidated = new TextDecoder().decode(
+        invalidateIncompletePageSuspenseShell(invalidShell),
+      );
+      expect(invalidated).toContain('"__prefetchLoadingShell":"NotSuspended"');
+      expect(invalidated).not.toContain('"__prefetchLoadingShell":"PageSuspense"');
+    }
   });
 
   it("learns static route templates from loading-shell prefetch payloads", () => {
