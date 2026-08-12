@@ -1,9 +1,97 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createServer, type Plugin } from "vite";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+const CAPTURE_RSC_REQUEST = "__vinextCaptureWorkerRscRequest";
+
+function workerEntryVirtualModules(): Plugin {
+  const modules = new Map([
+    [
+      "virtual:vinext-rsc-entry",
+      `
+export const __assetPrefix = "";
+export const __basePath = "";
+export const __imageAllowedWidths = [];
+export const __imageConfig = {};
+export default async function rscHandler(request) {
+  globalThis.${CAPTURE_RSC_REQUEST}(request);
+  return new Response("ok");
+}
+`,
+    ],
+    ["virtual:vinext-cache-adapters", "export function registerConfiguredCacheAdapters() {}"],
+    ["virtual:vinext-image-adapters", "export function registerConfiguredImageOptimizer() {}"],
+  ]);
+
+  return {
+    name: "app-router-worker-entry-test-virtual-modules",
+    resolveId(id) {
+      return modules.has(id) ? `\0${id}` : null;
+    },
+    load(id) {
+      return id.startsWith("\0") ? (modules.get(id.slice(1)) ?? null) : null;
+    },
+  };
+}
+
 describe("App Router Production server worker entry compatibility", () => {
+  it("does not restore unverified prerender route params at the Worker boundary", async () => {
+    // No Next.js test port applies: these headers and this Worker boundary are vinext-specific.
+    const capturedRequests: Request[] = [];
+    Reflect.set(globalThis, CAPTURE_RSC_REQUEST, (request: Request) => {
+      capturedRequests.push(request);
+    });
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [workerEntryVirtualModules()],
+        resolve: {
+          alias: {
+            "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+          },
+        },
+        server: { middlewareMode: true },
+      });
+      const entry = (await server.ssrLoadModule(
+        path.resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts"),
+      )) as {
+        default: { fetch(request: Request): Promise<Response> };
+      };
+      const routeParams = encodeURIComponent(
+        JSON.stringify({
+          fallbackParamNames: ["slug"],
+          params: { slug: "attacker" },
+          routePattern: "/blog/:slug",
+        }),
+      );
+
+      await entry.default.fetch(
+        new Request("https://example.com/blog/attacker", {
+          headers: {
+            "x-vinext-prerender-route-params": routeParams,
+            "x-vinext-prerender-secret": "not-the-build-secret",
+          },
+        }),
+      );
+
+      expect(capturedRequests).toHaveLength(1);
+      expect(capturedRequests[0].headers.get("x-vinext-prerender-route-params")).toBeNull();
+    } finally {
+      await server?.close();
+      Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
   it("accepts Worker-style default exports from dist/server/index.js", async () => {
     const outDirs: string[] = [];
     function writeWorkerEntry(value: string): string {
