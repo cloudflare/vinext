@@ -647,6 +647,24 @@ function prefetchUrl(
           }
           return;
         }
+        // Both `prefetch={true}` and `unstable_dynamicOnHover` use Next's Full
+        // fetch strategy. The latter starts as an automatic shell and upgrades
+        // on hover, but the upgraded task may still reuse a recent visited
+        // response with the Full-prefetch freshness window.
+        const claimedVisitedResponseExpiresAt =
+          mode !== "auto"
+            ? getNavigationRuntime()?.functions.claimVisitedResponseForFullPrefetch?.(
+                rscUrl,
+                interceptionContext,
+                mountedSlotsHeader,
+              )
+            : null;
+        if (
+          claimedVisitedResponseExpiresAt !== null &&
+          claimedVisitedResponseExpiresAt !== undefined
+        ) {
+          return;
+        }
         prefetched.add(cacheKey);
         // Next's `prefetchInlining` Segment Cache path fetches a route tree
         // and then one inlined segment payload. Vinext still caches the unified

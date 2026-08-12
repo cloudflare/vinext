@@ -54,6 +54,11 @@ export type NavigationRuntimeNavigate = (
 ) => Promise<void>;
 
 export type NavigationRuntimeFunctions = {
+  claimVisitedResponseForFullPrefetch?: (
+    rscUrl: string,
+    interceptionContext: string | null,
+    mountedSlotsHeader: string | null,
+  ) => number | null;
   clearNavigationCaches?: () => void;
   commitHashNavigation?: (
     href: string,
@@ -124,6 +129,7 @@ function readRuntimeWindow(): Window | null {
 function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntimeFunctions {
   if (!isUnknownRecord(value)) return false;
   return (
+    isOptionalRuntimeFunction(Reflect.get(value, "claimVisitedResponseForFullPrefetch")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "clearNavigationCaches")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&

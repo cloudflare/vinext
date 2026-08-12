@@ -127,6 +127,8 @@ import {
 } from "./app-browser-state.js";
 import { AppBrowserHistoryController } from "./app-browser-history-controller.js";
 import {
+  claimVisitedResponseCacheEntryForFullPrefetch,
+  createVisitedResponseFullPrefetchSnapshot,
   createVisitedResponseCacheEntry,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
@@ -2393,6 +2395,28 @@ function bootstrapHydration(
   // Exposed through one typed runtime seam so next/navigation, Link, Form, and
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
+    claimVisitedResponseForFullPrefetch: (rscUrl, interceptionContext, mountedSlotsHeader) => {
+      const claim = claimVisitedResponseCacheEntryForFullPrefetch(
+        visitedResponseCache,
+        rscUrl,
+        interceptionContext,
+        mountedSlotsHeader,
+      );
+      if (claim === null) return null;
+
+      // Keep Full-prefetch freshness separate from the visited response's
+      // dynamic-navigation deadline. Publishing the claimed response here lets
+      // a later navigation consume the explicit prefetch without making every
+      // ordinary navigation eligible for the static Full-prefetch window.
+      seedPrefetchResponseSnapshot(
+        rscUrl,
+        createVisitedResponseFullPrefetchSnapshot(claim),
+        interceptionContext,
+        mountedSlotsHeader,
+        PREFETCH_CACHE_TTL,
+      );
+      return claim.expiresAt;
+    },
     clearNavigationCaches: clearClientNavigationCaches,
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),

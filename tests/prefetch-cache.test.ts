@@ -1263,6 +1263,86 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(fetchedUrl, null, null)).not.toBeNull();
   });
 
+  it('reuses a visited response for repeated kind: "full" router.prefetch without fetching', async () => {
+    const claimVisitedResponseForFullPrefetch = vi.fn(
+      (rscUrl: string, interceptionContext: string | null, mountedSlotsHeader: string | null) => {
+        const expiresAt = Date.now() + 60_000;
+        seedPrefetchResponseSnapshot(
+          rscUrl,
+          {
+            buffer: new TextEncoder().encode("visited flight").buffer,
+            contentType: "text/x-component",
+            expiresAt,
+            paramsHeader: null,
+            renderedPathAndSearch: "/reports",
+            url: rscUrl,
+          },
+          interceptionContext,
+          mountedSlotsHeader,
+        );
+        return expiresAt;
+      },
+    );
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { claimVisitedResponseForFullPrefetch },
+    };
+    const fetch = vi.fn();
+    const onInvalidate = vi.fn();
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/reports", { kind: "full", onInvalidate });
+    await waitForPrefetchSetup(() => claimVisitedResponseForFullPrefetch.mock.calls.length > 0);
+    appRouterInstance.prefetch("/reports", { kind: "full", onInvalidate });
+    await settlePrefetchSetup();
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(claimVisitedResponseForFullPrefetch).toHaveBeenCalledOnce();
+    expect(onInvalidate).not.toHaveBeenCalled();
+
+    invalidatePrefetchCache();
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+    invalidatePrefetchCache();
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidates a visited-response full prefetch once at its static deadline", async () => {
+    const claimVisitedResponseForFullPrefetch = vi.fn(
+      (rscUrl: string, interceptionContext: string | null, mountedSlotsHeader: string | null) => {
+        const expiresAt = Date.now();
+        seedPrefetchResponseSnapshot(
+          rscUrl,
+          {
+            buffer: new TextEncoder().encode("visited flight").buffer,
+            contentType: "text/x-component",
+            expiresAt,
+            paramsHeader: null,
+            renderedPathAndSearch: "/reports",
+            url: rscUrl,
+          },
+          interceptionContext,
+          mountedSlotsHeader,
+        );
+        return expiresAt;
+      },
+    );
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { claimVisitedResponseForFullPrefetch },
+    };
+    const fetch = vi.fn();
+    const onInvalidate = vi.fn();
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/reports", { kind: "full", onInvalidate });
+    await waitForPrefetchSetup(() => onInvalidate.mock.calls.length > 0);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+    invalidatePrefetchCache();
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps default-kind router.prefetch learning-only on loading-shell routes (#2707)", async () => {
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
       { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },

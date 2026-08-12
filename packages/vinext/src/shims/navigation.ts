@@ -292,6 +292,10 @@ export const PREFETCH_CACHE_TTL = resolveClientRouterStaleTime(
 const MIN_SERVER_STALE_TIME_SECONDS = 30;
 const MIN_PREFETCH_STALE_TIME_MS = MIN_SERVER_STALE_TIME_SECONDS * 1000;
 
+export function resolveFullPrefetchStaleTimeMs(staleTimeMs: number = PREFETCH_CACHE_TTL): number {
+  return Math.max(staleTimeMs, MIN_PREFETCH_STALE_TIME_MS);
+}
+
 /**
  * The render's `cacheLife` claim about client reuse. The wire treats the two
  * variants as mutually exclusive — a response carries either the resolved
@@ -530,7 +534,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   // No signal: the static prefetch window, floored like Next's
   // `STATIC_STALETIME_MS = getStaleTimeMs(config)`.
   if (seconds === undefined) {
-    return timestamp + Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS);
+    return timestamp + resolveFullPrefetchStaleTimeMs(fallbackTtlMs);
   }
   // An automatic prefetch takes a dynamic render's bound verbatim, including
   // below the 30s floor: Next's `computeDynamicStaleAt` never floors it, so a
@@ -542,7 +546,7 @@ function resolvePrefetchedRscResponseExpiresAt(
     ? timestamp + seconds * 1000
     : timestamp +
         (seconds === 0
-          ? Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS)
+          ? resolveFullPrefetchStaleTimeMs(fallbackTtlMs)
           : Math.max(seconds * 1000, MIN_PREFETCH_STALE_TIME_MS));
 }
 
@@ -2889,6 +2893,21 @@ const _appRouter: AppRouterInstance = {
           })
         ) {
           return;
+        }
+        if (kind === "full") {
+          const claimedVisitedResponseExpiresAt =
+            getNavigationRuntime()?.functions.claimVisitedResponseForFullPrefetch?.(
+              rscUrl,
+              interceptionContext,
+              mountedSlotsHeader,
+            );
+          if (
+            claimedVisitedResponseExpiresAt !== null &&
+            claimedVisitedResponseExpiresAt !== undefined
+          ) {
+            attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
+            return;
+          }
         }
       } else if (hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)) {
         attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
