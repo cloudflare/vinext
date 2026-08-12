@@ -22,13 +22,15 @@ import {
 
 type WindowType = "object" | "undefined";
 
-const sourceEscapePattern =
-  /\\(?:\r\n|[\n\r\u2028\u2029]|u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})|x[\da-fA-F]{2})/;
+const sourceEscapePattern = /\\(?:\r\n|[\n\r\u2028\u2029]|[^\n\r\u2028\u2029])/;
+const identifierEscapePattern = /\\(?:u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})|x[\da-fA-F]{2})/;
 
-// The anchor makes each process/browser lookahead scan from the start exactly
-// once. An unanchored bridge restarts at every `process` token and is quadratic.
+// Match the local member syntax instead of bridging arbitrary source between
+// `process` and `browser`. The latter restarts at every token and is quadratic.
+// A comment after `process` or member punctuation is enough to admit the file;
+// the scope-aware AST pass below remains the precise gate.
 export const consumerEnvironmentConditionFilter = new RegExp(
-  String.raw`\btypeof\s+window\b|${sourceEscapePattern.source}|^(?=[\s\S]*\bprocess\b)(?=[\s\S]*\bbrowser\b)`,
+  String.raw`\btypeof\s+window\b|${identifierEscapePattern.source}|\bprocess\b[\s)]*(?:(?:\?\.|\.)\s*(?:browser\b|\/[/*])|(?:\?\.\s*)?\[[\s(]*(?:["']browser["']|["'][^"'\\\n\r]*\\|\/[/*])|\/[/*])`,
 );
 
 export type ConsumerEnvironmentReplacements = {
