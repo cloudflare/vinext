@@ -59,8 +59,19 @@ describe("typeof window compilation", () => {
     expect(consumerEnvironmentConditionFilter.test("process.env.NODE_ENV")).toBe(false);
     expect(consumerEnvironmentConditionFilter.test("process /* comment */ . browser")).toBe(true);
     expect(consumerEnvironmentConditionFilter.test('process["browser"]')).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test("browser && process.browser")).toBe(true);
     expect(consumerEnvironmentConditionFilter.test("process.brow\\u0073er")).toBe(true);
     expect(consumerEnvironmentConditionFilter.test("proce\\u0073s.browser")).toBe(true);
+  });
+
+  it("filters large process-heavy sources in linear time", () => {
+    const source = "process.env.NODE_ENV; ".repeat(40_000);
+    const start = performance.now();
+    const matches = consumerEnvironmentConditionFilter.test(source);
+    const elapsed = performance.now() - start;
+
+    expect(matches).toBe(false);
+    expect(elapsed).toBeLessThan(500);
   });
 
   it("uses native folding only from the stable Vite 8.1.4 release", () => {

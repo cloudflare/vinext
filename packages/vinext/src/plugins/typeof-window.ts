@@ -25,7 +25,7 @@ type WindowType = "object" | "undefined";
 const sourceEscapePattern = /\\(?:u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})|x[\da-fA-F]{2})/;
 
 export const consumerEnvironmentConditionFilter =
-  /\btypeof\s+window\b|\bprocess\b[\s\S]*?\bbrowser\b|\\(?:u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})|x[\da-fA-F]{2})/;
+  /\btypeof\s+window\b|\bbrowser\b|\\(?:u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})|x[\da-fA-F]{2})/;
 
 export type ConsumerEnvironmentReplacements = {
   typeofWindow?: WindowType;
