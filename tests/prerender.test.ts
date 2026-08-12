@@ -1675,6 +1675,133 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
   });
 });
 
+describe("prerenderApp — prefetch hint collection", () => {
+  it("skips an ordinary dynamic route in a cacheComponents app without invoking the collector", async () => {
+    const root = tmpDir("vinext-prerender-dynamic-prefetch-hints-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "page.tsx"),
+      "export default function Page() { return null; }\n",
+    );
+
+    let hintCollectionRequests = 0;
+    let hintCleanupRequests = 0;
+    const server = createServer((req, res) => {
+      if (req.url?.startsWith("/__vinext/prerender/prefetch-hints")) {
+        if (req.method === "DELETE") {
+          hintCleanupRequests++;
+          res.statusCode = 204;
+          res.end();
+          return;
+        }
+        hintCollectionRequests++;
+        res.statusCode = 500;
+        res.end("collector must not run");
+        return;
+      }
+      res.setHeader("cache-control", "private, no-cache, no-store, max-age=0, must-revalidate");
+      res.setHeader("content-type", "text/html");
+      res.end("<html><body>dynamic</body></html>");
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await appRouter(appDir);
+      const config = await resolveNextConfig({
+        cacheComponents: true,
+        experimental: { prefetchInlining: true },
+      });
+
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes,
+        outDir,
+        config,
+        _prodServer: { server, port },
+      });
+
+      expect(result.routes).toContainEqual({ route: "/", status: "skipped", reason: "dynamic" });
+      expect(hintCollectionRequests).toBe(0);
+      expect(hintCleanupRequests).toBe(1);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a rendered route when hint collection has no matching route", async () => {
+    const root = tmpDir("vinext-prerender-missing-prefetch-hints-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "page.tsx"),
+      "export default function Page() { return null; }\n",
+    );
+
+    let hintCollectionRequests = 0;
+    let hintCleanupRequests = 0;
+    const server = createServer((req, res) => {
+      if (req.url?.startsWith("/__vinext/prerender/prefetch-hints")) {
+        if (req.method === "DELETE") {
+          hintCleanupRequests++;
+          res.statusCode = 204;
+          res.end();
+          return;
+        }
+        hintCollectionRequests++;
+        res.statusCode = 404;
+        res.end("no matching route");
+        return;
+      }
+      if (req.headers.accept?.includes("text/x-component")) {
+        res.setHeader("content-type", "text/x-component");
+        res.end("0:null\n");
+        return;
+      }
+      res.setHeader("cache-control", "public, max-age=0, must-revalidate");
+      res.setHeader("content-type", "text/html");
+      res.end("<html><body>static</body></html>");
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await appRouter(appDir);
+      const config = await resolveNextConfig({
+        cacheComponents: true,
+        experimental: { prefetchInlining: true },
+      });
+
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes,
+        outDir,
+        config,
+        _prodServer: { server, port },
+      });
+
+      const route = result.routes.find((entry) => entry.route === "/");
+      expect(route).toMatchObject({ route: "/", status: "rendered" });
+      expect(route).not.toHaveProperty("prefetchHints");
+      expect(hintCollectionRequests).toBe(1);
+      expect(hintCleanupRequests).toBe(1);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => {
   async function prerenderDynamicRootParamRoute(
     cacheComponents: boolean,

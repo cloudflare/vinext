@@ -140,6 +140,17 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     });
 
     expect(code).toContain('prefetchInlining: {"maxBundleSize":9007199254740991,"maxSize":512}');
+    expect(code).toContain("app-route-tree-prefetch.js");
+    expect(code).toContain("createFromReadableStream as _createFromReadableStream");
+    expect(code).toContain("collectPrefetchHints: __collectPrefetchHints");
+  });
+
+  it("omits prefetch-inlining measurement code from ordinary RSC entries", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+
+    expect(code).not.toContain("app-route-tree-prefetch.js");
+    expect(code).not.toContain("createFromReadableStream as _createFromReadableStream");
+    expect(code).not.toContain("__collectPrefetchHints");
   });
 
   it("routes hybrid Pages API misses through the Pages server entry", () => {

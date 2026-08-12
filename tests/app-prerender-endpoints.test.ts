@@ -128,6 +128,56 @@ describe("App prerender endpoint helpers", () => {
     await expect(response?.text()).resolves.toBe("This page could not be found");
   });
 
+  it("passes concrete Flight bytes to the build-time prefetch hint collector", async () => {
+    const collectPrefetchHints = vi.fn(async () => ({
+      name: "",
+      param: null,
+      prefetchHints: 0,
+      slots: null,
+    }));
+    const response = await handleAppPrerenderEndpoint(
+      new Request(
+        "http://localhost/__vinext/prerender/prefetch-hints?pathname=%2Fblog%2Fhello&pattern=%2Fblog%2F%3Aslug",
+        { body: new Uint8Array([1, 2, 3]), method: "POST" },
+      ),
+      {
+        collectPrefetchHints,
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/prefetch-hints",
+        staticParamsMap: {},
+      },
+    );
+
+    expect(collectPrefetchHints).toHaveBeenCalledWith({
+      affinity: null,
+      pathname: "/blog/hello",
+      pattern: "/blog/:slug",
+      rscData: new Uint8Array([1, 2, 3]),
+    });
+    expect(response?.status).toBe(200);
+    await expect(response?.json()).resolves.toMatchObject({ name: "", prefetchHints: 0 });
+  });
+
+  it("discards an unconsumed build-time prefetch head by affinity", async () => {
+    const discardPrefetchHead = vi.fn();
+    const response = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/prefetch-hints", {
+        method: "DELETE",
+      }),
+      {
+        collectPrefetchHints: vi.fn(),
+        discardPrefetchHead,
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/prefetch-hints",
+        prerenderAffinity: "render-3",
+        staticParamsMap: {},
+      },
+    );
+
+    expect(response?.status).toBe(204);
+    expect(discardPrefetchHead).toHaveBeenCalledWith("render-3");
+  });
+
   it("calls generateStaticParams with object parent params and serializes the result", async () => {
     const generateStaticParams = vi.fn(({ params }) => [
       { category: params.category, slug: "hello" },

@@ -51,6 +51,12 @@ export const VINEXT_PRERENDER_STATIC_PARAMS_PATH = "/__vinext/prerender/static-p
 /** Internal endpoint used to evaluate Pages Router getStaticPaths exports. */
 export const VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH = "/__vinext/prerender/pages-static-paths";
 
+/** Internal endpoint used to measure build-time segment-cache prefetch hints. */
+export const VINEXT_PRERENDER_PREFETCH_HINTS_PATH = "/__vinext/prerender/prefetch-hints";
+
+/** Pins related build-time render requests to the same prerender worker. */
+export const VINEXT_PRERENDER_AFFINITY_HEADER = "x-vinext-prerender-affinity";
+
 /** Internal endpoint used to enumerate cached dynamic metadata route paths. */
 export const VINEXT_PRERENDER_METADATA_ROUTES_PATH = "/__vinext/prerender/metadata-routes";
 
@@ -248,6 +254,7 @@ export const INTERNAL_HEADERS = [
 
 /** Vinext-only internal headers stripped alongside Next.js protocol internals. */
 export const VINEXT_INTERNAL_HEADERS = [
+  VINEXT_PRERENDER_AFFINITY_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,

@@ -331,5 +331,17 @@ test.describe("App Router segment-cache prefetch inlining", () => {
     expect(firstDynamicSegment?.name).toBe("slug");
     expect(firstDynamicSegment?.param).toEqual({ key: null, siblings: null, type: "d" });
     expect(renderInliningTree(secondDynamic.tree)).toBe(renderInliningTree(firstDynamic.tree));
+
+    const shippedRsc = await fs.readFile(
+      path.join(
+        prefetchInliningApp.fixtureRoot,
+        "dist",
+        "server",
+        "prerendered-routes",
+        "test-small-chain.rsc",
+      ),
+      "utf8",
+    );
+    expect(shippedRsc).not.toContain("__vinextPrefetchHead");
   });
 });

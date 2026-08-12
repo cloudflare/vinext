@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import type { TreePrefetch } from "./app-route-tree-prefetch.js";
 
 export type PrerenderManifestRoute = {
   route: string;
@@ -25,6 +26,7 @@ export type PrerenderManifest = {
   trailingSlash?: boolean;
   routes?: PrerenderManifestRoute[];
   pregeneratedConcretePaths?: Array<[string, string[]]>;
+  prefetchHints?: Record<string, TreePrefetch>;
 };
 
 export type PrerenderedPathSelectionOptions = {
