@@ -1276,6 +1276,7 @@ export async function renderAppPageLifecycle(
         isForceStatic: options.isForceStatic,
         revalidateSeconds,
       }),
+      linkHeader: linkHeader ?? null,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
       },
