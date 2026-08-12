@@ -7,6 +7,5 @@ export const GET = (req: NextRequest) => {
   return NextResponse.json({
     url: url.pathname,
     nextUrl: req.nextUrl.pathname,
-    runtime: process.env.NEXT_RUNTIME,
   });
 };

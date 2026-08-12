@@ -60,7 +60,6 @@ describe("App Router route-handler trailingSlash: true (#1827)", () => {
       await expect(slashed.json()).resolves.toEqual({
         url: `/runtime/${runtime}/`,
         nextUrl: `/runtime/${runtime}/`,
-        runtime: runtime === "edge" ? "edge" : "nodejs",
       });
     },
     30000,
@@ -94,7 +93,6 @@ describe("App Router route-handler trailingSlash: false (#1827)", () => {
       await expect(unslashed.json()).resolves.toEqual({
         url: `/runtime/${runtime}`,
         nextUrl: `/runtime/${runtime}`,
-        runtime: runtime === "edge" ? "edge" : "nodejs",
       });
     },
     30000,

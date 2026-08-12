@@ -248,7 +248,6 @@ import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
-import { createRouteRuntimeIsolationPlugin } from "./plugins/route-runtime-isolation.js";
 import { getTypeofWindowReplacement, replaceTypeofWindow } from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
@@ -5965,7 +5964,6 @@ export const loadServerActionClient = ${
         },
       },
     },
-    createRouteRuntimeIsolationPlugin(),
     // Inject server-environment defines. Server environments receive
     // NEXT_RUNTIME + user `compiler.defineServer` entries. The universal
     // `compiler.define` map is already merged into the top-level Vite
