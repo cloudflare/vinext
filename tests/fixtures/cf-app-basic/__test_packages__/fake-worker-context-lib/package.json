@@ -3,13 +3,35 @@
   "version": "1.0.0",
   "type": "module",
   "exports": {
-    "./worker-esm-js": {
-      "browser": "./worker-browser.js",
-      "import": "./worker-esm-js.js"
+    "./esm-package1/entry": {
+      "browser": "./browser.mjs",
+      "import": "./esm-package1-correct.mjs",
+      "require": "./wrong.cjs"
     },
-    "./worker-esm-mjs": {
-      "browser": "./worker-browser.js",
-      "import": "./worker-esm-mjs.mjs"
+    "./esm-package2/entry": {
+      "browser": "./browser.mjs",
+      "import": "./esm-package2-correct.js",
+      "require": "./wrong.cjs"
+    },
+    "./invalid-esm-package/entry": {
+      "browser": "./browser.mjs",
+      "import": "./invalid/correct.js",
+      "require": "./invalid/alternative.js"
+    },
+    "./app-esm-package1/entry": {
+      "browser": "./browser.mjs",
+      "import": "./app-esm-package1-correct.mjs",
+      "require": "./wrong.cjs"
+    },
+    "./app-esm-package2/entry": {
+      "browser": "./browser.mjs",
+      "import": "./app-esm-package2-correct.js",
+      "require": "./wrong.cjs"
+    },
+    "./app-cjs-esm-package/entry": {
+      "browser": "./browser.mjs",
+      "import": "./app-cjs/correct.js",
+      "require": "./app-cjs/alternative.js"
     }
   }
 }

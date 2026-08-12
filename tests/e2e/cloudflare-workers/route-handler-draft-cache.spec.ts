@@ -1,10 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { globSync, readFileSync } from "node:fs";
+import path from "node:path";
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../fixtures";
 
 const FIXTURE_DIR = `${process.cwd()}/tests/fixtures/cf-app-basic`;
 const BASE_URL = "http://localhost:4195";
+const SERVER_OUTPUT_DIR = path.join(FIXTURE_DIR, "dist/server");
 
 let server: ChildProcess;
 
@@ -39,6 +42,10 @@ async function setDraftMode(request: APIRequestContext, enabled: boolean): Promi
   expect(response.headers()["cdn-cache-control"]).toBeUndefined();
   expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
   expect(response.headers()["cache-tag"]).toBeUndefined();
+}
+
+function normalizeHtml(value: string): string {
+  return value.replaceAll("<!-- -->", "");
 }
 
 async function readDraftIsrRoute(request: APIRequestContext, scenario: string) {
@@ -169,18 +176,72 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     await setDraftMode(request, false);
   });
 
-  for (const pathname of ["/worker-esm-static", "/worker-esm-ssr", "/worker-esm-ssg"]) {
-    test(`${pathname} preserves server and browser export conditions`, async ({ page }) => {
-      const response = await fetch(`${BASE_URL}${pathname}`);
-      expect(response.status).toBe(200);
-      expect((await response.text()).replaceAll("<!-- -->", "")).toContain(
-        pathname === "/worker-esm-static" ? "worker+worker" : "worker+worker|worker+worker",
-      );
+  test.describe("real Worker ESM externals parity", () => {
+    // Ported from Next.js: test/e2e/esm-externals/esm-externals.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/esm-externals/esm-externals.test.ts
+    for (const { pathname, selector, expected } of [
+      {
+        pathname: "/static",
+        selector: "body p",
+        expected: "Hello World+World+World+World+World+World",
+      },
+      {
+        pathname: "/ssr",
+        selector: "body p",
+        expected: "Hello World+World+World+World+World+World",
+      },
+      {
+        pathname: "/ssg",
+        selector: "body p",
+        expected: "Hello World+World+World+World+World+World",
+      },
+      {
+        pathname: "/server",
+        selector: "body > p",
+        expected: "Hello World+World+World",
+      },
+      {
+        pathname: "/client",
+        selector: "body > p",
+        expected: "Hello World+World+World",
+      },
+    ]) {
+      test(`${pathname} returns the same SSR HTML as the upstream ESM externals test`, async ({
+        page,
+      }) => {
+        const response = await fetch(`${BASE_URL}${pathname}`);
+        expect(response.status).toBe(200);
+        const html = await response.text();
+        const paragraphHtml = await page.evaluate(
+          ({ html, selector }) =>
+            new DOMParser().parseFromString(html, "text/html").querySelector(selector)?.innerHTML,
+          { html, selector },
+        );
+        expect(paragraphHtml).toBeDefined();
+        expect(normalizeHtml(paragraphHtml!)).toBe(expected);
+      });
 
-      await page.goto(`${BASE_URL}${pathname}`);
-      await expect(page.locator("#worker-esm-value")).toHaveText(
-        pathname === "/worker-esm-static" ? "worker+worker" : "browser+browser|worker+worker",
+      test(`${pathname} renders the same browser text as the upstream ESM externals test`, async ({
+        page,
+      }) => {
+        await page.goto(`${BASE_URL}${pathname}`);
+        await expect(page.locator("body")).toHaveAttribute("data-worker-esm-hydrated", pathname);
+        await expect(page.locator(selector)).toHaveText(expected);
+      });
+    }
+
+    test("keeps the Cloudflare Worker deployment self-contained", () => {
+      const externals = JSON.parse(
+        readFileSync(path.join(SERVER_OUTPUT_DIR, "vinext-externals.json"), "utf8"),
+      ) as unknown;
+      expect(externals).toEqual([]);
+
+      const serverCode = globSync("**/*.js", { cwd: SERVER_OUTPUT_DIR })
+        .map((file) => readFileSync(path.join(SERVER_OUTPUT_DIR, file), "utf8"))
+        .join("\n");
+      expect(serverCode).not.toMatch(
+        /(?:from\s*|import\s*\()\s*["']fake-worker-context-lib(?:\/|["'])/,
       );
     });
-  }
+  });
 });
