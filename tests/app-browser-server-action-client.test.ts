@@ -22,6 +22,7 @@ vi.mock("@vitejs/plugin-rsc/browser", () => ({
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.clearAllMocks();
 });
 
 describe("app browser server action client", () => {
@@ -426,30 +427,37 @@ describe("app browser server action client", () => {
         }),
       ),
     );
+    // The server always pairs a re-rendered root with a returnValue record —
+    // void actions come back as `{ ok: true, data: undefined }`, which Flight
+    // serializes as `$undefined` and decodes to a truthy object, never an
+    // omitted key (app-server-action-execution.ts renderToReadableStream).
     vi.mocked(createFromFetch).mockResolvedValueOnce({
       root: wireElements,
+      returnValue: { ok: true, data: undefined },
     });
     const commitSameUrlNavigatePayload = vi.fn();
     const clearClientNavigationCaches = vi.fn();
 
-    await invokeClientServerAction("action-id", [], actionInitiation, {
-      basePath: "",
-      clearClientNavigationCaches,
-      clientRscCompatibilityId: null,
-      commitSameUrlNavigatePayload,
-      navigationPlanner,
-      performHardNavigation: vi.fn(),
-      renderRedirectPayload: vi.fn(),
-      syncCurrentHistoryState: vi.fn(),
-      syncServerActionHttpFallbackHead: vi.fn(),
-    });
+    await expect(
+      invokeClientServerAction("action-id", [], actionInitiation, {
+        basePath: "",
+        clearClientNavigationCaches,
+        clientRscCompatibilityId: null,
+        commitSameUrlNavigatePayload,
+        navigationPlanner,
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      }),
+    ).resolves.toBeUndefined();
 
     expect(clearClientNavigationCaches).toHaveBeenCalledTimes(1);
     expect(commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
     const [elementsArg, , returnValueArg, revalidationArg] =
       commitSameUrlNavigatePayload.mock.calls[0];
     await expect(elementsArg).resolves.toEqual(normalizeAppElements(wireElements));
-    expect(returnValueArg).toBeUndefined();
+    expect(returnValueArg).toEqual({ ok: true, data: undefined });
     expect(revalidationArg).toBe("staticAndDynamic");
   });
 

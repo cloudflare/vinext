@@ -498,8 +498,12 @@ test.describe("Server action forwarding loop guard", () => {
 test.describe("Data-returning server actions", () => {
   // Regression contract for the Payload getFormState pattern: a data-returning
   // server action with no revalidation must resolve its value without applying
-  // the RSC tree (Next.js' bail-out in server-action-reducer.ts). Re-applying
-  // the tree would hand the form a fresh initialState and wipe pending edits.
+  // the RSC tree (Next.js' bail-out in server-action-reducer.ts). The server
+  // render counter is the discriminator: re-applying the tree would re-render
+  // the page server-side and advance it. The input assertion guards the
+  // user-visible contract (pending edits survive the roundtrip) but is not
+  // itself proof of no tree update, since React can reconcile an uncontrolled
+  // input in place.
   test("preserves form edits without re-rendering the page", async ({ page }) => {
     await page.goto(`${BASE}/action-form-preserved`);
     await expect(page.locator("h1")).toHaveText("Action Form Preserved Test");
