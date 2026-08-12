@@ -4,46 +4,8 @@ import {
   replaceNextRuntimeForIsolatedRoute,
   withIsolatedRouteRuntime,
 } from "../packages/vinext/src/plugins/route-runtime-isolation.js";
-import { createDynamicPreloadMetadataPlugin } from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
-import {
-  createGoogleFontsPlugin,
-  createLocalFontsPlugin,
-} from "../packages/vinext/src/plugins/fonts.js";
-import { createOptimizeImportsPlugin } from "../packages/vinext/src/plugins/optimize-imports.js";
-import type { Plugin } from "vite";
-
-function transformIdInclude(plugin: Plugin): RegExp {
-  const transform = plugin.transform as
-    | { filter?: { id?: RegExp | { include?: RegExp } } }
-    | undefined;
-  const idFilter = transform?.filter?.id;
-  const include = idFilter instanceof RegExp ? idFilter : idFilter?.include;
-  if (!(include instanceof RegExp)) {
-    throw new Error(`${plugin.name} must expose a RegExp transform id include filter`);
-  }
-  return include;
-}
 
 describe("route runtime isolation", () => {
-  it("keeps query-qualified edge modules eligible for sibling RSC transforms", () => {
-    const plugins = [
-      createOptimizeImportsPlugin(
-        () => undefined,
-        () => "/project",
-      ),
-      createDynamicPreloadMetadataPlugin(),
-      createGoogleFontsPlugin("/vinext/shims/font-google.ts", "/vinext/shims/"),
-      createLocalFontsPlugin("/vinext/shims/"),
-    ];
-
-    for (const plugin of plugins) {
-      const include = transformIdInclude(plugin);
-      expect(include.test("/project/app/page.tsx?vinext-route-runtime=edge")).toBe(true);
-      expect(include.test("/project/app/helper.ts#fragment")).toBe(true);
-      expect(include.test("/project/app/styles.css?vinext-route-runtime=edge")).toBe(false);
-    }
-  });
-
   it("preserves existing module queries while adding edge runtime identity", () => {
     const id = withIsolatedRouteRuntime("/project/shared.ts?raw&encoded=%2Fvalue#fragment", "edge");
 

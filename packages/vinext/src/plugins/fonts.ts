@@ -42,8 +42,6 @@ import { findFontFilesInCss } from "../build/google-fonts/find-font-files-in-css
 import { CONTENT_TYPES } from "../server/static-file-cache.js";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 
-const SCRIPT_MODULE_ID_RE = /\.(tsx?|jsx?|mjs)(?:[?#]|$)/;
-
 /**
  * Thrown when Google Fonts returns a non-2xx response. Distinct from a raw
  * `fetch` rejection (network error, DNS failure, AbortError) so the call
@@ -717,14 +715,14 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
       // import from next/font/google.
       filter: {
         id: {
-          include: SCRIPT_MODULE_ID_RE,
+          include: /\.(tsx?|jsx?|mjs)$/,
         },
         code: "next/font/google",
       },
       async handler(code, id) {
         // Defensive guard — duplicates filter logic
         if (id.startsWith("\0")) return null;
-        if (!SCRIPT_MODULE_ID_RE.test(id)) return null;
+        if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
         if (!code.includes("next/font/google")) return null;
         if (id.startsWith(shimsDir)) return null;
 
@@ -1158,14 +1156,14 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
       // default-import check below keep this from touching unrelated modules.
       filter: {
         id: {
-          include: SCRIPT_MODULE_ID_RE,
+          include: /\.(tsx?|jsx?|mjs)$/,
         },
         code: "next/font/local",
       },
       handler(code, id) {
         // Defensive guards — duplicate filter logic
         if (id.startsWith("\0")) return null;
-        if (!SCRIPT_MODULE_ID_RE.test(id)) return null;
+        if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
         if (!code.includes("next/font/local")) return null;
         // Skip vinext's own shim files — the font-local shim contains example
         // paths in comments that would be incorrectly rewritten. A precise

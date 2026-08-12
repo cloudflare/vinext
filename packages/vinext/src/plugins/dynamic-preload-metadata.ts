@@ -6,8 +6,6 @@ import { isUnknownRecord as isRecord } from "../utils/record.js";
 import { hasTrailingComma } from "../utils/has-trailing-comma.js";
 import { relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
 
-const SCRIPT_MODULE_ID_RE = /\.(tsx?|jsx?|mjs)(?:[?#]|$)/;
-
 type AstRecord = Record<string, unknown>;
 
 type TransformResult = {
@@ -685,14 +683,14 @@ export function createDynamicPreloadMetadataPlugin(): Plugin {
     transform: {
       filter: {
         id: {
-          include: SCRIPT_MODULE_ID_RE,
+          include: /\.(tsx?|jsx?|mjs)$/,
           exclude: /node_modules/,
         },
         code: "next/dynamic",
       },
       async handler(code, id) {
         if (id.includes("node_modules") || id.startsWith("\0")) return null;
-        if (!SCRIPT_MODULE_ID_RE.test(id)) return null;
+        if (!/\.(tsx?|jsx?|mjs)$/.test(id)) return null;
 
         const result = await transformNextDynamicPreloadMetadata(
           code,
