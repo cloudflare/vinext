@@ -22,10 +22,14 @@ import {
 
 type WindowType = "object" | "undefined";
 
-const sourceEscapePattern = /\\(?:u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})|x[\da-fA-F]{2})/;
+const sourceEscapePattern =
+  /\\(?:\r\n|[\n\r\u2028\u2029]|u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})|x[\da-fA-F]{2})/;
 
-export const consumerEnvironmentConditionFilter =
-  /\btypeof\s+window\b|\bbrowser\b|\\(?:u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})|x[\da-fA-F]{2})/;
+// The anchor makes each process/browser lookahead scan from the start exactly
+// once. An unanchored bridge restarts at every `process` token and is quadratic.
+export const consumerEnvironmentConditionFilter = new RegExp(
+  String.raw`\btypeof\s+window\b|${sourceEscapePattern.source}|^(?=[\s\S]*\bprocess\b)(?=[\s\S]*\bbrowser\b)`,
+);
 
 export type ConsumerEnvironmentReplacements = {
   typeofWindow?: WindowType;

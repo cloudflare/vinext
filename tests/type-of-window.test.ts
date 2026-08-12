@@ -56,21 +56,33 @@ describe("typeof window compilation", () => {
   });
 
   it("filters unrelated process references before invoking JavaScript", () => {
+    const lineContinuation = 'process["brow' + "\\" + '\nser"]';
     expect(consumerEnvironmentConditionFilter.test("process.env.NODE_ENV")).toBe(false);
     expect(consumerEnvironmentConditionFilter.test("process /* comment */ . browser")).toBe(true);
     expect(consumerEnvironmentConditionFilter.test('process["browser"]')).toBe(true);
     expect(consumerEnvironmentConditionFilter.test("browser && process.browser")).toBe(true);
     expect(consumerEnvironmentConditionFilter.test("process.brow\\u0073er")).toBe(true);
     expect(consumerEnvironmentConditionFilter.test("proce\\u0073s.browser")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test(lineContinuation)).toBe(true);
   });
 
-  it("filters large process-heavy sources in linear time", () => {
-    const source = "process.env.NODE_ENV; ".repeat(40_000);
+  it("folds computed process.browser with a string line continuation", () => {
+    const member = 'process["brow' + "\\" + '\nser"]';
+    const result = replaceConsumerEnvironmentConditions(`if (${member}) import("browser-only")`, {
+      processBrowser: false,
+      pruneUnreachableImports: true,
+    });
+
+    expect(result?.code).not.toContain("browser-only");
+  });
+
+  it("filters large one-sided sources in linear time", () => {
+    const sources = ["process.env.NODE_ENV; ".repeat(40_000), "browser; ".repeat(100_000)];
     const start = performance.now();
-    const matches = consumerEnvironmentConditionFilter.test(source);
+    const matches = sources.map((source) => consumerEnvironmentConditionFilter.test(source));
     const elapsed = performance.now() - start;
 
-    expect(matches).toBe(false);
+    expect(matches).toEqual([false, false]);
     expect(elapsed).toBeLessThan(500);
   });
 
