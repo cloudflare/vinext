@@ -6137,9 +6137,9 @@ export const loadServerActionClient = ${
         let dims = cache.get(imagePath);
         if (!dims) {
           try {
-            const { imageSize } = await import("image-size");
+            const { readImageDimensions } = await import("./utils/image-dimensions.js");
             const buffer = fs.readFileSync(imagePath);
-            const result = imageSize(buffer);
+            const result = readImageDimensions(buffer);
             dims = { width: result.width ?? 0, height: result.height ?? 0 };
             cache.set(imagePath, dims);
           } catch {
