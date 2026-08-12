@@ -5998,21 +5998,6 @@ export const loadServerActionClient = ${
         };
       },
     },
-    // Next.js replaces process.browser in every compilation target. Keep the
-    // define environment-scoped so browser-only branches disappear from both
-    // application code and optimized dependencies without leaking `true` into
-    // RSC/SSR builds.
-    {
-      name: "vinext:process-browser-define",
-      configEnvironment(_name, environment) {
-        const value = environment.consumer === "client" ? "true" : "false";
-        const define = { "process.browser": value };
-        return {
-          define,
-          optimizeDeps: { rolldownOptions: { transform: { define } } },
-        };
-      },
-    },
     // Toolchains before Vite 8.1.4 / Rolldown 1.1.4 can run native define
     // folding too late to prune dead imports, so retain the custom fold for
     // every build. Newer toolchains only need it for plugin-RSC's write-less
