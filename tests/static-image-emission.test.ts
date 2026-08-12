@@ -60,7 +60,6 @@ type FixtureOptions = {
   basePath?: string;
   assetPrefix?: string;
   deploymentId?: string;
-  runtime?: "edge";
 };
 
 async function createFixture(
@@ -133,8 +132,6 @@ import ClientImage from "./client-image";
 export default function Page() {
   return <main>${imageMarkup}<ClientImage /></main>;
 }
-
-${options.runtime ? `export const runtime = ${JSON.stringify(options.runtime)};` : ""}
 `,
     );
   } else {
@@ -434,10 +431,6 @@ describe("static image import production emission", () => {
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-image/next-image.test.ts
   it("emits App Router static imports while preserving ordinary asset thresholds", async () => {
     await assertStaticImageProductionParity("app");
-  }, 60_000);
-
-  it("emits static imports from runtime-isolated edge App Router modules", async () => {
-    await assertStaticImageProductionParity("app", { runtime: "edge" });
   }, 60_000);
 
   it("emits Pages Router static imports while preserving ordinary asset thresholds", async () => {

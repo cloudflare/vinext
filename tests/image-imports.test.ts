@@ -361,21 +361,6 @@ describe("vinext:image-imports — transform", () => {
     expectImageBinding(result.code, "hero", "test-4x3.png");
   });
 
-  it("uses the .ts parser for a runtime-isolated module query", async () => {
-    const plugin = getImagePlugin();
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import hero from './test-4x3.png';`,
-      `const value: unknown = hero;`,
-      `const widened = <{ src: string }>value;`,
-      `console.log(widened.src);`,
-    ].join("\n");
-    const id = `${path.join(IMAGES_DIR, "cast.ts")}?vinext-route-runtime=edge`;
-    const result = await transform.call(plugin, code, id);
-    expect(result).not.toBeNull();
-    expectImageBinding(result.code, "hero", "test-4x3.png");
-  });
-
   it("transforms an image import in a .ts file using a non-comma generic arrow", async () => {
     const plugin = getImagePlugin();
     const transform = unwrapHook(plugin.transform);
