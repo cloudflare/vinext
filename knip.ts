@@ -30,7 +30,13 @@ export default {
   workspaces: {
     ".": {
       entry: ["scripts/*.{js,ts,mjs,mts}", "tests/**/*.test.ts", "tests/helpers.ts"],
-      project: ["tests/**/*.{js,ts}", "!tests/fixtures/**"],
+      project: [
+        "tests/**/*.{js,ts}",
+        "!tests/fixtures/**",
+        // Byte-pinned upstream Worker fixture loaded dynamically by its
+        // Playwright config; provenance tests verify the checked-in files.
+        "!tests/e2e/cloudflare-workers/worker-fixture/**",
+      ],
     },
     "packages/vinext": {
       entry: [

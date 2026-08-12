@@ -31,6 +31,8 @@ export default defineConfig({
     trailingComma: "all",
     ignorePatterns: [
       "tests/fixtures/ecosystem/**",
+      // Pinned byte-for-byte from Next.js v16.2.6; provenance tests verify hashes.
+      "tests/e2e/cloudflare-workers/worker-fixture/**",
       "examples/**",
       "packages/types/next/upstream/**",
     ],
@@ -38,6 +40,8 @@ export default defineConfig({
   lint: {
     ignorePatterns: [
       "fixtures/ecosystem/**",
+      // Pinned byte-for-byte from Next.js v16.2.6; provenance tests verify hashes.
+      "tests/e2e/cloudflare-workers/worker-fixture/**",
       "tests/fixtures/**",
       "tests/fixtures/ecosystem/**",
       "examples/**",

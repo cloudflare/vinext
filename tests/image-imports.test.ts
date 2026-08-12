@@ -3,7 +3,7 @@ import path from "node:path";
 import vm from "node:vm";
 import vinext from "../packages/vinext/src/index.js";
 import { toSlash } from "pathslash";
-import type { Plugin } from "vite-plus";
+import { mergeConfig, type Plugin, type UserConfig } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
 const IMAGES_DIR = path.resolve(import.meta.dirname, "./fixtures/images");
@@ -22,6 +22,67 @@ function getImagePlugin(): Plugin & { _dimCache: Map<string, { width: number; he
   if (!plugin) throw new Error("vinext:image-imports plugin not found");
   return plugin as any;
 }
+
+describe("vinext:image-imports — worker config", () => {
+  it("adds one fresh image plugin without replaying user worker config", async () => {
+    const root = path.resolve(import.meta.dirname, "fixtures/app-basic");
+    const plugins = vinext({ appDir: root }) as Plugin[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    if (!configPlugin) throw new Error("vinext:config plugin not found");
+
+    let factoryCalls = 0;
+    const hookCalls: string[] = [];
+    const userPlugin: Plugin = {
+      name: "user:worker-plugin",
+      buildStart() {
+        hookCalls.push("buildStart");
+      },
+    };
+    const external = ["external-one", "external-two"];
+    const output = [{ entryFileNames: "worker-one.js" }, { entryFileNames: "worker-two.js" }];
+    const userConfig: UserConfig = {
+      root,
+      plugins: [],
+      worker: {
+        plugins: () => {
+          factoryCalls++;
+          return [userPlugin];
+        },
+        rolldownOptions: { external, output },
+      },
+    };
+
+    const config = unwrapHook(configPlugin.config);
+    const pluginConfig = await config.call(configPlugin, userConfig, {
+      command: "build",
+      mode: "production",
+    });
+    const mergedConfig = mergeConfig(userConfig, pluginConfig ?? {});
+
+    expect(mergedConfig.worker?.rolldownOptions?.external).toEqual(external);
+    expect(mergedConfig.worker?.rolldownOptions?.output).toEqual(output);
+
+    const firstPlugins = mergedConfig.worker?.plugins?.() as Plugin[];
+    const secondPlugins = mergedConfig.worker?.plugins?.() as Plugin[];
+    expect(factoryCalls).toBe(2);
+    expect(firstPlugins.filter((plugin) => plugin.name === userPlugin.name)).toEqual([userPlugin]);
+    expect(secondPlugins.filter((plugin) => plugin.name === userPlugin.name)).toEqual([userPlugin]);
+
+    const firstImagePlugin = firstPlugins.find((plugin) => plugin.name === "vinext:image-imports");
+    const secondImagePlugin = secondPlugins.find(
+      (plugin) => plugin.name === "vinext:image-imports",
+    );
+    expect(firstImagePlugin).toBeDefined();
+    expect(secondImagePlugin).toBeDefined();
+    expect(firstImagePlugin).not.toBe(secondImagePlugin);
+
+    for (const plugin of firstPlugins) {
+      const buildStart = unwrapHook(plugin.buildStart);
+      if (buildStart) await buildStart.call(plugin);
+    }
+    expect(hookCalls).toEqual(["buildStart"]);
+  });
+});
 
 // ── resolveId ─────────────────────────────────────────────────
 describe("vinext:image-imports — resolveId", () => {
@@ -168,6 +229,35 @@ describe("vinext:image-imports — transform", () => {
     expect(result).not.toBeNull();
     expectImageBinding(result.code, "hero", "test-4x3.png");
     expectImageBinding(result.code, "photo", "test-8x6.jpg");
+  });
+
+  it("transforms dynamic image imports outside worker builds into StaticImageData modules", async () => {
+    const plugin = getImagePlugin();
+    const transform = unwrapHook(plugin.transform);
+    const result = await transform.call(
+      plugin,
+      `export const image = import("./test-4x3.png");`,
+      fakeId,
+    );
+    const imagePath = toSlash(PNG_PATH);
+
+    expect(result?.code).toContain(
+      `import(${JSON.stringify(imagePath + "?vinext-dynamic-image")})`,
+    );
+
+    const resolveId = unwrapHook(plugin.resolveId);
+    const dynamicImageId = resolveId.call(plugin, imagePath + "?vinext-dynamic-image", fakeId);
+    const load = unwrapHook(plugin.load);
+    const dynamicImageModule = await load.call(plugin, dynamicImageId);
+    expect(dynamicImageModule).toContain(
+      `import url from ${JSON.stringify(imagePath + "?vinext-image-url")}`,
+    );
+    expect(dynamicImageModule).toContain(
+      `import meta from ${JSON.stringify(imagePath + "?vinext-meta")}`,
+    );
+    expect(dynamicImageModule).toContain(
+      "export default { src: url, width: meta.width, height: meta.height }",
+    );
   });
 
   it("returns null for files with no image imports", async () => {

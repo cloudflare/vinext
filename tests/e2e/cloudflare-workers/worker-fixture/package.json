@@ -1,0 +1,5 @@
+{
+  "name": "@vinext/e2e-cloudflare-worker-parity",
+  "private": true,
+  "type": "module"
+}
