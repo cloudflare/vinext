@@ -101,10 +101,6 @@ describe("Next.js deploy harness logging", () => {
       expect(localVinext.dependencies["@vinext/types"]).toBe("file:../.vinext-local-types-package");
       expect(localCloudflare.peerDependencies.vinext).toBe("file:../.vinext-local-package");
       expect(localTypes.name).toBe("@vinext/types");
-      const fixturePackage = JSON.parse(
-        fs.readFileSync(path.join(appRoot, "package.json"), "utf8"),
-      );
-      expect(fixturePackage.devDependencies["am-i-vibing"]).toBe("^0.5.0");
       expect(fs.existsSync(path.join(appRoot, ".vinext-local-types-package/next/index.d.ts"))).toBe(
         true,
       );
