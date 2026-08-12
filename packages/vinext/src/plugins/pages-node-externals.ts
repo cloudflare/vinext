@@ -188,6 +188,14 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
     // produces ERR_LOAD_URL; only production bundles need this external seam.
     apply: "build",
     enforce: "pre",
+    applyToEnvironment(environment) {
+      return (
+        options.isEnabled() &&
+        options.getPagesDir() !== null &&
+        environment.name !== "client" &&
+        environment.config.consumer !== "client"
+      );
+    },
     transform: {
       // Alias plugins resolve before user resolveId hooks, so follow static
       // import edges here while the original specifiers are still available.

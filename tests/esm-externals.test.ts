@@ -321,6 +321,34 @@ export const world = World
 }
 
 describe("ESM externals", () => {
+  it("only applies Pages externalization to eligible server environments", () => {
+    let pagesDir: string | null = "/project/pages";
+    let enabled = true;
+    const plugin = createPagesNodeExternalsPlugin({
+      getRoot: () => "/project",
+      getPagesDir: () => pagesDir,
+      getAliases: () => ({}),
+      getTsconfigAliases: () => ({}),
+      getBundledPackages: () => new Set(),
+      isEnabled: () => enabled,
+    });
+    const applyToEnvironment = plugin.applyToEnvironment!;
+    const environment = (name: string, consumer: "client" | "server") =>
+      ({ name, config: { consumer } }) as Parameters<typeof applyToEnvironment>[0];
+
+    expect(applyToEnvironment(environment("rsc", "server"))).toBe(true);
+    expect(applyToEnvironment(environment("ssr", "server"))).toBe(true);
+    expect(applyToEnvironment(environment("client", "server"))).toBe(false);
+    expect(applyToEnvironment(environment("custom-client", "client"))).toBe(false);
+
+    pagesDir = null;
+    expect(applyToEnvironment(environment("rsc", "server"))).toBe(false);
+
+    pagesDir = "/project/pages";
+    enabled = false;
+    expect(applyToEnvironment(environment("rsc", "server"))).toBe(false);
+  });
+
   it("skips canonical ownership work in App-only builds", async () => {
     const realpathSpy = vi.spyOn(fs.realpathSync, "native");
     const resolve = vi.fn();
