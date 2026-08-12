@@ -7,6 +7,7 @@
     "@vinext/cloudflare": "workspace:*",
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
+    "fake-worker-context-lib": "file:__test_packages__/fake-worker-context-lib",
     "react": "catalog:",
     "react-dom": "catalog:",
     "react-server-dom-webpack": "catalog:",

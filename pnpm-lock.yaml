@@ -1240,6 +1240,9 @@ importers:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
         version: 0.5.34(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)
+      fake-worker-context-lib:
+        specifier: file:__test_packages__/fake-worker-context-lib
+        version: file:tests/fixtures/cf-app-basic/__test_packages__/fake-worker-context-lib
       react:
         specifier: 'catalog:'
         version: 19.2.7
@@ -6079,6 +6082,9 @@ packages:
 
   fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-context-lib, type: directory}
+
+  fake-worker-context-lib@file:tests/fixtures/cf-app-basic/__test_packages__/fake-worker-context-lib:
+    resolution: {directory: tests/fixtures/cf-app-basic/__test_packages__/fake-worker-context-lib, type: directory}
 
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-css-lib, type: directory}
@@ -11737,6 +11743,8 @@ snapshots:
   extendable-error@0.1.7: {}
 
   fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib: {}
+
+  fake-worker-context-lib@file:tests/fixtures/cf-app-basic/__test_packages__/fake-worker-context-lib: {}
 
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib: {}
 

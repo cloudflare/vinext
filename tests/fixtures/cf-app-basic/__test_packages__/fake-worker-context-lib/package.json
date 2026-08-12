@@ -1,0 +1,15 @@
+{
+  "name": "fake-worker-context-lib",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    "./worker-esm-js": {
+      "browser": "./worker-browser.js",
+      "import": "./worker-esm-js.js"
+    },
+    "./worker-esm-mjs": {
+      "browser": "./worker-browser.js",
+      "import": "./worker-esm-mjs.mjs"
+    }
+  }
+}

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../fixtures";
 
@@ -6,6 +7,16 @@ const FIXTURE_DIR = `${process.cwd()}/tests/fixtures/cf-app-basic`;
 const BASE_URL = "http://localhost:4195";
 
 let server: ChildProcess;
+
+async function stopServer(): Promise<void> {
+  if (server.exitCode !== null || server.signalCode !== null) return;
+  if (process.platform === "win32" || server.pid === undefined) {
+    server.kill();
+  } else {
+    process.kill(-server.pid, "SIGTERM");
+  }
+  await Promise.race([once(server, "exit"), new Promise((resolve) => setTimeout(resolve, 5_000))]);
+}
 
 async function waitForServer(): Promise<void> {
   for (let attempt = 0; attempt < 240; attempt++) {
@@ -46,14 +57,17 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
   test.beforeAll(async () => {
     server = spawn(
       "created_node_modules=0; if ! test -e node_modules && ! test -L node_modules; then ln -s ../../../node_modules node_modules; created_node_modules=1; fi; trap 'if test \"$created_node_modules\" = 1; then rm node_modules; fi' EXIT; ../../../node_modules/.bin/vp build --config vite.cdn-cache.config.ts && npx wrangler dev --config dist/server/wrangler.json --port 4195",
-      { cwd: FIXTURE_DIR, shell: true, stdio: "inherit" },
+      {
+        cwd: FIXTURE_DIR,
+        detached: process.platform !== "win32",
+        shell: true,
+        stdio: "inherit",
+      },
     );
     await waitForServer();
   });
 
-  test.afterAll(() => {
-    server.kill();
-  });
+  test.afterAll(stopServer);
 
   test("keeps draft and anonymous route-handler ISR responses isolated", async ({ request }) => {
     const forged = await request.get(`${BASE_URL}/api/draft-isr/forged-${Date.now()}`, {
@@ -154,4 +168,19 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
 
     await setDraftMode(request, false);
   });
+
+  for (const pathname of ["/worker-esm-static", "/worker-esm-ssr", "/worker-esm-ssg"]) {
+    test(`${pathname} preserves server and browser export conditions`, async ({ page }) => {
+      const response = await fetch(`${BASE_URL}${pathname}`);
+      expect(response.status).toBe(200);
+      expect((await response.text()).replaceAll("<!-- -->", "")).toContain(
+        pathname === "/worker-esm-static" ? "worker+worker" : "worker+worker|worker+worker",
+      );
+
+      await page.goto(`${BASE_URL}${pathname}`);
+      await expect(page.locator("#worker-esm-value")).toHaveText(
+        pathname === "/worker-esm-static" ? "worker+worker" : "browser+browser|worker+worker",
+      );
+    });
+  }
 });
