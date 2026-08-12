@@ -40,12 +40,15 @@ describe("compatibility suite support policy", () => {
   });
 
   it("classifies the mixed legacy Edge Runtime suite at file scope", () => {
-    expect(getSuiteSupport("test/e2e/app-dir/next-after-app-deploy/index.test.ts")).toEqual({
+    const suite = "test/e2e/app-dir/next-after-app-deploy/index.test.ts";
+
+    expect(getSuiteSupport(suite)).toEqual({
       status: "unsupported",
       feature: "Next.js dual Node.js and legacy Edge Runtime builds",
       reason:
         "Vinext uses one Workers/Node-compat server graph and does not implement Next.js's per-route legacy Edge Runtime bundle or route-specific process.env.NEXT_RUNTIME constant. This mixed file couples portable nodejs assertions with legacy edge-runtime variants; cover after() on Workers separately.",
     });
+    expect(NON_SUPPORTED_SUITES).toContain(suite);
   });
 
   it("uses canonical Next.js suite paths", () => {
