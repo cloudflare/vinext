@@ -47,7 +47,7 @@ const NEXT_RUNTIME_CONDITION_LABELS = {
   status: "needs-vite-equivalent",
   feature: "Runtime export conditions across deployment environments",
   reason:
-    "The exact suite asserts Next.js's per-route node/edge compiler split and private edge-light condition. Vinext instead selects node in the Node adapter, worker/workerd in Cloudflare Workers, and browser in the client; equivalent Worker coverage lives in tests/e2e/cloudflare-workers/route-handler-draft-cache.spec.ts.",
+    "The exact suite remains 2 of 12 passing because it asserts Next.js's per-route node/edge compiler split and private edge-light condition. Vinext instead selects node in the Node adapter, worker/workerd in Cloudflare Workers, and browser in the client; the equivalent Worker test passes across middleware, Pages and App APIs, Pages and App rendering, client hydration, and server actions in tests/e2e/cloudflare-workers/route-handler-draft-cache.spec.ts.",
 } as const satisfies ScopedSuiteSupport;
 
 export const SUITE_SUPPORT_POLICY = {
