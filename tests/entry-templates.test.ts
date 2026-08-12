@@ -8,7 +8,6 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import vm from "node:vm";
-import { toSlash } from "pathslash";
 import { describe, it, expect } from "vite-plus/test";
 import {
   generateBrowserEntry,
@@ -161,16 +160,15 @@ describe("App Router generated manifest construction", () => {
         routes: [route("/edge", edgeLayout), route("/nodejs", nodeLayout)],
       });
       const imports = manifest.imports.join("\n");
-      const sharedId = toSlash(sharedPage);
 
       expect(imports).toContain(
-        `import(${JSON.stringify(`${sharedId}?vinext-route-runtime=edge`)})`,
+        `import(${JSON.stringify(`${sharedPage}?vinext-route-runtime=edge`)})`,
       );
-      expect(imports).toContain(`import(${JSON.stringify(sharedId)})`);
+      expect(imports).toContain(`import(${JSON.stringify(sharedPage)})`);
       expect(imports).toContain(
-        `import(${JSON.stringify(`${toSlash(edgeLayout)}?vinext-route-runtime=edge`)})`,
+        `import(${JSON.stringify(`${edgeLayout}?vinext-route-runtime=edge`)})`,
       );
-      expect(imports).toContain(`import(${JSON.stringify(toSlash(nodeLayout))})`);
+      expect(imports).toContain(`import(${JSON.stringify(nodeLayout)})`);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
