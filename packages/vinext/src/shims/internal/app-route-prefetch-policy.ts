@@ -45,6 +45,8 @@ export type AppRoutePrefetchPolicy = {
    */
   honorDynamicStaleTime: boolean;
   prefetchShellFirst: boolean;
+  /** Keep compatibility-only dynamic paths on the single learning-shell request path. */
+  skipSegmentCacheScheduler?: true;
   /** Fetch the route tree before the concrete page segment. */
   requiresRouteTreePrefetch?: true;
   shouldPrefetch: boolean;
@@ -128,6 +130,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     fallbackTtl: "static",
     honorDynamicStaleTime: true,
     prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,
+    ...(hasCacheComponentsLearningOnlyDynamicPath ? { skipSegmentCacheScheduler: true } : {}),
     ...(requiresRouteTreePrefetch ? { requiresRouteTreePrefetch: true } : {}),
     shouldPrefetch: true,
   };

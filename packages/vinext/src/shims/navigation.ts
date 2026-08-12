@@ -2467,6 +2467,17 @@ function resetStaleLinkStatus(): void {
   getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
 }
 
+function cancelAppPrefetchesForDestination(destination: string): void {
+  cancelPendingPrefetchSetups(destination);
+  getNavigationRuntime()?.functions.cancelLinkPrefetchTasks?.();
+}
+
+/** Cancel prefetch work only after App Router proves a traversal needs RSC. */
+export function cancelAppPrefetchesForTraversal(): void {
+  const destination = toAppPrefetchDestination(window.location.href);
+  if (destination !== null) cancelAppPrefetchesForDestination(destination);
+}
+
 /**
  * Signal that a navigation to `href` is starting, for the callers that will
  * fetch the destination. Separate from `resetStaleLinkStatus()` because a raw
@@ -2481,22 +2492,14 @@ function notifyAppNavigationStart(href: string): void {
   // the destination above precisely because it does not select a resource —
   // which makes checking for the same-document case here load-bearing.
   if (destination !== null && !isHashOnlyBrowserUrlChange(href, window.location.href, __basePath)) {
-    cancelPendingPrefetchSetups(destination);
+    cancelAppPrefetchesForDestination(destination);
   }
   resetStaleLinkStatus();
 }
 
-/**
- * popstate variant. The browser has already applied the history entry by the
- * time this runs, so the pre-navigation URL that `isHashOnlyBrowserUrlChange`
- * needs is gone. Back/forward across a route boundary does drive an RSC fetch
- * (`app-browser-entry.ts`'s popstate handler), so cancelling by destination is
- * right; a hash-only entry over-cancels, which costs one re-prefetch and can
- * never cause a duplicate request.
- */
+/** Reset Link status for every traversal; the App browser entry separately
+ * cancels prefetch work only after ruling out a same-route hash traversal. */
 function notifyAppPopstateNavigationStart(): void {
-  const destination = toAppPrefetchDestination(window.location.href);
-  if (destination !== null) cancelPendingPrefetchSetups(destination);
   resetStaleLinkStatus();
 }
 
