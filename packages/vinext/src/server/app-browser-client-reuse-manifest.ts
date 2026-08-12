@@ -16,6 +16,10 @@ import {
   createStaticLayoutClientReusePayloadHash,
   createStaticLayoutClientReuseRouteId,
 } from "./static-layout-client-reuse-proof.js";
+import {
+  createSameRouteLayoutClientReusePayloadHash,
+  createSameRouteLayoutClientReuseVariantCacheKey,
+} from "./same-route-layout-client-reuse-proof.js";
 import type { AppRouterState } from "./app-browser-state.js";
 
 type ClientReuseManifestLimits = typeof DEFAULT_CLIENT_REUSE_MANIFEST_LIMITS;
@@ -32,6 +36,8 @@ type BrowserClientReuseManifestEntry = Readonly<{
 
 type CreateClientReuseManifestHeaderOptions = Readonly<{
   limits?: ClientReuseManifestLimits;
+  retainedElements?: readonly AppElements[];
+  sameRoutePathname?: string;
 }>;
 
 function capClientReuseManifestProducerLimits(
@@ -130,6 +136,22 @@ function createStaticLayoutEntry(input: {
   };
 }
 
+function createSameRouteLayoutEntry(input: {
+  artifactCompatibility: ArtifactCompatibilityEnvelope;
+  layoutId: string;
+  pathname: string;
+  routeId: string;
+}): BrowserClientReuseManifestEntry {
+  const variantCacheKey = createSameRouteLayoutClientReuseVariantCacheKey(input);
+  return {
+    artifactCompatibility: input.artifactCompatibility,
+    id: input.layoutId,
+    payloadHash: createSameRouteLayoutClientReusePayloadHash(input),
+    privacy: "public",
+    variantCacheKey,
+  };
+}
+
 export function createClientReuseManifestHeaderFromVisibleAppState(
   state: VisibleAppState,
   options: CreateClientReuseManifestHeaderOptions = {},
@@ -137,24 +159,56 @@ export function createClientReuseManifestHeaderFromVisibleAppState(
   const limits = capClientReuseManifestProducerLimits(
     options.limits ?? DEFAULT_CLIENT_REUSE_MANIFEST_LIMITS,
   );
-  const metadata = AppElementsWire.readMetadata(state.elements);
   const entries: BrowserClientReuseManifestEntry[] = [];
+  const retainedLayoutIds = new Set<string>();
 
-  for (const layoutId of metadata.layoutIds) {
+  // The visible tree is the primary owner. An optimistic loading shell may
+  // additionally own target-route layouts that were prefetched but were not
+  // present at navigation start; those layouts are equally retained while the
+  // authoritative page response streams in.
+  for (const elements of [state.elements, ...(options.retainedElements ?? [])]) {
+    const metadata = AppElementsWire.readMetadata(elements);
+    for (const layoutId of metadata.layoutIds) {
+      if (entries.length >= limits.maxEntryCount) break;
+      if (retainedLayoutIds.has(layoutId)) continue;
+      if (layoutId.length > limits.maxEntryIdLength) continue;
+      if (metadata.layoutFlags[layoutId] !== "s") continue;
+      if (!hasRetainedElement(elements, layoutId)) continue;
+
+      const parsedKey = AppElementsWire.parseElementKey(layoutId);
+      if (parsedKey?.kind !== "layout") continue;
+
+      const entry = createStaticLayoutEntry({
+        artifactCompatibility: metadata.artifactCompatibility,
+        layoutId,
+      });
+      if (entry) {
+        entries.push(entry);
+        retainedLayoutIds.add(layoutId);
+      }
+    }
     if (entries.length >= limits.maxEntryCount) break;
-    if (layoutId.length > limits.maxEntryIdLength) continue;
-    if (metadata.layoutFlags[layoutId] !== "s") continue;
-    if (!hasRetainedElement(state.elements, layoutId)) continue;
+  }
 
-    const parsedKey = AppElementsWire.parseElementKey(layoutId);
-    if (parsedKey?.kind !== "layout") continue;
+  if (options.sameRoutePathname !== undefined && entries.length < limits.maxEntryCount) {
+    const metadata = AppElementsWire.readMetadata(state.elements);
+    for (const layoutId of metadata.layoutIds) {
+      if (entries.length >= limits.maxEntryCount) break;
+      if (retainedLayoutIds.has(layoutId)) continue;
+      if (layoutId.length > limits.maxEntryIdLength) continue;
+      if (metadata.layoutFlags[layoutId] !== "d") continue;
+      if (!hasRetainedElement(state.elements, layoutId)) continue;
+      if (AppElementsWire.parseElementKey(layoutId)?.kind !== "layout") continue;
 
-    const entry = createStaticLayoutEntry({
-      artifactCompatibility: metadata.artifactCompatibility,
-      layoutId,
-    });
-    if (entry) {
-      entries.push(entry);
+      entries.push(
+        createSameRouteLayoutEntry({
+          artifactCompatibility: metadata.artifactCompatibility,
+          layoutId,
+          pathname: options.sameRoutePathname,
+          routeId: metadata.routeId,
+        }),
+      );
+      retainedLayoutIds.add(layoutId);
     }
   }
 

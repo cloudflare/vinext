@@ -643,7 +643,7 @@ function classifyEarlyNavigationIntent(
   // key order. We intentionally do not sort, since query order can be observable.
   const sameSearch = current.searchParams.toString() === next.searchParams.toString();
 
-  if (samePathname && sameSearch && next.hash !== "") {
+  if (samePathname && sameSearch && next.hash !== "" && next.hash !== current.hash) {
     return {
       hash: next.hash,
       kind: "sameDocumentScroll",

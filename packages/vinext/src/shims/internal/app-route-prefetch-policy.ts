@@ -74,6 +74,38 @@ const NO_APP_ROUTE_PREFETCH: AppRoutePrefetchPolicy = {
   shouldPrefetch: false,
 };
 
+function hasCacheComponentsLearningOnlyDynamicPath(
+  route: VinextLinkPrefetchRoute,
+  routeUrl: URL,
+): boolean {
+  const isFullyDynamicRootRoute =
+    route.patternParts.length === 1 && route.patternParts[0]?.startsWith(":");
+  const requiresRouteTreePrefetch =
+    String(process.env.__NEXT_CACHE_COMPONENTS) === "true" && route.hasRootParams === true;
+  return (
+    route.isDynamic &&
+    String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
+    (ENCODED_PATH_DELIMITER_RE.test(routeUrl.pathname) ||
+      (isFullyDynamicRootRoute && !requiresRouteTreePrefetch))
+  );
+}
+
+export function requiresSinglePhaseLearningOnlyAppRoutePrefetch(href: string): boolean {
+  if (typeof window === "undefined") return false;
+  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
+  if (!routes) return false;
+  const routeHref = toSameOriginRouteHref(href);
+  if (routeHref === null) return false;
+  const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
+  return (
+    match !== null &&
+    hasCacheComponentsLearningOnlyDynamicPath(
+      match.route,
+      new URL(routeHref, "http://vinext.local"),
+    )
+  );
+}
+
 export function canAutoPrefetchFullAppRoute(href: string): boolean {
   return resolveAutoAppRoutePrefetch(href).cacheForNavigation;
 }
@@ -107,13 +139,10 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   //
   // Next.js parity:
   // test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
-  const isFullyDynamicRootRoute =
-    route.patternParts.length === 1 && route.patternParts[0]?.startsWith(":");
-  const hasCacheComponentsLearningOnlyDynamicPath =
-    route.isDynamic &&
-    String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
-    (ENCODED_PATH_DELIMITER_RE.test(routeUrl.pathname) ||
-      (isFullyDynamicRootRoute && !requiresRouteTreePrefetch));
+  const isCacheComponentsLearningOnlyDynamicPath = hasCacheComponentsLearningOnlyDynamicPath(
+    route,
+    routeUrl,
+  );
   return {
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
     // Routes with loading boundaries prefetch a shell first so navigation can
@@ -122,7 +151,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     // branches must be derived from the click-time target tree.
     cacheForNavigation:
       !hasSearchParams &&
-      !hasCacheComponentsLearningOnlyDynamicPath &&
+      !isCacheComponentsLearningOnlyDynamicPath &&
       (requiresRouteTreePrefetch ||
         (!route.canPrefetchLoadingShell && route.requiresDynamicNavigationRequest !== true)),
     fallbackTtl: "static",

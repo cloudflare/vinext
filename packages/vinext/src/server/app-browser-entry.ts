@@ -28,6 +28,7 @@ import {
   createCachedRscResponseSnapshot,
   createClientNavigationRenderSnapshot,
   deletePrefetchResponseSnapshot,
+  cancelAppPrefetchesForTraversal,
   DYNAMIC_NAVIGATION_CACHE_TTL,
   PREFETCH_CACHE_TTL,
   getClientNavigationRenderContext,
@@ -161,6 +162,7 @@ import {
   installAppNavigationFailureListeners,
 } from "../client/app-nav-failure-handler.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
+import { retainElementsAfterOptimisticCommit } from "./app-browser-optimistic-commit.js";
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -483,6 +485,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   );
   const template = createOptimisticRouteTemplate({
     allowLoadingShell: options.entry.optimisticRouteShell === true,
+    allowSegmentShell: options.entry.authoritativeSegmentShell === true,
     basePath: __basePath,
     elements,
     href: options.entry.snapshot.url || source.rscUrl,
@@ -1731,6 +1734,7 @@ function bootstrapHydration(
 
       while (true) {
         const url = new URL(currentHref, window.location.origin);
+        let optimisticRetainedElements: AppElements | null = null;
         const requestState = getRequestState(
           navigationKind,
           url.pathname,
@@ -2055,7 +2059,6 @@ function bootstrapHydration(
             });
 
             if (optimisticPayload !== null) {
-              detachedNavigationCommits = true;
               const optimisticNavigationSnapshot = createClientNavigationRenderSnapshot(
                 currentHref,
                 optimisticPayload.params,
@@ -2066,30 +2069,40 @@ function bootstrapHydration(
               // detachedNavigationCommits. That keeps late optimistic errors or
               // transitions from mutating a newer navigation or sharing mutable
               // pending state with the authoritative render.
-              void renderNavigationPayload({
-                actionType: toActionType(navigationKind),
-                historyUpdateMode: currentHistoryMode,
-                navigationCommitKind: "detached",
-                navigationInitiationState,
-                navigationSnapshot: optimisticNavigationSnapshot,
-                navId,
-                operationLane: toOperationLane(navigationKind),
-                params: optimisticPayload.params,
-                payload: Promise.resolve(optimisticPayload.elements),
-                payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
-                pendingRouterState: null,
-                previousNextUrl: requestPreviousNextUrl,
-                restoredBfcacheIds,
-                reuseCurrentBfcacheIds,
-                scrollIntent,
-                targetHref: currentHref,
-                traversalIntent: activeTraversalIntent,
-                visibleCommitMode,
-              }).catch((error) => {
+              try {
+                const retainedElements = await retainElementsAfterOptimisticCommit({
+                  commit: () =>
+                    renderNavigationPayload({
+                      actionType: toActionType(navigationKind),
+                      historyUpdateMode: currentHistoryMode,
+                      navigationCommitKind: "detached",
+                      navigationInitiationState,
+                      navigationSnapshot: optimisticNavigationSnapshot,
+                      navId,
+                      operationLane: toOperationLane(navigationKind),
+                      params: optimisticPayload.params,
+                      payload: Promise.resolve(optimisticPayload.elements),
+                      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+                      pendingRouterState: null,
+                      previousNextUrl: requestPreviousNextUrl,
+                      restoredBfcacheIds,
+                      reuseCurrentBfcacheIds,
+                      scrollIntent,
+                      targetHref: currentHref,
+                      traversalIntent: activeTraversalIntent,
+                      visibleCommitMode,
+                    }),
+                  elements: optimisticPayload.template.elements,
+                });
+                if (retainedElements !== null) {
+                  optimisticRetainedElements = retainedElements;
+                  detachedNavigationCommits = true;
+                }
+              } catch (error) {
                 if (browserNavigationController.isCurrentNavigation(navId)) {
                   console.error("[vinext] Optimistic RSC navigation error:", error);
                 }
-              });
+              }
             }
           }
         }
@@ -2100,8 +2113,27 @@ function bootstrapHydration(
           // Computed from the nav-start router state so it matches the snapshot
           // the request would have carried if produced earlier.
           if (navigationKind === "navigate") {
-            const clientReuseManifestHeader =
-              createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
+            const targetPathAndSearchWithoutBasePath = createBasePathStrippedPathAndSearch(
+              url,
+              __basePath,
+            );
+            const isExactSameRouteNavigation =
+              targetPathAndSearchWithoutBasePath ===
+              createSnapshotPathAndSearch(navigationInitiationState.navigationSnapshot);
+            const queryIndex = targetPathAndSearchWithoutBasePath.indexOf("?");
+            const clientReuseManifestHeader = createClientReuseManifestHeaderFromVisibleAppState(
+              navigationInitiationState,
+              {
+                retainedElements:
+                  optimisticRetainedElements === null ? [] : [optimisticRetainedElements],
+                sameRoutePathname: isExactSameRouteNavigation
+                  ? targetPathAndSearchWithoutBasePath.slice(
+                      0,
+                      queryIndex === -1 ? undefined : queryIndex,
+                    )
+                  : undefined,
+              },
+            );
             if (clientReuseManifestHeader !== null) {
               requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
             }
@@ -2466,6 +2498,7 @@ function bootstrapHydration(
       restorePopstateScrollPosition(event.state);
       return;
     }
+    cancelAppPrefetchesForTraversal();
     const snapshotNavigationId = browserNavigationController.beginNavigation();
     if (
       restoreHistoryStateSnapshot(event.state, snapshotNavigationId, () => {

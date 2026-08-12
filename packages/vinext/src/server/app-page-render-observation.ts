@@ -7,7 +7,7 @@ import {
   consumeInvalidDynamicUsageError,
   consumeRenderRequestApiUsage,
 } from "vinext/shims/headers";
-import { AppElementsWire, isAppElementsRecord } from "./app-elements.js";
+import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
 import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import {
   buildRenderObservation,
@@ -30,10 +30,7 @@ function readRootBoundaryId(element: Readonly<Record<string, unknown>>): string 
   return typeof rootLayoutTreePath === "string" ? rootLayoutTreePath : null;
 }
 
-function readRouteId(
-  element: ReactNode | Readonly<Record<string, ReactNode>>,
-  routePattern: string,
-): string {
+function readRouteId(element: ReactNode | AppOutgoingElements, routePattern: string): string {
   if (isAppElementsRecord(element)) {
     const routeId = element[AppElementsWire.keys.route];
     if (typeof routeId === "string") {
@@ -112,7 +109,7 @@ export function createAppPageRenderObservation(options: {
 }
 
 export function createAppPageRscOutputScope(options: {
-  element: ReactNode | Readonly<Record<string, ReactNode>>;
+  element: ReactNode | AppOutgoingElements;
   mountedSlotsHeader?: string | null;
   renderEpoch: string | null;
   rootBoundaryId: string | null;
@@ -133,7 +130,7 @@ export function createAppPageRscOutputScope(options: {
 // set of mounted parallel-route slots; only RSC payload artifacts include that
 // slot fingerprint in their output scope.
 export function createAppPageHtmlOutputScope(options: {
-  element: ReactNode | Readonly<Record<string, ReactNode>>;
+  element: ReactNode | AppOutgoingElements;
   renderEpoch: string | null;
   rootBoundaryId: string | null;
   routePattern: string;

@@ -6,6 +6,10 @@ import {
 } from "./artifact-compatibility.js";
 import type { StaticLayoutArtifactReuseDecision } from "./cache-proof.js";
 import {
+  createSameRouteLayoutClientReusePayloadHash,
+  createSameRouteLayoutClientReuseVariantCacheKey,
+} from "./same-route-layout-client-reuse-proof.js";
+import {
   CLIENT_REUSE_MANIFEST_SKIP_VERIFICATION_ENTRY_BUDGET,
   createClientReusePayloadHash,
   type ClientReuseManifestEntry,
@@ -289,6 +293,47 @@ export function crossCheckClientReuseManifestEntryWithCache(
       variantCacheKeyHash: createClientReusePayloadHash(proof.variant.cacheKey),
     },
     skipDisposition,
+  };
+}
+
+export function verifySameRouteLayoutClientReuse(input: {
+  artifactCompatibility: ArtifactCompatibilityEnvelope;
+  entry: ClientReuseManifestEntry;
+  pathname: string;
+  routeId: string;
+}): SkipCacheCrossCheckResult {
+  const { entry } = input;
+  if (entry.kind !== "layout") {
+    return rejectSkipCacheCrossCheck(entry, "SKIP_CACHE_REUSE_CLASS_UNSUPPORTED", {
+      entryKind: entry.kind,
+      reuseClass: "same-route-layout",
+    });
+  }
+  if (!isExactArtifactCompatibility(input.artifactCompatibility, entry.artifactCompatibility)) {
+    return rejectSkipCacheCrossCheck(entry, "SKIP_CACHE_ARTIFACT_COMPATIBILITY_INCOMPATIBLE");
+  }
+
+  const proofInput = {
+    artifactCompatibility: input.artifactCompatibility,
+    layoutId: entry.id,
+    pathname: input.pathname,
+    routeId: input.routeId,
+  };
+  const variantCacheKey = createSameRouteLayoutClientReuseVariantCacheKey(proofInput);
+  if (entry.variantCacheKey !== variantCacheKey) {
+    return rejectSkipCacheCrossCheck(entry, "SKIP_CACHE_VARIANT_MISMATCH");
+  }
+  const payloadHash = createSameRouteLayoutClientReusePayloadHash(proofInput);
+  if (entry.payloadHash !== payloadHash) {
+    return rejectSkipCacheCrossCheck(entry, "SKIP_CACHE_PAYLOAD_HASH_MISMATCH");
+  }
+
+  return {
+    code: "SKIP_CACHE_CROSS_CHECK_PASSED",
+    entryId: entry.id,
+    fields: { entryKind: entry.kind, reuseClass: "same-route-layout" },
+    kind: "verified",
+    skipDisposition: createStaticLayoutSkipDisposition([entry.id]),
   };
 }
 

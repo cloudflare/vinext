@@ -1695,7 +1695,7 @@ describe("layoutFlags injection into RSC payload", () => {
   function createRscOptions(overrides: {
     cleanPathname?: string;
     clientReuseManifest?: ClientReuseManifestParseResult;
-    element?: Record<string, ReactNode>;
+    element?: AppOutgoingElements;
     layoutParamAccess?: ReturnType<typeof createAppLayoutParamAccessTracker>;
     layoutCount?: number;
     pageTags?: string[];
@@ -2062,6 +2062,90 @@ describe("layoutFlags injection into RSC payload", () => {
     expect(getCapturedElement()["page:/blog/hello"]).toBe("post-page");
     expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({ [layoutId]: "s" });
     expect(Object.hasOwn(getCapturedElement(), APP_SKIPPED_LAYOUT_IDS_KEY)).toBe(false);
+  });
+
+  it("omits a dynamic layout only when an exact same-route proof matches", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+    const originalBuildId = process.env.__VINEXT_BUILD_ID;
+    process.env.__VINEXT_BUILD_ID = "deploy-test";
+    const layoutId = "layout:/same-page-nav";
+    const routeId = "route:/same-page-nav";
+    const routePattern = "/same-page-nav";
+    const artifactCompatibility = createArtifactCompatibilityEnvelope({
+      deploymentVersion: "deploy-test",
+      graphVersion: createArtifactCompatibilityGraphVersion({
+        routePattern,
+        rootBoundaryId: "/",
+      }),
+      rootBoundaryId: "/",
+    });
+    const retainedState = {
+      elements: {
+        ...AppElementsWire.createMetadataEntries({
+          interceptionContext: null,
+          layoutIds: [layoutId],
+          rootLayoutTreePath: "/",
+          routeId,
+        }),
+        [AppElementsWire.keys.artifactCompatibility]: artifactCompatibility,
+        [AppElementsWire.keys.layoutFlags]: { [layoutId]: "d" as const },
+        [layoutId]: "mounted-layout",
+      },
+      visibleCommitVersion: 1,
+    };
+    const header = createClientReuseManifestHeaderFromVisibleAppState(retainedState, {
+      sameRoutePathname: routePattern,
+    });
+    const clientReuseManifest = parseClientReuseManifestHeader(header);
+    const createOptions = (cleanPathname: string) =>
+      createRscOptions({
+        cleanPathname,
+        clientReuseManifest,
+        element: {
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: null,
+            layoutIds: [layoutId],
+            rootLayoutTreePath: "/",
+            routeId,
+          }),
+          [layoutId]: "fresh-layout",
+          "page:/same-page-nav": "fresh-page",
+        },
+        layoutCount: 1,
+        probeLayoutAt: () => null,
+        classification: {
+          getLayoutId: () => layoutId,
+          buildTimeClassifications: null,
+          async runWithIsolatedDynamicScope(fn) {
+            const result = await fn();
+            return { result, dynamicDetected: true };
+          },
+        },
+        routePattern,
+      });
+
+    try {
+      const matching = createOptions(routePattern);
+      await renderAppPageLifecycle(matching.options);
+      expect(Object.hasOwn(matching.getCapturedElement(), layoutId)).toBe(false);
+      expect(matching.getCapturedElement()["page:/same-page-nav"]).toBe("fresh-page");
+      expect(matching.getCapturedElement()[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual([layoutId]);
+
+      const mismatched = createOptions("/different-path");
+      await renderAppPageLifecycle(mismatched.options);
+      expect(mismatched.getCapturedElement()[layoutId]).toBe("fresh-layout");
+      expect(Object.hasOwn(mismatched.getCapturedElement(), APP_SKIPPED_LAYOUT_IDS_KEY)).toBe(
+        false,
+      );
+    } finally {
+      if (originalBuildId === undefined) {
+        delete process.env.__VINEXT_BUILD_ID;
+      } else {
+        process.env.__VINEXT_BUILD_ID = originalBuildId;
+      }
+    }
   });
 
   it("wire payload layoutFlags uses only the shorthand 's'/'d' values, never tagged reasons", async () => {

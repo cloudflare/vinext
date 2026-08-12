@@ -32,6 +32,7 @@ import {
   hydrateRootInTransition,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
+import { retainElementsAfterOptimisticCommit } from "../packages/vinext/src/server/app-browser-optimistic-commit.js";
 import {
   peekSettledPrefetchResponseForNavigation,
   preserveCommittedPrefetchExpiry,
@@ -4374,6 +4375,35 @@ describe("app browser navigation controller", () => {
 });
 
 describe("app browser navigation lifecycle settlement", () => {
+  it("does not advertise detached retained layouts before their visible commit", async () => {
+    const elements = createResolvedElements("route:/projects", "/", null, {
+      "layout:/projects": React.createElement("section", null, "projects"),
+    });
+    let resolveCommit: ((outcome: "committed" | "no-commit") => void) | undefined;
+    const commit = new Promise<"committed" | "no-commit">((resolve) => {
+      resolveCommit = resolve;
+    });
+    let settled = false;
+    const retained = retainElementsAfterOptimisticCommit({
+      commit: () => commit,
+      elements,
+    }).then((value) => {
+      settled = true;
+      return value;
+    });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    resolveCommit?.("committed");
+    expect(await retained).toBe(elements);
+    expect(
+      await retainElementsAfterOptimisticCommit({
+        commit: async () => "no-commit",
+        elements,
+      }),
+    ).toBeNull();
+  });
+
   it("prepares authoritative layout reuse from the state before a detached commit", async () => {
     const rootLayout = React.createElement("div", null, "root layout");
     const rootLayoutId = AppElementsWire.encodeLayoutId("/");
@@ -4478,6 +4508,111 @@ describe("app browser navigation lifecycle settlement", () => {
       expect(stateRef.current.bfcacheIds[projectLayoutId]).not.toBe(detachedProjectLayoutId);
       expect(stateRef.current.elements[rootLayoutId]).toBe(rootLayout);
       expect(stateRef.current.bfcacheIds[rootLayoutId]).toBe("0");
+    } finally {
+      detach();
+    }
+  });
+
+  it("preserves a server-skipped layout introduced by the detached commit", async () => {
+    const rootLayout = React.createElement("div", null, "root layout");
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const projectLayoutId = AppElementsWire.encodeLayoutId("/projects/[projectId]");
+    const detachedProjectLayout = React.createElement("section", null, "project layout");
+    const navigationInitiationState = createState({
+      bfcacheIds: { [rootLayoutId]: "0" },
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        {
+          [rootLayoutId]: rootLayout,
+          "page:/dashboard": React.createElement("main", null, "dashboard"),
+        },
+        [rootLayoutId],
+      ),
+      layoutIds: [rootLayoutId],
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
+      routeId: "route:/dashboard",
+    });
+    const routeManifest = createTestRouteManifest([
+      {
+        id: "route:/dashboard",
+        layoutIds: [rootLayoutId],
+        pattern: "/dashboard",
+        rootBoundaryId: "root-boundary:/",
+      },
+      {
+        id: "route:/projects/[projectId]",
+        layoutIds: [rootLayoutId, projectLayoutId],
+        pattern: "/projects/[projectId]",
+        rootBoundaryId: "root-boundary:/",
+      },
+    ]);
+    const { controller, detach, stateRef, waitForNextVisibleCommitDispatch } =
+      createControllerHarness(navigationInitiationState, {
+        getRouteManifest: () => routeManifest,
+      });
+    const targetHref = "https://example.com/projects/b";
+    const navigationSnapshot = createClientNavigationRenderSnapshot(targetHref, {
+      projectId: "b",
+    });
+
+    try {
+      const navId = controller.beginNavigation();
+      await dispatchTestNavigationPayload({
+        controller,
+        navigationCommitKind: "detached",
+        navigationInitiationState,
+        navigationSnapshot,
+        navId,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            "route:/projects/[projectId]",
+            "/",
+            null,
+            {
+              [APP_SKIPPED_LAYOUT_IDS_KEY]: [rootLayoutId],
+              [projectLayoutId]: detachedProjectLayout,
+              "page:/projects/[projectId]": React.createElement("main", null, "loading"),
+            },
+            [rootLayoutId, projectLayoutId],
+          ),
+        ),
+        params: { projectId: "b" },
+        targetHref,
+        waitForNextVisibleCommitDispatch,
+      });
+
+      const detachedProjectLayoutBfcacheId = stateRef.current.bfcacheIds[projectLayoutId];
+
+      await dispatchTestNavigationPayload({
+        controller,
+        navigationCommitKind: "authoritative",
+        navigationInitiationState,
+        navigationSnapshot,
+        navId,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            "route:/projects/[projectId]",
+            "/",
+            null,
+            {
+              [APP_SKIPPED_LAYOUT_IDS_KEY]: [rootLayoutId, projectLayoutId],
+              "page:/projects/[projectId]": React.createElement("main", null, "project b"),
+            },
+            [rootLayoutId, projectLayoutId],
+          ),
+        ),
+        params: { projectId: "b" },
+        targetHref,
+        waitForNextVisibleCommitDispatch,
+      });
+
+      expect(stateRef.current.elements[projectLayoutId]).toBe(detachedProjectLayout);
+      expect(stateRef.current.bfcacheIds[projectLayoutId]).toBe(detachedProjectLayoutBfcacheId);
+      expect(stateRef.current.elements["page:/projects/[projectId]"]).toMatchObject({
+        props: { children: "project b" },
+      });
     } finally {
       detach();
     }

@@ -69,6 +69,7 @@ import {
   createStaticLayoutClientReusePayloadHash,
   createStaticLayoutClientReuseRouteId,
   crossCheckClientReuseManifestEntryWithCache,
+  verifySameRouteLayoutClientReuse,
 } from "./skip-cache-proof.js";
 import {
   createAppPageHtmlOutputScope,
@@ -198,7 +199,7 @@ type RenderAppPageLifecycleOptions = {
   // Per-layout observation tracker. Constructed in dispatch, consumed by the
   // skip transport planner to reject layouts that are unsafe for static reuse.
   layoutParamAccess?: AppLayoutParamAccessTracker;
-  element: ReactNode | Readonly<Record<string, ReactNode>>;
+  element: ReactNode | AppOutgoingElements;
   classification?: LayoutClassificationOptions | null;
 };
 
@@ -300,7 +301,7 @@ function readRootBoundaryId(element: Readonly<Record<string, unknown>>): string 
 }
 
 function createAppPageArtifactCompatibility(
-  element: ReactNode | Readonly<Record<string, ReactNode>>,
+  element: ReactNode | AppOutgoingElements,
   routePattern: string,
 ): ArtifactCompatibilityEnvelope | undefined {
   if (!isAppElementsRecord(element)) {
@@ -395,7 +396,7 @@ function createRenderLifecycleSkipDisposition(input: {
   artifactCompatibility: ArtifactCompatibilityEnvelope | undefined;
   cleanPathname: string;
   clientReuseManifest: ClientReuseManifestParseResult | undefined;
-  element: ReactNode | Readonly<Record<string, ReactNode>>;
+  element: ReactNode | AppOutgoingElements;
   isRscRequest: boolean;
   layoutFlags: Readonly<Record<string, "s" | "d">>;
   layoutParamAccess: AppLayoutParamAccessTracker | undefined;
@@ -425,6 +426,18 @@ function createRenderLifecycleSkipDisposition(input: {
   const plan = createClientReuseSkipTransportPlan({
     manifest: clientReuseManifest,
     verifyEntry(entry) {
+      if (
+        entry.kind === "layout" &&
+        input.layoutFlags[entry.id] === "d" &&
+        AppElementsWire.parseElementKey(entry.id)?.kind === "layout"
+      ) {
+        return verifySameRouteLayoutClientReuse({
+          artifactCompatibility,
+          entry,
+          pathname: input.cleanPathname,
+          routeId: AppElementsWire.readMetadata(element).routeId,
+        });
+      }
       if (
         entry.kind !== "layout" ||
         !staticLayoutIds.has(entry.id) ||
