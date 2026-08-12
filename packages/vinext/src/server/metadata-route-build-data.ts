@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import { imageSize } from "image-size";
 import { routePatternParts } from "../routing/route-pattern.js";
+import { readImageDimensions } from "../utils/image-dimensions.js";
 import {
   getMetadataRouteKind,
   type MetadataFileRoute,
@@ -72,7 +72,7 @@ function readMetadataRouteAltText(route: MetadataFileRoute): string | undefined 
 
 function readMetadataImageDimensions(buffer: Buffer, route: MetadataFileRoute): ImageDimensions {
   try {
-    const dimensions = imageSize(buffer);
+    const dimensions = readImageDimensions(buffer);
     return {
       width: dimensions.width,
       height: dimensions.height,

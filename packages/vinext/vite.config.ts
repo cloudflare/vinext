@@ -91,6 +91,14 @@ export default defineConfig({
         "web-vitals",
         "image-size",
       ],
+      onlyBundle: [
+        "am-i-vibing",
+        "process-ancestry",
+        "pathslash",
+        "ipaddr.js",
+        "web-vitals",
+        "image-size",
+      ],
       neverBundle: (id) =>
         id.includes("node_modules") &&
         !id.includes("am-i-vibing") &&
