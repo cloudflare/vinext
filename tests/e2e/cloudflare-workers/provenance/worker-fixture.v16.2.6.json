@@ -1,0 +1,102 @@
+{
+  "nextRef": "v16.2.6",
+  "nextCommit": "ee6e79b1792a4d401ddf2480f40a83549fe8e722",
+  "upstreamSuite": "test/e2e/app-dir/worker/worker.test.ts",
+  "upstreamUrl": "https://github.com/vercel/next.js/blob/ee6e79b1792a4d401ddf2480f40a83549fe8e722/test/e2e/app-dir/worker/worker.test.ts",
+  "equivalentSuite": "tests/e2e/cloudflare-workers/worker.spec.ts",
+  "upstreamSuiteSnapshot": {
+    "path": "tests/e2e/cloudflare-workers/provenance/worker.test.v16.2.6.txt",
+    "sha256": "031d9a5f3ba1e864d7720b75aea13b0daf2d1ec174faa614fb12ab4b24ed9ed5"
+  },
+  "upstreamFixtureRoot": "test/e2e/app-dir/worker",
+  "fixtureRoot": "tests/e2e/cloudflare-workers/worker-fixture",
+  "upstreamConfig": {
+    "upstreamPath": "test/e2e/app-dir/worker/next.config.js",
+    "path": "tests/e2e/cloudflare-workers/provenance/next.config.v16.2.6.txt",
+    "sha256": "61b74190bed3a1e4a78544cc46aa229d59e80596c0b04c79e63d5d6b57103007",
+    "equivalentLocalFiles": ["package.json", "vite.config.mjs", "wrangler.jsonc"],
+    "equivalence": "The empty Next.js config is replaced by the checked-in vinext Vite/Rolldown build, Cloudflare Vite plugin, and Wrangler runtime configuration. package.json declares the fixture as its own ESM project."
+  },
+  "removed": [
+    "The suite-wide beforePageLoad hook asserting Turbopack's private ?dpl token on every /_next/ request"
+  ],
+  "cases": [
+    {
+      "name": "should support web workers with dynamic imports",
+      "route": "/classic",
+      "fixtures": ["app/classic/page.js", "app/worker.ts", "app/worker-dep.ts"]
+    },
+    {
+      "name": "should support module web workers with dynamic imports",
+      "route": "/module",
+      "fixtures": ["app/module/page.js", "app/worker.ts", "app/worker-dep.ts"]
+    },
+    {
+      "name": "should not bundle web workers with string specifiers",
+      "route": "/string",
+      "fixtures": ["app/string/page.js", "public/unbundled-worker.js"]
+    },
+    {
+      "name": "should have access to NEXT_DEPLOYMENT_ID in web worker",
+      "route": "/deployment-id",
+      "fixtures": ["app/deployment-id/page.js", "app/deployment-id-worker.ts"]
+    },
+    {
+      "name": "should support loading WASM files in workers",
+      "route": "/wasm",
+      "fixtures": ["app/wasm/page.js", "app/wasm-worker.ts", "app/add.wasm"]
+    },
+    {
+      "name": "should support shared workers",
+      "route": "/shared",
+      "fixtures": ["app/shared/page.js", "app/shared-worker.ts", "app/worker-dep.ts"]
+    },
+    {
+      "name": "should support loading PNG files in web workers",
+      "route": "/png",
+      "fixtures": ["app/png/page.js", "app/png-worker.ts", "app/test-image.png"]
+    }
+  ],
+  "commonFixtures": ["app/layout.js"],
+  "byteExactFixturePaths": [
+    "app/add.wasm",
+    "app/classic/page.js",
+    "app/deployment-id-worker.ts",
+    "app/deployment-id/page.js",
+    "app/layout.js",
+    "app/module/page.js",
+    "app/png-worker.ts",
+    "app/png/page.js",
+    "app/shared-worker.ts",
+    "app/shared/page.js",
+    "app/string/page.js",
+    "app/test-image.png",
+    "app/wasm-worker.ts",
+    "app/wasm/page.js",
+    "app/worker-dep.ts",
+    "app/worker.ts",
+    "public/unbundled-worker.js"
+  ],
+  "sha256": {
+    "app/add.wasm": "1243f8d30305b495475e5172d994d71d2293af46aec99680d92d625f940816d6",
+    "app/classic/page.js": "91064ec78abf16cbc3729753fe70a714644f8fa5a322ba7ae21266410f04a322",
+    "app/deployment-id-worker.ts": "5d30ff6fa2e6ff58a8344b2a100d7cb2ebcbdec63bc7aff6d51b2d2537935043",
+    "app/deployment-id/page.js": "602a8df589069bfeedbf26ed7c77488e8a948fb2e17db4c8e3c982ef3e37945f",
+    "app/layout.js": "dfe848d1e1cc4e0389a098731d60c249b323412a777732dc999c6efb4ab60c63",
+    "app/module/page.js": "e953b509a85ac6698623c0549a232c7a13373fd9ab9b9a1d825805c7026ae20a",
+    "app/png-worker.ts": "8b14efbd1374c411edf7dd31a45a63a00830e17196ddb51d6d1341b303fbeac4",
+    "app/png/page.js": "d0d576e7732dcad41c4af872a9811b4277a19865f020146c0178b2faa01d44eb",
+    "app/shared-worker.ts": "bef4dab6f3020e746cd2ce761da6189bafc99a806f016220b36093b4ba126cf4",
+    "app/shared/page.js": "ab8469b0d80c18bf91eac39065f49420e52b7b3ab1af3e2b302db45f02c0d660",
+    "app/string/page.js": "67ee1c99ffdc01066c1d76303ffaf81fa43932b3b63af9a42788fdf009864f10",
+    "app/test-image.png": "2e9b06dc65a4dec84a3eb3124553ec93ca27c78221e64ab2177d0f1412cfcb20",
+    "app/wasm-worker.ts": "365bb61bdcadb27c8deace79591b7a324508e5c36f1b5e81aef81d8cf9ccc2b7",
+    "app/wasm/page.js": "ba9ec1eba721ef192d9d35e3ccb3193fa39d9b53b31df6bbfdf4bc6623a81f1f",
+    "app/worker-dep.ts": "6bf4254ac166c036deb61b39253278123da8d512c7996cf0f9e22686574f873a",
+    "app/worker.ts": "2a3695c1b638f95406b29cfbd87e50994768b4f5159f2b11f752cf65e380d969",
+    "package.json": "cb427fbcd8767d1ea63bc2a9716f7f403c6eb8c55b34673e1c2c01a55ba575fa",
+    "public/unbundled-worker.js": "a8773f4f62a2b9ce6ba5268ca36c85b4401fd7118091d50a3c8ef7ad04f55568",
+    "vite.config.mjs": "fee37e22229e802c0f517d27b0fea4974235bee6a4a23ca3c8725b34e1287355",
+    "wrangler.jsonc": "e5d08d7557c2de5638a230d8be1af8ca5de5b6f2e9bff0d1e70f30017b3acdfa"
+  }
+}

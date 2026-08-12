@@ -578,6 +578,7 @@ for (const dep of [
   'react-server-dom-webpack',
   '@mdx-js/rollup',
   '@mdx-js/react',
+  'am-i-vibing',
   'ipaddr.js',
 ]) {
   if (!pkg.devDependencies[dep] && !pkg.dependencies?.[dep]) {

@@ -9,6 +9,8 @@
 
 export type SuiteSupportStatus = "supported" | "deferred" | "needs-vite-equivalent" | "unsupported";
 
+export const VITE_EQUIVALENT_LABEL = "Vite-equivalent required";
+
 export type SuiteSupport = {
   status: SuiteSupportStatus;
   feature: string | null;
@@ -108,7 +110,7 @@ export const SUITE_SUPPORT_POLICY = {
     status: "needs-vite-equivalent",
     feature: "Browser Web Workers and emitted worker assets",
     reason:
-      "Portable worker behavior is covered with Vite and Rolldown; the Next.js suite-wide ?dpl asset-token hook is not portable.",
+      "The exact Next.js v16.2.6 suite remains 0/7 and is inapplicable because its only residual assertion, worker.test.ts:21:50, is the suite-wide beforePageLoad hook requiring Turbopack's global ?dpl token on every /_next/ request. tests/e2e/cloudflare-workers/worker.spec.ts is the 7/7 Vite, Rolldown, and Wrangler equivalent: it removes only that token hook and retains all seven test names, fixture behavior, interactions, and assertions.",
   },
   "test/e2e/babel/index.test.ts": NEXT_BUNDLER_SPECIFIC,
   "test/e2e/import-conditions/import-conditions.test.ts": VITE_RUNTIME_CONDITIONS,
