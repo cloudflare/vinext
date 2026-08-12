@@ -56,6 +56,8 @@ describe("compatibility suite support policy", () => {
     expect(support.reason).toContain(
       "tests/e2e/cloudflare-workers/route-handler-draft-cache.spec.ts",
     );
+    expect(support.reason).toContain("2 of 12 passing");
+    expect(support.reason).toContain("the equivalent Worker test passes across middleware");
   });
 });
 
