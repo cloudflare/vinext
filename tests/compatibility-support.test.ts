@@ -46,11 +46,12 @@ describe("compatibility suite support policy", () => {
     }
   });
 
-  it("defers Next.js-specific next/head serialization whitespace", () => {
+  it("defers non-semantic next/head serialization whitespace", () => {
     expect(getSuiteSupport("test/e2e/next-head/index.test.ts")).toEqual({
       status: "deferred",
       feature: "Pages Router HTML serialization",
-      reason: "Next.js internal HTML serialization whitespace; charset order is already correct",
+      reason:
+        "Vinext preserves formatting whitespace between correctly ordered head tags, while the exact Next.js assertion requires contiguous serialized tags.",
     });
   });
 

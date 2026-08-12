@@ -115,7 +115,8 @@ export const SUITE_SUPPORT_POLICY = {
   "test/e2e/next-head/index.test.ts": {
     status: "deferred",
     feature: "Pages Router HTML serialization",
-    reason: "Next.js internal HTML serialization whitespace; charset order is already correct",
+    reason:
+      "Vinext preserves formatting whitespace between correctly ordered head tags, while the exact Next.js assertion requires contiguous serialized tags.",
   },
 } as const satisfies Record<string, ScopedSuiteSupport>;
 
