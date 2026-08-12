@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vite-plus/test";
-import { createBuilder } from "vite";
+import { createBuilder, createServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import { createPagesNodeExternalsPlugin } from "../packages/vinext/src/plugins/pages-node-externals.js";
 import { startProdServer } from "../packages/vinext/src/server/prod-server.js";
@@ -168,6 +168,20 @@ function createFixture(): string {
         'export default "LITERAL"; if (Math.random() < 0) import("literal-dynamic-import-fail");',
     },
   );
+  writePackage(
+    root,
+    "mdx-esm-package",
+    {
+      exports: {
+        "./entry": { browser: "./browser.mjs", import: "./entry.mjs" },
+      },
+    },
+    {
+      "browser.mjs": 'export default "MDX_EXTERNAL";',
+      "entry.mjs":
+        'export default "MDX_EXTERNAL"; if (Math.random() < 0) import("mdx-import-fail");',
+    },
+  );
   for (const [name, value] of [
     ["geist", "DEFAULT_TRANSPILED"],
     ["optimized-esm-package", "OPTIMIZED"],
@@ -185,6 +199,7 @@ function createFixture(): string {
     root,
     "next.config.mjs",
     `export default {
+  pageExtensions: ["js", "jsx", "ts", "tsx", "mdx"],
   serverExternalPackages: ["app-esm-package1", "app-esm-package2", "app-cjs-esm-package"],
   transpilePackages: ["explicit-esm-package"],
   experimental: { optimizePackageImports: ["optimized-esm-package"] },
@@ -286,6 +301,22 @@ import optimized from "optimized-esm-package/entry";
 import explicit from "explicit-esm-package/entry";
 export default function Page() { return <p>{defaultTranspiled}+{optimized}+{explicit}</p>; }`,
   );
+  writeFile(
+    root,
+    "lib/external-content.mdx",
+    `import World from "mdx-esm-package/entry"
+
+export const world = World
+
+# Shared MDX content`,
+  );
+  writeFile(
+    root,
+    "pages/mdx-ownership.mdx",
+    `import { world } from "../lib/external-content.mdx"
+
+<p>MDX:{world}</p>`,
+  );
   return root;
 }
 
@@ -317,6 +348,30 @@ describe("ESM externals", () => {
       realpathSpy.mockRestore();
     }
   });
+
+  it("keeps native ESM dependencies inside Vite's dev module runner", async () => {
+    const root = createFixture();
+    const server = await createServer({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext({ appDir: root })],
+      server: { port: 0 },
+    });
+
+    try {
+      await server.listen();
+      const address = server.httpServer?.address();
+      if (!address || typeof address === "string") throw new Error("Missing dev server address");
+      const response = await fetch(`http://localhost:${address.port}/static`);
+      expect(response.status).toBe(200);
+      expect((await response.text()).replaceAll("<!-- -->", "")).toContain(
+        "Hello World+World+World+World+World+World",
+      );
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
 
   it("builds and renders the mixed App and Pages Router fixture with import conditions", async () => {
     const root = createFixture();
@@ -363,6 +418,10 @@ describe("ESM externals", () => {
       expect(bundledPackages.replaceAll("<!-- -->", "")).toContain(
         "DEFAULT_TRANSPILED+OPTIMIZED+EXPLICIT",
       );
+      const mdxOwnership = await (
+        await fetch(`http://127.0.0.1:${address.port}/mdx-ownership`)
+      ).text();
+      expect(mdxOwnership.replaceAll("<!-- -->", "")).toContain("MDX:MDX_EXTERNAL");
     } finally {
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
@@ -387,6 +446,7 @@ describe("ESM externals", () => {
     ) as string[];
     expect(externals).toContain("dynamic-esm-package");
     expect(externals).toContain("literal-dynamic-esm-package");
+    expect(externals).toContain("mdx-esm-package");
     expect(externals).not.toContain("geist");
     expect(externals).not.toContain("optimized-esm-package");
     expect(externals).not.toContain("explicit-esm-package");

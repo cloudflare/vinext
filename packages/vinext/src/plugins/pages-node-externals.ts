@@ -29,7 +29,6 @@ const FRAMEWORK_PACKAGES = new Set([
   "vite",
   "vinext",
 ]);
-const SCRIPT_MODULE_RE = /\.[cm]?[jt]sx?$/i;
 
 function packageNameFromSpecifier(id: string): string | null {
   const [first, second] = id.split("/");
@@ -230,9 +229,10 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
       },
     },
     resolveId: {
-      // Relative edges retain the cheap resolve-time path (including imports
-      // emitted by non-script transforms such as MDX). Bare alias propagation
-      // is handled by the transform hook because Vite resolves aliases first.
+      // Relative edges retain the cheap resolve-time ownership path, including
+      // imports emitted by non-script transforms such as MDX. Bare requests
+      // are resolved below both to seed local alias targets and to make the
+      // final externalization decision.
       filter: { id: /^(?:\.\.?\/|(?![./\\]|[a-zA-Z][\w+.-]*:)[\w@])/ },
       async handler(id, importer) {
         const environment = this.environment;
@@ -256,11 +256,7 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
           const resolved = await this.resolve(id, importer, { skipSelf: true });
           if (resolved && !resolved.external) {
             const resolvedFile = canonicalFile(resolved.id);
-            if (
-              path.isAbsolute(resolvedFile) &&
-              !resolvedFile.includes("/node_modules/") &&
-              SCRIPT_MODULE_RE.test(resolvedFile)
-            ) {
+            if (path.isAbsolute(resolvedFile) && !resolvedFile.includes("/node_modules/")) {
               pagesOwnedModules.add(resolvedFile);
             }
           }
