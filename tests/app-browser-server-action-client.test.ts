@@ -396,6 +396,63 @@ describe("app browser server action client", () => {
     expect(revalidationArg).toBe("dynamicOnly");
   });
 
+  it("commits the RSC tree for revalidated void actions with no return value", async () => {
+    const wireElements = AppElementsWire.createMetadataEntries({
+      interception: null,
+      interceptionContext: null,
+      layoutIds: [AppElementsWire.encodeLayoutId("/")],
+      rootLayoutTreePath: "/",
+      routeId: AppElementsWire.encodeRouteId("/source", null),
+      slotBindings: [],
+    });
+    const routerState = createActionTestRouterState();
+    const actionInitiation = createServerActionInitiationSnapshot({
+      href: "https://example.com/source",
+      navigationId: 1,
+      routerState,
+    });
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source", origin: "https://example.com" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("flight", {
+          status: 200,
+          headers: {
+            "content-type": "text/x-component",
+            [ACTION_REVALIDATED_HEADER]: "1",
+          },
+        }),
+      ),
+    );
+    vi.mocked(createFromFetch).mockResolvedValueOnce({
+      root: wireElements,
+    });
+    const commitSameUrlNavigatePayload = vi.fn();
+    const clearClientNavigationCaches = vi.fn();
+
+    await invokeClientServerAction("action-id", [], actionInitiation, {
+      basePath: "",
+      clearClientNavigationCaches,
+      clientRscCompatibilityId: null,
+      commitSameUrlNavigatePayload,
+      navigationPlanner,
+      performHardNavigation: vi.fn(),
+      renderRedirectPayload: vi.fn(),
+      syncCurrentHistoryState: vi.fn(),
+      syncServerActionHttpFallbackHead: vi.fn(),
+    });
+
+    expect(clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+    expect(commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
+    const [elementsArg, , returnValueArg, revalidationArg] =
+      commitSameUrlNavigatePayload.mock.calls[0];
+    await expect(elementsArg).resolves.toEqual(normalizeAppElements(wireElements));
+    expect(returnValueArg).toBeUndefined();
+    expect(revalidationArg).toBe("staticAndDynamic");
+  });
+
   it("commits a raw full-tree payload from a non-action RSC response", async () => {
     const wireElements = AppElementsWire.createMetadataEntries({
       interception: null,

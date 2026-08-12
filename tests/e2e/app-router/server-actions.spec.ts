@@ -493,14 +493,14 @@ test.describe("Server action forwarding loop guard", () => {
     expect(response.status).toBe(404);
     expect(response.hasNotFoundHeader).toBe(true);
   });
+});
 
+test.describe("Data-returning server actions", () => {
   // Regression contract for the Payload getFormState pattern: a data-returning
   // server action with no revalidation must resolve its value without applying
   // the RSC tree (Next.js' bail-out in server-action-reducer.ts). Re-applying
   // the tree would hand the form a fresh initialState and wipe pending edits.
-  test("data-returning server action preserves form edits without re-rendering", async ({
-    page,
-  }) => {
+  test("preserves form edits without re-rendering the page", async ({ page }) => {
     await page.goto(`${BASE}/action-form-preserved`);
     await expect(page.locator("h1")).toHaveText("Action Form Preserved Test");
     await waitForAppRouterHydration(page);
