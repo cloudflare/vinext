@@ -32,12 +32,14 @@ import MagicString from "magic-string";
 
 /**
  * Conservative superset filter: the handler (AST-based) is authoritative —
- * this only decides whether a module is worth parsing. Deliberately allows
- * whitespace/comments/multiple args so prettier-formatted or annotated calls
- * are not missed; string/comment false positives are rejected by the handler.
+ * this only decides whether a module is worth parsing. The window between the
+ * callee and the argument is unbounded because block comments of arbitrary
+ * length can sit between them (a bounded window silently misses calls in
+ * annotated dependencies); string/comment false positives are rejected by
+ * the handler.
  */
 export const WORKERD_IMPORT_META_URL_FILTER =
-  /(?:fileURLToPath|createRequire)\s*\([\s\S]{0,80}?import\.meta\s*(?:\.|\?\.)\s*url/;
+  /(?:fileURLToPath|createRequire)[\s\S]{0,20}?\([\s\S]*?import\.meta\s*(?:\.|\?\.)\s*url/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;

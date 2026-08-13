@@ -97,6 +97,20 @@ const s = "fileURLToPath(import.meta.url) in a string";`;
       expect(WORKERD_IMPORT_META_URL_FILTER.test("createRequire(import.meta.url)")).toBe(true);
     });
 
+    it("matches long block comments between callee and argument", () => {
+      const longComment = "/* " + "x".repeat(200) + " */";
+      expect(
+        WORKERD_IMPORT_META_URL_FILTER.test(`fileURLToPath(${longComment} import.meta.url)`),
+      ).toBe(true);
+      expect(
+        WORKERD_IMPORT_META_URL_FILTER.test(`fileURLToPath(
+  // a comment explaining why this call exists and spanning multiple
+  // lines of prose that would exceed any bounded window
+  import.meta.url
+)`),
+      ).toBe(true);
+    });
+
     it("matches whitespace, comment, and trailing-comma variants", () => {
       expect(WORKERD_IMPORT_META_URL_FILTER.test("fileURLToPath (import.meta.url)")).toBe(true);
       expect(WORKERD_IMPORT_META_URL_FILTER.test("fileURLToPath(import.meta.url,)")).toBe(true);
