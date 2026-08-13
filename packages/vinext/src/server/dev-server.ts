@@ -247,6 +247,8 @@ function writeGsspRedirect(
 
 /** Body placeholder used to split the document shell for streaming. */
 const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
+const SSR_HEAD_START_MARKER = "<!--VINEXT_SSR_HEAD_START-->";
+const SSR_HEAD_END_MARKER = "<!--VINEXT_SSR_HEAD_END-->";
 
 function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
   res.removeHeader("Content-Length");
@@ -430,11 +432,11 @@ async function streamPageToResponse(
     );
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
-    // Inject head tags
     if (headHTML || fontHeadHTML || generatedAssetHeadHTML) {
       docHtml = docHtml.replace(
         "</head>",
-        `  ${protectAssetTags(fontHeadHTML)}${protectAssetTags(headHTML)}\n  ${generatedAssetHeadHTML}\n</head>`,
+        `${SSR_HEAD_START_MARKER}${protectAssetTags(headHTML)}${SSR_HEAD_END_MARKER}` +
+          `  ${protectAssetTags(fontHeadHTML)}\n  ${generatedAssetHeadHTML}\n</head>`,
       );
     }
     // Inject scripts: replace placeholder or append before </body>
@@ -452,7 +454,8 @@ async function streamPageToResponse(
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
-  ${protectAssetTags(fontHeadHTML)}${protectAssetTags(headHTML)}
+  ${SSR_HEAD_START_MARKER}${protectAssetTags(headHTML)}${SSR_HEAD_END_MARKER}
+  ${protectAssetTags(fontHeadHTML)}
   ${generatedAssetHeadHTML}
 </head>
 <body>
@@ -475,6 +478,25 @@ async function streamPageToResponse(
     }),
     protectedAssetMarker,
   );
+  // Keep collected head tags in the template while Vite transforms it, then
+  // move the transformed block ahead of Vite's prepended dev scripts and any
+  // custom Document children. This preserves both Vite's HTML transforms and
+  // Next.js's canonical charset, viewport, and user-tag ordering.
+  const ssrHeadStart = transformedShell.indexOf(SSR_HEAD_START_MARKER);
+  const ssrHeadEnd = transformedShell.indexOf(SSR_HEAD_END_MARKER);
+  if (ssrHeadStart !== -1 && ssrHeadEnd > ssrHeadStart) {
+    const transformedHeadHTML = transformedShell.slice(
+      ssrHeadStart + SSR_HEAD_START_MARKER.length,
+      ssrHeadEnd,
+    );
+    transformedShell =
+      transformedShell.slice(0, ssrHeadStart) +
+      transformedShell.slice(ssrHeadEnd + SSR_HEAD_END_MARKER.length);
+    transformedShell = transformedShell.replace(
+      /<head(?:\s[^>]*)?>/i,
+      (openingHead) => `${openingHead}${transformedHeadHTML}`,
+    );
+  }
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);

@@ -331,11 +331,17 @@ async function buildPagesShellHtml(
       { configuredCrossOrigin: options.crossOrigin },
     );
     html = html.replace("__NEXT_MAIN__", bodyMarker);
-    if (options.ssrHeadHTML || generatedAssetTags || fontHeadHTML) {
+    // Next.js renders the collected `next/head` array before children declared
+    // inside a custom Document's <Head>. Insert it after the opening tag so the
+    // default charset remains the first element even when <Head> has props.
+    if (options.ssrHeadHTML) {
       html = html.replace(
-        "</head>",
-        `  ${fontHeadHTML}${options.ssrHeadHTML}\n  ${generatedAssetTags}\n</head>`,
+        /<head(?:\s[^>]*)?>/i,
+        (openingHead) => `${openingHead}${options.ssrHeadHTML}`,
       );
+    }
+    if (generatedAssetTags || fontHeadHTML) {
+      html = html.replace("</head>", `  ${fontHeadHTML}\n  ${generatedAssetTags}\n</head>`);
     }
     html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
     if (!html.includes("__NEXT_DATA__")) {

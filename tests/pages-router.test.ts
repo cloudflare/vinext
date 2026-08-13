@@ -1468,6 +1468,16 @@ export default function Page({ marker }: { marker: string }) {
     // The title tag should be in <head>, not in <body>
     const headSection = html.split("</head>")[0];
     expect(headSection).toContain("Hello vinext");
+
+    // Ported from Next.js: test/e2e/next-head/index.test.ts
+    const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+    expect(headContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
+    expect(headContents.indexOf('name="viewport"')).toBeGreaterThan(
+      headContents.indexOf('charset="utf-8"'),
+    );
+    expect(headContents.indexOf('name="description"')).toBeGreaterThan(
+      headContents.indexOf('name="viewport"'),
+    );
   });
 
   it("rerenders GSP pages without carrying prior render state", async () => {
@@ -6384,6 +6394,14 @@ export default function CounterPage() {
       const indexHtml = await indexRes.text();
       expect(indexHtml).toContain("Hello, vinext!");
       expect(indexHtml).toContain("__NEXT_DATA__");
+      const indexHeadContents = indexHtml.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+      expect(indexHeadContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
+      expect(indexHeadContents.indexOf('name="viewport"')).toBeGreaterThan(
+        indexHeadContents.indexOf('charset="utf-8"'),
+      );
+      expect(indexHeadContents.indexOf('name="description"')).toBeGreaterThan(
+        indexHeadContents.indexOf('name="viewport"'),
+      );
 
       // Test: about page renders
       const aboutRes = await fetch(`${prodUrl}/about`);

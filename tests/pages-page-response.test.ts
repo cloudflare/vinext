@@ -482,6 +482,33 @@ describe("pages page response", () => {
     expect(generatedPreload).toContain('crossorigin="anonymous"');
   });
 
+  it("places collected head tags before custom Document children", async () => {
+    // Ported from Next.js: test/e2e/next-head/index.test.ts
+    const common = createCommonOptions();
+    common.renderDocumentToString.mockResolvedValue(
+      '<!DOCTYPE html><html><head data-theme="dark"><meta name="document-child" content="1" /></head>' +
+        '<body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>',
+    );
+    common.options.getSSRHeadHTML = vi.fn(
+      () =>
+        '<meta charset="utf-8" data-next-head="" />' +
+        '<meta name="viewport" content="width=device-width" data-next-head="" />' +
+        '<meta name="page-head" content="1" data-next-head="" />',
+    );
+
+    const response = await renderPagesPageResponse(common.options);
+    const html = await response.text();
+    const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+
+    expect(headContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
+    expect(headContents.indexOf('name="viewport"')).toBeGreaterThan(
+      headContents.indexOf('charset="utf-8"'),
+    );
+    expect(headContents.indexOf('name="page-head"')).toBeLessThan(
+      headContents.indexOf('name="document-child"'),
+    );
+  });
+
   it("renders page before collecting SSR head HTML to prevent style race conditions", async () => {
     // Ported from Next.js: vercel/next.js@9853944
     // styled-jsx (and <Head>) styles must be collected AFTER rendering completes,
