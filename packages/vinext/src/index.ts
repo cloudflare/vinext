@@ -273,6 +273,7 @@ import {
   getTypeofWindowReplacement,
   replaceConsumerEnvironmentConditions,
 } from "./plugins/typeof-window.js";
+import { createWorkerdImportMetaUrlGuardPlugin } from "./plugins/workerd-import-meta-url-guard.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { publicFilePathVariants } from "./utils/public-file-path.js";
@@ -6479,6 +6480,10 @@ export const loadServerActionClient = ${
         };
       },
     },
+    // Guard fileURLToPath(import.meta.url) / createRequire(import.meta.url) so
+    // module init survives workerd (import.meta.url is undefined for bundled
+    // modules). See src/plugins/workerd-import-meta-url-guard.ts.
+    createWorkerdImportMetaUrlGuardPlugin(),
     // Local image import transform:
     // When a source file imports a local image (e.g., `import hero from './hero.jpg'`),
     // this plugin transforms the default import to a StaticImageData object with
