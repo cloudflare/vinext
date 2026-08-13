@@ -20093,7 +20093,7 @@ describe("Pages Router concurrent navigation", () => {
   it("hard-navigates when middleware rewrites an existing Pages path to App Router", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
-    const { win, render } = createNavWindow();
+    const { win, pushState, render } = createNavWindow();
     const sourceLoader = vi.fn(async () => ({ default: () => null }));
     Object.assign(win.location, { origin: "http://localhost" });
     Object.assign(win.__NEXT_DATA__, {
@@ -20131,7 +20131,12 @@ describe("Pages Router concurrent navigation", () => {
       expect(fetch).toHaveBeenCalledOnce();
       expect(sourceLoader).not.toHaveBeenCalled();
       expect(render).not.toHaveBeenCalled();
-      expect(hrefAssignments).toEqual(["/exists-but-not-routed"]);
+      expect(pushState).toHaveBeenCalledOnce();
+      expect(pushState).toHaveBeenCalledWith(expect.any(Object), "", "/exists-but-not-routed");
+      expect(hrefAssignments).toEqual([
+        "http://localhost/exists-but-not-routed",
+        "/exists-but-not-routed",
+      ]);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -20146,7 +20151,7 @@ describe("Pages Router concurrent navigation", () => {
   it("hard-navigates when a middleware rewrite target is App-owned before a dynamic Pages route", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
-    const { win, render } = createNavWindow();
+    const { win, pushState, render } = createNavWindow();
     const sourceLoader = vi.fn(async () => ({ default: () => null }));
     Object.assign(win.location, { origin: "http://localhost" });
     Object.assign(win.__NEXT_DATA__, {
@@ -20191,7 +20196,9 @@ describe("Pages Router concurrent navigation", () => {
       expect(fetch).toHaveBeenCalledOnce();
       expect(sourceLoader).not.toHaveBeenCalled();
       expect(render).not.toHaveBeenCalled();
-      expect(hrefAssignments).toEqual(["/rewrite-to-app"]);
+      expect(pushState).toHaveBeenCalledOnce();
+      expect(pushState).toHaveBeenCalledWith(expect.any(Object), "", "/rewrite-to-app");
+      expect(hrefAssignments).toEqual(["http://localhost/rewrite-to-app", "/rewrite-to-app"]);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {

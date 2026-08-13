@@ -2741,6 +2741,7 @@ async function navigateClient(
             __basePath,
           );
           if (rewrittenOwner === "app" || rewrittenOwner === "document") {
+            options.beforeHistoryChange?.();
             scheduleHardNavigationAndThrow(browserUrl, "Navigation rewritten to a non-Pages route");
           }
           const rewrittenTarget =
@@ -2751,6 +2752,7 @@ async function navigateClient(
               pagesDataTargetOptions,
             );
           if (!rewrittenTarget) {
+            options.beforeHistoryChange?.();
             scheduleHardNavigationAndThrow(browserUrl, "Navigation rewritten to a non-Pages route");
           }
           dataTarget = rewrittenTarget;
