@@ -548,6 +548,28 @@ describe("plugin-rsc inline use-cache references", () => {
     },
   );
 
+  it.each(["rsc", "ssr", "client"])(
+    "still rejects default scalar exports from file-level cache modules in the %s graph",
+    async (environmentName) => {
+      // Next.js only relaxes named variable literals; non-function defaults remain invalid.
+      // https://github.com/vercel/next.js/blob/c0c64a0ab154853f4c792fb7b22a81d1b04ce073/crates/next-custom-transforms/src/transforms/server_actions.rs#L2081-L2107
+      const plugins = await getPlugins();
+      await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const transform = unwrapHook(plugin.transform)!;
+
+      await expect(
+        transform.call(
+          { environment: { name: environmentName, mode: "build" } },
+          [`"use cache";`, `export default 1;`].join("\n"),
+          moduleId,
+        ),
+      ).rejects.toThrow(/non async function/);
+    },
+  );
+
   it.each(["use cache:remote", "use cache remote", "use cache : remote"])(
     "rejects malformed cache directive %s",
     async (directive) => {
