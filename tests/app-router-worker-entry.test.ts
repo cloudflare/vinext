@@ -37,7 +37,7 @@ export default async function rscHandler(request) {
 }
 
 describe("App Router Production server worker entry compatibility", () => {
-  it("does not restore unverified prerender route params at the Worker boundary", async () => {
+  it("restores prerender route params only for the server-owned Node context", async () => {
     // No Next.js test port applies: these headers and this Worker boundary are vinext-specific.
     const capturedRequests: Request[] = [];
     Reflect.set(globalThis, CAPTURE_RSC_REQUEST, (request: Request) => {
@@ -63,7 +63,17 @@ describe("App Router Production server worker entry compatibility", () => {
       const entry = (await server.ssrLoadModule(
         path.resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts"),
       )) as {
-        default: { fetch(request: Request): Promise<Response> };
+        default: {
+          fetch(
+            request: Request,
+            env?: unknown,
+            ctx?: {
+              waitUntil(promise: Promise<unknown>): void;
+              hostRuntime?: "node" | "worker";
+              trustedRevalidateOrigin?: string;
+            },
+          ): Promise<Response>;
+        };
       };
       const routeParams = encodeURIComponent(
         JSON.stringify({
@@ -73,17 +83,29 @@ describe("App Router Production server worker entry compatibility", () => {
         }),
       );
 
-      await entry.default.fetch(
+      const prerenderRequest = () =>
         new Request("https://example.com/blog/attacker", {
           headers: {
             "x-vinext-prerender-route-params": routeParams,
             "x-vinext-prerender-secret": "not-the-build-secret",
           },
-        }),
-      );
+        });
 
-      expect(capturedRequests).toHaveLength(1);
+      // A deployed Worker receives the platform ExecutionContext, so an external
+      // caller supplying both headers must not reach the RSC handler with them.
+      await entry.default.fetch(prerenderRequest(), undefined, { waitUntil() {} });
+
+      // prod-server verified the secret in nodeToWebRequest before building this
+      // context, so the payload it re-serialized has to survive the entry filter.
+      await entry.default.fetch(prerenderRequest(), undefined, {
+        waitUntil() {},
+        hostRuntime: "node",
+        trustedRevalidateOrigin: "http://127.0.0.1:3000",
+      });
+
+      expect(capturedRequests).toHaveLength(2);
       expect(capturedRequests[0].headers.get("x-vinext-prerender-route-params")).toBeNull();
+      expect(capturedRequests[1].headers.get("x-vinext-prerender-route-params")).toBe(routeParams);
     } finally {
       await server?.close();
       Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
