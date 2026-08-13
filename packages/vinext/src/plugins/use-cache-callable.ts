@@ -126,7 +126,14 @@ function isAppPageDefaultExport(
 }
 
 function shouldTransformModuleExport(name: string, id: string, meta: ModuleExportMeta): boolean {
-  if (meta.isFunction === false) return false;
+  if (
+    meta.isFunction === false &&
+    (meta.valueNode?.type === "Literal" ||
+      meta.valueNode?.type === "ObjectExpression" ||
+      meta.valueNode?.type === "ArrayExpression")
+  ) {
+    return false;
+  }
   if (/\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id) && name === "default") return false;
   return true;
 }
