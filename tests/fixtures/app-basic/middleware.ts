@@ -253,6 +253,22 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next({ request: { headers } });
   }
 
+  // Gate the hybrid Pages -> App API fallback rewrite on a request cookie
+  // injected by middleware. The Pages dev pipeline owns this middleware pass,
+  // so its App handoff must carry both the resolved target and request headers.
+  if (
+    pathname.startsWith("/api/pages-fallback-to-app/") &&
+    request.nextUrl.searchParams.has("mw-auth")
+  ) {
+    const headers = new Headers(request.headers);
+    const existing = headers.get("cookie") ?? "";
+    headers.set(
+      "cookie",
+      existing ? existing + "; mw-api-fallback-user=1" : "mw-api-fallback-user=1",
+    );
+    return NextResponse.next({ request: { headers } });
+  }
+
   // Middleware headers take precedence over next.config.js headers for the same key.
   // Middleware sets e2e-headers=middleware; config sets e2e-headers=next.config.js via /(.*).
   // Ref: opennextjs-cloudflare headers.test.ts — "Middleware headers override next.config.js headers"
@@ -437,6 +453,7 @@ export const config = {
     "/api/header-override-delete",
     "/api/header-override-stray",
     "/api/pages-og",
+    "/api/pages-fallback-to-app/:path*",
     "/header-override-after-prior-access",
     "/pages-header-override-delete",
     "/revalidate-test",

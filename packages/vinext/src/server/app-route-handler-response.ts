@@ -5,8 +5,11 @@ import {
   MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
+  NEXT_CACHE_TAGS_HEADER,
   NEXTJS_CACHE_HEADER,
+  VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_CACHE_HEADER,
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
 } from "./headers.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -88,6 +91,8 @@ export function buildRouteHandlerCachedResponse(
       headers.set(key, value);
     }
   }
+  headers.delete(NEXT_CACHE_TAGS_HEADER);
+  headers.delete(VINEXT_METADATA_ROUTE_CACHE_HEADER);
   setCacheStateHeaders(headers, options.cacheState);
   // HIT/STALE served from the origin store: route the cache header through the
   // CDN adapter (default: identical single Cache-Control). Edge adapters never
@@ -114,7 +119,7 @@ export function applyRouteHandlerRevalidateHeader(
   tags?: readonly string[],
 ): void {
   // Fresh (MISS) response: route through the CDN adapter so edge adapters emit
-  // CDN-Cache-Control + Cache-Tag while the default emits a single Cache-Control.
+  // their provider-specific policy while the default emits Cache-Control.
   // Uses buildAppRouteMissIsrCacheControl so the revalidate=0→NEVER and
   // Infinity→STATIC gates apply, and expireSeconds is used as the direct route
   // config ceiling (not a per-entry metadata fallback).
@@ -222,6 +227,14 @@ export async function buildAppRouteCacheValue(response: Response): Promise<Cache
   response.headers.forEach((value, key) => {
     if (
       key === "set-cookie" ||
+      key === "connection" ||
+      key === "content-length" ||
+      key === "date" ||
+      key === "keep-alive" ||
+      key === "transfer-encoding" ||
+      key === NEXT_CACHE_TAGS_HEADER ||
+      key === VINEXT_METADATA_ROUTE_CACHE_HEADER ||
+      key === VINEXT_PRERENDER_CACHE_LIFE_HEADER ||
       key === VINEXT_CACHE_HEADER.toLowerCase() ||
       key === NEXTJS_CACHE_HEADER.toLowerCase() ||
       key === "cache-control" ||

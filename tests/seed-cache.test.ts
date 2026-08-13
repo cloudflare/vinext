@@ -18,7 +18,11 @@ import {
   type CacheHandlerValue,
   type IncrementalCacheValue,
 } from "../packages/vinext/src/shims/cache.js";
-import { isrCacheKey, getRevalidateDuration } from "../packages/vinext/src/server/isr-cache.js";
+import {
+  appIsrCacheKey,
+  isrCacheKey,
+  getRevalidateDuration,
+} from "../packages/vinext/src/server/isr-cache.js";
 import { getRenderedConcreteUrlPathsForRoute } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed-cache.js";
 
@@ -111,6 +115,149 @@ describe("seedMemoryCacheFromPrerender", () => {
       const rscText = new TextDecoder().decode(rscValue.rscData!);
       expect(rscText).toBe("RSC payload for about");
     }
+  });
+
+  it("seeds prerendered metadata responses as App Route entries", async () => {
+    const buildId = "metadata-build";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/robots.txt",
+            status: "rendered",
+            revalidate: 900,
+            expire: 3600,
+            stale: 300,
+            router: "metadata",
+            headers: {
+              "content-type": "text/plain",
+              "x-vinext-metadata-route-cache": "1",
+            },
+            responseStatus: 200,
+          },
+        ],
+      },
+      { "robots.txt.route": "User-Agent: *\nAllow: /buildtime\n" },
+    );
+
+    expect(await seedMemoryCacheFromPrerender(serverDir)).toBe(1);
+    const entry = await getCacheHandler().get(appIsrCacheKey("/robots.txt", "route", buildId));
+    expect(entry?.value?.kind).toBe("APP_ROUTE");
+    expect(entry?.cacheControl).toEqual({ revalidate: 900, expire: 3600, stale: 300 });
+    if (entry?.value?.kind === "APP_ROUTE") {
+      expect(new TextDecoder().decode(entry.value.body)).toContain("/buildtime");
+      expect(entry.value.headers["content-type"]).toBe("text/plain");
+    }
+  });
+
+  it("does not seed invalid metadata client stale times", async () => {
+    const policies: Array<{ cacheControl?: { stale?: number } }> = [];
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "metadata-invalid-stale-build",
+        routes: [
+          {
+            route: "/robots.txt",
+            status: "rendered",
+            revalidate: 900,
+            stale: -1,
+            router: "metadata",
+            responseStatus: 200,
+          },
+        ],
+      },
+      { "robots.txt.route": "User-Agent: *\nAllow: /\n" },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir, {
+      async writeAppRouteEntry(_key, _data, policy) {
+        policies.push(policy);
+      },
+    });
+
+    expect(policies).toHaveLength(1);
+    expect(policies[0].cacheControl).toEqual({ revalidate: 900 });
+  });
+
+  it("does not seed metadata responses with zero revalidate", async () => {
+    let writes = 0;
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "metadata-zero-revalidate-build",
+        routes: [
+          {
+            route: "/robots.txt",
+            status: "rendered",
+            revalidate: 0,
+            router: "metadata",
+            responseStatus: 200,
+          },
+        ],
+      },
+      { "robots.txt.route": "User-Agent: *\nAllow: /\n" },
+    );
+
+    const seeded = await seedMemoryCacheFromPrerender(serverDir, {
+      async writeAppRouteEntry() {
+        writes++;
+      },
+    });
+
+    expect(seeded).toBe(0);
+    expect(writes).toBe(0);
+  });
+
+  it("normalizes metadata keys and preserves route and user invalidation tags", async () => {
+    const writes: Array<{ key: string; policy: { tags?: string[] } }> = [];
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "metadata-encoded-build",
+        routes: [
+          {
+            route: "/products/sitemap.xml",
+            path: "/products/sitemap/hello%20world.xml",
+            routeSegments: ["products"],
+            status: "rendered",
+            revalidate: 900,
+            router: "metadata",
+            headers: {
+              "content-type": "application/xml",
+              "x-vinext-metadata-route-cache": "1",
+            },
+            tags: ["metadata-user-tag"],
+          },
+        ],
+      },
+      {
+        "products/sitemap/hello%20world.xml.route": '<?xml version="1.0"?><urlset></urlset>',
+      },
+    );
+
+    await seedMemoryCacheFromPrerender(serverDir, {
+      buildAppRouteKey(pathname) {
+        return `metadata:${pathname}`;
+      },
+      async writeAppRouteEntry(key, _data, policy) {
+        writes.push({ key, policy });
+      },
+    });
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0].key).toBe("metadata:/products/sitemap/hello world.xml");
+    expect(writes[0].policy.tags).toEqual(
+      expect.arrayContaining([
+        "/products/sitemap/hello world.xml",
+        "_N_T_/products/sitemap/hello world.xml",
+        "_N_T_/layout",
+        "_N_T_/products/route",
+        "metadata-user-tag",
+      ]),
+    );
   });
 
   it("replays prerendered App Router Link headers", async () => {

@@ -45,6 +45,7 @@ export default {
         "src/build/prerender-server-entry.ts",
         // Runtime helpers imported by generated virtual entries. The imports
         // are emitted as strings, so knip cannot trace them statically.
+        "src/client/react-instance-bootstrap.ts",
         "src/server/app-middleware.ts",
         "src/server/app-page-dispatch.ts",
         "src/server/app-page-head.ts",

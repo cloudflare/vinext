@@ -1,3 +1,4 @@
+import { createContext, runInContext } from "node:vm";
 import { describe, it, expect } from "vite-plus/test";
 import { createElement, Suspense, use } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
@@ -103,12 +104,112 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     expect(finalScripts).toContain('.rsc.push("chunk2")');
   });
 
+  it("optionally mirrors text chunks into the Next.js inline Flight transport", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["chunk1", "chunk2"]), {
+      mirrorNextFlight: true,
+      scriptNonce: "test-nonce",
+    });
+
+    const finalScripts = await transform.finalize();
+
+    expect(finalScripts).toContain(
+      '<script nonce="test-nonce">(self.__next_f=self.__next_f||[]).push([0])</script>',
+    );
+    expect(finalScripts).toContain(
+      '<script nonce="test-nonce">self.__next_f.push([1,"chunk1"])</script>',
+    );
+    expect(finalScripts).toContain(
+      '<script nonce="test-nonce">self.__next_f.push([1,"chunk2"])</script>',
+    );
+    expect(finalScripts).toContain(
+      '<script nonce="test-nonce">self.addEventListener("DOMContentLoaded",()=>{if(self.__next_f?.push===Array.prototype.push)self.__next_f.length=0},{once:true})</script>',
+    );
+    expect(finalScripts.match(/self\.__next_f=self\.__next_f\|\|\[\]/g)).toHaveLength(1);
+  });
+
+  it("does not mirror Next.js inline Flight chunks by default", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]));
+
+    const finalScripts = await transform.finalize();
+
+    expect(finalScripts).not.toContain("self.__next_f");
+  });
+
+  it("schedules cleanup for an unclaimed progressive buffer before a later stream error", async () => {
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(new TextEncoder().encode("partial"));
+      },
+    });
+    const transform = createRscEmbedTransform(stream, { mirrorNextFlight: true });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const progressiveScripts = transform.flush();
+    expect(progressiveScripts).toContain('self.__next_f.push([1,"partial"])');
+    expect(progressiveScripts).toContain('self.addEventListener("DOMContentLoaded"');
+
+    streamController.error(new Error("stream broke"));
+    await expect(transform.finalize()).rejects.toThrow("stream broke");
+  });
+
+  it("preserves progressive chunks until a deferred Next.js consumer claims the buffer", async () => {
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(new TextEncoder().encode("first"));
+      },
+    });
+    const transform = createRscEmbedTransform(stream, { mirrorNextFlight: true });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const firstScripts = transform.flush();
+    streamController.enqueue(new TextEncoder().encode("second"));
+    streamController.close();
+    const finalScripts = await transform.finalize();
+
+    const listeners = new Map<string, () => void>();
+    const self = {
+      __next_f: undefined as undefined | Array<unknown>,
+      addEventListener(name: string, listener: () => void) {
+        listeners.set(name, listener);
+      },
+    };
+    const context = createContext({ self });
+    const runScripts = (html: string) => {
+      const scriptSources = html
+        .slice("<script>".length, -"</script>".length)
+        .split("</script><script>");
+      for (const scriptSource of scriptSources) {
+        runInContext(scriptSource, context);
+      }
+    };
+
+    runScripts(firstScripts);
+    const received = [...self.__next_f!];
+    self.__next_f!.length = 0;
+    self.__next_f!.push = (segment) => {
+      received.push(segment);
+      return received.length;
+    };
+    runScripts(finalScripts);
+    listeners.get("DOMContentLoaded")!();
+
+    expect(received).toEqual([[0], [1, "first"], [1, "second"]]);
+    expect(self.__next_f).toHaveLength(0);
+    expect(self.__next_f!.push).not.toBe(Array.prototype.push);
+  });
+
   it("finalizes initial cache metadata after the RSC stream settles", async () => {
     let initialCacheKind: "dynamic" | "static" = "static";
-    const transform = createRscEmbedTransform(createTextStream(["chunk"]), undefined, () => ({
-      kind: initialCacheKind,
-      ...(initialCacheKind === "dynamic" ? { dynamicStaleTimeSeconds: 30 } : {}),
-    }));
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]), {
+      getInitialNavigationCacheMetadata: () => ({
+        kind: initialCacheKind,
+        ...(initialCacheKind === "dynamic" ? { dynamicStaleTimeSeconds: 30 } : {}),
+      }),
+    });
 
     initialCacheKind = "dynamic";
     const finalScripts = await transform.finalize();
@@ -121,9 +222,11 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
   });
 
   it("omits dynamic stale time from finalized static payload metadata", async () => {
-    const transform = createRscEmbedTransform(createTextStream(["chunk"]), undefined, () => ({
-      kind: "static",
-    }));
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]), {
+      getInitialNavigationCacheMetadata: () => ({
+        kind: "static",
+      }),
+    });
 
     const finalScripts = await transform.finalize();
 
@@ -136,10 +239,12 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     // The getter runs at finalize() time — after the RSC stream drains — so a
     // cacheLife claim registered mid-stream still reaches the done script.
     let staleTimeSeconds: number | undefined;
-    const transform = createRscEmbedTransform(createTextStream(["chunk"]), undefined, () => ({
-      kind: "static",
-      ...(staleTimeSeconds === undefined ? {} : { staleTimeSeconds }),
-    }));
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]), {
+      getInitialNavigationCacheMetadata: () => ({
+        kind: "static",
+        ...(staleTimeSeconds === undefined ? {} : { staleTimeSeconds }),
+      }),
+    });
 
     staleTimeSeconds = 30;
     const finalScripts = await transform.finalize();
@@ -179,11 +284,13 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/binary/rsc-binary.test.ts
     const transform = createRscEmbedTransform(
       createByteStream([new Uint8Array([0xff, 0, 1, 2, 3])]),
+      { mirrorNextFlight: true },
     );
 
     const finalScripts = await transform.finalize();
 
     expect(finalScripts).toContain('.rsc.push([3,"/wABAgM="])');
+    expect(finalScripts).toContain('self.__next_f.push([3,"/wABAgM="])');
   });
 
   it("does not lose incomplete UTF-8 bytes before a binary chunk", async () => {

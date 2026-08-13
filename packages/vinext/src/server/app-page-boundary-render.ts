@@ -58,7 +58,7 @@ import {
   createAppPageSourcePage,
   type AppPageRouteWiringRoute,
 } from "./app-page-route-wiring.js";
-import { NEVER_CACHE_CONTROL } from "./cache-control.js";
+import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = ComponentType<any>;
@@ -399,6 +399,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     initialDevServerError?: unknown;
     layoutModules: readonly (TModule | null | undefined)[];
     navigationParams?: AppPageParams;
+    mirrorNextFlight?: boolean;
     route?: AppPageBoundaryRoute<TModule> | null;
     routePattern?: string;
     status: number;
@@ -447,6 +448,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
             searchParams: requestUrl.searchParams,
             params: options.navigationParams ?? options.route?.params ?? {},
           },
+          mirrorNextFlight: options.mirrorNextFlight,
           rscStream,
           scriptNonce: options.scriptNonce,
           ssrHandler,
@@ -712,6 +714,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     element,
     handleSpecialErrors: true,
     layoutModules: skipLayoutWrapping ? [] : layoutModules,
+    mirrorNextFlight: true,
     navigationParams: options.matchedParams,
     route: skipLayoutWrapping ? null : options.route,
     routePattern: options.route?.pattern,
@@ -837,10 +840,7 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
       status: errorBoundary.isGlobalError ? 500 : 200,
     });
     if (errorBoundary.isGlobalError) {
-      response.headers.set("Cache-Control", NEVER_CACHE_CONTROL);
-      response.headers.delete("CDN-Cache-Control");
-      response.headers.delete("Cloudflare-CDN-Cache-Control");
-      response.headers.delete("Cache-Tag");
+      applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
     }
     return response;
   };

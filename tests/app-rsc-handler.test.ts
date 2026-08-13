@@ -27,6 +27,7 @@ import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   handleMetadataRouteRequest,
+  isMetadataRouteRequestPath,
   type MetadataRuntimeRoute,
 } from "../packages/vinext/src/server/metadata-route-response.js";
 import type { MiddlewareModule } from "../packages/vinext/src/server/middleware-runtime.js";
@@ -115,6 +116,11 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
       "handleServerActionRequest" in overrides
         ? overrides.handleServerActionRequest
         : async () => null,
+    isMetadataRoutePath:
+      overrides.isMetadataRoutePath ??
+      (overrides.metadataRoutes
+        ? (cleanPathname) => isMetadataRouteRequestPath(overrides.metadataRoutes!, cleanPathname)
+        : undefined),
     i18nConfig: overrides.i18nConfig ?? null,
     imageConfig: overrides.imageConfig,
     isDev: overrides.isDev ?? true,
@@ -1614,6 +1620,34 @@ describe("createAppRscHandler", () => {
     expect(response.status).toBe(200);
     expect(response.headers.has("location")).toBe(false);
     expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not trailing-slash redirect extensionless metadata image routes", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      metadataRoutes: [
+        {
+          type: "icon",
+          isDynamic: true,
+          filePath: "/tmp/app/icon.tsx",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/icon",
+          contentType: "image/png",
+          module: {
+            default: async () =>
+              new Response("icon bytes", { headers: { "content-type": "image/png" } }),
+          },
+        },
+      ],
+      trailingSlash: true,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/icon"), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    expect(await response.text()).toBe("icon bytes");
   });
 
   it("marks progressive action page renders even when decoded form state is null", async () => {
@@ -3455,43 +3489,47 @@ describe("createAppRscHandler", () => {
     },
   );
 
-  it("propagates rewritten query parameters to App route handlers", async () => {
-    const route = createPageRoute({
-      page: null,
-      pattern: "/api/static",
-      routeHandler: { GET: () => new Response("route") },
-      routeSegments: ["api", "static"],
-    });
-    const dispatchMatchedRouteHandler = vi.fn(
-      async (_options: Parameters<HandlerOptions["dispatchMatchedRouteHandler"]>[0]) =>
-        new Response("route"),
-    );
-    const handler = createHandler({
-      configHeaders: [],
-      configRewrites: {
-        beforeFiles: [{ source: "/legacy", destination: "/api/static?destination=2&same=new" }],
-        afterFiles: [],
-        fallback: [],
-      },
-      dispatchMatchedRouteHandler,
-      matchRoute: (pathname) => (pathname === "/api/static" ? { params: {}, route } : null),
-    });
+  it.each(["beforeFiles", "fallback"] as const)(
+    "propagates %s rewrite query parameters to App route handlers",
+    async (rewritePhase) => {
+      const route = createPageRoute({
+        page: null,
+        pattern: "/api/static",
+        routeHandler: { GET: () => new Response("route") },
+        routeSegments: ["api", "static"],
+      });
+      const dispatchMatchedRouteHandler = vi.fn(
+        async (_options: Parameters<HandlerOptions["dispatchMatchedRouteHandler"]>[0]) =>
+          new Response("route"),
+      );
+      const rewrite = { source: "/legacy", destination: "/api/static?destination=2&same=new" };
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: rewritePhase === "beforeFiles" ? [rewrite] : [],
+          afterFiles: [],
+          fallback: rewritePhase === "fallback" ? [rewrite] : [],
+        },
+        dispatchMatchedRouteHandler,
+        matchRoute: (pathname) => (pathname === "/api/static" ? { params: {}, route } : null),
+      });
 
-    await handler(new Request("https://example.test/docs/legacy?original=1&same=old"), null);
+      await handler(new Request("https://example.test/docs/legacy?original=1&same=old"), null);
 
-    const routeHandlerOptions = dispatchMatchedRouteHandler.mock.lastCall?.[0];
-    expect(Object.fromEntries(routeHandlerOptions!.searchParams)).toEqual({
-      destination: "2",
-      original: "1",
-      same: "new",
-    });
-    expect(new URL(routeHandlerOptions!.request.url).pathname).toBe("/docs/legacy");
-    expect(Object.fromEntries(new URL(routeHandlerOptions!.request.url).searchParams)).toEqual({
-      destination: "2",
-      original: "1",
-      same: "new",
-    });
-  });
+      const routeHandlerOptions = dispatchMatchedRouteHandler.mock.lastCall?.[0];
+      expect(Object.fromEntries(routeHandlerOptions!.searchParams)).toEqual({
+        destination: "2",
+        original: "1",
+        same: "new",
+      });
+      expect(new URL(routeHandlerOptions!.request.url).pathname).toBe("/docs/legacy");
+      expect(Object.fromEntries(new URL(routeHandlerOptions!.request.url).searchParams)).toEqual({
+        destination: "2",
+        original: "1",
+        same: "new",
+      });
+    },
+  );
 
   it("does not let afterFiles rewrites override non-dynamic app routes", async () => {
     const routes = {
