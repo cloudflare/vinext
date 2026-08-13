@@ -3,6 +3,11 @@ import { describe, it, expect } from "vite-plus/test";
 import { createElement, Suspense, use } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import {
+  concatUint8Arrays,
+  decodeRscEmbeddedChunk,
+  type RscEmbeddedChunk,
+} from "../packages/vinext/src/server/app-rsc-embedded-chunks.js";
+import {
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
@@ -277,6 +282,34 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const finalScripts = await transform.finalize();
     expect(finalScripts).toContain("stylesheet");
     expect(finalScripts).toContain(".done=true");
+  });
+
+  it("preserves a UTF-8 BOM at an embedded Flight chunk boundary", async () => {
+    const flightChunks = [
+      new TextEncoder().encode("1:T4,"),
+      new Uint8Array([0xef, 0xbb, 0xbf, 0x61]),
+      new TextEncoder().encode("2:T1,b"),
+    ];
+    const expectedBytes = concatUint8Arrays(flightChunks);
+
+    const transform = createRscEmbedTransform(createByteStream(flightChunks));
+    const finalScripts = await transform.finalize();
+    const self: Record<PropertyKey, unknown> = {};
+    const context = createContext({ self });
+
+    for (const scriptSource of finalScripts
+      .slice("<script>".length, -"</script>".length)
+      .split("</script><script>")) {
+      runInContext(scriptSource, context);
+    }
+
+    const navigationRuntime = self[Symbol.for("vinext.navigationRuntime")] as {
+      bootstrap: { rsc: { rsc: RscEmbeddedChunk[] } };
+    };
+    const embeddedChunks = navigationRuntime.bootstrap.rsc.rsc.map(decodeRscEmbeddedChunk);
+    const embeddedBytes = concatUint8Arrays(embeddedChunks);
+
+    expect(embeddedBytes).toEqual(expectedBytes);
   });
 
   it("embeds non-UTF-8 RSC chunks as base64 binary chunks", async () => {

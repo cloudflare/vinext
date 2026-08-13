@@ -140,7 +140,7 @@ export function createRscEmbedTransform(
         if (result.done) break;
         rawChunks.push(result.value);
         try {
-          const decoder = new TextDecoder("utf-8", { fatal: true });
+          const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
           const text = decoder.decode(result.value);
           pendingChunks.push(text);
         } catch {
