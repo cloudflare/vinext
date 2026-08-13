@@ -1,5 +1,6 @@
 import { parseAst, type Plugin } from "vite";
 import MagicString from "magic-string";
+import { isUnknownRecord as isRecord } from "../utils/record.js";
 
 /**
  * Guard `fileURLToPath(import.meta.url)` / `createRequire(import.meta.url)`
@@ -40,10 +41,6 @@ import MagicString from "magic-string";
  */
 export const WORKERD_IMPORT_META_URL_FILTER =
   /(?:fileURLToPath|createRequire)[\s\S]{0,20}?\([\s\S]*?import\.meta\s*(?:\.|\?\.)\s*url/;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function isIdentifier(node: unknown, name: string): boolean {
   return isRecord(node) && node.type === "Identifier" && node.name === name;
