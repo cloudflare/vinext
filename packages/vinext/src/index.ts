@@ -179,6 +179,7 @@ import {
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
+import { createTransitiveExternalsPlugin } from "./plugins/transitive-externals.js";
 // Keep this source-relative: resolving through vinext's package export can read
 // a stale built copy while developing or testing the source tree.
 // oxlint-disable-next-line vinext-local/prefer-import-alias
@@ -1421,7 +1422,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
-  let nitroTraceDepsFromServerExternals: string[] = [];
+  let resolvedServerExternalPackages: string[] = [];
   let isServeCommand = false;
   let pagesOptimizeEntries: string[] = [];
   const pagesClientAssetsOutputDirs = new Set<string>();
@@ -2584,7 +2585,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           nextConfig?.serverExternalPackages,
           serverTranspilePackages,
         );
-        nitroTraceDepsFromServerExternals = nextServerExternal;
+        resolvedServerExternalPackages = nextServerExternal;
         // Detect if this is a multi-environment build (App Router or Cloudflare).
         // In multi-env builds, manualChunks must only be set per-environment
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
@@ -6338,6 +6339,13 @@ export const loadServerActionClient = ${
     // standalone/node_modules/ — uses the bundler's own import graph instead of
     // fragile regex scanning of emitted files.
     createServerExternalsManifestPlugin(),
+    // Preserve importer-relative package identity for nested copies of
+    // serverExternalPackages. Next.js refuses to externalize these requests
+    // when their importer and project-root resolutions differ.
+    createTransitiveExternalsPlugin({
+      getRoot: () => root,
+      getExternalPackages: () => resolvedServerExternalPackages,
+    }),
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that
@@ -6433,12 +6441,9 @@ export const loadServerActionClient = ${
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
-          if (nitroTraceDepsFromServerExternals.length > 0) {
+          if (resolvedServerExternalPackages.length > 0) {
             nitro.options.traceDeps = [
-              ...new Set([
-                ...(nitro.options.traceDeps ?? []),
-                ...nitroTraceDepsFromServerExternals,
-              ]),
+              ...new Set([...(nitro.options.traceDeps ?? []), ...resolvedServerExternalPackages]),
             ];
           }
 

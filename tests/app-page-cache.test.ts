@@ -1171,6 +1171,7 @@ describe("app page cache helpers", () => {
         },
         expireSeconds: 300,
         revalidateSeconds: 60,
+        linkHeader: "</fresh.css>; rel=preload; as=style",
         waitUntil(promise) {
           pendingCacheWrites.push(promise);
         },
@@ -1233,6 +1234,7 @@ describe("app page cache helpers", () => {
       },
       isrSet,
       revalidateSeconds: 60,
+      linkHeader: null,
       waitUntil(promise: Promise<void>) {
         pendingCacheWrites.push(promise);
       },
@@ -1306,6 +1308,7 @@ describe("app page cache helpers", () => {
         },
         isrSet,
         revalidateSeconds: 60,
+        linkHeader: null,
         waitUntil(promise) {
           pendingCacheWrites.push(promise);
         },

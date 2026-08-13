@@ -49,7 +49,7 @@ import {
   type PagesPipelineDeps,
   type PagesRenderOptions,
 } from "./pages-request-pipeline.js";
-import { mergeHeaders } from "./worker-utils.js";
+import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
 import {
   normalizeNextDataPagePathname,
   isNextDataPathname,
@@ -1778,9 +1778,12 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // identifies the request as a public/static-file lookup. Middleware may
       // still handle or rewrite the request by returning a non-404 response.
       if (missingBuildAsset && response.status === 404) {
-        cancelResponseBody(response);
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Not Found");
+        await sendWebResponse(
+          finalizeMissingStaticAssetResponse(response, true),
+          req,
+          res,
+          compress,
+        );
         return;
       }
 
@@ -2309,9 +2312,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (result.type === "response") {
         const { response } = result;
         if (missingBuildAsset && response.status === 404) {
-          cancelResponseBody(response);
-          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-          res.end("Not Found");
+          await sendWebResponse(
+            finalizeMissingStaticAssetResponse(response, true),
+            req,
+            res,
+            compress,
+          );
           return;
         }
         const streamedApi = isVinextStreamedApiResponse(response);
