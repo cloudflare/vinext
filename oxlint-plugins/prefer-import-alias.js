@@ -167,6 +167,30 @@ function loadAliasesForFile(filename) {
 }
 
 /**
+ * Get an absolute on-disk filename for filesystem and path comparisons.
+ *
+ * `context.filename` is not guaranteed to be absolute (notably when linting
+ * through an editor), while `physicalFilename` is the ESLint API intended for
+ * accessing the file on disk. Keep the fallback for Oxlint/ESLint callers that
+ * do not provide it, resolving relative filenames against the lint context's
+ * cwd rather than the JS plugin process's cwd.
+ */
+function getPhysicalFilename(context) {
+  const filename = context.physicalFilename ?? context.filename;
+  if (
+    typeof filename !== "string" ||
+    filename.length === 0 ||
+    (filename.startsWith("<") && filename.endsWith(">"))
+  ) {
+    return null;
+  }
+  // Resolve even an already-absolute filename so Windows paths supplied by
+  // the language server with `/` separators are normalized to the same native
+  // representation as alias targets built with `path.resolve()`.
+  return path.resolve(context.cwd ?? process.cwd(), filename);
+}
+
+/**
  * Reverse-map an absolute import path to a tsconfig-defined bare specifier.
  * Returns null if no alias exposes this file.
  */
@@ -220,9 +244,11 @@ const rule = {
       if (!source || typeof source.value !== "string") return;
       const importPath = source.value;
       if (!importPath.startsWith(".")) return;
-      const aliases = loadAliasesForFile(context.filename);
+      const filename = getPhysicalFilename(context);
+      if (!filename) return;
+      const aliases = loadAliasesForFile(filename);
       if (aliases.length === 0) return;
-      const importerDir = path.dirname(context.filename);
+      const importerDir = path.dirname(filename);
       const absoluteImport = path.resolve(importerDir, importPath);
       const aliased = tryReverseAlias(absoluteImport, importerDir, aliases);
       if (!aliased) return;
