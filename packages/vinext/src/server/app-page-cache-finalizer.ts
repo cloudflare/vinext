@@ -48,6 +48,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
+  linkHeader: string | null;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
@@ -208,7 +209,7 @@ export function finalizeAppPageHtmlCacheResponse(
         cacheTags: pageTags,
         state: observationState,
       });
-      const linkHeader = response.headers.get("link");
+      const linkHeader = options.linkHeader;
       const writes = [
         options.isrSet(
           htmlKey,

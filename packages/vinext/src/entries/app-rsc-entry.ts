@@ -42,6 +42,10 @@ const appRouteHandlerDispatchPath = resolveEntryPath(
   "../server/app-route-handler-dispatch.js",
   import.meta.url,
 );
+const appRouteRequestBuiltInsPath = resolveEntryPath(
+  "../server/app-route-request-built-ins.js",
+  import.meta.url,
+);
 const appRouteHandlerResponsePath = resolveEntryPath(
   "../server/app-route-handler-response.js",
   import.meta.url,
@@ -240,6 +244,7 @@ export function generateRscEntry(
   const prefetchInlining = config?.prefetchInlining ?? false;
   const hasServerActions = config?.hasServerActions !== false;
   const actionOwners = config?.actionOwners;
+  const hasAppRouteHandlers = routes.some((route) => route.routePath !== null);
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
@@ -285,6 +290,13 @@ async function __loadPrerenderPagesRoutes() {
     : "";
 
   return `
+${
+  hasAppRouteHandlers
+    ? `// Capture the canonical Request surface before any user module can extend it.
+// The global-backed snapshot remains available to the lazy dispatch chunk.
+import ${JSON.stringify(appRouteRequestBuiltInsPath)};`
+    : ""
+}
 import ${JSON.stringify(serverGlobalsPath)};
 import {
   renderToReadableStream as _renderToReadableStream,
@@ -699,8 +711,14 @@ export async function seedMemoryCacheFromPrerender(serverDir) {
     buildAppPageRscKey(pathname) {
       return __isrRscKey(pathname);
     },
+    buildAppRouteKey(pathname) {
+      return __isrRouteKey(pathname);
+    },
     writeAppPageEntry(key, data, metadata) {
       return __isrSetPrerenderedAppPage(key, data, metadata);
+    },
+    writeAppRouteEntry(key, data, policy) {
+      return __isrSet(key, data, policy);
     },
   });
 }
@@ -1298,13 +1316,35 @@ const __appRscHandler = createAppRscHandler({
   ${hasPagesDir ? `loadPrerenderPagesRoutes: __loadPrerenderPagesRoutes,` : ""}
   ${
     (metadataRoutes?.length ?? 0) > 0
+      ? `async getPrerenderMetadataRoutePaths() {
+    const { getPrerenderableMetadataRoutePaths: __getPrerenderableMetadataRoutePaths } =
+      await __loadMetadataRouteResponse();
+    return __getPrerenderableMetadataRoutePaths(metadataRoutes);
+  },`
+      : ""
+  }
+  ${
+    (metadataRoutes?.length ?? 0) > 0
+      ? `async isMetadataRoutePath(cleanPathname) {
+    const { isMetadataRouteRequestPath: __isMetadataRouteRequestPath } =
+      await __loadMetadataRouteResponse();
+    return __isMetadataRouteRequestPath(metadataRoutes, cleanPathname);
+  },`
+      : ""
+  }
+  ${
+    (metadataRoutes?.length ?? 0) > 0
       ? `async handleMetadataRouteRequest(cleanPathname) {
     const { handleMetadataRouteRequest: __handleMetadataRouteRequest } =
       await __loadMetadataRouteResponse();
     return __handleMetadataRouteRequest({
       metadataRoutes,
       cleanPathname,
+      isrGet: __isrGet,
+      isrRouteKey: __isrRouteKey,
+      isrSet: __isrSet,
       makeThenableParams,
+      scheduleBackgroundRegeneration: __triggerBackgroundRegeneration,
     });
   },`
       : ""

@@ -139,8 +139,14 @@ export type AppPageSsrHandler = {
       pprFallbackShellSignal?: AbortSignal;
       /** When true, wait for the full React tree before emitting bytes. */
       waitForAllReady?: boolean;
+      /** Render is producing a static/prerendered HTML artifact. */
+      isStaticGeneration?: boolean;
+      /** `dynamic = "force-static"` suppresses the useSearchParams bailout. */
+      isForceStatic?: boolean;
       /** Dev-only: original server error to surface in the browser overlay. */
       initialDevServerError?: unknown;
+      /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
+      mirrorNextFlight?: boolean;
       /** When true, an SSR-phase-only shell render error resolves to the
        *  default `__next_error__` error-document shell (with the original
        *  flight payload and bootstrap) instead of rejecting. See handleSsr. */
@@ -183,10 +189,16 @@ type RenderAppPageHtmlStreamOptions = {
   pprFallbackShellSignal?: AbortSignal;
   /** When true, wait for the full React tree before emitting bytes. */
   waitForAllReady?: boolean;
+  /** Render is producing a static/prerendered HTML artifact. */
+  isStaticGeneration?: boolean;
+  /** `dynamic = "force-static"` suppresses the useSearchParams bailout. */
+  isForceStatic?: boolean;
   /** Override the default shell-error recovery decision passed to handleSsr. */
   fallbackToErrorDocumentOnShellError?: boolean;
   /** Dev-only: original server error to surface in the browser overlay. */
   initialDevServerError?: unknown;
+  /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
+  mirrorNextFlight?: boolean;
   /** True when the app supplies a custom global-error.tsx. Disables the
    *  default error-document shell fallback so SSR shell errors keep driving
    *  the server-rendered global-error boundary re-render. */
@@ -253,7 +265,10 @@ export async function renderAppPageHtmlStream(
     capturedRscDataRef: options.capturedRscDataRef,
     pprFallbackShellSignal: options.pprFallbackShellSignal,
     waitForAllReady: options.waitForAllReady,
+    isStaticGeneration: options.isStaticGeneration,
+    isForceStatic: options.isForceStatic,
     initialDevServerError: options.initialDevServerError,
+    mirrorNextFlight: options.mirrorNextFlight,
     // Only when the caller affirmatively knows there is no custom
     // global-error.tsx; undefined (unknown) keeps reject semantics.
     fallbackToErrorDocumentOnShellError:

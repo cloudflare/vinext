@@ -180,6 +180,7 @@ import {
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
+import { createTransitiveExternalsPlugin } from "./plugins/transitive-externals.js";
 // Keep this source-relative: resolving through vinext's package export can read
 // a stale built copy while developing or testing the source tree.
 // oxlint-disable-next-line vinext-local/prefer-import-alias
@@ -249,7 +250,11 @@ import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
-import { getTypeofWindowReplacement, replaceTypeofWindow } from "./plugins/typeof-window.js";
+import {
+  consumerEnvironmentConditionFilter,
+  getTypeofWindowReplacement,
+  replaceConsumerEnvironmentConditions,
+} from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { publicFilePathVariants } from "./utils/public-file-path.js";
@@ -1422,7 +1427,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
-  let nitroTraceDepsFromServerExternals: string[] = [];
+  let resolvedServerExternalPackages: string[] = [];
   let isServeCommand = false;
   let pagesOptimizeEntries: string[] = [];
   const pagesClientAssetsOutputDirs = new Set<string>();
@@ -1796,9 +1801,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
   };
 
-  const cachedTypeofWindowTransform = createTransformCache<
-    ReturnType<typeof getTypeofWindowReplacement>,
-    ReturnType<typeof replaceTypeofWindow>
+  const cachedConsumerConditionTransform = createTransformCache<
+    string,
+    ReturnType<typeof replaceConsumerEnvironmentConditions>
   >();
 
   const plugins: PluginOption[] = [
@@ -2378,7 +2383,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // packages/next/src/build/define-env.ts.
         // See: https://nextjs.org/docs/app/api-reference/config/next-config-js/compiler#define
         for (const [key, value] of Object.entries(nextConfig.compilerDefine)) {
-          if (key in defines) {
+          if (key in defines || key === "process.browser") {
             throw new Error(
               `The \`compiler.define\` option is configured to replace the \`${key}\` variable. ` +
                 `This variable is either part of a built-in or is already configured.`,
@@ -2393,7 +2398,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // mode predictable: misconfigured projects fail at config resolution
         // instead of producing subtly wrong output.
         for (const key of Object.keys(nextConfig.compilerDefineServer)) {
-          if (key in defines) {
+          if (key in defines || key === "process.browser") {
             throw new Error(
               `The \`compiler.defineServer\` option is configured to replace the \`${key}\` variable. ` +
                 `This variable is either part of a built-in or is already configured.`,
@@ -2587,7 +2592,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           nextConfig?.serverExternalPackages,
           serverTranspilePackages,
         );
-        nitroTraceDepsFromServerExternals = nextServerExternal;
+        resolvedServerExternalPackages = nextServerExternal;
         // Detect if this is a multi-environment build (App Router or Cloudflare).
         // In multi-env builds, manualChunks must only be set per-environment
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
@@ -5940,13 +5945,29 @@ export const loadServerActionClient = ${
         },
       },
     },
+    // Consumer-scoped built-ins shared by every Vite environment. Next.js
+    // compiles `process.browser` to true for browser code and false for every
+    // server target. Keep it beside the existing `typeof window` define so
+    // RSC, SSR, Workers, and the client cannot drift onto separate policies.
+    // Optimized dependencies use a separate Rolldown pipeline, so mirror
+    // `process.browser` into that pipeline for both client and server deps.
     {
       name: "vinext:typeof-window",
       configEnvironment(_name, environment) {
-        if (!useNativeTypeofWindowFolding) return null;
+        const isClient = environment.consumer === "client";
+        const processBrowser = isClient ? "true" : "false";
+        const define: Record<string, string> = {
+          "process.browser": processBrowser,
+        };
+        if (useNativeTypeofWindowFolding) {
+          define["typeof window"] = isClient ? '"object"' : '"undefined"';
+        }
         return {
-          define: {
-            "typeof window": environment.consumer === "client" ? '"object"' : '"undefined"',
+          define,
+          optimizeDeps: {
+            rolldownOptions: {
+              transform: { define: { "process.browser": processBrowser } },
+            },
           },
         };
       },
@@ -5963,17 +5984,30 @@ export const loadServerActionClient = ${
       },
       enforce: "post",
       transform: {
-        filter: { code: /\btypeof\s+window\b/ },
+        filter: { code: consumerEnvironmentConditionFilter },
         handler(code, id) {
-          if (useNativeTypeofWindowFolding && this.environment.config.build.write !== false) {
-            return null;
-          }
+          const scansImports = this.environment.config.build.write === false;
+          const replaceTypeofWindow = !useNativeTypeofWindowFolding || scansImports;
+          const replaceProcessBrowser = scansImports;
+          if (!replaceTypeofWindow && !replaceProcessBrowser) return null;
           const cacheDir = `${toSlash(this.environment.config.cacheDir).replace(/\/$/, "")}/`;
           if (toSlash(id).startsWith(cacheDir)) return null;
 
-          const replacement = getTypeofWindowReplacement(this.environment);
-          return cachedTypeofWindowTransform(id, code, replacement, () =>
-            replaceTypeofWindow(code, replacement, id),
+          const typeofWindow = getTypeofWindowReplacement(this.environment);
+          const processBrowser = this.environment.config.consumer === "client";
+          const variant = `${replaceTypeofWindow ? typeofWindow : "-"}:${
+            replaceProcessBrowser ? processBrowser : "-"
+          }`;
+          return cachedConsumerConditionTransform(id, code, variant, () =>
+            replaceConsumerEnvironmentConditions(
+              code,
+              {
+                ...(replaceTypeofWindow ? { typeofWindow } : {}),
+                ...(replaceProcessBrowser ? { processBrowser } : {}),
+                pruneUnreachableImports: scansImports,
+              },
+              id,
+            ),
           );
         },
       },
@@ -6352,6 +6386,13 @@ export const loadServerActionClient = ${
     // standalone/node_modules/ — uses the bundler's own import graph instead of
     // fragile regex scanning of emitted files.
     createServerExternalsManifestPlugin(),
+    // Preserve importer-relative package identity for nested copies of
+    // serverExternalPackages. Next.js refuses to externalize these requests
+    // when their importer and project-root resolutions differ.
+    createTransitiveExternalsPlugin({
+      getRoot: () => root,
+      getExternalPackages: () => resolvedServerExternalPackages,
+    }),
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that
@@ -6447,12 +6488,9 @@ export const loadServerActionClient = ${
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
-          if (nitroTraceDepsFromServerExternals.length > 0) {
+          if (resolvedServerExternalPackages.length > 0) {
             nitro.options.traceDeps = [
-              ...new Set([
-                ...(nitro.options.traceDeps ?? []),
-                ...nitroTraceDepsFromServerExternals,
-              ]),
+              ...new Set([...(nitro.options.traceDeps ?? []), ...resolvedServerExternalPackages]),
             ];
           }
 
