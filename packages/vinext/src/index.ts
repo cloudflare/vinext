@@ -4129,14 +4129,13 @@ export const loadServerActionClient = ${
       enforce: "post",
 
       configEnvironment(name, config) {
-        if (!hasCloudflarePlugin || (name !== "rsc" && name !== "ssr")) return null;
+        if (name !== "rsc" && name !== "ssr") return null;
 
-        // @cloudflare/vite-plugin enables the `browser` condition for generic
-        // Worker applications. Vinext's Worker environments render Next.js
-        // server code, however, so selecting a package's browser export here
-        // diverges from Next.js and can execute a client-only implementation
-        // during SSR. Keep the Worker-specific conditions, but let ESM imports
-        // fall through to their `import` export instead of `browser`.
+        // Vinext's RSC and SSR environments render Next.js server code, so
+        // selecting a package's browser export here diverges from Next.js and
+        // can execute a client-only implementation during SSR. Preserve every
+        // host-specific condition, but let ESM imports fall through to their
+        // `import` export instead of `browser`.
         if (config.resolve?.conditions?.includes("browser")) {
           config.resolve.conditions = config.resolve.conditions.filter(
             (condition) => condition !== "browser",
