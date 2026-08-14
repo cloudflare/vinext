@@ -1128,13 +1128,12 @@ function nodeToWebRequest(
   const origin = `${proto}://${host}`;
   const url = new URL(urlOverride ?? req.url ?? "/", origin);
 
-  const prerenderRouteParamsPayload = readTrustedPrerenderRouteParamsFromHeaders(
-    rawHeaders,
-    prerenderSecret,
-  );
+  const prerenderRouteParamsPayload = prerenderSecret
+    ? readTrustedPrerenderRouteParamsFromHeaders(rawHeaders, prerenderSecret)
+    : null;
   const isTrustedSpeculativePrerender =
     process.env.VINEXT_PRERENDER === "1" &&
-    prerenderSecret !== undefined &&
+    Boolean(prerenderSecret) &&
     rawHeaders.get(VINEXT_PRERENDER_SECRET_HEADER) === prerenderSecret &&
     rawHeaders.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
   // Strip internal headers that should not be honored from external requests.
