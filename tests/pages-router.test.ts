@@ -7748,6 +7748,10 @@ describe("Pages _document renderPage enhancers", () => {
       JSON.stringify({ private: true, dependencies: { next: "*", react: "*", "react-dom": "*" } }),
     );
     await fsp.writeFile(
+      path.join(fixtureRoot, "next.config.mjs"),
+      `export default { experimental: { clientTraceMetadata: ["x-vinext-trace"] } };\n`,
+    );
+    await fsp.writeFile(
       path.join(fixtureRoot, "pages", "_app.tsx"),
       `export default function App({ Component, pageProps }: any) {
   return <main id="app-shell"><Component {...pageProps} /></main>;
@@ -7947,6 +7951,69 @@ export default class CustomDocument extends Document {
       for (const id of expectedIds) {
         expect(html).toContain(`id="${id}">RENDERED`);
         expect(html.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
+      }
+    }
+  });
+
+  it("places client trace metadata after custom Document children in dev and prod", async () => {
+    // Next.js renders trace metadata after custom Document children and generated
+    // assets: packages/next/src/pages/_document.tsx.
+    // Coverage adapted from Next.js:
+    // test/e2e/opentelemetry/client-trace-metadata/client-trace-metadata.test.ts
+    const apiSymbol = Symbol.for("opentelemetry.js.api.1");
+    const spanSymbol = Symbol.for("OpenTelemetry Context Key SPAN");
+    const registry = globalThis as Record<symbol, unknown>;
+    const originalApi = registry[apiSymbol];
+    const activeContext = {
+      getValue(key: symbol) {
+        return key === spanSymbol ? true : undefined;
+      },
+      setValue() {
+        return this;
+      },
+    };
+    registry[apiSymbol] = {
+      context: {
+        active: () => activeContext,
+        with<T>(_context: unknown, fn: () => T): T {
+          return fn();
+        },
+      },
+      propagation: {
+        inject(
+          _context: unknown,
+          carrier: Array<{ key: string; value: string }>,
+          setter: {
+            set(carrier: Array<{ key: string; value: string }>, key: string, value: string): void;
+          },
+        ) {
+          setter.set(carrier, "x-vinext-trace", "trace-value");
+        },
+      },
+    };
+
+    try {
+      for (const [mode, url] of [
+        ["dev", devUrl],
+        ["prod", prodUrl],
+      ] as const) {
+        const response = await fetch(`${url}/`);
+        expect(response.status, mode).toBe(200);
+        const html = await response.text();
+        const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+        expect(headContents.match(/name="x-vinext-trace"/g), mode).toHaveLength(1);
+        expect(headContents.indexOf('name="page-head"'), mode).toBeLessThan(
+          headContents.indexOf('name="document-child"'),
+        );
+        expect(headContents.indexOf('name="document-child"'), mode).toBeLessThan(
+          headContents.indexOf('name="x-vinext-trace"'),
+        );
+      }
+    } finally {
+      if (originalApi === undefined) {
+        delete registry[apiSymbol];
+      } else {
+        registry[apiSymbol] = originalApi;
       }
     }
   });

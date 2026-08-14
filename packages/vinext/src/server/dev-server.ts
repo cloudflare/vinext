@@ -282,6 +282,8 @@ async function streamPageToResponse(
     extraHeaders?: Record<string, string | string[]>;
     /** Called after renderToReadableStream resolves (shell ready) to collect head HTML */
     getHeadHTML: () => string;
+    /** Called after the shell renders to collect metadata emitted at the tail of `<head>`. */
+    getTailHeadHTML?: () => string;
     /**
      * Build the React tree with optional App/Component enhancers applied.
      * Used by the Pages Router `_document.getInitialProps` contract:
@@ -324,6 +326,7 @@ async function streamPageToResponse(
     statusCode,
     extraHeaders,
     getHeadHTML,
+    getTailHeadHTML,
     enhancePageElement,
     scriptNonce,
     documentContext,
@@ -385,8 +388,11 @@ async function streamPageToResponse(
   // Now that the shell has rendered (and any _document.getInitialProps
   // has injected its tags), collect head HTML.
   const headHTML = getHeadHTML();
-  const documentStylesHTML =
-    documentRenderPage.status === "rendered" ? documentRenderPage.stylesHTML : "";
+  let tailHeadHTML = getTailHeadHTML?.() ?? "";
+  if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
+    if (tailHeadHTML) tailHeadHTML += "\n  ";
+    tailHeadHTML += documentRenderPage.stylesHTML;
+  }
 
   // Build the document shell with a placeholder for the body
   let shellTemplate: string;
@@ -431,12 +437,12 @@ async function streamPageToResponse(
     );
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
-    if (headHTML || fontHeadHTML || generatedAssetHeadHTML || documentStylesHTML) {
+    if (headHTML || fontHeadHTML || generatedAssetHeadHTML || tailHeadHTML) {
       docHtml = docHtml.replace(
         "</head>",
         `${SSR_HEAD_START_MARKER}${protectAssetTags(headHTML)}${SSR_HEAD_END_MARKER}` +
           `  ${protectAssetTags(fontHeadHTML)}\n  ${generatedAssetHeadHTML}\n` +
-          `  ${protectAssetTags(documentStylesHTML)}\n</head>`,
+          `  ${protectAssetTags(tailHeadHTML)}\n</head>`,
       );
     }
     // Inject scripts: replace placeholder or append before </body>
@@ -457,7 +463,7 @@ async function streamPageToResponse(
   ${SSR_HEAD_START_MARKER}${protectAssetTags(headHTML)}${SSR_HEAD_END_MARKER}
   ${protectAssetTags(fontHeadHTML)}
   ${generatedAssetHeadHTML}
-  ${protectAssetTags(documentStylesHTML)}
+  ${protectAssetTags(tailHeadHTML)}
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
@@ -1671,15 +1677,12 @@ export function createSSRHandler(
           // after renderToReadableStream resolves). Head tags from Suspense
           // children arrive late — this matches Next.js behavior.
           //
-          // Trace metadata is appended after Head shim output so it always
-          // lands in the final document head. When clientTraceMetadata is
-          // unset (the common case) this is a no-op.
-          getHeadHTML: () => {
-            const headHTML =
-              typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "";
-            const traceHTML = getClientTraceMetadataHTML(clientTraceMetadata);
-            return traceHTML ? `${headHTML}\n  ${traceHTML}` : headHTML;
-          },
+          getHeadHTML: () =>
+            typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
+          // Next.js renders trace metadata after custom Document children and
+          // generated assets, immediately before Document styles. Keep it out
+          // of the collected Head block that dev hoists to the top.
+          getTailHeadHTML: () => getClientTraceMetadataHTML(clientTraceMetadata),
           setDocumentInitialHead:
             typeof headShim.setDocumentInitialHead === "function"
               ? headShim.setDocumentInitialHead
