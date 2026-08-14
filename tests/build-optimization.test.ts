@@ -720,8 +720,7 @@ describe("optimizeDeps.exclude for vinext", () => {
     const plugins = vinext();
     const conditionsPlugin = plugins.find(
       (p: any) =>
-        p.name === "vinext:cloudflare-server-conditions" &&
-        typeof p.configEnvironment === "function",
+        p.name === "vinext:server-conditions" && typeof p.configEnvironment === "function",
     );
     expect(conditionsPlugin).toBeDefined();
 
