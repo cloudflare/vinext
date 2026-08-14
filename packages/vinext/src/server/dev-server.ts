@@ -247,8 +247,6 @@ function writeGsspRedirect(
 
 /** Body placeholder used to split the document shell for streaming. */
 const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
-const SSR_HEAD_START_MARKER = "<!--VINEXT_SSR_HEAD_START-->";
-const SSR_HEAD_END_MARKER = "<!--VINEXT_SSR_HEAD_END-->";
 
 function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
   res.removeHeader("Content-Length");
@@ -388,6 +386,12 @@ async function streamPageToResponse(
   // Now that the shell has rendered (and any _document.getInitialProps
   // has injected its tags), collect head HTML.
   const headHTML = getHeadHTML();
+  // Head content can legally include arbitrary inline script/style text, so
+  // fixed sentinels would be user-collidable and could truncate the extracted
+  // block. A per-response UUID keeps the transform markers unambiguous.
+  const ssrHeadMarkerId = randomUUID();
+  const ssrHeadStartMarker = `<!--VINEXT_SSR_HEAD_START:${ssrHeadMarkerId}-->`;
+  const ssrHeadEndMarker = `<!--VINEXT_SSR_HEAD_END:${ssrHeadMarkerId}-->`;
   let tailHeadHTML = getTailHeadHTML?.() ?? "";
   if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
     if (tailHeadHTML) tailHeadHTML += "\n  ";
@@ -440,7 +444,7 @@ async function streamPageToResponse(
     if (headHTML || fontHeadHTML || generatedAssetHeadHTML || tailHeadHTML) {
       docHtml = docHtml.replace(
         "</head>",
-        `${SSR_HEAD_START_MARKER}${protectAssetTags(headHTML)}${SSR_HEAD_END_MARKER}` +
+        `${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}` +
           `  ${protectAssetTags(fontHeadHTML)}\n  ${generatedAssetHeadHTML}\n` +
           `  ${protectAssetTags(tailHeadHTML)}\n</head>`,
       );
@@ -460,7 +464,7 @@ async function streamPageToResponse(
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
-  ${SSR_HEAD_START_MARKER}${protectAssetTags(headHTML)}${SSR_HEAD_END_MARKER}
+  ${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}
   ${protectAssetTags(fontHeadHTML)}
   ${generatedAssetHeadHTML}
   ${protectAssetTags(tailHeadHTML)}
@@ -489,16 +493,16 @@ async function streamPageToResponse(
   // move the transformed block ahead of Vite's prepended dev scripts and any
   // custom Document children. This preserves both Vite's HTML transforms and
   // Next.js's canonical charset, viewport, and user-tag ordering.
-  const ssrHeadStart = transformedShell.indexOf(SSR_HEAD_START_MARKER);
-  const ssrHeadEnd = transformedShell.indexOf(SSR_HEAD_END_MARKER);
+  const ssrHeadStart = transformedShell.indexOf(ssrHeadStartMarker);
+  const ssrHeadEnd = transformedShell.indexOf(ssrHeadEndMarker);
   if (ssrHeadStart !== -1 && ssrHeadEnd > ssrHeadStart) {
     const transformedHeadHTML = transformedShell.slice(
-      ssrHeadStart + SSR_HEAD_START_MARKER.length,
+      ssrHeadStart + ssrHeadStartMarker.length,
       ssrHeadEnd,
     );
     transformedShell =
       transformedShell.slice(0, ssrHeadStart) +
-      transformedShell.slice(ssrHeadEnd + SSR_HEAD_END_MARKER.length);
+      transformedShell.slice(ssrHeadEnd + ssrHeadEndMarker.length);
     transformedShell = transformedShell.replace(
       /<head(?:\s[^>]*)?>/i,
       (openingHead) => `${openingHead}${transformedHeadHTML}`,
@@ -714,6 +718,7 @@ export function createSSRHandler(
 
     const errorPageContext = {
       basePath,
+      clientTraceMetadata,
       locale: locale ?? currentDefaultLocale,
       locales: i18nConfig?.locales,
       defaultLocale: currentDefaultLocale,
@@ -1773,6 +1778,7 @@ async function renderErrorPage(
   reactStrictMode = false,
   context: {
     basePath: string;
+    clientTraceMetadata?: readonly string[];
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
@@ -2009,6 +2015,7 @@ async function renderErrorPage(
           },
           getHeadHTML: () =>
             typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
+          getTailHeadHTML: () => getClientTraceMetadataHTML(context.clientTraceMetadata),
           setDocumentInitialHead:
             typeof headShim.setDocumentInitialHead === "function"
               ? headShim.setDocumentInitialHead
@@ -2018,6 +2025,7 @@ async function renderErrorPage(
         });
       } else {
         const bodyHtml = await renderToStringAsync(element);
+        const traceMetaHTML = getClientTraceMetadataHTML(context.clientTraceMetadata);
         const protectedAssetMarker = `data-vinext-document-asset-props-protected-${randomUUID()}`;
         const protectAssetTags = (assetHtml: string): string =>
           markDocumentAssetPropsProtectedTags(assetHtml, protectedAssetMarker);
@@ -2036,6 +2044,7 @@ async function renderErrorPage(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   ${assetHeadHTML}
+  ${traceMetaHTML}
 </head>
 <body>
   <div id="__next">${protectAssetTags(bodyHtml)}</div>

@@ -7729,6 +7729,18 @@ describe("Pages _document renderPage enhancers", () => {
     expect(html).not.toContain('id="page-content"');
   }
 
+  function expectFragmentsInOrder(html: string, fragments: string[], mode?: string): void {
+    let previousIndex = -1;
+    for (const fragment of fragments) {
+      const index = html.indexOf(fragment);
+      expect(
+        index,
+        `${mode ? `${mode}: ` : ""}missing or out-of-order fragment: ${fragment}`,
+      ).toBeGreaterThan(previousIndex);
+      previousIndex = index;
+    }
+  }
+
   beforeAll(async () => {
     fixtureRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-document-enhancers-"));
     outDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-document-enhancers-out-"));
@@ -7771,14 +7783,19 @@ export function getServerSideProps({ query }: any) {
   renderCounts.enhancer = 0;
   renderCounts.page = 0;
   renderCounts.error = 0;
-  return { props: { throwPage: query.throwPage === "true" } };
+  return {
+    props: {
+      markerScript: query.markerScript === "true",
+      throwPage: query.throwPage === "true",
+    },
+  };
 }
-export default function Page({ throwPage }: { throwPage: boolean }) {
+export default function Page({ markerScript, throwPage }: { markerScript: boolean; throwPage: boolean }) {
   if (throwPage) {
     renderCounts.page += 1;
     throw new Error("page render failed");
   }
-  return <><Head><meta name="page-head" content="1" /></Head><p id="page-content">PAGE</p></>;
+  return <><Head><meta name="page-head" content="1" />{markerScript ? <script id="head-marker-content" dangerouslySetInnerHTML={{ __html: 'window.__VINEXT_HEAD_MARKER__ = "<!--VINEXT_SSR_HEAD_END-->";' }} /> : null}</Head><p id="page-content">PAGE</p></>;
 }
 `,
     );
@@ -7947,7 +7964,7 @@ export default class CustomDocument extends Document {
       expect(html).toContain('id="document-prop">DOCUMENT');
       expect(html).toContain('id="page-content">PAGE');
       expect(html.match(/id="page-content"/g)).toHaveLength(1);
-      expect(html.indexOf('name="page-head"')).toBeLessThan(html.indexOf('name="document-child"'));
+      expectFragmentsInOrder(html, ['name="page-head"', 'name="document-child"'], mode);
       for (const id of expectedIds) {
         expect(html).toContain(`id="${id}">RENDERED`);
         expect(html.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
@@ -7997,17 +8014,36 @@ export default class CustomDocument extends Document {
         ["dev", devUrl],
         ["prod", prodUrl],
       ] as const) {
-        const response = await fetch(`${url}/`);
-        expect(response.status, mode).toBe(200);
+        for (const [pathname, status, fragments] of [
+          ["/", 200, ['name="page-head"', 'name="document-child"', 'name="x-vinext-trace"']],
+          ["/?throwPage=true", 500, ['name="document-child"', 'name="x-vinext-trace"']],
+        ] as const) {
+          const response = await fetch(`${url}${pathname}`);
+          expect(response.status, `${mode} ${pathname}`).toBe(status);
+          const html = await response.text();
+          const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+          expect(headContents.match(/name="x-vinext-trace"/g), `${mode} ${pathname}`).toHaveLength(
+            1,
+          );
+          expectFragmentsInOrder(headContents, [...fragments], `${mode} ${pathname}`);
+        }
+      }
+
+      // The dev error renderer also has a manual default-Document branch.
+      // Temporarily remove the custom Document so this distinct path cannot
+      // silently omit the same trace metadata.
+      const documentPath = path.join(fixtureRoot, "pages", "_document.tsx");
+      const documentBackupPath = path.join(fixtureRoot, "_document.tsx.backup");
+      await fsp.rename(documentPath, documentBackupPath);
+      try {
+        const response = await fetch(`${devUrl}/?throwPage=true`);
+        expect(response.status).toBe(500);
         const html = await response.text();
         const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
-        expect(headContents.match(/name="x-vinext-trace"/g), mode).toHaveLength(1);
-        expect(headContents.indexOf('name="page-head"'), mode).toBeLessThan(
-          headContents.indexOf('name="document-child"'),
-        );
-        expect(headContents.indexOf('name="document-child"'), mode).toBeLessThan(
-          headContents.indexOf('name="x-vinext-trace"'),
-        );
+        expect(headContents.match(/name="x-vinext-trace"/g)).toHaveLength(1);
+        expectFragmentsInOrder(headContents, ['name="viewport"', 'name="x-vinext-trace"']);
+      } finally {
+        await fsp.rename(documentBackupPath, documentPath);
       }
     } finally {
       if (originalApi === undefined) {
@@ -8016,6 +8052,16 @@ export default class CustomDocument extends Document {
         registry[apiSymbol] = originalApi;
       }
     }
+  });
+
+  it("preserves inline Head content containing the old fixed dev marker", async () => {
+    const response = await fetch(`${devUrl}/?markerScript=true`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+    expect(headContents).toContain('window.__VINEXT_HEAD_MARKER__ = "<!--VINEXT_SSR_HEAD_END-->";');
+    expect(headContents.match(/id="head-marker-content"/g)).toHaveLength(1);
+    expectFragmentsInOrder(headContents, ['id="head-marker-content"', 'name="document-child"']);
   });
 
   it.each(["dev", "prod"] as const)(
@@ -8028,9 +8074,7 @@ export default class CustomDocument extends Document {
       expect(html).toContain('id="manual-document-html">MANUAL');
       expect(html).toContain("data-manual-document-style");
       expect(html).toContain(".manual{color:blue}");
-      expect(html.indexOf('name="document-child"')).toBeLessThan(
-        html.indexOf("data-manual-document-style"),
-      );
+      expectFragmentsInOrder(html, ['name="document-child"', "data-manual-document-style"], mode);
       expect(html).not.toContain('id="page-content"');
       expect(html).not.toContain('id="app-shell"');
     },

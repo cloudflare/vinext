@@ -30,6 +30,15 @@ function getStartTags(html: string, tagName: string): string[] {
   return tags;
 }
 
+function expectFragmentsInOrder(html: string, fragments: string[]): void {
+  let previousIndex = -1;
+  for (const fragment of fragments) {
+    const index = html.indexOf(fragment);
+    expect(index, `missing or out-of-order fragment: ${fragment}`).toBeGreaterThan(previousIndex);
+    previousIndex = index;
+  }
+}
+
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
@@ -502,12 +511,12 @@ describe("pages page response", () => {
     const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
 
     expect(headContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
-    expect(headContents.indexOf('name="viewport"')).toBeGreaterThan(
-      headContents.indexOf('charset="utf-8"'),
-    );
-    expect(headContents.indexOf('name="page-head"')).toBeLessThan(
-      headContents.indexOf('name="document-child"'),
-    );
+    expectFragmentsInOrder(headContents, [
+      'charset="utf-8"',
+      'name="viewport"',
+      'name="page-head"',
+      'name="document-child"',
+    ]);
   });
 
   it("places collected head tags before generated font tags without a custom Document", async () => {
@@ -529,12 +538,7 @@ describe("pages page response", () => {
     const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
 
     expect(headContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
-    expect(headContents.indexOf('name="page-head"')).toBeLessThan(
-      headContents.indexOf('rel="stylesheet"'),
-    );
-    expect(headContents.indexOf('name="page-head"')).toBeLessThan(
-      headContents.indexOf('as="font"'),
-    );
+    expectFragmentsInOrder(headContents, ['name="page-head"', 'rel="stylesheet"', 'as="font"']);
   });
 
   it("renders page before collecting SSR head HTML to prevent style race conditions", async () => {
