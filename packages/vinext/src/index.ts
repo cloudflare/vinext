@@ -4125,7 +4125,7 @@ export const loadServerActionClient = ${
       },
     },
     {
-      name: "vinext:cloudflare-server-conditions",
+      name: "vinext:server-conditions",
       enforce: "post",
 
       configEnvironment(name, config) {
