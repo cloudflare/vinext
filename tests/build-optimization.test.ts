@@ -715,39 +715,17 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   }, 15000);
 
-  it("uses server package conditions in Cloudflare Worker environments", async () => {
+  it("uses server package conditions in RSC and SSR environments", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
-    const mainPlugin = plugins.find(
-      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
-    );
     const conditionsPlugin = plugins.find(
       (p: any) =>
         p.name === "vinext:cloudflare-server-conditions" &&
         typeof p.configEnvironment === "function",
     );
-    expect(mainPlugin).toBeDefined();
     expect(conditionsPlugin).toBeDefined();
 
-    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-server-conditions-"));
-    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
-    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
-    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
-    await fsp.writeFile(
-      path.join(tmpDir, "pages", "index.tsx"),
-      `export default function Home() { return <h1>Home</h1>; }`,
-    );
-
-    try {
-      await (mainPlugin as any).config(
-        {
-          root: tmpDir,
-          build: {},
-          plugins: [{ name: "vite-plugin-cloudflare" }],
-        },
-        { command: "build" },
-      );
-
+    for (const environmentName of ["rsc", "ssr"]) {
       const workerConfig = {
         resolve: {
           conditions: ["workerd", "worker", "module", "browser", "development|production"],
@@ -760,7 +738,7 @@ describe("optimizeDeps.exclude for vinext", () => {
           },
         },
       };
-      (conditionsPlugin as any).configEnvironment("rsc", workerConfig);
+      (conditionsPlugin as any).configEnvironment(environmentName, workerConfig);
       expect(workerConfig.resolve.conditions).toEqual([
         "workerd",
         "worker",
@@ -773,36 +751,34 @@ describe("optimizeDeps.exclude for vinext", () => {
         "module",
         "development",
       ]);
-
-      const clientConfig = {
-        resolve: { conditions: ["module", "browser"] },
-        optimizeDeps: {
-          rolldownOptions: { resolve: { conditionNames: ["module", "browser"] } },
-        },
-      };
-      (conditionsPlugin as any).configEnvironment("client", clientConfig);
-      expect(clientConfig.resolve.conditions).toEqual(["module", "browser"]);
-      expect(clientConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual([
-        "module",
-        "browser",
-      ]);
-
-      const auxiliaryWorkerConfig = {
-        resolve: { conditions: ["workerd", "worker", "module", "browser"] },
-        optimizeDeps: {
-          rolldownOptions: {
-            resolve: { conditionNames: ["workerd", "worker", "module", "browser"] },
-          },
-        },
-      };
-      (conditionsPlugin as any).configEnvironment("auxiliary-worker", auxiliaryWorkerConfig);
-      expect(auxiliaryWorkerConfig.resolve.conditions).toContain("browser");
-      expect(auxiliaryWorkerConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toContain(
-        "browser",
-      );
-    } finally {
-      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
+
+    const clientConfig = {
+      resolve: { conditions: ["module", "browser"] },
+      optimizeDeps: {
+        rolldownOptions: { resolve: { conditionNames: ["module", "browser"] } },
+      },
+    };
+    (conditionsPlugin as any).configEnvironment("client", clientConfig);
+    expect(clientConfig.resolve.conditions).toEqual(["module", "browser"]);
+    expect(clientConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual([
+      "module",
+      "browser",
+    ]);
+
+    const auxiliaryWorkerConfig = {
+      resolve: { conditions: ["workerd", "worker", "module", "browser"] },
+      optimizeDeps: {
+        rolldownOptions: {
+          resolve: { conditionNames: ["workerd", "worker", "module", "browser"] },
+        },
+      },
+    };
+    (conditionsPlugin as any).configEnvironment("auxiliary-worker", auxiliaryWorkerConfig);
+    expect(auxiliaryWorkerConfig.resolve.conditions).toContain("browser");
+    expect(auxiliaryWorkerConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toContain(
+      "browser",
+    );
   }, 15000);
 
   it("suppresses missing optional Cloudflare Pages Router worker optimizer warnings", async () => {
