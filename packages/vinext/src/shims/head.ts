@@ -561,11 +561,11 @@ export function _syncClientHead(): void {
   // Next.js reconciles changed tag types in this fixed order. Preserve JSX
   // order within each type while matching that cross-type insertion contract.
   const tagTypeOrder = ["meta", "base", "link", "style", "script", "noscript"];
-  newTags.sort((left, right) => {
-    const leftOrder = tagTypeOrder.indexOf(left.tagName.toLowerCase());
-    const rightOrder = tagTypeOrder.indexOf(right.tagName.toLowerCase());
-    return leftOrder - rightOrder;
-  });
+  const getTagTypeOrder = (tag: Element): number => {
+    const index = tagTypeOrder.indexOf(tag.tagName.toLowerCase());
+    return index === -1 ? Number.POSITIVE_INFINITY : index;
+  };
+  newTags.sort((left, right) => getTagTypeOrder(left) - getTagTypeOrder(right));
   for (const newTag of newTags) {
     if (newTag.tagName.toLowerCase() === "meta" && newTag.getAttribute("charset") !== null) {
       headEl.prepend(newTag);
