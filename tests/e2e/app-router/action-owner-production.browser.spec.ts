@@ -513,6 +513,27 @@ test.describe("production server action ownership", () => {
     expect(status).toBe(404);
   });
 
+  test("lets multipart POSTs fall through to App Route handlers", async ({ page }) => {
+    await page.goto(`${app.baseUrl}/ownership/report/public`);
+    const response = await page.evaluate(async () => {
+      const body = new FormData();
+      body.set("value", "ROUTE_HANDLER_FORM_DATA");
+      const result = await fetch("/ownership/report/route-handler", { body, method: "POST" });
+      return {
+        actionNotFound: result.headers.get("x-nextjs-action-not-found"),
+        body: await result.json(),
+        status: result.status,
+      };
+    });
+
+    expect(response.status).toBe(202);
+    expect(response.actionNotFound).toBeNull();
+    expect(response.body).toEqual({
+      marker: "ROUTE_HANDLER_EXECUTED",
+      value: "ROUTE_HANDLER_FORM_DATA",
+    });
+  });
+
   test("includes server-reference modules reached by side-effect imports", async ({ page }) => {
     await page.goto(`${app.baseUrl}/ownership/side-effect`);
     const response = await page.evaluate(
