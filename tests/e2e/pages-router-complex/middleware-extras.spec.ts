@@ -5,7 +5,7 @@ import { test, expect } from "@playwright/test";
  * asset-prefix rewrite, and the hard 403 on the built-in image endpoint.
  */
 test.describe("middleware extras", () => {
-  test.fixme("answers raw /_next/data requests with a hardNavTo payload", async ({ request }) => {
+  test("answers raw /_next/data requests with a hardNavTo payload", async ({ request }) => {
     const response = await request.get("/_next/data/whatever/journal.json?x=1", {
       maxRedirects: 0,
     });
@@ -24,12 +24,21 @@ test.describe("middleware extras", () => {
     expect(response.status()).toBe(404);
   });
 
-  test.fixme("blocks the built-in image endpoint with a 403", async ({ request }) => {
+  test("blocks the built-in image endpoint with a 403", async ({ request }) => {
     const response = await request.get("/_next/image?url=%2Ffoo.png&w=640&q=75", {
       maxRedirects: 0,
     });
     expect(response.status()).toBe(403);
     const body = await response.json();
     expect(body.error).toContain("image endpoint is disabled");
+  });
+
+  test("preserves image parameters from a beforeFiles rewrite", async ({ request }) => {
+    const response = await request.get("/legacy/image-alias", { maxRedirects: 0 });
+    // The configured source is intentionally absent, so reaching the image
+    // optimizer produces its source 404. Losing the rewritten query instead
+    // fails parameter validation with 400 before that fetch.
+    expect(response.status()).toBe(404);
+    expect(await response.text()).toBe("Image not found");
   });
 });

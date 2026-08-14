@@ -19,6 +19,8 @@
  *   await runWithFetchCache(async () => { ... render ... });
  */
 
+import { Buffer } from "node:buffer";
+
 import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
@@ -43,7 +45,7 @@ import {
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v3";
+const CACHE_KEY_PREFIX = "v5";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 // "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
@@ -74,34 +76,27 @@ type ExtendedRequestInit = RequestInit & {
 
 /**
  * Collect all headers from the request, excluding the blocklist.
- * Merges headers from both the Request object and the init object,
- * with init taking precedence (matching fetch() spec behavior).
+ * RequestInit headers replace a Request input's headers rather than merging
+ * with them, matching the Request constructor's normalization behavior.
  */
 function collectHeaders(input: string | URL | Request, init?: RequestInit): Record<string, string> {
-  const merged: Record<string, string> = {};
-
-  // Start with headers from Request object (if any)
-  if (input instanceof Request && input.headers) {
-    input.headers.forEach((v, k) => {
-      merged[k] = v;
-    });
-  }
-
-  // Override with headers from init (init takes precedence per fetch spec)
-  if (init?.headers) {
-    const headers =
-      init.headers instanceof Headers ? init.headers : new Headers(init.headers as HeadersInit);
-    headers.forEach((v, k) => {
-      merged[k] = v;
-    });
-  }
+  const headers = getEffectiveRequestHeaders(input, init);
+  const collected = Object.fromEntries(headers.entries());
 
   // Remove blocklisted headers
   for (const blocked of HEADER_BLOCKLIST) {
-    delete merged[blocked];
+    delete collected[blocked];
   }
 
-  return merged;
+  return collected;
+}
+
+function getEffectiveRequestHeaders(input: string | URL | Request, init?: RequestInit): Headers {
+  return init?.headers !== undefined
+    ? new Headers(init.headers)
+    : input instanceof Request
+      ? input.headers
+      : new Headers();
 }
 
 /**
@@ -116,22 +111,63 @@ function hasAuthHeaders(input: string | URL | Request, init?: RequestInit): bool
   return AUTH_HEADERS.some((name) => name in headers);
 }
 
+const BYTE_HEX = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0"));
+
+function encodeBodyBytes(bytes: Uint8Array): string {
+  let encoded = "bytes:";
+  for (const byte of bytes) {
+    encoded += BYTE_HEX[byte];
+  }
+  return encoded;
+}
+
+function concatBodyBytes(chunks: Uint8Array[]): Uint8Array {
+  const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 async function serializeFormData(
   formData: FormData,
-  pushBodyChunk: (chunk: string) => void,
+  pushBodyChunk: (chunk: string, byteLength?: number) => void,
   getTotalBodyBytes: () => number,
 ): Promise<void> {
+  const encoder = new TextEncoder();
   for (const [key, val] of formData.entries()) {
     if (typeof val === "string") {
       pushBodyChunk(JSON.stringify([key, { kind: "string", value: val }]));
       continue;
     }
-    if (
-      val.size > MAX_CACHE_KEY_BODY_BYTES ||
-      getTotalBodyBytes() + val.size > MAX_CACHE_KEY_BODY_BYTES
-    ) {
+    // Reject obviously oversized metadata before JSON escaping can amplify an
+    // attacker-controlled field name, filename, or media type.
+    const metadataLowerBound =
+      encoder.encode(key).byteLength +
+      encoder.encode(val.name).byteLength +
+      encoder.encode(val.type).byteLength;
+    if (getTotalBodyBytes() + val.size + metadataLowerBound > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
+
+    const metadata = JSON.stringify([
+      key,
+      {
+        kind: "file",
+        name: val.name,
+        type: val.type,
+        value: "bytes:",
+      },
+    ]);
+    const metadataByteLength = encoder.encode(metadata).byteLength;
+    if (getTotalBodyBytes() + val.size + metadataByteLength > MAX_CACHE_KEY_BODY_BYTES) {
+      throw new BodyTooLargeForCacheKeyError();
+    }
+
+    const bytes = new Uint8Array(await val.arrayBuffer());
     pushBodyChunk(
       JSON.stringify([
         key,
@@ -139,9 +175,10 @@ async function serializeFormData(
           kind: "file",
           name: val.name,
           type: val.type,
-          value: await val.text(),
+          value: encodeBodyBytes(bytes),
         },
       ]),
+      bytes.byteLength + metadataByteLength,
     );
   }
 }
@@ -171,13 +208,25 @@ function stripMultipartBoundary(contentType: string): string {
 type SerializedBodyResult = {
   bodyChunks: string[];
   canonicalizedContentType?: string;
+  defaultContentType?: string;
+  bodyMetadata?: string;
 };
 
-async function readRequestBodyChunksWithinLimit(request: Request): Promise<{
+const NORMALIZED_FETCH_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "POST", "PUT"]);
+
+function normalizeFetchMethod(method: string): string {
+  const upperMethod = method.toUpperCase();
+  return NORMALIZED_FETCH_METHODS.has(upperMethod) ? upperMethod : method;
+}
+
+async function readRequestBodyChunksWithinLimit(
+  request: Request,
+  effectiveHeaders: Headers,
+): Promise<{
   chunks: Uint8Array[];
   contentType: string | undefined;
 }> {
-  const contentLengthHeader = request.headers.get("content-length");
+  const contentLengthHeader = effectiveHeaders.get("content-length");
   if (contentLengthHeader) {
     const contentLength = Number(contentLengthHeader);
     if (Number.isFinite(contentLength) && contentLength > MAX_CACHE_KEY_BODY_BYTES) {
@@ -186,7 +235,7 @@ async function readRequestBodyChunksWithinLimit(request: Request): Promise<{
   }
 
   const requestClone = request.clone();
-  const contentType = requestClone.headers.get("content-type") ?? undefined;
+  const contentType = effectiveHeaders.get("content-type") ?? undefined;
   const reader = requestClone.body?.getReader();
   if (!reader) {
     return { chunks: [], contentType };
@@ -226,30 +275,40 @@ async function serializeBody(
   input: string | URL | Request,
   init?: RequestInit,
 ): Promise<SerializedBodyResult> {
-  if (!init?.body && !(input instanceof Request && input.body)) {
+  const hasInitBody = init?.body !== undefined && init.body !== null;
+  if (!hasInitBody && !(input instanceof Request && input.body)) {
     return { bodyChunks: [] };
   }
 
   const bodyChunks: string[] = [];
   const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
   let totalBodyBytes = 0;
   let canonicalizedContentType: string | undefined;
+  let defaultContentType: string | undefined;
+  let bodyMetadata: string | undefined = "body-present";
+  const hasEffectiveContentType = getEffectiveRequestHeaders(input, init).has("content-type");
 
-  const pushBodyChunk = (chunk: string): void => {
-    totalBodyBytes += encoder.encode(chunk).byteLength;
+  const pushBodyChunk = (chunk: string, byteLength = encoder.encode(chunk).byteLength): void => {
+    totalBodyBytes += byteLength;
     if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
     bodyChunks.push(chunk);
   };
+  const pushBodyBytes = (bytes: Uint8Array): void => {
+    pushBodyChunk(encodeBodyBytes(bytes), bytes.byteLength);
+  };
   const getTotalBodyBytes = (): number => totalBodyBytes;
 
-  if (init?.body instanceof Uint8Array) {
-    if (init.body.byteLength > MAX_CACHE_KEY_BODY_BYTES) {
+  if (init?.body instanceof ArrayBuffer || (init?.body && ArrayBuffer.isView(init.body))) {
+    const bytes =
+      init.body instanceof ArrayBuffer
+        ? new Uint8Array(init.body)
+        : new Uint8Array(init.body.buffer, init.body.byteOffset, init.body.byteLength);
+    if (bytes.byteLength > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
-    pushBodyChunk(decoder.decode(init.body));
+    pushBodyBytes(bytes);
     (init as ExtendedRequestInit)._ogBody = init.body;
   } else if (init?.body && typeof (init.body as { getReader?: unknown }).getReader === "function") {
     // ReadableStream
@@ -257,29 +316,24 @@ async function serializeBody(
     const [bodyForHashing, bodyForFetch] = readableBody.tee();
     (init as ExtendedRequestInit)._ogBody = bodyForFetch;
     const reader = bodyForHashing.getReader();
+    const chunks: Uint8Array[] = [];
 
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (typeof value === "string") {
-          pushBodyChunk(value);
-        } else {
-          // Check raw byte size before the expensive decode to prevent
-          // OOM from a single oversized chunk.
-          totalBodyBytes += value.byteLength;
-          if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
-            throw new BodyTooLargeForCacheKeyError();
-          }
-          bodyChunks.push(decoder.decode(value, { stream: true }));
+        const bytes = typeof value === "string" ? encoder.encode(value) : value;
+        totalBodyBytes += bytes.byteLength;
+        if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
+          throw new BodyTooLargeForCacheKeyError();
         }
+        chunks.push(bytes);
       }
-      const finalChunk = decoder.decode();
-      if (finalChunk) {
-        pushBodyChunk(finalChunk);
-      }
+      bodyChunks.push(encodeBodyBytes(concatBodyBytes(chunks)));
     } catch (err) {
-      await reader.cancel();
+      // Do not await cancellation of one tee branch: it may not settle until
+      // the fallback fetch starts consuming the other branch.
+      void reader.cancel().catch(() => {});
       if (err instanceof BodyTooLargeForCacheKeyError) {
         throw err;
       }
@@ -288,12 +342,21 @@ async function serializeBody(
   } else if (init?.body instanceof URLSearchParams) {
     // URLSearchParams — .toString() gives a stable serialization
     (init as ExtendedRequestInit)._ogBody = init.body;
-    pushBodyChunk(init.body.toString());
+    pushBodyBytes(encoder.encode(init.body.toString()));
+    if (!hasEffectiveContentType) {
+      defaultContentType = "application/x-www-form-urlencoded;charset=UTF-8";
+    }
   } else if (init?.body && typeof (init.body as { keys?: unknown }).keys === "function") {
     // FormData
     const formData = init.body as FormData;
     (init as ExtendedRequestInit)._ogBody = init.body;
     await serializeFormData(formData, pushBodyChunk, getTotalBodyBytes);
+    // The generated boundary is transport-specific and the serialized form
+    // entries already distinguish bodies, so keep only the stable media type.
+    if (!hasEffectiveContentType) {
+      defaultContentType = "multipart/form-data";
+      bodyMetadata = "body-present;valid-multipart-boundary";
+    }
   } else if (
     init?.body &&
     typeof (init.body as { arrayBuffer?: unknown }).arrayBuffer === "function"
@@ -303,22 +366,31 @@ async function serializeBody(
     if (blob.size > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
-    pushBodyChunk(await blob.text());
     const arrayBuffer = await blob.arrayBuffer();
+    pushBodyBytes(new Uint8Array(arrayBuffer));
     (init as ExtendedRequestInit)._ogBody = new Blob([arrayBuffer], { type: blob.type });
+    if (!hasEffectiveContentType) {
+      defaultContentType = blob.type || undefined;
+    }
   } else if (typeof init?.body === "string") {
     // String length is always <= UTF-8 byte length, so this is a
     // cheap lower-bound check that avoids encoder.encode() for huge strings.
     if (init.body.length > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
-    pushBodyChunk(init.body);
+    pushBodyBytes(encoder.encode(init.body));
     (init as ExtendedRequestInit)._ogBody = init.body;
+    if (!hasEffectiveContentType) {
+      defaultContentType = "text/plain;charset=UTF-8";
+    }
   } else if (input instanceof Request && input.body) {
     let chunks: Uint8Array[];
     let contentType: string | undefined;
     try {
-      ({ chunks, contentType } = await readRequestBodyChunksWithinLimit(input));
+      ({ chunks, contentType } = await readRequestBodyChunksWithinLimit(
+        input,
+        getEffectiveRequestHeaders(input, init),
+      ));
     } catch (err) {
       if (err instanceof BodyTooLargeForCacheKeyError) {
         throw err;
@@ -340,7 +412,11 @@ async function serializeBody(
           formContentType === "multipart/form-data" && contentType
             ? stripMultipartBoundary(contentType)
             : undefined;
-        return { bodyChunks, canonicalizedContentType };
+        bodyMetadata =
+          formContentType === "multipart/form-data"
+            ? "body-present;valid-multipart-boundary"
+            : "body-present";
+        return { bodyChunks, canonicalizedContentType, bodyMetadata };
       } catch (err) {
         if (err instanceof BodyTooLargeForCacheKeyError) {
           throw err;
@@ -349,16 +425,10 @@ async function serializeBody(
       }
     }
 
-    for (const chunk of chunks) {
-      pushBodyChunk(decoder.decode(chunk, { stream: true }));
-    }
-    const finalChunk = decoder.decode();
-    if (finalChunk) {
-      pushBodyChunk(finalChunk);
-    }
+    pushBodyBytes(concatBodyBytes(chunks));
   }
 
-  return { bodyChunks, canonicalizedContentType };
+  return { bodyChunks, canonicalizedContentType, defaultContentType, bodyMetadata };
 }
 
 /**
@@ -373,24 +443,25 @@ async function buildFetchCacheKey(
   init?: RequestInit & { next?: NextFetchOptions },
 ): Promise<string> {
   let url: string;
-  let method = "GET";
+  const inputRequest = input instanceof Request ? input : undefined;
 
   if (typeof input === "string") {
-    url = input;
+    url = new Request(input).url;
   } else if (input instanceof URL) {
-    url = input.toString();
+    url = new Request(input).url;
   } else {
-    // Request object
     url = input.url;
-    method = input.method || "GET";
   }
 
-  if (init?.method) method = init.method;
+  const method = normalizeFetchMethod(init?.method ?? inputRequest?.method ?? "GET");
 
   const headers = collectHeaders(input, init);
-  const { bodyChunks, canonicalizedContentType } = await serializeBody(input, init);
+  const { bodyChunks, canonicalizedContentType, defaultContentType, bodyMetadata } =
+    await serializeBody(input, init);
   if (canonicalizedContentType) {
     headers["content-type"] = canonicalizedContentType;
+  } else if (defaultContentType && headers["content-type"] === undefined) {
+    headers["content-type"] = defaultContentType;
   }
 
   const cacheString = JSON.stringify([
@@ -398,14 +469,15 @@ async function buildFetchCacheKey(
     url,
     method,
     headers,
-    init?.mode,
-    init?.redirect,
-    init?.credentials,
-    init?.referrer,
-    init?.referrerPolicy,
-    init?.integrity,
-    init?.cache,
+    init?.mode ?? inputRequest?.mode ?? "cors",
+    init?.redirect ?? inputRequest?.redirect ?? "follow",
+    init?.credentials ?? inputRequest?.credentials ?? "same-origin",
+    init?.referrer ?? inputRequest?.referrer ?? "about:client",
+    init?.referrerPolicy ?? inputRequest?.referrerPolicy ?? "",
+    init?.integrity ?? inputRequest?.integrity ?? "",
+    init?.cache ?? inputRequest?.cache ?? "default",
     bodyChunks,
+    bodyMetadata,
   ]);
 
   const encoder = new TextEncoder();
@@ -586,7 +658,7 @@ async function buildFetchCacheValue(
   if (response.status !== 200) return null;
 
   const responseForCache = options?.cloneForReturn === false ? response : response.clone();
-  const body = await responseForCache.text();
+  const body = Buffer.from(await responseForCache.arrayBuffer()).toString("base64");
   const headers: Record<string, string> = {};
   responseForCache.headers.forEach((v, k) => {
     if (k.toLowerCase() === "set-cookie") return;
@@ -863,8 +935,8 @@ function createFetchDedupeCandidate(
     return null;
   }
 
-  const method = init?.method?.toUpperCase();
-  if (method && method !== "GET" && method !== "HEAD") {
+  const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
     return null;
   }
 
@@ -872,8 +944,10 @@ function createFetchDedupeCandidate(
     return null;
   }
 
-  const request =
-    typeof input === "string" || input instanceof URL ? new Request(input, init) : input;
+  // RequestInit overrides a Request input too. Normalize whenever init is
+  // present so the dedupe key describes the request that fetch will execute.
+  // Eligible GET/HEAD requests have no body stream for this to disturb.
+  const request = input instanceof Request && !init ? input : new Request(input, init);
 
   if ((request.method !== "GET" && request.method !== "HEAD") || request.keepalive) {
     return null;
@@ -923,7 +997,7 @@ function buildCachedFetchResponse(
   data: CachedFetchValue["data"],
   input: string | URL | Request,
 ): Response {
-  const response = new Response(data.body, {
+  const response = new Response(Buffer.from(data.body, "base64"), {
     status: data.status ?? 200,
     headers: data.headers,
   });

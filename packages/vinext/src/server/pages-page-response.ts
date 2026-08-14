@@ -485,7 +485,9 @@ function applyGsspHeaders(
       headers.set(key, String(value));
     }
   }
-  headers.set("Content-Type", "text/html; charset=utf-8");
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "text/html; charset=utf-8");
+  }
   return statusCode ?? gsspRes.statusCode;
 }
 
@@ -684,9 +686,8 @@ export async function renderPagesPageResponse(
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
   } else if (options.isrRevalidateSeconds !== null) {
-    // Fresh ISR (MISS) response: route through the CDN adapter so edge adapters
-    // emit CDN-Cache-Control + a path-based Cache-Tag (matching revalidatePath,
-    // which Pages Router invalidation uses) while the default emits Cache-Control.
+    // Fresh ISR (MISS) response: route through the CDN adapter with the path tag
+    // used by Pages Router invalidation while the default emits Cache-Control.
     const isrPathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
     const stem = isrPathname.endsWith("/") ? isrPathname.slice(0, -1) : isrPathname;
     applyCdnResponseHeaders(responseHeaders, {

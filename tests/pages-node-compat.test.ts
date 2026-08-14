@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { once } from "node:events";
 import {
   createPagesReqRes,
   getPagesPreviewData,
@@ -67,6 +68,41 @@ void previewDataValues;
 void nextApiHandler;
 
 describe("Pages Node compat response", () => {
+  it.each([204, 205, 304])(
+    "creates a bodyless %i response while preserving custom headers",
+    async (status) => {
+      // Ported from Next.js: test/e2e/api-support/pages/api/status-204.js
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/api-support/pages/api/status-204.js
+      const { res, responsePromise } = createPagesReqRes({
+        body: undefined,
+        query: {},
+        request: new Request("https://example.test/api/status-204"),
+        url: "/api/status-204",
+      });
+
+      res.setHeader("Surrogate-Control", "max-age=14400");
+      res.setHeader("Content-Type", "text/plain");
+      res.setHeader("Content-Length", "18");
+      res.setHeader("Transfer-Encoding", "chunked");
+      res.status(status);
+      const finished = once(res, "finish");
+      res.write("discard-one");
+      res.write("discard-two");
+      res.end("discard-three");
+
+      const response = await responsePromise;
+      expect(response.status).toBe(status);
+      expect(response.headers.get("surrogate-control")).toBe("max-age=14400");
+      expect(response.headers.get("content-type")).toBeNull();
+      expect(response.headers.get("content-length")).toBeNull();
+      expect(response.headers.get("transfer-encoding")).toBeNull();
+      expect(response.body).toBeNull();
+      await expect(response.text()).resolves.toBe("");
+      await finished;
+      expect((res as unknown as { bufferedChunks: Buffer[] }).bufferedChunks).toHaveLength(0);
+    },
+  );
+
   it("does not expose process environment variables on the request", () => {
     const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
     process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";

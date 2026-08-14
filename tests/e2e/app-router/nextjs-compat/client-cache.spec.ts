@@ -268,6 +268,52 @@ test.describe("Next.js compat: client cache", () => {
     expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
   });
 
+  test("prefetch=true with search params reuses a zero-dynamic-stale page", async ({ page }) => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    const home = "/nextjs-compat/client-cache-search";
+    const target = `${home}/0`;
+    const requests = trackRscRequests(page);
+    await page.goto(home);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#client-cache-search-home")).toBeVisible();
+    await expect
+      .poll(() => requestsFor(requests, target).some((request) => !request.partial))
+      .toBe(true);
+
+    requests.length = 0;
+    await page.click(`a[href="${target}?timeout=0"]`);
+    await expect(page.locator("#client-cache-search-id")).toHaveText("0");
+    const initial = await page.locator("#client-cache-search-random").innerText();
+    expect(requestsFor(requests, target)).toEqual([]);
+
+    await page.click(`a[href="${home}"]`);
+    await expect(page.locator("#client-cache-search-home")).toBeVisible();
+    requests.length = 0;
+    await page.click(`a[href="${target}?timeout=0"]`);
+    await expect(page.locator("#client-cache-search-id")).toHaveText("0");
+    expect(await page.locator("#client-cache-search-random").innerText()).toBe(initial);
+    expect(requestsFor(requests, target)).toEqual([]);
+
+    await page.click(`a[href="${home}"]`);
+    await expect(page.locator("#client-cache-search-home")).toBeVisible();
+    await advanceTime(page, 30_000);
+    requests.length = 0;
+    await page.click(`a[href="${target}?timeout=0"]`);
+    await expect(page.locator("#client-cache-search-id")).toHaveText("0");
+    expect(await page.locator("#client-cache-search-random").innerText()).toBe(initial);
+    expect(requestsFor(requests, target)).toEqual([]);
+
+    await page.click(`a[href="${home}"]`);
+    await expect(page.locator("#client-cache-search-home")).toBeVisible();
+    await advanceTime(page, 270_000);
+    requests.length = 0;
+    await page.click(`a[href="${target}?timeout=0"]`);
+    await expect(page.locator("#client-cache-search-id")).toHaveText("0");
+    expect(await page.locator("#client-cache-search-random").innerText()).not.toBe(initial);
+  });
+
   test("parallel-slot page state resets between dynamic siblings", async ({ page }) => {
     await openHome(page);
     await navigateTo(page, "#client-cache-full", "0");
@@ -291,9 +337,56 @@ test.describe("Next.js compat: client cache", () => {
       .poll(() => requestsFor(requests, `${ROOT}/0`).some((request) => !request.partial))
       .toBe(true);
 
+    // Delay the redundant cache branch that formerly blocked committed-cache
+    // publication after the prefetch was consumed. The consumed snapshot must
+    // remain discoverable during that handoff so a Link remount cannot start a
+    // duplicate request.
+    await page.evaluate(() => {
+      const testWindow = window as ClientCacheTestWindow;
+      const state: DelayedNavigationCachePublicationState = {
+        releaseOldNavigationTail: null,
+      };
+      testWindow.__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__ = state;
+      const originalTee = Reflect.get(
+        ReadableStream.prototype,
+        "tee",
+      ) as typeof ReadableStream.prototype.tee;
+      ReadableStream.prototype.tee = function (this: ReadableStream<unknown>) {
+        ReadableStream.prototype.tee = originalTee;
+        const [reactBranch, cacheBranch] = originalTee.call(this);
+        const cacheReader = cacheBranch.getReader();
+        const delayedCacheBranch = new ReadableStream({
+          async start(controller) {
+            while (true) {
+              const result = await cacheReader.read();
+              if (result.done) break;
+              controller.enqueue(result.value);
+            }
+            await new Promise<void>((resolve) => {
+              state.releaseOldNavigationTail = resolve;
+            });
+            controller.close();
+          },
+          cancel(reason) {
+            return cacheReader.cancel(reason);
+          },
+        });
+        return [reactBranch, delayedCacheBranch];
+      } as typeof ReadableStream.prototype.tee;
+    });
+
     requests.length = 0;
     await targetLink.click();
     await expect(page.locator("#client-cache-id")).toHaveText("0");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            typeof (window as ClientCacheTestWindow).__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__
+              ?.releaseOldNavigationTail === "function",
+        ),
+      )
+      .toBe(true);
     const initial = await readRandom(page);
     expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
 
@@ -308,10 +401,22 @@ test.describe("Next.js compat: client cache", () => {
 
     requests.length = 0;
     const cachedTargetLink = await revealAccordionLink(page, `${ROOT}/0`);
+    expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
     await cachedTargetLink.click();
     await expect(page.locator("#client-cache-id")).toHaveText("0");
     expect(await readRandom(page)).toBe(initial);
     expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
+    await page.evaluate(() => {
+      const state = (window as ClientCacheTestWindow)
+        .__VINEXT_DELAYED_NAVIGATION_CACHE_PUBLICATION__;
+      if (
+        state?.releaseOldNavigationTail === null ||
+        state?.releaseOldNavigationTail === undefined
+      ) {
+        throw new Error("Consumed prefetch cache tail was not delayed");
+      }
+      state.releaseOldNavigationTail();
+    });
 
     const cachedHomeLink = await revealAccordionLink(page, ROOT);
     await cachedHomeLink.click();

@@ -29,7 +29,13 @@ function entriesFromPackageJson(relativePath: string): string[] {
 export default {
   workspaces: {
     ".": {
-      entry: ["scripts/*.{js,ts,mjs,mts}", "tests/**/*.test.ts", "tests/helpers.ts"],
+      entry: [
+        "scripts/*.{js,ts,mjs,mts}",
+        "tests/**/*.test.ts",
+        "tests/helpers.ts",
+        // Filesystem route entries in the standalone Vite/Worker fixture.
+        "tests/e2e/cloudflare-workers/fixture/app/**/route.ts",
+      ],
       project: ["tests/**/*.{js,ts}", "!tests/fixtures/**"],
     },
     "packages/vinext": {
@@ -45,6 +51,7 @@ export default {
         "src/build/prerender-server-entry.ts",
         // Runtime helpers imported by generated virtual entries. The imports
         // are emitted as strings, so knip cannot trace them statically.
+        "src/client/react-instance-bootstrap.ts",
         "src/server/app-middleware.ts",
         "src/server/app-page-dispatch.ts",
         "src/server/app-page-head.ts",

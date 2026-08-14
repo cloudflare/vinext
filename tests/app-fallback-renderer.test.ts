@@ -260,7 +260,7 @@ describe("app fallback renderer factory", () => {
     );
 
     const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
-    expect(payload.__sourcePage).toBe("/foo/bar/(..)(..)hoge/page");
+    expect(payload.__srcPage).toEqual(["foo", "bar", "(..)(..)hoge", "page"]);
   });
 
   it("passes request to createRscOnErrorHandler at call time", async () => {
@@ -362,7 +362,7 @@ describe("app fallback renderer factory", () => {
     );
 
     const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
-    expect(payload.__sourcePage).toBe("/foo/bar/(..)(..)hoge/page");
+    expect(payload.__srcPage).toEqual(["foo", "bar", "(..)(..)hoge", "page"]);
   });
 
   it("uses opts.layouts override instead of route.layouts", async () => {

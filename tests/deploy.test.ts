@@ -1385,6 +1385,9 @@ describe("readPagesRouterEntrySource", () => {
     // Worker passes configRewrites dep with all three phases.
     expect(content).toContain("configRewrites,");
     expect(content).toContain(
+      'matchApiRoute: typeof matchApiRoute === "function" ? matchApiRoute : null',
+    );
+    expect(content).toContain(
       'matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null',
     );
     expect(content).toContain("runPagesRequest(request, deps)");
@@ -1479,6 +1482,7 @@ describe("readPagesRouterEntrySource", () => {
 
   it("exports the built-in fetch handler and router-specific worker entries", () => {
     const exportsMap = readVinextPackageExports();
+    expect(hasPackageExport(exportsMap, "./client")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/fetch-handler")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/app-router-entry")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/pages-router-entry")).toBe(true);
@@ -1676,12 +1680,23 @@ describe("readPagesRouterEntrySource", () => {
           canceled = true;
         },
       }),
-      { status: 404, headers: { "content-type": "text/html" } },
+      {
+        status: 404,
+        headers: {
+          "content-length": "12",
+          "content-type": "text/html",
+          "req-url-path": "/_next/static/build/_devMiddlewareManifest.json?foo=1",
+        },
+      },
     );
 
     const finalized = finalizeMissingStaticAssetResponse(routed404, true);
     expect(finalized.status).toBe(404);
     expect(finalized.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(finalized.headers.get("content-length")).toBeNull();
+    expect(finalized.headers.get("req-url-path")).toBe(
+      "/_next/static/build/_devMiddlewareManifest.json?foo=1",
+    );
     expect(await finalized.text()).toBe("Not Found");
     await vi.waitFor(() => expect(canceled).toBe(true));
 
@@ -1690,6 +1705,15 @@ describe("readPagesRouterEntrySource", () => {
 
     const regular404 = new Response("rendered 404", { status: 404 });
     expect(finalizeMissingStaticAssetResponse(regular404, false)).toBe(regular404);
+  });
+
+  it("finalizes missing build-asset 404s in both Node production routers", () => {
+    const content = fs.readFileSync(
+      path.join(import.meta.dirname, "../packages/vinext/src/server/prod-server.ts"),
+      "utf8",
+    );
+
+    expect(content.match(/finalizeMissingStaticAssetResponse\(/g)).toHaveLength(2);
   });
 
   it("resolveStaticAssetSignal fetches and merges static asset responses with middleware status", async () => {
@@ -1813,13 +1837,18 @@ describe("readPagesRouterEntrySource", () => {
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
-  it("checks image optimization after basePath stripping", () => {
+  it("dispatches image optimization through the post-middleware filesystem phase", () => {
     const content = readPagesRouterEntrySource();
     const basePathPos = content.indexOf("const stripped = stripBasePath(pathname, basePath);");
-    const imagePos = content.indexOf("isImageOptimizationPath(pathname)");
+    const filesystemPos = content.indexOf("serveFilesystemRoute: async");
+    const imagePos = content.indexOf("isImageOptimizationPath(requestPathname)");
     expect(basePathPos).toBeGreaterThan(-1);
+    expect(filesystemPos).toBeGreaterThan(-1);
     expect(imagePos).toBeGreaterThan(-1);
-    expect(basePathPos).toBeLessThan(imagePos);
+    expect(basePathPos).toBeLessThan(filesystemPos);
+    expect(filesystemPos).toBeLessThan(imagePos);
+    expect(content).not.toContain("isImageOptimizationPath(pathname)");
+    expect(content).toContain("new URL(resolvedUrl, request.url)");
   });
 
   it("threads configured image widths and qualities into optimization validation", () => {

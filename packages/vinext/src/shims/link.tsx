@@ -445,13 +445,13 @@ function prefetchUrl(
           getMountedSlotsHeader,
           createAppPrefetchRequestHeaders,
           discardLearningOnlyPrefetchCacheEntry,
+          fetchRouteTreeGatedPrefetch,
+          hasFreshLearningOnlyPrefetchCacheEntry,
           hasSearchAgnosticPrefetchShellForRoute,
           hasPrefetchCacheEntryForNavigation,
-          peekPrefetchResponseForNavigation,
           prefetchRscResponse,
           prepareNavigationPrefetchSnapshot,
           DYNAMIC_NAVIGATION_CACHE_TTL,
-          restoreRscResponse,
           PREFETCH_CACHE_TTL,
         } = navigation;
         const { createRscRequestUrl } = rscCacheBusting;
@@ -512,7 +512,12 @@ function prefetchUrl(
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
         }
         const shouldSendSegmentPrefetchHeaders = isOptimisticRouteShellPrefetch || mode === "auto";
-        if (__prefetchInlining && mode === "auto" && autoPrefetch.cacheForNavigation) {
+        const requiresRouteTreePrefetch = autoPrefetch.requiresRouteTreePrefetch === true;
+        if (
+          (__prefetchInlining || requiresRouteTreePrefetch) &&
+          mode === "auto" &&
+          autoPrefetch.cacheForNavigation
+        ) {
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/__PAGE__");
         } else if (shouldSendSegmentPrefetchHeaders) {
@@ -531,10 +536,11 @@ function prefetchUrl(
         if (autoPrefetch.cacheForNavigation) {
           discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
         }
-        if (prefetched.has(cacheKey)) {
-          if (!autoPrefetch.cacheForNavigation) {
-            return;
-          }
+        if (
+          !autoPrefetch.cacheForNavigation &&
+          hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)
+        ) {
+          return;
         }
         const fetchFullRscPayload = () =>
           scheduleAppPrefetchFetch(
@@ -648,7 +654,9 @@ function prefetchUrl(
         // timing so duplicate visible links see the full payload as already
         // pending while tests/userland can still observe the later data fetch.
         const gateViaRouteTree =
-          __prefetchInlining && mode === "auto" && autoPrefetch.prefetchShellFirst;
+          (__prefetchInlining || requiresRouteTreePrefetch) &&
+          mode === "auto" &&
+          autoPrefetch.prefetchShellFirst;
         const gateViaExplicitSearchShell =
           mode === "full" &&
           hasSearchParams &&
@@ -664,31 +672,13 @@ function prefetchUrl(
                   await fetchLoadingShellForReuse();
                   return fetchFullRscPayload();
                 }
-                const shellHeaders = createAppPrefetchRequestHeaders({
-                  interceptionContext,
-                  fetchPriority: priority,
-                  renderMode: undefined,
-                });
-                shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
-                shellHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
-                if (mountedSlotsHeader) {
-                  shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
-                }
-                const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
-                const shellCacheKey = AppElementsWire.encodeCacheKey(
-                  shellRscUrl,
-                  interceptionContext,
-                );
-                const shellCache = getPrefetchCache();
-                let shellEntry = shellCache.get(shellCacheKey);
-                if (shellEntry === undefined) {
-                  getPrefetchedUrls().add(shellCacheKey);
-                  prefetchRscResponse(
-                    shellRscUrl,
+                return fetchRouteTreeGatedPrefetch({
+                  fetchFullRscPayload,
+                  fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>
                     scheduleAppPrefetchFetch(
                       (signal) =>
-                        fetch(shellRscUrl, {
-                          headers: shellHeaders,
+                        fetch(routeTreeRscUrl, {
+                          headers: routeTreeHeaders,
                           credentials: "include",
                           priority,
                           signal,
@@ -697,42 +687,11 @@ function prefetchUrl(
                         }),
                       priority,
                     ),
-                    interceptionContext,
-                    mountedSlotsHeader,
-                    undefined,
-                    {
-                      cacheForNavigation: false,
-                      optimisticRouteShell: false,
-                      prefetchKind: "route-tree",
-                    },
-                  );
-                  shellEntry = shellCache.get(shellCacheKey);
-                }
-                await shellEntry?.pending?.catch(() => {});
-                const renderedPathAndSearch = shellEntry?.snapshot?.renderedPathAndSearch;
-                if (renderedPathAndSearch) {
-                  const renderedRscUrl = await createRscRequestUrl(renderedPathAndSearch, headers);
-                  const cachedRenderedResponse = peekPrefetchResponseForNavigation(
-                    renderedRscUrl,
-                    interceptionContext,
-                    mountedSlotsHeader,
-                  );
-                  if (cachedRenderedResponse) {
-                    return restoreRscResponse(cachedRenderedResponse);
-                  }
-                }
-                return scheduleAppPrefetchFetch(
-                  (signal) =>
-                    fetch(rscUrl, {
-                      headers,
-                      credentials: "include",
-                      priority,
-                      signal,
-                      // @ts-expect-error — purpose is a valid fetch option in some browsers
-                      purpose: "prefetch",
-                    }),
-                  priority,
-                );
+                  fullHref,
+                  headers,
+                  interceptionContext,
+                  mountedSlotsHeader,
+                });
               })()
             : fetchFullRscPayload();
         if (
@@ -757,7 +716,7 @@ function prefetchUrl(
               autoPrefetch.fallbackTtl === "dynamic"
                 ? DYNAMIC_NAVIGATION_CACHE_TTL
                 : PREFETCH_CACHE_TTL,
-            minimumTtlMs: autoPrefetch.minimumTtlMs,
+            honorDynamicStaleTime: autoPrefetch.honorDynamicStaleTime,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
             prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
             prepareSnapshot: autoPrefetch.cacheForNavigation
@@ -782,7 +741,7 @@ function prefetchUrl(
           const middlewareDataHref =
             fullRouteHref === fullHref
               ? dataTarget.middlewareDataHref
-              : (getPagesMiddlewareDataHref(fullHref, __basePath) ?? undefined);
+              : (getPagesMiddlewareDataHref(fullHref, __basePath, { locale }) ?? undefined);
           prefetchPagesData({ ...dataTarget, middlewareDataHref });
         } else {
           // The target is not a Pages Router route — mark it on the Pages
@@ -1204,6 +1163,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Track pending state for useLinkStatus()
   const [pending, setPending] = useState(false);
   const mountedRef = useRef(true);
+  const pendingPagesIntentPrefetchRef = useRef<(() => void) | null>(null);
   // Stable setter so the global navigation registry can reset this link's
   // pending state from another navigation without depending on render identity.
   const setPendingRef = useRef<PendingLinkSetter | null>(null);
@@ -1217,6 +1177,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     const setter = setPendingRef.current;
     return () => {
       mountedRef.current = false;
+      pendingPagesIntentPrefetchRef.current?.();
+      pendingPagesIntentPrefetchRef.current = null;
       // Drop our setter from the global registry on unmount so a later
       // navigation never calls into an unmounted component.
       if (setter) clearLinkForCurrentNavigation(setter);
@@ -1227,10 +1189,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // In App Router, null/undefined/"auto" is automatic prefetch and true opts
   // into a full RSC prefetch, matching Next.js's public prefetch contract.
   const internalRef = useRef<HTMLAnchorElement | null>(null);
-  const prefetchMode = resolveLinkPrefetchMode(prefetchProp, isDangerous);
+  // A shallow Pages navigation only mutates the current route's visible URL;
+  // it must not issue a data prefetch for that URL. Besides wasting a request,
+  // such a prefetch would run middleware/getServerSideProps even though the
+  // shallow transition itself deliberately skips them.
+  const prefetchRouterMode = getLinkPrefetchRouterMode();
+  const isShallowPagesLink = prefetchRouterMode === "pages" && shallow;
+  const effectivePrefetchProp = isShallowPagesLink ? false : prefetchProp;
+  const prefetchMode = resolveLinkPrefetchMode(effectivePrefetchProp, isDangerous);
   const shouldViewportPrefetch = canLinkPrefetch({
     nodeEnv: process.env.NODE_ENV,
-    prefetch: prefetchProp,
+    prefetch: effectivePrefetchProp,
     isDangerous,
   });
 
@@ -1274,7 +1243,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
               currentOrigin: window.location.origin,
             }) ?? undefined),
       queuedViewportPrefetch: false,
-      routerMode: getLinkPrefetchRouterMode(),
+      routerMode: prefetchRouterMode,
       viewportPrefetched: false,
     };
     observedLinkPrefetches.set(node, instance);
@@ -1286,15 +1255,23 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       visibleLinkPrefetches.delete(instance);
       instance.isVisible = false;
     };
-  }, [shouldViewportPrefetch, prefetchMode, normalizedHref, normalizedRouteHref, locale]);
+  }, [
+    shouldViewportPrefetch,
+    prefetchMode,
+    prefetchRouterMode,
+    normalizedHref,
+    normalizedRouteHref,
+    locale,
+  ]);
 
   const prefetchOnIntent = useCallback(() => {
     if (
+      isShallowPagesLink ||
       !canLinkIntentPrefetch({
         nodeEnv: process.env.NODE_ENV,
-        prefetch: prefetchProp,
+        prefetch: effectivePrefetchProp,
         isDangerous,
-        routerMode: getLinkPrefetchRouterMode(),
+        routerMode: prefetchRouterMode,
       })
     ) {
       return;
@@ -1315,35 +1292,53 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       locale,
     );
   }, [
-    prefetchProp,
+    effectivePrefetchProp,
     isDangerous,
+    isShallowPagesLink,
     prefetchMode,
+    prefetchRouterMode,
     normalizedHref,
     normalizedRouteHref,
     locale,
     unstable_dynamicOnHover,
   ]);
 
+  const schedulePrefetchOnIntent = useCallback(() => {
+    if (prefetchRouterMode !== "pages" || typeof window.requestAnimationFrame !== "function") {
+      prefetchOnIntent();
+      return;
+    }
+
+    pendingPagesIntentPrefetchRef.current?.();
+    const frame = window.requestAnimationFrame(() => {
+      pendingPagesIntentPrefetchRef.current = null;
+      prefetchOnIntent();
+    });
+    pendingPagesIntentPrefetchRef.current = () => window.cancelAnimationFrame(frame);
+  }, [prefetchOnIntent, prefetchRouterMode]);
+
   const handleMouseEnter = useCallback(
     (e: MouseEvent<HTMLAnchorElement>) => {
       onMouseEnter?.(e);
-      prefetchOnIntent();
+      schedulePrefetchOnIntent();
     },
-    [onMouseEnter, prefetchOnIntent],
+    [onMouseEnter, schedulePrefetchOnIntent],
   );
 
   const handleTouchStart = useCallback(
     (e: TouchEvent<HTMLAnchorElement>) => {
       onTouchStart?.(e);
-      prefetchOnIntent();
+      schedulePrefetchOnIntent();
     },
-    [onTouchStart, prefetchOnIntent],
+    [onTouchStart, schedulePrefetchOnIntent],
   );
 
   const handleClick = async (
     e: MouseEvent<HTMLAnchorElement>,
     options: { skipLinkOnClick?: boolean } = {},
   ) => {
+    pendingPagesIntentPrefetchRef.current?.();
+    pendingPagesIntentPrefetchRef.current = null;
     // In legacyBehavior, the onClick prop on <Link> itself is ignored — the
     // child's onClick is the one that runs (and Next.js even warns when
     // `onClick` is passed to <Link> alongside `legacyBehavior`). Skip the

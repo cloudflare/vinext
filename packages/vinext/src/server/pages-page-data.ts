@@ -402,6 +402,8 @@ type ResolvePagesPageDataResponseResult = {
 
 type ResolvePagesPageDataNotFoundResult = {
   kind: "notFound";
+  /** Headers set by getServerSideProps before it returned notFound. */
+  responseHeaders?: Record<string, string | number | boolean | string[]>;
   /** Current getStaticProps cache lifetime, when this is an SSG result. */
   revalidateSeconds?: number | false;
   expireSeconds?: number;
@@ -433,15 +435,51 @@ function buildPagesNotFoundResult(
   revalidateSeconds?: number | false,
   cacheState?: "MISS" | "HIT" | "STALE",
   expireSeconds?: number,
+  responseHeaders?: Record<string, string | number | boolean | string[]>,
 ): ResolvePagesPageDataResponseResult | ResolvePagesPageDataNotFoundResult {
   if (options.isDataReq) {
     return {
       kind: "response",
-      response: buildPagesDataNotFoundResponse(options.deploymentId),
+      response: mergePagesNotFoundSourceHeaders(
+        buildPagesDataNotFoundResponse(options.deploymentId),
+        responseHeaders,
+      ),
     };
   }
 
-  return { kind: "notFound", revalidateSeconds, expireSeconds, cacheState };
+  return {
+    kind: "notFound",
+    revalidateSeconds,
+    expireSeconds,
+    cacheState,
+    responseHeaders,
+  };
+}
+
+export function mergePagesNotFoundSourceHeaders(
+  response: Response,
+  sourceHeaders: Record<string, string | number | boolean | string[]> | undefined,
+): Response {
+  if (!sourceHeaders) return response;
+
+  const headers = new Headers(response.headers);
+
+  for (const [name, value] of Object.entries(sourceHeaders)) {
+    const lowerName = name.toLowerCase();
+    if (lowerName === "set-cookie") {
+      headers.delete("set-cookie");
+      const cookies = Array.isArray(value) ? value : [value];
+      for (const cookie of cookies) headers.append("set-cookie", String(cookie));
+    } else {
+      headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
+    }
+  }
+
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
 }
 
 function applyPagesTerminalMissHeaders(
@@ -712,6 +750,7 @@ function buildPagesRedirectResponse(
   >,
   props: PagesRenderProps = { pageProps: {} },
   method: "getStaticProps" | "getServerSideProps" = "getStaticProps",
+  responseHeaders?: Headers,
 ): Response {
   const resolved = resolvePagesRedirect(redirect, {
     method,
@@ -725,10 +764,9 @@ function buildPagesRedirectResponse(
   // executable schemes here: a data navigation would otherwise assign a
   // request-controlled `javascript:` URL to `window.location.href`.
   if (isDangerousScheme(resolved.destination)) {
-    const headers = new Headers({
-      "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
-      "Content-Type": "text/plain; charset=utf-8",
-    });
+    const headers = new Headers(responseHeaders);
+    headers.set("Cache-Control", "private, no-cache, no-store, max-age=0, must-revalidate");
+    headers.set("Content-Type", "text/plain; charset=utf-8");
     if (options.deploymentId) {
       headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, options.deploymentId);
     }
@@ -738,21 +776,33 @@ function buildPagesRedirectResponse(
   if (options.isDataReq) {
     // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
     // `_next/data` redirect exits for deployment-skew protection.
-    const init: ResponseInit & { headers: Record<string, string> } = { headers: {} };
+    const headers = new Headers(responseHeaders);
     if (options.deploymentId) {
-      init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = options.deploymentId;
+      headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, options.deploymentId);
     }
-    return buildNextDataPropsJsonResponse(redirectProps, options.safeJsonStringify, init);
+    return buildNextDataPropsJsonResponse(redirectProps, options.safeJsonStringify, { headers });
   }
 
   const location = resolvePagesRedirectLocation(resolved, options.basePath);
+  const headers = new Headers(responseHeaders);
+  headers.set("Location", location);
+  if (resolved.statusCode === 308) headers.set("Refresh", `0;url=${location}`);
   return new Response(location, {
     status: resolved.statusCode,
-    headers: {
-      Location: location,
-      ...(resolved.statusCode === 308 ? { Refresh: `0;url=${location}` } : {}),
-    },
+    headers,
   });
+}
+
+function getPagesGsspResponseHeaders(res: PagesGsspResponse): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(res.getHeaders())) {
+    if (Array.isArray(value)) {
+      for (const item of value) headers.append(name, item);
+    } else {
+      headers.set(name, String(value));
+    }
+  }
+  return headers;
 }
 
 function buildCachedPagesRedirectResponse(
@@ -1318,12 +1368,20 @@ export async function resolvePagesPageData(
           options,
           renderProps,
           "getServerSideProps",
+          getPagesGsspResponseHeaders(res),
         ),
       };
     }
 
     if (result?.notFound) {
-      return buildPagesNotFoundResult(options);
+      const responseHeaders = res.getHeaders();
+      return buildPagesNotFoundResult(
+        options,
+        undefined,
+        undefined,
+        undefined,
+        Object.keys(responseHeaders).length > 0 ? responseHeaders : undefined,
+      );
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getServerSideProps", data.props)`

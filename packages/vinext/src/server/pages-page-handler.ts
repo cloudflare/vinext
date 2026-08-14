@@ -24,7 +24,7 @@ import {
   type PagesPreviewState,
 } from "./pages-preview.js";
 import { hasUserDocumentGetInitialProps } from "./document-initial-head.js";
-import { resolvePagesPageData } from "./pages-page-data.js";
+import { mergePagesNotFoundSourceHeaders, resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
@@ -33,8 +33,9 @@ import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
 import {
   BROWSER_REVALIDATE_CACHE_CONTROL,
-  shouldUseNextDeployCacheControl,
   applyCdnResponseHeaders,
+  hasExplicitNonCacheableResponsePolicy,
+  shouldUseNextDeployCacheControl,
 } from "./cache-control.js";
 import {
   buildNextDataPropsJsonResponse,
@@ -77,14 +78,14 @@ import {
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
 
-function finalizePagesPreviewResponse(response: Response, preview: PagesPreviewState): Response {
+export function finalizePagesPreviewResponse(
+  response: Response,
+  preview: PagesPreviewState,
+): Response {
   if (preview.data === false && !preview.shouldClear) return response;
   const headers = new Headers(response.headers);
   if (preview.data !== false) {
-    headers.set("Cache-Control", PAGES_PREVIEW_CACHE_CONTROL);
-    headers.delete("CDN-Cache-Control");
-    headers.delete("Cloudflare-CDN-Cache-Control");
-    headers.delete("Cache-Tag");
+    applyCdnResponseHeaders(headers, { cacheControl: PAGES_PREVIEW_CACHE_CONTROL });
   }
   if (preview.shouldClear) appendPagesPreviewClearCookies(headers);
   return new Response(response.body, {
@@ -112,6 +113,20 @@ function withPagesCacheState(
   });
 }
 
+function stripPagesNotFoundFramingHeaders(response: Response): Response {
+  if (!response.headers.has("Content-Length") && !response.headers.has("Transfer-Encoding")) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  headers.delete("Content-Length");
+  headers.delete("Transfer-Encoding");
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
 function applyPagesErrorCachePolicy(
   response: Response,
   revalidateSeconds: number | false | undefined,
@@ -119,28 +134,12 @@ function applyPagesErrorCachePolicy(
   cacheTagPathname: string,
 ): Response {
   const headers = new Headers(response.headers);
-  const browserPolicy = headers.get("Cache-Control");
-  const sharedPolicies = [
-    headers.get("CDN-Cache-Control"),
-    headers.get("Cloudflare-CDN-Cache-Control"),
-  ];
-  const hasCacheableSharedPolicy = sharedPolicies.some(
-    (value) => value && /(?:^|,)\s*s-maxage\s*=/i.test(value),
-  );
-  const hasExplicitSharedNoStore = sharedPolicies.some(
-    (value) => value && /(?:private|no-store|no-cache)/i.test(value),
-  );
-  if (
-    hasExplicitSharedNoStore ||
-    (!hasCacheableSharedPolicy &&
-      browserPolicy &&
-      /(?:private|no-store|no-cache)/i.test(browserPolicy))
-  ) {
-    return response;
-  }
-  headers.delete("CDN-Cache-Control");
-  headers.delete("Cloudflare-CDN-Cache-Control");
-  headers.delete("Cache-Tag");
+  if (hasExplicitNonCacheableResponsePolicy(headers)) return response;
+  // The source route's notFound lifetime controls the outgoing response, not
+  // the inner error page's lifetime. Preview and nonce-bearing responses are
+  // excluded by the caller, and explicit no-store responses stay untouched.
+  // Reapply the source policy through the adapter so this replacement does not
+  // need to inspect adapter-owned header names.
   if (revalidateSeconds === undefined) {
     applyCdnResponseHeaders(headers, { cacheControl: ISR_NEVER_CACHE_CONTROL });
   } else {
@@ -318,6 +317,8 @@ type RenderPageOptions = {
   __notFoundExpireSeconds?: number;
   /** Source-page identity used for the outgoing notFound cache tag. */
   __notFoundCachePathname?: string;
+  /** Source gSSP headers that seed the recursively rendered notFound page. */
+  __notFoundSourceHeaders?: Record<string, string | number | boolean | string[]>;
   /** Internal recursion guard while a top-level on-demand request owns the batch. */
   __skipOnDemandCoalesce?: boolean;
   err?: unknown;
@@ -782,6 +783,11 @@ export function createPagesPageHandler(
           if (typeof renderStatusCode === "number") {
             reqRes.res.statusCode = renderStatusCode;
           }
+          if (options?.__notFoundSourceHeaders) {
+            for (const [name, value] of Object.entries(options.__notFoundSourceHeaders)) {
+              reqRes.res.setHeader(name, value);
+            }
+          }
           return reqRes;
         };
 
@@ -888,10 +894,15 @@ export function createPagesPageHandler(
               __notFoundRevalidateSeconds: pageDataResult.revalidateSeconds,
               __notFoundExpireSeconds: pageDataResult.expireSeconds,
               __notFoundCachePathname: isrCachePathname,
+              __notFoundSourceHeaders: pageDataResult.responseHeaders,
             });
           } else {
-            notFoundResponse = buildDefaultPagesNotFoundResponse();
+            notFoundResponse = mergePagesNotFoundSourceHeaders(
+              buildDefaultPagesNotFoundResponse(),
+              pageDataResult.responseHeaders,
+            );
           }
+          notFoundResponse = stripPagesNotFoundFramingHeaders(notFoundResponse);
 
           if (isOnDemandRevalidate) {
             notFoundResponse = withPagesCacheState(notFoundResponse, "REVALIDATED");
@@ -929,7 +940,7 @@ export function createPagesPageHandler(
         }
         const gsspRes = pageDataResult.gsspRes;
         const documentReqRes =
-          serializedPagesNextData.autoExport === true
+          serializedPagesNextData.autoExport === true && !options?.__notFoundSourceHeaders
             ? null
             : (pageDataResult.documentReqRes ?? createPageReqRes());
         // The error page keeps its own ISR policy and cache identity. A source

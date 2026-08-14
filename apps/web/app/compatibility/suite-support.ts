@@ -60,6 +60,12 @@ export const SUITE_SUPPORT_POLICY = {
     DEFERRED_PARTIAL_PRERENDERING,
   "test/e2e/app-dir/fallback-shells/fallback-shells.test.ts": DEFERRED_PARTIAL_PRERENDERING,
   "test/e2e/app-dir/next-config/index.test.ts": NEXT_BUNDLER_SPECIFIC,
+  "test/e2e/app-dir/next-after-app-deploy/index.test.ts": {
+    status: "unsupported",
+    feature: "Next.js dual Node.js and legacy Edge Runtime builds",
+    reason:
+      "Vinext uses one Workers/Node-compat server graph and does not implement Next.js's per-route legacy Edge Runtime bundle or route-specific process.env.NEXT_RUNTIME constant. This mixed file couples portable nodejs assertions with legacy edge-runtime variants; cover after() on Workers separately.",
+  },
   "test/e2e/app-dir/prefetch-true-instant/prefetch-true-instant.test.ts":
     DEFERRED_PARTIAL_PRERENDERING,
   "test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts": DEFERRED_PARTIAL_PRERENDERING,
@@ -135,7 +141,6 @@ const SUPPORTED_SUITE_FEATURES = {
   "test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts":
     "Metadata rendering and navigation",
   "test/e2e/app-dir/navigation/navigation.test.ts": "App Router navigation and metadata",
-  "test/e2e/app-dir/next-after-app-deploy/index.test.ts": "ISR, tags, revalidation, and after()",
   "test/e2e/app-dir/next-config-ts-native-mts/dynamic-import-esm/next-config-ts-dynamic-import-esm.test.ts":
     "next.config and custom tsconfig loading",
   "test/e2e/app-dir/next-config-ts-native-ts/dynamic-import-esm/next-config-ts-dynamic-import-esm.test.ts":

@@ -90,6 +90,13 @@ const nextConfig: NextConfig = {
         destination: "/about",
         permanent: false,
       },
+      // Ported from Next.js v16.2.6:
+      // test/e2e/app-dir/rsc-query-routing/next.config.js
+      {
+        source: "/nextjs-compat/rsc-query-routing/redirect/source",
+        destination: "/nextjs-compat/rsc-query-routing/redirect/dest",
+        permanent: true,
+      },
     ];
   },
 
@@ -171,6 +178,12 @@ const nextConfig: NextConfig = {
           source: "/rewritten-use-pathname",
           destination: "/nextjs-compat/hooks-search",
         },
+        // Ported from Next.js v16.2.6:
+        // test/e2e/app-dir/rsc-query-routing/next.config.js
+        {
+          source: "/nextjs-compat/rsc-query-routing/rewrite/source",
+          destination: "/nextjs-compat/rsc-query-routing/rewrite/dest",
+        },
       ],
       fallback: [
         // Used by Vitest: app-router.test.ts — fallback rewrite gated on a
@@ -189,6 +202,14 @@ const nextConfig: NextConfig = {
           has: [{ type: "cookie", key: "mw-pages-fallback-user" }],
           destination: "/pages-header-override-delete",
         },
+        // Used by hybrid App+Pages dev and production tests: the Pages
+        // pipeline sees the unmatched /api source first, then hands the
+        // internal fallback destination to the App route handler.
+        {
+          source: "/api/pages-fallback-to-app/:path*",
+          has: [{ type: "cookie", key: "mw-api-fallback-user" }],
+          destination: "/api/fallback-rewrite-target/:path*?from=fallback",
+        },
       ],
     };
   },
@@ -203,7 +224,19 @@ const nextConfig: NextConfig = {
       // Used by Vitest: app-router.test.ts
       {
         source: "/about",
-        headers: [{ key: "X-Page-Header", value: "about-page" }],
+        headers: [
+          { key: "X-Page-Header", value: "about-page" },
+          { key: "X-Action-Header-Collision", value: "target" },
+        ],
+      },
+      // Server-action redirect parity: source headers are forwarded into the
+      // internal target GET and retained unless the target replaces them.
+      {
+        source: "/nextjs-compat/action-redirect-middleware",
+        headers: [
+          { key: "X-Action-Source-Only", value: "yes" },
+          { key: "X-Action-Header-Collision", value: "source" },
+        ],
       },
       // Used by E2E: config-redirect.spec.ts — has/missing on headers rules
       {

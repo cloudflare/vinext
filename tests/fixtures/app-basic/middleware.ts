@@ -25,6 +25,16 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.rewrite(new URL("/about", request.url));
   }
 
+  // A concrete Pages route owns this destination even though the App Router's
+  // /docs/[...slug] catch-all also matches it. The Pages data response must run
+  // GSSP instead of being replaced by the App rewrite placeholder.
+  if (pathname === "/pages-data-rewrite-source") {
+    const response = NextResponse.rewrite(new URL("/docs/pages-data-rewrite-target", request.url));
+    response.cookies.set("pages-rewrite-session", "middleware", { path: "/" });
+    response.headers.set("cache-control", "public, max-age=3600");
+    return response;
+  }
+
   // Ported from Next.js: test/e2e/middleware-general/app/middleware-node.js
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/app/middleware-node.js
   if (pathname === "/_next/static/middleware-rewrite.js") {
@@ -243,6 +253,22 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next({ request: { headers } });
   }
 
+  // Gate the hybrid Pages -> App API fallback rewrite on a request cookie
+  // injected by middleware. The Pages dev pipeline owns this middleware pass,
+  // so its App handoff must carry both the resolved target and request headers.
+  if (
+    pathname.startsWith("/api/pages-fallback-to-app/") &&
+    request.nextUrl.searchParams.has("mw-auth")
+  ) {
+    const headers = new Headers(request.headers);
+    const existing = headers.get("cookie") ?? "";
+    headers.set(
+      "cookie",
+      existing ? existing + "; mw-api-fallback-user=1" : "mw-api-fallback-user=1",
+    );
+    return NextResponse.next({ request: { headers } });
+  }
+
   // Middleware headers take precedence over next.config.js headers for the same key.
   // Middleware sets e2e-headers=middleware; config sets e2e-headers=next.config.js via /(.*).
   // Ref: opennextjs-cloudflare headers.test.ts — "Middleware headers override next.config.js headers"
@@ -380,6 +406,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   }
   r.headers.set("x-mw-pathname", pathname);
   r.headers.set("x-mw-ran", "true");
+  if (pathname === "/about") {
+    r.headers.set(
+      "x-action-target-saw-source",
+      request.headers.get("x-action-source-only") ?? "missing",
+    );
+  }
   if (sessionToken) {
     r.headers.set("x-mw-has-session", "true");
   }
@@ -400,6 +432,7 @@ export const config = {
   matcher: [
     "/about",
     "/exists-but-not-routed",
+    "/pages-data-rewrite-source",
     "/middleware-redirect",
     "/middleware-rewrite",
     "/middleware-rewritten-use-pathname",
@@ -420,6 +453,7 @@ export const config = {
     "/api/header-override-delete",
     "/api/header-override-stray",
     "/api/pages-og",
+    "/api/pages-fallback-to-app/:path*",
     "/header-override-after-prior-access",
     "/pages-header-override-delete",
     "/revalidate-test",

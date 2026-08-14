@@ -21,15 +21,21 @@ import {
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  VINEXT_MW_CTX_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   handleMetadataRouteRequest,
+  isMetadataRouteRequestPath,
   type MetadataRuntimeRoute,
 } from "../packages/vinext/src/server/metadata-route-response.js";
 import type { MiddlewareModule } from "../packages/vinext/src/server/middleware-runtime.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import {
+  getHeadersContext,
+  headers as requestHeaders,
+} from "../packages/vinext/src/shims/headers.js";
 
 type TestRoute = {
   __loadPage?: unknown;
@@ -110,6 +116,11 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
       "handleServerActionRequest" in overrides
         ? overrides.handleServerActionRequest
         : async () => null,
+    isMetadataRoutePath:
+      overrides.isMetadataRoutePath ??
+      (overrides.metadataRoutes
+        ? (cleanPathname) => isMetadataRouteRequestPath(overrides.metadataRoutes!, cleanPathname)
+        : undefined),
     i18nConfig: overrides.i18nConfig ?? null,
     imageConfig: overrides.imageConfig,
     isDev: overrides.isDev ?? true,
@@ -219,6 +230,27 @@ describe("createAppRscHandler", () => {
       );
     },
   );
+
+  it("passes source config headers into Server Action execution", async () => {
+    let sourceConfigHeader: string | null | undefined;
+    const handleServerActionRequest: NonNullable<
+      HandlerOptions["handleServerActionRequest"]
+    > = async (options) => {
+      sourceConfigHeader = options.sourceConfigHeaders?.get("x-test-header");
+      return new Response("action");
+    };
+    const handler = createHandler({ handleServerActionRequest });
+
+    await handler(
+      new Request("https://example.test/docs/about", {
+        method: "POST",
+        headers: { "next-action": "action-id", "content-type": "text/plain" },
+      }),
+      null,
+    );
+
+    expect(sourceConfigHeader).toBe("applied");
+  });
 
   it.each(["afterFiles", "fallback"] as const)(
     "allows out-of-basePath POST requests through %s rewrites to App route handlers",
@@ -522,6 +554,45 @@ describe("createAppRscHandler", () => {
     expect(middlewareRequest!.nextUrl.pathname).toBe("/outside");
   });
 
+  it("dispatches Server Action redirect targets through the complete App pipeline", async () => {
+    const seenPathnames: string[] = [];
+    const middleware = vi.fn((request: NextRequest) => {
+      const { pathname } = new URL(request.url);
+      seenPathnames.push(pathname);
+      return pathname === "/docs/protected"
+        ? new Response("unauthorized", { status: 401 })
+        : new Response(null, { headers: { "x-middleware-next": "1" } });
+    });
+    let dispatchRedirectTargetRequest: ((request: Request) => Promise<Response>) | undefined;
+    const handler = createHandler({
+      configHeaders: [],
+      handleServerActionRequest: async (options) => {
+        dispatchRedirectTargetRequest = options.dispatchRedirectTargetRequest;
+        return new Response("action");
+      },
+      middlewareModule: { default: middleware },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        method: "POST",
+        headers: { "next-action": "action-id", "content-type": "text/plain" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(seenPathnames).toEqual(["/docs/about"]);
+
+    expect(dispatchRedirectTargetRequest).toBeDefined();
+    const targetResponse = await dispatchRedirectTargetRequest!(
+      new Request("https://example.test/docs/protected"),
+    );
+    expect(targetResponse.status).toBe(401);
+    expect(await targetResponse.text()).toBe("unauthorized");
+    expect(seenPathnames).toEqual(["/docs/about", "/docs/protected"]);
+  });
+
   it.each([
     "url=%2Fimg.jpg&w=640junk&q=75",
     "url=%2Fimg.jpg&w=640&q=75&extra=1",
@@ -591,6 +662,723 @@ describe("createAppRscHandler", () => {
         route: sourceRoute,
       }),
     );
+  });
+
+  // Interception renders the source route's tree, so that route must clear the
+  // same middleware boundary a direct request to it would. Next.js never renders
+  // the source for this request (its rewrite targets the intercepting route and
+  // the client keeps its own segments), so there is no upstream behaviour to
+  // mirror here; the boundary exists because vinext renders the extra route.
+  it("denies an interception source route that middleware rejects", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
+    const middlewarePaths: string[] = [];
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed/secret" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      async runMiddleware({ cleanPathname }) {
+        middlewarePaths.push(cleanPathname);
+        return cleanPathname.startsWith("/feed/secret")
+          ? { kind: "response", response: new Response("denied", { status: 401 }) }
+          : { kind: "continue", cleanPathname, rewritten: false, search: null };
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/secret" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(401);
+    await expect(response.text()).resolves.toBe("denied");
+    expect(middlewarePaths).toEqual(["/photos/1", "/feed/secret"]);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  // Next.js exercises interception routes and middleware together here:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/interception-dynamic-segment-middleware/interception-dynamic-segment-middleware.test.ts
+  // Vinext's additional source-authorization pass must preserve the same
+  // normalized pathname identity used by ordinary middleware matching.
+  it("normalizes encoded interception sources before middleware matching", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
+    const middlewarePaths: string[] = [];
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/%66eed/secret" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      middlewareModule: {
+        config: { matcher: "/feed/:path*" },
+        default(request: NextRequest) {
+          middlewarePaths.push(request.nextUrl.pathname);
+          return new Response("denied", { status: 401 });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/%66eed/secret" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(401);
+    expect(middlewarePaths).toEqual(["/feed/secret"]);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("rejects interception sources containing a raw query delimiter", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const matchInterceptRoute = vi.fn(() => ({ route: createPageRoute(), params: {} }));
+    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/admin?bypass" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(400);
+    expect(matchInterceptRoute).not.toHaveBeenCalled();
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed encoded interception sources before middleware", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
+    const middlewarePaths: string[] = [];
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed/%" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      middlewareModule: {
+        default(request: NextRequest) {
+          middlewarePaths.push(request.nextUrl.pathname);
+          return new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/%" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(400);
+    expect(middlewarePaths).toEqual(["/photos/1"]);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("passes the raw interception source to the one-decode route matcher", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const matchInterceptRoute = vi.fn(() => null);
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/%2561dmin" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(matchInterceptRoute).toHaveBeenCalledWith("/photos/1", "/%2561dmin");
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ interceptionContext: "/%2561dmin" }),
+    );
+  });
+
+  it("passes the raw interception source to Server Action dispatch", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const handleServerActionRequest = vi.fn(async () => new Response("action"));
+    const handler = createHandler({
+      configHeaders: [],
+      handleServerActionRequest,
+      matchInterceptRoute: () => null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/%2561dmin" });
+    headers.set("content-type", "text/plain");
+    headers.set("next-action", "interception-action");
+    const response = await handler(
+      new Request("https://example.test/docs/photos/1", {
+        body: "action-body",
+        headers,
+        method: "POST",
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(handleServerActionRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ interceptionContext: "/%2561dmin" }),
+    );
+  });
+
+  it("authorizes the interception source with the target's resolved query", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed" });
+    const middlewareRequests: Array<[string, string]> = [];
+    const dispatchMatchedPage = vi.fn(
+      async ({ searchParams }: { searchParams: URLSearchParams }) =>
+        new Response(searchParams.get("view") ?? "missing"),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      async runMiddleware({ cleanPathname, request }) {
+        middlewareRequests.push([cleanPathname, new URL(request.url).search]);
+        return {
+          kind: "continue",
+          cleanPathname,
+          rewritten: cleanPathname === "/photos/1",
+          search: cleanPathname === "/photos/1" ? "?view=private" : null,
+        };
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1?view=public", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("private");
+    expect(middlewareRequests).toEqual([
+      ["/photos/1", "?view=public"],
+      ["/feed", "?view=private"],
+    ]);
+  });
+
+  it("authorizes an intercepted Server Action source with the resolved query", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed" });
+    const middlewareRequests: Array<[string, string]> = [];
+    const handleServerActionRequest = vi.fn(
+      async ({ searchParams }: { searchParams: URLSearchParams }) =>
+        new Response(searchParams.get("view") ?? "missing"),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      handleServerActionRequest,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      async runMiddleware({ cleanPathname, request }) {
+        middlewareRequests.push([cleanPathname, new URL(request.url).search]);
+        return {
+          kind: "continue",
+          cleanPathname,
+          rewritten: cleanPathname === "/photos/1",
+          search: cleanPathname === "/photos/1" ? "?view=private" : null,
+        };
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    headers.set("content-type", "text/plain");
+    headers.set("next-action", "interception-action");
+    const response = await handler(
+      new Request("https://example.test/docs/photos/1?view=public", {
+        body: "action-body",
+        headers,
+        method: "POST",
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("private");
+    expect(middlewareRequests).toEqual([
+      ["/photos/1", "?view=public"],
+      ["/feed", "?view=private"],
+    ]);
+  });
+
+  it("does not replay a forwarded target middleware result for the interception source", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
+    const middlewarePaths: string[] = [];
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed/secret" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      middlewareModule: {
+        default(request: NextRequest) {
+          middlewarePaths.push(request.nextUrl.pathname);
+          return new Response("denied", { status: 401 });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/secret" });
+    headers.set(VINEXT_MW_CTX_HEADER, JSON.stringify({ h: [["x-mw-target", "1"]] }));
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(401);
+    expect(middlewarePaths).toEqual(["/feed/secret"]);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  // Next.js implements interception as a generated rewrite whose destination is
+  // the intercepting route, so middleware rewriting the source away never
+  // renders the source tree. Vinext renders that tree directly and must fail
+  // closed when its authorization pass changes the source route.
+  // Ref: Next.js test/e2e/app-dir/interception-middleware-rewrite/
+  // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/interception-middleware-rewrite
+  it("does not render an interception source that middleware rewrites away", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed/secret" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/feed/secret"
+            ? new Response(null, {
+                headers: {
+                  "x-middleware-rewrite": "https://example.test/docs/login",
+                },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/secret" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("forwards RSC cache-busting params when source middleware rewrites externally", async () => {
+    // Combines the Next.js interception + middleware and middleware RSC
+    // external-rewrite contracts for vinext's additional source authorization pass:
+    // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/interception-middleware-rewrite
+    // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/middleware-rsc-external-rewrite
+    const receivedUrls: string[] = [];
+    const server = createServer((req, res) => {
+      receivedUrls.push(req.url ?? "");
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("upstream");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    const upstreamUrl = `http://127.0.0.1:${address.port}/proxy`;
+
+    try {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({ pattern: "/feed" });
+      const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1?tab=latest", headers);
+      const handler = createHandler({
+        configHeaders: [],
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
+        matchRoute: (pathname: string) =>
+          pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+        middlewareModule: {
+          default(request: NextRequest) {
+            return request.nextUrl.pathname === "/feed"
+              ? new Response(null, { headers: { "x-middleware-rewrite": upstreamUrl } })
+              : new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+      });
+
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(receivedUrls).toHaveLength(1);
+      const forwardedUrl = new URL(`http://vinext.local${receivedUrls[0]}`);
+      expect(forwardedUrl.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(true);
+      expect(forwardedUrl.searchParams.get("tab")).toBe("latest");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("does not promote an interception-only source that middleware rewrites away", async () => {
+    const sourceRoute = createPageRoute({ pattern: "/feed/secret" });
+    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed/secret" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: () => null,
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/feed/secret"
+            ? new Response(null, {
+                headers: {
+                  "x-middleware-rewrite": "https://example.test/docs/login",
+                },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/secret" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("does not render an interception source when middleware rewrites only its query", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed" });
+    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/feed") return { params: {}, route: sourceRoute };
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/feed"
+            ? new Response(null, {
+                headers: {
+                  "x-middleware-rewrite": "https://example.test/docs/feed?view=login",
+                },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1?view=secret", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("allows an identity rewrite that keeps the authorized source request unchanged", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed" });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/feed") return { params: {}, route: sourceRoute };
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/feed"
+            ? new Response(null, {
+                headers: {
+                  "x-middleware-rewrite": "https://example.test/docs/feed?tab=comments",
+                },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1?tab=comments", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+  });
+
+  it("allows a source rewrite that resolves to the selected route and params", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({
+      pattern: "/:locale/feed",
+      routeSegments: ["[locale]", "feed"],
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed" ? { route: sourceRoute, params: { locale: "en" } } : null,
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") {
+          return { params: {} as Record<string, string | string[]>, route: targetRoute };
+        }
+        if (pathname === "/en/feed") {
+          return {
+            params: { locale: "en" } as Record<string, string | string[]>,
+            route: sourceRoute,
+          };
+        }
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/feed"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/en/feed" },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      kind: "request headers",
+      sourceResponseHeaders: new Headers({
+        "x-middleware-next": "1",
+        "x-middleware-override-headers": "x-source-only",
+        "x-middleware-request-x-source-only": "source",
+      }),
+    },
+    {
+      kind: "cookies set by middleware",
+      sourceResponseHeaders: new Headers({
+        "x-middleware-next": "1",
+        "x-middleware-set-cookie": "source-session=1; Path=/",
+      }),
+    },
+  ])("fails closed when source authorization changes $kind", async ({ sourceResponseHeaders }) => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed" });
+    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      middlewareModule: {
+        default(request: NextRequest) {
+          if (request.nextUrl.pathname !== "/feed") {
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          }
+          return new Response(null, { headers: sourceResponseHeaders });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("invalidates a primed headers snapshot when source middleware adds a header", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed" });
+    const dispatchMatchedPage = vi.fn(async () => {
+      const currentHeaders = await requestHeaders();
+      return new Response(currentHeaders.get("x-source") ?? "missing");
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      async runMiddleware({ cleanPathname }) {
+        if (cleanPathname === "/photos/1") {
+          await requestHeaders();
+        } else {
+          getHeadersContext()?.headers.set("x-source", "added");
+        }
+        return { kind: "continue", cleanPathname, rewritten: false, search: null };
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("added");
+  });
+
+  it("preserves the Server Action body after authorizing an interception source", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed" });
+    const middlewarePaths: string[] = [];
+    const handleServerActionRequest = vi.fn(
+      async ({ request }: { request: Request }) => new Response(await request.text()),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      handleServerActionRequest,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      middlewareModule: {
+        async default(request: NextRequest) {
+          middlewarePaths.push(request.nextUrl.pathname);
+          if (request.nextUrl.pathname === "/feed") {
+            expect(await request.text()).toBe("action-body");
+          }
+          return new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    headers.set("content-type", "text/plain");
+    headers.set("next-action", "interception-action");
+    const response = await handler(
+      new Request("https://example.test/docs/photos/1", {
+        body: "action-body",
+        headers,
+        method: "POST",
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("action-body");
+    expect(middlewarePaths).toEqual(["/photos/1", "/feed"]);
+    expect(handleServerActionRequest).toHaveBeenCalledOnce();
+  });
+
+  it("does not await cancellation of a streaming Server Action body branch", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed" });
+    let resolveBodyCancelled!: () => void;
+    const bodyCancelled = new Promise<void>((resolve) => {
+      resolveBodyCancelled = resolve;
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("action-body"));
+      },
+      cancel() {
+        resolveBodyCancelled();
+      },
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      handleServerActionRequest: async ({ request }: { request: Request }) => {
+        void request.body?.cancel().catch(() => {});
+        return new Response("dispatched");
+      },
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      middlewareModule: {
+        default: () => new Response(null, { headers: { "x-middleware-next": "1" } }),
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    headers.set("content-type", "text/plain");
+    headers.set("next-action", "interception-action");
+    const requestInit: RequestInit = { body, headers, method: "POST" };
+    Object.defineProperty(requestInit, "duplex", { value: "half" });
+    const responsePromise = handler(
+      new Request("https://example.test/docs/photos/1", requestInit),
+      null,
+    );
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const responseBeforeBodyClose = await Promise.race([
+      responsePromise,
+      new Promise<null>((resolve) => {
+        timeout = setTimeout(() => resolve(null), 500);
+      }),
+    ]);
+    if (timeout) clearTimeout(timeout);
+    const response = responseBeforeBodyClose ?? (await responsePromise);
+
+    expect(responseBeforeBodyClose).not.toBeNull();
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("dispatched");
+    await expect(
+      Promise.race([
+        bodyCancelled.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+      ]),
+    ).resolves.toBe(true);
+  });
+
+  it("does not re-run middleware when no interception context is supplied", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const middlewarePaths: string[] = [];
+    const handler = createHandler({
+      configHeaders: [],
+      matchInterceptRoute: () => null,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      async runMiddleware({ cleanPathname }) {
+        middlewarePaths.push(cleanPathname);
+        return { kind: "continue", cleanPathname, rewritten: false, search: null };
+      },
+    });
+
+    const headers = createRscRequestHeaders({});
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(middlewarePaths).toEqual(["/photos/1"]);
   });
 
   it("does not promote a Route Handler slot owner for interception-only RSC targets", async () => {
@@ -832,6 +1620,34 @@ describe("createAppRscHandler", () => {
     expect(response.status).toBe(200);
     expect(response.headers.has("location")).toBe(false);
     expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not trailing-slash redirect extensionless metadata image routes", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      metadataRoutes: [
+        {
+          type: "icon",
+          isDynamic: true,
+          filePath: "/tmp/app/icon.tsx",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/icon",
+          contentType: "image/png",
+          module: {
+            default: async () =>
+              new Response("icon bytes", { headers: { "content-type": "image/png" } }),
+          },
+        },
+      ],
+      trailingSlash: true,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/icon"), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    expect(await response.text()).toBe("icon bytes");
   });
 
   it("marks progressive action page renders even when decoded form state is null", async () => {
@@ -1850,6 +2666,195 @@ describe("createAppRscHandler", () => {
     }
   });
 
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "validates out-of-basePath RSC requests before %s external rewrite proxies",
+    async (phase) => {
+      const receivedUrls: string[] = [];
+      const server = createServer((req, res) => {
+        receivedUrls.push(req.url ?? "");
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end("upstream");
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address() as AddressInfo;
+      const upstreamBase = `http://127.0.0.1:${address.port}`;
+
+      try {
+        const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+        const expectedHash = await computeRscCacheBustingSearchParam(headers);
+        const rewrite = {
+          source: "/outside",
+          destination: `${upstreamBase}/proxy`,
+          basePath: false as const,
+        };
+        const handler = createHandler({
+          configHeaders: [],
+          configRewrites: {
+            beforeFiles: phase === "beforeFiles" ? [rewrite] : [],
+            afterFiles: phase === "afterFiles" ? [rewrite] : [],
+            fallback: phase === "fallback" ? [rewrite] : [],
+          },
+          matchRoute: () => null,
+        });
+
+        for (const method of ["GET", "HEAD"] as const) {
+          const response = await handler(
+            new Request("https://example.test/outside.rsc?tab=latest", { headers, method }),
+            null,
+          );
+
+          expect(response.status).toBe(307);
+          expect(response.headers.get("location")).toBe(
+            `/outside.rsc?tab=latest&_rsc=${expectedHash}`,
+          );
+        }
+        expect(receivedUrls).toEqual([]);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
+  it.each(["middleware", "forwarded"] as const)(
+    "validates out-of-basePath RSC requests before %s external rewrite proxies",
+    async (mode) => {
+      const receivedUrls: string[] = [];
+      const server = createServer((req, res) => {
+        receivedUrls.push(req.url ?? "");
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end("upstream");
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address() as AddressInfo;
+      const upstreamUrl = `http://127.0.0.1:${address.port}/proxy`;
+
+      try {
+        const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+        const expectedHash = await computeRscCacheBustingSearchParam(headers);
+        if (mode === "forwarded") {
+          headers.set(
+            VINEXT_MW_CTX_HEADER,
+            JSON.stringify({
+              h: [
+                ["location", "/middleware-location"],
+                ["set-cookie", "session=forwarded"],
+              ],
+              r: upstreamUrl,
+            }),
+          );
+        }
+        const handler = createHandler({
+          configHeaders: [],
+          middlewareModule: {
+            default: () =>
+              new Response(null, {
+                headers: {
+                  location: "/middleware-location",
+                  "set-cookie": "session=middleware",
+                  "x-middleware-rewrite": upstreamUrl,
+                },
+              }),
+          },
+          matchRoute: () => null,
+        });
+
+        for (const method of ["GET", "HEAD"] as const) {
+          const response = await handler(
+            new Request("https://example.test/outside.rsc?tab=latest", { headers, method }),
+            null,
+          );
+
+          expect(response.status).toBe(307);
+          expect(response.headers.get("location")).toBe(
+            `/outside.rsc?tab=latest&_rsc=${expectedHash}`,
+          );
+          expect(response.headers.get("set-cookie")).toBe(`session=${mode}`);
+        }
+        expect(receivedUrls).toEqual([]);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
+  it.each(["middleware", "forwarded"] as const)(
+    "forwards valid RSC cache-busting params to %s external rewrite proxies",
+    async (mode) => {
+      const receivedRequests: Array<{
+        headers: import("node:http").IncomingHttpHeaders;
+        url: string;
+      }> = [];
+      const server = createServer((req, res) => {
+        receivedRequests.push({ headers: req.headers, url: req.url ?? "" });
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end("upstream");
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address() as AddressInfo;
+      const upstreamUrl = `http://127.0.0.1:${address.port}/proxy`;
+
+      try {
+        const headers = createRscRequestHeaders({
+          mountedSlotsHeader: "slot:modal:/",
+          prefetchRouterState: { pathAndSearch: "/outside?tab=latest", routeId: "/outside" },
+        });
+        const routerState = headers.get("next-router-state-tree");
+        expect(routerState).not.toBeNull();
+        if (mode === "forwarded") {
+          headers.set(
+            VINEXT_MW_CTX_HEADER,
+            JSON.stringify({
+              h: [
+                [
+                  "x-middleware-override-headers",
+                  "rsc,next-router-prefetch,next-router-state-tree",
+                ],
+                ["x-middleware-request-next-router-prefetch", "0"],
+                ["x-middleware-request-next-router-state-tree", "tampered"],
+                ["x-middleware-request-rsc", "0"],
+              ],
+              r: upstreamUrl,
+            }),
+          );
+        }
+        const requestUrl = await createRscRequestUrl("/outside?tab=latest", headers);
+        const handler = createHandler({
+          configHeaders: [],
+          middlewareModule: {
+            default: () =>
+              new Response(null, {
+                headers: {
+                  "x-middleware-override-headers":
+                    "rsc,next-router-prefetch,next-router-state-tree",
+                  "x-middleware-request-next-router-prefetch": "0",
+                  "x-middleware-request-next-router-state-tree": "tampered",
+                  "x-middleware-request-rsc": "0",
+                  "x-middleware-rewrite": upstreamUrl,
+                },
+              }),
+          },
+          matchRoute: () => null,
+        });
+
+        const response = await handler(
+          new Request(`https://example.test${requestUrl}`, { headers }),
+          null,
+        );
+
+        expect(response.status).toBe(200);
+        expect(receivedRequests).toHaveLength(1);
+        const [received] = receivedRequests;
+        const forwardedUrl = new URL(`http://vinext.local${received.url}`);
+        expect(forwardedUrl.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(true);
+        expect(received.headers[RSC_HEADER.toLowerCase()]).toBe("1");
+        expect(received.headers[NEXT_ROUTER_PREFETCH_HEADER.toLowerCase()]).toBe("1");
+        expect(received.headers["next-router-state-tree"]).toBe(routerState);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
   it("applies basePath false rewrites before rejecting outside-basePath requests", async () => {
     // Ported from Next.js: test/e2e/app-dir/app-basepath/index.test.ts
     // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-basepath/index.test.ts
@@ -2138,6 +3143,36 @@ describe("createAppRscHandler", () => {
     const dispatched = dispatchMatchedRouteHandler.mock.calls[0]?.[0];
     expect(new URL(dispatched?.request.url ?? "").search).toBe("?tab=latest");
     expect(dispatched?.searchParams.toString()).toBe("tab=latest");
+  });
+
+  it.each([
+    { name: "Node", runtime: undefined },
+    { name: "Edge", runtime: "edge" },
+  ])("preserves Workers cf metadata for $name route handlers", async ({ runtime }) => {
+    const route = createPageRoute({
+      page: null,
+      pattern: "/api/inspect",
+      routeHandler: { GET: () => new Response("route"), runtime },
+      routeSegments: ["api", "inspect"],
+    });
+    const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
+      async () => new Response("route", { status: 200 }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedRouteHandler,
+      matchRoute: (pathname: string) =>
+        pathname === "/api/inspect" ? { params: {}, route } : null,
+    });
+    const request = new Request("https://example.test/docs/api/inspect");
+    const cf = { country: "AU" };
+    Object.defineProperty(request, "cf", { value: cf, enumerable: true });
+
+    const response = await handler(request, null);
+
+    expect(response.status).toBe(200);
+    const dispatched = dispatchMatchedRouteHandler.mock.calls[0]?.[0];
+    expect(Reflect.get(dispatched!.request, "cf")).toBe(cf);
   });
 
   it("serves full-route RSC payloads at HTML URLs marked by RSC header alone", async () => {
@@ -2484,43 +3519,47 @@ describe("createAppRscHandler", () => {
     },
   );
 
-  it("propagates rewritten query parameters to App route handlers", async () => {
-    const route = createPageRoute({
-      page: null,
-      pattern: "/api/static",
-      routeHandler: { GET: () => new Response("route") },
-      routeSegments: ["api", "static"],
-    });
-    const dispatchMatchedRouteHandler = vi.fn(
-      async (_options: Parameters<HandlerOptions["dispatchMatchedRouteHandler"]>[0]) =>
-        new Response("route"),
-    );
-    const handler = createHandler({
-      configHeaders: [],
-      configRewrites: {
-        beforeFiles: [{ source: "/legacy", destination: "/api/static?destination=2&same=new" }],
-        afterFiles: [],
-        fallback: [],
-      },
-      dispatchMatchedRouteHandler,
-      matchRoute: (pathname) => (pathname === "/api/static" ? { params: {}, route } : null),
-    });
+  it.each(["beforeFiles", "fallback"] as const)(
+    "propagates %s rewrite query parameters to App route handlers",
+    async (rewritePhase) => {
+      const route = createPageRoute({
+        page: null,
+        pattern: "/api/static",
+        routeHandler: { GET: () => new Response("route") },
+        routeSegments: ["api", "static"],
+      });
+      const dispatchMatchedRouteHandler = vi.fn(
+        async (_options: Parameters<HandlerOptions["dispatchMatchedRouteHandler"]>[0]) =>
+          new Response("route"),
+      );
+      const rewrite = { source: "/legacy", destination: "/api/static?destination=2&same=new" };
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: rewritePhase === "beforeFiles" ? [rewrite] : [],
+          afterFiles: [],
+          fallback: rewritePhase === "fallback" ? [rewrite] : [],
+        },
+        dispatchMatchedRouteHandler,
+        matchRoute: (pathname) => (pathname === "/api/static" ? { params: {}, route } : null),
+      });
 
-    await handler(new Request("https://example.test/docs/legacy?original=1&same=old"), null);
+      await handler(new Request("https://example.test/docs/legacy?original=1&same=old"), null);
 
-    const routeHandlerOptions = dispatchMatchedRouteHandler.mock.lastCall?.[0];
-    expect(Object.fromEntries(routeHandlerOptions!.searchParams)).toEqual({
-      destination: "2",
-      original: "1",
-      same: "new",
-    });
-    expect(new URL(routeHandlerOptions!.request.url).pathname).toBe("/docs/legacy");
-    expect(Object.fromEntries(new URL(routeHandlerOptions!.request.url).searchParams)).toEqual({
-      destination: "2",
-      original: "1",
-      same: "new",
-    });
-  });
+      const routeHandlerOptions = dispatchMatchedRouteHandler.mock.lastCall?.[0];
+      expect(Object.fromEntries(routeHandlerOptions!.searchParams)).toEqual({
+        destination: "2",
+        original: "1",
+        same: "new",
+      });
+      expect(new URL(routeHandlerOptions!.request.url).pathname).toBe("/docs/legacy");
+      expect(Object.fromEntries(new URL(routeHandlerOptions!.request.url).searchParams)).toEqual({
+        destination: "2",
+        original: "1",
+        same: "new",
+      });
+    },
+  );
 
   it("does not let afterFiles rewrites override non-dynamic app routes", async () => {
     const routes = {
@@ -2779,6 +3818,99 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
     expect(renderPagesFallback).not.toHaveBeenCalled();
     expect(clearRequestContext).toHaveBeenCalled();
+  });
+
+  it("lets a concrete Pages route win a middleware rewrite over a dynamic App match", async () => {
+    // A dynamic App match does not own the rewrite target: the Pages route is
+    // more specific, so its data (here a getServerSideProps redirect) must be
+    // rendered rather than short-circuited into an empty rewrite response.
+    const renderPagesFallback = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ pageProps: { __N_REDIRECT: "/login" } }), {
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: (pathname: string) =>
+        pathname === "/protected"
+          ? {
+              params: { slug: ["protected"] },
+              route: createPageRoute({
+                isDynamic: true,
+                pattern: "/[...slug]",
+                routeSegments: ["[...slug]"],
+              }),
+            }
+          : null,
+      middlewareModule: {
+        default: (request: NextRequest) =>
+          request.nextUrl.pathname === "/source"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": new URL("/protected", request.url).toString() },
+              })
+            : undefined,
+      },
+      renderPagesFallback,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/_next/data/build-id/source.json", {
+        headers: { "x-nextjs-data": "1" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-nextjs-rewrite")).toBe("/protected");
+    expect(await response.json()).toEqual({ pageProps: { __N_REDIRECT: "/login" } });
+    expect(renderPagesFallback).toHaveBeenCalled();
+  });
+
+  it("keeps middleware response headers when a rewrite lands on a dynamic App route", async () => {
+    // No Pages route claims the target, so the App match legitimately owns it.
+    // The response still has to carry cookies the middleware set on the way.
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: (pathname: string) =>
+        pathname === "/app-only"
+          ? {
+              params: { slug: ["app-only"] },
+              route: createPageRoute({
+                isDynamic: true,
+                pattern: "/[...slug]",
+                routeSegments: ["[...slug]"],
+              }),
+            }
+          : null,
+      middlewareModule: {
+        default: (request: NextRequest) =>
+          request.nextUrl.pathname === "/source"
+            ? new Response(null, {
+                headers: {
+                  "set-cookie": "probe=1; Path=/",
+                  "x-test-header": "middleware",
+                  "x-middleware-rewrite": new URL("/app-only", request.url).toString(),
+                },
+              })
+            : undefined,
+      },
+      renderPagesFallback: vi.fn(async () => null),
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/_next/data/build-id/source.json", {
+        headers: { "x-nextjs-data": "1" },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-nextjs-rewrite")).toBe("/app-only");
+    expect(response.headers.get("set-cookie")).toBe("probe=1; Path=/");
+    expect(response.headers.get("x-test-header")).toBe("middleware");
+    expect(response.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(await response.text()).toBe("{}");
   });
 
   it.each([

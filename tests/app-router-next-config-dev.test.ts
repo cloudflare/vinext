@@ -116,6 +116,26 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(html).toContain('"page":"/pages-header-override-delete"');
   });
 
+  it("hands unmatched API fallback rewrites to App route handlers", async () => {
+    const res = await fetch(
+      `${baseUrl}/api/pages-fallback-to-app/session/login?client=vinext&mw-auth`,
+      {
+        headers: { "x-api-fallback-handoff": "preserved" },
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-custom-header")).toBe("vinext-app");
+    await expect(res.json()).resolves.toEqual({
+      body: null,
+      cookie: "mw-api-fallback-user=1",
+      header: "preserved",
+      pathname: "/api/pages-fallback-to-app/session/login",
+      query: { client: "vinext", from: "fallback", "mw-auth": "" },
+      slugs: ["session", "login"],
+    });
+  });
+
   it("applies custom headers from next.config.js on API routes", async () => {
     const res = await fetch(`${baseUrl}/api/hello`);
     expect(res.headers.get("x-custom-header")).toBe("vinext-app");

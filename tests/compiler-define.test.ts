@@ -262,6 +262,31 @@ describe("compiler.define forwarding to Vite", () => {
     }
   }, 15000);
 
+  it("rejects environment-scoped process.browser compiler overrides", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+
+    for (const option of ["define", "defineServer"] as const) {
+      const plugins = vinext() as VinextPlugin[];
+      const mainPlugin = plugins.find(
+        (p) => p.name === "vinext:config" && typeof p.config === "function",
+      );
+      const tmpDir = await setupTmpProject(
+        `export default { compiler: { ${option}: { "process.browser": "override" } } };`,
+      );
+
+      try {
+        await expect(
+          mainPlugin!.config!(
+            { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+            { command: "build" },
+          ),
+        ).rejects.toThrow(new RegExp(`compiler\\.${option}.*process\\.browser`));
+      } finally {
+        await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+  }, 15000);
+
   it("throws when `compiler.defineServer` collides with `compiler.define` or a built-in", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext() as VinextPlugin[];

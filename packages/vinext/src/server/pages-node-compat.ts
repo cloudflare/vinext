@@ -14,6 +14,9 @@ import {
 } from "./pages-preview.js";
 
 const MAX_PAGES_API_BODY_SIZE = DEFAULT_PAGES_API_BODY_SIZE_LIMIT;
+// Next.js's Node sendData() strips bodies for 204/304. Fetch additionally
+// forbids a body for 205, so the Worker adapter must normalize that status too.
+const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
 
 /**
  * @deprecated Use PagesBodyParseError from pages-media-type.ts instead.
@@ -255,6 +258,7 @@ class PagesResponseStream extends Writable {
   private readonly bufferedChunks: Buffer[] = [];
   private streamEnded = false;
   private pendingWrite: ((error?: Error | null) => void) | null = null;
+  private discardBody = false;
 
   constructor(
     private readonly resolveResponse: (value: Response) => void,
@@ -395,6 +399,10 @@ class PagesResponseStream extends Writable {
     encoding: BufferEncoding,
     callback: (error?: Error | null) => void,
   ): void {
+    if (this.discardBody) {
+      callback();
+      return;
+    }
     const buffer = typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
     if (this.controller && !this.streamEnded) {
       try {
@@ -502,6 +510,20 @@ class PagesResponseStream extends Writable {
     }
     for (const cookie of this.setCookieHeaders) {
       headers.append("set-cookie", cookie);
+    }
+
+    // Fetch rejects a Response that pairs 204/205/304 with any body, including
+    // an empty ReadableStream. Node's ServerResponse accepts `res.status(204).end()`,
+    // so preserve that API while matching Next.js's sendData() cleanup for
+    // bodyless statuses.
+    if (NO_BODY_RESPONSE_STATUSES.has(this.resStatusCode)) {
+      this.discardBody = true;
+      this.bufferedChunks.length = 0;
+      headers.delete("content-length");
+      headers.delete("content-type");
+      headers.delete("transfer-encoding");
+      this.resolveResponse(new Response(null, { status: this.resStatusCode, headers }));
+      return;
     }
 
     const stream = new ReadableStream({

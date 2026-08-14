@@ -467,6 +467,27 @@ describe("App RSC route matching", () => {
     });
   });
 
+  it("decodes an interception source exactly once", () => {
+    const matcher = createAppRscRouteMatcher([
+      route("/admin", ["admin"], {
+        modal: {
+          intercepts: [
+            {
+              sourceMatchPattern: "/admin",
+              targetPattern: "/photos/:id",
+              interceptLayouts: ["modal-layout"],
+              page: "photo-page",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/photos/1", "/%61dmin")).not.toBeNull();
+    expect(matcher.findIntercept("/photos/1", "/%2561dmin")).toBeNull();
+  });
+
   it("renders a root-slot interception from the concrete matched source route", () => {
     const matcher = createAppRscRouteMatcher([
       route("/", [], {

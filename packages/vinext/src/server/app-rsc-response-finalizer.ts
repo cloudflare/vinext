@@ -28,6 +28,38 @@ type FinalizeAppRscResponseOptions = {
 };
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
+const configHeadersAlreadyApplied = new WeakSet<Response>();
+
+/** Mark a response whose final target pipeline has already applied config headers. */
+export function markAppRscResponseConfigHeadersApplied(response: Response): Response {
+  configHeadersAlreadyApplied.add(response);
+  return response;
+}
+
+/** Apply only the matching next.config headers for an App Router request. */
+export async function applyAppRscConfigHeaders(
+  headers: Headers,
+  request: Request,
+  options: FinalizeAppRscResponseOptions,
+): Promise<void> {
+  if (!HAS_CONFIG_HEADERS || !options.configHeaders.length) return;
+
+  const url = new URL(request.url);
+  let pathname = url.pathname;
+  const hadBasePath = !options.basePath || hasBasePath(pathname, options.basePath);
+  pathname = stripBasePath(pathname, options.basePath);
+  const matchPathname = options.i18nConfig
+    ? normalizeDefaultLocalePathname(pathname, options.i18nConfig, { hostname: url.hostname })
+    : pathname;
+
+  const { applyConfigHeadersToResponse } = await import("./config-headers.js");
+  applyConfigHeadersToResponse(headers, {
+    configHeaders: options.configHeaders,
+    pathname: matchPathname,
+    requestContext: options.requestContext,
+    basePathState: { basePath: options.basePath, hadBasePath },
+  });
+}
 
 /**
  * Apply App Router response finalization that must happen outside individual
@@ -67,41 +99,15 @@ export async function finalizeAppRscResponse(
   // unspecified response is never accidentally edge-cached), while the default
   // origin-managed adapter leaves it absent (unchanged behavior). This runs only
   // when Cache-Control is absent, so it never clobbers a policy a renderer
-  // already applied — including a real `CDN-Cache-Control`. Redirects are
-  // already skipped above.
+  // already applied. Redirects are already skipped above.
   if (!response.headers.has("Cache-Control")) {
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
   }
 
-  if (!HAS_CONFIG_HEADERS || !options.configHeaders.length) {
+  if (configHeadersAlreadyApplied.has(response)) {
     return response;
   }
-
-  const url = new URL(request.url);
-  let pathname = url.pathname;
-
-  // Config header sources are defined without basePath prefix. Strip basePath
-  // at a segment boundary (not a string prefix) so /app2/page with basePath
-  // /app is not incorrectly treated as /app with suffix /2/page.
-  const hadBasePath = !options.basePath || hasBasePath(pathname, options.basePath);
-  pathname = stripBasePath(pathname, options.basePath);
-
-  // Default-locale path normalisation (issue #1336, item 4). Splice in the
-  // (domain-aware) default locale on unprefixed paths so locale-aware
-  // `has`/`missing` rules with `:locale` placeholders or `locale: false`
-  // overrides still match default-locale URLs. Mirrors the call sites in
-  // `prod-server.ts`, `deploy.ts`, and `app-rsc-handler.ts`.
-  const matchPathname = options.i18nConfig
-    ? normalizeDefaultLocalePathname(pathname, options.i18nConfig, { hostname: url.hostname })
-    : pathname;
-
-  const { applyConfigHeadersToResponse } = await import("./config-headers.js");
-  applyConfigHeadersToResponse(response.headers, {
-    configHeaders: options.configHeaders,
-    pathname: matchPathname,
-    requestContext: options.requestContext,
-    basePathState: { basePath: options.basePath, hadBasePath },
-  });
+  await applyAppRscConfigHeaders(response.headers, request, options);
 
   // Static-file 405 responses are synthesized before config headers run.
   // Reassert their body metadata afterward so a matching headers() rule cannot

@@ -22,6 +22,23 @@ import {
 
 type WindowType = "object" | "undefined";
 
+const sourceEscapePattern = /\\(?:\r\n|[\n\r\u2028\u2029]|[^\n\r\u2028\u2029])/;
+const identifierEscapePattern = /\\(?:u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})|x[\da-fA-F]{2})/;
+
+// Match the local member syntax instead of bridging arbitrary source between
+// `process` and `browser`. The latter restarts at every token and is quadratic.
+// A comment after `process` or member punctuation is enough to admit the file;
+// the scope-aware AST pass below remains the precise gate.
+export const consumerEnvironmentConditionFilter = new RegExp(
+  String.raw`\btypeof\s+window\b|${identifierEscapePattern.source}|\bprocess\b[\s)]*(?:(?:\?\.|\.)\s*(?:browser\b|\/[/*])|(?:\?\.\s*)?\[[\s(]*(?:["']browser["']|["'][^"'\\\n\r]*\\|\/[/*])|\/[/*])`,
+);
+
+export type ConsumerEnvironmentReplacements = {
+  typeofWindow?: WindowType;
+  processBrowser?: boolean;
+  pruneUnreachableImports?: boolean;
+};
+
 type AstNode = Parameters<typeof forEachAstChild>[0];
 
 type EnvironmentLike = {
@@ -108,8 +125,127 @@ function evaluateTypeofWindowComparison(
   return node.operator === "==" || node.operator === "===" ? equal : !equal;
 }
 
+function isProcessBrowserMember(node: unknown, scope: AstScope): boolean {
+  const candidate =
+    isAstRecord(node) && node.type === "ChainExpression" && isAstRecord(node.expression)
+      ? node.expression
+      : node;
+  if (!isAstRecord(candidate) || candidate.type !== "MemberExpression") {
+    return false;
+  }
+  return (
+    isIdentifierNamed(candidate.object, "process") &&
+    (candidate.computed
+      ? stringLiteralValue(candidate.property) === "browser"
+      : isIdentifierNamed(candidate.property, "browser")) &&
+    !hasAstBinding(scope, "process")
+  );
+}
+
+function booleanLiteralValue(node: unknown): boolean | null {
+  if (!isAstRecord(node) || node.type !== "Literal" || typeof node.value !== "boolean") {
+    return null;
+  }
+  return node.value;
+}
+
+function evaluateProcessBrowserCondition(
+  node: unknown,
+  replacement: boolean,
+  scope: AstScope,
+): boolean | null {
+  if (isProcessBrowserMember(node, scope)) return replacement;
+  if (isAstRecord(node) && node.type === "UnaryExpression" && node.operator === "!") {
+    const value = evaluateProcessBrowserCondition(node.argument, replacement, scope);
+    return value === null ? null : !value;
+  }
+  if (!isAstRecord(node) || node.type !== "BinaryExpression") return null;
+  if (!["==", "===", "!=", "!=="].includes(String(node.operator))) return null;
+
+  const leftIsProcessBrowser = isProcessBrowserMember(node.left, scope);
+  const rightIsProcessBrowser = isProcessBrowserMember(node.right, scope);
+  const comparedValue = leftIsProcessBrowser
+    ? booleanLiteralValue(node.right)
+    : rightIsProcessBrowser
+      ? booleanLiteralValue(node.left)
+      : null;
+  if (comparedValue === null) return null;
+
+  const equal = replacement === comparedValue;
+  return node.operator === "==" || node.operator === "===" ? equal : !equal;
+}
+
+type EvaluatedCondition = {
+  value: boolean;
+  effects: AstNode[];
+};
+
+function evaluateConsumerCondition(
+  node: unknown,
+  replacements: ConsumerEnvironmentReplacements,
+  scope: AstScope,
+): EvaluatedCondition | null {
+  if (isAstRecord(node) && node.type === "LogicalExpression") {
+    const left = evaluateConsumerCondition(node.left, replacements, scope);
+    if (node.operator === "&&") {
+      if (left?.value === false) return left;
+      if (left?.value === true) {
+        const right = evaluateConsumerCondition(node.right, replacements, scope);
+        return right ? { value: right.value, effects: [...left.effects, ...right.effects] } : null;
+      }
+      const right = evaluateConsumerCondition(node.right, replacements, scope);
+      if (
+        replacements.pruneUnreachableImports &&
+        right?.value === false &&
+        right.effects.length === 0 &&
+        isAstRecord(node.left)
+      ) {
+        return { value: false, effects: [node.left] };
+      }
+    } else if (node.operator === "||") {
+      if (left?.value === true) return left;
+      if (left?.value === false) {
+        const right = evaluateConsumerCondition(node.right, replacements, scope);
+        return right ? { value: right.value, effects: [...left.effects, ...right.effects] } : null;
+      }
+      const right = evaluateConsumerCondition(node.right, replacements, scope);
+      if (
+        replacements.pruneUnreachableImports &&
+        right?.value === true &&
+        right.effects.length === 0 &&
+        isAstRecord(node.left)
+      ) {
+        return { value: true, effects: [node.left] };
+      }
+    } else if (node.operator === "??" && left !== null) {
+      return left;
+    }
+    return null;
+  }
+  if (replacements.typeofWindow !== undefined) {
+    const result = evaluateTypeofWindowComparison(node, replacements.typeofWindow, scope);
+    if (result !== null) return { value: result, effects: [] };
+  }
+  if (replacements.processBrowser === undefined) return null;
+  const result = evaluateProcessBrowserCondition(node, replacements.processBrowser, scope);
+  return result === null ? null : { value: result, effects: [] };
+}
+
 export function replaceTypeofWindow(code: string, replacement: WindowType, id = "file.js") {
-  if (!/typeof\s+window/.test(code)) return null;
+  return replaceConsumerEnvironmentConditions(code, { typeofWindow: replacement }, id);
+}
+
+export function replaceConsumerEnvironmentConditions(
+  code: string,
+  replacements: ConsumerEnvironmentReplacements,
+  id = "file.js",
+) {
+  const mayContainTypeofWindow =
+    replacements.typeofWindow !== undefined && /typeof\s+window/.test(code);
+  const mayContainProcessBrowser =
+    replacements.processBrowser !== undefined &&
+    ((/\bprocess\b/.test(code) && /\bbrowser\b/.test(code)) || sourceEscapePattern.test(code));
+  if (!mayContainTypeofWindow && !mayContainProcessBrowser) return null;
 
   const extension = path.extname(id.split("?", 1)[0]);
   const lang =
@@ -130,6 +266,14 @@ export function replaceTypeofWindow(code: string, replacement: WindowType, id = 
   const output = new MagicString(code);
   let changed = false;
   if (!isAstRecord(ast)) return null;
+
+  function overwriteGap(start: number, end: number, content: string): void {
+    if (start === end) {
+      output.appendLeft(start, content);
+    } else {
+      output.overwrite(start, end, content);
+    }
+  }
 
   const rootScope = createAstScope(null);
   collectDirectScopeBindings(ast, rootScope);
@@ -170,10 +314,25 @@ export function replaceTypeofWindow(code: string, replacement: WindowType, id = 
     const scope = createChildScope(node, parentScope) ?? parentScope;
 
     if (node.type === "IfStatement" && hasRange(node)) {
-      const result = evaluateTypeofWindowComparison(node.test, replacement, scope);
+      const result = evaluateConsumerCondition(node.test, replacements, scope);
       if (result !== null) {
-        const selected = result ? node.consequent : node.alternate;
-        if (isAstRecord(selected) && hasRange(selected)) {
+        const selected = result.value ? node.consequent : node.alternate;
+        if (result.effects.length > 0) {
+          const effects = result.effects.filter(hasRange);
+          for (const effect of effects) visit(effect, scope);
+          if (isAstRecord(selected) && hasRange(selected)) visit(selected, scope);
+          overwriteGap(node.start, effects[0].start, "{ (");
+          for (let index = 1; index < effects.length; index++) {
+            overwriteGap(effects[index - 1].end, effects[index].start, "); (");
+          }
+          const lastEffect = effects.at(-1)!;
+          if (isAstRecord(selected) && hasRange(selected)) {
+            overwriteGap(lastEffect.end, selected.start, "); ");
+            overwriteGap(selected.end, node.end, " }");
+          } else {
+            overwriteGap(lastEffect.end, node.end, "); }");
+          }
+        } else if (isAstRecord(selected) && hasRange(selected)) {
           output.remove(node.start, selected.start);
           output.remove(selected.end, node.end);
           visit(selected, scope);
@@ -186,16 +345,47 @@ export function replaceTypeofWindow(code: string, replacement: WindowType, id = 
     }
 
     if (node.type === "ConditionalExpression" && hasRange(node)) {
-      const result = evaluateTypeofWindowComparison(node.test, replacement, scope);
-      const selected = result ? node.consequent : node.alternate;
+      const result = evaluateConsumerCondition(node.test, replacements, scope);
+      const selected = result?.value ? node.consequent : node.alternate;
       if (result !== null && isAstRecord(selected) && hasRange(selected)) {
-        output.overwrite(node.start, selected.start, "(");
-        if (selected.end < node.end) {
-          output.overwrite(selected.end, node.end, ")");
+        if (result.effects.length > 0) {
+          const effects = result.effects.filter(hasRange);
+          for (const effect of effects) visit(effect, scope);
+          visit(selected, scope);
+          overwriteGap(node.start, effects[0].start, "((");
+          for (let index = 1; index < effects.length; index++) {
+            overwriteGap(effects[index - 1].end, effects[index].start, "), (");
+          }
+          overwriteGap(effects.at(-1)!.end, selected.start, "), (");
+          overwriteGap(selected.end, node.end, "))");
         } else {
-          output.appendLeft(selected.end, ")");
+          output.overwrite(node.start, selected.start, "(");
+          if (selected.end < node.end) {
+            output.overwrite(selected.end, node.end, ")");
+          } else {
+            output.appendLeft(selected.end, ")");
+          }
+          visit(selected, scope);
         }
-        visit(selected, scope);
+        changed = true;
+        return;
+      }
+    }
+
+    if (node.type === "LogicalExpression" && hasRange(node)) {
+      const result = evaluateConsumerCondition(node, replacements, scope);
+      if (result !== null) {
+        const effects = result.effects.filter(hasRange);
+        if (effects.length > 0) {
+          for (const effect of effects) visit(effect, scope);
+          overwriteGap(node.start, effects[0].start, "((");
+          for (let index = 1; index < effects.length; index++) {
+            overwriteGap(effects[index - 1].end, effects[index].start, "), (");
+          }
+          overwriteGap(effects.at(-1)!.end, node.end, `), ${String(result.value)})`);
+        } else {
+          output.overwrite(node.start, node.end, String(result.value));
+        }
         changed = true;
         return;
       }
@@ -205,10 +395,21 @@ export function replaceTypeofWindow(code: string, replacement: WindowType, id = 
       node.type === "UnaryExpression" &&
       node.operator === "typeof" &&
       isIdentifierNamed(node.argument, "window") &&
+      replacements.typeofWindow !== undefined &&
       !hasAstBinding(scope, "window") &&
       hasRange(node)
     ) {
-      output.overwrite(node.start, node.end, JSON.stringify(replacement));
+      output.overwrite(node.start, node.end, JSON.stringify(replacements.typeofWindow));
+      changed = true;
+      return;
+    }
+
+    if (
+      replacements.processBrowser !== undefined &&
+      isProcessBrowserMember(node, scope) &&
+      hasRange(node)
+    ) {
+      output.overwrite(node.start, node.end, String(replacements.processBrowser));
       changed = true;
       return;
     }

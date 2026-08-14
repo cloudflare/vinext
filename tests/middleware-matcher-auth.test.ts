@@ -42,6 +42,8 @@ const PROTECTED_PATHS = [
   "/bracket-shorthand/a1z9",
 ] as const;
 
+const ENCODED_LINE_TERMINATORS = ["%0A", "%0D", "%E2%80%A8", "%E2%80%A9"] as const;
+
 async function assertAuthGuard(baseUrl: string): Promise<void> {
   const protectedResponses = await Promise.all(
     PROTECTED_PATHS.map(async (pathname) => {
@@ -104,6 +106,111 @@ async function assertAuthGuard(baseUrl: string): Promise<void> {
   expect(wrongLastMissingBody).toContain("conditioned page");
 }
 
+async function assertEncodedPathAuthGuard(baseUrl: string): Promise<void> {
+  const headers = { "x-encoded-path-auth": "1" };
+  const targets = [
+    { body: "protected localized admin page", pathname: "/xx/admin/dashboard" },
+    { body: "protected order page", pathname: "/orders/42" },
+    { body: "protected invoice route handler", pathname: "/billing/invoices/current" },
+    ...ENCODED_LINE_TERMINATORS.flatMap((encoded) => [
+      { body: "protected localized admin page", pathname: `/xx${encoded}/admin/dashboard` },
+      { body: "protected order page", pathname: `/orders/42${encoded}` },
+      { body: "protected invoice route handler", pathname: `/billing/invoices/${encoded}` },
+    ]),
+  ];
+
+  const unguardedResults: Array<{
+    body: string;
+    expectedBody: string;
+    guard: string | null;
+    pathname: string;
+    status: number;
+  }> = [];
+  for (const target of targets) {
+    const response = await fetch(`${baseUrl}${target.pathname}`);
+    unguardedResults.push({
+      body: await response.text(),
+      expectedBody: target.body,
+      guard: response.headers.get("x-auth-guard"),
+      pathname: target.pathname,
+      status: response.status,
+    });
+  }
+  expect(unguardedResults.map(({ pathname, status }) => ({ pathname, status }))).toEqual(
+    targets.map(({ pathname }) => ({ pathname, status: 200 })),
+  );
+  for (const { body, expectedBody, guard, pathname } of unguardedResults) {
+    expect(guard, pathname).toBeNull();
+    expect(body, pathname).toContain(expectedBody);
+  }
+
+  const results: Array<{ body: string; guard: string | null; pathname: string; status: number }> =
+    [];
+  for (const target of targets) {
+    const response = await fetch(`${baseUrl}${target.pathname}`, { headers });
+    results.push({
+      body: await response.text(),
+      guard: response.headers.get("x-auth-guard"),
+      pathname: target.pathname,
+      status: response.status,
+    });
+  }
+
+  expect(results.map(({ pathname, status }) => ({ pathname, status }))).toEqual(
+    targets.map(({ pathname }) => ({ pathname, status: 403 })),
+  );
+  for (const { body, guard, pathname } of results) {
+    expect(guard, pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
+  }
+}
+
+async function assertEncodedDelimiterAuthGuard(baseUrl: string): Promise<void> {
+  const protectedTargets = [
+    { body: "protected order page", pathname: "/orders/42%2F" },
+    { body: "protected order page", pathname: "/orders/42%3F" },
+    { body: "protected order page", pathname: "/orders/42%23" },
+    { body: "protected localized admin page", pathname: "/xx/admin/dash%2Fboard" },
+    { body: "protected localized admin page", pathname: "/xx/admin/dash%2Fboard.rsc" },
+    {
+      body: "protected invoice route handler",
+      pathname: "/billing/invoices/current%2Fq3",
+    },
+  ];
+  const matcherMissPaths = ["/orders/42%5C", "/orders/42%252F", "/orders/42%20"];
+
+  for (const target of protectedTargets) {
+    const response = await fetch(`${baseUrl}${target.pathname}`);
+    const body = await response.text();
+    expect(response.status, target.pathname).toBe(200);
+    expect(response.headers.get("x-auth-guard"), target.pathname).toBeNull();
+    expect(body, target.pathname).toContain(target.body);
+  }
+  for (const pathname of matcherMissPaths) {
+    const response = await fetch(`${baseUrl}${pathname}`);
+    const body = await response.text();
+    expect(response.status, pathname).toBe(200);
+    expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
+    expect(body, pathname).toContain("protected order page");
+  }
+
+  const headers = { "x-encoded-delimiter-auth": "1" };
+  for (const target of protectedTargets) {
+    const response = await fetch(`${baseUrl}${target.pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, target.pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), target.pathname).toBe("blocked");
+    expect(body, target.pathname).toBe("blocked by middleware");
+  }
+  for (const pathname of matcherMissPaths) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(200);
+    expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
+    expect(body, pathname).toContain("protected order page");
+  }
+}
+
 async function closeHttpServer(server: http.Server | undefined): Promise<void> {
   if (!server) return;
   await new Promise<void>((resolve, reject) => {
@@ -150,6 +257,14 @@ describe("valid middleware matcher auth guards", () => {
     it("blocks every path selected by group and constrained-repeat matchers", async () => {
       await assertAuthGuard(baseUrl);
     }, 30_000);
+
+    it("keeps encoded line terminators inside middleware auth scope", async () => {
+      await assertEncodedPathAuthGuard(baseUrl);
+    }, 30_000);
+
+    it("matches decoded path delimiters with constrained matcher parity", async () => {
+      await assertEncodedDelimiterAuthGuard(baseUrl);
+    }, 30_000);
   });
 
   describe("built Node production server", () => {
@@ -193,6 +308,14 @@ describe("valid middleware matcher auth guards", () => {
 
     it("blocks every path selected by group and constrained-repeat matchers", async () => {
       await assertAuthGuard(baseUrl);
+    });
+
+    it("keeps encoded line terminators inside middleware auth scope", async () => {
+      await assertEncodedPathAuthGuard(baseUrl);
+    });
+
+    it("matches decoded path delimiters with constrained matcher parity", async () => {
+      await assertEncodedDelimiterAuthGuard(baseUrl);
     });
   });
 
@@ -262,6 +385,14 @@ describe("valid middleware matcher auth guards", () => {
 
     it("blocks every path selected by group and constrained-repeat matchers", async () => {
       await assertAuthGuard(baseUrl);
+    });
+
+    it("keeps encoded line terminators inside middleware auth scope", async () => {
+      await assertEncodedPathAuthGuard(baseUrl);
+    });
+
+    it("matches decoded path delimiters with constrained matcher parity", async () => {
+      await assertEncodedDelimiterAuthGuard(baseUrl);
     });
   });
 });

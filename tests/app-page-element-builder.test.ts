@@ -6,7 +6,7 @@ import {
   APP_LAYOUT_IDS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
-  APP_SOURCE_PAGE_KEY,
+  APP_SOURCE_PAGE_SEGMENTS_KEY,
   APP_SLOT_BINDINGS_KEY,
   AppElementsWire,
   type AppElements,
@@ -751,9 +751,12 @@ describe("buildPageElements", () => {
       }),
     );
 
-    expect((result as Record<string, unknown>)[APP_SOURCE_PAGE_KEY]).toBe(
-      "/foo/bar/(..)(..)hoge/page",
-    );
+    expect((result as Record<string, unknown>)[APP_SOURCE_PAGE_SEGMENTS_KEY]).toEqual([
+      "foo",
+      "bar",
+      "(..)(..)hoge",
+      "page",
+    ]);
   });
 
   it("keys sibling interception pages by target graph and bound params", async () => {
