@@ -384,10 +384,9 @@ async function streamPageToResponse(
 
   // Now that the shell has rendered (and any _document.getInitialProps
   // has injected its tags), collect head HTML.
-  let headHTML = getHeadHTML();
-  if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
-    headHTML += `\n  ${documentRenderPage.stylesHTML}`;
-  }
+  const headHTML = getHeadHTML();
+  const documentStylesHTML =
+    documentRenderPage.status === "rendered" ? documentRenderPage.stylesHTML : "";
 
   // Build the document shell with a placeholder for the body
   let shellTemplate: string;
@@ -432,11 +431,12 @@ async function streamPageToResponse(
     );
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
-    if (headHTML || fontHeadHTML || generatedAssetHeadHTML) {
+    if (headHTML || fontHeadHTML || generatedAssetHeadHTML || documentStylesHTML) {
       docHtml = docHtml.replace(
         "</head>",
         `${SSR_HEAD_START_MARKER}${protectAssetTags(headHTML)}${SSR_HEAD_END_MARKER}` +
-          `  ${protectAssetTags(fontHeadHTML)}\n  ${generatedAssetHeadHTML}\n</head>`,
+          `  ${protectAssetTags(fontHeadHTML)}\n  ${generatedAssetHeadHTML}\n` +
+          `  ${protectAssetTags(documentStylesHTML)}\n</head>`,
       );
     }
     // Inject scripts: replace placeholder or append before </body>
@@ -457,6 +457,7 @@ async function streamPageToResponse(
   ${SSR_HEAD_START_MARKER}${protectAssetTags(headHTML)}${SSR_HEAD_END_MARKER}
   ${protectAssetTags(fontHeadHTML)}
   ${generatedAssetHeadHTML}
+  ${protectAssetTags(documentStylesHTML)}
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>

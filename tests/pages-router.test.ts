@@ -1470,6 +1470,7 @@ export default function Page({ marker }: { marker: string }) {
     expect(headSection).toContain("Hello vinext");
 
     // Ported from Next.js: test/e2e/next-head/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/next-head/index.test.ts
     const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
     expect(headContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
     expect(headContents.indexOf('name="viewport"')).toBeGreaterThan(
@@ -6394,6 +6395,8 @@ export default function CounterPage() {
       const indexHtml = await indexRes.text();
       expect(indexHtml).toContain("Hello, vinext!");
       expect(indexHtml).toContain("__NEXT_DATA__");
+      // Ported from Next.js: test/e2e/next-head/index.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/next-head/index.test.ts
       const indexHeadContents = indexHtml.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
       expect(indexHeadContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
       expect(indexHeadContents.indexOf('name="viewport"')).toBeGreaterThan(
@@ -7901,7 +7904,7 @@ export default class CustomDocument extends Document {
   }
   render() {
     return (
-      <Html><Head /><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-request-context">{(this.props as any).documentRequestContext}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript /></body></Html>
+      <Html><Head><meta name="document-child" content="1" /></Head><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-request-context">{(this.props as any).documentRequestContext}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript /></body></Html>
     );
   }
 }
@@ -7956,6 +7959,9 @@ export default class CustomDocument extends Document {
       expect(html).toContain('id="manual-document-html">MANUAL');
       expect(html).toContain("data-manual-document-style");
       expect(html).toContain(".manual{color:blue}");
+      expect(html.indexOf('name="document-child"')).toBeLessThan(
+        html.indexOf("data-manual-document-style"),
+      );
       expect(html).not.toContain('id="page-content"');
       expect(html).not.toContain('id="app-shell"');
     },
