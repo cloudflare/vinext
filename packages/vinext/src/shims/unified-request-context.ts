@@ -12,6 +12,7 @@
 
 import type { AsyncLocalStorage } from "node:async_hooks";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import { getCacheTimestamp } from "./cache-handler.js";
 import type {
   CacheState,
   ExecutionContextLike,
@@ -100,6 +101,8 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     headersContext: null,
     actionRevalidationKind: 0,
     pendingRevalidatedTags: new Map<string, number>(),
+    previouslyRevalidatedTags: new Set<string>(),
+    requestStartTime: getCacheTimestamp(),
     pendingRevalidations: new Set<Promise<void>>(),
     dynamicUsageDetected: false,
     renderRequestApiUsage: new Set(),
@@ -378,7 +381,7 @@ export function runWithUnifiedStateMutation<T>(
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Object/array fields (afterContext, pendingSetCookies,
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), Set
-  // Set fields (renderRequestApiUsage, pendingRevalidations,
+  // Set fields (renderRequestApiUsage, previouslyRevalidatedTags, pendingRevalidations,
   // cacheableFetchUrls, dynamicFetchUrls),
   // Map fields (pendingRevalidatedTags, unstableCacheObservations, _privateCache),
   // requestCache WeakMap, and object fields (headersContext,

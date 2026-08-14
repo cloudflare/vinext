@@ -1,5 +1,6 @@
 import {
   _drainPendingRevalidations,
+  _getPendingRevalidatedTags,
   getAndClearActionRevalidationKind,
   type ActionRevalidationKind,
 } from "vinext/shims/cache-request-state";
@@ -66,6 +67,7 @@ import {
 import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-error-responses.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { markAppRscResponseConfigHeadersApplied } from "./app-rsc-response-finalizer.js";
+import { writePreviouslyRevalidatedTags } from "./revalidated-tags.js";
 
 type AppPageParams = Record<string, string | string[]>;
 
@@ -619,6 +621,8 @@ async function createActionRedirectTargetRequest(options: {
   actionMiddlewareRequestHeaders: Headers | null;
   pendingCookies: readonly string[];
   request: Request;
+  revalidatedTags: readonly string[];
+  revalidationToken: string;
   sourceConfigHeaders: Headers | null;
   url: URL;
 }): Promise<Request> {
@@ -645,6 +649,7 @@ async function createActionRedirectTargetRequest(options: {
   // target request, so an empty jar is represented as Cookie: rather than by
   // omitting the header.
   headers.set("cookie", cookieHeader ?? "");
+  writePreviouslyRevalidatedTags(headers, options.revalidatedTags, options.revalidationToken);
 
   // Match Next.js' internal redirect fetch: it is a fresh full-tree RSC GET,
   // not another action request or a patch against the action route's tree.
@@ -1640,6 +1645,8 @@ export async function handleServerActionRscRequest<
             ...(actionDraftCookie ? [actionDraftCookie] : []),
           ],
           request: options.request,
+          revalidatedTags: _getPendingRevalidatedTags(),
+          revalidationToken: options.draftModeSecret,
           sourceConfigHeaders: options.sourceConfigHeaders ?? null,
           url: redirectTarget,
         });

@@ -30,13 +30,14 @@
 
 import {
   getDataCacheHandler,
+  getCacheTimestamp,
   type CachedFetchValue,
   type CacheControlMetadata,
   type CacheHandlerValue,
 } from "./cache-handler.js";
 import {
   cacheLifeProfiles,
-  _wasPendingTagRevalidatedAfter,
+  _wasTagRevalidatedAfter,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
   type CacheLifeConfig,
@@ -754,7 +755,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         existing?.cacheState !== "stale" &&
         rootParams &&
         redirectValue?.kind === "FETCH" &&
-        !_wasPendingTagRevalidatedAfter(
+        !_wasTagRevalidatedAfter(
           [...(redirectValue.tags ?? []), ...softTags],
           existing.lastModified,
         )
@@ -773,7 +774,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         existing?.value &&
         existing.value.kind === "FETCH" &&
         existing.cacheState !== "stale" &&
-        !_wasPendingTagRevalidatedAfter(
+        !_wasTagRevalidatedAfter(
           [...(existing.value.tags ?? []), ...softTags],
           existing.lastModified,
         )
@@ -806,7 +807,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         }
       }
 
-      // Cache miss (or stale) — execute with context
+      // Cache miss (or stale) — execute with context. Capture the boundary
+      // before user code starts because handlers timestamp entries only when
+      // set() completes; an invalidation during the fill must still win.
+      const fillStartedAt = getCacheTimestamp();
       const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
         fn,
         callArgs,
@@ -827,10 +831,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       propagateCacheTagsToRequest(ctx.tags);
       const revalidateSeconds =
         effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
+      const fillWasInvalidated = _wasTagRevalidatedAfter([...ctx.tags, ...softTags], fillStartedAt);
 
       // Serialization ran while the cache ALS was active so lazy Server
       // Component work is reflected in `ctx` before selecting the final key.
-      if (collectedResult?.cacheEntry) {
+      if (collectedResult?.cacheEntry && !fillWasInvalidated) {
         try {
           const serialized = collectedResult.cacheEntry;
           const cacheValue = {

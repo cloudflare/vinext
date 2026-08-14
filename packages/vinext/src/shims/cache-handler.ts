@@ -12,6 +12,31 @@ export type CacheHandlerValue = {
   value: IncrementalCacheValue | null;
 };
 
+/**
+ * Epoch timestamp with sub-millisecond ordering when the runtime exposes the
+ * High Resolution Time API. Cache fills and tag invalidations must share this
+ * clock so two operations in the same `Date.now()` millisecond remain ordered.
+ * @internal
+ */
+export function getCacheTimestamp(): number {
+  const wallTime = Date.now();
+  if (
+    typeof performance !== "undefined" &&
+    Number.isFinite(performance.timeOrigin) &&
+    performance.timeOrigin > 0
+  ) {
+    const highResolutionTime = performance.timeOrigin + performance.now();
+    // Fake timers and wall-clock corrections can move Date.now() onto a
+    // different epoch while the monotonic clock keeps its original origin.
+    // Persist the wall clock in that case rather than comparing unrelated
+    // timestamp domains across cache handlers or Worker isolates.
+    if (Math.abs(highResolutionTime - wallTime) < 60_000) {
+      return highResolutionTime;
+    }
+  }
+  return wallTime;
+}
+
 export type CacheControlMetadata = {
   revalidate: number | false;
   expire?: number;
@@ -239,7 +264,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
     for (const tag of entry.tags) {
       const revalidatedAt = this.tagRevalidatedAt.get(tag);
-      if (revalidatedAt && revalidatedAt >= entry.lastModified) {
+      if (revalidatedAt && revalidatedAt > entry.lastModified) {
         this.deleteEntry(key);
         return null;
       }
@@ -247,7 +272,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
     for (const tag of readStringArrayField(ctx, "softTags")) {
       const revalidatedAt = this.tagRevalidatedAt.get(tag);
-      if (revalidatedAt && revalidatedAt >= entry.lastModified) {
+      if (revalidatedAt && revalidatedAt > entry.lastModified) {
         return null;
       }
     }
@@ -313,7 +338,7 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return;
 
-    const now = Date.now();
+    const now = getCacheTimestamp();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
         ? now + effectiveRevalidate * 1000
@@ -358,7 +383,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
   async revalidateTag(tags: string | string[]): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
-    const now = Date.now();
+    const now = getCacheTimestamp();
     for (const tag of tagList) {
       this.tagRevalidatedAt.set(tag, now);
       while (this.tagRevalidatedAt.size > MAX_REVALIDATED_TAG_ENTRIES) {

@@ -1112,6 +1112,10 @@ describe("fetch cache shim", () => {
             next: { revalidate: 60, tags: ["posts"] },
           });
           expect((await initial.json()).count).toBe(1);
+          const initialReuse = await fetch("https://api.example.com/post-revalidation-reuse", {
+            next: { revalidate: 60, tags: ["posts"] },
+          });
+          expect((await initialReuse.json()).count).toBe(1);
 
           vi.advanceTimersByTime(10);
           expect(revalidateTag("posts", { expire: 0 })).toBeUndefined();
@@ -1129,6 +1133,56 @@ describe("fetch cache shim", () => {
           expect(fetchMock).toHaveBeenCalledTimes(2);
         }),
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not persist a tagged fetch fill that straddles request-local revalidation", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+      let releaseFill!: () => void;
+      const fillGate = new Promise<void>((resolve) => {
+        releaseFill = resolve;
+      });
+      let markFillStarted!: () => void;
+      const fillStarted = new Promise<void>((resolve) => {
+        markFillStarted = resolve;
+      });
+      fetchMock.mockImplementationOnce(async (input: string | URL | Request) => {
+        requestCount++;
+        markFillStarted();
+        await fillGate;
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        return new Response(JSON.stringify({ url, count: requestCount }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      });
+
+      await runWithRequestContext(createRequestContext(), async () => {
+        const straddled = fetch("https://api.example.com/straddled-tagged-fill", {
+          next: { revalidate: 60, tags: ["posts"] },
+        });
+        await fillStarted;
+        vi.advanceTimersByTime(10);
+        expect(revalidateTag("posts", { expire: 0 })).toBeUndefined();
+        vi.advanceTimersByTime(10);
+        releaseFill();
+
+        expect((await (await straddled).json()).count).toBe(1);
+        const regenerated = await fetch("https://api.example.com/straddled-tagged-fill", {
+          next: { revalidate: 60, tags: ["posts"] },
+        });
+        expect((await regenerated.json()).count).toBe(2);
+        const reused = await fetch("https://api.example.com/straddled-tagged-fill", {
+          next: { revalidate: 60, tags: ["posts"] },
+        });
+        expect((await reused.json()).count).toBe(2);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      });
     } finally {
       vi.useRealTimers();
     }

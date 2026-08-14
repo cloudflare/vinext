@@ -21,7 +21,12 @@
 
 import { Buffer } from "node:buffer";
 
-import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
+import {
+  getCacheTimestamp,
+  getDataCacheHandler,
+  type CachedFetchValue,
+  type CacheHandler,
+} from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
@@ -32,7 +37,7 @@ import {
 import {
   _getPendingRevalidatedTagTimestamp,
   _setRequestScopedCacheLife,
-  _wasPendingTagRevalidatedAfter,
+  _wasTagRevalidatedAfter,
 } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
@@ -715,10 +720,20 @@ async function writeFetchCacheResponse(
   response: Response,
   tags: string[],
   revalidateSeconds: number,
-  options?: { cloneForReturn?: boolean },
+  options?: {
+    cloneForReturn?: boolean;
+    fillStartedAt?: number;
+    softTags?: readonly string[];
+  },
 ): Promise<void> {
   const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds, options);
   if (!cacheValue) return;
+  if (
+    options?.fillStartedAt !== undefined &&
+    _wasTagRevalidatedAfter([...tags, ...(options.softTags ?? [])], options.fillStartedAt)
+  ) {
+    return;
+  }
 
   await handler.set(cacheKey, cacheValue, {
     fetchCache: true,
@@ -1298,7 +1313,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       });
       if (
         cached?.value?.kind === "FETCH" &&
-        _wasPendingTagRevalidatedAfter(
+        _wasTagRevalidatedAfter(
           [...(cached.value.tags ?? []), ...tags, ...softTags],
           cached.lastModified,
         )
@@ -1323,8 +1338,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // However, if we have a stale entry, return it and trigger background refetch.
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
         if (shouldRefreshStaleFetchInForeground()) {
+          const fillStartedAt = getCacheTimestamp();
           const freshResponse = await dedupeFetch(input, fetchInit);
-          await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds);
+          await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds, {
+            fillStartedAt,
+            softTags,
+          });
           return freshResponse;
         }
 
@@ -1333,10 +1352,13 @@ function createPatchedFetch(): typeof globalThis.fetch {
         // Background refetch — deduped so only one in-flight refetch runs
         // per cache key, preventing thundering herd on popular endpoints.
         if (!pendingRefetches.has(cacheKey)) {
+          const fillStartedAt = getCacheTimestamp();
           const refetchPromise = originalFetch(input, fetchInit)
             .then(async (freshResp) => {
               await writeFetchCacheResponse(handler, cacheKey, freshResp, tags, revalidateSeconds, {
                 cloneForReturn: false,
+                fillStartedAt,
+                softTags,
               });
             })
             .catch((err) => {
@@ -1382,13 +1404,15 @@ function createPatchedFetch(): typeof globalThis.fetch {
       console.error("[vinext] fetch cache read error:", cacheErr);
     }
 
-    // Cache miss — fetch from network
+    // Cache miss — fetch from network. Preserve the pre-fetch boundary so a
+    // response that overlaps tag invalidation is not cached afterward.
+    const fillStartedAt = getCacheTimestamp();
     const response = await (mustBypassPendingRevalidation
       ? originalFetch(input, fetchInit)
       : dedupeFetch(input, fetchInit));
 
     const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
-    if (cacheValue) {
+    if (cacheValue && !_wasTagRevalidatedAfter([...tags, ...softTags], fillStartedAt)) {
       handler
         .set(cacheKey, cacheValue, {
           fetchCache: true,

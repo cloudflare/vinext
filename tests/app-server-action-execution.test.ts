@@ -22,8 +22,13 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
+  NEXT_CACHE_REVALIDATED_TAGS_HEADER,
+  NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import {
   cacheTag,
   getAndClearActionRevalidationKind,
+  MemoryCacheHandler,
   refresh,
   revalidatePath,
   revalidateTag,
@@ -1829,25 +1834,30 @@ describe("app server action execution helpers", () => {
     });
     Object.defineProperty(actionRequest, "cf", { value: { country: "AU" }, enumerable: true });
 
-    const response = await handleServerActionRscRequest(
-      createRscOptions({
-        async dispatchRedirectTargetRequest(request) {
-          targetRequest = request;
-          return new Response("target-flight", {
-            headers: {
-              "content-type": "text/x-component",
-              "x-target-pipeline": "1",
-            },
-          });
-        },
-        getAndClearPendingCookies() {
-          return ["theme=dark; Path=/", "deleted=; Path=/; Max-Age=0"];
-        },
-        loadServerAction() {
-          return Promise.resolve(() => redirect("/redirect-target?from=action"));
-        },
-        request: actionRequest,
-      }),
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      handleServerActionRscRequest(
+        createRscOptions({
+          async dispatchRedirectTargetRequest(request) {
+            targetRequest = request;
+            return new Response("target-flight", {
+              headers: {
+                "content-type": "text/x-component",
+                "x-target-pipeline": "1",
+              },
+            });
+          },
+          getAndClearPendingCookies() {
+            return ["theme=dark; Path=/", "deleted=; Path=/; Max-Age=0"];
+          },
+          loadServerAction() {
+            return Promise.resolve(() => {
+              updateTag("redirected-posts");
+              redirect("/redirect-target?from=action");
+            });
+          },
+          request: actionRequest,
+        }),
+      ),
     );
 
     expect(response?.status).toBe(303);
@@ -1864,6 +1874,8 @@ describe("app server action execution helpers", () => {
     expect(targetRequest!.headers.get("x-rsc-action")).toBeNull();
     expect(targetRequest!.headers.get("next-router-state-tree")).toBeNull();
     expect(targetRequest!.headers.get("x-vinext-mw-ctx")).toBeNull();
+    expect(targetRequest!.headers.get(NEXT_CACHE_REVALIDATED_TAGS_HEADER)).toBe("redirected-posts");
+    expect(targetRequest!.headers.get(NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER)).toBe("draft-secret");
     expect(targetRequest!.headers.get("cookie")).toBe("session=1; theme=dark");
     expect(Reflect.get(targetRequest!, "cf")).toEqual({ country: "AU" });
   });
@@ -2403,6 +2415,48 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("x-action-revalidated")).toBe("1");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache/use-cache.test.ts
+  it("reuses each use cache value before and after updateTag across an action rerender", async () => {
+    const previousHandler = getDataCacheHandler();
+    setDataCacheHandler(new MemoryCacheHandler());
+    let callCount = 0;
+    const actionValues: number[] = [];
+    const rerenderValues: number[] = [];
+    const cached = registerCachedFunction(async () => {
+      cacheTag("action-dedupe-integration");
+      return ++callCount;
+    }, "test:action-dedupe-integration");
+
+    try {
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        handleServerActionRscRequest(
+          createRscOptions({
+            loadServerAction() {
+              return Promise.resolve(async () => {
+                actionValues.push(await cached(), await cached());
+                updateTag("action-dedupe-integration");
+                return "revalidated";
+              });
+            },
+            async renderToReadableStream(model) {
+              rerenderValues.push(await cached(), await cached());
+              return new Response(JSON.stringify(model)).body!;
+            },
+          }),
+        ),
+      );
+
+      expect(response?.status).toBe(200);
+      await response?.text();
+      expect(actionValues).toEqual([1, 1]);
+      expect(rerenderValues).toEqual([2, 2]);
+      expect(callCount).toBe(2);
+    } finally {
+      setDataCacheHandler(previousHandler);
+    }
+  });
+
   // Covers the read-your-own-writes ordering asserted by Next.js:
   // test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts
@@ -2434,11 +2488,15 @@ describe("app server action execution helpers", () => {
       cacheTag("dashboard");
       return "fresh-use-cache";
     }, "test:update-tag-read-your-own-writes");
+    // This fixture represents a value persisted before the action invalidates
+    // its tag. Keep that creation time stable: returning Date.now() from get()
+    // would falsely describe the old value as newly written on every read.
+    const storedAt = Date.now() - 1_000;
 
     setDataCacheHandler({
       async get() {
         return {
-          lastModified: Date.now(),
+          lastModified: storedAt,
           value: {
             kind: "FETCH",
             data: {
