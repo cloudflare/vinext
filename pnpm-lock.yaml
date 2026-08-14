@@ -1062,9 +1062,6 @@ importers:
       '@vinext/types':
         specifier: workspace:^
         version: link:../types
-      image-size:
-        specifier: 'catalog:'
-        version: 2.0.2
       ipaddr.js:
         specifier: 'catalog:'
         version: 2.4.0
@@ -1099,6 +1096,9 @@ importers:
       am-i-vibing:
         specifier: 'catalog:'
         version: 0.5.0
+      image-size:
+        specifier: 'catalog:'
+        version: 2.0.2
       pathslash:
         specifier: 'catalog:'
         version: 0.1.0
