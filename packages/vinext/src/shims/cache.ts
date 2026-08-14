@@ -38,7 +38,7 @@ import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
   ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC,
-  _hasPendingRevalidatedTag,
+  _wasPendingTagRevalidatedAfter,
   _markPendingRevalidatedTag,
   _queuePendingRevalidation,
   _setRequestScopedCacheLife,
@@ -645,13 +645,17 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       // requests, but foreground-refresh inside revalidation scopes so the
       // regenerated page/route stores fresh data.
       const softTags = getCurrentFetchSoftTags();
-      const existing = _hasPendingRevalidatedTag([...tags, ...softTags])
-        ? null
-        : await getDataCacheHandler().get(cacheKey, {
-            kind: "FETCH",
-            tags,
-            softTags,
-          });
+      let existing = await getDataCacheHandler().get(cacheKey, {
+        kind: "FETCH",
+        tags,
+        softTags,
+      });
+      if (
+        existing &&
+        _wasPendingTagRevalidatedAfter([...tags, ...softTags], existing.lastModified)
+      ) {
+        existing = null;
+      }
       if (existing?.value && existing.value.kind === "FETCH") {
         const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
         if (cached.ok) {

@@ -1037,6 +1037,7 @@ describe("fetch cache shim", () => {
 
   it("bypasses a stored tagged fetch while its request-local invalidation is pending", async () => {
     const previousHandler = getCacheHandler();
+    const storedAt = Date.now();
     let markInvalidationStarted!: () => void;
     const invalidationStarted = new Promise<void>((resolve) => {
       markInvalidationStarted = resolve;
@@ -1052,7 +1053,7 @@ describe("fetch cache shim", () => {
         getCalls++;
         if (getCalls === 1) return null;
         return {
-          lastModified: Date.now(),
+          lastModified: storedAt,
           value: {
             kind: "FETCH",
             data: {
@@ -1099,6 +1100,39 @@ describe("fetch cache shim", () => {
   });
 
   // ── TTL expiry (stale-while-revalidate) ─────────────────────────────
+
+  it("reuses a tagged fetch cached after request-local revalidation", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+
+      await runWithRequestContext(createRequestContext(), () =>
+        runWithFetchDedupe(async () => {
+          const initial = await fetch("https://api.example.com/post-revalidation-reuse", {
+            next: { revalidate: 60, tags: ["posts"] },
+          });
+          expect((await initial.json()).count).toBe(1);
+
+          vi.advanceTimersByTime(10);
+          expect(revalidateTag("posts", { expire: 0 })).toBeUndefined();
+
+          vi.advanceTimersByTime(10);
+          const regenerated = await fetch("https://api.example.com/post-revalidation-reuse", {
+            next: { revalidate: 60, tags: ["posts"] },
+          });
+          expect((await regenerated.json()).count).toBe(2);
+
+          const reused = await fetch("https://api.example.com/post-revalidation-reuse", {
+            next: { revalidate: 60, tags: ["posts"] },
+          });
+          expect((await reused.json()).count).toBe(2);
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("returns stale data after TTL expires and triggers background refetch", async () => {
     const res1 = await fetch("https://api.example.com/stale-test", {

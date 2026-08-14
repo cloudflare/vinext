@@ -62,7 +62,7 @@ export type UnstableCacheObservation = Readonly<{
 
 export type CacheState = {
   actionRevalidationKind: ActionRevalidationKind;
-  pendingRevalidatedTags: Set<string>;
+  pendingRevalidatedTags: Map<string, number>;
   pendingRevalidations: Set<Promise<void>>;
   requestScopedCacheLife: CacheLifeConfig | null;
   unstableCacheObservations: Map<string, UnstableCacheObservation>;
@@ -79,7 +79,7 @@ export const ACTION_DID_REVALIDATE_DYNAMIC_ONLY = 2 satisfies ActionRevalidation
 
 const fallbackState = (globalState[FALLBACK_KEY] ??= {
   actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
-  pendingRevalidatedTags: new Set<string>(),
+  pendingRevalidatedTags: new Map<string, number>(),
   pendingRevalidations: new Set<Promise<void>>(),
   requestScopedCacheLife: null,
   unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
@@ -106,7 +106,7 @@ export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> 
   }
   const state: CacheState = {
     actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
-    pendingRevalidatedTags: new Set<string>(),
+    pendingRevalidatedTags: new Map<string, number>(),
     pendingRevalidations: new Set<Promise<void>>(),
     requestScopedCacheLife: null,
     unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
@@ -148,14 +148,30 @@ function hasRequestScopedCacheState(): boolean {
 /** @internal */
 export function _markPendingRevalidatedTag(tag: string): void {
   if (!hasRequestScopedCacheState()) return;
-  getCacheState().pendingRevalidatedTags.add(tag);
+  getCacheState().pendingRevalidatedTags.set(tag, Date.now());
 }
 
 /** @internal */
-export function _hasPendingRevalidatedTag(tags: readonly string[]): boolean {
-  if (!hasRequestScopedCacheState()) return false;
+export function _getPendingRevalidatedTagTimestamp(tags: readonly string[]): number | null {
+  if (!hasRequestScopedCacheState()) return null;
   const pendingTags = getCacheState().pendingRevalidatedTags;
-  return tags.some((tag) => pendingTags.has(tag));
+  let latest: number | null = null;
+  for (const tag of tags) {
+    const revalidatedAt = pendingTags.get(tag);
+    if (revalidatedAt !== undefined && (latest === null || revalidatedAt > latest)) {
+      latest = revalidatedAt;
+    }
+  }
+  return latest;
+}
+
+/** @internal */
+export function _wasPendingTagRevalidatedAfter(
+  tags: readonly string[],
+  entryLastModified: number,
+): boolean {
+  const revalidatedAt = _getPendingRevalidatedTagTimestamp(tags);
+  return revalidatedAt !== null && revalidatedAt > entryLastModified;
 }
 
 /**

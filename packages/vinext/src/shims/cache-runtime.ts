@@ -36,7 +36,7 @@ import {
 } from "./cache-handler.js";
 import {
   cacheLifeProfiles,
-  _hasPendingRevalidatedTag,
+  _wasPendingTagRevalidatedAfter,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
   type CacheLifeConfig,
@@ -742,20 +742,22 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // `fn` still propagate with their digest intact instead of being masked
       // by the handler's own exception.
       let existing: CacheHandlerValue | null = null;
-      if (!_hasPendingRevalidatedTag(softTags)) {
-        try {
-          existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
-        } catch (error) {
-          console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
-        }
+      try {
+        existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
+      } catch (error) {
+        console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
       }
       const redirectValue = existing?.value;
       if (
+        existing !== null &&
         isRootParamRedirect(existing) &&
         existing?.cacheState !== "stale" &&
         rootParams &&
         redirectValue?.kind === "FETCH" &&
-        !_hasPendingRevalidatedTag([...(redirectValue.tags ?? []), ...softTags])
+        !_wasPendingTagRevalidatedAfter(
+          [...(redirectValue.tags ?? []), ...softTags],
+          existing.lastModified,
+        )
       ) {
         const redirectNames = rootParamNamesFromTags(redirectValue.tags);
         const combinedNames = addKnownRootParamNames(id, redirectNames);
@@ -771,7 +773,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         existing?.value &&
         existing.value.kind === "FETCH" &&
         existing.cacheState !== "stale" &&
-        !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
+        !_wasPendingTagRevalidatedAfter(
+          [...(existing.value.tags ?? []), ...softTags],
+          existing.lastModified,
+        )
       ) {
         try {
           propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));

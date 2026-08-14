@@ -6024,6 +6024,44 @@ describe("next/cache shim", () => {
     setCacheHandler(new MemoryCacheHandler());
   });
 
+  it("reuses an unstable_cache entry created after updateTag in the same request", async () => {
+    const { _runWithCacheState, MemoryCacheHandler, setCacheHandler, unstable_cache, updateTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+      setCacheHandler(new MemoryCacheHandler());
+
+      let callCount = 0;
+      const cached = unstable_cache(async () => ++callCount, ["action-dedupe-unstable"], {
+        tags: ["action-dedupe-unstable"],
+      });
+
+      await _runWithCacheState(async () => {
+        expect(await cached()).toBe(1);
+
+        vi.advanceTimersByTime(10);
+        const previousPhase = setHeadersAccessPhase("action");
+        try {
+          updateTag("action-dedupe-unstable");
+        } finally {
+          setHeadersAccessPhase(previousPhase);
+        }
+
+        vi.advanceTimersByTime(10);
+        expect(await cached()).toBe(2);
+        expect(await cached()).toBe(2);
+      });
+
+      expect(callCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("updateTag throws when called outside a Server Action (e.g. route handler)", async () => {
     const { updateTag } = await import("../packages/vinext/src/shims/cache.js");
     const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
@@ -7184,6 +7222,49 @@ describe('"use cache" runtime', () => {
     const r3 = await cached();
     expect(r3).toEqual({ count: 2 });
     expect(callCount).toBe(2);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache/use-cache.test.ts
+  it("reuses a use cache entry created after updateTag in the same request", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { _runWithCacheState, cacheTag, MemoryCacheHandler, setCacheHandler, updateTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+      setCacheHandler(new MemoryCacheHandler());
+
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        cacheTag("action-dedupe");
+        return ++callCount;
+      }, "test:action-dedupe");
+
+      await _runWithCacheState(async () => {
+        expect(await cached()).toBe(1);
+
+        vi.advanceTimersByTime(10);
+        const previousPhase = setHeadersAccessPhase("action");
+        try {
+          updateTag("action-dedupe");
+        } finally {
+          setHeadersAccessPhase(previousPhase);
+        }
+
+        vi.advanceTimersByTime(10);
+        expect(await cached()).toBe(2);
+        expect(await cached()).toBe(2);
+      });
+
+      expect(callCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
   });
 
   it("nested cacheTag bubbles to the outer cache entry even when the inner HITs", async () => {

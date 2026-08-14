@@ -24,8 +24,16 @@ import { Buffer } from "node:buffer";
 import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
-import { getHeadersContext, isInsideAnyCacheScope, markDynamicUsage } from "./headers.js";
-import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
+import {
+  getHeadersContext,
+  isInsideAnyCacheScope,
+  markDynamicUsage,
+} from "./headers.js";
+import {
+  _getPendingRevalidatedTagTimestamp,
+  _setRequestScopedCacheLife,
+  _wasPendingTagRevalidatedAfter,
+} from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
   isInsideUnifiedScope,
@@ -1277,21 +1285,23 @@ function createPatchedFetch(): typeof globalThis.fetch {
       throw err;
     }
     const handler = getDataCacheHandler();
-    let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
+    let mustBypassPendingRevalidation =
+      _getPendingRevalidatedTagTimestamp([...tags, ...softTags]) !== null;
 
     // Try cache first
     try {
-      let cached = mustBypassPendingRevalidation
-        ? null
-        : await handler.get(cacheKey, {
-            kind: "FETCH",
-            tags,
-            softTags,
-            revalidate: revalidateSeconds,
-          });
+      let cached = await handler.get(cacheKey, {
+        kind: "FETCH",
+        tags,
+        softTags,
+        revalidate: revalidateSeconds,
+      });
       if (
         cached?.value?.kind === "FETCH" &&
-        _hasPendingRevalidatedTag([...(cached.value.tags ?? []), ...tags, ...softTags])
+        _wasPendingTagRevalidatedAfter(
+          [...(cached.value.tags ?? []), ...tags, ...softTags],
+          cached.lastModified,
+        )
       ) {
         mustBypassPendingRevalidation = true;
         cached = null;
