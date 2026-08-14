@@ -1233,8 +1233,20 @@ describe("App Router Production server (startProdServer)", () => {
 
     expect(res.status).toBe(200);
     expect(link).toContain('</llms.txt>; rel="describedby"; type="text/plain"');
+    expect(link).not.toContain("</superseded>");
     expect(link).toContain("</agent-test.woff2>");
     expect(link).toContain("rel=preload");
+  });
+
+  it("keeps middleware Link precedence while preserving React preload links", async () => {
+    const res = await fetch(`${baseUrl}/config-link-preload?middleware-link=1`);
+    const link = res.headers.get("link") ?? "";
+
+    expect(res.status).toBe(200);
+    expect(link).toContain('</middleware.css>; rel="preload"; as="style"');
+    expect(link).toContain("</agent-test.woff2>");
+    expect(link).not.toContain("</llms.txt>");
+    expect(link).not.toContain("</superseded>");
   });
 
   it("routes unmatched API paths through fallback rewrites to App route handlers", async () => {

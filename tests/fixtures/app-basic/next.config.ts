@@ -240,6 +240,12 @@ const nextConfig: NextConfig = {
       },
       // Regression for #2788: this discovery Link must coexist with the
       // React preload Link emitted by app/config-link-preload/page.tsx.
+      // Both rules match intentionally: Next.js keeps the last non-cookie
+      // config value before middleware and framework response headers run.
+      {
+        source: "/config-link-preload",
+        headers: [{ key: "Link", value: '</superseded>; rel="describedby"' }],
+      },
       {
         source: "/config-link-preload",
         headers: [
