@@ -7761,7 +7761,8 @@ describe("Pages _document renderPage enhancers", () => {
     );
     await fsp.writeFile(
       path.join(fixtureRoot, "pages", "index.tsx"),
-      `import { renderCounts } from "../render-counts";
+      `import Head from "next/head";
+import { renderCounts } from "../render-counts";
 export function getServerSideProps({ query }: any) {
   renderCounts.enhancer = 0;
   renderCounts.page = 0;
@@ -7773,7 +7774,7 @@ export default function Page({ throwPage }: { throwPage: boolean }) {
     renderCounts.page += 1;
     throw new Error("page render failed");
   }
-  return <p id="page-content">PAGE</p>;
+  return <><Head><meta name="page-head" content="1" /></Head><p id="page-content">PAGE</p></>;
 }
 `,
     );
@@ -7942,6 +7943,7 @@ export default class CustomDocument extends Document {
       expect(html).toContain('id="document-prop">DOCUMENT');
       expect(html).toContain('id="page-content">PAGE');
       expect(html.match(/id="page-content"/g)).toHaveLength(1);
+      expect(html.indexOf('name="page-head"')).toBeLessThan(html.indexOf('name="document-child"'));
       for (const id of expectedIds) {
         expect(html).toContain(`id="${id}">RENDERED`);
         expect(html.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
