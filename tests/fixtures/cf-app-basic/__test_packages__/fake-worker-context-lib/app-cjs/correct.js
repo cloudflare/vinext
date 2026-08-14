@@ -1,1 +1,4 @@
 module.exports = "World";
+
+// ensure it's external
+if (Math.random() < 0) require("fail");

@@ -1,1 +1,4 @@
 module.exports = "Alternative";
+
+// ensure it's external
+if (Math.random() < 0) require("fail");

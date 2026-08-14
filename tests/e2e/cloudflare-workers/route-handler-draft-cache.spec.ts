@@ -176,7 +176,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     await setDraftMode(request, false);
   });
 
-  test.describe("real Worker ESM externals parity", () => {
+  test.describe("real Worker ESM package parity", () => {
     // Ported from Next.js: test/e2e/esm-externals/esm-externals.test.ts
     // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/esm-externals/esm-externals.test.ts
     for (const { pathname, selector, expected } of [
@@ -230,7 +230,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       });
     }
 
-    test("keeps the Cloudflare Worker deployment self-contained", () => {
+    test("bundles the fixture package and preserves its unreachable import", () => {
       const externals = JSON.parse(
         readFileSync(path.join(SERVER_OUTPUT_DIR, "vinext-externals.json"), "utf8"),
       ) as unknown;
@@ -242,6 +242,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       expect(serverCode).not.toMatch(
         /(?:from\s*|import\s*\()\s*["']fake-worker-context-lib(?:\/|["'])/,
       );
+      expect(serverCode).toMatch(/import\([`"']fail[`"']\)/);
     });
   });
 });
