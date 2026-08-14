@@ -799,6 +799,49 @@ describe("app page dispatch", () => {
     expect(cachePolicy.cacheControl.expire).toBeUndefined();
   });
 
+  it("writes HTML-captured RSC data under the plain key when interception context is absent", async () => {
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+    const { options } = createDispatchOptions({
+      cleanPathname: "/photos/123",
+      interceptionContext: null,
+      isProduction: true,
+      isrRscKey(pathname, mountedSlotsHeader, _renderMode, interceptionContext) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}:${interceptionContext ?? "none"}`;
+      },
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("direct-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>direct</html>"]);
+        },
+      }),
+      revalidateSeconds: 60,
+    });
+
+    const response = await runWithExecutionContext(executionContext, () =>
+      dispatchAppPage(options),
+    );
+    await response.text();
+    await Promise.all(waitUntilPromises.splice(0));
+
+    const writtenKeys = isrSet.mock.calls.map(([key]) => key);
+    expect(writtenKeys).toHaveLength(2);
+    expect(writtenKeys).toEqual(
+      expect.arrayContaining(["html:/photos/123", "rsc:/photos/123:none:none"]),
+    );
+  });
+
   it("does not reuse queryless HTML when the page reads searchParams", async () => {
     let pageExecutions = 0;
     async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
@@ -2924,6 +2967,53 @@ describe("app page dispatch", () => {
     expect(capturedFallbackToErrorDocument).toBeUndefined();
     expect(isrSet).toHaveBeenCalled();
     expect(afterRan).toBe(true);
+  });
+
+  it("regenerates stale HTML-captured RSC data under the plain key without interception context", async () => {
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      cleanPathname: "/photos/123",
+      interceptionContext: null,
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale direct</html>"), true),
+      ),
+      isrRscKey(pathname, mountedSlotsHeader, _renderMode, interceptionContext) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}:${interceptionContext ?? "none"}`;
+      },
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("regenerated-direct-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>regenerated direct</html>"]);
+        },
+      }),
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await expect(response.text()).resolves.toBe("<html>stale direct</html>");
+    expect(typeof scheduledRender).toBe("function");
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await scheduledRender();
+
+    const writtenKeys = isrSet.mock.calls.map(([key]) => key);
+    expect(writtenKeys).toHaveLength(2);
+    expect(writtenKeys).toEqual(
+      expect.arrayContaining(["html:/photos/123", "rsc:/photos/123:none:none"]),
+    );
   });
 
   it.each(["page", "metadata"] as const)(
