@@ -17,7 +17,11 @@ describe("createPagesDevHydrationScript", () => {
     expect(script).toContain('() => import("/pages/_app.tsx")');
     expect(script).toContain("const appRouter = Router;");
     expect(script).not.toContain("pageProps: rawPageProps,");
-    expect(script).toContain("if (nextData.isFallback)");
+    expect(script).toContain("const shouldHydrateQuery =");
+    expect(script).toContain("const initialMatchesMiddleware =");
+    expect(script).toContain("nextData.__vinext?.hasMiddleware === true");
+    expect(script).toContain("nextData.__vinext?.hasRewrites === true");
+    expect(script).toContain("shallow: !nextData.isFallback && !initialMatchesMiddleware");
     expect(script).not.toContain("window.__VINEXT_PAGE_PATTERNS__ = [nextData.page]");
   });
 

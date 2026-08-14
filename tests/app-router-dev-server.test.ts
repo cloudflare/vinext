@@ -388,6 +388,15 @@ describe("App Router integration", () => {
     expect(html).toContain("hello");
   });
 
+  it("keeps useSearchParams server-rendered outside static prerender", async () => {
+    const res = await fetch(
+      `${baseUrl}/nextjs-compat/use-search-params-static-bailout?value=runtime`,
+    );
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('<p id="search-params-value">runtime</p>');
+  });
+
   it("SSR renders a real app route that calls useRouter()", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-router");
     expect(res.status).toBe(200);
@@ -1505,6 +1514,7 @@ describe("App Router integration", () => {
     // Title from generateMetadata should use the dynamic slug
     expect(html).toContain("<title>Blog: my-post</title>");
     expect(html).toMatch(/name="description".*content="Read about my-post"/);
+    expect(html).not.toContain("self.__next_f");
   });
 
   it("layout generateMetadata() does not receive searchParams (Next.js parity)", async () => {
@@ -1519,6 +1529,29 @@ describe("App Router integration", () => {
     const html = await res.text();
     // Layout falls back to "home" because it never receives searchParams.
     expect(html).toContain("<title>Layout Section: home</title>");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
+  it("renders the local not-found boundary when generateMetadata() calls notFound()", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/generate-metadata-not-found`, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Local found boundary");
+    expect(html).not.toContain("not-found-text");
+    const flightText = [
+      ...html.matchAll(/<script[^>]*>self\.__next_f\.push\(\[1,"([\s\S]*?)"\]\)<\/script>/g),
+    ]
+      .map((match) => match[1])
+      .join("");
+    expect(flightText).toContain("Local found boundary");
+    expect(html).toContain('<meta name="robots" content="noindex"');
+    expect(html).toContain("<title>Local not found</title>");
+    expect(html).toContain('<meta name="description" content="Local not found description"');
+    expect(html).toContain('<meta name="keywords" content="parent"');
   });
 
   it("renders catch-all routes with multiple segments", async () => {

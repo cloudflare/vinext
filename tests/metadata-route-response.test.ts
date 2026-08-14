@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vite-plus/test";
-import { handleMetadataRouteRequest } from "../packages/vinext/src/server/metadata-route-response.js";
+import {
+  getPrerenderableMetadataRoutePaths,
+  handleMetadataRouteRequest,
+} from "../packages/vinext/src/server/metadata-route-response.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { withEnvVar } from "./env-test-helpers.js";
+import { addCollectedRequestTags } from "../packages/vinext/src/shims/fetch-cache.js";
+import { _setRequestScopedCacheLife } from "../packages/vinext/src/shims/cache-request-state.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 
 type MetadataRuntimeRoute = MetadataFileRoute & {
   fileDataBase64?: string;
@@ -11,7 +21,473 @@ function makeThenableParams(params: Record<string, string | string[]>): unknown 
   return Object.assign(Promise.resolve(params), params);
 }
 
+function markUseCache<T extends (...args: never[]) => unknown>(fn: T): T {
+  Reflect.set(fn, Symbol.for("vinext.useCacheFunction"), true);
+  return fn;
+}
+
 describe("handleMetadataRouteRequest", () => {
+  it("enumerates cached text metadata routes for build prerendering", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/use-cache-metadata-route-handler/use-cache-metadata-route-handler.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-metadata-route-handler/use-cache-metadata-route-handler.test.ts
+    const routes = [
+      {
+        type: "sitemap",
+        isDynamic: true,
+        filePath: "/tmp/app/sitemap.ts",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/sitemap.xml",
+        contentType: "application/xml",
+        module: { default: markUseCache(async () => []) },
+      },
+      {
+        type: "sitemap",
+        isDynamic: true,
+        filePath: "/tmp/app/products/sitemap.ts",
+        routePrefix: "/products",
+        routeSegments: ["products"],
+        servedUrl: "/products/sitemap.xml",
+        contentType: "application/xml",
+        module: {
+          generateSitemaps: async () => [{ id: 0 }, { id: "one" }],
+          default: markUseCache(async () => []),
+        },
+      },
+      {
+        type: "robots",
+        isDynamic: true,
+        filePath: "/tmp/app/robots.ts",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/robots.txt",
+        contentType: "text/plain",
+        module: { default: markUseCache(async () => ({})) },
+      },
+      {
+        type: "manifest",
+        isDynamic: true,
+        filePath: "/tmp/app/manifest.ts",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/manifest.webmanifest",
+        contentType: "application/manifest+json",
+        module: { default: markUseCache(async () => ({})) },
+      },
+      {
+        type: "icon",
+        isDynamic: true,
+        filePath: "/tmp/app/icon.tsx",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/icon",
+        contentType: "image/png",
+        module: { default: async () => new Response("icon") },
+      },
+    ] satisfies MetadataFileRoute[];
+
+    await expect(getPrerenderableMetadataRoutePaths(routes)).resolves.toEqual([
+      { path: "/sitemap.xml", routePattern: "/sitemap.xml", routeSegments: [] },
+      {
+        path: "/products/sitemap/0.xml",
+        routePattern: "/products/sitemap.xml",
+        routeSegments: ["products"],
+      },
+      {
+        path: "/products/sitemap/one.xml",
+        routePattern: "/products/sitemap.xml",
+        routeSegments: ["products"],
+      },
+      { path: "/robots.txt", routePattern: "/robots.txt", routeSegments: [] },
+      {
+        path: "/manifest.webmanifest",
+        routePattern: "/manifest.webmanifest",
+        routeSegments: [],
+      },
+    ]);
+  });
+
+  it("publishes collected cache tags and cache life for prerender seeding", async () => {
+    const response = await withEnvVar("VINEXT_PRERENDER", "1", () =>
+      runWithRequestContext(createRequestContext(), () =>
+        handleMetadataRouteRequest({
+          cleanPathname: "/robots.txt",
+          makeThenableParams,
+          metadataRoutes: [
+            {
+              type: "robots",
+              isDynamic: true,
+              filePath: "/tmp/app/robots.ts",
+              routePrefix: "",
+              routeSegments: [],
+              servedUrl: "/robots.txt",
+              contentType: "text/plain",
+              module: {
+                default: markUseCache(async () => {
+                  addCollectedRequestTags(["metadata-user-tag"]);
+                  _setRequestScopedCacheLife({ revalidate: 60, expire: 300, stale: 30 });
+                  return { rules: { userAgent: "*" } };
+                }),
+              },
+            },
+          ],
+        }),
+      ),
+    );
+
+    expect(response?.headers.get("x-next-cache-tags")).toBe("metadata-user-tag");
+    expect(response?.headers.get("x-vinext-prerender-cache-life")).toBe(
+      '{"revalidate":60,"expire":300,"stale":30}',
+    );
+  });
+
+  it("does not replay an unrelated cached App Route response as metadata", async () => {
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/api/cached",
+      isrRouteKey: (pathname) => pathname,
+      async isrGet() {
+        throw new Error("unrelated paths must not query the metadata cache");
+      },
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "robots",
+          isDynamic: true,
+          filePath: "/tmp/app/robots.ts",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/robots.txt",
+          contentType: "text/plain",
+          module: { default: async () => ({ rules: { userAgent: "*" } }) },
+        },
+      ],
+    });
+
+    expect(response).toBeNull();
+  });
+
+  it("replays a matched cached response without invoking the metadata function", async () => {
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/robots.txt",
+      isrRouteKey: (pathname) => pathname,
+      async isrGet(key) {
+        expect(key).toBe("/robots.txt");
+        return {
+          isStale: false,
+          value: {
+            lastModified: 1,
+            value: {
+              kind: "APP_ROUTE",
+              body: new TextEncoder().encode("User-Agent: *\nAllow: /buildtime\n").buffer,
+              headers: {
+                "content-type": "text/plain",
+                "x-next-cache-tags": "private-tag",
+                "x-vinext-metadata-route-cache": "1",
+              },
+              status: 200,
+            },
+          },
+        };
+      },
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "robots",
+          isDynamic: true,
+          filePath: "/tmp/app/robots.ts",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/robots.txt",
+          contentType: "text/plain",
+          module: {
+            default: async () => {
+              throw new Error("cached metadata must not execute at runtime");
+            },
+          },
+        },
+      ],
+    });
+
+    expect(await response?.text()).toContain("/buildtime");
+    expect(response?.headers.get("x-next-cache-tags")).toBeNull();
+    expect(response?.headers.has("x-vinext-metadata-route-cache")).toBe(false);
+  });
+
+  it("does not add an outer metadata cache around shared use-cache functions in development", async () => {
+    let metadataCalls = 0;
+    let outerReads = 0;
+    let outerWrites = 0;
+    const responses = await withEnvVar("NODE_ENV", "development", async () => {
+      const defaultExport = registerCachedFunction(async () => {
+        metadataCalls++;
+        return { rules: { userAgent: "*", allow: `/runtime-${metadataCalls}` } };
+      }, "test:metadata-dev-bypass");
+      const route = {
+        type: "robots",
+        isDynamic: true,
+        filePath: "/tmp/app/robots.ts",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/robots.txt",
+        contentType: "text/plain",
+        module: { default: defaultExport },
+      } satisfies MetadataFileRoute;
+      const request = () =>
+        runWithRequestContext(createRequestContext(), () =>
+          handleMetadataRouteRequest({
+            cleanPathname: "/robots.txt",
+            async isrGet() {
+              outerReads++;
+              return null;
+            },
+            isrRouteKey: (pathname) => pathname,
+            async isrSet() {
+              outerWrites++;
+            },
+            makeThenableParams,
+            metadataRoutes: [route],
+            scheduleBackgroundRegeneration() {
+              throw new Error("development metadata must not schedule ISR regeneration");
+            },
+          }),
+        );
+      return [await request(), await request()];
+    });
+
+    expect(metadataCalls).toBe(2);
+    expect(outerReads).toBe(0);
+    expect(outerWrites).toBe(0);
+    expect(await responses[0]?.text()).toContain("/runtime-1");
+    expect(await responses[1]?.text()).toContain("/runtime-2");
+  });
+
+  for (const cacheControl of ["no-store", "no-cache"]) {
+    it(`does not admit runtime metadata responses with Cache-Control: ${cacheControl}`, async () => {
+      let outerWrites = 0;
+      const response = await handleMetadataRouteRequest({
+        cleanPathname: "/icon",
+        async isrGet() {
+          return null;
+        },
+        isrRouteKey: (pathname) => pathname,
+        async isrSet() {
+          outerWrites++;
+        },
+        makeThenableParams,
+        metadataRoutes: [
+          {
+            type: "icon",
+            isDynamic: true,
+            filePath: "/tmp/app/icon.tsx",
+            routePrefix: "",
+            routeSegments: [],
+            servedUrl: "/icon",
+            contentType: "image/png",
+            module: {
+              default: markUseCache(
+                async () =>
+                  new Response("dynamic image", {
+                    headers: { "cache-control": cacheControl, "content-type": "image/png" },
+                  }),
+              ),
+            },
+          },
+        ],
+      });
+
+      expect(response?.headers.get("cache-control")).toBe(cacheControl);
+      expect(await response?.text()).toBe("dynamic image");
+      expect(outerWrites).toBe(0);
+    });
+  }
+
+  it("does not replay a colliding unmarked App Route cache entry", async () => {
+    let metadataCalls = 0;
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/robots.txt",
+      isrRouteKey: (pathname) => pathname,
+      async isrGet() {
+        return {
+          isStale: false,
+          value: {
+            lastModified: 1,
+            value: {
+              kind: "APP_ROUTE",
+              body: new TextEncoder().encode("unrelated app route").buffer,
+              headers: { "content-type": "text/plain" },
+              status: 200,
+            },
+          },
+        };
+      },
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "robots",
+          isDynamic: true,
+          filePath: "/tmp/app/robots.ts",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/robots.txt",
+          contentType: "text/plain",
+          module: {
+            default: async () => {
+              metadataCalls++;
+              return { rules: { userAgent: "*", allow: "/runtime" } };
+            },
+          },
+        },
+      ],
+    });
+
+    expect(metadataCalls).toBe(1);
+    expect(await response?.text()).toContain("/runtime");
+  });
+
+  it("serves stale metadata while regenerating its value and invalidation tags", async () => {
+    let metadataCalls = 0;
+    let regenerate: (() => Promise<void>) | undefined;
+    const writes: Array<{
+      key: string;
+      policy: { cacheControl?: unknown; tags?: string[] };
+      value: { headers: Record<string, string | string[]>; body: ArrayBuffer };
+    }> = [];
+    const defaultExport = markUseCache(async () => {
+      metadataCalls++;
+      addCollectedRequestTags(["metadata-user-tag"]);
+      return { rules: { userAgent: "*", allow: "/regenerated" } };
+    });
+
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/robots.txt",
+      isrRouteKey: (pathname) => `metadata:${pathname}`,
+      async isrGet() {
+        return {
+          isStale: true,
+          value: {
+            lastModified: 1,
+            cacheControl: { revalidate: 60, expire: 300, stale: 30 },
+            value: {
+              kind: "APP_ROUTE",
+              body: new TextEncoder().encode("User-Agent: *\nAllow: /stale\n").buffer,
+              headers: {
+                "content-type": "text/plain",
+                "x-vinext-metadata-route-cache": "1",
+              },
+              status: 200,
+            },
+          },
+        };
+      },
+      async isrSet(key, value, policy) {
+        writes.push({ key, value, policy });
+      },
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "robots",
+          isDynamic: true,
+          filePath: "/tmp/app/robots.ts",
+          routePrefix: "",
+          routeSegments: ["robots"],
+          servedUrl: "/robots.txt",
+          contentType: "text/plain",
+          module: { default: defaultExport },
+        },
+      ],
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        regenerate = renderFn;
+      },
+    });
+
+    expect(metadataCalls).toBe(0);
+    expect(await response?.text()).toContain("/stale");
+    expect(regenerate).toBeTypeOf("function");
+
+    await regenerate?.();
+    expect(metadataCalls).toBe(1);
+    expect(writes).toHaveLength(1);
+    expect(writes[0].key).toBe("metadata:/robots.txt");
+    expect(writes[0].policy.cacheControl).toEqual({
+      revalidate: 60,
+      expire: 300,
+      stale: 30,
+    });
+    expect(writes[0].policy.tags).toEqual(
+      expect.arrayContaining([
+        "/robots.txt",
+        "_N_T_/robots.txt",
+        "_N_T_/layout",
+        "_N_T_/robots/route",
+        "metadata-user-tag",
+      ]),
+    );
+    expect(writes[0].value.headers["x-vinext-metadata-route-cache"]).toBe("1");
+    expect(new TextDecoder().decode(writes[0].value.body)).toContain("/regenerated");
+  });
+
+  it("preserves stale metadata when background regeneration returns a non-ok response", async () => {
+    let metadataCalls = 0;
+    let regenerate: (() => Promise<void>) | undefined;
+    const writes: unknown[] = [];
+    const defaultExport = markUseCache(async () => {
+      metadataCalls++;
+      return new Response("missing", { status: 404 });
+    });
+
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/icon",
+      isrRouteKey: (pathname) => `metadata:${pathname}`,
+      async isrGet() {
+        return {
+          isStale: true,
+          value: {
+            lastModified: 1,
+            cacheControl: { revalidate: 60 },
+            value: {
+              kind: "APP_ROUTE",
+              body: new TextEncoder().encode("stale icon").buffer,
+              headers: {
+                "content-type": "image/png",
+                "x-vinext-metadata-route-cache": "1",
+              },
+              status: 200,
+            },
+          },
+        };
+      },
+      async isrSet(...args) {
+        writes.push(args);
+      },
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "icon",
+          isDynamic: true,
+          filePath: "/tmp/app/icon.tsx",
+          routePrefix: "",
+          routeSegments: ["icon"],
+          servedUrl: "/icon",
+          contentType: "image/png",
+          module: { default: defaultExport },
+        },
+      ],
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        regenerate = renderFn;
+      },
+    });
+
+    expect(metadataCalls).toBe(0);
+    expect(response?.status).toBe(200);
+    await expect(response?.text()).resolves.toBe("stale icon");
+    expect(regenerate).toBeTypeOf("function");
+
+    await regenerate?.();
+    expect(metadataCalls).toBe(1);
+    expect(writes).toHaveLength(0);
+  });
+
   it("does not inspect generateSitemaps on non-sitemap metadata routes", async () => {
     let generateSitemapsReads = 0;
     const route = {

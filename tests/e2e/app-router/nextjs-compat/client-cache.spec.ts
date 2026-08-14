@@ -268,6 +268,52 @@ test.describe("Next.js compat: client cache", () => {
     expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
   });
 
+  test("prefetch=true with search params reuses a zero-dynamic-stale page", async ({ page }) => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    const home = "/nextjs-compat/client-cache-search";
+    const target = `${home}/0`;
+    const requests = trackRscRequests(page);
+    await page.goto(home);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#client-cache-search-home")).toBeVisible();
+    await expect
+      .poll(() => requestsFor(requests, target).some((request) => !request.partial))
+      .toBe(true);
+
+    requests.length = 0;
+    await page.click(`a[href="${target}?timeout=0"]`);
+    await expect(page.locator("#client-cache-search-id")).toHaveText("0");
+    const initial = await page.locator("#client-cache-search-random").innerText();
+    expect(requestsFor(requests, target)).toEqual([]);
+
+    await page.click(`a[href="${home}"]`);
+    await expect(page.locator("#client-cache-search-home")).toBeVisible();
+    requests.length = 0;
+    await page.click(`a[href="${target}?timeout=0"]`);
+    await expect(page.locator("#client-cache-search-id")).toHaveText("0");
+    expect(await page.locator("#client-cache-search-random").innerText()).toBe(initial);
+    expect(requestsFor(requests, target)).toEqual([]);
+
+    await page.click(`a[href="${home}"]`);
+    await expect(page.locator("#client-cache-search-home")).toBeVisible();
+    await advanceTime(page, 30_000);
+    requests.length = 0;
+    await page.click(`a[href="${target}?timeout=0"]`);
+    await expect(page.locator("#client-cache-search-id")).toHaveText("0");
+    expect(await page.locator("#client-cache-search-random").innerText()).toBe(initial);
+    expect(requestsFor(requests, target)).toEqual([]);
+
+    await page.click(`a[href="${home}"]`);
+    await expect(page.locator("#client-cache-search-home")).toBeVisible();
+    await advanceTime(page, 270_000);
+    requests.length = 0;
+    await page.click(`a[href="${target}?timeout=0"]`);
+    await expect(page.locator("#client-cache-search-id")).toHaveText("0");
+    expect(await page.locator("#client-cache-search-random").innerText()).not.toBe(initial);
+  });
+
   test("parallel-slot page state resets between dynamic siblings", async ({ page }) => {
     await openHome(page);
     await navigateTo(page, "#client-cache-full", "0");

@@ -881,6 +881,51 @@ describe("app page render lifecycle", () => {
     );
   });
 
+  it("keeps request-specific middleware Link headers out of live ISR cache entries", async () => {
+    // Related Next.js middleware response-header coverage:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-middleware/app-middleware.test.ts
+    const common = createCommonOptions();
+    const frameworkLinkHeader = "</framework.css>; rel=preload; as=style";
+    const middlewareLinkHeader = "</new-ui.css>; rel=preload; as=style";
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          if (options?.capturedRscDataRef) {
+            options.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("flight-data").buffer,
+            );
+          }
+          if (options?.sideStream) {
+            void options.sideStream.getReader().cancel();
+          }
+
+          return {
+            htmlStream: createStream(["<html>page</html>"]),
+            metadataReady: Promise.resolve(),
+            capturedRscData: options?.capturedRscDataRef?.value ?? null,
+            linkHeader: frameworkLinkHeader,
+          };
+        },
+      }),
+      middlewareContext: {
+        headers: new Headers({ Link: middlewareLinkHeader }),
+        status: null,
+      },
+      revalidateSeconds: 30,
+    });
+
+    // Middleware still owns the Link header on this request's outgoing response.
+    expect(response.headers.get("link")).toBe(middlewareLinkHeader);
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    await Promise.all(common.waitUntilPromises);
+
+    const htmlCacheWrite = common.isrSet.mock.calls.find(([key]) => key === "html:/posts/post");
+    expect(htmlCacheWrite?.[1].headers?.link).toBe(frameworkLinkHeader);
+  });
+
   it("does not wait for cacheLife-only RSC capture before returning production HTML responses", async () => {
     const common = createCommonOptions();
     const releaseRsc = createDeferred();

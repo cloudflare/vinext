@@ -1,4 +1,5 @@
 import { createNonceAttribute } from "./html.js";
+import { resolveClientRuntimeModule } from "../entries/runtime-entry-module.js";
 
 export type PagesDevHydrationOptions = {
   appModuleSource: string | null;
@@ -13,6 +14,7 @@ export type PagesDevHydrationOptions = {
 
 export function createPagesDevHydrationScript(options: PagesDevHydrationOptions): string {
   const nonceAttr = createNonceAttribute(options.scriptNonce);
+  const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
   const initializeRouter = options.forceRouterReady
     ? "_initializePagesRouterReadyFromNextData(nextData, true);"
     : "_initializePagesRouterReadyFromNextData(nextData);";
@@ -23,10 +25,17 @@ export function createPagesDevHydrationScript(options: PagesDevHydrationOptions)
     options.normalizePageProps === false
       ? "const pageProps = rawPageProps ?? {};"
       : 'const pageProps = rawPageProps && typeof rawPageProps === "object" ? rawPageProps : {};';
-  const fallbackReplacement = options.replaceFallbackRoute
+  const hydrationQueryUpdate = options.replaceFallbackRoute
     ? `
-  if (nextData.isFallback) {
-    await Router.replace(window.location.pathname + window.location.search + window.location.hash, undefined, { _h: 1, scroll: false });
+  const initialMatchesMiddleware =
+    nextData.__vinext?.hasMiddleware === true || nextData.__vinext?.hasRewrites === true;
+  const shouldHydrateQuery =
+    nextData.isFallback ||
+    (nextData.gsp === true && (initialMatchesMiddleware || window.location.search !== ""));
+  if (shouldHydrateQuery) {
+    const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+    const routeUrl = nextData.isFallback ? nextData.__vinext?.routeUrl : undefined;
+    await Router.replace(routeUrl || currentUrl, routeUrl ? currentUrl : undefined, { _h: 1, scroll: false, shallow: !nextData.isFallback && !initialMatchesMiddleware });
   }`
     : "";
   const createElement = options.appModuleSource
@@ -47,6 +56,7 @@ export function createPagesDevHydrationScript(options: PagesDevHydrationOptions)
 
   return `
 <script type="module"${nonceAttr}>
+import ${JSON.stringify(reactInstanceBootstrapPath)};
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
@@ -96,7 +106,7 @@ async function hydrate() {
   window.__VINEXT_HYDRATED_AT = hydratedAt;
   window.__NEXT_HYDRATED = true;
   window.__NEXT_HYDRATED_AT = hydratedAt;
-  window.__NEXT_HYDRATED_CB?.();${fallbackReplacement}
+  window.__NEXT_HYDRATED_CB?.();${hydrationQueryUpdate}
 }
 hydrate();
 </script>`;
