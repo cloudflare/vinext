@@ -40,7 +40,7 @@ import { isUnknownRecord as isRecord } from "../utils/record.js";
  * the handler.
  */
 export const WORKERD_IMPORT_META_URL_FILTER =
-  /(?:fileURLToPath|createRequire)[\s\S]{0,20}?\([\s\S]*?import\.meta\s*(?:\.|\?\.)\s*url/;
+  /(?:fileURLToPath|createRequire)(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*\([\s\S]*?import\.meta(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*(?:\.|\?\.)(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*url/;
 
 function isIdentifier(node: unknown, name: string): boolean {
   return isRecord(node) && node.type === "Identifier" && node.name === name;

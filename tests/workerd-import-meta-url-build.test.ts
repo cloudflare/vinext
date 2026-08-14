@@ -7,7 +7,9 @@ import vinext from "../packages/vinext/src/index.js";
 
 const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/workerd-import-meta-url");
 const GUARDED_DEP_ID = path.join(APP_FIXTURE_DIR, "node_modules/dep-with-guard/index.js");
-const GUARDED_DEP_SOURCE = path.join(APP_FIXTURE_DIR, "deps/dep-with-guard/index.js");
+// Keep the raw source in a non-JS fixture so the formatter cannot relocate the
+// pre-parenthesis comment into the argument list and weaken this regression.
+const GUARDED_DEP_SOURCE = path.join(APP_FIXTURE_DIR, "deps/dep-with-guard/index.fixture.js.txt");
 
 async function readJavaScriptTree(dir: string): Promise<string> {
   const files = await fs.readdir(dir, { recursive: true });

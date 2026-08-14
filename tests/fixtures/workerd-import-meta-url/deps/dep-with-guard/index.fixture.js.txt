@@ -1,0 +1,9 @@
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath /* A deliberately long block comment spanning
+ * multiple lines, the kind an annotated dependency would carry, exceeding any
+ * bounded filter window between the callee and opening parenthesis. This
+ * exercises the production transform filter rather than only the AST handler. */
+  (import.meta.url);
+
+export const modulePath = __filename;

@@ -111,6 +111,29 @@ const s = "fileURLToPath(import.meta.url) in a string";`;
       ).toBe(true);
     });
 
+    it("matches long block comments between the callee and opening parenthesis", () => {
+      const longComment = "/* " + "x".repeat(200) + " */";
+      expect(
+        WORKERD_IMPORT_META_URL_FILTER.test(`fileURLToPath ${longComment} (import.meta.url)`),
+      ).toBe(true);
+      expect(
+        WORKERD_IMPORT_META_URL_FILTER.test(`createRequire ${longComment} (import.meta.url)`),
+      ).toBe(true);
+    });
+
+    it("matches comments around import.meta member access", () => {
+      expect(
+        WORKERD_IMPORT_META_URL_FILTER.test(
+          "fileURLToPath(import.meta /* annotated access */ .url)",
+        ),
+      ).toBe(true);
+      expect(
+        WORKERD_IMPORT_META_URL_FILTER.test(
+          "createRequire(import.meta. /* annotated property */ url)",
+        ),
+      ).toBe(true);
+    });
+
     it("matches whitespace, comment, and trailing-comma variants", () => {
       expect(WORKERD_IMPORT_META_URL_FILTER.test("fileURLToPath (import.meta.url)")).toBe(true);
       expect(WORKERD_IMPORT_META_URL_FILTER.test("fileURLToPath(import.meta.url,)")).toBe(true);
