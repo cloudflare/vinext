@@ -522,13 +522,19 @@ function Head({ children }: HeadProps): React.ReactElement {
   // oxlint-disable-next-line react-hooks/rules-of-hooks
   useEffect(() => {
     const instanceId = headInstanceIdRef.current!;
-    _clientHeadChildren.set(instanceId, children);
-    _syncClientHead();
-
     return () => {
       _clientHeadChildren.delete(instanceId);
       _syncClientHead();
     };
+  }, []);
+
+  // Keep updates separate from unmount cleanup. A children-dependent cleanup
+  // would remove the old projection before every render, so even unchanged
+  // tags would be recreated at the end of <head> during Fast Refresh.
+  // oxlint-disable-next-line react-hooks/rules-of-hooks
+  useEffect(() => {
+    _clientHeadChildren.set(headInstanceIdRef.current!, children);
+    _syncClientHead();
   }, [children]);
 
   return React.createElement(React.Fragment);
