@@ -7,7 +7,7 @@ import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
-import { hasFrameworkLinkHeaders } from "./app-response-header-provenance.js";
+import { hasPostConfigLinkHeaders } from "./app-response-header-provenance.js";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -61,7 +61,7 @@ export async function applyAppRscConfigHeaders(
     pathname: matchPathname,
     requestContext: options.requestContext,
     basePathState: { basePath: options.basePath, hadBasePath },
-    appendToFrameworkLink: hasFrameworkLinkHeaders(headers),
+    appendToPostConfigLink: hasPostConfigLinkHeaders(headers),
     middlewareHeaders: options.middlewareHeaders,
   });
 }

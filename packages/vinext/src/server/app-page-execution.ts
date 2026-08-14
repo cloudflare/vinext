@@ -9,6 +9,11 @@ import {
 import { VINEXT_RSC_REDIRECT_HEADER, VINEXT_RSC_REDIRECT_TYPE_HEADER } from "./headers.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import {
+  copyLinkHeaderProvenance,
+  hasFrameworkLinkHeaders,
+  markFrameworkLinkHeaders,
+} from "./app-response-header-provenance.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
 import { isPromiseLike } from "../utils/promise.js";
@@ -196,14 +201,21 @@ function mergeAppPageSpecialErrorHeaders(
   response: Response,
   middlewareContext: { headers: Headers | null } | undefined,
 ): Response {
+  const frameworkLink = hasFrameworkLinkHeaders(response.headers)
+    ? response.headers.get("link")
+    : null;
   const headers = new Headers(response.headers);
+  if (frameworkLink) headers.delete("link");
   mergeMiddlewareResponseHeaders(headers, middlewareContext?.headers ?? null);
+  if (frameworkLink) headers.append("link", frameworkLink);
 
-  return new Response(response.body, {
+  const result = new Response(response.body, {
     headers,
     status: response.status,
     statusText: response.statusText,
   });
+  markFrameworkLinkHeaders(result.headers, frameworkLink);
+  return result;
 }
 
 export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError | null {
@@ -429,14 +441,15 @@ export async function buildAppPageSpecialErrorResponse(
       // error status in this case (app-render.tsx ~2845). Mirror by not
       // overriding the status, symmetrically with the redirect-from-metadata
       // path which is already gated on serveStreamingMetadata !== false.
-      const responseToMerge =
-        options.specialError.fromMetadata === true && options.serveStreamingMetadata !== false
-          ? new Response(fallbackResponse.body, {
-              headers: fallbackResponse.headers,
-              status: 200,
-              statusText: fallbackResponse.statusText,
-            })
-          : fallbackResponse;
+      let responseToMerge = fallbackResponse;
+      if (options.specialError.fromMetadata === true && options.serveStreamingMetadata !== false) {
+        responseToMerge = new Response(fallbackResponse.body, {
+          headers: fallbackResponse.headers,
+          status: 200,
+          statusText: fallbackResponse.statusText,
+        });
+        copyLinkHeaderProvenance(fallbackResponse.headers, responseToMerge.headers);
+      }
       return mergeAppPageSpecialErrorHeaders(responseToMerge, options.middlewareContext);
     }
   }

@@ -632,6 +632,14 @@ describe("mergeMiddlewareResponseHeaders", () => {
     expect(target.get("X-Custom")).toBe("from-middleware");
   });
 
+  it("ignores empty middleware Link values", () => {
+    const target = new Headers({ Link: "</framework.css>; rel=preload; as=style" });
+
+    mergeMiddlewareResponseHeaders(target, new Headers({ Link: "" }));
+
+    expect(target.get("link")).toBe("</framework.css>; rel=preload; as=style");
+  });
+
   it("appends Set-Cookie headers instead of overriding", () => {
     const target = new Headers();
     target.append("Set-Cookie", "existing=1; Path=/");

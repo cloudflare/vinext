@@ -5,7 +5,10 @@ import {
   markAppRscResponseConfigHeadersApplied,
 } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
-import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import {
+  markEdgeRouteHandlerLinkHeaders,
+  markFrameworkLinkHeaders,
+} from "../packages/vinext/src/server/app-response-header-provenance.js";
 
 function makeRequestContext(headers: Headers = new Headers()): RequestContext {
   return {
@@ -125,6 +128,30 @@ describe("finalizeAppRscResponse — config header application", () => {
     expect(link).not.toContain("</config>");
   });
 
+  it("does not let an empty middleware Link suppress config", async () => {
+    const response = new Response("body", {
+      headers: { Link: "</framework.css>; rel=preload; as=style" },
+    });
+    markFrameworkLinkHeaders(response.headers, response.headers.get("link"));
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/",
+          headers: [{ key: "Link", value: '</config>; rel="describedby"' }],
+        },
+      ],
+      i18nConfig: null,
+      middlewareHeaders: new Headers({ Link: "" }),
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("link")).toBe(
+      '</config>; rel="describedby", </framework.css>; rel=preload; as=style',
+    );
+  });
+
   it("uses the last matching config Link value before appending framework preloads", async () => {
     // Next.js assigns every matching non-cookie config header in route order,
     // so the final matching value wins.
@@ -171,6 +198,29 @@ describe("finalizeAppRscResponse — config header application", () => {
     });
 
     expect(response.headers.get("link")).toBe('</config>; rel="describedby"');
+  });
+
+  it("appends Edge route-handler Link values after matching config", async () => {
+    const response = new Response("body", {
+      headers: { Link: '</edge-route>; rel="alternate"' },
+    });
+    markEdgeRouteHandlerLinkHeaders(response.headers, response.headers.get("link"));
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/api/link"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/api/link",
+          headers: [{ key: "Link", value: '</config>; rel="describedby"' }],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("link")).toBe(
+      '</config>; rel="describedby", </edge-route>; rel="alternate"',
+    );
   });
 
   it("adds the App Router RSC vary header when no config headers are configured", async () => {

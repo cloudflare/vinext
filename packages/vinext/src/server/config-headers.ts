@@ -20,8 +20,8 @@ type ApplyConfigHeadersOptions = {
   basePathState?: BasePathMatchState;
   /** Existing framework-generated headers that matching config rules may replace. */
   overwriteExisting?: ReadonlySet<string>;
-  /** Renderer-owned Link values are emitted after config headers in Next.js. */
-  appendToFrameworkLink?: boolean;
+  /** Renderer and Edge-handler Link values are emitted after config headers in Next.js. */
+  appendToPostConfigLink?: boolean;
   /** Middleware response headers run after config and therefore suppress config values. */
   middlewareHeaders?: Headers | null;
 };
@@ -94,12 +94,12 @@ export function applyConfigHeadersToResponse(
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "link") {
-      if (options.middlewareHeaders?.has(lowerName)) continue;
+      if (options.middlewareHeaders?.get(lowerName)) continue;
 
-      const frameworkLink = options.appendToFrameworkLink ? responseHeaders.get(lowerName) : null;
+      const postConfigLink = options.appendToPostConfigLink ? responseHeaders.get(lowerName) : null;
       responseHeaders.set(
         header.key,
-        frameworkLink ? `${header.value}, ${frameworkLink}` : header.value,
+        postConfigLink ? `${header.value}, ${postConfigLink}` : header.value,
       );
     } else if (ADDITIVE_CONFIG_HEADER_NAMES.has(lowerName)) {
       responseHeaders.append(header.key, header.value);
