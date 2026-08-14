@@ -1236,7 +1236,7 @@ describe("App Router Production server (startProdServer)", () => {
     expect(link).toContain("</agent-test.woff2>");
     expect(link).toContain("rel=preload");
   });
-  
+
   it("routes unmatched API paths through fallback rewrites to App route handlers", async () => {
     const res = await fetch(
       `${baseUrl}/api/pages-fallback-to-app/session/login?client=vinext&mw-auth`,
