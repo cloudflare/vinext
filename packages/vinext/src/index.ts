@@ -4125,6 +4125,32 @@ export const loadServerActionClient = ${
       },
     },
     {
+      name: "vinext:cloudflare-server-conditions",
+      enforce: "post",
+
+      configEnvironment(name, config) {
+        if (!hasCloudflarePlugin || (name !== "rsc" && name !== "ssr")) return null;
+
+        // @cloudflare/vite-plugin enables the `browser` condition for generic
+        // Worker applications. Vinext's Worker environments render Next.js
+        // server code, however, so selecting a package's browser export here
+        // diverges from Next.js and can execute a client-only implementation
+        // during SSR. Keep the Worker-specific conditions, but let ESM imports
+        // fall through to their `import` export instead of `browser`.
+        if (config.resolve?.conditions?.includes("browser")) {
+          config.resolve.conditions = config.resolve.conditions.filter(
+            (condition) => condition !== "browser",
+          );
+        }
+        const optimizerConditions = config.optimizeDeps?.rolldownOptions?.resolve?.conditionNames;
+        if (optimizerConditions?.includes("browser")) {
+          config.optimizeDeps!.rolldownOptions!.resolve!.conditionNames =
+            optimizerConditions.filter((condition) => condition !== "browser");
+        }
+        return null;
+      },
+    },
+    {
       name: "vinext:css-url-assets-restore",
       enforce: "post",
       apply: "build",
