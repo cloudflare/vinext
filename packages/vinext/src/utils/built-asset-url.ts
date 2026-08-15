@@ -6,7 +6,6 @@ export function renderVinextBuiltUrl(
   assetPrefix: string,
   deploymentId?: string,
   hostType?: "js" | "css" | "html",
-  hostId?: string,
 ): string {
   const urlPrefix = resolveAssetUrlPrefix(assetPrefix);
   const onDiskDir = resolveAssetsDir(assetPrefix);
@@ -22,7 +21,5 @@ export function renderVinextBuiltUrl(
   // Adding a deployment query to URLs embedded in JavaScript gives the entry a
   // different module identity while its relative imports remain unversioned,
   // splitting React/RSC singleton state across duplicate module graphs.
-  const workerPath = `${ASSET_PREFIX_URL_DIR}/workers/`;
-  const isWorkerGraph = filename.includes(workerPath) || hostId?.includes(workerPath);
-  return hostType === "js" && !isWorkerGraph ? url : appendDeploymentIdQuery(url, deploymentId);
+  return hostType === "js" ? url : appendDeploymentIdQuery(url, deploymentId);
 }

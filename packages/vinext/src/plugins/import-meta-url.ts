@@ -124,54 +124,7 @@ export function createImportMetaUrlPlugin(options: { getRoot: () => string | und
         return value;
       },
     },
-    renderChunk(code) {
-      if (this.environment?.name !== "client") return null;
-      const rewritten = rewriteBuiltWorkerUrlBase(code);
-      if (!rewritten) return null;
-      return {
-        code: rewritten.code,
-        map: rewritten.map,
-      };
-    },
   };
-}
-
-export function rewriteBuiltWorkerUrlBase(code: string): RewriteResult | null {
-  if (!code.includes("/_next/static/workers/") || !code.includes("file:///ROOT/")) return null;
-
-  let ast: unknown;
-  try {
-    ast = parseAst(code);
-  } catch {
-    return null;
-  }
-
-  const output = new MagicString(code);
-  let changed = false;
-
-  function visit(value: unknown): void {
-    if (!isAstRecord(value)) return;
-    if (isNewUrlExpression(value)) {
-      const args = nodeArray(value.arguments);
-      const workerUrl = staticStringValue(args[0]);
-      const baseUrl = staticStringValue(args[1]);
-      if (
-        workerUrl?.includes("/_next/static/workers/") &&
-        baseUrl?.startsWith("file:///ROOT/") &&
-        isAstRecord(args[1]) &&
-        hasRange(args[1])
-      ) {
-        output.overwrite(args[1].start, args[1].end, "globalThis.location.href");
-        changed = true;
-        return;
-      }
-    }
-    forEachAstChild(value, visit);
-  }
-
-  visit(ast);
-  if (!changed) return null;
-  return { code: output.toString(), map: output.generateMap({ hires: "boundary" }) };
 }
 
 // Test-only entry point. Delegates to the same transform the plugin runs so
@@ -217,9 +170,7 @@ function rewriteCanonicalSourceIdentity(
 ): RewriteResult | null {
   let ast: unknown;
   try {
-    ast = parseAst(code, {
-      lang: /\.(?:[cm]?ts)$/.test(canonicalId) ? "ts" : "tsx",
-    });
+    ast = parseAst(code);
   } catch {
     return null;
   }
@@ -371,11 +322,8 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
 
     if (isNewUrlExpression(value)) {
       const args = nodeArray(value.arguments);
-      const preservesWorkerBase = isViteWorkerUrl(args[0]);
       for (let index = 0; index < args.length; index += 1) {
-        if (index === 1 && (preservesWorkerBase || isImportMetaUrlOrChainedNode(args[index]))) {
-          continue;
-        }
+        if (index === 1 && isImportMetaUrlBaseNode(args[index])) continue;
         visit(args[index]);
       }
       // The callee is always the bare `URL` identifier (see isNewUrlExpression),
@@ -627,6 +575,25 @@ function isImportMetaUrlOrChainedNode(value: unknown): value is AstRange {
   );
 }
 
+function isImportMetaUrlBaseNode(value: unknown): boolean {
+  if (isImportMetaUrlOrChainedNode(value)) return true;
+
+  // Vite rewrites worker constructors to:
+  //   new URL(emittedWorkerUrl, "" + import.meta.url)
+  // Preserve that generated base just like the direct asset-expression form.
+  // Replacing it with our source-identity file URL would make the browser
+  // resolve the emitted worker against file:// instead of the deployment origin.
+  return (
+    isAstRecord(value) &&
+    value.type === "BinaryExpression" &&
+    value.operator === "+" &&
+    isAstRecord(value.left) &&
+    value.left.type === "Literal" &&
+    value.left.value === "" &&
+    isImportMetaUrlOrChainedNode(value.right)
+  );
+}
+
 // Catches the ChainExpression wrapper so we record the outer node range
 // and avoid descending into the inner MemberExpression (which happens
 // to share the same start/end, but this is more explicit).
@@ -643,25 +610,6 @@ function isChainExpressionWrappingImportMetaUrl(value: unknown): value is AstRan
 // `new window.URL(...)`. Matches Vite's own asset-detection scope.
 function isNewUrlExpression(value: AstRecord): boolean {
   return value.type === "NewExpression" && isIdentifierNamed(value.callee, "URL");
-}
-
-function staticStringValue(value: unknown): string | undefined {
-  if (!isAstRecord(value)) return undefined;
-  if (value.type === "Literal" && typeof value.value === "string") return value.value;
-  if (value.type !== "TemplateLiteral" || nodeArray(value.expressions).length > 0) return undefined;
-  const quasis = nodeArray(value.quasis);
-  if (quasis.length !== 1 || !isAstRecord(quasis[0]) || !isAstRecord(quasis[0].value)) {
-    return undefined;
-  }
-  const cooked = quasis[0].value.cooked;
-  return typeof cooked === "string" ? cooked : undefined;
-}
-
-function isViteWorkerUrl(value: unknown): boolean {
-  const url = staticStringValue(value);
-  return (
-    url?.includes("?worker_file&type=") === true || url?.includes("/_next/static/workers/") === true
-  );
 }
 
 function findDirectivePrologueEnd(ast: unknown): number {

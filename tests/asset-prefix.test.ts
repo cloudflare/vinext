@@ -123,27 +123,6 @@ describe("renderVinextBuiltUrl", () => {
     );
   });
 
-  it("versions worker entries and assets without versioning ordinary JavaScript chunks", () => {
-    expect(
-      renderVinextBuiltUrl(
-        "_next/static/workers/image-worker.js",
-        "",
-        "dpl_123",
-        "js",
-        "_next/static/chunks/page.js",
-      ),
-    ).toBe("/_next/static/workers/image-worker.js?dpl=dpl_123");
-    expect(
-      renderVinextBuiltUrl(
-        "_next/static/media/image.png",
-        "",
-        "dpl_123",
-        "js",
-        "_next/static/workers/image-worker.js",
-      ),
-    ).toBe("/_next/static/media/image.png?dpl=dpl_123");
-  });
-
   it("combines path asset prefixes and deployment IDs", () => {
     expect(renderVinextBuiltUrl("cdn/_next/static/chunk.js", "/cdn", "dpl_123")).toBe(
       "/cdn/_next/static/chunk.js?dpl=dpl_123",

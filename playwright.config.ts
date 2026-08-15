@@ -416,6 +416,30 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "web-worker-vinext": {
+    testDir: "./tests/e2e/web-worker",
+    use: { baseURL: "http://localhost:4200" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../../../../fixtures/app-basic/node_modules node_modules) && npx vp run vinext#build && node ../../../../../packages/vinext/dist/cli.js build && node ../../../../../packages/vinext/dist/cli.js start --port 4200",
+      cwd: "./tests/e2e/web-worker/fixtures/vinext",
+      port: 4200,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
+  "web-worker-cloudflare": {
+    testDir: "./tests/e2e/web-worker",
+    use: { baseURL: "http://localhost:4201" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../../../../fixtures/cf-app-basic/node_modules node_modules) && npx vp run vinext#build && npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4201",
+      cwd: "./tests/e2e/web-worker/fixtures/cloudflare",
+      port: 4201,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
 };
 
 type ProjectName = keyof typeof projectServers;

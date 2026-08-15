@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import {
   createImportMetaUrlPlugin,
-  rewriteBuiltWorkerUrlBase,
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
@@ -76,21 +75,6 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toContain(`const url = "file:///ROOT/pages/index.tsx"`);
   });
 
-  it.each(["ts", "mts", "cts"])("parses .%s sources as TypeScript", async (extension) => {
-    const sourcePath = path.join(realRoot, "workers", `worker.${extension}`);
-    await fsp.mkdir(path.dirname(sourcePath), { recursive: true });
-    await fsp.writeFile(sourcePath, `const sourceUrl: string = import.meta.url;\n`);
-
-    const result = rewriteImportMetaUrl(
-      `const sourceUrl: string = import.meta.url;\n`,
-      sourcePath,
-      linkedRoot,
-      "client",
-    );
-
-    expect(result?.code).toContain(`"file:///ROOT/workers/worker.${extension}"`);
-  });
-
   it("preserves import.meta?.url as the base argument in new URL asset expressions", () => {
     const result = rewriteImportMetaUrl(
       `const asset = new URL("./font.ttf", import.meta?.url);\nconst url = import.meta?.url;\n`,
@@ -103,19 +87,10 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toContain(`const url = "file:///ROOT/pages/index.tsx"`);
   });
 
-  it("uses the browser location for emitted worker URL bases", () => {
-    const result = rewriteBuiltWorkerUrlBase(
-      'new Worker(new URL("/docs/_next/static/workers/worker.js?dpl=deploy", "file:///ROOT/app/page.tsx"))',
-    );
-
-    expect(result?.code).toContain(
-      'new URL("/docs/_next/static/workers/worker.js?dpl=deploy", globalThis.location.href)',
-    );
-  });
-
-  it("preserves Vite development worker URL base expressions", () => {
+  it("preserves Vite's coerced import.meta.url base for emitted worker URLs", () => {
+    // Regression: https://github.com/cloudflare/vinext/issues/2600
     const result = rewriteImportMetaUrl(
-      'new Worker(new URL("/docs/app/worker.ts?worker_file&type=module", "" + import.meta.url));',
+      'new Worker(new URL(/* @vite-ignore */ "/_next/static/echo.worker.js", "" + import.meta.url));',
       pagePath,
       linkedRoot,
       "client",

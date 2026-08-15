@@ -1703,100 +1703,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const staticImageImportsByModule = new Map<string, Set<string>>();
   const writtenStaticImageFiles = new Set<string>();
 
-  function createWorkerImageImportPlugin(): Plugin {
-    const metadataPrefix = "\0vinext-worker-image-meta:";
-    return {
-      name: "vinext:worker-image-imports",
-      enforce: "pre",
-      watchChange(id) {
-        imageImportDimCache.delete(id);
-      },
-      resolveId(source) {
-        return source.startsWith(metadataPrefix) ? source : null;
-      },
-      async load(id) {
-        if (!id.startsWith(metadataPrefix)) return null;
-        const imagePath = id.slice(metadataPrefix.length);
-        this.addWatchFile(imagePath);
-        let dimensions = imageImportDimCache.get(imagePath);
-        if (!dimensions) {
-          try {
-            const { imageSize } = await import("image-size");
-            const result = imageSize(fs.readFileSync(imagePath));
-            dimensions = { width: result.width ?? 0, height: result.height ?? 0 };
-          } catch {
-            dimensions = { width: 0, height: 0 };
-          }
-          imageImportDimCache.set(imagePath, dimensions);
-        }
-        return `export default ${JSON.stringify(dimensions)};`;
-      },
-      transform(code, id) {
-        const sourceId = id.split("?", 1)[0];
-        if (sourceId.includes("node_modules") || !/\.(?:[cm]?[jt]sx?)$/.test(sourceId)) {
-          return null;
-        }
-        if (!new RegExp(`import\\(\\s*['"][^'"]+\\.(${IMAGE_EXTS})['"]\\s*\\)`).test(code)) {
-          return null;
-        }
-
-        let ast: ReturnType<typeof parseAst>;
-        try {
-          ast = parseAst(code, { lang: /\.(?:[cm]?ts)$/.test(sourceId) ? "ts" : "tsx" });
-        } catch {
-          return null;
-        }
-
-        const output = new MagicString(code);
-        const imageExtension = new RegExp(`\\.(${IMAGE_EXTS})$`);
-        let changed = false;
-        const visit = (value: unknown): void => {
-          if (!value || typeof value !== "object") return;
-          const node = value as ASTNode & {
-            type?: string;
-            start?: number;
-            end?: number;
-            source?: { type?: string; value?: unknown };
-          };
-          if (
-            node.type === "ImportExpression" &&
-            typeof node.start === "number" &&
-            typeof node.end === "number" &&
-            node.source?.type === "Literal" &&
-            typeof node.source.value === "string" &&
-            imageExtension.test(node.source.value)
-          ) {
-            const importPath = node.source.value;
-            const imagePath = normalizePathSeparators(
-              path.resolve(path.dirname(sourceId), importPath),
-            );
-            if (fs.existsSync(imagePath)) {
-              output.overwrite(
-                node.start,
-                node.end,
-                `Promise.all([import(${JSON.stringify(importPath)}), import(${JSON.stringify(
-                  metadataPrefix + imagePath,
-                )})]).then(([url, metadata]) => ({ default: { src: url.default, width: metadata.default.width, height: metadata.default.height } }))`,
-              );
-              changed = true;
-              return;
-            }
-          }
-          for (const child of Object.values(node)) {
-            if (Array.isArray(child)) {
-              for (const item of child) visit(item);
-            } else {
-              visit(child);
-            }
-          }
-        };
-        visit(ast);
-        if (!changed) return null;
-        return { code: output.toString(), map: output.generateMap({ hires: "boundary" }) };
-      },
-    };
-  }
-
   // Shared state for the MDX proxy plugin. We auto-inject @mdx-js/rollup when
   // MDX is detected in app/pages during config(), and lazily on first plain
   // .mdx transform for MDX that only enters the graph via import.meta.glob.
@@ -2713,23 +2619,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const hasClientBuildEnvironment =
           hasAppDir || hasCloudflarePlugin || hasNitroPlugin || shouldInjectPlainPagesEnvironments;
         const clientAssetsDir = resolveAssetsDir(nextConfig.assetPrefix ?? "");
-        const workerOutputDir = `${clientAssetsDir}/workers`;
-        const workerEntryFileNames = `${workerOutputDir}/[name]-[hash].js`;
-        const workerChunkFileNames = `${workerOutputDir}/[name]-[hash].js`;
-        const workerBundlerOptions =
-          viteMajorVersion >= 8 ? config.worker?.rolldownOptions : config.worker?.rollupOptions;
-        const workerOutputs = workerBundlerOptions?.output;
-        const workerOutput = Array.isArray(workerOutputs)
-          ? workerOutputs.map((output) => ({
-              ...output,
-              entryFileNames: workerEntryFileNames,
-              chunkFileNames: workerChunkFileNames,
-            }))
-          : {
-              ...workerOutputs,
-              entryFileNames: workerEntryFileNames,
-              chunkFileNames: workerChunkFileNames,
-            };
         // Next emits CSS url() deps as files, not inlined data URLs. A user's
         // explicit `build.assetsInlineLimit` always wins.
         clientAssetsInlineLimit = config.build?.assetsInlineLimit ?? 0;
@@ -2921,33 +2810,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(!isSSR && !isMultiEnv ? { output: getClientOutputConfig(clientAssetsDir) } : {}),
             }),
           },
-          worker: {
-            ...config.worker,
-            plugins: () => {
-              const configuredWorkerPlugins = config.worker?.plugins;
-              const userWorkerPlugins =
-                typeof configuredWorkerPlugins === "function"
-                  ? configuredWorkerPlugins()
-                  : configuredWorkerPlugins;
-              return [
-                ...((userWorkerPlugins as PluginOption[] | undefined) ?? []),
-                createWorkerImageImportPlugin(),
-              ];
-            },
-            ...(viteMajorVersion >= 8
-              ? {
-                  rolldownOptions: {
-                    ...config.worker?.rolldownOptions,
-                    output: workerOutput,
-                  },
-                }
-              : {
-                  rollupOptions: {
-                    ...config.worker?.rollupOptions,
-                    output: workerOutput,
-                  },
-                }),
-          },
           // Let OPTIONS requests pass through Vite's CORS middleware to our
           // route handlers so they can set the Allow header and run user-defined
           // OPTIONS handlers. Without this, Vite's CORS middleware responds to
@@ -3085,7 +2947,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       nextConfig.assetPrefix,
                       nextConfig.deploymentId,
                       context.hostType,
-                      context.hostId,
                     ),
                 },
               }
