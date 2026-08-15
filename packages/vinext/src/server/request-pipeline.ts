@@ -545,6 +545,24 @@ function getRequestCf(request: Request): unknown {
 }
 
 /**
+ * Re-attach the Workers-specific `cf` metadata from `source` onto a rebuilt
+ * Request. `new Request()` never copies it, and middleware/authorization code
+ * can key off `request.cf` (geo checks, bot scores), so every reconstruction
+ * must restore it explicitly.
+ */
+export function attachRequestCfMetadata(target: Request, source: Request): Request {
+  const cf = getRequestCf(source);
+  if (cf !== undefined) {
+    Object.defineProperty(target, "cf", {
+      value: cf,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return target;
+}
+
+/**
  * Clone a Request while overriding headers, preserving metadata when possible.
  *
  * Some runtimes (Workers) allow `new Request(request, { headers })` which
@@ -567,6 +585,8 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
       cache: request.cache,
       mode: request.mode,
       credentials: request.credentials,
+      // Undici rejects keepalive with an exposed ReadableStream body.
+      keepalive: request.body === null && request.keepalive,
       referrer: request.referrer,
       referrerPolicy: request.referrerPolicy,
     };
@@ -576,16 +596,7 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
     }
     cloned = new Request(request.url, init);
   }
-  const cf = getRequestCf(request);
-  if (cf !== undefined) {
-    // new Request() does not copy Workers-specific cf, so re-attach it.
-    Object.defineProperty(cloned, "cf", {
-      value: cf,
-      enumerable: true,
-      configurable: true,
-    });
-  }
-  return cloned;
+  return attachRequestCfMetadata(cloned, request);
 }
 
 /**
@@ -615,6 +626,8 @@ export function cloneRequestWithUrl(request: Request, url: string): Request {
       cache: request.cache,
       mode: request.mode,
       credentials: request.credentials,
+      // Undici rejects keepalive with an exposed ReadableStream body.
+      keepalive: request.body === null && request.keepalive,
       referrer: request.referrer,
       referrerPolicy: request.referrerPolicy,
     };
@@ -624,14 +637,5 @@ export function cloneRequestWithUrl(request: Request, url: string): Request {
     }
     cloned = new Request(url, init);
   }
-  const cf = getRequestCf(request);
-  if (cf !== undefined) {
-    // new Request() does not copy Workers-specific cf, so re-attach it.
-    Object.defineProperty(cloned, "cf", {
-      value: cf,
-      enumerable: true,
-      configurable: true,
-    });
-  }
-  return cloned;
+  return attachRequestCfMetadata(cloned, request);
 }

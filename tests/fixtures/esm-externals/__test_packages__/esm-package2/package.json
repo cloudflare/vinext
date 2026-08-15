@@ -1,0 +1,11 @@
+{
+  "name": "esm-package",
+  "type": "module",
+  "exports": {
+    "./entry": {
+      "browser": "./browser.mjs",
+      "import": "./correct.js",
+      "require": "./wrong.cjs"
+    }
+  }
+}

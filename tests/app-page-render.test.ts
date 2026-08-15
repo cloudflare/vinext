@@ -4,7 +4,6 @@ import React from "react";
 import {
   APP_ARTIFACT_COMPATIBILITY_KEY,
   APP_LAYOUT_FLAGS_KEY,
-  APP_RENDER_OBSERVATION_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
   AppElementsWire,
@@ -882,6 +881,52 @@ describe("app page render lifecycle", () => {
     );
   });
 
+  it("keeps request-specific middleware Link headers out of live ISR cache entries", async () => {
+    // Related Next.js middleware response-header coverage:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-middleware/app-middleware.test.ts
+    const common = createCommonOptions();
+    const frameworkLinkHeader = "</framework.css>; rel=preload; as=style";
+    const middlewareLinkHeader = "</new-ui.css>; rel=preload; as=style";
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          if (options?.capturedRscDataRef) {
+            options.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("flight-data").buffer,
+            );
+          }
+          if (options?.sideStream) {
+            void options.sideStream.getReader().cancel();
+          }
+
+          return {
+            htmlStream: createStream(["<html>page</html>"]),
+            metadataReady: Promise.resolve(),
+            capturedRscData: options?.capturedRscDataRef?.value ?? null,
+            linkHeader: frameworkLinkHeader,
+          };
+        },
+      }),
+      middlewareContext: {
+        headers: new Headers({ Link: middlewareLinkHeader }),
+        status: null,
+      },
+      revalidateSeconds: 30,
+    });
+
+    // Middleware replaces earlier config/user values, then the framework's
+    // render-owned preload is appended to the outgoing response.
+    expect(response.headers.get("link")).toBe(`${middlewareLinkHeader}, ${frameworkLinkHeader}`);
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    await Promise.all(common.waitUntilPromises);
+
+    const htmlCacheWrite = common.isrSet.mock.calls.find(([key]) => key === "html:/posts/post");
+    expect(htmlCacheWrite?.[1].headers?.link).toBe(frameworkLinkHeader);
+  });
+
   it("does not wait for cacheLife-only RSC capture before returning production HTML responses", async () => {
     const common = createCommonOptions();
     const releaseRsc = createDeferred();
@@ -1699,6 +1744,7 @@ describe("layoutFlags injection into RSC payload", () => {
     element?: Record<string, ReactNode>;
     layoutParamAccess?: ReturnType<typeof createAppLayoutParamAccessTracker>;
     layoutCount?: number;
+    pageTags?: string[];
     probeLayoutAt?: (index: number) => unknown;
     classification?: LayoutClassificationOptions | null;
     routePattern?: string;
@@ -1717,7 +1763,7 @@ describe("layoutFlags injection into RSC payload", () => {
       getFontPreloads: () => [],
       getFontStyles: () => [],
       getNavigationContext: () => null,
-      getPageTags: () => [],
+      getPageTags: () => overrides.pageTags ?? [],
       getRequestCacheLife: () => null,
       handlerStart: 0,
       hasLoadingBoundary: false,
@@ -1848,13 +1894,14 @@ describe("layoutFlags injection into RSC payload", () => {
     });
   });
 
-  it("injects partial render observation metadata into outgoing AppElements payloads", async () => {
+  it("keeps server-only render observations out of outgoing AppElements payloads", async () => {
     const { options, getCapturedElement } = createRscOptions({
       element: {
         [APP_ROOT_LAYOUT_KEY]: "/",
         "layout:/": "root-layout",
         "page:/test": "test-page",
       },
+      pageTags: ["/test", "_N_T_/(marketing)/pricing/page"],
     });
 
     await renderAppPageLifecycle({
@@ -1869,25 +1916,9 @@ describe("layoutFlags injection into RSC payload", () => {
       },
     });
 
-    const renderObservation = getCapturedElement()[APP_RENDER_OBSERVATION_KEY];
-
-    expect(renderObservation).toMatchObject({
-      boundaryOutcome: { kind: "unknown" },
-      cacheability: "unknown",
-      completeness: "partial",
-      output: {
-        kind: "app-rsc",
-        mountedSlotsFingerprint: null,
-        renderEpoch: null,
-        rootBoundaryId: "/",
-        routeId: "route:/test",
-      },
-      requestApis: expect.arrayContaining([
-        { kind: "headers", status: "observed" },
-        { kind: "params", status: "observed" },
-      ]),
-    });
-    expect(JSON.stringify(renderObservation)).not.toContain("secret");
+    const outgoingPayload = getCapturedElement();
+    expect(outgoingPayload).not.toHaveProperty("__renderObservation");
+    expect(JSON.stringify(outgoingPayload)).not.toContain("_N_T_/(marketing)/pricing/page");
   });
 
   it("injects __layoutFlags for multiple independently classified layouts", async () => {

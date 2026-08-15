@@ -118,6 +118,23 @@ describe("deprecated config warnings", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("resolves both URL-normalization option names", async () => {
+    await expect(resolveNextConfig({ skipProxyUrlNormalize: true })).resolves.toMatchObject({
+      skipProxyUrlNormalize: true,
+    });
+    await expect(resolveNextConfig({ skipMiddlewareUrlNormalize: true })).resolves.toMatchObject({
+      skipProxyUrlNormalize: true,
+    });
+  });
+
+  it("rejects both URL-normalization option names together", async () => {
+    await expect(
+      resolveNextConfig({ skipProxyUrlNormalize: true, skipMiddlewareUrlNormalize: true }),
+    ).rejects.toThrow(
+      "Config options `skipProxyUrlNormalize` and `skipMiddlewareUrlNormalize` cannot be set at the same time.",
+    );
+  });
 });
 
 describe("loadNextConfig with CJS next.config.js under type:module", () => {
@@ -351,16 +368,20 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
     expect(config?.env?.VAL).toBe("json-data");
   });
 
-  it("exposes a CommonJS module/exports object inside next.config.ts", async () => {
-    tmpDir = makeTempDir();
-    fs.writeFileSync(
-      path.join(tmpDir, "next.config.ts"),
-      `module.exports = { env: { VIA: "module.exports" } };\n`,
-    );
+  it.each(["ts", "mts"])(
+    "exposes a CommonJS module/exports object inside next.config.%s under type:module",
+    async (extension) => {
+      tmpDir = makeTempDir();
+      fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+      fs.writeFileSync(
+        path.join(tmpDir, `next.config.${extension}`),
+        `module.exports = { env: { VIA: "module.exports" } };\n`,
+      );
 
-    const config = await loadNextConfig(tmpDir);
-    expect(config?.env?.VIA).toBe("module.exports");
-  });
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.env?.VIA).toBe("module.exports");
+    },
+  );
 
   it("does not inject __dirname when user already declares it", async () => {
     // Regression test for https://github.com/cloudflare/vinext/issues/1345.
@@ -410,6 +431,39 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
     const config = await loadNextConfig(tmpDir);
     expect(config?.env?.HAS_REQUIRE).toBe("function");
   });
+
+  it.each(["ts", "mts"])(
+    "preserves require observed with typeof in next.config.%s",
+    async (extension) => {
+      tmpDir = makeTempDir();
+      fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+      fs.writeFileSync(
+        path.join(tmpDir, `next.config.${extension}`),
+        `export default { env: { HAS_REQUIRE: typeof require } };\n`,
+      );
+
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.env?.HAS_REQUIRE).toBe("function");
+    },
+  );
+
+  it.each(["ts", "mts"])(
+    "preserves require used in a default parameter in next.config.%s",
+    async (extension) => {
+      tmpDir = makeTempDir();
+      fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+      fs.writeFileSync(path.join(tmpDir, "data.json"), `{"value":"parameter-default"}`);
+      fs.writeFileSync(
+        path.join(tmpDir, `next.config.${extension}`),
+        `export default function config(_phase, _options, data = require("./data.json")) {\n` +
+          `  return { env: { VALUE: data.value } };\n` +
+          `}\n`,
+      );
+
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.env?.VALUE).toBe("parameter-default");
+    },
+  );
 
   it("loads a pure-ESM next.config.ts without injecting CJS shims", async () => {
     // No __filename / __dirname / require / module / exports references —
@@ -589,6 +643,39 @@ describe("loadNextConfig with tsconfig path aliases", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it.each(["ts", "mts"])(
+    "supports dynamic TypeScript imports from next.config.%s",
+    async (extension) => {
+      // Ported from Next.js:
+      // test/e2e/app-dir/next-config-ts-native-ts/dynamic-import-esm/
+      // test/e2e/app-dir/next-config-ts-native-mts/dynamic-import-esm/
+      // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/next-config-ts-native-ts/dynamic-import-esm/next.config.ts
+      tmpDir = makeTempDir();
+
+      fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+      fs.writeFileSync(path.join(tmpDir, "foo.ts"), `export const foo = "foo";\n`);
+      fs.writeFileSync(
+        path.join(tmpDir, "tsconfig.json"),
+        JSON.stringify({ compilerOptions: { allowImportingTsExtensions: true } }),
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, `next.config.${extension}`),
+        `await Promise.resolve();\n` +
+          `interface module { value: string }\n` +
+          `type require = string;\n` +
+          `const note = "module exports require"; // require is mentioned in a comment\n` +
+          `export default async function config() {\n` +
+          `  const { foo } = await import("./foo.ts");\n` +
+          `  return { env: { FOO: foo, NOTE: note } };\n` +
+          `}\n`,
+      );
+
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.env?.FOO).toBe("foo");
+      expect(config?.env?.NOTE).toBe("module exports require");
+    },
+  );
 
   it("resolves '@/*' imports in next.config.ts from tsconfig paths (no baseUrl)", async () => {
     tmpDir = makeTempDir();
@@ -2054,6 +2141,7 @@ describe("detectNextIntlConfig", () => {
       assetPrefix: "",
       basePath: "",
       trailingSlash: false,
+      skipProxyUrlNormalize: false,
       typescript: {},
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],

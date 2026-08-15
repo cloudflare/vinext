@@ -22,6 +22,8 @@ import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { hasCompleteNegativeRequestApiProof, type RenderObservation } from "./cache-proof.js";
 import { isAppPprDynamicFallbackShellHtml } from "./app-ppr-fallback-shell.js";
+import { buildPageCacheTags } from "./implicit-tags.js";
+import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 export {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -154,6 +156,14 @@ export function buildAppPageCacheTags(pathname: string, extraTags: readonly stri
   return tags.map(encodeCacheTag);
 }
 
+export function buildAppRouteCacheTags(
+  pathname: string,
+  extraTags: readonly string[],
+  routeSegments: readonly string[],
+): string[] {
+  return buildPageCacheTags(pathname, [...extraTags], [...routeSegments], "route");
+}
+
 function buildAppPageCachedHeaders(options: {
   cacheControl: string;
   cacheState: BuildAppPageCachedResponseOptions["cacheState"];
@@ -174,14 +184,6 @@ function buildAppPageCachedHeaders(options: {
   setCacheStateHeaders(headers, options.cacheState);
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
-  if (options.linkHeader) {
-    if (Array.isArray(options.linkHeader)) {
-      for (const value of options.linkHeader) headers.append("Link", value);
-    } else {
-      headers.set("Link", options.linkHeader);
-    }
-  }
-
   if (options.mountedSlotsHeader) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
@@ -189,6 +191,13 @@ function buildAppPageCachedHeaders(options: {
   applyClientStaleTimeHeader(headers, options.staleTimeSeconds);
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
+  if (options.linkHeader) {
+    if (Array.isArray(options.linkHeader)) {
+      for (const value of options.linkHeader) headers.append("Link", value);
+    } else {
+      headers.append("Link", options.linkHeader);
+    }
+  }
   return headers;
 }
 
@@ -282,10 +291,12 @@ export function buildAppPageCachedResponse(
     staleTimeSeconds,
   });
 
-  return new Response(cachedValue.html, {
+  const response = new Response(cachedValue.html, {
     status,
     headers: htmlHeaders,
   });
+  markFrameworkLinkHeaders(response.headers, cachedValue.headers?.link);
+  return response;
 }
 
 type ServeAppPageCachedHtmlOptions = {

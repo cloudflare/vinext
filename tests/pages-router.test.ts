@@ -7,6 +7,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import { toSlash } from "pathslash";
 import zlib from "node:zlib";
 import vinext from "../packages/vinext/src/index.js";
 import { createModuleDependencyCache } from "../packages/vinext/src/build/module-dependency-cache.js";
@@ -150,6 +151,12 @@ function getStylesheetHrefs(html: string): string[] {
     .filter((tag) => getHtmlAttr(tag, "rel") === "stylesheet")
     .map((tag) => getHtmlAttr(tag, "href"))
     .filter((href): href is string => href !== null);
+}
+
+function getStylesheetTags(html: string): string[] {
+  return Array.from(html.matchAll(/<link\b[^>]*>/gi), (match) => match[0]).filter(
+    (tag) => getHtmlAttr(tag, "rel") === "stylesheet",
+  );
 }
 
 function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixture {
@@ -315,8 +322,15 @@ function writeEncodedSlashPagesFixture(rootDir: string): void {
   );
   fs.writeFileSync(
     path.join(rootDir, "middleware.ts"),
-    `export const config = { matcher: "/a/b" };
-export default function middleware() {
+    `import { NextResponse, type NextRequest } from "next/server";
+
+export const config = { matcher: "/a/b" };
+export default function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname === "/a%2Fb") {
+    const response = NextResponse.next();
+    response.headers.set("x-encoded-slash-matcher", "matched");
+    return response;
+  }
   return new Response("nested blocked", { status: 418 });
 }
 `,
@@ -980,11 +994,30 @@ describe("Pages Router integration", () => {
   it("getServerSideProps returning notFound renders custom 404 page", async () => {
     const res = await fetch(`${baseUrl}/posts/missing`);
     expect(res.status).toBe(404);
+    expect(res.headers.get("content-length")).toBeNull();
+    expect(res.headers.get("content-type")).toBe("application/vnd.vinext.not-found+html");
+    expect(res.headers.get("set-cookie")).toContain("missing=one; Path=/");
+    expect(res.headers.get("set-cookie")).toContain("missing=two; Path=/");
+    expect(res.headers.get("surrogate-control")).toBe("max-age=600s, delta=noop");
     const html = await res.text();
     // Should render the custom 404 page (pages/404.tsx), not plain text
     expect(html).toContain("Page Not Found");
     // Should be wrapped in the _app layout
     expect(html).toContain("app-wrapper");
+  });
+
+  it("preserves getServerSideProps headers on notFound data responses", async () => {
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/posts/missing.json`, {
+      headers: { Accept: "application/json", "x-nextjs-data": "1" },
+    });
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-length")).toBeNull();
+    expect(res.headers.get("content-type")).toBe("application/vnd.vinext.not-found+html");
+    expect(res.headers.get("set-cookie")).toContain("missing=one; Path=/");
+    expect(res.headers.get("set-cookie")).toContain("missing=two; Path=/");
+    expect(res.headers.get("surrogate-control")).toBe("max-age=600s, delta=noop");
+    await expect(res.json()).resolves.toEqual({ notFound: true });
   });
 
   // Regression for #1465: a getServerSideProps `{ redirect }` on an HTML
@@ -1155,6 +1188,7 @@ describe("Pages Router integration", () => {
 
       const encodedRes = await fetch(`${started.baseUrl}/a%2Fb`);
       expect(encodedRes.status).toBe(404);
+      expect(encodedRes.headers.get("x-encoded-slash-matcher")).toBe("matched");
       expect(await encodedRes.text()).not.toContain("nested blocked");
 
       const nestedRes = await fetch(`${started.baseUrl}/a/b`);
@@ -1434,6 +1468,17 @@ export default function Page({ marker }: { marker: string }) {
     // The title tag should be in <head>, not in <body>
     const headSection = html.split("</head>")[0];
     expect(headSection).toContain("Hello vinext");
+
+    // Ported from Next.js: test/e2e/next-head/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/next-head/index.test.ts
+    const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+    expect(headContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
+    expect(headContents.indexOf('name="viewport"')).toBeGreaterThan(
+      headContents.indexOf('charset="utf-8"'),
+    );
+    expect(headContents.indexOf('name="description"')).toBeGreaterThan(
+      headContents.indexOf('name="viewport"'),
+    );
   });
 
   it("rerenders GSP pages without carrying prior render state", async () => {
@@ -3500,6 +3545,149 @@ describe("Pages Router allowedDevOrigins config", () => {
   });
 });
 
+// Ported from Next.js: test/e2e/i18n-api-support/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-api-support/index.test.ts
+// Next.js resolves fallback rewrites after an API filesystem miss instead of
+// immediately returning "404 - API route not found".
+describe("Pages Router unmatched API fallback rewrites", () => {
+  it("proxies unmatched API requests with their method, query, headers, and body", async () => {
+    const { createServer: createHttpServer } = await import("node:http");
+    const upstream = createHttpServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            body: Buffer.concat(chunks).toString("utf8"),
+            header: req.headers["x-proxy-regression"],
+            method: req.method,
+            url: req.url,
+          }),
+        );
+      });
+    });
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-api-fallback-"));
+    const outDir = path.join(tmpDir, "dist");
+    let devServer: ViteDevServer | undefined;
+    let prodServer: import("node:http").Server | undefined;
+
+    try {
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+      const upstreamAddress = upstream.address();
+      if (typeof upstreamAddress === "string" || upstreamAddress === null) {
+        throw new Error("Expected upstream port");
+      }
+
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.join(tmpDir, "pages", "api"), { recursive: true });
+      await fsp.writeFile(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(path.join(tmpDir, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+      await fsp.writeFile(
+        path.join(tmpDir, "pages", "index.tsx"),
+        `export default function Home() { return <main>API fallback fixture</main>; }\n`,
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, "pages", "api", "local.ts"),
+        `export default function handler(_req, res) { res.status(200).json({ local: true }); }\n`,
+      );
+      await fsp.writeFile(
+        path.join(tmpDir, "next.config.mjs"),
+        `export default {
+  basePath: "/docs",
+  async rewrites() {
+    return {
+      beforeFiles: [],
+      afterFiles: [],
+      fallback: [{
+        source: "/api/:path*",
+        has: [{ type: "header", key: "x-use-api-fallback", value: "yes" }],
+        missing: [{ type: "header", key: "x-block-api-fallback" }],
+        destination: "http://127.0.0.1:${upstreamAddress.port}/auth/:path*?from=config",
+      }],
+    };
+  },
+};
+`,
+      );
+
+      const assertRequests = async (baseUrl: string) => {
+        const missingHasResponse = await fetch(`${baseUrl}/docs/api/session/gated`);
+        expect(missingHasResponse.status).toBe(404);
+
+        const blockedByMissingResponse = await fetch(`${baseUrl}/docs/api/session/gated`, {
+          headers: {
+            "x-block-api-fallback": "1",
+            "x-use-api-fallback": "yes",
+          },
+        });
+        expect(blockedByMissingResponse.status).toBe(404);
+
+        const localResponse = await fetch(`${baseUrl}/docs/api/local`, {
+          headers: { "x-use-api-fallback": "yes" },
+        });
+        expect(localResponse.status).toBe(200);
+        await expect(localResponse.json()).resolves.toEqual({ local: true });
+
+        const body = JSON.stringify({ grant: "fixture" });
+        const response = await fetch(`${baseUrl}/docs/api/session/login?client=vinext`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-proxy-regression": "preserved",
+            "x-use-api-fallback": "yes",
+          },
+          body,
+        });
+        expect(response.status).toBe(200);
+        const upstreamRequest = (await response.json()) as {
+          body: string;
+          header?: string;
+          method?: string;
+          url?: string;
+        };
+        expect(upstreamRequest.body).toBe(body);
+        expect(upstreamRequest.header).toBe("preserved");
+        expect(upstreamRequest.method).toBe("POST");
+        const upstreamUrl = new URL(upstreamRequest.url ?? "", "http://upstream.test");
+        expect(upstreamUrl.pathname).toBe("/auth/session/login");
+        expect(Object.fromEntries(upstreamUrl.searchParams)).toEqual({
+          client: "vinext",
+          from: "config",
+        });
+      };
+
+      const dev = await startFixtureServer(tmpDir);
+      devServer = dev.server;
+      await assertRequests(dev.baseUrl);
+      await devServer.close();
+      devServer = undefined;
+
+      await buildPagesFixtureToOutDir(tmpDir, outDir);
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      prodServer = unwrapStartedProdServer(
+        await startProdServer({ port: 0, host: "127.0.0.1", outDir }),
+      );
+      const prodAddress = prodServer.address();
+      if (typeof prodAddress === "string" || prodAddress === null) {
+        throw new Error("Expected production server port");
+      }
+      await assertRequests(`http://127.0.0.1:${prodAddress.port}`);
+    } finally {
+      await devServer?.close();
+      await new Promise<void>((resolve) =>
+        prodServer ? prodServer.close(() => resolve()) : resolve(),
+      );
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 120000);
+});
+
 describe("Virtual server entry generation", () => {
   it("generates valid JavaScript for the server entry", async () => {
     // Create a minimal server just to access the plugin's virtual module
@@ -3591,8 +3779,17 @@ describe("Virtual server entry generation", () => {
       expect(res.status).toBe(200);
       expect(html).toContain("Global CSS Pages Test");
       const stylesheetHrefs = getStylesheetHrefs(html);
+      const stylesheetTags = getStylesheetTags(html);
+      expect(stylesheetHrefs).toHaveLength(fixture.devStylesheetHrefs.length);
+      expect(stylesheetHrefs).not.toContain("/styles/query.css?raw");
       for (const href of fixture.devStylesheetHrefs) {
         expect(stylesheetHrefs).toContain(href);
+        const tag = stylesheetTags.find((candidate) => getHtmlAttr(candidate, "href") === href);
+        expect(getHtmlAttr(tag ?? "", "data-vite-dev-id")).toBe(
+          toSlash(
+            fs.realpathSync.native(path.join(testServer.config.root, decodeURI(href).slice(1))),
+          ),
+        );
       }
       expect(html).not.toContain("type-only.module.css");
 
@@ -6198,6 +6395,16 @@ export default function CounterPage() {
       const indexHtml = await indexRes.text();
       expect(indexHtml).toContain("Hello, vinext!");
       expect(indexHtml).toContain("__NEXT_DATA__");
+      // Ported from Next.js: test/e2e/next-head/index.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/next-head/index.test.ts
+      const indexHeadContents = indexHtml.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+      expect(indexHeadContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
+      expect(indexHeadContents.indexOf('name="viewport"')).toBeGreaterThan(
+        indexHeadContents.indexOf('charset="utf-8"'),
+      );
+      expect(indexHeadContents.indexOf('name="description"')).toBeGreaterThan(
+        indexHeadContents.indexOf('name="viewport"'),
+      );
 
       // Test: about page renders
       const aboutRes = await fetch(`${prodUrl}/about`);
@@ -6789,6 +6996,7 @@ describe("Production server middleware (Pages Router)", () => {
 
       const encodedRes = await fetch(`${tempProdUrl}/a%2Fb`);
       expect(encodedRes.status).toBe(404);
+      expect(encodedRes.headers.get("x-encoded-slash-matcher")).toBe("matched");
       expect(await encodedRes.text()).not.toContain("nested blocked");
 
       const nestedRes = await fetch(`${tempProdUrl}/a/b`);
@@ -7521,6 +7729,18 @@ describe("Pages _document renderPage enhancers", () => {
     expect(html).not.toContain('id="page-content"');
   }
 
+  function expectFragmentsInOrder(html: string, fragments: string[], mode?: string): void {
+    let previousIndex = -1;
+    for (const fragment of fragments) {
+      const index = html.indexOf(fragment);
+      expect(
+        index,
+        `${mode ? `${mode}: ` : ""}missing or out-of-order fragment: ${fragment}`,
+      ).toBeGreaterThan(previousIndex);
+      previousIndex = index;
+    }
+  }
+
   beforeAll(async () => {
     fixtureRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-document-enhancers-"));
     outDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-document-enhancers-out-"));
@@ -7540,6 +7760,10 @@ describe("Pages _document renderPage enhancers", () => {
       JSON.stringify({ private: true, dependencies: { next: "*", react: "*", "react-dom": "*" } }),
     );
     await fsp.writeFile(
+      path.join(fixtureRoot, "next.config.mjs"),
+      `export default { experimental: { clientTraceMetadata: ["x-vinext-trace"] } };\n`,
+    );
+    await fsp.writeFile(
       path.join(fixtureRoot, "pages", "_app.tsx"),
       `export default function App({ Component, pageProps }: any) {
   return <main id="app-shell"><Component {...pageProps} /></main>;
@@ -7553,19 +7777,25 @@ describe("Pages _document renderPage enhancers", () => {
     );
     await fsp.writeFile(
       path.join(fixtureRoot, "pages", "index.tsx"),
-      `import { renderCounts } from "../render-counts";
+      `import Head from "next/head";
+import { renderCounts } from "../render-counts";
 export function getServerSideProps({ query }: any) {
   renderCounts.enhancer = 0;
   renderCounts.page = 0;
   renderCounts.error = 0;
-  return { props: { throwPage: query.throwPage === "true" } };
+  return {
+    props: {
+      markerScript: query.markerScript === "true",
+      throwPage: query.throwPage === "true",
+    },
+  };
 }
-export default function Page({ throwPage }: { throwPage: boolean }) {
+export default function Page({ markerScript, throwPage }: { markerScript: boolean; throwPage: boolean }) {
   if (throwPage) {
     renderCounts.page += 1;
     throw new Error("page render failed");
   }
-  return <p id="page-content">PAGE</p>;
+  return <><Head><meta name="page-head" content="1" />{markerScript ? <script id="head-marker-content" dangerouslySetInnerHTML={{ __html: 'window.__VINEXT_HEAD_MARKER__ = "<!--VINEXT_SSR_HEAD_END-->";' }} /> : null}</Head><p id="page-content">PAGE</p></>;
 }
 `,
     );
@@ -7696,7 +7926,7 @@ export default class CustomDocument extends Document {
   }
   render() {
     return (
-      <Html><Head /><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-request-context">{(this.props as any).documentRequestContext}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript /></body></Html>
+      <Html><Head><meta name="document-child" content="1" /></Head><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-request-context">{(this.props as any).documentRequestContext}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript /></body></Html>
     );
   }
 }
@@ -7734,11 +7964,104 @@ export default class CustomDocument extends Document {
       expect(html).toContain('id="document-prop">DOCUMENT');
       expect(html).toContain('id="page-content">PAGE');
       expect(html.match(/id="page-content"/g)).toHaveLength(1);
+      expectFragmentsInOrder(html, ['name="page-head"', 'name="document-child"'], mode);
       for (const id of expectedIds) {
         expect(html).toContain(`id="${id}">RENDERED`);
         expect(html.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
       }
     }
+  });
+
+  it("places client trace metadata after custom Document children in dev and prod", async () => {
+    // Next.js renders trace metadata after custom Document children and generated
+    // assets: packages/next/src/pages/_document.tsx.
+    // Coverage adapted from Next.js:
+    // test/e2e/opentelemetry/client-trace-metadata/client-trace-metadata.test.ts
+    const apiSymbol = Symbol.for("opentelemetry.js.api.1");
+    const spanSymbol = Symbol.for("OpenTelemetry Context Key SPAN");
+    const registry = globalThis as Record<symbol, unknown>;
+    const originalApi = registry[apiSymbol];
+    const activeContext = {
+      getValue(key: symbol) {
+        return key === spanSymbol ? true : undefined;
+      },
+      setValue() {
+        return this;
+      },
+    };
+    registry[apiSymbol] = {
+      context: {
+        active: () => activeContext,
+        with<T>(_context: unknown, fn: () => T): T {
+          return fn();
+        },
+      },
+      propagation: {
+        inject(
+          _context: unknown,
+          carrier: Array<{ key: string; value: string }>,
+          setter: {
+            set(carrier: Array<{ key: string; value: string }>, key: string, value: string): void;
+          },
+        ) {
+          setter.set(carrier, "x-vinext-trace", "trace-value");
+        },
+      },
+    };
+
+    try {
+      for (const [mode, url] of [
+        ["dev", devUrl],
+        ["prod", prodUrl],
+      ] as const) {
+        for (const [pathname, status, fragments] of [
+          ["/", 200, ['name="page-head"', 'name="document-child"', 'name="x-vinext-trace"']],
+          ["/?throwPage=true", 500, ['name="document-child"', 'name="x-vinext-trace"']],
+        ] as const) {
+          const response = await fetch(`${url}${pathname}`);
+          expect(response.status, `${mode} ${pathname}`).toBe(status);
+          const html = await response.text();
+          const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+          expect(headContents.match(/name="x-vinext-trace"/g), `${mode} ${pathname}`).toHaveLength(
+            1,
+          );
+          expectFragmentsInOrder(headContents, [...fragments], `${mode} ${pathname}`);
+        }
+      }
+
+      // The dev error renderer also has a manual default-Document branch.
+      // Temporarily remove the custom Document so this distinct path cannot
+      // silently omit the same trace metadata.
+      const documentPath = path.join(fixtureRoot, "pages", "_document.tsx");
+      const documentBackupPath = path.join(fixtureRoot, "_document.tsx.backup");
+      await fsp.rename(documentPath, documentBackupPath);
+      try {
+        const response = await fetch(`${devUrl}/?throwPage=true`);
+        expect(response.status).toBe(500);
+        const html = await response.text();
+        const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+        expect(headContents.match(/name="x-vinext-trace"/g)).toHaveLength(1);
+        expectFragmentsInOrder(headContents, ['name="viewport"', 'name="x-vinext-trace"']);
+      } finally {
+        await fsp.rename(documentBackupPath, documentPath);
+      }
+    } finally {
+      if (originalApi === undefined) {
+        delete registry[apiSymbol];
+      } else {
+        registry[apiSymbol] = originalApi;
+      }
+    }
+  });
+
+  it("preserves inline Head content containing the old fixed dev marker", async () => {
+    const response = await fetch(`${devUrl}/?markerScript=true`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+    expect(headContents).toContain('window.__VINEXT_HEAD_MARKER__ = "<!--VINEXT_SSR_HEAD_END-->";');
+    expect(headContents.match(/id="head-marker-content"/g)).toHaveLength(1);
+    expectFragmentsInOrder(headContents, ['id="head-marker-content"', 'name="document-child"']);
   });
 
   it.each(["dev", "prod"] as const)(
@@ -7751,6 +8074,7 @@ export default class CustomDocument extends Document {
       expect(html).toContain('id="manual-document-html">MANUAL');
       expect(html).toContain("data-manual-document-style");
       expect(html).toContain(".manual{color:blue}");
+      expectFragmentsInOrder(html, ['name="document-child"', "data-manual-document-style"], mode);
       expect(html).not.toContain('id="page-content"');
       expect(html).not.toContain('id="app-shell"');
     },

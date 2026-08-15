@@ -7,6 +7,7 @@ import {
   buildNextDataNotFoundResponse,
   encodeUrlParserIgnoredCharacters,
   normalizePagesDataRequest,
+  shouldAddTrailingSlashToPagesDataPath,
   normalizeNextDataPagePathname,
   urlParserCreatesPagesDataPath,
 } from "../packages/vinext/src/server/pages-data-route.js";
@@ -130,6 +131,12 @@ describe("pages-data-route", () => {
   });
 
   describe("normalizePagesDataRequest", () => {
+    it("does not add trailingSlash when proxy URL normalization is skipped", () => {
+      expect(shouldAddTrailingSlashToPagesDataPath(true, true, true)).toBe(false);
+      expect(shouldAddTrailingSlashToPagesDataPath(true, true, false)).toBe(true);
+      expect(shouldAddTrailingSlashToPagesDataPath(false, true, false)).toBe(false);
+    });
+
     it("applies trailingSlash to the page URL before middleware sees data requests", () => {
       // Mirrors Next.js middleware-trailing-slash data-request coverage:
       // test/e2e/middleware-trailing-slash/test/index.test.ts.
@@ -250,7 +257,7 @@ describe("pages-data-route", () => {
       try {
         const req = new Request("http://localhost/_next/data/stale-build-id/about.json");
         const result = normalizePagesDataRequest(req, BUILD_ID);
-        expect(result.isDataReq).toBe(false);
+        expect(result.isDataReq).toBe(true);
         expect(result.notFoundResponse).not.toBeNull();
         expect(result.notFoundResponse!.status).toBe(404);
         expect(result.notFoundResponse!.headers.get("x-nextjs-deployment-id")).toBe(

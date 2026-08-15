@@ -299,6 +299,8 @@ async function buildPagesShellHtml(
     "assetTags" | "disableOptimizedLoading" | "DocumentComponent" | "renderDocumentToString"
   > & {
     ssrHeadHTML: string;
+    /** Head content that Next.js renders after custom Document children and generated assets. */
+    tailHeadHTML: string;
     /**
      * Document props already resolved by `runDocumentRenderPage`. When set,
      * `getInitialProps` was consumed by the renderPage path and must not be
@@ -331,10 +333,19 @@ async function buildPagesShellHtml(
       { configuredCrossOrigin: options.crossOrigin },
     );
     html = html.replace("__NEXT_MAIN__", bodyMarker);
-    if (options.ssrHeadHTML || generatedAssetTags || fontHeadHTML) {
+    // Next.js renders the collected `next/head` array before children declared
+    // inside a custom Document's <Head>. Insert it after the opening tag so the
+    // default charset remains the first element even when <Head> has props.
+    if (options.ssrHeadHTML) {
+      html = html.replace(
+        /<head(?:\s[^>]*)?>/i,
+        (openingHead) => `${openingHead}${options.ssrHeadHTML}`,
+      );
+    }
+    if (generatedAssetTags || fontHeadHTML || options.tailHeadHTML) {
       html = html.replace(
         "</head>",
-        `  ${fontHeadHTML}${options.ssrHeadHTML}\n  ${generatedAssetTags}\n</head>`,
+        `  ${fontHeadHTML}\n  ${generatedAssetTags}\n  ${options.tailHeadHTML}\n</head>`,
       );
     }
     html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
@@ -363,8 +374,9 @@ async function buildPagesShellHtml(
   );
   return (
     "<!DOCTYPE html>\n<html>\n<head>\n" +
-    `  ${fontHeadHTML}${options.ssrHeadHTML}\n` +
+    `  ${options.ssrHeadHTML}${fontHeadHTML}\n` +
     `  ${generatedAssetTags}\n` +
+    `  ${options.tailHeadHTML}\n` +
     "</head>\n<body>\n" +
     `  <div id="__next">${bodyMarker}</div>\n` +
     `  ${generatedNextDataScript}\n` +
@@ -485,7 +497,9 @@ function applyGsspHeaders(
       headers.set(key, String(value));
     }
   }
-  headers.set("Content-Type", "text/html; charset=utf-8");
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "text/html; charset=utf-8");
+  }
   return statusCode ?? gsspRes.statusCode;
 }
 
@@ -594,13 +608,14 @@ export async function renderPagesPageResponse(
   // `getClientTraceMetadataHTML` returns "" and we forward the head HTML
   // verbatim — keeping the no-op path zero-overhead.
   const traceMetaHTML = getClientTraceMetadataHTML(options.clientTraceMetadata);
-  let ssrHeadHTML = headFromShim;
-  if (traceMetaHTML) ssrHeadHTML += `\n  ${traceMetaHTML}`;
+  const ssrHeadHTML = headFromShim;
+  let tailHeadHTML = traceMetaHTML;
   // `styles` returned by `_document.getInitialProps()` (e.g. collected
   // styled-components / emotion <style> tags) is already rendered to a string
   // by the shared helper, ready to merge into the SSR head.
   if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
-    ssrHeadHTML += `\n  ${documentRenderPage.stylesHTML}`;
+    if (tailHeadHTML) tailHeadHTML += "\n  ";
+    tailHeadHTML += documentRenderPage.stylesHTML;
   }
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
@@ -608,6 +623,7 @@ export async function renderPagesPageResponse(
     DocumentComponent: options.DocumentComponent,
     renderDocumentToString: options.renderDocumentToString,
     ssrHeadHTML,
+    tailHeadHTML,
     // When the renderPage path already invoked getInitialProps, reuse its
     // resolved props instead of calling it a second time.
     // `skipped` means it was never invoked → fall through to the fast path.
@@ -684,9 +700,8 @@ export async function renderPagesPageResponse(
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
   } else if (options.isrRevalidateSeconds !== null) {
-    // Fresh ISR (MISS) response: route through the CDN adapter so edge adapters
-    // emit CDN-Cache-Control + a path-based Cache-Tag (matching revalidatePath,
-    // which Pages Router invalidation uses) while the default emits Cache-Control.
+    // Fresh ISR (MISS) response: route through the CDN adapter with the path tag
+    // used by Pages Router invalidation while the default emits Cache-Control.
     const isrPathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
     const stem = isrPathname.endsWith("/") ? isrPathname.slice(0, -1) : isrPathname;
     applyCdnResponseHeaders(responseHeaders, {

@@ -40,6 +40,10 @@ const appRouteHandlerDispatchPath = resolveEntryPath(
   "../server/app-route-handler-dispatch.js",
   import.meta.url,
 );
+const appRouteRequestBuiltInsPath = resolveEntryPath(
+  "../server/app-route-request-built-ins.js",
+  import.meta.url,
+);
 const appRouteHandlerResponsePath = resolveEntryPath(
   "../server/app-route-handler-response.js",
   import.meta.url,
@@ -232,6 +236,7 @@ export function generateRscEntry(
   const cacheComponents = config?.cacheComponents === true;
   const prefetchInlining = config?.prefetchInlining ?? false;
   const hasServerActions = config?.hasServerActions !== false;
+  const hasAppRouteHandlers = routes.some((route) => route.routePath !== null);
   const i18nConfig = config?.i18n ?? null;
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
@@ -277,6 +282,13 @@ async function __loadPrerenderPagesRoutes() {
     : "";
 
   return `
+${
+  hasAppRouteHandlers
+    ? `// Capture the canonical Request surface before any user module can extend it.
+// The global-backed snapshot remains available to the lazy dispatch chunk.
+import ${JSON.stringify(appRouteRequestBuiltInsPath)};`
+    : ""
+}
 import ${JSON.stringify(serverGlobalsPath)};
 import {
   renderToReadableStream as _renderToReadableStream,
@@ -685,8 +697,14 @@ export async function seedMemoryCacheFromPrerender(serverDir) {
     buildAppPageRscKey(pathname) {
       return __isrRscKey(pathname);
     },
+    buildAppRouteKey(pathname) {
+      return __isrRouteKey(pathname);
+    },
     writeAppPageEntry(key, data, metadata) {
       return __isrSetPrerenderedAppPage(key, data, metadata);
+    },
+    writeAppRouteEntry(key, data, policy) {
+      return __isrSet(key, data, policy);
     },
   });
 }
@@ -1071,6 +1089,8 @@ export default createAppRscHandler({
     scriptNonce,
     routeMatch,
     routePathname,
+    dispatchRedirectTargetRequest,
+    sourceConfigHeaders,
     searchParams,
   }) {
     const {
@@ -1101,6 +1121,7 @@ export default createAppRscHandler({
         renderMode: actionRenderMode,
         observeMetadataSearchParamsAccess,
         observePageSearchParamsAccess,
+        scriptNonce: targetScriptNonce,
       }) {
         return buildPageElements(actionRoute, actionParams, actionCleanPathname, {
           opts: interceptOpts,
@@ -1111,7 +1132,7 @@ export default createAppRscHandler({
           renderMode: actionRenderMode,
           observeMetadataSearchParamsAccess: observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: observePageSearchParamsAccess === true,
-        }, undefined, actionCleanPathname, scriptNonce);
+        }, undefined, actionCleanPathname, targetScriptNonce ?? scriptNonce);
       },
       cleanPathname,
       clearRequestContext() {
@@ -1152,12 +1173,15 @@ export default createAppRscHandler({
       },
       isRscRequest,
       loadServerAction,
+      // Redirect targets are rendered as if the client had navigated to them,
+      // so they must route on the raw pathname a real request would use.
       matchRoute(pathnameToMatch) {
-        return matchRoute(pathnameToMatch);
+        return matchRequestRoute(pathnameToMatch);
       },
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       maxActionBodySizeLabel: __MAX_ACTION_BODY_SIZE_LABEL,
       middlewareHeaders: middlewareContext.headers,
+      middlewareRequestHeaders: middlewareContext.requestHeaders,
       middlewareStatus: middlewareContext.status,
       mountedSlotsHeader,
       readBodyWithLimit: __readBodyWithLimit,
@@ -1172,6 +1196,8 @@ export default createAppRscHandler({
       },
       resolveRouteRuntime: __resolveRouteRuntime,
       request,
+      dispatchRedirectTargetRequest,
+      sourceConfigHeaders,
       sanitizeErrorForClient(error) {
         return __sanitizeErrorForClient(error);
       },
@@ -1207,13 +1233,35 @@ export default createAppRscHandler({
   ${hasPagesDir ? `loadPrerenderPagesRoutes: __loadPrerenderPagesRoutes,` : ""}
   ${
     (metadataRoutes?.length ?? 0) > 0
+      ? `async getPrerenderMetadataRoutePaths() {
+    const { getPrerenderableMetadataRoutePaths: __getPrerenderableMetadataRoutePaths } =
+      await __loadMetadataRouteResponse();
+    return __getPrerenderableMetadataRoutePaths(metadataRoutes);
+  },`
+      : ""
+  }
+  ${
+    (metadataRoutes?.length ?? 0) > 0
+      ? `async isMetadataRoutePath(cleanPathname) {
+    const { isMetadataRouteRequestPath: __isMetadataRouteRequestPath } =
+      await __loadMetadataRouteResponse();
+    return __isMetadataRouteRequestPath(metadataRoutes, cleanPathname);
+  },`
+      : ""
+  }
+  ${
+    (metadataRoutes?.length ?? 0) > 0
       ? `async handleMetadataRouteRequest(cleanPathname) {
     const { handleMetadataRouteRequest: __handleMetadataRouteRequest } =
       await __loadMetadataRouteResponse();
     return __handleMetadataRouteRequest({
       metadataRoutes,
       cleanPathname,
+      isrGet: __isrGet,
+      isrRouteKey: __isrRouteKey,
+      isrSet: __isrSet,
       makeThenableParams,
+      scheduleBackgroundRegeneration: __triggerBackgroundRegeneration,
     });
   },`
       : ""
@@ -1235,11 +1283,12 @@ export default createAppRscHandler({
   },
   ${
     middlewarePath
-      ? `runMiddleware({ cleanPathname, context, hadBasePath, isDataRequest, middlewareRequest, request }) {
+      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, validateExternalRewriteRequest }) {
     return __applyAppMiddleware({
       basePath: __basePath,
       cleanPathname,
       context,
+      externalRewriteRequest,
       hadBasePath,
       filePath: ${JSON.stringify(middlewarePath ? toSlash(middlewarePath) : "")},
       i18nConfig: __i18nConfig,
@@ -1249,6 +1298,7 @@ export default createAppRscHandler({
       module: middlewareModule,
       request,
       trailingSlash: __trailingSlash,
+      validateExternalRewriteRequest,
     });
   },`
       : ""

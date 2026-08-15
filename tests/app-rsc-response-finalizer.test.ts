@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import {
+  finalizeAppRscResponse,
+  markAppRscResponseConfigHeadersApplied,
+} from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
+import {
+  markEdgeRouteHandlerLinkHeaders,
+  markFrameworkLinkHeaders,
+} from "../packages/vinext/src/server/app-response-header-provenance.js";
 
 function makeRequestContext(headers: Headers = new Headers()): RequestContext {
   return {
@@ -29,6 +36,191 @@ describe("finalizeAppRscResponse — config header application", () => {
     });
 
     expect(response.headers.get("x-added")).toBe("config");
+  });
+
+  it("does not reapply source config headers to an internally dispatched target response", async () => {
+    const response = markAppRscResponseConfigHeadersApplied(
+      new Response("target flight", { headers: { "x-route-value": "target" } }),
+    );
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/action-source"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/action-source",
+          headers: [{ key: "x-route-value", value: "source" }],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("x-route-value")).toBe("target");
+  });
+
+  it("preserves config Link headers alongside framework preload links", async () => {
+    // Regression for #2788: React and next/font emit preload Link headers before
+    // App Router response finalization applies matching next.config.js headers.
+    const response = new Response("body", {
+      status: 200,
+      headers: {
+        Link: '</agent-test.woff2>; rel=preload; as="font"; crossorigin=""; type="font/woff2"',
+      },
+    });
+    markFrameworkLinkHeaders(response.headers, response.headers.get("link"));
+    const request = new Request("http://example.com/");
+
+    await finalizeAppRscResponse(response, request, {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/",
+          headers: [
+            {
+              key: "Link",
+              value: '</llms.txt>; rel="describedby"; type="text/plain"',
+            },
+          ],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    const link = response.headers.get("link") ?? "";
+    expect(link).toContain('</llms.txt>; rel="describedby"; type="text/plain"');
+    expect(link).toContain(
+      '</agent-test.woff2>; rel=preload; as="font"; crossorigin=""; type="font/woff2"',
+    );
+  });
+
+  it("keeps middleware Link precedence without dropping framework preload links", async () => {
+    // Next.js applies config headers first, lets middleware replace them, and
+    // then appends React's preload headers during rendering.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const middlewareHeaders = new Headers({
+      Link: '</middleware.css>; rel="preload"; as="style"',
+    });
+    const response = new Response("body", {
+      status: 200,
+      headers: {
+        Link: `${middlewareHeaders.get("link")}, </agent-test.woff2>; rel=preload; as="font"`,
+      },
+    });
+    markFrameworkLinkHeaders(response.headers, response.headers.get("link"));
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/",
+          headers: [{ key: "Link", value: '</config>; rel="describedby"' }],
+        },
+      ],
+      i18nConfig: null,
+      middlewareHeaders,
+      requestContext: makeRequestContext(),
+    });
+
+    const link = response.headers.get("link") ?? "";
+    expect(link).toContain('</middleware.css>; rel="preload"; as="style"');
+    expect(link).toContain('</agent-test.woff2>; rel=preload; as="font"');
+    expect(link).not.toContain("</config>");
+  });
+
+  it("does not let an empty middleware Link suppress config", async () => {
+    const response = new Response("body", {
+      headers: { Link: "</framework.css>; rel=preload; as=style" },
+    });
+    markFrameworkLinkHeaders(response.headers, response.headers.get("link"));
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/",
+          headers: [{ key: "Link", value: '</config>; rel="describedby"' }],
+        },
+      ],
+      i18nConfig: null,
+      middlewareHeaders: new Headers({ Link: "" }),
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("link")).toBe(
+      '</config>; rel="describedby", </framework.css>; rel=preload; as=style',
+    );
+  });
+
+  it("uses the last matching config Link value before appending framework preloads", async () => {
+    // Next.js assigns every matching non-cookie config header in route order,
+    // so the final matching value wins.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const response = new Response("body", {
+      headers: { Link: '</agent-test.woff2>; rel=preload; as="font"' },
+    });
+    markFrameworkLinkHeaders(response.headers, response.headers.get("link"));
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/"), {
+      basePath: "",
+      configHeaders: [
+        { source: "/", headers: [{ key: "Link", value: '</first>; rel="describedby"' }] },
+        { source: "/", headers: [{ key: "Link", value: '</last>; rel="describedby"' }] },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    const link = response.headers.get("link") ?? "";
+    expect(link).not.toContain("</first>");
+    expect(link).toContain('</last>; rel="describedby"');
+    expect(link).toContain('</agent-test.woff2>; rel=preload; as="font"');
+  });
+
+  it("does not treat a route-owned Link value as a framework preload", async () => {
+    // Config headers are already present on Next.js' outgoing response before
+    // a route-handler Response is copied, so the config value retains precedence.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/send-response.ts
+    const response = new Response("body", {
+      headers: { Link: '</route-handler>; rel="alternate"' },
+    });
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/api/link"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/api/link",
+          headers: [{ key: "Link", value: '</config>; rel="describedby"' }],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("link")).toBe('</config>; rel="describedby"');
+  });
+
+  it("appends Edge route-handler Link values after matching config", async () => {
+    const response = new Response("body", {
+      headers: { Link: '</edge-route>; rel="alternate"' },
+    });
+    markEdgeRouteHandlerLinkHeaders(response.headers, response.headers.get("link"));
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/api/link"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/api/link",
+          headers: [{ key: "Link", value: '</config>; rel="describedby"' }],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("link")).toBe(
+      '</config>; rel="describedby", </edge-route>; rel="alternate"',
+    );
   });
 
   it("adds the App Router RSC vary header when no config headers are configured", async () => {

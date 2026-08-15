@@ -23,12 +23,7 @@ import {
 // These modules must be imported before any rendering occurs.
 import "vinext/shims/router-state";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
-import {
-  createInlineScriptTag,
-  createNonceAttribute,
-  escapeHtmlAttr,
-  safeJsonStringify,
-} from "./html.js";
+import { createInlineScriptTag, createNonceAttribute, safeJsonStringify } from "./html.js";
 import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
@@ -69,9 +64,9 @@ import {
   type PagesStaticPathsEntry,
 } from "./pages-page-data.js";
 import { sanitizeDestination } from "../config/config-matchers.js";
-import { createPagesDevAssetUrl, createPagesDevModuleUrl } from "./pages-dev-module-url.js";
+import { collectPagesDevInitialStylesheetHeadHTML } from "./pages-dev-stylesheets.js";
+import { createPagesDevModuleUrl } from "./pages-dev-module-url.js";
 import { createPagesDevHydrationScript } from "./pages-dev-hydration.js";
-import { getManifestFilesForModule } from "./pages-asset-tags.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
 import {
@@ -165,133 +160,6 @@ function buildDevPagesTerminalCacheControl(
   return buildMissIsrCacheControl(revalidateSeconds, expireSeconds);
 }
 
-const DEV_STYLESHEET_ASSET_RE = /\.(?:css|scss|sass)$/i;
-
-type PagesClientAssetsModule = {
-  default?: {
-    ssrManifest?: Record<string, string[]>;
-  };
-};
-
-const transformedStylesheetAssetsCache = new WeakMap<ViteDevServer, Map<string, string[]>>();
-const transformedStylesheetAssetsWatchers = new WeakSet<ViteDevServer>();
-
-function createDevInitialStylesheetHeadHTML(options: {
-  ssrManifest: Record<string, string[]> | null | undefined;
-  moduleIds: (string | null | undefined)[];
-  nonceAttr: string;
-}): string {
-  const { ssrManifest, moduleIds, nonceAttr } = options;
-  if (!ssrManifest || moduleIds.length === 0) return "";
-
-  const seen = new Set<string>();
-  let html = "";
-  for (const moduleId of moduleIds) {
-    const files = getManifestFilesForModule(ssrManifest, moduleId);
-    if (!files) continue;
-    for (const file of files) {
-      if (!DEV_STYLESHEET_ASSET_RE.test(file) || seen.has(file)) continue;
-      seen.add(file);
-      const href = createPagesDevAssetUrl(file);
-      html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(href)}" />\n  `;
-    }
-  }
-  return html;
-}
-
-async function collectTransformedStylesheetAssets(
-  server: ViteDevServer,
-  moduleIds: (string | null | undefined)[],
-): Promise<string[]> {
-  const clientEnvironment = server.environments.client;
-  if (!clientEnvironment) return [];
-
-  const cachedServerAssets = transformedStylesheetAssetsCache.get(server);
-  const cache = cachedServerAssets ?? new Map<string, string[]>();
-  if (!cachedServerAssets) transformedStylesheetAssetsCache.set(server, cache);
-  if (!transformedStylesheetAssetsWatchers.has(server)) {
-    transformedStylesheetAssetsWatchers.add(server);
-    const clearCache = () => cache.clear();
-    server.watcher.on("add", clearCache);
-    server.watcher.on("change", clearCache);
-    server.watcher.on("unlink", clearCache);
-  }
-
-  const cacheKey = moduleIds.filter((moduleId): moduleId is string => Boolean(moduleId)).join("\0");
-  const cachedAssets = cache.get(cacheKey);
-  if (cachedAssets) return cachedAssets;
-
-  const assets = new Set<string>();
-  const seenModules = new Set<string>();
-  async function visitModule(moduleUrl: string): Promise<void> {
-    if (seenModules.has(moduleUrl)) return;
-    seenModules.add(moduleUrl);
-    try {
-      await clientEnvironment.transformRequest(moduleUrl);
-      const moduleNode = await clientEnvironment.moduleGraph.getModuleByUrl(moduleUrl);
-      if (!moduleNode) return;
-      for (const importedModule of moduleNode.importedModules) {
-        if (
-          importedModule.type === "css" ||
-          /\.(?:css|scss|sass)(?:$|[?#])/i.test(importedModule.url)
-        ) {
-          if (importedModule.url.startsWith("//")) continue;
-          const assetUrl = importedModule.url.startsWith("\0")
-            ? `/@id/__x00__${importedModule.url.slice(1)}${importedModule.url.includes("?") ? "&" : "?"}direct`
-            : importedModule.url;
-          assets.add(assetUrl);
-        } else if (importedModule.type === "js") {
-          await visitModule(importedModule.url);
-        }
-      }
-    } catch {
-      // Preserve the source-manifest fallback when a third-party client
-      // transform fails while the server render itself remains valid.
-    }
-  }
-
-  for (const moduleId of moduleIds) {
-    if (!moduleId) continue;
-    await visitModule(createPagesDevModuleUrl(server.config.root, moduleId, "/"));
-  }
-  const result = [...assets];
-  cache.set(cacheKey, result);
-  return result;
-}
-
-async function collectDevInitialStylesheetHeadHTML(
-  server: ViteDevServer,
-  runner: ModuleImporter,
-  moduleIds: (string | null | undefined)[],
-  nonceAttr: string,
-): Promise<string> {
-  let manifestHTML = "";
-  try {
-    const pagesClientAssets = (await runner.import(
-      "virtual:vinext-pages-client-assets",
-    )) as PagesClientAssetsModule;
-    manifestHTML = createDevInitialStylesheetHeadHTML({
-      ssrManifest: pagesClientAssets.default?.ssrManifest,
-      moduleIds,
-      nonceAttr,
-    });
-  } catch {
-    // If dev asset metadata is unavailable, keep the existing client-graph
-    // CSS behavior instead of failing the page render.
-  }
-
-  const transformedAssets = await collectTransformedStylesheetAssets(server, moduleIds);
-  if (transformedAssets.length === 0) return manifestHTML;
-
-  let html = manifestHTML;
-  for (const asset of transformedAssets) {
-    const href = asset.startsWith("/") ? asset : createPagesDevAssetUrl(asset);
-    if (html.includes(`href="${escapeHtmlAttr(href)}"`)) continue;
-    html += `<link rel="stylesheet"${nonceAttr} href="${escapeHtmlAttr(href)}" />\n  `;
-  }
-  return html;
-}
-
 /**
  * Emit a `getServerSideProps` / `getStaticProps` `{ redirect }` result.
  *
@@ -324,10 +192,19 @@ function writeGsspRedirect(
     ...props,
     pageProps: props.pageProps,
   });
+  // `getServerSideProps` may set response headers before returning a redirect.
+  // Pass them explicitly to writeHead: unlike the normal render path, redirects
+  // return before the later gSSP-header capture/forwarding step runs.
+  const gsspHeaders = Object.fromEntries(
+    Object.entries(res.getHeaders()).filter(
+      (entry): entry is [string, string | number | string[]] => entry[1] !== undefined,
+    ),
+  );
 
   if (isDangerousScheme(resolved.destination)) {
     const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
-    const headers: Record<string, string> = {
+    const headers: Record<string, string | number | string[]> = {
+      ...gsspHeaders,
       "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
       "Content-Type": "text/plain; charset=utf-8",
     };
@@ -343,7 +220,10 @@ function writeGsspRedirect(
     // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
     // `_next/data` redirect exits for deployment-skew protection. Fixes #1829.
     const deploymentId = process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
-    const dataHeaders: Record<string, string> = { "Content-Type": "application/json" };
+    const dataHeaders: Record<string, string | number | string[]> = {
+      ...gsspHeaders,
+      "Content-Type": "application/json",
+    };
     if (deploymentId) {
       dataHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
     }
@@ -358,6 +238,7 @@ function writeGsspRedirect(
 
   const location = resolvePagesRedirectLocation(resolved, options.basePath);
   res.writeHead(resolved.statusCode, {
+    ...gsspHeaders,
     Location: location,
     ...(resolved.statusCode === 308 ? { Refresh: `0;url=${location}` } : {}),
   });
@@ -366,6 +247,11 @@ function writeGsspRedirect(
 
 /** Body placeholder used to split the document shell for streaming. */
 const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
+
+function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
+  res.removeHeader("Content-Length");
+  res.removeHeader("Transfer-Encoding");
+}
 
 /**
  * Stream a Pages Router page response using progressive SSR.
@@ -394,6 +280,8 @@ async function streamPageToResponse(
     extraHeaders?: Record<string, string | string[]>;
     /** Called after renderToReadableStream resolves (shell ready) to collect head HTML */
     getHeadHTML: () => string;
+    /** Called after the shell renders to collect metadata emitted at the tail of `<head>`. */
+    getTailHeadHTML?: () => string;
     /**
      * Build the React tree with optional App/Component enhancers applied.
      * Used by the Pages Router `_document.getInitialProps` contract:
@@ -422,6 +310,8 @@ async function streamPageToResponse(
     crossOrigin?: string;
     /** Buffer the body before writing headers so error-page fallback remains safe. */
     bufferBodyBeforeHeaders?: boolean;
+    /** Keep a response Content-Type set before rendering a notFound page. */
+    preserveExistingContentType?: boolean;
   },
 ): Promise<void> {
   const {
@@ -434,12 +324,14 @@ async function streamPageToResponse(
     statusCode,
     extraHeaders,
     getHeadHTML,
+    getTailHeadHTML,
     enhancePageElement,
     scriptNonce,
     documentContext,
     setDocumentInitialHead,
     crossOrigin,
     bufferBodyBeforeHeaders = false,
+    preserveExistingContentType = false,
   } = options;
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
@@ -493,9 +385,17 @@ async function streamPageToResponse(
 
   // Now that the shell has rendered (and any _document.getInitialProps
   // has injected its tags), collect head HTML.
-  let headHTML = getHeadHTML();
+  const headHTML = getHeadHTML();
+  // Head content can legally include arbitrary inline script/style text, so
+  // fixed sentinels would be user-collidable and could truncate the extracted
+  // block. A per-response UUID keeps the transform markers unambiguous.
+  const ssrHeadMarkerId = randomUUID();
+  const ssrHeadStartMarker = `<!--VINEXT_SSR_HEAD_START:${ssrHeadMarkerId}-->`;
+  const ssrHeadEndMarker = `<!--VINEXT_SSR_HEAD_END:${ssrHeadMarkerId}-->`;
+  let tailHeadHTML = getTailHeadHTML?.() ?? "";
   if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
-    headHTML += `\n  ${documentRenderPage.stylesHTML}`;
+    if (tailHeadHTML) tailHeadHTML += "\n  ";
+    tailHeadHTML += documentRenderPage.stylesHTML;
   }
 
   // Build the document shell with a placeholder for the body
@@ -541,11 +441,12 @@ async function streamPageToResponse(
     );
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
-    // Inject head tags
-    if (headHTML || fontHeadHTML || generatedAssetHeadHTML) {
+    if (headHTML || fontHeadHTML || generatedAssetHeadHTML || tailHeadHTML) {
       docHtml = docHtml.replace(
         "</head>",
-        `  ${protectAssetTags(fontHeadHTML)}${protectAssetTags(headHTML)}\n  ${generatedAssetHeadHTML}\n</head>`,
+        `${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}` +
+          `  ${protectAssetTags(fontHeadHTML)}\n  ${generatedAssetHeadHTML}\n` +
+          `  ${protectAssetTags(tailHeadHTML)}\n</head>`,
       );
     }
     // Inject scripts: replace placeholder or append before </body>
@@ -563,8 +464,10 @@ async function streamPageToResponse(
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
-  ${protectAssetTags(fontHeadHTML)}${protectAssetTags(headHTML)}
+  ${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}
+  ${protectAssetTags(fontHeadHTML)}
   ${generatedAssetHeadHTML}
+  ${protectAssetTags(tailHeadHTML)}
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
@@ -586,6 +489,25 @@ async function streamPageToResponse(
     }),
     protectedAssetMarker,
   );
+  // Keep collected head tags in the template while Vite transforms it, then
+  // move the transformed block ahead of Vite's prepended dev scripts and any
+  // custom Document children. This preserves both Vite's HTML transforms and
+  // Next.js's canonical charset, viewport, and user-tag ordering.
+  const ssrHeadStart = transformedShell.indexOf(ssrHeadStartMarker);
+  const ssrHeadEnd = transformedShell.indexOf(ssrHeadEndMarker);
+  if (ssrHeadStart !== -1 && ssrHeadEnd > ssrHeadStart) {
+    const transformedHeadHTML = transformedShell.slice(
+      ssrHeadStart + ssrHeadStartMarker.length,
+      ssrHeadEnd,
+    );
+    transformedShell =
+      transformedShell.slice(0, ssrHeadStart) +
+      transformedShell.slice(ssrHeadEnd + ssrHeadEndMarker.length);
+    transformedShell = transformedShell.replace(
+      /<head(?:\s[^>]*)?>/i,
+      (openingHead) => `${openingHead}${transformedHeadHTML}`,
+    );
+  }
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
@@ -595,10 +517,10 @@ async function streamPageToResponse(
   // Set array-valued headers (e.g. Set-Cookie from gSSP) via setHeader()
   // before writeHead(), since writeHead()'s headers object doesn't handle
   // arrays portably. Then writeHead() merges with any setHeader() calls.
-  const headers: Record<string, string> = {
-    "Content-Type": "text/html; charset=utf-8",
-    "Transfer-Encoding": "chunked",
-  };
+  const headers: Record<string, string> = { "Transfer-Encoding": "chunked" };
+  if (!preserveExistingContentType || !res.hasHeader("Content-Type")) {
+    headers["Content-Type"] = "text/html; charset=utf-8";
+  }
   if (extraHeaders) {
     for (const [key, val] of Object.entries(extraHeaders)) {
       if (Array.isArray(val)) {
@@ -796,6 +718,7 @@ export function createSSRHandler(
 
     const errorPageContext = {
       basePath,
+      clientTraceMetadata,
       locale: locale ?? currentDefaultLocale,
       locales: i18nConfig?.locales,
       defaultLocale: currentDefaultLocale,
@@ -1231,11 +1154,14 @@ export function createSSRHandler(
               // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
               const deploymentId =
                 process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
-              const notFoundHeaders: Record<string, string> = {
-                "Content-Type": "application/json",
-              };
-              if (deploymentId) notFoundHeaders[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
-              res.writeHead(404, notFoundHeaders);
+              stripDevPagesNotFoundFramingHeaders(res);
+              if (!res.hasHeader("Content-Type")) {
+                res.setHeader("Content-Type", "application/json");
+              }
+              if (deploymentId && !res.hasHeader(NEXTJS_DEPLOYMENT_ID_HEADER)) {
+                res.setHeader(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);
+              }
+              res.writeHead(404);
               res.end('{"notFound":true}');
               return;
             }
@@ -1549,7 +1475,7 @@ export function createSSRHandler(
         // Collect SSR font links (Google Fonts <link> tags) and font class styles
         let fontHeadHTML = "";
         const appAssetPath = AppComponent ? appFilePath : null;
-        const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+        const assetHeadHTML = await collectPagesDevInitialStylesheetHeadHTML(
           server,
           runner,
           [appAssetPath, route.filePath],
@@ -1756,15 +1682,12 @@ export function createSSRHandler(
           // after renderToReadableStream resolves). Head tags from Suspense
           // children arrive late — this matches Next.js behavior.
           //
-          // Trace metadata is appended after Head shim output so it always
-          // lands in the final document head. When clientTraceMetadata is
-          // unset (the common case) this is a no-op.
-          getHeadHTML: () => {
-            const headHTML =
-              typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "";
-            const traceHTML = getClientTraceMetadataHTML(clientTraceMetadata);
-            return traceHTML ? `${headHTML}\n  ${traceHTML}` : headHTML;
-          },
+          getHeadHTML: () =>
+            typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
+          // Next.js renders trace metadata after custom Document children and
+          // generated assets, immediately before Document styles. Keep it out
+          // of the collected Head block that dev hoists to the top.
+          getTailHeadHTML: () => getClientTraceMetadataHTML(clientTraceMetadata),
           setDocumentInitialHead:
             typeof headShim.setDocumentInitialHead === "function"
               ? headShim.setDocumentInitialHead
@@ -1855,6 +1778,7 @@ async function renderErrorPage(
   reactStrictMode = false,
   context: {
     basePath: string;
+    clientTraceMetadata?: readonly string[];
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
@@ -2029,7 +1953,7 @@ async function renderErrorPage(
       const responseHeaders = typeof res.getHeaders === "function" ? res.getHeaders() : undefined;
       const scriptNonce = getScriptNonceFromNodeHeaderSources(req.headers, responseHeaders);
       const nonceAttr = createNonceAttribute(scriptNonce);
-      const assetHeadHTML = await collectDevInitialStylesheetHeadHTML(
+      const assetHeadHTML = await collectPagesDevInitialStylesheetHeadHTML(
         server,
         runner,
         [appAssetPath, errorAssetPath],
@@ -2060,6 +1984,7 @@ async function renderErrorPage(
         setPagePatternsFromNextData: true,
       });
       const errorScripts = `${errorNextDataScript}\n${errorHydrationScript}`;
+      if (statusCode === 404) stripDevPagesNotFoundFramingHeaders(res);
       if (DocumentComponent) {
         await streamPageToResponse(res, element, {
           url,
@@ -2090,14 +2015,17 @@ async function renderErrorPage(
           },
           getHeadHTML: () =>
             typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
+          getTailHeadHTML: () => getClientTraceMetadataHTML(context.clientTraceMetadata),
           setDocumentInitialHead:
             typeof headShim.setDocumentInitialHead === "function"
               ? headShim.setDocumentInitialHead
               : undefined,
           crossOrigin: context.crossOrigin,
+          preserveExistingContentType: statusCode === 404,
         });
       } else {
         const bodyHtml = await renderToStringAsync(element);
+        const traceMetaHTML = getClientTraceMetadataHTML(context.clientTraceMetadata);
         const protectedAssetMarker = `data-vinext-document-asset-props-protected-${randomUUID()}`;
         const protectAssetTags = (assetHtml: string): string =>
           markDocumentAssetPropsProtectedTags(assetHtml, protectedAssetMarker);
@@ -2116,6 +2044,7 @@ async function renderErrorPage(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   ${assetHeadHTML}
+  ${traceMetaHTML}
 </head>
 <body>
   <div id="__next">${protectAssetTags(bodyHtml)}</div>
@@ -2133,7 +2062,12 @@ async function renderErrorPage(
           ),
           protectedAssetMarker,
         );
-        res.writeHead(statusCode, { "Content-Type": "text/html; charset=utf-8" });
+        res.writeHead(
+          statusCode,
+          statusCode === 404 && res.hasHeader("Content-Type")
+            ? undefined
+            : { "Content-Type": "text/html; charset=utf-8" },
+        );
         res.end(transformedHtml);
       }
       return;
