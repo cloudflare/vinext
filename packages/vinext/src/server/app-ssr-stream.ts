@@ -58,7 +58,12 @@ export function navigationRuntimeRscBootstrapExpression(): string {
 
 export function createNavigationRuntimeRscMetadataScript(
   params: Record<string, string | string[]>,
-  nav: { pathname: string; searchParams: [string, string][] },
+  nav: {
+    isForceStatic?: boolean;
+    isStaticGeneration?: boolean;
+    pathname: string;
+    searchParams: [string, string][];
+  },
   dynamicStaleTimeSeconds?: number,
 ): string {
   return (

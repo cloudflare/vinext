@@ -428,11 +428,25 @@ describe("history snapshot target normalization shared with same-route popstate 
     // basePath-prefixed, percent-encoded popstate URL must normalize to the same
     // string the snapshot produced. Guards the #1743 basePath target check.
     const snapshot = createClientNavigationRenderSnapshot(
-      "https://example.com/scroll-restoration?q=a+b",
+      "https://example.com/scroll-restoration?q=a%20b",
       {},
     );
-    const popstateTarget = new URL("https://example.com/docs/scroll-restoration?q=a%20b");
+    const popstateTarget = new URL("https://example.com/docs/scroll-restoration?q=a+b");
 
+    expect(createBasePathStrippedPathAndSearch(popstateTarget, "/docs")).toBe(
+      createSnapshotPathAndSearch(snapshot),
+    );
+  });
+
+  it("retains canonical URL search identity when force-static hides hook search params", () => {
+    const snapshot = createClientNavigationRenderSnapshot(
+      "https://example.com/scroll-restoration?q=a%20b",
+      {},
+      true,
+    );
+    const popstateTarget = new URL("https://example.com/docs/scroll-restoration?q=a+b");
+
+    expect(snapshot.searchParams.toString()).toBe("");
     expect(createBasePathStrippedPathAndSearch(popstateTarget, "/docs")).toBe(
       createSnapshotPathAndSearch(snapshot),
     );

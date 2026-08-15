@@ -65,6 +65,7 @@ type BrowserNavigationCommitEffectFactory = (options: {
   bfcacheIds: Readonly<Record<string, string>>;
   href: string;
   historyUpdateMode: HistoryUpdateMode | undefined;
+  isForceStatic: boolean;
   navId: number;
   params: Record<string, string | string[]>;
   previousNextUrl: string | null;
@@ -840,6 +841,7 @@ export function createAppBrowserNavigationController(
           bfcacheIds: approvedCommit.action.bfcacheIds,
           href: options.targetHref,
           historyUpdateMode: options.historyUpdateMode,
+          isForceStatic: options.navigationSnapshot.isForceStatic === true,
           navId: options.navId,
           params: options.params,
           previousNextUrl: approvedCommit.previousNextUrl,

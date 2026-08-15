@@ -22,6 +22,12 @@ export default function HomePage() {
           <li>
             <Link href="/products/widget">Product: widget (Pages Router)</Link>
           </li>
+          <li>
+            <Link href="/search-params?value=navigated">Search params</Link>
+          </li>
+          <li>
+            <Link href="/force-static-search-params?value=ignored">Force-static search params</Link>
+          </li>
         </ul>
       </nav>
     </main>

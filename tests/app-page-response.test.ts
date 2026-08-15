@@ -12,6 +12,7 @@ import {
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_FORCE_STATIC_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { withEnvVar } from "./env-test-helpers.js";
@@ -489,6 +490,28 @@ describe("app page response helpers", () => {
     });
 
     expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
+  });
+
+  it("marks force-static RSC responses for client navigation", () => {
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      isForceStatic: true,
+      middlewareContext: { headers: null, status: null },
+      policy: {},
+    });
+
+    expect(response.headers.get(VINEXT_FORCE_STATIC_HEADER)).toBe("1");
+  });
+
+  it("keeps ordinary-route force-static policy authoritative over middleware", () => {
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      middlewareContext: {
+        headers: new Headers({ [VINEXT_FORCE_STATIC_HEADER]: "1" }),
+        status: null,
+      },
+      policy: {},
+    });
+
+    expect(response.headers.get(VINEXT_FORCE_STATIC_HEADER)).toBe("0");
   });
 
   it("keeps the framework rendered path when middleware sets the internal alias header", () => {

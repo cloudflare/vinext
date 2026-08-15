@@ -43,6 +43,7 @@ import {
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_FORCE_STATIC_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
@@ -314,6 +315,7 @@ export type CachedRscResponse = {
   contentType: string;
   dynamicStaleTimeSeconds?: number;
   expiresAt?: number;
+  isForceStatic?: boolean;
   mountedSlotsHeader?: string | null;
   paramsHeader: string | null;
   preparedElements?: AppElements;
@@ -1244,6 +1246,7 @@ export function createCachedRscResponseSnapshot(
     ...(completedDynamicStaleTimeSeconds !== undefined ? { completedDynamicStaleTimeSeconds } : {}),
     contentType: response.headers.get("content-type") ?? VINEXT_RSC_CONTENT_TYPE,
     ...(dynamicStaleTimeSeconds !== undefined ? { dynamicStaleTimeSeconds } : {}),
+    ...(response.headers.get(VINEXT_FORCE_STATIC_HEADER) === "1" ? { isForceStatic: true } : {}),
     mountedSlotsHeader: response.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     paramsHeader: response.headers.get(VINEXT_PARAMS_HEADER),
     renderedPathAndSearch: parseRenderedPathAndSearchHeader(
@@ -1316,6 +1319,9 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
   }
   if (isStaleTimeSeconds(cached.dynamicStaleTimeSeconds)) {
     headers.set(VINEXT_DYNAMIC_STALE_TIME_HEADER, String(cached.dynamicStaleTimeSeconds));
+  }
+  if (cached.isForceStatic === true) {
+    headers.set(VINEXT_FORCE_STATIC_HEADER, "1");
   }
   if (isStaleTimeSeconds(cached.completedDynamicStaleTimeSeconds)) {
     headers.set(VINEXT_RSC_COMPLETION_METADATA_HEADER, "resolved");
@@ -1748,11 +1754,13 @@ type ClientNavigationState = {
   originalReplaceState: typeof window.history.replaceState;
   patchInstalled: boolean;
   hasPendingNavigationUpdate: boolean;
+  isForceStatic: boolean;
   suppressUrlNotifyCount: number;
   navigationSnapshotActiveCount: number;
 };
 
 type CommitClientNavigationStateOptions = {
+  isForceStatic?: boolean;
   releaseSnapshot?: boolean;
 };
 
@@ -1796,6 +1804,7 @@ export function getClientNavigationState(): ClientNavigationState | null {
     originalReplaceState: window.history.replaceState.bind(window.history),
     patchInstalled: false,
     hasPendingNavigationUpdate: false,
+    isForceStatic: false,
     suppressUrlNotifyCount: 0,
     navigationSnapshotActiveCount: 0,
   };
@@ -1899,7 +1908,7 @@ function syncCommittedUrlStateFromLocation(): boolean {
     changed = true;
   }
 
-  const search = window.location.search;
+  const search = state.isForceStatic ? "" : window.location.search;
   if (search !== state.cachedSearch) {
     state.cachedSearch = search;
     state.cachedReadonlySearchParams = new ReadonlyURLSearchParams(search);
@@ -1986,9 +1995,12 @@ const _EMPTY_PARAMS: Record<string, string | string[]> = {};
 // ---------------------------------------------------------------------------
 
 export type ClientNavigationRenderSnapshot = {
+  isForceStatic?: boolean;
   pathname: string;
   searchParams: ReadonlyURLSearchParams;
   params: Record<string, string | string[]>;
+  /** Canonical browser-visible query, retained when force-static hides it from hooks. */
+  urlSearch?: string;
 };
 
 const _CLIENT_NAV_RENDER_CTX_KEY = Symbol.for("vinext.clientNavigationRenderContext");
@@ -2024,19 +2036,36 @@ export function useClientNavigationRenderSnapshot(): ClientNavigationRenderSnaps
 export function createClientNavigationRenderSnapshot(
   href: string,
   params: Record<string, string | string[]>,
+  isForceStatic: boolean = false,
 ): ClientNavigationRenderSnapshot {
   const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
   const url = new URL(href, origin);
 
   return {
+    isForceStatic,
     pathname: stripBasePath(url.pathname, __basePath),
-    searchParams: new ReadonlyURLSearchParams(url.search),
+    searchParams: new ReadonlyURLSearchParams(isForceStatic ? "" : url.search),
     params,
+    urlSearch: url.searchParams.toString(),
   };
 }
 
+/** Initialize the committed client URL policy before App Router hydration subscribes. */
+export function initializeClientNavigationForceStatic(isForceStatic: boolean): void {
+  const state = getClientNavigationState();
+  if (!state) return;
+  state.isForceStatic = isForceStatic;
+  const search = isForceStatic ? "" : window.location.search;
+  state.cachedSearch = search;
+  state.cachedReadonlySearchParams = new ReadonlyURLSearchParams(search);
+}
+
+export function isClientNavigationForceStatic(): boolean {
+  return getClientNavigationState()?.isForceStatic === true;
+}
+
 export function createSnapshotPathAndSearch(snapshot: ClientNavigationRenderSnapshot): string {
-  const query = snapshot.searchParams.toString();
+  const query = snapshot.urlSearch ?? snapshot.searchParams.toString();
   return query === "" ? snapshot.pathname : `${snapshot.pathname}?${query}`;
 }
 
@@ -2274,6 +2303,10 @@ export function commitClientNavigationState(
   if (isServer) return;
   const state = getClientNavigationState();
   if (!state) return;
+
+  if (options?.isForceStatic !== undefined) {
+    state.isForceStatic = options.isForceStatic;
+  }
 
   // Only navigation-owned commits may release a render snapshot. Ownerless URL
   // syncs still update committed pathname/search state, but must not consume

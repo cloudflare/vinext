@@ -713,6 +713,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       clearRequestContext: options.clearRequestContext,
       hasRequestSearchParams,
       isEdgeRuntime: options.isEdgeRuntime,
+      isForceStatic,
       isRscRequest: options.isRscRequest,
       isrDebug: options.isrDebug,
       isrGet: options.isrGet,

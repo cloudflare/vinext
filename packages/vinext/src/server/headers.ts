@@ -69,6 +69,9 @@ export const VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
 /** Per-page dynamic stale time in seconds for App Router RSC responses. */
 export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
 
+/** Marks an App Router RSC response whose route uses `dynamic = "force-static"`. */
+export const VINEXT_FORCE_STATIC_HEADER = "X-Vinext-Force-Static";
+
 /** Marks an RSC body carrying completion metadata after the Flight payload. */
 export const VINEXT_RSC_COMPLETION_METADATA_HEADER = "X-Vinext-Rsc-Completion-Metadata";
 

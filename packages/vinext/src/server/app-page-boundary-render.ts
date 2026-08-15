@@ -442,6 +442,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
           fontData,
           fontLinkHeader: options.buildFontLinkHeader(fontData.preloads),
           isEdgeRuntime: options.isEdgeRuntime,
+          isStaticGeneration: process.env.VINEXT_PRERENDER === "1",
           middlewareHeaders: options.middlewareContext.headers,
           navigationContext: options.getNavigationContext() ?? {
             pathname,

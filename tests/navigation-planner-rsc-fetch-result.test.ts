@@ -115,6 +115,31 @@ describe("navigationPlanner RSC fetch-result classification", () => {
     });
   });
 
+  it("defers a missing compatibility header when Flight metadata will validate it", () => {
+    const decision = classify({
+      compatibilityIdHeader: null,
+      deferMissingCompatibilityCheck: true,
+      responseUrl: null,
+    });
+
+    expect(decision).toMatchObject({
+      discardBody: false,
+      kind: "proceedToCommit",
+    });
+  });
+
+  it("does not defer a present mismatched compatibility header", () => {
+    const decision = classify({
+      compatibilityIdHeader: "server-build",
+      deferMissingCompatibilityCheck: true,
+    });
+
+    expect(decision).toMatchObject({
+      kind: "hardNavigate",
+      reason: "rscCompatibilityMismatch",
+    });
+  });
+
   it("follows response-URL redirects without discarding the body", () => {
     const decision = classify({
       effectiveHistoryUpdateMode: "push",

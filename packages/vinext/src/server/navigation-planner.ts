@@ -175,6 +175,8 @@ export type RscFetchResultFacts = {
   isRscContentType: boolean;
   hasBody: boolean;
   compatibilityIdHeader: string | null;
+  /** A headerless response carries the compatibility id in decoded Flight metadata. */
+  deferMissingCompatibilityCheck?: boolean;
   responseUrl: string | null;
   streamedRedirectTarget: string | null;
   streamedRedirectType?: "push" | "replace" | null;
@@ -486,21 +488,23 @@ function classifyRscFetchResult(facts: RscFetchResultFacts): RscFetchResultDecis
     });
   }
 
-  const compatibilityDecision = resolveRscCompatibilityNavigationDecision({
-    clientCompatibilityId: facts.clientCompatibilityId,
-    currentHref: facts.currentHref,
-    origin: facts.origin,
-    responseCompatibilityId: facts.compatibilityIdHeader,
-    responseUrl: facts.responseUrl,
-  });
-  if (compatibilityDecision.kind === "hard-navigate") {
-    return createRscFetchResultHardNavigationDecision({
-      discardBody: false,
-      facts,
-      reason: "rscCompatibilityMismatch",
-      reasonCode: NavigationTraceReasonCodes.rscCompatibilityMismatch,
-      url: compatibilityDecision.hardNavigationTarget,
+  if (!(facts.deferMissingCompatibilityCheck === true && facts.compatibilityIdHeader === null)) {
+    const compatibilityDecision = resolveRscCompatibilityNavigationDecision({
+      clientCompatibilityId: facts.clientCompatibilityId,
+      currentHref: facts.currentHref,
+      origin: facts.origin,
+      responseCompatibilityId: facts.compatibilityIdHeader,
+      responseUrl: facts.responseUrl,
     });
+    if (compatibilityDecision.kind === "hard-navigate") {
+      return createRscFetchResultHardNavigationDecision({
+        discardBody: false,
+        facts,
+        reason: "rscCompatibilityMismatch",
+        reasonCode: NavigationTraceReasonCodes.rscCompatibilityMismatch,
+        url: compatibilityDecision.hardNavigationTarget,
+      });
+    }
   }
 
   if (facts.responseUrl !== null) {

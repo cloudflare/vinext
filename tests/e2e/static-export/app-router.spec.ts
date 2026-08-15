@@ -72,13 +72,115 @@ test.describe("Static Export — App Router", () => {
     await expect(page.locator("h1")).toHaveText("About");
   });
 
+  test("useSearchParams reads the browser query during hydration", async ({ page }) => {
+    await page.goto(`${BASE}/search-params?value=direct`);
+
+    await expect(page.getByTestId("query-value")).toHaveText("direct");
+    expect(await page.evaluate(() => window.location.search)).toBe("?value=direct");
+  });
+
+  test("useSearchParams reads the target query after client navigation", async ({ page }) => {
+    await page.goto(`${BASE}/`);
+    await page.evaluate(() => {
+      (
+        window as typeof window & { __staticExportNavigationSentinel?: number }
+      ).__staticExportNavigationSentinel = 42;
+    });
+    const documentRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.isNavigationRequest()) documentRequests.push(request.url());
+    });
+    await page.locator('a[href="/search-params?value=navigated"]').click();
+    await page.waitForURL(`${BASE}/search-params?value=navigated`);
+
+    await expect(page.getByTestId("query-value")).toHaveText("navigated");
+    expect(
+      await page.evaluate(
+        () =>
+          (window as typeof window & { __staticExportNavigationSentinel?: number })
+            .__staticExportNavigationSentinel,
+      ),
+    ).toBe(42);
+    expect(documentRequests).toEqual([]);
+  });
+
+  test("useSearchParams stays empty for force-static pages", async ({ page }) => {
+    await page.goto(`${BASE}/force-static-search-params?value=ignored`);
+
+    await expect(page.getByTestId("query-value")).toHaveText("missing");
+  });
+
+  test("useSearchParams stays empty after client navigation to a force-static page", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/`);
+    await page.evaluate(() => {
+      (
+        window as typeof window & { __staticExportNavigationSentinel?: number }
+      ).__staticExportNavigationSentinel = 42;
+    });
+    const documentRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.isNavigationRequest()) documentRequests.push(request.url());
+    });
+    await page.locator('a[href="/force-static-search-params?value=ignored"]').click();
+    await page.waitForURL(`${BASE}/force-static-search-params?value=ignored`);
+
+    await expect(page.getByTestId("query-value")).toHaveText("missing");
+    expect(
+      await page.evaluate(
+        () =>
+          (window as typeof window & { __staticExportNavigationSentinel?: number })
+            .__staticExportNavigationSentinel,
+      ),
+    ).toBe(42);
+    expect(documentRequests).toEqual([]);
+  });
+
+  test("leaving and revisiting force-static restores each route's search-param policy", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/force-static-search-params?value=ignored`);
+    await expect(page.getByTestId("query-value")).toHaveText("missing");
+    await page.evaluate(() => {
+      (
+        window as typeof window & { __staticExportNavigationSentinel?: number }
+      ).__staticExportNavigationSentinel = 42;
+    });
+    const documentRequests: string[] = [];
+    page.on("request", (request) => {
+      if (request.isNavigationRequest()) documentRequests.push(request.url());
+    });
+
+    await page.locator('a[href="/search-params?value=restored"]').click();
+    await page.waitForURL(`${BASE}/search-params?value=restored`);
+    await expect(page.getByTestId("query-value")).toHaveText("restored");
+
+    await page.evaluate(() => window.history.back());
+    await page.waitForURL(`${BASE}/force-static-search-params?value=ignored`);
+    await expect(page.getByTestId("query-value")).toHaveText("missing");
+
+    await page.evaluate(() => window.history.forward());
+    await page.waitForURL(`${BASE}/search-params?value=restored`);
+    await expect(page.getByTestId("query-value")).toHaveText("restored");
+    expect(
+      await page.evaluate(
+        () =>
+          (window as typeof window & { __staticExportNavigationSentinel?: number })
+            .__staticExportNavigationSentinel,
+      ),
+    ).toBe(42);
+    expect(documentRequests).toEqual([]);
+  });
+
   test("root layout metadata is applied", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page).toHaveTitle("Static Export Fixture");
   });
 
   test("404 page for non-existent route", async ({ page }) => {
-    const response = await page.goto(`${BASE}/nonexistent-page`);
+    const response = await page.goto(`${BASE}/nonexistent-page?value=not-found-query`);
     expect(response?.status()).toBe(404);
+    await expect(page.getByTestId("query-value")).toHaveText("not-found-query");
   });
 });

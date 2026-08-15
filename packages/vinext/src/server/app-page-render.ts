@@ -84,6 +84,7 @@ import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-obse
 import { peekDynamicUsage } from "vinext/shims/headers";
 import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
+import { getVinextRscCompatibilityId } from "./app-rsc-cache-busting.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -717,6 +718,8 @@ export async function renderAppPageLifecycle(
     options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds();
   const outgoingElement = AppElementsWire.encodeOutgoingPayload({
     element: options.element,
+    isForceStatic: options.isForceStatic,
+    rscCompatibilityId: getVinextRscCompatibilityId() ?? undefined,
     layoutFlags,
     ...(dynamicStaleTimeSeconds !== undefined &&
     options.isPrerender !== true &&
@@ -857,6 +860,7 @@ export async function renderAppPageLifecycle(
       // the conservative pending expiry after decoding.
       dynamicStaleTimeSeconds: shouldEmitDynamicStaleTime ? dynamicStaleTimeSeconds : undefined,
       isEdgeRuntime: options.isEdgeRuntime,
+      isForceStatic: options.isForceStatic,
       middlewareContext: options.middlewareContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       params: options.navigationParams,

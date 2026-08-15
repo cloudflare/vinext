@@ -23,6 +23,8 @@ const LEGACY_APP_SOURCE_PAGE_KEY = "__sourcePage";
 export const APP_ARTIFACT_COMPATIBILITY_KEY = "__artifactCompatibility";
 export const APP_CACHE_ENTRY_REUSE_PROOF_KEY = "__cacheEntryReuseProof";
 export const APP_DYNAMIC_STALE_TIME_KEY = "__dynamicStaleTime";
+export const APP_FORCE_STATIC_KEY = "__forceStatic";
+export const APP_RSC_COMPATIBILITY_ID_KEY = "__rscCompatibilityId";
 export const APP_INTERCEPTION_KEY = "__interception";
 export const APP_INTERCEPTION_CONTEXT_KEY = "__interceptionContext";
 export const APP_LAYOUT_IDS_KEY = "__layoutIds";
@@ -200,6 +202,8 @@ type AppElementsMetadata = {
   artifactCompatibility: ArtifactCompatibilityEnvelope;
   cacheEntryReuseProof?: CacheEntryReuseProof;
   dynamicStaleTimeSeconds?: number;
+  isForceStatic?: boolean;
+  rscCompatibilityId?: string;
   interception: AppElementsInterception | null;
   interceptionContext: string | null;
   layoutIds: readonly string[];
@@ -268,6 +272,8 @@ type AppElementsWireKeys = {
   readonly artifactCompatibility: typeof APP_ARTIFACT_COMPATIBILITY_KEY;
   readonly cacheEntryReuseProof: typeof APP_CACHE_ENTRY_REUSE_PROOF_KEY;
   readonly dynamicStaleTime: typeof APP_DYNAMIC_STALE_TIME_KEY;
+  readonly forceStatic: typeof APP_FORCE_STATIC_KEY;
+  readonly rscCompatibilityId: typeof APP_RSC_COMPATIBILITY_ID_KEY;
   readonly interception: typeof APP_INTERCEPTION_KEY;
   readonly interceptionContext: typeof APP_INTERCEPTION_CONTEXT_KEY;
   readonly layoutIds: typeof APP_LAYOUT_IDS_KEY;
@@ -292,6 +298,8 @@ type AppElementsWireCodec = {
     artifactCompatibility?: ArtifactCompatibilityEnvelope;
     cacheEntryReuseProof?: CacheEntryReuseProof;
     dynamicStaleTimeSeconds?: number;
+    isForceStatic?: boolean;
+    rscCompatibilityId?: string;
     layoutFlags: LayoutFlags;
     skipDisposition?: ClientReuseManifestSkipDisposition;
   }): ReactNode | AppOutgoingElements;
@@ -685,6 +693,8 @@ export function buildOutgoingAppPayload(input: {
   artifactCompatibility?: ArtifactCompatibilityEnvelope;
   cacheEntryReuseProof?: CacheEntryReuseProof;
   dynamicStaleTimeSeconds?: number;
+  isForceStatic?: boolean;
+  rscCompatibilityId?: string;
   layoutFlags: LayoutFlags;
   skipDisposition?: ClientReuseManifestSkipDisposition;
 }): ReactNode | AppOutgoingElements {
@@ -722,6 +732,12 @@ export function buildOutgoingAppPayload(input: {
   }
   if (input.dynamicStaleTimeSeconds !== undefined) {
     payload[APP_DYNAMIC_STALE_TIME_KEY] = input.dynamicStaleTimeSeconds;
+  }
+  if (input.isForceStatic === true) {
+    payload[APP_FORCE_STATIC_KEY] = true;
+  }
+  if (input.rscCompatibilityId) {
+    payload[APP_RSC_COMPATIBILITY_ID_KEY] = input.rscCompatibilityId;
   }
   return payload;
 }
@@ -893,6 +909,12 @@ export function readAppElementsMetadata(
     dynamicStaleTime >= 0
       ? dynamicStaleTime
       : undefined;
+  const isForceStatic = elements[APP_FORCE_STATIC_KEY] === true;
+  const rscCompatibilityIdValue = elements[APP_RSC_COMPATIBILITY_ID_KEY];
+  const rscCompatibilityId =
+    typeof rscCompatibilityIdValue === "string" && rscCompatibilityIdValue.length > 0
+      ? rscCompatibilityIdValue
+      : undefined;
   // Next.js carries source segments in its Flight router state and only joins
   // them into window.next.__internal_src_page in the browser. The legacy key is
   // retained only as a reader for cached payloads from rolling deployments.
@@ -907,6 +929,8 @@ export function readAppElementsMetadata(
     artifactCompatibility,
     ...(cacheEntryReuseProof ? { cacheEntryReuseProof } : {}),
     ...(dynamicStaleTimeSeconds === undefined ? {} : { dynamicStaleTimeSeconds }),
+    ...(isForceStatic ? { isForceStatic: true } : {}),
+    ...(rscCompatibilityId ? { rscCompatibilityId } : {}),
     interception,
     interceptionContext: interceptionContext ?? null,
     layoutIds,
@@ -927,6 +951,8 @@ export const AppElementsWire: AppElementsWireCodec = {
     artifactCompatibility: APP_ARTIFACT_COMPATIBILITY_KEY,
     cacheEntryReuseProof: APP_CACHE_ENTRY_REUSE_PROOF_KEY,
     dynamicStaleTime: APP_DYNAMIC_STALE_TIME_KEY,
+    forceStatic: APP_FORCE_STATIC_KEY,
+    rscCompatibilityId: APP_RSC_COMPATIBILITY_ID_KEY,
     interception: APP_INTERCEPTION_KEY,
     interceptionContext: APP_INTERCEPTION_CONTEXT_KEY,
     layoutIds: APP_LAYOUT_IDS_KEY,

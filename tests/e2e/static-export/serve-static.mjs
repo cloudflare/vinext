@@ -78,9 +78,19 @@ const server = createServer(async (req, res) => {
   try {
     const parsed = new URL(req.url ?? "/", "http://localhost");
     let pathname = decodeURIComponent(parsed.pathname);
+    const acceptsRsc = req.headers.accept
+      ?.split(",")
+      .some((type) => type.trim().startsWith("text/x-component"));
+    const isRscRequest = req.headers.rsc === "1" || acceptsRsc;
 
-    // Directory index
-    if (pathname.endsWith("/")) pathname += "index.html";
+    // Static App Router navigation requests keep the visible pathname and use
+    // the RSC headers for content negotiation. Map them to the exported .rsc
+    // sibling so the fixture exercises a real soft navigation.
+    if (isRscRequest && !pathname.endsWith(".rsc")) {
+      pathname = pathname.endsWith("/") ? `${pathname}index.rsc` : `${pathname}.rsc`;
+    } else if (pathname.endsWith("/")) {
+      pathname += "index.html";
+    }
 
     // Resolve file path — try exact match, then .html extension
     let filePath = resolve(join(rootDir, pathname));

@@ -6,6 +6,7 @@ import {
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
+  createCompatibleOptimisticRouteTemplate,
   createOptimisticRouteElements,
   createOptimisticRouteTemplate,
   getOptimisticPrefetchSourceKey,
@@ -281,6 +282,46 @@ describe("App Router optimistic routing", () => {
 
     expect(navigationPayload?.params).toEqual({ slug: "post-2" });
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
+  });
+
+  it("rejects optimistic templates with a mismatched response compatibility header", () => {
+    const elements = {
+      ...createBlogElements(),
+      [AppElementsWire.keys.rscCompatibilityId]: "client-build",
+    };
+
+    expect(
+      createCompatibleOptimisticRouteTemplate({
+        basePath: "",
+        clientCompatibilityId: "client-build",
+        elements,
+        href: "/blog/post-1.rsc?_rsc=abc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        responseCompatibilityId: "server-build",
+        routeManifest: blogManifest(),
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects headerless optimistic templates with mismatched Flight metadata", () => {
+    const elements = {
+      ...createBlogElements(),
+      [AppElementsWire.keys.rscCompatibilityId]: "server-build",
+    };
+
+    expect(
+      createCompatibleOptimisticRouteTemplate({
+        basePath: "",
+        clientCompatibilityId: "client-build",
+        elements,
+        href: "/blog/post-1.rsc?_rsc=abc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        responseCompatibilityId: null,
+        routeManifest: blogManifest(),
+      }),
+    ).toBeNull();
   });
 
   it("includes active parallel slot params in optimistic navigation payloads", () => {

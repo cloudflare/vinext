@@ -7,6 +7,8 @@ import {
   APP_ARTIFACT_COMPATIBILITY_KEY,
   APP_CACHE_ENTRY_REUSE_PROOF_KEY,
   APP_DYNAMIC_STALE_TIME_KEY,
+  APP_FORCE_STATIC_KEY,
+  APP_RSC_COMPATIBILITY_ID_KEY,
   AppElementsWire,
   APP_INTERCEPTION_KEY,
   APP_INTERCEPTION_CONTEXT_KEY,
@@ -374,6 +376,32 @@ describe("AppElementsWire", () => {
 
     expect(payload[APP_DYNAMIC_STALE_TIME_KEY]).toBe(30);
     expect(AppElementsWire.readMetadata(payload).dynamicStaleTimeSeconds).toBe(30);
+  });
+
+  it("round-trips force-static policy through payload metadata", () => {
+    const payload = AppElementsWire.encodeOutgoingPayload({
+      element: {
+        ...AppElementsWire.createMetadataEntries({
+          interceptionContext: null,
+          rootLayoutTreePath: "/",
+          routeId: AppElementsWire.encodeRouteId("/force-static", null),
+        }),
+        [AppElementsWire.encodePageId("/force-static", null)]: "page",
+      },
+      isForceStatic: true,
+      rscCompatibilityId: "compat-static-export",
+      layoutFlags: {},
+    });
+
+    expect(isAppElementsRecord(payload)).toBe(true);
+    if (!isAppElementsRecord(payload)) return;
+
+    expect(payload[APP_FORCE_STATIC_KEY]).toBe(true);
+    expect(payload[APP_RSC_COMPATIBILITY_ID_KEY]).toBe("compat-static-export");
+    expect(AppElementsWire.readMetadata(payload)).toMatchObject({
+      isForceStatic: true,
+      rscCompatibilityId: "compat-static-export",
+    });
   });
 
   it("keeps legacy unmatched-slot markers compatible while parsing slot keys", () => {

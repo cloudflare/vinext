@@ -21,7 +21,10 @@ import {
 } from "../packages/vinext/src/server/cache-proof.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
-import { NEXT_ROUTER_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  NEXT_ROUTER_STALE_TIME_HEADER,
+  VINEXT_FORCE_STATIC_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -152,7 +155,23 @@ describe("app page cache helpers", () => {
     expect(rscResponse?.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
     expect(rscResponse?.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
     expect(rscResponse?.headers.get("x-nextjs-cache")).toBe("STALE");
+    expect(rscResponse?.headers.get(VINEXT_FORCE_STATIC_HEADER)).toBe("0");
     expect(await rscResponse?.arrayBuffer()).toEqual(rscData);
+  });
+
+  it("marks force-static cached RSC responses authoritatively", () => {
+    const response = buildAppPageCachedResponse(
+      buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer),
+      {
+        cacheState: "HIT",
+        isForceStatic: true,
+        isRscRequest: true,
+        middlewareHeaders: new Headers({ [VINEXT_FORCE_STATIC_HEADER]: "0" }),
+        revalidateSeconds: 60,
+      },
+    );
+
+    expect(response?.headers.get(VINEXT_FORCE_STATIC_HEADER)).toBe("1");
   });
 
   it("replays the entry's client stale time on cache hits", async () => {

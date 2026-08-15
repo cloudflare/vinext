@@ -321,6 +321,8 @@ function buildHeadInjectionHtml(
   scriptNonce?: string,
 ): string {
   const navPayload = {
+    isForceStatic: navContext.isForceStatic === true,
+    isStaticGeneration: navContext.isStaticGeneration === true,
     pathname: navContext.pathname,
     searchParams: [...navContext.searchParams.entries()],
   };

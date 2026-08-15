@@ -7,7 +7,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
-import { VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
+import { VINEXT_FORCE_STATIC_HEADER, VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
 import { applyClientStaleTimeHeader, applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -74,6 +74,7 @@ type BuildAppPageCachedResponseOptions = {
   cacheState: "HIT" | "STALE";
   expireSeconds?: number;
   isEdgeRuntime?: boolean;
+  isForceStatic?: boolean;
   isRscRequest: boolean;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
@@ -85,6 +86,7 @@ type ReadAppPageCacheResponseOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
   isEdgeRuntime?: boolean;
+  isForceStatic?: boolean;
   isRscRequest: boolean;
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
@@ -270,6 +272,7 @@ export function buildAppPageCachedResponse(
     });
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
+    rscHeaders.set(VINEXT_FORCE_STATIC_HEADER, options.isForceStatic ? "1" : "0");
 
     return new Response(cachedValue.rscData, {
       status,
@@ -421,6 +424,7 @@ export async function readAppPageCacheResponse(
         cacheControl: cached?.value.cacheControl,
         expireSeconds: options.expireSeconds,
         isEdgeRuntime: options.isEdgeRuntime,
+        isForceStatic: options.isForceStatic,
         isRscRequest: options.isRscRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
@@ -519,6 +523,7 @@ export async function readAppPageCacheResponse(
         cacheControl: cached.value.cacheControl,
         expireSeconds: options.expireSeconds,
         isEdgeRuntime: options.isEdgeRuntime,
+        isForceStatic: options.isForceStatic,
         isRscRequest: options.isRscRequest,
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,

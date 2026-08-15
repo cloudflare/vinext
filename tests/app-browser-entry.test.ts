@@ -145,6 +145,7 @@ import {
   ACTION_REVALIDATED_HEADER,
   ACTION_REDIRECT_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
+  VINEXT_FORCE_STATIC_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -1066,6 +1067,7 @@ describe("app browser entry navigation scheduling", () => {
       new Response("unused", {
         headers: {
           "content-type": "text/x-component",
+          [VINEXT_FORCE_STATIC_HEADER]: "1",
           [VINEXT_MOUNTED_SLOTS_HEADER]: "children",
           [VINEXT_PARAMS_HEADER]: "%7B%22slug%22%3A%22target%22%7D",
           [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "compat-a",
@@ -1076,6 +1078,7 @@ describe("app browser entry navigation scheduling", () => {
     );
 
     expect(snapshot.compatibilityIdHeader).toBe("compat-a");
+    expect(snapshot.isForceStatic).toBe(true);
     expect(snapshot.url).toBe(responseUrl);
     expect(
       resolveRscCompatibilityNavigationDecision({
@@ -1089,9 +1092,24 @@ describe("app browser entry navigation scheduling", () => {
 
     const replayed = navigationShim.restoreRscResponse(snapshot);
     expect(replayed.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
+    expect(replayed.headers.get(VINEXT_FORCE_STATIC_HEADER)).toBe("1");
     expect(replayed.headers.get(VINEXT_MOUNTED_SLOTS_HEADER)).toBe("children");
     expect(replayed.headers.get(VINEXT_PARAMS_HEADER)).toBe("%7B%22slug%22%3A%22target%22%7D");
     expect(await replayed.text()).toBe("flight");
+  });
+
+  it("omits search params from force-static client navigation snapshots", () => {
+    stubWindow("https://example.com/current");
+
+    const snapshot = createClientNavigationRenderSnapshot(
+      "https://example.com/target?value=ignored",
+      {},
+      true,
+    );
+
+    expect(snapshot.pathname).toBe("/target");
+    expect(snapshot.searchParams.toString()).toBe("");
+    expect(navigationShim.createSnapshotPathAndSearch(snapshot)).toBe("/target?value=ignored");
   });
 
   it("parses action revalidation headers into explicit client effects", () => {
@@ -1553,7 +1571,7 @@ describe("app browser entry navigation scheduling", () => {
     const snapshotState = createState({
       elements: createResolvedElements("route:/scroll-restoration", "/"),
       navigationSnapshot: createClientNavigationRenderSnapshot(
-        "https://example.com/scroll-restoration?q=a+b",
+        "https://example.com/scroll-restoration?q=a%20b",
         {},
       ),
       routeId: "route:/scroll-restoration",
@@ -1567,7 +1585,7 @@ describe("app browser entry navigation scheduling", () => {
     const restored = controller.restoreHistorySnapshotVisibleState({
       navId,
       state: snapshotState,
-      targetHref: "https://example.com/docs/scroll-restoration?q=a%20b",
+      targetHref: "https://example.com/docs/scroll-restoration?q=a+b",
     });
 
     expect(restored).toBe(true);

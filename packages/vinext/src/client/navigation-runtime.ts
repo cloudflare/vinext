@@ -3,6 +3,8 @@ import { isUnknownRecord } from "../utils/record.js";
 import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
 
 export type NavigationRuntimeSnapshot = {
+  isForceStatic?: boolean;
+  isStaticGeneration?: boolean;
   pathname: string;
   searchParams: [string, string][];
 };
@@ -144,9 +146,13 @@ function isNavigationRuntimeRscChunk(value: unknown): value is NavigationRuntime
 
 function isNavigationRuntimeSnapshot(value: unknown): value is NavigationRuntimeSnapshot {
   if (!isUnknownRecord(value)) return false;
+  const isForceStatic = Reflect.get(value, "isForceStatic");
+  const isStaticGeneration = Reflect.get(value, "isStaticGeneration");
   const pathname = Reflect.get(value, "pathname");
   const searchParams = Reflect.get(value, "searchParams");
   return (
+    (isForceStatic === undefined || typeof isForceStatic === "boolean") &&
+    (isStaticGeneration === undefined || typeof isStaticGeneration === "boolean") &&
     typeof pathname === "string" &&
     Array.isArray(searchParams) &&
     searchParams.every(

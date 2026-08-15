@@ -7,6 +7,7 @@ import {
   NEXT_CACHE_TAGS_HEADER,
   NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_FORCE_STATIC_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
@@ -78,6 +79,7 @@ type BuildAppPageRscResponseOptions = {
   /** The render is being captured for a cache write but streams before its cacheLife resolves. */
   staleTimePending?: boolean;
   isEdgeRuntime?: boolean;
+  isForceStatic?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
   params?: Record<string, unknown>;
@@ -322,6 +324,7 @@ export function buildAppPageRscResponse(
     setCacheStateHeaders(headers, options.policy.cacheState);
   }
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+  headers.set(VINEXT_FORCE_STATIC_HEADER, options.isForceStatic ? "1" : "0");
   if (options.renderedPathAndSearch) {
     headers.set(
       VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,

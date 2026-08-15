@@ -4,7 +4,11 @@ import { stripBasePath } from "../utils/base-path.js";
 import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
 import type { RouteManifest, RouteManifestRoute } from "../routing/app-route-graph.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
-import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache-busting.js";
+import {
+  isRscCompatibilityIdCompatible,
+  stripRscCacheBustingSearchParam,
+  stripRscSuffix,
+} from "./app-rsc-cache-busting.js";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
@@ -27,6 +31,7 @@ type OptimisticRouteMatch = {
 
 export type OptimisticRouteTemplate = {
   elements: AppElements;
+  isForceStatic: boolean;
   mountedSlotsHeader: string | null;
   pageElementIds: readonly string[];
   routeId: string;
@@ -342,10 +347,25 @@ export function createOptimisticRouteTemplate(options: {
 
   return {
     elements: options.elements,
+    isForceStatic: metadata.isForceStatic === true,
     mountedSlotsHeader: options.mountedSlotsHeader,
     pageElementIds,
     routeId: match.route.id,
   };
+}
+
+export function createCompatibleOptimisticRouteTemplate(
+  options: Parameters<typeof createOptimisticRouteTemplate>[0] & {
+    clientCompatibilityId: string | null;
+    responseCompatibilityId: string | null;
+  },
+): OptimisticRouteTemplate | null {
+  const metadata = AppElementsWire.readMetadata(options.elements);
+  const responseCompatibilityId = options.responseCompatibilityId ?? metadata.rscCompatibilityId;
+  if (!isRscCompatibilityIdCompatible(responseCompatibilityId, options.clientCompatibilityId)) {
+    return null;
+  }
+  return createOptimisticRouteTemplate(options);
 }
 
 export function createOptimisticRouteElements(template: OptimisticRouteTemplate): AppElements {

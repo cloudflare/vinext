@@ -246,15 +246,21 @@ declare global {
   var __VINEXT_RSC_PARAMS__: Record<string, string | string[]> | undefined;
 
   /**
-   * Navigation context embedded by `generateSsrEntry()` for hydration
-   * snapshot consistency. Contains the pathname and searchParams used
-   * during SSR so `useSyncExternalStore` `getServerSnapshot` matches the
-   * SSR-rendered HTML.
+   * Navigation context embedded for hydration snapshot consistency. Contains
+   * the pathname and searchParams used during SSR plus static-rendering flags
+   * that tell the browser when the visible URL is authoritative.
    * `searchParams` is serialised as an array of `[key, value]` pairs to
    * preserve duplicate keys (e.g. `?tag=a&tag=b`).
    */
   // oxlint-disable-next-line no-var
-  var __VINEXT_RSC_NAV__: { pathname: string; searchParams: [string, string][] } | undefined;
+  var __VINEXT_RSC_NAV__:
+    | {
+        isForceStatic?: boolean;
+        isStaticGeneration?: boolean;
+        pathname: string;
+        searchParams: [string, string][];
+      }
+    | undefined;
 
   /**
    * Maps emitted CSS asset hrefs to file contents when next.config enables
