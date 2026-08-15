@@ -3486,19 +3486,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // directory. This must run after Vite merges config hooks: output arrays
         // are concatenated during config merging, so returning a mapped array
         // from config() would retain the original unisolated outputs as well.
-        const workerFileNames = `${resolveAssetsDir(nextConfig.assetPrefix ?? "")}/workers/[name]-[hash].js`;
-        const workerOutputs = config.worker.rolldownOptions.output;
-        config.worker.rolldownOptions.output = Array.isArray(workerOutputs)
-          ? (workerOutputs.length > 0 ? workerOutputs : [{}]).map((output) => ({
-              ...output,
-              entryFileNames: workerFileNames,
-              chunkFileNames: workerFileNames,
-            }))
-          : {
-              ...workerOutputs,
-              entryFileNames: workerFileNames,
-              chunkFileNames: workerFileNames,
-            };
+        if (config.worker?.rolldownOptions) {
+          const workerFileNames = `${resolveAssetsDir(nextConfig.assetPrefix ?? "")}/workers/[name]-[hash].js`;
+          const workerOutputs = config.worker.rolldownOptions.output;
+          config.worker.rolldownOptions.output = Array.isArray(workerOutputs)
+            ? (workerOutputs.length > 0 ? workerOutputs : [{}]).map((output) => ({
+                ...output,
+                entryFileNames: workerFileNames,
+                chunkFileNames: workerFileNames,
+              }))
+            : {
+                ...workerOutputs,
+                entryFileNames: workerFileNames,
+                chunkFileNames: workerFileNames,
+              };
+        }
 
         // Provide the resolved config to the Sass-aware CSS Modules Loader so
         // it can call Vite's `preprocessCSS` when processing SCSS files
