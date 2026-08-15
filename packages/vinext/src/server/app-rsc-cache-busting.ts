@@ -215,7 +215,12 @@ function createCacheBustingInput(
 }
 
 async function sha256CacheBustingHash(input: string): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", textEncoder.encode(input));
+  const subtle = globalThis.crypto?.subtle;
+  // `globalThis.crypto.subtle` is undefined in non-secure browser contexts
+  // just fallback to legacy fnv1a64.
+  if (!subtle) return fnv1a64(input);
+
+  const digest = await subtle.digest("SHA-256", textEncoder.encode(input));
   return encodeBase64Url(new Uint8Array(digest).subarray(0, CACHE_BUSTING_DIGEST_BYTES));
 }
 
