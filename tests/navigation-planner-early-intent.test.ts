@@ -145,10 +145,33 @@ describe("navigationPlanner early navigation intent classification", () => {
     expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
   });
 
-  it("treats hash removal as a flight navigation, not a same-document scroll", () => {
+  it("treats hash removal (/docs#section → /docs) as a same-document scroll to top", () => {
+    // Next.js parity (#1985): same pathname + search with the hash REMOVED is a
+    // hash-only change, so it scrolls (to top, since the target hash is empty)
+    // without an RSC fetch — identical to adding or changing a hash.
     const decision = classify({
       currentHref: "https://example.com/docs#section",
       targetHref: "https://example.com/docs",
+    });
+
+    expect(decision).toEqual({
+      kind: "sameDocumentScroll",
+      hash: "",
+      mode: "push",
+      scroll: true,
+      trace: decision.trace,
+    });
+    expectSingleTraceEntry(decision, NavigationTraceReasonCodes.sameDocumentScroll, {
+      targetHref: "https://example.com/docs",
+    });
+  });
+
+  it("still flights a same-URL navigation with no hash on either side", () => {
+    // Guard: hash removal must not turn a genuine same-URL reload (no hash at all)
+    // into a same-document scroll.
+    const decision = classify({
+      currentHref: "https://example.com/docs?q=1",
+      targetHref: "https://example.com/docs?q=1",
     });
 
     expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });

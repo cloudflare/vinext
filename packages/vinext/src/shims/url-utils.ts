@@ -216,7 +216,17 @@ export function isHashOnlyBrowserUrlChange(
     // Keep this raw comparison distinct from the App Router planner's parsed
     // search-param comparison until their separate navigation lifecycles are
     // deliberately unified.
-    return currentPathname === nextPathname && current.search === next.search && next.hash !== "";
+    //
+    // A hash-only change is one where either side carries a hash: adding,
+    // changing, or REMOVING the hash (/page#a → /page). Removal is still a
+    // hash-only navigation (scroll to top) and must not trigger a full page
+    // fetch — Next.js parity (#1985). A same-URL navigation with no hash on
+    // either side is not hash-only.
+    return (
+      currentPathname === nextPathname &&
+      current.search === next.search &&
+      (next.hash !== "" || current.hash !== "")
+    );
   } catch {
     return false;
   }

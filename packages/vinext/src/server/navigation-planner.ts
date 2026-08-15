@@ -643,7 +643,13 @@ function classifyEarlyNavigationIntent(
   // key order. We intentionally do not sort, since query order can be observable.
   const sameSearch = current.searchParams.toString() === next.searchParams.toString();
 
-  if (samePathname && sameSearch && next.hash !== "") {
+  // A same pathname+search navigation is a same-document scroll whenever either
+  // side carries a hash. This covers adding a hash (/docs → /docs#a), changing
+  // it (/docs#a → /docs#b), and — critically — removing it (/docs#a → /docs),
+  // which is a hash-only change that scrolls to top without an RSC fetch, per
+  // Next.js (#1985). A genuine same-URL reload with no hash on either side still
+  // falls through to a flight navigation.
+  if (samePathname && sameSearch && (next.hash !== "" || current.hash !== "")) {
     return {
       hash: next.hash,
       kind: "sameDocumentScroll",

@@ -9177,6 +9177,27 @@ describe("middleware matcher patterns", () => {
 });
 
 // ---------------------------------------------------------------------------
+describe("isHashOnlyBrowserUrlChange", () => {
+  it("treats adding, changing, and removing a hash on the same page as hash-only", async () => {
+    const { isHashOnlyBrowserUrlChange } =
+      await import("../packages/vinext/src/shims/url-utils.js");
+    // add
+    expect(isHashOnlyBrowserUrlChange("https://x/docs#a", "https://x/docs")).toBe(true);
+    // change
+    expect(isHashOnlyBrowserUrlChange("https://x/docs#b", "https://x/docs#a")).toBe(true);
+    // remove — Next.js parity (#1985); previously misclassified as a full navigation
+    expect(isHashOnlyBrowserUrlChange("https://x/docs", "https://x/docs#a")).toBe(true);
+  });
+
+  it("is not hash-only with no hash on either side, or when path/search differ", async () => {
+    const { isHashOnlyBrowserUrlChange } =
+      await import("../packages/vinext/src/shims/url-utils.js");
+    expect(isHashOnlyBrowserUrlChange("https://x/docs", "https://x/docs")).toBe(false);
+    expect(isHashOnlyBrowserUrlChange("https://x/other", "https://x/docs#a")).toBe(false);
+    expect(isHashOnlyBrowserUrlChange("https://x/docs?q=2", "https://x/docs?q=1#a")).toBe(false);
+  });
+});
+
 // normalizePath unit tests
 
 describe("normalizePath", () => {
