@@ -24,6 +24,7 @@ import {
 import {
   NEXT_CACHE_REVALIDATED_TAGS_HEADER,
   NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER,
+  VINEXT_CACHE_REVALIDATED_TAGS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import {
   cacheTag,
@@ -1851,7 +1852,7 @@ describe("app server action execution helpers", () => {
           },
           loadServerAction() {
             return Promise.resolve(() => {
-              updateTag("redirected-posts");
+              updateTag("redirected,posts");
               redirect("/redirect-target?from=action");
             });
           },
@@ -1874,7 +1875,10 @@ describe("app server action execution helpers", () => {
     expect(targetRequest!.headers.get("x-rsc-action")).toBeNull();
     expect(targetRequest!.headers.get("next-router-state-tree")).toBeNull();
     expect(targetRequest!.headers.get("x-vinext-mw-ctx")).toBeNull();
-    expect(targetRequest!.headers.get(NEXT_CACHE_REVALIDATED_TAGS_HEADER)).toBe("redirected-posts");
+    expect(targetRequest!.headers.get(NEXT_CACHE_REVALIDATED_TAGS_HEADER)).toBe("redirected,posts");
+    expect(targetRequest!.headers.get(VINEXT_CACHE_REVALIDATED_TAGS_HEADER)).toBe(
+      '["redirected,posts"]',
+    );
     expect(targetRequest!.headers.get(NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER)).toBe("draft-secret");
     expect(targetRequest!.headers.get("cookie")).toBe("session=1; theme=dark");
     expect(Reflect.get(targetRequest!, "cf")).toEqual({ country: "AU" });

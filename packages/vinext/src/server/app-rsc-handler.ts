@@ -19,6 +19,7 @@ import {
   NEXT_ACTION_HEADER,
   NEXT_CACHE_REVALIDATED_TAGS_HEADER,
   NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER,
+  VINEXT_CACHE_REVALIDATED_TAGS_HEADER,
   RSC_ACTION_HEADER,
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
@@ -33,7 +34,7 @@ import {
   VINEXT_INTERCEPTION_ID_HEADER,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
-import { getCacheTimestamp } from "vinext/shims/cache";
+import { getCacheTimestamp } from "vinext/shims/cache-handler";
 import type { ReactFormState } from "react-dom/client";
 import {
   getRequestExecutionContext,
@@ -1955,6 +1956,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // neither the invalidated tags nor its secret token is application data.
     filteredHeaders.delete(NEXT_CACHE_REVALIDATED_TAGS_HEADER);
     filteredHeaders.delete(NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER);
+    filteredHeaders.delete(VINEXT_CACHE_REVALIDATED_TAGS_HEADER);
     filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
     if (isForwardedActionContext(ctx)) {
       filteredHeaders.set("x-action-forwarded", "1");
