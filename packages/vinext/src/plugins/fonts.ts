@@ -26,7 +26,7 @@
 
 import type { Plugin } from "vite";
 import { parseAst } from "vite";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import fs from "node:fs";
 import { escapeRegExp } from "../utils/regex.js";
 import { lastSignificantChar } from "../utils/has-trailing-comma.js";
@@ -138,9 +138,10 @@ export function _rewriteCachedFontCssToServedUrls(
   cacheDir: string,
   assetsDir: string = DEFAULT_ASSETS_DIR,
 ): string {
-  if (!cacheDir || !css.includes(cacheDir)) return css;
+  const normalizedCacheDir = toSlash(cacheDir);
+  if (!normalizedCacheDir || !css.includes(normalizedCacheDir)) return css;
   const prefix = assetsDir || DEFAULT_ASSETS_DIR;
-  return css.split(cacheDir).join(`/${prefix}/${VINEXT_FONT_URL_NAMESPACE}`);
+  return css.split(normalizedCacheDir).join(`/${prefix}/${VINEXT_FONT_URL_NAMESPACE}`);
 }
 
 /**
@@ -661,7 +662,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
     enforce: "pre",
 
     configResolved(config) {
-      cacheDir = path.join(config.root, ".vinext", "fonts");
+      cacheDir = path.join(toSlash(config.root), ".vinext", "fonts");
     },
 
     // Dev-mode equivalent of the production `writeBundle` copy step. In dev
