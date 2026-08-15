@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   isBenignAssetImportError,
+  isGzipJsonParseError,
   isSocketErrorBackstopInstalled,
   peerDisconnectCode,
 } from "../packages/vinext/src/server/socket-error-backstop.js";
@@ -107,6 +108,67 @@ describe("isBenignAssetImportError", () => {
     expect(isBenignAssetImportError(undefined)).toBe(false);
     expect(isBenignAssetImportError("ERR_UNKNOWN_FILE_EXTENSION")).toBe(false);
     expect(isBenignAssetImportError(42)).toBe(false);
+  });
+});
+
+describe("isGzipJsonParseError", () => {
+  // Regression coverage for issue #2921: miniflare's dispatchFetch calls
+  // response.json() on a gzip-encoded workerd 500 during a Worker
+  // WebSocket upgrade. The resulting SyntaxError escaped the
+  // vite-plugin upgrade handler and the backstop re-threw it, killing
+  // the dev server.
+
+  it("matches JSON.parse of gzip magic bytes", () => {
+    // 1f 8b 08 is the gzip header. Node quotes the first byte as the
+    // unexpected token (U+001F). Use the real parser so the predicate
+    // tracks Node's message shape rather than a hand-built string.
+    let err: unknown;
+    try {
+      JSON.parse(
+        Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13]).toString("utf8"),
+      );
+    } catch (caught) {
+      err = caught;
+    }
+    expect(err).toBeInstanceOf(SyntaxError);
+    expect(isGzipJsonParseError(err)).toBe(true);
+  });
+
+  it("matches a truncated gzip snippet the way a longer body prints", () => {
+    // Longer compressed bodies produce the `...` truncation in Node's
+    // SyntaxError message. Still the same unexpected token.
+    const gzipPrefix = Buffer.alloc(80, 0);
+    gzipPrefix[0] = 0x1f;
+    gzipPrefix[1] = 0x8b;
+    gzipPrefix[2] = 0x08;
+    let err: unknown;
+    try {
+      JSON.parse(gzipPrefix.toString("utf8"));
+    } catch (caught) {
+      err = caught;
+    }
+    expect(isGzipJsonParseError(err)).toBe(true);
+  });
+
+  it("does NOT absorb other JSON parse failures (real bugs must still crash)", () => {
+    for (const input of ["", "not json", "<html>", '{"a":']) {
+      let err: unknown;
+      try {
+        JSON.parse(input);
+      } catch (caught) {
+        err = caught;
+      }
+      expect(isGzipJsonParseError(err), input).toBe(false);
+    }
+  });
+
+  it("does NOT absorb unrelated errors or non-object reasons", () => {
+    expect(isGzipJsonParseError(new Error("boom"))).toBe(false);
+    expect(isGzipJsonParseError(new SyntaxError("Unexpected token 'A'"))).toBe(false);
+    expect(isGzipJsonParseError(null)).toBe(false);
+    expect(isGzipJsonParseError(undefined)).toBe(false);
+    expect(isGzipJsonParseError("is not valid JSON")).toBe(false);
+    expect(isGzipJsonParseError(42)).toBe(false);
   });
 });
 

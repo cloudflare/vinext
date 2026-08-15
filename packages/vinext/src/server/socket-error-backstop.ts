@@ -14,12 +14,14 @@
  * `uncaughtException`, where this listener filters it.
  *
  * Filters strictly on peer-disconnect codes (ECONNRESET / EPIPE /
- * ECONNABORTED) plus benign static-asset `import()` rejections (see
- * `isBenignAssetImportError`), and synchronously re-throws everything
- * else, preserving Node's default crash semantics for genuine bugs.
- * This is more conservative than Next.js's equivalent
- * (`router-server.ts`'s log-only handler), which silently swallows
- * every uncaught — vinext keeps real bugs surfacing.
+ * ECONNABORTED), benign static-asset `import()` rejections (see
+ * `isBenignAssetImportError`), and gzip-bodied `response.json()`
+ * failures from miniflare's `dispatchFetch` (see
+ * `isGzipJsonParseError`). Synchronously re-throws everything else,
+ * preserving Node's default crash semantics for genuine bugs. This is
+ * more conservative than Next.js's equivalent (`router-server.ts`'s
+ * log-only handler), which silently swallows every uncaught — vinext
+ * keeps real bugs surfacing.
  *
  * **Installed at module load.** Earlier iterations tried to gate
  * install via Vite's `config()` hook (`command === "serve"`) so it
@@ -170,6 +172,39 @@ export function isBenignAssetImportError(err: unknown): boolean {
 }
 
 /**
+ * Gzip magic first byte. miniflare's `dispatchFetch` calls
+ * `response.json()` on a workerd 500 that still has
+ * `Content-Encoding: gzip` (the vite-plugin forwards the browser's
+ * `Accept-Encoding` on WebSocket upgrades; the custom undici
+ * dispatcher does not decompress). `JSON.parse` then sees this byte
+ * as the unexpected token.
+ */
+const GZIP_MAGIC_BYTE = 0x1f;
+
+/**
+ * Pure predicate: returns `true` when `err` is the `SyntaxError`
+ * `JSON.parse` throws on a gzip-compressed body. Node quotes the
+ * unexpected token as the U+001F unit-separator character (gzip's
+ * first magic byte) and ends the message with `is not valid JSON`.
+ *
+ * Kept narrow: HTML error pages (`Unexpected token '<'`), empty
+ * bodies (`Unexpected end of JSON input`), and other parse failures
+ * still crash. Dev-only: the listener absorbs this after the
+ * prerender re-throw, so a gzip parse during `vinext build` still
+ * fails the build. Exported for unit testing in isolation.
+ *
+ * @see https://github.com/cloudflare/vinext/issues/2921
+ */
+export function isGzipJsonParseError(err: unknown): boolean {
+  if (err === null || typeof err !== "object") return false;
+  const name = (err as { name?: string }).name;
+  if (name !== "SyntaxError") return false;
+  const message = (err as { message?: string }).message ?? "";
+  if (!message.includes("is not valid JSON")) return false;
+  return message.includes(String.fromCharCode(GZIP_MAGIC_BYTE));
+}
+
+/**
  * Test-only: returns whether the backstop has been installed in this
  * process. Used by the unit test to assert idempotent install via the
  * Symbol.for guard. Not part of the public API.
@@ -206,6 +241,12 @@ export function installSocketErrorBackstop(): void {
     return true;
   };
 
+  const absorbGzipJsonParse = (reason: unknown, kind: string): boolean => {
+    if (!isGzipJsonParseError(reason)) return false;
+    if (debug) console.warn(`[vinext] absorbed ${kind} gzip JSON parse`);
+    return true;
+  };
+
   process.on("uncaughtException", (err: Error) => {
     if (absorbBenignAssetImport(err, "uncaughtException")) return;
     if (process.env.VINEXT_PRERENDER === "1") throw err;
@@ -214,6 +255,7 @@ export function installSocketErrorBackstop(): void {
       if (debug) console.warn(`[vinext] absorbed uncaughtException ${code}`);
       return;
     }
+    if (absorbGzipJsonParse(err, "uncaughtException")) return;
     throw err;
   });
   process.on("unhandledRejection", (reason: unknown) => {
@@ -224,6 +266,7 @@ export function installSocketErrorBackstop(): void {
       if (debug) console.warn(`[vinext] absorbed unhandledRejection ${code}`);
       return;
     }
+    if (absorbGzipJsonParse(reason, "unhandledRejection")) return;
     throw reason;
   });
 }
