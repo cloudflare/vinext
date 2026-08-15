@@ -1240,9 +1240,43 @@ importers:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
         version: 0.5.34(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.7
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.7(react@19.2.7)
+      react-server-dom-webpack:
+        specifier: 'catalog:'
+        version: 19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      vinext:
+        specifier: workspace:*
+        version: link:../../../packages/vinext
+      vite:
+        specifier: npm:@voidzero-dev/vite-plus-core@0.2.6
+        version: '@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)'
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.80.0(@cloudflare/workers-types@4.20260313.1)
+    devDependencies:
+      vite-plus:
+        specifier: 'catalog:'
+        version: 0.2.6(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.10(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(esbuild@0.27.3)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+
+  tests/fixtures/cf-esm-externals:
+    dependencies:
+      '@cloudflare/vite-plugin':
+        specifier: 'catalog:'
+        version: 1.31.0(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(workerd@1.20260401.1)(wrangler@4.80.0)
+      '@vitejs/plugin-react':
+        specifier: 'catalog:'
+        version: 6.0.1(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))
+      '@vitejs/plugin-rsc':
+        specifier: 'catalog:'
+        version: 0.5.34(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.27.3)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)
       fake-worker-context-lib:
         specifier: file:__test_packages__/fake-worker-context-lib
-        version: file:tests/fixtures/cf-app-basic/__test_packages__/fake-worker-context-lib
+        version: file:tests/fixtures/cf-esm-externals/__test_packages__/fake-worker-context-lib
       react:
         specifier: 'catalog:'
         version: 19.2.7
@@ -6083,8 +6117,8 @@ packages:
   fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-context-lib, type: directory}
 
-  fake-worker-context-lib@file:tests/fixtures/cf-app-basic/__test_packages__/fake-worker-context-lib:
-    resolution: {directory: tests/fixtures/cf-app-basic/__test_packages__/fake-worker-context-lib, type: directory}
+  fake-worker-context-lib@file:tests/fixtures/cf-esm-externals/__test_packages__/fake-worker-context-lib:
+    resolution: {directory: tests/fixtures/cf-esm-externals/__test_packages__/fake-worker-context-lib, type: directory}
 
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-css-lib, type: directory}
@@ -11744,7 +11778,7 @@ snapshots:
 
   fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib: {}
 
-  fake-worker-context-lib@file:tests/fixtures/cf-app-basic/__test_packages__/fake-worker-context-lib: {}
+  fake-worker-context-lib@file:tests/fixtures/cf-esm-externals/__test_packages__/fake-worker-context-lib: {}
 
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib: {}
 

@@ -10,6 +10,7 @@ import { createBuilder, createServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import { createPagesNodeExternalsPlugin } from "../packages/vinext/src/plugins/pages-node-externals.js";
 import { startProdServer } from "../packages/vinext/src/server/prod-server.js";
+import { shouldExternalizeMissingFixtureImport } from "./fixtures/cf-esm-externals/esm-externals-test-plugin.js";
 
 const WORKSPACE_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 const fixtureRoots: string[] = [];
@@ -321,6 +322,26 @@ export const world = World
 }
 
 describe("ESM externals", () => {
+  it("limits the Worker missing-module sentinel to its dedicated fixture package", () => {
+    const sourceImporter =
+      "/repo/tests/fixtures/cf-esm-externals/__test_packages__/fake-worker-context-lib/correct.mjs";
+    const installedImporter =
+      "C:\\repo\\node_modules\\.pnpm\\fake-worker-context-lib@file+tests+fixtures+cf-esm-externals+__test_packages__+fake-worker-context-lib\\node_modules\\fake-worker-context-lib\\correct.mjs";
+
+    expect(shouldExternalizeMissingFixtureImport("fail", sourceImporter)).toBe(true);
+    expect(shouldExternalizeMissingFixtureImport("fail", installedImporter)).toBe(true);
+    expect(shouldExternalizeMissingFixtureImport("another-missing-module", sourceImporter)).toBe(
+      false,
+    );
+    expect(
+      shouldExternalizeMissingFixtureImport(
+        "fail",
+        "/repo/node_modules/unrelated-package/index.mjs",
+      ),
+    ).toBe(false);
+    expect(shouldExternalizeMissingFixtureImport("fail", undefined)).toBe(false);
+  });
+
   it("only applies Pages externalization to eligible server environments", () => {
     let pagesDir: string | null = "/project/pages";
     let enabled = true;
