@@ -36,6 +36,16 @@ describe("forwarded cache revalidation tags", () => {
     expect(readPreviouslyRevalidatedTags(headers, "draft-secret")).toEqual(['["posts"]']);
   });
 
+  it("falls back to the legacy header when the JSON side channel is malformed", () => {
+    const headers = new Headers({
+      [NEXT_CACHE_REVALIDATED_TAGS_HEADER]: "posts,users",
+      [NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER]: "draft-secret",
+      [VINEXT_CACHE_REVALIDATED_TAGS_HEADER]: "not-json",
+    });
+
+    expect(readPreviouslyRevalidatedTags(headers, "draft-secret")).toEqual(["posts", "users"]);
+  });
+
   it("rejects forged tags with a missing or mismatched token", () => {
     const headers = new Headers({
       [NEXT_CACHE_REVALIDATED_TAGS_HEADER]: "posts",
