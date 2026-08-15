@@ -44,33 +44,45 @@ type DocumentLike = {
   getInitialProps?: (ctx: DocumentContext) => Promise<{ head?: unknown } | undefined>;
 };
 
+/**
+ * True when `_document` supplies its own `getInitialProps`, rather than
+ * exposing none or inheriting the shim's default. Comparing against the
+ * captured `DEFAULT_GET_INITIAL_PROPS` reference is what distinguishes a user
+ * override from the default — extending the shim's `Document` without
+ * overriding inherits the same static function.
+ *
+ * Callers use this to decide whether the render pipeline owes `_document` the
+ * full `getInitialProps` contract, since only an override can observe it.
+ */
+export function hasUserDocumentGetInitialProps(
+  DocumentComponent: React.ComponentType | null | undefined,
+): boolean {
+  if (!DocumentComponent) return false;
+  const getInitialProps = (DocumentComponent as unknown as DocumentLike).getInitialProps;
+  return typeof getInitialProps === "function" && getInitialProps !== DEFAULT_GET_INITIAL_PROPS;
+}
+
 export async function callDocumentGetInitialProps(
   DocumentComponent: React.ComponentType | null | undefined,
   setDocumentInitialHead: ((head: React.ReactNode[]) => void) | undefined,
 ): Promise<void> {
   if (!DocumentComponent || !setDocumentInitialHead) return;
 
-  const DocCtor = DocumentComponent as unknown as DocumentLike;
-  const getInitialProps = DocCtor.getInitialProps;
-
-  // Skip when the component does not expose `getInitialProps` at all, or
-  // when it still resolves to the default inherited from vinext's shim.
-  // Comparing against the captured `DEFAULT_GET_INITIAL_PROPS` reference is
-  // what distinguishes a user override from the default — extending the
-  // shim's `Document` without overriding inherits the same static function.
-  if (typeof getInitialProps !== "function" || getInitialProps === DEFAULT_GET_INITIAL_PROPS) {
-    return;
-  }
+  // Nothing to merge when the user did not override the shim's default, which
+  // always resolves `head` to `undefined`.
+  const getInitialProps = (DocumentComponent as unknown as DocumentLike).getInitialProps;
+  if (!getInitialProps || !hasUserDocumentGetInitialProps(DocumentComponent)) return;
 
   try {
-    const initialProps = await getInitialProps({
+    const context = {
       // Minimal DocumentContext — vinext does not yet plumb the full context
       // (req/res/renderPage/defaultGetInitialProps) for SSR. User code that
       // relies on those fields receives no-op stand-ins; matches the
       // documented limitation in `shims/document.tsx`.
       defaultGetInitialProps: async () => ({ html: "", head: [], styles: undefined }),
       renderPage: () => ({ html: "" }),
-    });
+    } as unknown as DocumentContext;
+    const initialProps = await getInitialProps(context);
     const initialHead = Array.isArray(initialProps?.head)
       ? (initialProps.head as React.ReactNode[])
       : [];

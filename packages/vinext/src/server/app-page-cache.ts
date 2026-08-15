@@ -3,18 +3,27 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
-import { applyEdgeRuntimeHeader } from "./app-page-response.js";
+import { applyClientStaleTimeHeader, applyEdgeRuntimeHeader } from "./app-page-response.js";
+import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
-import { buildAppPageCacheValue, type ISRCacheEntry } from "./isr-cache.js";
+import {
+  buildAppPageCacheValue,
+  isrCacheControl,
+  type AppPageCacheSetter,
+  type ISRCacheEntry,
+} from "./isr-cache.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { hasCompleteNegativeRequestApiProof, type RenderObservation } from "./cache-proof.js";
 import { isAppPprDynamicFallbackShellHtml } from "./app-ppr-fallback-shell.js";
+import { buildPageCacheTags } from "./implicit-tags.js";
+import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 export {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -23,13 +32,6 @@ export {
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageCacheGetter = (key: string) => Promise<ISRCacheEntry | null>;
-type AppPageCacheSetter = (
-  key: string,
-  data: CachedAppPageValue,
-  revalidateSeconds: number,
-  tags: string[],
-  expireSeconds?: number,
-) => Promise<void>;
 type AppPageBackgroundRegenerator = (key: string, renderFn: () => Promise<void>) => void;
 type AppPageRscCacheKeyBuilder = (
   pathname: string,
@@ -47,6 +49,7 @@ export type AppPageCacheOutcomeMetric = Readonly<{
   outcome: "hit" | "miss" | "stale";
   reason:
     | "empty-entry"
+    | "expired"
     | "no-entry"
     | "non-app-page-entry"
     | "query-variant-unproven"
@@ -153,6 +156,14 @@ export function buildAppPageCacheTags(pathname: string, extraTags: readonly stri
   return tags.map(encodeCacheTag);
 }
 
+export function buildAppRouteCacheTags(
+  pathname: string,
+  extraTags: readonly string[],
+  routeSegments: readonly string[],
+): string[] {
+  return buildPageCacheTags(pathname, [...extraTags], [...routeSegments], "route");
+}
+
 function buildAppPageCachedHeaders(options: {
   cacheControl: string;
   cacheState: BuildAppPageCachedResponseOptions["cacheState"];
@@ -161,6 +172,7 @@ function buildAppPageCachedHeaders(options: {
   isEdgeRuntime?: boolean;
   middlewareHeaders?: Headers | null;
   mountedSlotsHeader?: string | null;
+  staleTimeSeconds?: number;
 }): Headers {
   const headers = new Headers({
     "Content-Type": options.contentType,
@@ -172,19 +184,20 @@ function buildAppPageCachedHeaders(options: {
   setCacheStateHeaders(headers, options.cacheState);
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
-  if (options.linkHeader) {
-    if (Array.isArray(options.linkHeader)) {
-      for (const value of options.linkHeader) headers.append("Link", value);
-    } else {
-      headers.set("Link", options.linkHeader);
-    }
-  }
-
   if (options.mountedSlotsHeader) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
 
+  applyClientStaleTimeHeader(headers, options.staleTimeSeconds);
+
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
+  if (options.linkHeader) {
+    if (Array.isArray(options.linkHeader)) {
+      for (const value of options.linkHeader) headers.append("Link", value);
+    } else {
+      headers.append("Link", options.linkHeader);
+    }
+  }
   return headers;
 }
 
@@ -197,6 +210,30 @@ function hasQueryInvariantAppPageProof(cachedValue: CachedAppPageValue): boolean
     cachedValue.renderObservation !== undefined &&
     hasCompleteNegativeRequestApiProof(cachedValue.renderObservation, ["searchParams"])
   );
+}
+
+function resolveRegeneratedAppPageCacheControl(options: {
+  expireSeconds?: number;
+  renderCacheControl?: CacheControlMetadata;
+  routeRevalidateSeconds: number;
+}): CacheControlMetadata {
+  let revalidateSeconds = options.routeRevalidateSeconds;
+  const renderRevalidateSeconds = options.renderCacheControl?.revalidate;
+  // An indefinite nested cache lifetime does not tighten the route's own
+  // finite revalidation policy.
+  if (typeof renderRevalidateSeconds === "number") {
+    revalidateSeconds =
+      revalidateSeconds > 0
+        ? Math.min(revalidateSeconds, renderRevalidateSeconds)
+        : renderRevalidateSeconds;
+  }
+
+  return isrCacheControl(revalidateSeconds, {
+    expireSeconds: options.renderCacheControl?.expire ?? options.expireSeconds,
+    // Carry the regenerating render's own claim onto the refreshed entry, so a
+    // background regen does not quietly drop it and widen client reuse.
+    staleSeconds: resolveClientStaleTimeSeconds(options.renderCacheControl),
+  });
 }
 
 export function buildAppPageCachedResponse(
@@ -213,6 +250,10 @@ export function buildAppPageCachedResponse(
     expireSeconds: options.expireSeconds,
     cacheControlMeta: options.cacheControl,
   });
+  // Replay the producing render's claim verbatim, not aged — Next.js re-emits
+  // the stored header unchanged on every hit, and the cached HTML body embeds
+  // the same original value in its done-script.
+  const staleTimeSeconds = resolveClientStaleTimeSeconds(options.cacheControl);
   if (options.isRscRequest) {
     if (!cachedValue.rscData) {
       return null;
@@ -225,8 +266,10 @@ export function buildAppPageCachedResponse(
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareHeaders: options.middlewareHeaders,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      staleTimeSeconds,
     });
     applyRscCompatibilityIdHeader(rscHeaders);
+    applyRscDeploymentIdHeader(rscHeaders);
 
     return new Response(cachedValue.rscData, {
       status,
@@ -245,12 +288,15 @@ export function buildAppPageCachedResponse(
     isEdgeRuntime: options.isEdgeRuntime,
     linkHeader: cachedValue.headers?.link,
     middlewareHeaders: options.middlewareHeaders,
+    staleTimeSeconds,
   });
 
-  return new Response(cachedValue.html, {
+  const response = new Response(cachedValue.html, {
     status,
     headers: htmlHeaders,
   });
+  markFrameworkLinkHeaders(response.headers, cachedValue.headers?.link);
+  return response;
 }
 
 type ServeAppPageCachedHtmlOptions = {
@@ -273,6 +319,11 @@ async function serveAppPageCachedHtml(
   options: ServeAppPageCachedHtmlOptions,
   transformValue?: (value: CachedAppPageValue) => CachedAppPageValue,
 ): Promise<Response | null> {
+  if (options.cached?.isExpired) {
+    options.isrDebug?.("MISS (expired)", options.pathname);
+    return null;
+  }
+
   if (typeof options.cachedValue.html !== "string" || options.cachedValue.html.length === 0) {
     if (options.cached?.isStale) {
       options.scheduleRegeneration();
@@ -308,10 +359,15 @@ async function serveAppPageCachedHtml(
 export async function readAppPageCacheResponse(
   options: ReadAppPageCacheResponseOptions,
 ): Promise<Response | null> {
+  if (options.isRscRequest && options.mountedSlotsHeader) {
+    options.isrDebug?.("MISS (mounted slots RSC variant)", options.cleanPathname);
+    return null;
+  }
+
   const isrKey = options.isRscRequest
     ? options.isrRscKey(
         options.cleanPathname,
-        options.mountedSlotsHeader,
+        null,
         options.renderMode,
         options.interceptionContext,
       )
@@ -321,6 +377,17 @@ export async function readAppPageCacheResponse(
   try {
     const cached = await options.isrGet(isrKey);
     const cachedValue = getCachedAppPageValue(cached);
+
+    if (cached?.isExpired) {
+      recordAppPageCacheOutcome(options.recordCacheOutcome, {
+        artifact,
+        cacheKey: isrKey,
+        outcome: "miss",
+        reason: "expired",
+      });
+      options.isrDebug?.("MISS (expired)", options.cleanPathname);
+      return null;
+    }
 
     if (cached && !cachedValue) {
       recordAppPageCacheOutcome(options.recordCacheOutcome, {
@@ -395,9 +462,11 @@ export async function readAppPageCacheResponse(
       // reuse it instead of recomputing the hash.
       options.scheduleBackgroundRegeneration(isrKey, async () => {
         const revalidatedPage = await options.renderFreshPageForCache();
-        const revalidateSeconds =
-          revalidatedPage.cacheControl?.revalidate ?? options.revalidateSeconds;
-        const expireSeconds = revalidatedPage.cacheControl?.expire ?? options.expireSeconds;
+        const cacheControl = resolveRegeneratedAppPageCacheControl({
+          expireSeconds: options.expireSeconds,
+          renderCacheControl: revalidatedPage.cacheControl,
+          routeRevalidateSeconds: options.revalidateSeconds,
+        });
         const writes = [
           options.isrSet(
             // For an RSC request `isrKey` is already the RSC variant key, so
@@ -407,7 +476,7 @@ export async function readAppPageCacheResponse(
               ? isrKey
               : options.isrRscKey(
                   options.cleanPathname,
-                  options.mountedSlotsHeader,
+                  null,
                   options.renderMode,
                   options.interceptionContext,
                 ),
@@ -417,9 +486,7 @@ export async function readAppPageCacheResponse(
               200,
               revalidatedPage.rscRenderObservation,
             ),
-            revalidateSeconds,
-            revalidatedPage.tags,
-            expireSeconds,
+            { cacheControl, tags: revalidatedPage.tags },
           ),
         ];
 
@@ -438,9 +505,7 @@ export async function readAppPageCacheResponse(
                 revalidatedPage.htmlRenderObservation,
                 revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
               ),
-              revalidateSeconds,
-              revalidatedPage.tags,
-              expireSeconds,
+              { cacheControl, tags: revalidatedPage.tags },
             ),
           );
         }

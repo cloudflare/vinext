@@ -1,17 +1,46 @@
 import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
-import type { NextHeader } from "../config/next-config.js";
-import type { BasePathMatchState, RequestContext } from "../config/config-matchers.js";
-import { matchHeaders } from "../config/config-matchers.js";
 import {
   INTERNAL_HEADERS,
   MIDDLEWARE_HEADER_PREFIX,
   VINEXT_INTERNAL_HEADERS,
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
-import { forbiddenResponse, notFoundResponse } from "./http-error-responses.js";
+import { MIDDLEWARE_CACHE_HEADER } from "../utils/protocol-headers.js";
+import { getUnconsumedMiddlewareRequestHeaders } from "../utils/middleware-request-headers.js";
+import {
+  forbiddenResponse,
+  methodNotAllowedResponse,
+  notFoundResponse,
+} from "./http-error-responses.js";
 import { isOpenRedirectShaped } from "./open-redirect.js";
 
 export { isOpenRedirectShaped } from "./open-redirect.js";
+
+const PATHNAME_CANONICALIZATION_BASE = new URL("http://vinext.invalid/");
+
+/**
+ * Apply the URL Standard's pathname canonicalization without decoding and
+ * re-encoding ordinary percent escapes.
+ *
+ * In particular, WHATWG URLs remove literal and percent-encoded dot segments
+ * (`/%2e/about` becomes `/about`) while preserving unrelated spellings such
+ * as `/%61bout`, `%2F`, `%5C`, and `%252F` byte-for-byte. Node request adapters
+ * must do this before comparing raw route/config/basePath identity so those
+ * comparisons agree with the `Request` that userland eventually receives.
+ */
+export function canonicalizeRequestPathname(pathname: string): string {
+  const url = new URL(PATHNAME_CANONICALIZATION_BASE);
+  url.pathname = pathname;
+  return url.pathname;
+}
+
+/** Canonicalize only the pathname portion while preserving the raw query. */
+export function canonicalizeRequestUrlPathname(url: string): string {
+  const queryIndex = url.indexOf("?");
+  const pathname = queryIndex === -1 ? url : url.slice(0, queryIndex);
+  const search = queryIndex === -1 ? "" : url.slice(queryIndex);
+  return canonicalizeRequestPathname(pathname) + search;
+}
 
 /**
  * Shared request pipeline utilities.
@@ -73,20 +102,6 @@ export { hasBasePath, stripBasePath };
 
 export type HeaderRecord = Record<string, string | string[]>;
 
-type ApplyConfigHeadersOptions = {
-  configHeaders: NextHeader[];
-  pathname: string;
-  requestContext: RequestContext;
-  /**
-   * basePath gating state. When omitted, every rule is treated as a default
-   * (basePath: true) rule for backward compatibility — callers that need to
-   * support `basePath: false` headers must pass this in.
-   */
-  basePathState?: BasePathMatchState;
-  /** Existing framework-generated headers that matching config rules may replace. */
-  overwriteExisting?: ReadonlySet<string>;
-};
-
 type StaticFileSignalContext = {
   headers: Headers | null;
   status: number | null;
@@ -104,94 +119,6 @@ const FILE_LIKE_PATHNAME_RE = /\.[^/]+\/?$/;
 
 function isWellKnownPathname(pathname: string): boolean {
   return pathname === "/.well-known" || pathname.startsWith("/.well-known/");
-}
-
-function findHeaderRecordKey(headers: HeaderRecord, lowerName: string): string | undefined {
-  for (const key of Object.keys(headers)) {
-    if (key.toLowerCase() === lowerName) return key;
-  }
-  return undefined;
-}
-
-function appendHeaderRecord(headers: HeaderRecord, lowerName: string, value: string): void {
-  const key = findHeaderRecordKey(headers, lowerName) ?? lowerName;
-  const existing = headers[key];
-  if (existing === undefined) {
-    headers[key] = value;
-    return;
-  }
-  if (Array.isArray(existing)) {
-    existing.push(value);
-    return;
-  }
-  headers[key] = [existing, value];
-}
-
-function appendVaryHeaderRecord(headers: HeaderRecord, value: string): void {
-  const key = findHeaderRecordKey(headers, "vary") ?? "vary";
-  const existing = headers[key];
-  if (existing === undefined) {
-    headers[key] = value;
-    return;
-  }
-  if (Array.isArray(existing)) {
-    existing.push(value);
-    return;
-  }
-  headers[key] = existing + ", " + value;
-}
-
-/**
- * Apply matched next.config.js headers to a Web Headers object.
- *
- * Next.js evaluates config header match conditions against the original
- * request snapshot. Middleware response headers still win for the same
- * response key, while multi-value headers are additive.
- */
-export function applyConfigHeadersToResponse(
-  responseHeaders: Headers,
-  options: ApplyConfigHeadersOptions,
-): void {
-  const matched = matchHeaders(
-    options.pathname,
-    options.configHeaders,
-    options.requestContext,
-    options.basePathState,
-  );
-  for (const header of matched) {
-    const lowerName = header.key.toLowerCase();
-    if (lowerName === "vary" || lowerName === "set-cookie") {
-      responseHeaders.append(header.key, header.value);
-    } else if (options.overwriteExisting?.has(lowerName) || !responseHeaders.has(lowerName)) {
-      responseHeaders.set(header.key, header.value);
-    }
-  }
-}
-
-/**
- * Apply matched next.config.js headers to the early response header record used
- * by Node and Worker Pages Router pipelines before a concrete response exists.
- */
-export function applyConfigHeadersToHeaderRecord(
-  headers: HeaderRecord,
-  options: ApplyConfigHeadersOptions,
-): void {
-  const matched = matchHeaders(
-    options.pathname,
-    options.configHeaders,
-    options.requestContext,
-    options.basePathState,
-  );
-  for (const header of matched) {
-    const lowerName = header.key.toLowerCase();
-    if (lowerName === "set-cookie") {
-      appendHeaderRecord(headers, lowerName, header.value);
-    } else if (lowerName === "vary") {
-      appendVaryHeaderRecord(headers, header.value);
-    } else if (findHeaderRecordKey(headers, lowerName) === undefined) {
-      headers[lowerName] = header.value;
-    }
-  }
 }
 
 export function createStaticFileSignal(
@@ -217,12 +144,17 @@ export function createStaticFileSignal(
  *
  * Public files are checked after middleware and before afterFiles/fallback
  * rewrites. The generated App Router entry provides the public-file set; this
- * helper owns the request-method and RSC exclusions plus static-file signaling.
+ * helper owns the RSC exclusion, existence-first method enforcement, and
+ * static-file signaling. Missing mutation targets continue through routing.
  */
 export function resolvePublicFileRoute(options: ResolvePublicFileRouteOptions): Response | null {
-  if (options.request.method !== "GET" && options.request.method !== "HEAD") return null;
   if (options.pathname.endsWith(".rsc")) return null;
   if (!options.publicFiles.has(options.cleanPathname)) return null;
+  if (options.request.method !== "GET" && options.request.method !== "HEAD") {
+    return methodNotAllowedResponse("GET, HEAD", {
+      headers: options.middlewareContext.headers ?? undefined,
+    });
+  }
   return createStaticFileSignal(options.cleanPathname, options.middlewareContext);
 }
 
@@ -544,15 +476,22 @@ export function isOriginAllowed(origin: string, allowed: string[]): boolean {
  *
  * Middleware uses `x-middleware-*` headers as internal signals (e.g.
  * `x-middleware-next`, `x-middleware-rewrite`, `x-middleware-request-*`).
- * These must be removed before sending the response to the client.
+ * Consumed protocol headers must be removed before sending the response to the
+ * client. Next.js exposes truthy unconsumed `x-middleware-request-*` values as
+ * literal request and response headers, so those are intentionally preserved.
  *
  * @param headers - The Headers object to modify in place
  */
 export function processMiddlewareHeaders(headers: Headers): void {
   const keysToDelete: string[] = [];
+  const unconsumedRequestHeaders = getUnconsumedMiddlewareRequestHeaders(headers);
 
   for (const key of headers.keys()) {
-    if (key.startsWith(MIDDLEWARE_HEADER_PREFIX)) {
+    if (
+      key.startsWith(MIDDLEWARE_HEADER_PREFIX) &&
+      key !== MIDDLEWARE_CACHE_HEADER &&
+      !unconsumedRequestHeaders.has(key)
+    ) {
       keysToDelete.push(key);
     }
   }
@@ -606,6 +545,24 @@ function getRequestCf(request: Request): unknown {
 }
 
 /**
+ * Re-attach the Workers-specific `cf` metadata from `source` onto a rebuilt
+ * Request. `new Request()` never copies it, and middleware/authorization code
+ * can key off `request.cf` (geo checks, bot scores), so every reconstruction
+ * must restore it explicitly.
+ */
+export function attachRequestCfMetadata(target: Request, source: Request): Request {
+  const cf = getRequestCf(source);
+  if (cf !== undefined) {
+    Object.defineProperty(target, "cf", {
+      value: cf,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return target;
+}
+
+/**
  * Clone a Request while overriding headers, preserving metadata when possible.
  *
  * Some runtimes (Workers) allow `new Request(request, { headers })` which
@@ -628,6 +585,8 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
       cache: request.cache,
       mode: request.mode,
       credentials: request.credentials,
+      // Undici rejects keepalive with an exposed ReadableStream body.
+      keepalive: request.body === null && request.keepalive,
       referrer: request.referrer,
       referrerPolicy: request.referrerPolicy,
     };
@@ -637,16 +596,7 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
     }
     cloned = new Request(request.url, init);
   }
-  const cf = getRequestCf(request);
-  if (cf !== undefined) {
-    // new Request() does not copy Workers-specific cf, so re-attach it.
-    Object.defineProperty(cloned, "cf", {
-      value: cf,
-      enumerable: true,
-      configurable: true,
-    });
-  }
-  return cloned;
+  return attachRequestCfMetadata(cloned, request);
 }
 
 /**
@@ -676,6 +626,8 @@ export function cloneRequestWithUrl(request: Request, url: string): Request {
       cache: request.cache,
       mode: request.mode,
       credentials: request.credentials,
+      // Undici rejects keepalive with an exposed ReadableStream body.
+      keepalive: request.body === null && request.keepalive,
       referrer: request.referrer,
       referrerPolicy: request.referrerPolicy,
     };
@@ -685,14 +637,5 @@ export function cloneRequestWithUrl(request: Request, url: string): Request {
     }
     cloned = new Request(url, init);
   }
-  const cf = getRequestCf(request);
-  if (cf !== undefined) {
-    // new Request() does not copy Workers-specific cf, so re-attach it.
-    Object.defineProperty(cloned, "cf", {
-      value: cf,
-      enumerable: true,
-      configurable: true,
-    });
-  }
-  return cloned;
+  return attachRequestCfMetadata(cloned, request);
 }

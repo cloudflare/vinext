@@ -17,24 +17,26 @@
  * end with `+`, and optional catch-alls end with `*`. See
  * `routing/route-trie.ts`.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import type {
   VinextLinkPrefetchRoute,
   VinextPagesLinkPrefetchRoute,
 } from "../packages/vinext/src/client/vinext-next-data.js";
-import type { NextRewrite } from "../packages/vinext/src/config/next-config.js";
-import { resolveHybridClientRouteOwner } from "../packages/vinext/src/shims/internal/hybrid-client-route-owner.js";
+import {
+  toClientRewrites,
+  type ClientRewrites,
+} from "../packages/vinext/src/client/client-rewrites.js";
+import {
+  resolveHybridClientRewriteHref,
+  resolveHybridClientRouteOwner,
+} from "../packages/vinext/src/shims/internal/hybrid-client-route-owner.js";
 
 const APP_BASE = "http://localhost/";
 
 type WindowState = {
   app: VinextLinkPrefetchRoute[];
   pages: VinextPagesLinkPrefetchRoute[];
-  rewrites?: {
-    afterFiles: NextRewrite[];
-    beforeFiles: NextRewrite[];
-    fallback: NextRewrite[];
-  };
+  rewrites?: ClientRewrites;
 };
 
 function installWindow({ app, pages, rewrites }: WindowState): void {
@@ -161,6 +163,32 @@ describe("resolveHybridClientRouteOwner", () => {
     },
   );
 
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "returns the %s rewrite destination href",
+    (rewritePhase) => {
+      installWindow({
+        app: [appRoute(["app-destination"], false)],
+        pages: [],
+        rewrites: {
+          beforeFiles:
+            rewritePhase === "beforeFiles"
+              ? [{ source: "/source", destination: "/app-destination" }]
+              : [],
+          afterFiles:
+            rewritePhase === "afterFiles"
+              ? [{ source: "/source", destination: "/app-destination" }]
+              : [],
+          fallback:
+            rewritePhase === "fallback"
+              ? [{ source: "/source", destination: "/app-destination" }]
+              : [],
+        },
+      });
+
+      expect(resolveHybridClientRewriteHref("/source", "")).toBe("/app-destination");
+    },
+  );
+
   it("evaluates conditional client rewrites against browser-visible context", () => {
     installWindow({
       app: [appRoute(["app-destination"], false)],
@@ -180,6 +208,58 @@ describe("resolveHybridClientRouteOwner", () => {
 
     expect(resolveHybridClientRouteOwner("/source", "")).toBeNull();
     expect(resolveHybridClientRouteOwner("/source?preview=1", "")).toBe("app");
+  });
+
+  it("hands rewrites with browser-invisible conditions back to the document request", () => {
+    installWindow({
+      app: [appRoute(["app-destination"], false)],
+      pages: [],
+      rewrites: toClientRewrites({
+        afterFiles: [],
+        beforeFiles: [
+          {
+            source: "/cookie-source",
+            destination: "/app-destination",
+            has: [{ type: "cookie", key: "internal-access", value: "cookie-secret" }],
+          },
+          {
+            source: "/header-source",
+            destination: "/app-destination",
+            has: [{ type: "header", key: "x-origin-auth", value: "header-secret" }],
+          },
+        ],
+        fallback: [],
+      }),
+    });
+
+    expect(resolveHybridClientRewriteHref("/cookie-source", "")).toBeNull();
+    expect(resolveHybridClientRouteOwner("/cookie-source", "")).toBe("document");
+    expect(resolveHybridClientRewriteHref("/header-source", "")).toBeNull();
+    expect(resolveHybridClientRouteOwner("/header-source", "")).toBe("document");
+  });
+
+  it("uses browser-authoritative conditions as a server handoff prefilter", () => {
+    installWindow({
+      app: [appRoute(["app-destination"], false)],
+      pages: [],
+      rewrites: toClientRewrites({
+        afterFiles: [],
+        beforeFiles: [
+          {
+            source: "/source",
+            destination: "/app-destination",
+            has: [
+              { type: "query", key: "preview", value: "1" },
+              { type: "cookie", key: "internal-access", value: "cookie-secret" },
+            ],
+          },
+        ],
+        fallback: [],
+      }),
+    });
+
+    expect(resolveHybridClientRouteOwner("/source", "")).toBeNull();
+    expect(resolveHybridClientRouteOwner("/source?preview=1", "")).toBe("document");
   });
 
   it("applies every beforeFiles rewrite before choosing ownership", () => {

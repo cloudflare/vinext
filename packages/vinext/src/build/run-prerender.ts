@@ -18,7 +18,7 @@
  * `dist/server/vinext-prerender.json` manifest.
  */
 
-import path from "node:path";
+import path from "pathslash";
 import fs from "node:fs";
 import type { Server as HttpServer } from "node:http";
 import type { PrerenderResult, PrerenderRouteResult } from "./prerender.js";
@@ -34,7 +34,9 @@ import { appRouter } from "../routing/app-router.js";
 import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
-import { startProdServer } from "../server/prod-server.js";
+import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
+import { enterPrerenderPhase } from "./prerender-phase.js";
+import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -89,12 +91,8 @@ function readBuiltBuildId(serverDir: string): string | null {
 type RunPrerenderOptions = {
   /** Project root directory. */
   root: string;
-  /**
-   * Override next.config values. Merged on top of the config loaded from disk.
-   * Intended for tests that need to exercise a specific config (e.g. output: 'export')
-   * without writing a next.config file.
-   */
-  nextConfigOverride?: Partial<import("../config/next-config.js").ResolvedNextConfig>;
+  /** Fully resolved Next.js config. Loaded from disk when omitted. */
+  nextConfig?: import("../config/next-config.js").ResolvedNextConfig;
   /**
    * Override the path to the Pages Router server bundle.
    * Defaults to `<root>/dist/server/entry.js`.
@@ -155,10 +153,6 @@ export function assertNoFatalPrerenderRoutes(routes: readonly PrerenderRouteResu
 
 /**
  * Statically generate routes and return the prerender result.
- *
- * `options.root` must be forward-slash — it is passed to `findDir` and flows
- * into the route model. The caller (the `vinext build` entry in cli.ts)
- * normalizes it.
  */
 export async function runPrerender(options: RunPrerenderOptions): Promise<PrerenderResult | null> {
   const { root } = options;
@@ -169,15 +163,6 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
   if (!appDir && !pagesDir) return null;
 
-  // Mark the entire prerender orchestration so the socket-error backstop
-  // re-throws peer-disconnect errors during user fetch() calls instead of
-  // silently absorbing them and producing corrupt output. prerender.ts
-  // sets and clears this var around its own render passes, but we widen
-  // the scope here to cover startProdServer / shared-server setup that
-  // happens before those phases run. See server/socket-error-backstop.ts.
-  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
-  process.env.VINEXT_PRERENDER = "1";
-
   // The manifest lands in dist/server/ alongside the server bundle so it's
   // cleaned with the rest of vinext's build output on rebuild and co-located
   // with server artifacts.
@@ -185,14 +170,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
   const serverDir = path.dirname(rscBundlePath);
 
-  const loadedConfig = await resolveNextConfig(await loadNextConfig(root), root);
-  const config = options.nextConfigOverride
-    ? { ...loadedConfig, ...options.nextConfigOverride }
-    : // Note: shallow merge — nested keys like `images` or `i18n` in
-      // nextConfigOverride replace the entire nested object from loadedConfig.
-      // This is intentional for test usage (top-level overrides only); a deep
-      // merge would be needed to support partial nested overrides in the future.
-      { ...loadedConfig };
+  const config = options.nextConfig
+    ? { ...options.nextConfig }
+    : {
+        ...(await resolveNextConfig(await loadNextConfig(root, PHASE_PRODUCTION_BUILD), root)),
+      };
   // Prerender must reuse the exact BUILD_ID that `vinext build` wrote to disk
   // rather than re-resolving a fresh one. `config.buildId` is consumed when
   // computing prerendered-output identity (prerender.ts), so re-resolving here
@@ -239,6 +221,10 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // and ensures both phases render against the same built bundle.
   let sharedProdServer: { server: HttpServer; port: number } | null = null;
   let sharedPrerenderSecret: string | undefined;
+  // Match Next's static-worker phase while user modules execute. This wider
+  // scope also covers shared-server startup; the nested router helpers restore
+  // back to this value and this cleanup restores the ordinary caller phase.
+  const restorePrerenderPhase = enterPrerenderPhase();
 
   try {
     if (appDir && pagesDir) {
@@ -332,12 +318,14 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       if (result.outputFiles) allOutputFiles.push(...result.outputFiles);
     }
   } finally {
-    // Close the shared prod server if we started one.
-    if (sharedProdServer) {
-      await new Promise<void>((resolve) => sharedProdServer!.server.close(() => resolve()));
+    try {
+      // Close the shared prod server if we started one.
+      if (sharedProdServer) {
+        await new Promise<void>((resolve) => sharedProdServer!.server.close(() => resolve()));
+      }
+    } finally {
+      restorePrerenderPhase();
     }
-    if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
-    else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
   }
 
   if (allRoutes.length === 0) {
@@ -386,6 +374,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   }
 
   injectPregeneratedConcretePaths(root);
+  if (fs.existsSync(rscBundlePath)) {
+    rememberCurrentServerEntryImportMtime(rscBundlePath);
+  }
 
   return {
     routes: allRoutes,

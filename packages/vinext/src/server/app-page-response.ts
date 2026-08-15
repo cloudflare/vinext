@@ -4,9 +4,13 @@ import {
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
 import {
+  NEXT_CACHE_TAGS_HEADER,
+  NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_STALE_TIME_PENDING_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./headers.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -15,7 +19,10 @@ import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
+import { applyPrerenderCacheLifeHeader } from "./prerender-cache-life-header.js";
+import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 
 export type AppPageMiddlewareContext = {
   headers: Headers | null;
@@ -32,6 +39,13 @@ export type AppPageResponseTiming = {
 type AppPageResponsePolicy = {
   cacheControl?: string;
   cacheState?: "MISS" | "STATIC";
+};
+
+type AppPagePrerenderCacheLife = {
+  expire?: number;
+  revalidate?: number;
+  /** Client-router dimension — see `resolveClientStaleTimeSeconds`. */
+  stale?: number;
 };
 
 type ResolveAppPageResponsePolicyBaseOptions = {
@@ -59,22 +73,29 @@ type AppPageHtmlResponsePolicy = {
 } & AppPageResponsePolicy;
 
 type BuildAppPageRscResponseOptions = {
+  cacheTags?: readonly string[];
   dynamicStaleTimeSeconds?: number;
+  /** The render is being captured for a cache write but streams before its cacheLife resolves. */
+  staleTimePending?: boolean;
   isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
   params?: Record<string, unknown>;
   policy: AppPageResponsePolicy;
+  renderedPathAndSearch?: string | null;
+  requestCacheLife?: AppPagePrerenderCacheLife | null;
   timing?: AppPageResponseTiming;
 };
 
 type BuildAppPageHtmlResponseOptions = {
+  cacheTags?: readonly string[];
   draftCookie?: string | null;
   /** Combined preload `Link` header value (React hints + font preloads), already capped. */
   linkHeader?: string;
   isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   policy: AppPageResponsePolicy;
+  requestCacheLife?: AppPagePrerenderCacheLife | null;
   timing?: AppPageResponseTiming;
 };
 
@@ -103,6 +124,27 @@ function applyDynamicStaleTimeHeader(headers: Headers, dynamicStaleTimeSeconds?:
     dynamicStaleTimeSeconds >= 0
   ) {
     headers.set(VINEXT_DYNAMIC_STALE_TIME_HEADER, String(dynamicStaleTimeSeconds));
+  }
+}
+
+/**
+ * Only ever set from a *completed* render's cacheLife (cache replay or
+ * prerender seed) — `use cache` scopes keep resolving after headers commit,
+ * so a streaming response can never carry it.
+ */
+export function applyClientStaleTimeHeader(
+  headers: Headers,
+  staleTimeSeconds: number | undefined,
+): void {
+  if (staleTimeSeconds === undefined) return;
+  headers.set(NEXT_ROUTER_STALE_TIME_HEADER, String(Math.floor(staleTimeSeconds)));
+}
+
+function applyPrerenderCacheTagsHeader(headers: Headers, cacheTags: readonly string[] | undefined) {
+  if (cacheTags && cacheTags.length > 0) {
+    // Match Next.js's static-generation side channel. Tags are already
+    // canonicalized by buildAppPageTags before reaching response shaping.
+    headers.set(NEXT_CACHE_TAGS_HEADER, cacheTags.join(","));
   }
 }
 
@@ -194,8 +236,8 @@ export function resolveAppPageHtmlResponsePolicy(
   if ((options.isForceStatic || options.isDynamicError) && options.revalidateSeconds === null) {
     return {
       cacheControl: STATIC_CACHE_CONTROL,
-      cacheState: "STATIC",
-      shouldWriteToCache: false,
+      cacheState: options.isProduction ? "MISS" : "STATIC",
+      shouldWriteToCache: options.isProduction,
     };
   }
 
@@ -270,6 +312,9 @@ export function buildAppPageRscResponse(
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
   applyDynamicStaleTimeHeader(headers, options.dynamicStaleTimeSeconds);
+  if (options.staleTimePending) {
+    headers.set(VINEXT_STALE_TIME_PENDING_HEADER, "1");
+  }
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);
   }
@@ -277,7 +322,16 @@ export function buildAppPageRscResponse(
     setCacheStateHeaders(headers, options.policy.cacheState);
   }
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+  if (options.renderedPathAndSearch) {
+    headers.set(
+      VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+      encodeURIComponent(options.renderedPathAndSearch),
+    );
+  }
   applyRscCompatibilityIdHeader(headers);
+  applyRscDeploymentIdHeader(headers);
+  applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
+  applyPrerenderCacheTagsHeader(headers, options.cacheTags);
 
   applyTimingHeader(headers, options.timing);
 
@@ -307,16 +361,19 @@ export function buildAppPageHtmlResponse(
   if (options.draftCookie) {
     headers.append("Set-Cookie", options.draftCookie);
   }
-  if (options.linkHeader) {
-    headers.set("Link", options.linkHeader);
-  }
-
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+  if (options.linkHeader) {
+    headers.append("Link", options.linkHeader);
+  }
+  applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
+  applyPrerenderCacheTagsHeader(headers, options.cacheTags);
 
   applyTimingHeader(headers, options.timing);
 
-  return new Response(body, {
+  const response = new Response(body, {
     status: options.middlewareContext.status ?? 200,
     headers,
   });
+  markFrameworkLinkHeaders(response.headers, options.linkHeader);
+  return response;
 }

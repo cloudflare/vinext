@@ -813,6 +813,95 @@ describe("buildAppPageProbes", () => {
     expect(probed.sort()).toEqual(["modal", "page"]);
   });
 
+  it("does not await slot pages protected by branch-local loading boundaries", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          modal: {
+            loading: { default: () => "loading" },
+            page: { default: recordingPage("modal", probed) },
+          },
+          sidebar: {
+            loadings: [{ default: () => "loading" }],
+            page: { default: recordingPage("sidebar", probed) },
+          },
+          team: { page: { default: recordingPage("team", probed) } },
+        },
+      },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: null,
+      isRscRequest: true,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(probed.sort()).toEqual(["page", "team"]);
+  });
+
+  it("does not await intercepted pages protected by slot or intercept loading boundaries", async () => {
+    const probed: string[] = [];
+    const buildProbes = (interceptLoadings?: readonly { default?: unknown }[]) =>
+      buildAppPageProbes({
+        route: {
+          slots: {
+            modal: {
+              loading: interceptLoadings ? null : { default: () => "slot loading" },
+              page: { default: recordingPage("modal", probed) },
+            },
+          },
+        },
+        pageComponent: recordingPage("page", probed),
+        asyncRouteParams: makeThenableParams({}),
+        searchParams: null,
+        intercept: {
+          interceptLoadings,
+          page: { default: recordingPage("intercept", probed) },
+          slotKey: "modal",
+        },
+        isRscRequest: true,
+        matchedParams: {},
+        makeThenableParams: makeThenableParamsLoose,
+      });
+
+    await Promise.all(buildProbes([{ default: () => "intercept loading" }]));
+    await Promise.all(buildProbes());
+
+    expect(probed).toEqual(["page", "page"]);
+  });
+
+  it("does await intercepted pages when only a sibling normal branch has loading", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageProbes({
+      route: {
+        slots: {
+          modal: {
+            loadings: [{ default: () => "gallery loading" }],
+            loadingTreePositions: [1],
+            page: { default: recordingPage("gallery", probed) },
+          },
+        },
+      },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: null,
+      intercept: {
+        page: { default: recordingPage("intercept", probed) },
+        slotKey: "modal",
+      },
+      isRscRequest: true,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(probed.sort()).toEqual(["intercept", "page"]);
+  });
+
   it("skips slots without a page default export", async () => {
     const probed: string[] = [];
     const probes = buildAppPageProbes({

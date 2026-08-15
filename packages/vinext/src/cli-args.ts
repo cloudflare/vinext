@@ -2,13 +2,14 @@
  * CLI argument parser for the vinext CLI.
  *
  * Parses flags for `vinext dev`, `vinext start`, `vinext build`, etc.
- * Validates that value-taking flags (`--port`, `--hostname`) have actual values
+ * Validates that value-taking flags (`--port`, `--hostname`, `--mode`) have actual values
  * rather than silently consuming the next flag or returning NaN/undefined.
  */
 
 type ParsedArgs = {
   port?: number;
   hostname?: string;
+  mode?: string;
   help?: boolean;
   verbose?: boolean;
   turbopack?: boolean;
@@ -149,6 +150,12 @@ export function parseArgs(args: string[]): ParsedArgs {
         break;
       }
 
+      case "--mode": {
+        result.mode = takeValue(arg, args, i);
+        i++;
+        break;
+      }
+
       default: {
         // Handle --flag=value forms (e.g. --port=3000, --hostname=0.0.0.0).
         const eqRaw = tryEqualsForm(arg, "port");
@@ -162,6 +169,14 @@ export function parseArgs(args: string[]): ParsedArgs {
             throw new Error(`--hostname requires a value, but none was provided.`);
           }
           result.hostname = hostRaw;
+          break;
+        }
+        const modeRaw = tryEqualsForm(arg, "mode");
+        if (modeRaw !== null) {
+          if (modeRaw === "") {
+            throw new Error(`--mode requires a value, but none was provided.`);
+          }
+          result.mode = modeRaw;
           break;
         }
         const prerenderConcurrencyRaw = tryEqualsForm(arg, "prerender-concurrency");

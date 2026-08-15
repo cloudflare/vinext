@@ -3,7 +3,126 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vite-plus/test";
 
-describe("Next.js deploy harness logging", () => {
+describe("Next.js deploy harness", () => {
+  it("enables Next.js test-only client instrumentation in deploy shards", () => {
+    const workflow = fs.readFileSync(
+      path.resolve(".github/workflows/nextjs-deploy-suite.yml"),
+      "utf8",
+    );
+    const deployShard = workflow.match(
+      /- name: Run deploy shard[\s\S]*?\n      - name: Upload test results/,
+    )?.[0];
+
+    expect(deployShard).toBeDefined();
+    expect(deployShard).toContain("NEXT_TEST_MODE: deploy");
+    expect(deployShard).toContain("__NEXT_TEST_MODE: e2e");
+  });
+
+  it("does not recursively append failure diagnostics to deploy logs", () => {
+    const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
+    const cleanup = script.match(
+      /(cleanup_on_error\(\) \{[\s\S]*?\n\})\n\ntrap cleanup_on_error EXIT/,
+    )?.[1];
+    expect(cleanup).toBeDefined();
+
+    const tempRoot = fs.mkdtempSync(path.join(process.cwd(), ".e2e-deploy-cleanup-test-"));
+    try {
+      const buildLog = path.join(tempRoot, "build.log");
+      fs.writeFileSync(buildLog, "build failed\n");
+
+      const result = execFileSync(
+        "bash",
+        [
+          "-c",
+          [
+            "persist_debug_artifacts() { :; }",
+            cleanup!,
+            "DEPLOYMENT_READY=0 PID_FILE=missing.pid PORT_FILE=missing.port SERVER_LOG=missing.log DEBUG_RUN_DIR=debug",
+            'cleanup_on_error 2>> "${BUILD_LOG}"',
+          ].join("\n"),
+        ],
+        {
+          cwd: tempRoot,
+          env: { ...process.env, BUILD_LOG: buildLog },
+          timeout: 2_000,
+        },
+      );
+
+      expect(result).toHaveLength(0);
+      const output = fs.readFileSync(buildLog, "utf8");
+      expect(output.match(/build failed/g)).toHaveLength(2);
+      expect(output).toContain("=== vinext e2e deploy debug ===");
+      expect(Buffer.byteLength(output)).toBeLessThan(2_000);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("materializes workspace dependencies required by the local vinext package", () => {
+    const repoRoot = path.resolve(".");
+    const script = fs.readFileSync(path.join(repoRoot, "scripts/e2e-deploy.sh"), "utf8");
+    const injection = script.match(
+      /node <<'EOF' >> "\$\{BUILD_LOG\}" 2>&1\n([\s\S]*?)\nEOF\n/,
+    )?.[1];
+    expect(injection).toBeDefined();
+
+    const tempRoot = fs.mkdtempSync(path.join(process.cwd(), ".e2e-deploy-package-test-"));
+    try {
+      const workspaceRoot = path.join(tempRoot, "workspace");
+      const appRoot = path.join(tempRoot, "app");
+      fs.mkdirSync(appRoot, { recursive: true });
+      fs.cpSync(path.join(repoRoot, "package.json"), path.join(workspaceRoot, "package.json"));
+      fs.cpSync(
+        path.join(repoRoot, "pnpm-workspace.yaml"),
+        path.join(workspaceRoot, "pnpm-workspace.yaml"),
+      );
+
+      for (const packageName of ["vinext", "cloudflare", "types"]) {
+        const packageRoot = path.join(workspaceRoot, "packages", packageName);
+        fs.mkdirSync(packageRoot, { recursive: true });
+        fs.cpSync(
+          path.join(repoRoot, "packages", packageName, "package.json"),
+          path.join(packageRoot, "package.json"),
+        );
+      }
+      fs.mkdirSync(path.join(workspaceRoot, "packages/vinext/dist"), { recursive: true });
+      fs.mkdirSync(path.join(workspaceRoot, "packages/cloudflare/dist"), { recursive: true });
+      fs.mkdirSync(path.join(workspaceRoot, "packages/types/next"), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspaceRoot, "packages/types/next/index.d.ts"),
+        'declare module "next" {}\n',
+      );
+      fs.writeFileSync(path.join(appRoot, "package.json"), '{"name":"fixture"}\n');
+
+      execFileSync(process.execPath, ["-e", injection!], {
+        cwd: appRoot,
+        env: { ...process.env, VINEXT_DIR: workspaceRoot },
+        stdio: "pipe",
+      });
+
+      const localVinext = JSON.parse(
+        fs.readFileSync(path.join(appRoot, ".vinext-local-package/package.json"), "utf8"),
+      );
+      const localCloudflare = JSON.parse(
+        fs.readFileSync(
+          path.join(appRoot, ".vinext-local-cloudflare-package/package.json"),
+          "utf8",
+        ),
+      );
+      const localTypes = JSON.parse(
+        fs.readFileSync(path.join(appRoot, ".vinext-local-types-package/package.json"), "utf8"),
+      );
+      expect(localVinext.dependencies["@vinext/types"]).toBe("file:../.vinext-local-types-package");
+      expect(localCloudflare.peerDependencies.vinext).toBe("file:../.vinext-local-package");
+      expect(localTypes.name).toBe("@vinext/types");
+      expect(fs.existsSync(path.join(appRoot, ".vinext-local-types-package/next/index.d.ts"))).toBe(
+        true,
+      );
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("initializes fixtures for the Node deployment platform", () => {
     const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
 

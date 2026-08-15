@@ -146,6 +146,16 @@ test.describe("Pages Router Production Build", () => {
     expect(jsRes.status()).toBe(200);
     expect(jsRes.headers()["content-type"]).toContain("javascript");
     expect(jsRes.headers()["cache-control"]).toContain("immutable");
+
+    const unsupported = await request.post(`${BASE}${jsPath}`);
+    expect(unsupported.status()).toBe(405);
+    expect(unsupported.headers()["allow"]).toBe("GET, HEAD");
+
+    const unsupportedConditional = await request.post(`${BASE}${jsPath}`, {
+      headers: { "If-None-Match": jsRes.headers()["etag"] ?? "*" },
+    });
+    expect(unsupportedConditional.status()).toBe(405);
+    expect(unsupportedConditional.headers()["allow"]).toBe("GET, HEAD");
   });
 
   test("large responses include compression headers", async ({ request }) => {

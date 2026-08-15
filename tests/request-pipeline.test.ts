@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import {
-  applyConfigHeadersToHeaderRecord,
-  applyConfigHeadersToResponse,
+  canonicalizeRequestPathname,
+  canonicalizeRequestUrlPathname,
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   createStaticFileSignal,
@@ -18,8 +18,39 @@ import {
   processMiddlewareHeaders,
   VINEXT_INTERNAL_HEADERS,
 } from "../packages/vinext/src/server/request-pipeline.js";
-import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  applyConfigHeadersToHeaderRecord,
+  applyConfigHeadersToResponse,
+} from "../packages/vinext/src/server/config-headers.js";
+import {
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
+
+// Ported from the URL boundary used by Next.js request handling: WHATWG URL
+// pathname parsing canonicalizes recognized dot segments before routing.
+describe("canonicalizeRequestPathname", () => {
+  it("canonicalizes literal and percent-encoded dot segments", () => {
+    expect(canonicalizeRequestPathname("/%2e/about")).toBe("/about");
+    expect(canonicalizeRequestPathname("/x/%2E%2e/old-about")).toBe("/old-about");
+    expect(canonicalizeRequestPathname("/docs/.%2e/about")).toBe("/about");
+  });
+
+  it("preserves every unrelated percent escape byte-for-byte", () => {
+    for (const pathname of ["/%61bout/", "/dynamic/a%2561/b%2Fc", "/%2f", "/%5c", "/%252f"]) {
+      expect(canonicalizeRequestPathname(pathname)).toBe(pathname);
+    }
+  });
+
+  it("preserves the raw query while canonicalizing only the pathname", () => {
+    expect(canonicalizeRequestUrlPathname("/x/%2e%2e/about?next=%2e%2e&x=%61")).toBe(
+      "/about?next=%2e%2e&x=%61",
+    );
+  });
+});
 
 // ── guardProtocolRelativeUrl ────────────────────────────────────────────
 
@@ -259,7 +290,13 @@ describe("resolvePublicFileRoute", () => {
     const response = resolvePublicFileRoute({
       cleanPathname: "/logo.svg",
       middlewareContext: {
-        headers: new Headers({ "x-from-middleware": "1" }),
+        headers: new Headers({
+          "content-encoding": "gzip",
+          "content-length": "999",
+          "content-type": "application/wrong",
+          "transfer-encoding": "chunked",
+          "x-from-middleware": "1",
+        }),
         status: 203,
       },
       pathname: "/logo.svg",
@@ -273,19 +310,28 @@ describe("resolvePublicFileRoute", () => {
     expect(response!.headers.get("x-from-middleware")).toBe("1");
   });
 
-  it("does not signal non-GET/HEAD, RSC, or missing public file requests", () => {
+  it("returns 405 for unsupported methods only after a public file match", async () => {
     const publicFiles = new Set(["/logo.svg", "/about.rsc"]);
     const middlewareContext = { headers: null, status: null };
 
-    expect(
-      resolvePublicFileRoute({
-        cleanPathname: "/logo.svg",
-        middlewareContext,
-        pathname: "/logo.svg",
-        publicFiles,
-        request: new Request("https://example.com/logo.svg", { method: "POST" }),
-      }),
-    ).toBeNull();
+    const mutationResponse = resolvePublicFileRoute({
+      cleanPathname: "/logo.svg",
+      middlewareContext: {
+        headers: new Headers({ "x-from-middleware": "1" }),
+        status: null,
+      },
+      pathname: "/logo.svg",
+      publicFiles,
+      request: new Request("https://example.com/logo.svg", { method: "POST" }),
+    });
+    expect(mutationResponse?.status).toBe(405);
+    expect(mutationResponse?.headers.get("allow")).toBe("GET, HEAD");
+    expect(mutationResponse?.headers.get("x-from-middleware")).toBe("1");
+    expect(mutationResponse?.headers.get("content-encoding")).toBeNull();
+    expect(mutationResponse?.headers.get("content-length")).toBeNull();
+    expect(mutationResponse?.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(mutationResponse?.headers.get("transfer-encoding")).toBeNull();
+    await expect(mutationResponse?.text()).resolves.toBe("Method Not Allowed");
     expect(
       resolvePublicFileRoute({
         cleanPathname: "/about.rsc",
@@ -304,6 +350,19 @@ describe("resolvePublicFileRoute", () => {
         request: new Request("https://example.com/missing.svg"),
       }),
     ).toBeNull();
+  });
+
+  it("matches decoded request variants against encoded public-file keys", () => {
+    const response = resolvePublicFileRoute({
+      cleanPathname: "/hello copy.txt",
+      middlewareContext: { headers: null, status: null },
+      pathname: "/hello%20copy.txt",
+      publicFiles: new Set(["/hello copy.txt", "/hello%20copy.txt"]),
+      request: new Request("https://example.com/hello%20copy.txt", { method: "POST" }),
+    });
+
+    expect(response?.status).toBe(405);
+    expect(response?.headers.get("allow")).toBe("GET, HEAD");
   });
 
   it("creates standalone static file signals from normal modules", () => {
@@ -706,8 +765,9 @@ describe("processMiddlewareHeaders", () => {
     expect(headers.get("content-type")).toBe("text/html");
   });
 
-  it("strips x-middleware-request-* headers", () => {
+  it("strips x-middleware-request-* headers consumed by the override list", () => {
     const headers = new Headers({
+      "x-middleware-override-headers": "x-custom",
       "x-middleware-request-x-custom": "value",
       "x-middleware-rewrite": "/new-path",
       "content-type": "text/html",
@@ -716,6 +776,28 @@ describe("processMiddlewareHeaders", () => {
     expect(headers.has("x-middleware-request-x-custom")).toBe(false);
     expect(headers.has("x-middleware-rewrite")).toBe(false);
     expect(headers.get("content-type")).toBe("text/html");
+  });
+
+  it("preserves truthy unconsumed x-middleware-request-* response headers", () => {
+    const headers = new Headers({
+      "x-middleware-request-x-custom": "literal",
+      "x-middleware-request-x-empty": "",
+    });
+
+    processMiddlewareHeaders(headers);
+
+    expect(headers.get("x-middleware-request-x-custom")).toBe("literal");
+    expect(headers.has("x-middleware-request-x-empty")).toBe(false);
+  });
+
+  it("preserves x-middleware-cache response opt-outs", () => {
+    const headers = new Headers({
+      "x-middleware-cache": "no-cache",
+      "x-middleware-next": "1",
+    });
+    processMiddlewareHeaders(headers);
+    expect(headers.get("x-middleware-cache")).toBe("no-cache");
+    expect(headers.has("x-middleware-next")).toBe(false);
   });
 
   it("is a no-op when no x-middleware-* headers are present", () => {
@@ -784,15 +866,31 @@ describe("filterInternalHeaders", () => {
 
   it("strips vinext-only internal headers without extending Next.js INTERNAL_HEADERS", () => {
     const headers = new Headers({
+      [VINEXT_PRERENDER_CACHE_LIFE_HEADER]: "forged",
       [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
+      [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "forged",
+      [VINEXT_REVALIDATE_HOST_HEADER]: "example.fr",
       "user-agent": "test",
     });
 
     const result = filterInternalHeaders(headers);
 
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER);
-    expect(VINEXT_INTERNAL_HEADERS).toEqual([VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]);
+    expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_SPECULATIVE_HEADER);
+    expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
+    expect(VINEXT_INTERNAL_HEADERS).toEqual([
+      VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+      VINEXT_PRERENDER_SPECULATIVE_HEADER,
+      VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+      VINEXT_REVALIDATE_HOST_HEADER,
+    ]);
+    for (const name of VINEXT_INTERNAL_HEADERS) {
+      expect(name).toBe(name.toLowerCase());
+    }
     expect(result.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)).toBe(false);
+    expect(result.has(VINEXT_PRERENDER_SPECULATIVE_HEADER)).toBe(false);
+    expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
+    expect(result.has(VINEXT_REVALIDATE_HOST_HEADER)).toBe(false);
     expect(result.get("user-agent")).toBe("test");
   });
 
@@ -855,7 +953,34 @@ describe("filterInternalHeaders", () => {
 });
 
 describe("buildRequestHeadersFromMiddlewareResponse", () => {
-  it("preserves credential headers when applying partial middleware override headers", () => {
+  it("does not translate stray forwarded values when the override header is empty", () => {
+    // Next.js only applies middleware request-header overrides when this
+    // protocol header is truthy, so the empty string emitted for `new Headers()`
+    // leaves the original logical request headers unchanged. The unconsumed
+    // protocol value is then copied under its literal header name.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const baseHeaders = new Headers({
+      authorization: "Bearer token",
+      cookie: "session=abc",
+    });
+    const middlewareHeaders = new Headers({
+      "x-middleware-override-headers": "",
+      "x-middleware-request-x-added": "literal",
+    });
+
+    const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
+
+    expect(result).not.toBeNull();
+    expect(result!.get("authorization")).toBe("Bearer token");
+    expect(result!.get("cookie")).toBe("session=abc");
+    expect(result!.get("x-added")).toBeNull();
+    expect(result!.get("x-middleware-request-x-added")).toBe("literal");
+  });
+
+  it("drops every header absent from the override list, credentials included", () => {
+    // Next.js treats the override list as the complete post-middleware header
+    // set (resolve-routes.ts deletes non-listed request headers), so an absent
+    // name means deleted — it must never be restored from the base request.
     const baseHeaders = new Headers({
       authorization: "Bearer token",
       cookie: "session=abc",
@@ -866,34 +991,59 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
       "x-middleware-request-x-added": "1",
     });
 
-    const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders, {
-      preserveCredentialHeaders: true,
-    });
-
-    expect(result).not.toBeNull();
-    expect(result!.get("authorization")).toBe("Bearer token");
-    expect(result!.get("cookie")).toBe("session=abc");
-    expect(result!.get("x-added")).toBe("1");
-    expect(result!.get("x-keep")).toBeNull();
-  });
-
-  it("deletes credential headers when middleware explicitly omits their forwarded values", () => {
-    const baseHeaders = new Headers({
-      authorization: "Bearer token",
-      cookie: "session=abc",
-      "x-keep": "original",
-    });
-    const middlewareHeaders = new Headers({
-      "x-middleware-override-headers": "authorization,cookie,x-keep",
-      "x-middleware-request-x-keep": "updated",
-    });
-
     const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
 
     expect(result).not.toBeNull();
     expect(result!.get("authorization")).toBeNull();
     expect(result!.get("cookie")).toBeNull();
-    expect(result!.get("x-keep")).toBe("updated");
+    expect(result!.get("x-keep")).toBeNull();
+    expect(result!.get("x-added")).toBe("1");
+  });
+
+  it("preserves forwarded header values literally when middleware sends no override list", () => {
+    // Next.js skips override translation without the list, then copies the
+    // unconsumed middleware header literally during its generic header merge.
+    const baseHeaders = new Headers({
+      authorization: "Bearer token",
+      cookie: "session=abc",
+    });
+    const middlewareHeaders = new Headers({ "x-middleware-request-x-added": "1" });
+
+    const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
+
+    expect(result).not.toBeNull();
+    expect(result!.get("authorization")).toBe("Bearer token");
+    expect(result!.get("cookie")).toBe("session=abc");
+    expect(result!.get("x-added")).toBeNull();
+    expect(result!.get("x-middleware-request-x-added")).toBe("1");
+  });
+
+  it("preserves unlisted forwarded values literally alongside valid overrides", () => {
+    const middlewareHeaders = new Headers({
+      "x-middleware-override-headers": "x-added",
+      "x-middleware-request-x-added": "translated",
+      "x-middleware-request-x-stray": "literal",
+    });
+
+    const result = buildRequestHeadersFromMiddlewareResponse(new Headers(), middlewareHeaders);
+
+    expect(result).not.toBeNull();
+    expect(result!.get("x-added")).toBe("translated");
+    expect(result!.get("x-middleware-request-x-added")).toBeNull();
+    expect(result!.get("x-middleware-request-x-stray")).toBe("literal");
+  });
+
+  it("drops empty unlisted forwarded values", () => {
+    const middlewareHeaders = new Headers({
+      "x-middleware-request-x-empty": "",
+    });
+
+    const result = buildRequestHeadersFromMiddlewareResponse(
+      new Headers({ "x-original": "kept" }),
+      middlewareHeaders,
+    );
+
+    expect(result).toBeNull();
   });
 });
 
@@ -924,6 +1074,51 @@ describe("cloneRequestWithHeaders", () => {
     const original = new Request("http://localhost", { redirect: "manual" });
     const cloned = cloneRequestWithHeaders(original, new Headers());
     expect(cloned.redirect).toBe("manual");
+  });
+
+  it("preserves keepalive in the foreign-request fallback", () => {
+    const NativeRequest = globalThis.Request;
+    class FallbackRequest extends NativeRequest {
+      constructor(input: URL | RequestInfo, init?: RequestInit) {
+        if (input instanceof NativeRequest || init instanceof NativeRequest) {
+          throw new TypeError("foreign request");
+        }
+        super(input, init);
+      }
+    }
+    vi.stubGlobal("Request", FallbackRequest);
+    try {
+      const original = new NativeRequest("http://localhost", { keepalive: true });
+      const cloned = cloneRequestWithHeaders(original, new Headers());
+      expect(cloned.keepalive).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps body-bearing requests usable in the keepalive fallback", async () => {
+    const NativeRequest = globalThis.Request;
+    class FallbackRequest extends NativeRequest {
+      constructor(input: URL | RequestInfo, init?: RequestInit) {
+        if (input instanceof NativeRequest || init instanceof NativeRequest) {
+          throw new TypeError("foreign request");
+        }
+        super(input, init);
+      }
+    }
+    vi.stubGlobal("Request", FallbackRequest);
+    try {
+      const original = new NativeRequest("http://localhost", {
+        method: "POST",
+        body: "payload",
+        keepalive: true,
+      });
+      const cloned = cloneRequestWithHeaders(original, new Headers());
+      expect(cloned.keepalive).toBe(false);
+      await expect(cloned.text()).resolves.toBe("payload");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("preserves signal", () => {
@@ -1042,5 +1237,50 @@ describe("cloneRequestWithUrl", () => {
     const original = new Request("http://localhost/path?_rsc=abc", { redirect: "manual" });
     const cloned = cloneRequestWithUrl(original, "http://localhost/path");
     expect(cloned.redirect).toBe("manual");
+  });
+
+  it("preserves keepalive in the foreign-request fallback", () => {
+    const NativeRequest = globalThis.Request;
+    class FallbackRequest extends NativeRequest {
+      constructor(input: URL | RequestInfo, init?: RequestInit) {
+        if (input instanceof NativeRequest || init instanceof NativeRequest) {
+          throw new TypeError("foreign request");
+        }
+        super(input, init);
+      }
+    }
+    vi.stubGlobal("Request", FallbackRequest);
+    try {
+      const original = new NativeRequest("http://localhost/path", { keepalive: true });
+      const cloned = cloneRequestWithUrl(original, "http://localhost/other");
+      expect(cloned.keepalive).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps body-bearing requests usable in the keepalive fallback", async () => {
+    const NativeRequest = globalThis.Request;
+    class FallbackRequest extends NativeRequest {
+      constructor(input: URL | RequestInfo, init?: RequestInit) {
+        if (input instanceof NativeRequest || init instanceof NativeRequest) {
+          throw new TypeError("foreign request");
+        }
+        super(input, init);
+      }
+    }
+    vi.stubGlobal("Request", FallbackRequest);
+    try {
+      const original = new NativeRequest("http://localhost/path", {
+        method: "POST",
+        body: "payload",
+        keepalive: true,
+      });
+      const cloned = cloneRequestWithUrl(original, "http://localhost/other");
+      expect(cloned.keepalive).toBe(false);
+      await expect(cloned.text()).resolves.toBe("payload");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

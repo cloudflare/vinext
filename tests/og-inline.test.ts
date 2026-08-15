@@ -5,6 +5,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { toSlash } from "pathslash";
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -342,7 +343,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       plugins: [createOgInlinePlugin("build", projectRoot)],
       build: {
         outDir: "dist",
-        rollupOptions: {
+        rolldownOptions: {
           input: path.join(projectRoot, "index.js"),
           output: { entryFileNames: "bundle.js" },
         },
@@ -378,7 +379,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       plugins: [createOgInlinePlugin("build", projectRoot)],
       build: {
         outDir: "dist",
-        rollupOptions: {
+        rolldownOptions: {
           input: path.join(projectRoot, "index.js"),
           output: { entryFileNames: "bundle.js" },
         },
@@ -420,7 +421,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       plugins: [createOgInlinePlugin("build", projectRoot)],
       build: {
         outDir: "dist",
-        rollupOptions: {
+        rolldownOptions: {
           input: path.join(projectRoot, "index.js"),
           output: { entryFileNames: "bundle.js" },
         },
@@ -1074,8 +1075,11 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     await transform.call(plugin, code, moduleId);
 
     // Exactly once: first call reads from disk, second call hits the build cache.
+    // The plugin reads through canonical forward-slash paths, so compare in
+    // that space while realpathSync stays native.
+    const expectedRead = toSlash(fs.realpathSync(path.join(tmpDir, "noto-sans.ttf")));
     const calls = readFileSpy.mock.calls.filter(
-      (call) => call[0] === fs.realpathSync(path.join(tmpDir, "noto-sans.ttf")),
+      (call) => typeof call[0] === "string" && toSlash(call[0]) === expectedRead,
     );
     expect(calls.length).toBe(1);
   });

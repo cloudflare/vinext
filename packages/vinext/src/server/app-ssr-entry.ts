@@ -38,6 +38,7 @@ import {
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
+  waitAtLeastOneReactRenderTask,
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
 import type { AppSsrRenderResult } from "./app-page-stream.js";
@@ -47,7 +48,7 @@ import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { createInitialBfcacheMaps } from "./app-bfcache-identity.js";
-import { BfcacheStateKeyMapContext, ElementsContext, Slot } from "vinext/shims/slot";
+import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
@@ -126,6 +127,10 @@ async function loadStaticPrerender(): Promise<StaticPrerender> {
     try {
       const [{ createRequire }, path] = await Promise.all([
         import("node:module"),
+        // Native node:path is fine here: the resolved path is fed straight into
+        // a dynamic import() and never compared against pathslash-normalized
+        // ids, so forward-slash canonicalization buys nothing.
+        // oxlint-disable-next-line no-restricted-imports
         import("node:path"),
       ]);
       const require = createRequire(import.meta.url);
@@ -260,7 +265,10 @@ function renderFontHtml(
   }
 
   for (const preload of fontData.preloads ?? []) {
-    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(appendAssetDeploymentIdQuery(preload.href))}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
+    // Font files are content-hashed immutable assets. Keep the preload URL
+    // byte-identical to the @font-face source so the browser consumes it;
+    // deployment IDs are only needed to cache-bust mutable static assets.
+    fontHTML += `<link rel="preload"${nonceAttr} href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
   }
 
   if (includeStyles && fontData.styles && fontData.styles.length > 0) {
@@ -382,17 +390,27 @@ export async function handleSsr(
     rootParams?: RootParams;
     /** Dev-only: original server error to surface in the browser overlay. */
     initialDevServerError?: unknown;
+    /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
+    mirrorNextFlight?: boolean;
     /** When true, wait for the full React tree (including Suspense boundaries)
      *  to resolve before returning the HTML stream. Used for static prerender
      *  and ISR cache writes to avoid caching fallback content. */
     waitForAllReady?: boolean;
+    /** Render is producing a static/prerendered HTML artifact. */
+    isStaticGeneration?: boolean;
+    /** `dynamic = "force-static"` suppresses the useSearchParams bailout. */
+    isForceStatic?: boolean;
     fallbackToErrorDocumentOnShellError?: boolean;
     dynamicStaleTimeSeconds?: number;
     getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
   },
 ): Promise<AppSsrRenderResult> {
   return runWithNavigationContext(async () => {
-    const ssrNavigationContext = requireNavigationContext(navContext);
+    const ssrNavigationContext = {
+      ...requireNavigationContext(navContext),
+      isStaticGeneration: options?.isStaticGeneration,
+      isForceStatic: options?.isForceStatic,
+    };
 
     await clientReferencePreloader.preload();
 
@@ -416,22 +434,22 @@ export async function handleSsr(
 
         if (options?.sideStream) {
           ssrStream = rscStream;
-          rscEmbed = createRscEmbedTransform(
-            options.sideStream,
-            options?.scriptNonce,
-            options?.getInitialNavigationCacheMetadata,
-          );
+          rscEmbed = createRscEmbedTransform(options.sideStream, {
+            mirrorNextFlight: options?.mirrorNextFlight,
+            scriptNonce: options?.scriptNonce,
+            getInitialNavigationCacheMetadata: options?.getInitialNavigationCacheMetadata,
+          });
           if (options.capturedRscDataRef) {
             options.capturedRscDataRef.value = rscEmbed.getRawBuffer();
           }
         } else {
           const [s1, s2] = rscStream.tee();
           ssrStream = s1;
-          rscEmbed = createRscEmbedTransform(
-            s2,
-            options?.scriptNonce,
-            options?.getInitialNavigationCacheMetadata,
-          );
+          rscEmbed = createRscEmbedTransform(s2, {
+            mirrorNextFlight: options?.mirrorNextFlight,
+            scriptNonce: options?.scriptNonce,
+            getInitialNavigationCacheMetadata: options?.getInitialNavigationCacheMetadata,
+          });
         }
 
         let flightRoot: PromiseLike<AppWireElements> | null = null;
@@ -452,18 +470,15 @@ export async function handleSsr(
           const bfcacheMaps = createInitialBfcacheMaps({
             elements,
             metadata,
-            // Normalized inside the function to match the client navigation
-            // snapshot pathname (SSR/client Activity key parity).
-            pathname: ssrNavigationContext.pathname,
           });
           const routeTree = createReactElement(
             ElementsContext.Provider,
             { value: elements },
             createReactElement(Slot, { id: metadata.routeId }),
           );
-          const stateKeyTree = createReactElement(
-            BfcacheStateKeyMapContext.Provider,
-            { value: bfcacheMaps.stateKeys },
+          const identityMapTree = createReactElement(
+            BfcacheIdentityMapContext.Provider,
+            { value: bfcacheMaps.identities },
             routeTree,
           );
           // During SSR we only provide the id *map*, seeded entirely with the
@@ -476,9 +491,9 @@ export async function handleSsr(
             ? createReactElement(
                 BfcacheIdMapContext.Provider,
                 { value: bfcacheMaps.bfcacheIds },
-                stateKeyTree,
+                identityMapTree,
               )
-            : stateKeyTree;
+            : identityMapTree;
         }
 
         const flightRootElement = createReactElement(VinextFlightRoot);
@@ -612,6 +627,7 @@ export async function handleSsr(
 
         let htmlStream: ReadableStream<Uint8Array>;
         let shellErrorRecovered = false;
+        let shouldDelayInitialHtmlPull = false;
         if (pprFallbackShellSignal) {
           const prerender = await loadStaticPrerender();
           const htmlAbortController = new AbortController();
@@ -630,6 +646,8 @@ export async function handleSsr(
 
             if (options?.waitForAllReady === true) {
               await streamingHtmlStream.allReady;
+            } else {
+              shouldDelayInitialHtmlPull = true;
             }
 
             htmlStream = streamingHtmlStream;
@@ -704,6 +722,10 @@ export async function handleSsr(
         // ordering applies to scripts rendered in the initial shell.
         const getBeforeInteractiveHeadHTML = (): string =>
           renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
+
+        if (shouldDelayInitialHtmlPull) {
+          await waitAtLeastOneReactRenderTask();
+        }
 
         const finalStream = deferUntilStreamConsumed(
           htmlStream.pipeThrough(

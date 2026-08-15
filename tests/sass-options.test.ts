@@ -24,9 +24,11 @@ import os from "node:os";
 import fsp from "node:fs/promises";
 import {
   buildSassPreprocessorOptions,
+  createSassCssUrlAssetImporter,
+  createSassTsconfigPathImporters,
   createSassTildeImporter,
 } from "../packages/vinext/src/plugins/sass.js";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect.
 // Save/restore so tests that call config() don't leak between files.
@@ -132,6 +134,125 @@ describe("buildSassPreprocessorOptions", () => {
   });
 });
 
+describe("createSassCssUrlAssetImporter", () => {
+  it("marks asset URLs relative to an imported partial before Sass flattens it", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-sass-partial-url-"));
+    const stylesDir = path.join(tmpDir, "styles");
+    const partialDir = path.join(stylesDir, "subdirectory");
+    await fsp.mkdir(partialDir, { recursive: true });
+    const entryPath = path.join(stylesDir, "global.scss");
+    const partialPath = path.join(partialDir, "_partial.scss");
+    await fsp.writeFile(entryPath, `@import './subdirectory/partial';`);
+    await fsp.writeFile(
+      partialPath,
+      `.red { background-image: url('./darka.svg'), url(darkb.svg); }`,
+    );
+
+    try {
+      const importer = createSassCssUrlAssetImporter();
+      const rewritten = importer.rewriteImports(`@import "./subdirectory/partial";`, entryPath);
+      const importUrl = rewritten.match(/@import "([^"]+)"/)?.[1];
+      expect(importUrl).toContain("vinext-css-url-asset:");
+      const canonicalUrl = importer.canonicalize(importUrl!);
+      expect(canonicalUrl?.href).toBe(pathToFileURL(partialPath).href);
+      const loaded = importer.load(canonicalUrl!);
+      expect(loaded?.syntax).toBe("scss");
+      expect(loaded?.contents).toContain("vinext_css_url_asset=darka.svg");
+      expect(loaded?.contents).toContain("vinext_css_url_asset=darkb.svg");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the default namespace for @use and supports explicit @use/@forward", async () => {
+    const sass = await import("sass");
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-sass-use-url-"));
+    const entryPath = path.join(tmpDir, "entry.scss");
+    const partialPath = path.join(tmpDir, "_card.scss");
+    await fsp.writeFile(partialPath, `$fg: red;\n.card { background-image: url('./card.svg'); }`);
+
+    try {
+      const importer = createSassCssUrlAssetImporter();
+      const defaultUse = importer.rewriteImports(
+        `@use "./card";\n.test { color: card.$fg; }`,
+        entryPath,
+      );
+      expect(defaultUse).toContain(" as card;");
+      expect(
+        sass.compileString(defaultUse, {
+          importers: [importer],
+          syntax: "scss",
+        }).css,
+      ).toContain("vinext_css_url_asset=card.svg");
+
+      const explicitUse = importer.rewriteImports(
+        `@use "./card" as c;\n.test { color: c.$fg; }`,
+        entryPath,
+      );
+      expect(explicitUse).not.toContain(" as card as c");
+      expect(() =>
+        sass.compileString(explicitUse, { importers: [importer], syntax: "scss" }),
+      ).not.toThrow();
+
+      const forwarded = importer.rewriteImports(`@forward "./card";`, entryPath);
+      expect(() =>
+        sass.compileString(forwarded, { importers: [importer], syntax: "scss" }),
+      ).not.toThrow();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves underscores in Sass default namespaces", async () => {
+    const sass = await import("sass");
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-sass-namespace-url-"));
+    const entryPath = path.join(tmpDir, "entry.scss");
+    await fsp.writeFile(
+      path.join(tmpDir, "_my_colors.scss"),
+      `$fg: red;\n.colors { background-image: url('./colors.svg'); }`,
+    );
+    try {
+      const importer = createSassCssUrlAssetImporter();
+      const underscored = importer.rewriteImports(
+        `@use "./my_colors";\n.test { color: my_colors.$fg; }`,
+        entryPath,
+      );
+      expect(underscored).toContain(" as my_colors;");
+      expect(() =>
+        sass.compileString(underscored, { importers: [importer], syntax: "scss" }),
+      ).not.toThrow();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads partials when Sass normalizes URLs with '~'", async () => {
+    const sass = await import("sass");
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-sass-short-path-url-"));
+    const shortPathDir = path.join(tmpDir, "RUNNER~1");
+    const entryPath = path.join(shortPathDir, "entry.scss");
+    await fsp.mkdir(shortPathDir);
+    await fsp.writeFile(
+      path.join(shortPathDir, "_card.scss"),
+      `$fg: red;\n.card { background-image: url('./card.svg'); }`,
+    );
+
+    try {
+      const importer = createSassCssUrlAssetImporter();
+      const rewritten = importer.rewriteImports(
+        `@use "./card";\n.test { color: card.$fg; }`,
+        entryPath,
+      );
+      expect(rewritten).toContain("RUNNER~1");
+      expect(() =>
+        sass.compileString(rewritten, { importers: [importer], syntax: "scss" }),
+      ).not.toThrow();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("createSassTildeImporter", () => {
   let tmpRoot: string;
   let importer: ReturnType<typeof createSassTildeImporter>;
@@ -199,9 +320,111 @@ describe("createSassTildeImporter", () => {
   });
 });
 
+describe("createSassTsconfigPathImporters", () => {
+  it("preserves exact, wildcard, longest-match, and target fallback semantics", async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext sass aliases "));
+    try {
+      const exact = path.join(root, "_exact.scss");
+      const missing = path.join(root, "missing");
+      const general = path.join(root, "general");
+      const special = path.join(root, "special");
+      await fsp.writeFile(exact, "$color: red;");
+      const importers = createSassTsconfigPathImporters([
+        { find: "@theme", replacements: [path.join(missing, "exact"), exact] },
+        { find: "@theme/*", replacements: [path.join(general, "*")] },
+        { find: "@theme/special/*", replacements: [path.join(special, "*")] },
+        {
+          find: "@palette-*-tokens",
+          replacements: [path.join(missing, "*"), path.join(general, "*")],
+        },
+      ]);
+
+      expect(importers[0]?.findFileUrl("@theme")?.href).toBe(
+        pathToFileURL(path.join(missing, "exact")).href,
+      );
+      expect(importers[1]?.findFileUrl("@theme")?.href).toBe(pathToFileURL(exact).href);
+      expect(importers[0]?.findFileUrl("@theme/colors")?.href).toBe(
+        pathToFileURL(path.join(general, "colors")).href,
+      );
+      expect(importers[0]?.findFileUrl("@theme/special/colors")?.href).toBe(
+        pathToFileURL(path.join(special, "colors")).href,
+      );
+      expect(importers[1]?.findFileUrl("@palette-colors-tokens")?.href).toBe(
+        pathToFileURL(path.join(general, "colors")).href,
+      );
+      expect(importers[1]?.findFileUrl("@palette-$&-tokens")?.href).toBe(
+        pathToFileURL(path.join(general, "$&")).href,
+      );
+      expect(importers[0]?.findFileUrl("@theme")).not.toBeNull();
+      expect(importers[0]?.findFileUrl("@theme/other/special/colors")?.href).toBe(
+        pathToFileURL(path.join(general, "other", "special", "colors")).href,
+      );
+      expect(importers[0]?.findFileUrl("@theme/")?.href).toBe(
+        pathToFileURL(general + path.sep).href,
+      );
+
+      const [equalPrefixImporter] = createSassTsconfigPathImporters([
+        { find: "@*", replacements: [path.join(root, "first", "*")] },
+        { find: "@*-tokens", replacements: [path.join(root, "second", "*")] },
+      ]);
+      expect(equalPrefixImporter?.findFileUrl("@blue-tokens")?.href).toBe(
+        pathToFileURL(path.join(root, "first", "blue-tokens")).href,
+      );
+
+      const sass = await import("sass");
+      expect(
+        sass.compileString('@use "@theme" as theme; .probe { color: theme.$color; }', {
+          importers,
+        }).css,
+      ).toContain("color: red");
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not intercept native Sass, file, relative, absolute, or remote URLs", () => {
+    const [importer] = createSassTsconfigPathImporters([
+      { find: "sass:color", replacements: ["/wrong/sass"] },
+      { find: "https:*", replacements: ["/wrong/remote/*"] },
+      { find: "file:*", replacements: ["/wrong/file/*"] },
+    ]);
+
+    for (const url of [
+      "sass:color",
+      "https://example.com/theme.scss",
+      "file:///tmp/theme.scss",
+      "//example.com/theme.scss",
+      "/absolute/theme.scss",
+      "./relative.scss",
+      "../relative.scss",
+      "~package/theme.scss",
+    ]) {
+      expect(importer?.findFileUrl(url)).toBeNull();
+    }
+  });
+
+  it("does not apply project aliases inside node_modules stylesheets", () => {
+    const [importer] = createSassTsconfigPathImporters([
+      { find: "@theme", replacements: ["/application/theme.scss"] },
+    ]);
+
+    expect(
+      importer?.findFileUrl("@theme", {
+        containingUrl: pathToFileURL("/workspace/node_modules/example/_entry.scss"),
+      }),
+    ).toBeNull();
+    expect(
+      importer?.findFileUrl("@theme", {
+        containingUrl: pathToFileURL("/workspace/styles/_entry.scss"),
+      })?.href,
+    ).toBe(pathToFileURL("/application/theme.scss").href);
+  });
+});
+
 describe("vinext config hook threads sassOptions into css.preprocessorOptions", () => {
   async function runConfigHook(
     nextConfigSrc: string,
+    tsconfigSrc?: string,
   ): Promise<Record<string, unknown> | undefined> {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
@@ -221,6 +444,7 @@ describe("vinext config hook threads sassOptions into css.preprocessorOptions", 
       `export default function Home() { return <h1>Home</h1>; }`,
     );
     await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), nextConfigSrc);
+    if (tsconfigSrc) await fsp.writeFile(path.join(tmpDir, "tsconfig.json"), tsconfigSrc);
 
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
@@ -238,9 +462,13 @@ describe("vinext config hook threads sassOptions into css.preprocessorOptions", 
       `export default { sassOptions: { additionalData: '$var: red;' } };`,
     );
     // oxlint-disable-next-line typescript/no-explicit-any
-    expect((css as any)?.preprocessorOptions?.scss?.additionalData).toBe("$var: red;");
+    expect(
+      await (css as any)?.preprocessorOptions?.scss?.additionalData(".test {}", "/tmp/test.scss"),
+    ).toBe("$var: red;.test {}");
     // oxlint-disable-next-line typescript/no-explicit-any
-    expect((css as any)?.preprocessorOptions?.sass?.additionalData).toBe("$var: red;");
+    expect(
+      await (css as any)?.preprocessorOptions?.sass?.additionalData(".test {}", "/tmp/test.sass"),
+    ).toBe("$var: red;.test {}");
   }, 15000);
 
   it("aliases includePaths into loadPaths in css.preprocessorOptions.scss", async () => {
@@ -266,5 +494,49 @@ describe("vinext config hook threads sassOptions into css.preprocessorOptions", 
     // oxlint-disable-next-line typescript/no-explicit-any
     const sassImporters: any[] = opts.sass.importers;
     expect(sassImporters.length).toBeGreaterThanOrEqual(1);
+  }, 15000);
+
+  it("preserves user importer order and precedence over tsconfig aliases", async () => {
+    const css = await runConfigHook(
+      `
+      const first = { name: "first", findFileUrl() { return null; } };
+      const second = { name: "second", findFileUrl() { return null; } };
+      export default { sassOptions: { importers: [first, second] } };
+    `,
+      JSON.stringify({ compilerOptions: { paths: { "@theme": ["./styles/theme.scss"] } } }),
+    );
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const scssImporters: any[] = (css as any)?.preprocessorOptions?.scss?.importers;
+    const scssUserIndexes = ["first", "second"].map((name) =>
+      scssImporters.findIndex((importer) => importer.name === name),
+    );
+    const scssAliasIndex = scssImporters.findIndex(
+      (importer) => importer.findFileUrl?.("@theme")?.protocol === "file:",
+    );
+    expect(scssUserIndexes).toEqual([2, 3]);
+    expect(scssAliasIndex).toBeGreaterThan(scssUserIndexes[1]!);
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const sassImporters: any[] = (css as any)?.preprocessorOptions?.sass?.importers;
+    const sassUserIndexes = ["first", "second"].map((name) =>
+      sassImporters.findIndex((importer) => importer.name === name),
+    );
+    const sassAliasIndex = sassImporters.findIndex(
+      (importer) => importer.findFileUrl?.("@theme")?.protocol === "file:",
+    );
+    expect(sassUserIndexes).toEqual([2, 3]);
+    expect(sassAliasIndex).toBeGreaterThan(sassUserIndexes[1]!);
+  }, 15000);
+
+  it("accepts a single user importer object", async () => {
+    const css = await runConfigHook(`
+      const only = { name: "only", findFileUrl() { return null; } };
+      export default { sassOptions: { importers: only } };
+    `);
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const scssImporters: any[] = (css as any)?.preprocessorOptions?.scss?.importers;
+    expect(scssImporters.some((importer) => importer.name === "only")).toBe(true);
+    // oxlint-disable-next-line typescript/no-explicit-any
+    const sassImporters: any[] = (css as any)?.preprocessorOptions?.sass?.importers;
+    expect(sassImporters.some((importer) => importer.name === "only")).toBe(true);
   }, 15000);
 });

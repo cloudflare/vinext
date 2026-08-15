@@ -138,7 +138,9 @@ test.describe("Layout persistence", () => {
 
   // Related Next.js coverage:
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params/vary-params.test.ts
-  test("dynamic segment layout counter survives param navigation while content updates", async ({
+  // Ported from Next.js: test/e2e/app-dir/use-router-bfcache-id/use-router-bfcache-id.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-router-bfcache-id/use-router-bfcache-id.test.ts
+  test("dynamic segment layout resets on param navigation while content updates", async ({
     page,
   }) => {
     await page.goto(`${BASE}/blog/hello-world`);
@@ -157,7 +159,7 @@ test.describe("Layout persistence", () => {
     await expect(page.getByTestId("blog-page-slug")).toHaveText("Slug: getting-started");
     await expect(page.getByTestId("layout-slug-awaited")).toHaveText("getting-started");
     await expect(page.getByTestId("layout-slug-direct")).toHaveText("getting-started");
-    await expect(page.getByTestId("layout-count")).toHaveText(`Layout count: ${initialCount + 1}`);
+    await expect(page.getByTestId("layout-count")).toHaveText("Layout count: 0");
   });
 });
 

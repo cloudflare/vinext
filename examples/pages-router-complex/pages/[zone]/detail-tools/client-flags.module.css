@@ -1,0 +1,9 @@
+.panel {
+  max-width: 32rem;
+}
+
+.group {
+  display: grid;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+}

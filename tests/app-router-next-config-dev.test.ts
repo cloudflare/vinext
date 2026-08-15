@@ -1,5 +1,5 @@
 import { type ViteDevServer } from "vite";
-import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
 import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "./helpers.js";
 
 describe("App Router next.config.js features (dev server integration)", () => {
@@ -116,6 +116,26 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(html).toContain('"page":"/pages-header-override-delete"');
   });
 
+  it("hands unmatched API fallback rewrites to App route handlers", async () => {
+    const res = await fetch(
+      `${baseUrl}/api/pages-fallback-to-app/session/login?client=vinext&mw-auth`,
+      {
+        headers: { "x-api-fallback-handoff": "preserved" },
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-custom-header")).toBe("vinext-app");
+    await expect(res.json()).resolves.toEqual({
+      body: null,
+      cookie: "mw-api-fallback-user=1",
+      header: "preserved",
+      pathname: "/api/pages-fallback-to-app/session/login",
+      query: { client: "vinext", from: "fallback", "mw-auth": "" },
+      slugs: ["session", "login"],
+    });
+  });
+
   it("applies custom headers from next.config.js on API routes", async () => {
     const res = await fetch(`${baseUrl}/api/hello`);
     expect(res.headers.get("x-custom-header")).toBe("vinext-app");
@@ -126,25 +146,48 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.headers.get("x-page-header")).toBe("about-page");
   });
 
+  it("preserves config Link headers alongside React preload links", async () => {
+    const res = await fetch(`${baseUrl}/config-link-preload`);
+    const link = res.headers.get("link") ?? "";
+
+    expect(res.status).toBe(200);
+    expect(link).toContain('</llms.txt>; rel="describedby"; type="text/plain"');
+    expect(link).not.toContain("</superseded>");
+    expect(link).toContain("</agent-test.woff2>");
+    expect(link).toContain("rel=preload");
+  });
+
+  it("keeps middleware Link precedence while preserving React preload links", async () => {
+    const res = await fetch(`${baseUrl}/config-link-preload?middleware-link=1`);
+    const link = res.headers.get("link") ?? "";
+
+    expect(res.status).toBe(200);
+    expect(link).toContain('</middleware.css>; rel="preload"; as="style"');
+    expect(link).toContain("</agent-test.woff2>");
+    expect(link).not.toContain("</llms.txt>");
+    expect(link).not.toContain("</superseded>");
+  });
+
   it("does not redirect for non-matching paths", async () => {
     const res = await fetch(`${baseUrl}/about`);
     expect(res.status).toBe(200);
     expect(res.redirected).toBe(false);
   });
 
-  // ── Percent-encoded paths should be decoded before config matching ──
+  // ── Config source literals retain raw request identity ──
+  // Next.js parity: resolve-routes.ts matches custom routes against curPathname.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
 
-  it("percent-encoded redirect path is decoded before config matching", async () => {
-    // /%6Fld-%61bout decodes to /old-about → /about (permanent redirect)
+  it("does not match a percent-encoded redirect source alias", async () => {
     const res = await fetch(`${baseUrl}/%6Fld-%61bout`, { redirect: "manual" });
-    expect(res.status).toBe(308);
-    expect(res.headers.get("location")).toContain("/about");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("location")).toBeNull();
   });
 
-  it("percent-encoded header path is decoded before config matching", async () => {
-    // /%61bout decodes to /about → X-Page-Header: about-page
+  it("does not match a percent-encoded header source alias", async () => {
     const res = await fetch(`${baseUrl}/%61bout`);
-    expect(res.headers.get("x-page-header")).toBe("about-page");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("x-page-header")).toBeNull();
   });
 
   it("encoded slashes stay within a single segment for config header matching", async () => {
@@ -152,11 +195,9 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.headers.get("x-custom-header")).toBeNull();
   });
 
-  it("percent-encoded rewrite path is decoded before config matching", async () => {
-    // /rewrite-%61bout decodes to /rewrite-about → /about (beforeFiles rewrite)
+  it("does not match a percent-encoded rewrite source alias", async () => {
     const res = await fetch(`${baseUrl}/rewrite-%61bout`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("About");
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("About");
   });
 });

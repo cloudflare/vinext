@@ -12,8 +12,9 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "types": ["vinext/types", "node"]
   },
-  "include": ["**/*.ts", "**/*.tsx", "../../packages/vinext/src/shims/next-shims.d.ts"],
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
   "exclude": ["node_modules"]
 }

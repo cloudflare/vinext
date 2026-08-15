@@ -20,6 +20,7 @@ beforeEach(() => {
 
 afterEach(() => {
   clearPregeneratedConcretePaths();
+  delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
   fs.rmSync(tmpDir, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
@@ -89,6 +90,27 @@ describe("injectPregeneratedConcretePaths", () => {
     const match = output.match(/globalThis\.__VINEXT_PREGENERATED_CONCRETE_PATHS = (\[.*?\]);/);
     expect(match).not.toBeNull();
     expect(JSON.parse(match![1])).toEqual([["/blog/:slug", ["/blog/post-a"]]]);
+    expect(globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS).toEqual([
+      ["/blog/:slug", ["/blog/post-a"]],
+    ]);
+  });
+
+  it("clears the current-process global when no concrete paths are available", () => {
+    globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/old/:slug", ["/old/post"]]];
+    writeFile(
+      "dist/server/index.js",
+      [
+        "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */",
+        'globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/old/:slug",["/old/post"]]];',
+        "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */",
+        'export default { fetch() { return new Response("ok"); } };',
+        "",
+      ].join("\n"),
+    );
+
+    injectPregeneratedConcretePaths(tmpDir);
+
+    expect(globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS).toBeUndefined();
   });
 
   it("hydrates the concrete-path registry from the generated Worker entry", async () => {

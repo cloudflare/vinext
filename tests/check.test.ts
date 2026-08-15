@@ -216,6 +216,17 @@ describe("scanImports", () => {
     expect(items[0].name).toBe("next/image");
   });
 
+  it("ignores imports used only by test modules and tool config files", () => {
+    writeFile("app/page.test.tsx", `import { useAmp } from "next/amp";`);
+    writeFile("vitest.config.ts", `import { useAmp } from "next/amp";`);
+    writeFile("site.config.ts", `import { useAmp } from "next/amp";`);
+    writeFile("app/page.tsx", `import Link from "next/link";`);
+
+    const items = scanImports(tmpDir);
+
+    expect(items.map((item) => item.name)).toEqual(["next/amp", "next/link"]);
+  });
+
   it("deduplicates files using the same import", () => {
     writeFile(
       "app/page.tsx",
@@ -290,9 +301,9 @@ describe("analyzeConfig", () => {
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "basePath")?.status).toBe("supported");
     expect(items.find((i) => i.name === "trailingSlash")?.status).toBe("supported");
-    // reactStrictMode is reported as `partial` until vinext actually wraps the
-    // hydrated root in `<React.StrictMode>` — currently the config is read but
-    // not enforced. See `packages/vinext/src/check.ts` for the rationale.
+    // reactStrictMode is enforced for the Pages Router (client root wrapped in
+    // `<React.StrictMode>` when `true`) but the App Router is not yet wrapped,
+    // so the status is `partial`. See `packages/vinext/src/check.ts`.
     expect(items.find((i) => i.name === "reactStrictMode")?.status).toBe("partial");
   });
 
@@ -308,6 +319,20 @@ describe("analyzeConfig", () => {
     const webpackItem = items.find((i) => i.name === "webpack");
     expect(webpackItem?.status).toBe("unsupported");
     expect(webpackItem?.detail).toContain("Vite replaces webpack");
+  });
+
+  it("detects cacheComponents as partially supported", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        cacheComponents: true,
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    const cacheComponentsItem = items.find((i) => i.name === "cacheComponents");
+    expect(cacheComponentsItem?.status).toBe("partial");
+    expect(cacheComponentsItem?.detail).toContain("experimental support");
   });
 
   it("does not flag webpack when it only appears in a comment", () => {
@@ -527,7 +552,7 @@ describe("analyzeConfig", () => {
     expect(item?.detail).toContain("not applicable");
   });
 
-  it("detects unrecognized middleware and proxy config options as unsupported", () => {
+  it("detects middleware and proxy config support", () => {
     writeFile(
       "next.config.mjs",
       `export default {
@@ -546,13 +571,15 @@ describe("analyzeConfig", () => {
     );
 
     const items = analyzeConfig(tmpDir);
+    expect(items.find((item) => item.name === "skipMiddlewareUrlNormalize")?.status).toBe(
+      "partial",
+    );
+    expect(items.find((item) => item.name === "skipProxyUrlNormalize")?.status).toBe("partial");
     const unsupportedNames = items
       .filter((item) => item.status === "unsupported")
       .map((item) => item.name);
 
     expect(unsupportedNames).toEqual([
-      "skipMiddlewareUrlNormalize",
-      "skipProxyUrlNormalize",
       "experimental.middlewarePrefetch",
       "experimental.proxyPrefetch",
       "experimental.middlewareClientMaxBodySize",
@@ -1210,6 +1237,33 @@ describe("checkConventions", () => {
     expect(cjs?.detail).toContain("fileURLToPath");
     expect(cjs?.detail).toContain("import.meta.dirname");
     expect(cjs?.files).toContain("lib/db.ts");
+  });
+
+  it("ignores CJS globals in test modules and tool config files", () => {
+    writeFile(
+      "src/app/mobile-layout-alignment.test.ts",
+      `const css = readFileSync(resolve(__dirname, "film.module.css"), "utf-8");`,
+    );
+    writeFile("vitest.config.ts", `export default { root: path.resolve(__dirname, "./src") };`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+
+    expect(cjs).toBeUndefined();
+  });
+
+  it("still reports CJS globals in runtime source alongside excluded files", () => {
+    writeFile("lib/db.ts", `const dir = path.join(__dirname, "data");`);
+    writeFile("site.config.ts", `const root = path.join(__dirname, "content");`);
+    writeFile("lib/db.spec.ts", `const fixture = path.join(__dirname, "fixtures");`);
+    writeFile("vitest.config.ts", `export default { root: path.resolve(__dirname, "./src") };`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+
+    expect(cjs?.files).toEqual(["lib/db.ts", "site.config.ts"]);
   });
 
   it("detects __filename usage", () => {

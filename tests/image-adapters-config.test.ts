@@ -68,6 +68,9 @@ describe("generateImageAdaptersModule", () => {
     const code = generateImageAdaptersModule({
       optimizer: { adapter: "@vinext/cloudflare/images/images-optimizer" },
     });
+    expect(code).toContain(
+      "if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
+    );
     expect(code).toContain("if (__vinextImageOptimizerRegistered) return;");
     expect(code).toContain("__vinextImageOptimizerRegistered = true;");
   });
@@ -310,7 +313,7 @@ describe("registration is wired into the router/runtime entries", () => {
   it("App Router RSC entry falls back to Next.js default widths when images is unset", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
     // Next.js defaults: deviceSizes then imageSizes.
-    expect(code).toContain("[640,750,828,1080,1200,1920,2048,3840,16,32,48,64,96,128,256,384]");
+    expect(code).toContain("[640,750,828,1080,1200,1920,2048,3840,32,48,64,96,128,256,384]");
   });
 
   it("Pages Router worker entry registers the optimizer with env and uses the registry", () => {

@@ -26,11 +26,11 @@ export type NEXT_DATA = {
   locale?: string;
   locales?: string[];
   defaultLocale?: string;
-  domainLocales?: Array<{
+  domainLocales?: ReadonlyArray<{
     domain: string;
     defaultLocale: string;
-    locales?: string[];
-    http?: boolean;
+    locales?: readonly string[];
+    http?: true;
   }>;
   scriptLoader?: unknown[];
   isPreview?: boolean;

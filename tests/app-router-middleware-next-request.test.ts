@@ -1,5 +1,5 @@
 import { type ViteDevServer } from "vite";
-import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
 import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "./helpers.js";
 
 describe("App Router middleware with NextRequest", () => {
@@ -132,6 +132,29 @@ describe("App Router middleware with NextRequest", () => {
       headersApiAuthorization: null,
       headersApiCookie: null,
       headersApiMiddlewareHeader: "hello-from-middleware",
+    });
+  });
+
+  it("does not translate an unlisted middleware request header value", async () => {
+    // Next.js skips override translation without x-middleware-override-headers,
+    // then copies the unconsumed protocol header to the request literally.
+    // Confirmed against Next.js 16.2.7 and resolve-routes.ts:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+    const res = await fetch(`${baseUrl}/api/header-override-stray`, {
+      headers: {
+        authorization: "Bearer secret",
+        "x-added": "original",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-middleware-request-x-added")).toBe("forged-by-middleware");
+    expect(await res.json()).toEqual({
+      authorization: "Bearer secret",
+      logical: "original",
+      logicalFromHeadersApi: "original",
+      raw: "forged-by-middleware",
+      rawFromHeadersApi: "forged-by-middleware",
     });
   });
 

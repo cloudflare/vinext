@@ -19,8 +19,7 @@ import {
 } from "../packages/vinext/src/plugins/strip-server-exports.js";
 import {
   createClientManualChunks,
-  clientTreeshakeConfig,
-  getClientTreeshakeConfigForVite,
+  getClientTreeshakeConfig,
   createRscFrameworkChunkOutputConfig,
   RSC_FRAMEWORK_CHUNK_TEST,
   isRscFrameworkModule,
@@ -35,6 +34,7 @@ import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
+import { aliasEntriesToRecord } from "./helpers.js";
 
 // `stripServerExports` returns `{ code, map }`; these tests assert on the
 // transformed source, so unwrap to the code string (null is preserved).
@@ -70,27 +70,12 @@ afterEach(() => {
 });
 
 function getBuildBundlerOptions(result: any) {
-  return result.build?.rolldownOptions ?? result.build?.rollupOptions;
+  return result.build?.rolldownOptions;
 }
 
 function getEnvBuildBundlerOptions(env: any) {
-  return env?.build?.rolldownOptions ?? env?.build?.rollupOptions;
+  return env?.build?.rolldownOptions;
 }
-
-// ─── clientTreeshakeConfig ────────────────────────────────────────────────────
-
-describe("clientTreeshakeConfig", () => {
-  it("uses 'recommended' preset for safe defaults", () => {
-    expect(clientTreeshakeConfig.preset).toBe("recommended");
-  });
-
-  it("sets moduleSideEffects to 'no-external' for aggressive vendor DCE", () => {
-    // 'no-external' marks node_modules as side-effect-free (enabling DCE for
-    // barrel-heavy libraries) while preserving side effects for local modules
-    // (CSS imports, polyfills).
-    expect(clientTreeshakeConfig.moduleSideEffects).toBe("no-external");
-  });
-});
 
 // ─── clientManualChunks ───────────────────────────────────────────────────────
 
@@ -103,11 +88,71 @@ describe("clientManualChunks", () => {
     expect(clientManualChunks("/node_modules/react-dom/client.js")).toBe("framework");
   });
 
+  it("splits the react-dom server renderer into its own 'react-dom-server' chunk", () => {
+    // Next.js supports these APIs in client components:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-basic/rsc-basic.test.ts
+    // Their Fizz implementation must not ride in the always-loaded framework
+    // chunk when only some client routes import it.
+    expect(clientManualChunks("/node_modules/react-dom/server.js")).toBe("react-dom-server");
+    expect(clientManualChunks("/node_modules/react-dom/server.browser.js")).toBe(
+      "react-dom-server",
+    );
+    expect(clientManualChunks("/node_modules/react-dom/server.edge.js")).toBe("react-dom-server");
+    expect(clientManualChunks("/node_modules/react-dom/static.browser.js")).toBe(
+      "react-dom-server",
+    );
+    expect(clientManualChunks("/node_modules/react-dom/static.edge.js")).toBe("react-dom-server");
+    expect(
+      clientManualChunks("/node_modules/react-dom/cjs/react-dom-server.browser.production.js"),
+    ).toBe("react-dom-server");
+    expect(
+      clientManualChunks(
+        "/node_modules/react-dom/cjs/react-dom-server-legacy.browser.production.js",
+      ),
+    ).toBe("react-dom-server");
+    expect(clientManualChunks("/node_modules/react-dom/server.browser.js?commonjs-entry")).toBe(
+      "react-dom-server",
+    );
+  });
+
+  it("keeps react-dom client + shared internals + server stub in 'framework'", () => {
+    expect(clientManualChunks("/node_modules/react-dom/index.js")).toBe("framework");
+    expect(clientManualChunks("/node_modules/react-dom/cjs/react-dom-client.production.js")).toBe(
+      "framework",
+    );
+    expect(clientManualChunks("/node_modules/react-dom/cjs/react-dom.production.js")).toBe(
+      "framework",
+    );
+    // The client-side stub that throws if server APIs are called — stays with the client.
+    expect(clientManualChunks("/node_modules/react-dom/server-rendering-stub.js")).toBe(
+      "framework",
+    );
+  });
+
+  // Bundler ids carry backslashes only on Windows, where `toSlash` is active.
+  it.runIf(process.platform === "win32")(
+    "classifies Windows-style backslash ids for the react-dom server split",
+    () => {
+      expect(clientManualChunks("C:\\proj\\node_modules\\react-dom\\server.browser.js")).toBe(
+        "react-dom-server",
+      );
+      expect(
+        clientManualChunks(
+          "C:\\proj\\node_modules\\react-dom\\cjs\\react-dom-server.browser.production.js",
+        ),
+      ).toBe("react-dom-server");
+      expect(clientManualChunks("C:\\proj\\node_modules\\react-dom\\client.js")).toBe("framework");
+      expect(
+        clientManualChunks("C:\\proj\\node_modules\\react-dom\\server-rendering-stub.js"),
+      ).toBe("framework");
+    },
+  );
+
   it("groups scheduler into 'framework' chunk", () => {
     expect(clientManualChunks("/node_modules/scheduler/index.js")).toBe("framework");
   });
 
-  it("returns undefined for other node_modules (Rollup default splitting)", () => {
+  it("returns undefined for other node_modules (default graph splitting)", () => {
     expect(clientManualChunks("/node_modules/mermaid/dist/mermaid.js")).toBeUndefined();
     expect(clientManualChunks("/node_modules/lodash-es/lodash.js")).toBeUndefined();
     expect(clientManualChunks("/node_modules/@mui/material/index.js")).toBeUndefined();
@@ -131,6 +176,9 @@ describe("clientManualChunks", () => {
     expect(appClientManualChunks("/vinext/shims/link.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/router.ts")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/image.tsx?client")).toBeUndefined();
+    expect(
+      appClientManualChunks("/vinext/shims/internal/hybrid-client-route-owner.js"),
+    ).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/legacy-image.tsx")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/layout-segment-context.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/web-vitals.ts")).toBeUndefined();
@@ -144,6 +192,43 @@ describe("clientManualChunks", () => {
   it("handles scoped package names correctly", () => {
     // Scoped packages should not be grouped into framework
     expect(clientManualChunks("/node_modules/@tanstack/react-query/index.js")).toBeUndefined();
+  });
+});
+
+describe("createClientManualChunks (installed layout)", () => {
+  // The shimsDir MUST contain node_modules — that's the regression: an installed
+  // copy's shims were swallowed by the node_modules early return.
+  const installedShimsDir = "/app/node_modules/vinext/dist/shims/";
+
+  it("groups shims under node_modules into the vinext chunk", () => {
+    const chunks = createClientManualChunks(installedShimsDir);
+    expect(chunks("/app/node_modules/vinext/dist/shims/slot.js")).toBe("vinext");
+    expect(chunks("/app/node_modules/vinext/dist/shims/navigation-context-state.js")).toBe(
+      "vinext",
+    );
+    expect(chunks("/app/node_modules/vinext/dist/shims/slot.js?v=abc")).toBe("vinext");
+  });
+
+  it("still excludes route-owned shims when preserving route boundaries", () => {
+    const chunks = createClientManualChunks(installedShimsDir, true);
+    expect(chunks("/app/node_modules/vinext/dist/shims/link.js")).toBeUndefined();
+    expect(
+      chunks("/app/node_modules/vinext/dist/shims/internal/hybrid-client-route-owner.js"),
+    ).toBeUndefined();
+    expect(chunks("/app/node_modules/vinext/dist/shims/slot.js")).toBe("vinext");
+  });
+
+  it("leaves framework and vendor grouping untouched", () => {
+    const chunks = createClientManualChunks(installedShimsDir);
+    expect(chunks("/app/node_modules/react/index.js")).toBe("framework");
+    expect(chunks("/app/node_modules/scheduler/index.js")).toBe("framework");
+    expect(chunks("/app/node_modules/react-dom/client.js")).toBe("framework");
+    expect(chunks("/app/node_modules/react-dom/server.browser.js")).toBe("react-dom-server");
+    expect(chunks("/app/node_modules/.pnpm/react@19.2.8/node_modules/react/index.js")).toBe(
+      "framework",
+    );
+    expect(chunks("/app/node_modules/lodash/map.js")).toBeUndefined();
+    expect(chunks("/app/src/components/Button.tsx")).toBeUndefined();
   });
 });
 
@@ -203,9 +288,9 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
       expect(result.environments.ssr.resolve.external).toContain("typescript");
       expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"true"');
-      expect(result.resolve.alias["vinext/server/pages-client-assets"]).toMatch(
-        /server\/pages-client-assets\.ts$/,
-      );
+      expect(
+        aliasEntriesToRecord(result.resolve.alias)["vinext/server/pages-client-assets"],
+      ).toMatch(/server\/pages-client-assets\.ts$/);
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -667,6 +752,71 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   }, 15000);
 
+  it("uses server package conditions in RSC and SSR environments", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const conditionsPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:server-conditions" && typeof p.configEnvironment === "function",
+    );
+    expect(conditionsPlugin).toBeDefined();
+
+    for (const environmentName of ["rsc", "ssr"]) {
+      const workerConfig = {
+        resolve: {
+          conditions: ["workerd", "worker", "module", "browser", "development|production"],
+        },
+        optimizeDeps: {
+          rolldownOptions: {
+            resolve: {
+              conditionNames: ["workerd", "worker", "module", "browser", "development"],
+            },
+          },
+        },
+      };
+      (conditionsPlugin as any).configEnvironment(environmentName, workerConfig);
+      expect(workerConfig.resolve.conditions).toEqual([
+        "workerd",
+        "worker",
+        "module",
+        "development|production",
+      ]);
+      expect(workerConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual([
+        "workerd",
+        "worker",
+        "module",
+        "development",
+      ]);
+    }
+
+    const clientConfig = {
+      resolve: { conditions: ["module", "browser"] },
+      optimizeDeps: {
+        rolldownOptions: { resolve: { conditionNames: ["module", "browser"] } },
+      },
+    };
+    (conditionsPlugin as any).configEnvironment("client", clientConfig);
+    expect(clientConfig.resolve.conditions).toEqual(["module", "browser"]);
+    expect(clientConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual([
+      "module",
+      "browser",
+    ]);
+
+    const auxiliaryWorkerConfig = {
+      resolve: { conditions: ["workerd", "worker", "module", "browser"] },
+      optimizeDeps: {
+        rolldownOptions: {
+          resolve: { conditionNames: ["workerd", "worker", "module", "browser"] },
+        },
+      },
+    };
+    (conditionsPlugin as any).configEnvironment("auxiliary-worker", auxiliaryWorkerConfig);
+    expect(auxiliaryWorkerConfig.resolve.conditions).toContain("browser");
+    expect(auxiliaryWorkerConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toContain(
+      "browser",
+    );
+  }, 15000);
+
   it("suppresses missing optional Cloudflare Pages Router worker optimizer warnings", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
@@ -788,6 +938,22 @@ describe("process.env.NODE_ENV define", () => {
     }
   }, 15000);
 
+  it("keeps NODE_ENV production for builds using test mode", async () => {
+    const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await mainPlugin.config(mockConfig, {
+        command: "build",
+        mode: "test",
+      });
+
+      expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("production"));
+      expect(process.env.NODE_ENV).toBe("production");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
   it("is injected as production for build without explicit mode", async () => {
     // Other tests in this file pass { command: "build" } with no mode.
     // The mode defaults to "development" via env?.mode ?? "development",
@@ -865,6 +1031,222 @@ describe("process.env.NODE_ENV define", () => {
 });
 
 // ─── Treeshake config applied to Vite builds ──────────────────────────────────
+
+// Ported from Next.js: test/unit/next-babel-loader-prod.test.ts
+// https://github.com/vercel/next.js/blob/v16.2.6/test/unit/next-babel-loader-prod.test.ts
+describe("process.browser define", () => {
+  it("uses the consumer type across client, RSC, SSR, and Worker environments", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = vinext().find((candidate: any) => candidate.name === "vinext:typeof-window") as
+      | { configEnvironment: (name: string, environment: { consumer: string }) => any }
+      | undefined;
+    expect(plugin).toBeDefined();
+
+    for (const [name, consumer, expected] of [
+      ["client", "client", "true"],
+      ["rsc", "server", "false"],
+      ["ssr", "server", "false"],
+      ["worker", "server", "false"],
+    ] as const) {
+      const result = plugin!.configEnvironment(name, { consumer });
+      expect(result.define["process.browser"], name).toBe(expected);
+      expect(
+        result.optimizeDeps.rolldownOptions.transform.define["process.browser"],
+        `${name} optimizer`,
+      ).toBe(expected);
+    }
+  });
+
+  it("survives Vite's environment config merge with optimizer defaults", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-process-browser-env-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function Layout({ children }) { return <html><body>{children}</body></html> }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Page() { return <p>home</p> }`,
+    );
+
+    try {
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      for (const [name, expected] of [
+        ["client", "true"],
+        ["rsc", "false"],
+        ["ssr", "false"],
+      ] as const) {
+        const config = builder.environments[name].config;
+        expect(config.define?.["process.browser"], name).toBe(expected);
+        expect(
+          config.optimizeDeps.rolldownOptions?.transform?.define?.["process.browser"],
+          `${name} optimizer`,
+        ).toBe(expected);
+        // The consumer define must merge with, not replace, the shared
+        // optimizer policy assembled by vinext:config.
+        expect(
+          config.optimizeDeps.rolldownOptions?.transform?.define?.["process.env.NODE_ENV"],
+          `${name} NODE_ENV optimizer`,
+        ).toBeDefined();
+        expect(
+          config.optimizeDeps.rolldownOptions?.moduleTypes?.[".js"],
+          `${name} JSX optimizer`,
+        ).toBe("jsx");
+      }
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 30_000);
+
+  // Ported from Next.js: test/production/pages-dir/production/test/process-env.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/production/pages-dir/production/test/process-env.ts
+  it("prunes the opposite branch from production RSC, SSR, and client bundles", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-process-browser-build-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const nodeModules = path.join(tmpDir, "node_modules");
+    await fsp.mkdir(nodeModules);
+    for (const entry of await fsp.readdir(rootNodeModules)) {
+      if (
+        entry === ".vite" ||
+        entry === ".cache" ||
+        entry === "process-browser-probe" ||
+        entry === "browser-only-probe" ||
+        entry === "universal-effect-probe"
+      ) {
+        continue;
+      }
+      await fsp.symlink(
+        path.join(rootNodeModules, entry),
+        path.join(nodeModules, entry),
+        "junction",
+      );
+    }
+    const dependency = path.join(nodeModules, "process-browser-probe");
+    await fsp.mkdir(dependency, { recursive: true });
+    await fsp.writeFile(
+      path.join(dependency, "package.json"),
+      JSON.stringify({ name: "process-browser-probe", version: "1.0.0", type: "module" }),
+    );
+    await fsp.writeFile(
+      path.join(dependency, "index.js"),
+      `export const dependencyBranch = process.browser ? "__DEP_BROWSER__" : "__DEP_SERVER__";`,
+    );
+    const browserOnlyDependency = path.join(nodeModules, "browser-only-probe");
+    await fsp.mkdir(browserOnlyDependency);
+    await fsp.writeFile(
+      path.join(browserOnlyDependency, "package.json"),
+      JSON.stringify({
+        name: "browser-only-probe",
+        version: "1.0.0",
+        type: "module",
+        exports: { ".": { browser: "./browser.js", default: null } },
+      }),
+    );
+    await fsp.writeFile(
+      path.join(browserOnlyDependency, "browser.js"),
+      `export const browserOnly = "__BROWSER_ONLY_MODULE__";`,
+    );
+    const universalEffectDependency = path.join(nodeModules, "universal-effect-probe");
+    await fsp.mkdir(universalEffectDependency);
+    await fsp.writeFile(
+      path.join(universalEffectDependency, "package.json"),
+      JSON.stringify({
+        name: "universal-effect-probe",
+        version: "1.0.0",
+        type: "module",
+        exports: "./index.js",
+      }),
+    );
+    await fsp.writeFile(
+      path.join(universalEffectDependency, "index.js"),
+      `globalThis.__UNIVERSAL_EFFECT_MODULE__ = true;
+export const effect = true;`,
+    );
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function Layout({ children }) { return <html><body>{children}</body></html> }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "client.tsx"),
+      `"use client";
+import { dependencyBranch } from "process-browser-probe";
+if (process.browser) void import("browser-only-probe");
+export function ClientProbe() {
+  return <p>{process.browser ? "__CLIENT_BROWSER__" : "__CLIENT_SERVER__"}:{dependencyBranch}</p>;
+}`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `import { ClientProbe } from "./client";
+if (Date.now() > 0 && process?.browser) void import("browser-only-probe");
+if (process["browser"]) void import("browser-only-probe");
+if (process.brow\\u0073er) void import("browser-only-probe");
+if (process["brow\\u0073er"]) void import("browser-only-probe");
+if (proce\\u0073s.browser) void import("browser-only-probe");
+if (process /* comment */ . browser) void import("browser-only-probe");
+import("universal-effect-probe") && process.browser && import("browser-only-probe");
+if (Date.now() > 0 || !process.browser) {
+  if (process.browser) void import("browser-only-probe");
+}
+export default function Page() {
+  return <main>{process.browser ? "__RSC_BROWSER__" : "__RSC_SERVER__"}<ClientProbe /></main>;
+}`,
+    );
+
+    const readJs = async (directory: string, excludedPrefix?: string): Promise<string> => {
+      const chunks: string[] = [];
+      for (const entry of await fsp.readdir(directory, { recursive: true })) {
+        const relative = entry.toString().replaceAll("\\", "/");
+        if (excludedPrefix && relative.startsWith(excludedPrefix)) continue;
+        if (!/\.m?js$/.test(relative)) continue;
+        chunks.push(await fsp.readFile(path.join(directory, relative), "utf8"));
+      }
+      return chunks.join("\n");
+    };
+
+    try {
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const client = await readJs(path.join(tmpDir, "dist", "client"));
+      const rsc = await readJs(path.join(tmpDir, "dist", "server"), "ssr/");
+      const ssr = await readJs(path.join(tmpDir, "dist", "server", "ssr"));
+      expect(client).toContain("__CLIENT_BROWSER__");
+      expect(client).toContain("__DEP_BROWSER__");
+      expect(client).toContain("__BROWSER_ONLY_MODULE__");
+      expect(client).not.toContain("__CLIENT_SERVER__");
+      expect(client).not.toContain("__DEP_SERVER__");
+      expect(rsc).toContain("__RSC_SERVER__");
+      expect(rsc).not.toContain("__RSC_BROWSER__");
+      expect(rsc).not.toContain("__BROWSER_ONLY_MODULE__");
+      expect(rsc).toContain("__UNIVERSAL_EFFECT_MODULE__");
+      expect(ssr).toContain("__CLIENT_SERVER__");
+      expect(ssr).toContain("__DEP_SERVER__");
+      expect(ssr).not.toContain("__CLIENT_BROWSER__");
+      expect(ssr).not.toContain("__DEP_BROWSER__");
+      expect(ssr).not.toContain("__BROWSER_ONLY_MODULE__");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 60_000);
+});
+
+// ─── Remaining treeshake config integration ─────────────────────────────
 
 describe("treeshake config integration", () => {
   it("plugin config hook applies treeshake to non-SSR builds", async () => {
@@ -3502,32 +3884,12 @@ export const getStaticPaths = () => [
   });
 });
 
-// ─── getClientTreeshakeConfigForVite ──────────────────────────────────────────
+// ─── getClientTreeshakeConfig ─────────────────────────────────────────────────
 
-describe("getClientTreeshakeConfigForVite", () => {
-  it("returns preset for Vite 7 (Rollup compatibility)", () => {
-    const config = getClientTreeshakeConfigForVite(7);
+describe("getClientTreeshakeConfig", () => {
+  it("returns Rolldown treeshake config without a Rollup preset", () => {
+    const config = getClientTreeshakeConfig();
     expect(config).toEqual({
-      preset: "recommended",
-      moduleSideEffects: "no-external",
-    });
-  });
-
-  it("returns config without preset for Vite 8 (Rolldown compatibility)", () => {
-    const config = getClientTreeshakeConfigForVite(8);
-    expect(config).toEqual({
-      moduleSideEffects: "no-external",
-    });
-  });
-
-  it("returns config without preset for Vite 9+", () => {
-    const config9 = getClientTreeshakeConfigForVite(9);
-    expect(config9).toEqual({
-      moduleSideEffects: "no-external",
-    });
-
-    const config10 = getClientTreeshakeConfigForVite(10);
-    expect(config10).toEqual({
       moduleSideEffects: "no-external",
     });
   });
@@ -3536,68 +3898,11 @@ describe("getClientTreeshakeConfigForVite", () => {
 // ─── createRscFrameworkChunkOutputConfig ──────────────────────────────────────
 
 describe("createRscFrameworkChunkOutputConfig", () => {
-  it("returns manualChunks for Vite 7 (Rollup) routing framework modules to 'framework'", () => {
-    const config = createRscFrameworkChunkOutputConfig(7);
-    expect(config).not.toHaveProperty("codeSplitting");
-    expect(config).toHaveProperty("manualChunks");
-    const manualChunks = (
-      config as {
-        manualChunks: (
-          id: string,
-          meta: {
-            getModuleInfo(id: string): { importers: string[]; isEntry: boolean } | null;
-          },
-        ) => string | undefined;
-      }
-    ).manualChunks;
-    const moduleInfo = new Map([
-      ["/app/src/entry.js", { importers: [], isEntry: true }],
-      ["/app/src/middleman.js", { importers: ["/app/src/entry.js"], isEntry: false }],
-      ["/app/src/lazy.js", { importers: [], isEntry: false }],
-      [
-        "/app/node_modules/react/index.js",
-        { importers: ["/app/src/middleman.js"], isEntry: false },
-      ],
-      [
-        "/app/node_modules/react-server-dom-webpack/client.js",
-        { importers: ["/app/src/entry.js"], isEntry: false },
-      ],
-      [
-        "/app/node_modules/react-dom/server.react-server.js",
-        { importers: ["/app/src/lazy.js"], isEntry: false },
-      ],
-    ]);
-    const meta = { getModuleInfo: (id: string) => moduleInfo.get(id) ?? null };
-    expect(manualChunks("/app/node_modules/react/index.js", meta)).toBe("framework");
-    expect(manualChunks("/app/node_modules/react-server-dom-webpack/client.js", meta)).toBe(
-      "framework",
-    );
-    expect(
-      manualChunks("/app/node_modules/react-dom/server.react-server.js", meta),
-    ).toBeUndefined();
-    // Non-framework node_modules and local files are left to the default algo.
-    expect(manualChunks("/app/node_modules/react-icons/lib/index.js", meta)).toBeUndefined();
-    expect(manualChunks("/app/src/page.tsx", meta)).toBeUndefined();
-  });
-
-  it("returns codeSplitting for Vite 8+ (Rolldown), not the deprecated advancedChunks", () => {
-    const config = createRscFrameworkChunkOutputConfig(8);
+  it("returns Rolldown codeSplitting, not the deprecated advancedChunks", () => {
+    const config = createRscFrameworkChunkOutputConfig();
     expect(config).not.toHaveProperty("advancedChunks");
     expect(config).not.toHaveProperty("manualChunks");
     expect(config).toEqual({
-      codeSplitting: {
-        groups: [
-          {
-            name: "framework",
-            test: RSC_FRAMEWORK_CHUNK_TEST,
-            entriesAware: true,
-          },
-        ],
-      },
-    });
-
-    // Vite 9+ uses the same Rolldown shape.
-    expect(createRscFrameworkChunkOutputConfig(9)).toEqual({
       codeSplitting: {
         groups: [
           {
@@ -3621,8 +3926,6 @@ describe("RSC framework package matching", () => {
     "/app/node_modules/react-server-dom-webpack/client.js",
     // pnpm-style nested path.
     "/app/node_modules/.pnpm/react@19.0.0/node_modules/react/index.js",
-    // Windows-style path used by the Vite 7 getPackageName predicate.
-    "C:\\app\\node_modules\\react-dom\\server.js",
   ];
   const notMatching = [
     "/app/node_modules/react-icons/lib/index.js",
@@ -3647,5 +3950,11 @@ describe("RSC framework package matching", () => {
     for (const id of notMatching) {
       expect(isRscFrameworkModule(id)).toBe(false);
     }
+  });
+
+  // Bundler ids carry backslashes only on Windows, where `toSlash` is active.
+  it.runIf(process.platform === "win32")("recognizes Windows-style ids", () => {
+    expect(RSC_FRAMEWORK_CHUNK_TEST.test("C:\\app\\node_modules\\react-dom\\server.js")).toBe(true);
+    expect(isRscFrameworkModule("C:\\app\\node_modules\\react-dom\\server.js")).toBe(true);
   });
 });

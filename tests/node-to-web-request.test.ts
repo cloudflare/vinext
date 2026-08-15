@@ -83,6 +83,63 @@ describe("nodeToWebRequest", () => {
     expect(parsed.pathname).toBe("/normalized/url");
   });
 
+  it("preserves internal prerender headers only with the matching build secret", () => {
+    // No Next.js test port applies: this authenticated transport is vinext-specific.
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    const routeParams = encodeURIComponent(
+      JSON.stringify({
+        fallbackParamNames: ["slug"],
+        params: { slug: "attacker" },
+        routePattern: "/blog/:slug",
+      }),
+    );
+    const request = (secret = "request-secret") =>
+      mockReq({
+        url: "/blog/attacker",
+        headers: {
+          host: "localhost:3000",
+          "x-vinext-prerender-route-params": routeParams,
+          "x-vinext-prerender-secret": secret,
+          "x-vinext-prerender-speculative": "1",
+        },
+      });
+
+    try {
+      expect(nodeToWebRequest(request()).headers.get("x-vinext-prerender-route-params")).toBeNull();
+      expect(nodeToWebRequest(request()).headers.get("x-vinext-prerender-speculative")).toBeNull();
+      expect(
+        nodeToWebRequest(request(""), undefined, "").headers.get("x-vinext-prerender-route-params"),
+      ).toBeNull();
+      expect(
+        nodeToWebRequest(request(""), undefined, "").headers.get("x-vinext-prerender-speculative"),
+      ).toBeNull();
+      expect(
+        nodeToWebRequest(request(), undefined, "wrong-secret").headers.get(
+          "x-vinext-prerender-route-params",
+        ),
+      ).toBeNull();
+      expect(
+        nodeToWebRequest(request(), undefined, "wrong-secret").headers.get(
+          "x-vinext-prerender-speculative",
+        ),
+      ).toBeNull();
+      expect(
+        nodeToWebRequest(request(), undefined, "request-secret").headers.get(
+          "x-vinext-prerender-route-params",
+        ),
+      ).toBe(routeParams);
+      expect(
+        nodeToWebRequest(request(), undefined, "request-secret").headers.get(
+          "x-vinext-prerender-speculative",
+        ),
+      ).toBe("1");
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
   it("uses req.url fallback '/' when req.url is undefined and no override", () => {
     const req = mockReq({ url: undefined });
 

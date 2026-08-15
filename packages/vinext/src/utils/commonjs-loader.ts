@@ -1,5 +1,10 @@
 import fs from "node:fs";
 import { createRequire, Module } from "node:module";
+// This loader interops with Node's CJS machinery, which is native-separator
+// keyed on Windows: canonicalPath must match the paths Node embeds in
+// ERR_REQUIRE_ESM messages and uses as require-cache keys, so its fallback
+// has to stay in native space alongside realpathSync.native.
+// oxlint-disable-next-line no-restricted-imports
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 

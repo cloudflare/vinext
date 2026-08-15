@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { getPullComparison, uploadPerformanceRun } from "../apps/web/app/lib/benchmarks/server";
 
 const cloudflareEnv = vi.hoisted<{ DB: unknown; PERFORMANCE_PROFILES: unknown }>(() => ({

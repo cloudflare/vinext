@@ -16,6 +16,14 @@ import { waitForAppRouterHydration } from "../../helpers";
 const BASE = "http://localhost:4174";
 const ROUTE = "/nextjs-compat/use-router-bfcache-id";
 
+type BfcacheTestWindow = Window & {
+  next?: {
+    router?: {
+      prefetch(href: string): void;
+    };
+  };
+};
+
 async function revealAndClick(page: Page, href: string) {
   await page.locator(`input[data-link-accordion="${href}"]`).first().check();
   await page.locator(`a[href="${href}"]`).first().click();
@@ -34,6 +42,83 @@ function waitForServerActionResponse(page: Page, pathname: string) {
 }
 
 test.describe("Next.js compat: useRouter().bfcacheId", () => {
+  test("replaces a prefetched dynamic layout shell with authoritative cross-param state", async ({
+    page,
+  }) => {
+    const rscRequests: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (!url.searchParams.has("_rsc") || request.headers()["rsc"] !== "1") return;
+      rscRequests.push(url.pathname);
+    });
+
+    await page.goto(`${BASE}${ROUTE}`);
+    await waitForAppRouterHydration(page);
+
+    await page.evaluate((href) => {
+      const router = (window as BfcacheTestWindow).next?.router;
+      if (router === undefined) throw new Error("Missing app router instance");
+      router.prefetch(href);
+    }, `${ROUTE}/x/1`);
+    await expect.poll(() => rscRequests.includes(`${ROUTE}/x/1`)).toBe(true);
+    await page.locator(`input[data-link-accordion="${ROUTE}/x/1"]`).check();
+    await page.locator(`a[href="${ROUTE}/x/1"]`).click();
+    await expect(visibleTestId(page, "pathname")).toHaveText(`${ROUTE}/x/1`);
+    await expect(visibleTestId(page, "server-group")).toHaveText("x");
+    await visibleTestId(page, "layout-input").fill("stale x layout state");
+    const xLayoutBfcacheId = await visibleTestId(page, "layout-bfcache-id").textContent();
+
+    await page.goBack();
+    await expect(page).toHaveURL(`${BASE}${ROUTE}`);
+    rscRequests.length = 0;
+
+    const yRequestGate: { release: (() => void) | null } = { release: null };
+    let resolveYRequestBlocked: () => void = () => {};
+    const yRequestBlocked = new Promise<void>((resolve) => {
+      resolveYRequestBlocked = resolve;
+    });
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (
+        url.pathname === `${ROUTE}/y/1` &&
+        url.searchParams.has("_rsc") &&
+        request.headers()["rsc"] === "1"
+      ) {
+        await new Promise<void>((resolve) => {
+          yRequestGate.release = resolve;
+          resolveYRequestBlocked();
+        });
+      }
+      await route.continue();
+    });
+
+    try {
+      await page.getByTestId("no-prefetch-y").click();
+      await yRequestBlocked;
+      await expect(visibleTestId(page, "server-group")).toHaveText("x");
+      const detachedLayoutBfcacheId = await visibleTestId(page, "layout-bfcache-id").textContent();
+
+      yRequestGate.release?.();
+      yRequestGate.release = null;
+
+      await expect(visibleTestId(page, "pathname")).toHaveText(`${ROUTE}/y/1`);
+      expect(rscRequests.filter((pathname) => pathname === `${ROUTE}/y/1`).length).toBeGreaterThan(
+        0,
+      );
+      await expect(visibleTestId(page, "server-group")).toHaveText("y");
+      await expect(visibleTestId(page, "layout-pathname")).toHaveText(`${ROUTE}/y/1`);
+      await expect(visibleTestId(page, "layout-param-group")).toHaveText("y");
+      await expect(visibleTestId(page, "layout-input")).toHaveValue("");
+      const yLayoutBfcacheId = await visibleTestId(page, "layout-bfcache-id").textContent();
+      expect(yLayoutBfcacheId).toMatch(/^_b_\d+_$/);
+      expect(yLayoutBfcacheId).not.toBe(xLayoutBfcacheId);
+      expect(yLayoutBfcacheId).not.toBe(detachedLayoutBfcacheId);
+    } finally {
+      yRequestGate.release?.();
+    }
+  });
+
   test("mints bfcacheIds for fresh leaf navigations and restores them on history traversal", async ({
     page,
   }) => {
@@ -257,9 +342,27 @@ test.describe("Next.js compat: useRouter().bfcacheId", () => {
     await revealAndClick(page, `${ROUTE}/x/2`);
     await expect(visibleTestId(page, "pathname")).toHaveText(`${ROUTE}/x/2`);
 
+    const bfcacheVersionBeforeInvalidation = await page.evaluate(() => {
+      const value = window.history.state?.__vinext_bfcacheVersion;
+      return typeof value === "number" ? value : null;
+    });
+    if (bfcacheVersionBeforeInvalidation === null) {
+      throw new Error("Missing BFCache version in the current history entry");
+    }
     const actionResponse = waitForServerActionResponse(page, `${ROUTE}/x/2`);
     await visibleTestId(page, "server-action-refresh").click();
     await actionResponse;
+    // The response event observes headers, before the streamed action payload is
+    // decoded and committed. Wait for the invalidation's visible history write
+    // so Back cannot supersede the action this test is meant to exercise.
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const value = window.history.state?.__vinext_bfcacheVersion;
+          return typeof value === "number" ? value : null;
+        }),
+      )
+      .toBe(bfcacheVersionBeforeInvalidation + 1);
 
     await page.goBack();
     await expect(visibleTestId(page, "pathname")).toHaveText(`${ROUTE}/x/1`);

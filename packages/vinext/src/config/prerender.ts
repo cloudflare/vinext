@@ -1,5 +1,12 @@
 import type { PluginOption } from "vite";
+import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
+export {
+  findVinextCacheConfigInPlugins,
+  loadVinextCacheConfigFromViteConfig,
+  VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
+  type VinextCacheConfig,
+} from "../cache/cache-adapters-virtual.js";
 
 export type VinextPrerenderConfig =
   | true
@@ -26,9 +33,18 @@ export type VinextPrerenderDecision = ResolvedVinextPrerenderConfig & {
 // Custom metadata key attached to vinext's config plugin so fresh Vite config
 // loads can recover the normalized prerender option without re-parsing user code.
 export const VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY = "__vinextPrerenderConfig";
+export const VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY = "__vinextRouteRootConfig";
+
+export type VinextRouteRootConfig = {
+  appDir?: string;
+  disableAppRouter?: boolean;
+  rscOutDir?: string;
+  ssrOutDir?: string;
+};
 
 type VinextPrerenderConfigPlugin = {
   [VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY]?: ResolvedVinextPrerenderConfig | null;
+  [VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY]?: VinextRouteRootConfig | null;
 };
 
 type ViteConfigLoader = {
@@ -52,19 +68,10 @@ export function normalizeVinextPrerenderConfig(
   );
 }
 
-function flattenPluginOptions(value: unknown, target: unknown[]): void {
-  if (Array.isArray(value)) {
-    for (const item of value) flattenPluginOptions(item, target);
-    return;
-  }
-  if (value) target.push(value);
-}
-
-export function findVinextPrerenderConfigInPlugins(
+export async function findVinextPrerenderConfigInPlugins(
   plugins: PluginOption[] | undefined,
-): ResolvedVinextPrerenderConfig | null {
-  const flattened: unknown[] = [];
-  flattenPluginOptions(plugins, flattened);
+): Promise<ResolvedVinextPrerenderConfig | null> {
+  const flattened = await flattenPluginOptions(plugins);
 
   for (const plugin of flattened) {
     if (!isUnknownRecord(plugin)) continue;
@@ -72,6 +79,22 @@ export function findVinextPrerenderConfigInPlugins(
       VINEXT_PRERENDER_CONFIG_PLUGIN_PROPERTY
     ];
     if (prerenderConfig) return prerenderConfig;
+  }
+
+  return null;
+}
+
+export async function findVinextRouteRootConfigInPlugins(
+  plugins: PluginOption[] | undefined,
+): Promise<VinextRouteRootConfig | null> {
+  const flattened = await flattenPluginOptions(plugins);
+
+  for (const plugin of flattened) {
+    if (!isUnknownRecord(plugin)) continue;
+    const routeRootConfig = (plugin as VinextPrerenderConfigPlugin)[
+      VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY
+    ];
+    if (routeRootConfig) return routeRootConfig;
   }
 
   return null;
@@ -86,7 +109,19 @@ export async function loadVinextPrerenderConfigFromViteConfig(
     undefined,
     root,
   );
-  return findVinextPrerenderConfigInPlugins(loaded?.config.plugins);
+  return await findVinextPrerenderConfigInPlugins(loaded?.config.plugins);
+}
+
+export async function loadVinextRouteRootConfigFromViteConfig(
+  vite: ViteConfigLoader,
+  root: string,
+): Promise<VinextRouteRootConfig | null> {
+  const loaded = await vite.loadConfigFromFile(
+    { command: "build", mode: "production" },
+    undefined,
+    root,
+  );
+  return await findVinextRouteRootConfigInPlugins(loaded?.config.plugins);
 }
 
 export function resolveVinextPrerenderDecision(options: {

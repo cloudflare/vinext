@@ -1,5 +1,8 @@
 import type { RenderObservation } from "../server/cache-proof.js";
-import { readCacheControlNumberField } from "../utils/cache-control-metadata.js";
+import {
+  readCacheControlNumberField,
+  readCacheControlRevalidateField,
+} from "../utils/cache-control-metadata.js";
 
 export type CacheHandlerValue = {
   lastModified: number;
@@ -10,8 +13,14 @@ export type CacheHandlerValue = {
 };
 
 export type CacheControlMetadata = {
-  revalidate: number;
+  revalidate: number | false;
   expire?: number;
+  /**
+   * Client-router reuse bound from the render's resolved `cacheLife`,
+   * persisted so warm hits replay the producing render's claim. Independent
+   * of `revalidate`/`expire`; absent means no claim was made.
+   */
+  stale?: number;
 };
 
 export type IncrementalCacheValue =
@@ -178,6 +187,14 @@ function readStringArrayField(ctx: Record<string, unknown> | undefined, field: s
   return value.filter((item): item is string => typeof item === "string");
 }
 
+function readPositiveNumberField(
+  ctx: Record<string, unknown> | undefined,
+  field: string,
+): number | undefined {
+  const value = ctx?.[field];
+  return typeof value === "number" && value > 0 ? value : undefined;
+}
+
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
   private tagRevalidatedAt = new Map<string, number>();
@@ -235,14 +252,26 @@ export class MemoryCacheHandler implements CacheHandler {
       }
     }
 
-    if (entry.expireAt !== null && Date.now() > entry.expireAt) {
-      this.deleteEntry(key);
-      return null;
-    }
-
     this.touchEntry(key, entry);
 
-    if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
+    const now = Date.now();
+    if (entry.expireAt !== null && now > entry.expireAt) {
+      return {
+        lastModified: entry.lastModified,
+        value: entry.value,
+        cacheState: "expired",
+        cacheControl: entry.cacheControl,
+      };
+    }
+
+    const requestedRevalidate = readPositiveNumberField(ctx, "revalidate");
+    const requestedRevalidateAt =
+      requestedRevalidate === undefined ? null : entry.lastModified + requestedRevalidate * 1000;
+    const isStale =
+      (entry.revalidateAt !== null && now > entry.revalidateAt) ||
+      (requestedRevalidateAt !== null && now > requestedRevalidateAt);
+
+    if (isStale) {
       return {
         lastModified: entry.lastModified,
         value: entry.value,
@@ -272,10 +301,15 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     const tags = [...tagSet];
 
-    let effectiveRevalidate = readCacheControlNumberField(ctx, "revalidate");
+    let effectiveRevalidate = readCacheControlRevalidateField(ctx);
     const effectiveExpire = readCacheControlNumberField(ctx, "expire");
+    const effectiveStale = readCacheControlNumberField(ctx, "stale");
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
+    } else if (data && "revalidate" in data && data.revalidate === false) {
+      // Preserve a non-expiring value when no context policy was supplied,
+      // but never let it override an explicit `ctx.revalidate: 0` no-store.
+      effectiveRevalidate ??= false;
     }
     if (effectiveRevalidate === 0) return;
 
@@ -288,11 +322,16 @@ export class MemoryCacheHandler implements CacheHandler {
       typeof effectiveExpire === "number" && effectiveExpire > 0
         ? now + effectiveExpire * 1000
         : null;
-    const cacheControl =
-      typeof effectiveRevalidate === "number"
-        ? effectiveExpire === undefined
-          ? { revalidate: effectiveRevalidate }
-          : { revalidate: effectiveRevalidate, expire: effectiveExpire }
+    // Absent fields stay absent rather than becoming explicit `undefined`, so a
+    // round trip through a serializing cache adapter cannot turn "no claim"
+    // into a key that later reads as present.
+    const cacheControl: CacheControlMetadata | undefined =
+      typeof effectiveRevalidate === "number" || effectiveRevalidate === false
+        ? {
+            revalidate: effectiveRevalidate,
+            ...(effectiveExpire === undefined ? {} : { expire: effectiveExpire }),
+            ...(effectiveStale === undefined ? {} : { stale: effectiveStale }),
+          }
         : undefined;
 
     if (this.maxMemoryCacheSize === 0) return;

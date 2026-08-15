@@ -1,4 +1,4 @@
-import path from "node:path";
+import path from "pathslash";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import { importExportWithCommonJsFallback } from "../utils/commonjs-loader.js";

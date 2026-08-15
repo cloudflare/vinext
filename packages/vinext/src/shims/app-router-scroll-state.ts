@@ -55,11 +55,27 @@ export function beginAppRouterScrollIntent(hash: string | null): AppRouterScroll
 }
 
 export function clearAppRouterScrollIntent(): void {
-  getScrollIntentStore().pending = null;
+  const store = getScrollIntentStore();
+  // Clearing is itself a newer scroll decision (including `scroll: false`).
+  // Advance ownership so deferred work from the prior intent cannot run after
+  // the pending slot becomes empty.
+  store.nextId += 1;
+  store.pending = null;
 }
 
 export function getPendingAppRouterScrollIntent(): AppRouterScrollIntent | null {
   return getScrollIntentStore().pending;
+}
+
+// Deferred post-commit work must remain invalidatable after its intent has
+// already been consumed. The monotonic id records newer ownership even when
+// the newer intent is also consumed before the deferred callback runs.
+export function isLatestAppRouterScrollIntent(
+  expected: AppRouterScrollIntent | null | undefined,
+): boolean {
+  return (
+    expected !== null && expected !== undefined && getScrollIntentStore().nextId === expected.id
+  );
 }
 
 export function claimAppRouterScrollIntentForCommit(

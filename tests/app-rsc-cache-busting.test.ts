@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
   computeRscCacheBustingSearchParam,
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -14,11 +15,12 @@ import {
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
-  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-  APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
-} from "../packages/vinext/src/server/app-rsc-render-mode.js";
-import { VINEXT_CLIENT_REUSE_MANIFEST_HEADER } from "../packages/vinext/src/server/headers.js";
+  FLIGHT_HEADERS,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  VINEXT_RSC_STATE_FINGERPRINT_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
@@ -71,6 +73,30 @@ describe("App Router RSC cache-busting", () => {
     await expect(createRscRequestUrl("/docs/", headers)).resolves.toBe("/docs/?_rsc");
   });
 
+  it("preserves encoded spaces while adding the RSC cache-busting query", async () => {
+    const headers = createRscRequestHeaders();
+
+    await expect(createRscRequestUrl("/?param=with%20space", headers)).resolves.toBe(
+      "/?param=with%20space&_rsc",
+    );
+  });
+
+  it("only exposes fetch priority through the Next.js test-mode header", () => {
+    withEnvVar("__NEXT_TEST_MODE", undefined, () => {
+      expect(
+        createRscRequestHeaders({ fetchPriority: "low" }).get("next-test-fetch-priority"),
+      ).toBeNull();
+    });
+    withEnvVar("__NEXT_TEST_MODE", "1", () => {
+      expect(
+        createRscRequestHeaders({ fetchPriority: "low" }).get("next-test-fetch-priority"),
+      ).toBe("low");
+      expect(
+        createRscRequestHeaders({ fetchPriority: "auto" }).get("next-test-fetch-priority"),
+      ).toBe("auto");
+    });
+  });
+
   it("hashes Vinext RSC variant headers into the request URL", async () => {
     const headers = createRscRequestHeaders({
       interceptionContext: "/feed",
@@ -83,6 +109,59 @@ describe("App Router RSC cache-busting", () => {
     await expect(createRscRequestUrl("/photos/42", headers)).resolves.toBe(
       `/photos/42?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}=${hash}`,
     );
+  });
+
+  // Ported from Next.js:
+  // packages/next/src/client/components/router-reducer/set-cache-busting-search-param.test.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/set-cache-busting-search-param.test.ts
+  it("falls back to the legacy FNV hash when Web Crypto is unavailable", async () => {
+    vi.stubGlobal("crypto", {});
+
+    try {
+      const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+      const legacyHash = fnv1a64("0,0,0,0,0,slot:modal:/,0");
+
+      await expect(createRscRequestUrl("/photos/42", headers)).resolves.toBe(
+        `/photos/42?_rsc=${legacyHash}`,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("adds a valued _rsc query for visible App Router state", async () => {
+    const headers = createRscRequestHeaders({
+      routerState: { pathAndSearch: "/current", routeId: "route:/current" },
+    });
+    const hash = await computeRscCacheBustingSearchParam(headers);
+
+    expect(headers.get(VINEXT_RSC_STATE_FINGERPRINT_HEADER)).toMatch(/^[0-9a-f]{16}$/);
+    expect(hash).not.toBe("");
+    await expect(createRscRequestUrl("/destination", headers)).resolves.toBe(
+      `/destination?_rsc=${hash}`,
+    );
+  });
+
+  it("derives the same state fingerprint for reusable prefetch requests", () => {
+    const routerState = { pathAndSearch: "/current", routeId: "route:/current" };
+    const navigationHeaders = createRscRequestHeaders({ routerState });
+    const prefetchHeaders = createRscRequestHeaders({ prefetchRouterState: routerState });
+
+    expect(prefetchHeaders.get(VINEXT_RSC_STATE_FINGERPRINT_HEADER)).toBe(
+      navigationHeaders.get(VINEXT_RSC_STATE_FINGERPRINT_HEADER),
+    );
+  });
+
+  it("keeps router state but omits the prefetch header for a full prefetch", () => {
+    const headers = createRscRequestHeaders({
+      nextUrl: "/current",
+      includePrefetchHeader: false,
+      prefetchRouterState: { pathAndSearch: "/current", routeId: "route:/current" },
+    });
+
+    expect(headers.get("next-router-prefetch")).toBeNull();
+    expect(headers.get("next-router-state-tree")).toBeTruthy();
+    expect(headers.get("next-url")).toBe("/current");
   });
 
   it("keeps server action POSTs on the visible route URL", () => {
@@ -108,16 +187,6 @@ describe("App Router RSC cache-busting", () => {
     );
 
     expect(feedHash).not.toBe(galleryHash);
-  });
-
-  it("varies preserve-current-UI refresh payloads from normal navigations", async () => {
-    const navigationHash = await computeRscCacheBustingSearchParam(createRscRequestHeaders());
-    const refreshHash = await computeRscCacheBustingSearchParam(
-      createRscRequestHeaders({ renderMode: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI }),
-    );
-
-    expect(navigationHash).toBe("");
-    expect(refreshHash).not.toBe("");
   });
 
   it("varies loading-shell prefetch payloads from normal navigations", async () => {
@@ -221,6 +290,19 @@ describe("App Router RSC cache-busting", () => {
     ).resolves.toBeNull();
   });
 
+  it("redirects HTML-path RSC requests without cache-busting params to a separate URL", async () => {
+    const headers = createRscRequestHeaders();
+    const request = new Request("https://example.com/photos/42?tab=latest", { headers });
+
+    const response = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("Location")).toBe("/photos/42?tab=latest&_rsc");
+  });
+
   it("accepts RSC requests whose cache-busting param matches the request headers", async () => {
     const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
     const url = await createRscRequestUrl("/photos/42", headers);
@@ -255,40 +337,15 @@ describe("App Router RSC cache-busting", () => {
     ).resolves.toBeNull();
   });
 
-  it("does not accept a bare previous hash for preserve-current-UI payloads", async () => {
+  it("accepts the prior bare navigation query after adding the state fingerprint", async () => {
     const headers = createRscRequestHeaders({
-      renderMode: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
+      routerState: { pathAndSearch: "/current", routeId: "route:/current" },
     });
-    const request = new Request("https://example.com/photos/42.rsc?_rsc", { headers });
-    const hash = await computeRscCacheBustingSearchParam(headers);
+    const request = new Request("https://example.com/photos/42?_rsc", { headers });
 
-    const response = await resolveInvalidRscCacheBustingRequest({
-      isRscRequest: true,
-      request,
-    });
-
-    expect(response?.status).toBe(307);
-    expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${hash}`);
-  });
-
-  it("does not accept previous mounted-slot hashes for preserve-current-UI payloads", async () => {
-    const headers = createRscRequestHeaders({
-      mountedSlotsHeader: "slot:modal:/",
-      renderMode: APP_RSC_RENDER_MODE_REFRESH_PRESERVE_UI,
-    });
-    const previousHash = await sha256CacheBustingHash("0,0,0,0,0,slot:modal:/");
-    const currentHash = await computeRscCacheBustingSearchParam(headers);
-    const request = new Request(`https://example.com/photos/42.rsc?_rsc=${previousHash}`, {
-      headers,
-    });
-
-    const response = await resolveInvalidRscCacheBustingRequest({
-      isRscRequest: true,
-      request,
-    });
-
-    expect(response?.status).toBe(307);
-    expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${currentHash}`);
+    await expect(
+      resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request }),
+    ).resolves.toBeNull();
   });
 
   it("ignores non-RSC and mutating requests", async () => {
@@ -309,9 +366,13 @@ describe("App Router RSC cache-busting", () => {
   });
 
   it("exports the full Vary value for RSC-bearing App Router responses", () => {
+    // Mirrors Next.js App Router's base Vary header:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-page/module.ts
     expect(VINEXT_RSC_VARY_HEADER).toBe(
-      "RSC, Accept, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode",
+      "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode, X-Vinext-Rsc-State-Fingerprint",
     );
+    expect(VINEXT_RSC_VARY_HEADER.split(", ")).not.toContain("Accept");
+    expect(FLIGHT_HEADERS).toContain(VINEXT_RSC_STATE_FINGERPRINT_HEADER.toLowerCase());
   });
 
   it("applies the current compatibility ID to RSC response headers when available", () => {
@@ -330,6 +391,37 @@ describe("App Router RSC cache-busting", () => {
     );
 
     expect(headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-env");
+  });
+
+  it("leaves the Next.js deployment ID header out of compatibility-only response headers", () => {
+    const headers = new Headers();
+
+    withEnvVar("__VINEXT_DEPLOYMENT_ID", "deployment-a", () =>
+      applyRscCompatibilityIdHeader(headers, "compat-a"),
+    );
+
+    expect(headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
+    expect(headers.has("x-nextjs-deployment-id")).toBe(false);
+  });
+
+  it("applies the Next.js deployment ID header to App Router RSC page response headers", () => {
+    const headers = new Headers();
+
+    withEnvVar("__VINEXT_DEPLOYMENT_ID", "deployment-a", () => applyRscDeploymentIdHeader(headers));
+
+    expect(headers.get("x-nextjs-deployment-id")).toBe("deployment-a");
+  });
+
+  it("removes a spoofed Next.js deployment ID header when none is configured", () => {
+    const headers = new Headers({
+      "x-nextjs-deployment-id": "spoofed-deployment",
+    });
+
+    withEnvVar("__VINEXT_DEPLOYMENT_ID", undefined, () =>
+      withEnvVar("NEXT_DEPLOYMENT_ID", undefined, () => applyRscDeploymentIdHeader(headers)),
+    );
+
+    expect(headers.has("x-nextjs-deployment-id")).toBe(false);
   });
 
   it("removes a spoofed compatibility ID header when no framework ID is available", () => {

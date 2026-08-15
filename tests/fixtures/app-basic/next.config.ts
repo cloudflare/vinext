@@ -11,6 +11,12 @@
 import type { NextConfig } from "vinext";
 
 const nextConfig: NextConfig = {
+  ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+    ? {
+        basePath: "/docs",
+        i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+      }
+    : {}),
   // Used by E2E: nextjs-compat/gesture-transitions.spec.ts — enabled
   // fixture-wide solely for that spec (the only observable effect is the
   // optional `experimental_gesturePush` method being attached). Note this
@@ -84,14 +90,34 @@ const nextConfig: NextConfig = {
         destination: "/about",
         permanent: false,
       },
+      // Ported from Next.js v16.2.6:
+      // test/e2e/app-dir/rsc-query-routing/next.config.js
+      {
+        source: "/nextjs-compat/rsc-query-routing/redirect/source",
+        destination: "/nextjs-compat/rsc-query-routing/redirect/dest",
+        permanent: true,
+      },
     ];
   },
 
   async rewrites() {
     return {
       beforeFiles: [
+        // Encoded App Page params must have the same canonical representation
+        // on direct requests and config rewrites.
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/encoded-parity/rewrite/:path*"
+            : "/encoded-parity/rewrite/:path*",
+          destination: "/encoded-parity/page/:path*",
+        },
         // Used by Vitest: app-router.test.ts
-        { source: "/rewrite-about", destination: "/about" },
+        {
+          source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
+            ? "/en/rewrite-about"
+            : "/rewrite-about",
+          destination: "/about",
+        },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {
           source: "/repeat-rewrite/:slug",
@@ -152,6 +178,12 @@ const nextConfig: NextConfig = {
           source: "/rewritten-use-pathname",
           destination: "/nextjs-compat/hooks-search",
         },
+        // Ported from Next.js v16.2.6:
+        // test/e2e/app-dir/rsc-query-routing/next.config.js
+        {
+          source: "/nextjs-compat/rsc-query-routing/rewrite/source",
+          destination: "/nextjs-compat/rsc-query-routing/rewrite/dest",
+        },
       ],
       fallback: [
         // Used by Vitest: app-router.test.ts — fallback rewrite gated on a
@@ -170,6 +202,14 @@ const nextConfig: NextConfig = {
           has: [{ type: "cookie", key: "mw-pages-fallback-user" }],
           destination: "/pages-header-override-delete",
         },
+        // Used by hybrid App+Pages dev and production tests: the Pages
+        // pipeline sees the unmatched /api source first, then hands the
+        // internal fallback destination to the App route handler.
+        {
+          source: "/api/pages-fallback-to-app/:path*",
+          has: [{ type: "cookie", key: "mw-api-fallback-user" }],
+          destination: "/api/fallback-rewrite-target/:path*?from=fallback",
+        },
       ],
     };
   },
@@ -184,7 +224,36 @@ const nextConfig: NextConfig = {
       // Used by Vitest: app-router.test.ts
       {
         source: "/about",
-        headers: [{ key: "X-Page-Header", value: "about-page" }],
+        headers: [
+          { key: "X-Page-Header", value: "about-page" },
+          { key: "X-Action-Header-Collision", value: "target" },
+        ],
+      },
+      // Server-action redirect parity: source headers are forwarded into the
+      // internal target GET and retained unless the target replaces them.
+      {
+        source: "/nextjs-compat/action-redirect-middleware",
+        headers: [
+          { key: "X-Action-Source-Only", value: "yes" },
+          { key: "X-Action-Header-Collision", value: "source" },
+        ],
+      },
+      // Regression for #2788: this discovery Link must coexist with the
+      // React preload Link emitted by app/config-link-preload/page.tsx.
+      // Both rules match intentionally: Next.js keeps the last non-cookie
+      // config value before middleware and framework response headers run.
+      {
+        source: "/config-link-preload",
+        headers: [{ key: "Link", value: '</superseded>; rel="describedby"' }],
+      },
+      {
+        source: "/config-link-preload",
+        headers: [
+          {
+            key: "Link",
+            value: '</llms.txt>; rel="describedby"; type="text/plain"',
+          },
+        ],
       },
       // Used by E2E: config-redirect.spec.ts — has/missing on headers rules
       {

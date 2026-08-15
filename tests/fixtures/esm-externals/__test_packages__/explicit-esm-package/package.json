@@ -1,0 +1,9 @@
+{
+  "name": "explicit-esm-package",
+  "type": "module",
+  "exports": {
+    "./entry": {
+      "import": "./entry.mjs"
+    }
+  }
+}

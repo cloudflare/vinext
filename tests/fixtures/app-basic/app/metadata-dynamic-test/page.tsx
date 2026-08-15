@@ -3,6 +3,11 @@ export async function generateMetadata() {
   return {
     title: "Dynamic Metadata Page",
     description: "Generated dynamically via generateMetadata",
+    alternates: {
+      canonical: "https://example.com/metadata-dynamic-test",
+      languages: { "en-US": "https://example.com/en/metadata-dynamic-test" },
+    },
+    robots: { index: false, follow: false },
     openGraph: {
       title: "Dynamic OG Title",
       description: "Dynamic OG Description",

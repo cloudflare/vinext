@@ -399,6 +399,42 @@ describe("RedirectBoundary digest classification", () => {
     });
   });
 
+  it("preserves semicolons inside redirect digest URLs", () => {
+    const e = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;replace;javascript:window.location.assign('/boom');;307;",
+    });
+
+    expect(RedirectErrorBoundaryClass).not.toBeNull();
+    expect(RedirectErrorBoundaryClass?.getDerivedStateFromError(e)).toEqual({
+      redirect: "javascript:window.location.assign('/boom');",
+      redirectType: "replace",
+    });
+  });
+
+  it("preserves percent escapes in Next-style raw redirect URLs", () => {
+    const e = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;replace;/docs%2Fguide%3Bpart;307;",
+    });
+
+    expect(RedirectErrorBoundaryClass).not.toBeNull();
+    expect(RedirectErrorBoundaryClass?.getDerivedStateFromError(e)).toEqual({
+      redirect: "/docs%2Fguide%3Bpart",
+      redirectType: "replace",
+    });
+  });
+
+  it("catches Next-style redirect digests with an empty URL", () => {
+    const e = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;replace;;307;",
+    });
+
+    expect(RedirectErrorBoundaryClass).not.toBeNull();
+    expect(RedirectErrorBoundaryClass?.getDerivedStateFromError(e)).toEqual({
+      redirect: "",
+      redirectType: "replace",
+    });
+  });
+
   it("re-throws non-redirect errors", () => {
     const e = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_NOT_FOUND" });
 
@@ -406,9 +442,18 @@ describe("RedirectBoundary digest classification", () => {
     expect(() => RedirectErrorBoundaryClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 
-  it("re-throws redirect errors with malformed/empty URL", () => {
+  it("re-throws incomplete redirect digests", () => {
     const e = Object.assign(new Error("NEXT_REDIRECT"), {
-      digest: "NEXT_REDIRECT;push;",
+      digest: "NEXT_REDIRECT;push",
+    });
+
+    expect(RedirectErrorBoundaryClass).not.toBeNull();
+    expect(() => RedirectErrorBoundaryClass?.getDerivedStateFromError(e)).toThrow(e);
+  });
+
+  it("re-throws Next-style redirect errors with a malformed status", () => {
+    const e = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;replace;/login;invalid;",
     });
 
     expect(RedirectErrorBoundaryClass).not.toBeNull();

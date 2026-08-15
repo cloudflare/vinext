@@ -56,6 +56,7 @@ export async function startFixtureServer(
     appDir?: string | null;
     appRouter?: boolean;
     listen?: boolean;
+    publicDir?: string | false;
     server?: {
       host?: string;
       allowedHosts?: true | string[];
@@ -86,6 +87,7 @@ export async function startFixtureServer(
     root: fixtureDir,
     configFile: false,
     plugins,
+    publicDir: opts?.publicDir,
     // Vite may discover additional deps after the first request (especially
     // with @vitejs/plugin-rsc environments) and trigger a re-optimization.
     // In non-browser test clients, we can't "reload" and would otherwise
@@ -111,6 +113,25 @@ export async function startFixtureServer(
   }
 
   return { server, baseUrl };
+}
+
+// ── Config helpers ────────────────────────────────────────────
+
+/**
+ * Normalize a config-hook `resolve.alias` value to a find→replacement record.
+ * vinext emits alias entry arrays (so tsconfig-derived entries can carry a
+ * customResolver); tests assert on the object view.
+ */
+export function aliasEntriesToRecord(alias: unknown): Record<string, string> {
+  if (Array.isArray(alias)) {
+    return Object.fromEntries(
+      alias.map((entry: { find: string | RegExp; replacement: string }) => [
+        String(entry.find),
+        entry.replacement,
+      ]),
+    );
+  }
+  return (alias ?? {}) as Record<string, string>;
 }
 
 // ── Fetch helpers ─────────────────────────────────────────────
@@ -242,7 +263,7 @@ export async function buildPagesFixture(fixtureDir: string): Promise<string> {
       outDir: serverOutDir,
       emptyOutDir: true,
       ssr: "virtual:vinext-server-entry",
-      rollupOptions: {
+      rolldownOptions: {
         output: { entryFileNames: "entry.js" },
       },
     },

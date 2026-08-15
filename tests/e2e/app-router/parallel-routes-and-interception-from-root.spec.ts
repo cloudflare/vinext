@@ -8,11 +8,11 @@ const BASE = "http://localhost:4174";
 const EXAMPLE = `${BASE}/interception-from-root/en/example`;
 
 test.describe("parallel-routes-and-interception-from-root", () => {
-  test("(...)[[locale]] interceptor interpolates [locale] correctly", async ({ page }) => {
-    // Tests that the (..)(..) [locale]/intercepted pattern matches the locale
-    // segment dynamically. The interception lives at:
-    //   [locale]/example/@modal/(...)[locale]/intercepted
-    // which should intercept navigation to /en/intercepted from anywhere.
+  test("(...) interceptor interpolates [locale] correctly", async ({ page }) => {
+    // The interception resolves from the app root and has no direct destination
+    // page, matching Next.js' parallel-routes-and-interception-from-root fixture.
+    // It lives at:
+    //   [locale]/example/@modal/(...)interception-from-root/[locale]/intercepted
     await page.goto(EXAMPLE);
     await waitForAppRouterHydration(page);
 
@@ -28,13 +28,9 @@ test.describe("parallel-routes-and-interception-from-root", () => {
     await expect(page.locator("#locale-label")).toHaveText("Locale: en");
   });
 
-  test("direct visit to intercepted URL shows full page (not modal)", async ({ page }) => {
-    // Direct navigation bypasses the interception — full page renders instead of modal
-    await page.goto(`${BASE}/interception-from-root/en/intercepted`);
-
-    await expect(page.locator("h2")).toHaveText("Full intercepted page for locale en");
-    // The example page h1 should NOT be present
-    await expect(page.locator("h1")).not.toBeVisible();
+  test("direct visit to interception-only URL returns not found", async ({ page }) => {
+    const response = await page.goto(`${BASE}/interception-from-root/en/intercepted`);
+    expect(response?.status()).toBe(404);
   });
 
   test("back navigation after interception returns to example page", async ({ page }) => {

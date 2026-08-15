@@ -99,6 +99,21 @@ function isDynamicSegment(segment: string): boolean {
   return segment.startsWith("[") && segment.endsWith("]");
 }
 
+function resolveSegmentConfigOwnerPosition(
+  routeSegments: readonly string[],
+  treePosition: number,
+): number {
+  let ownerPosition = Math.min(treePosition - 1, routeSegments.length - 1);
+  while (ownerPosition >= 0) {
+    const segment = routeSegments[ownerPosition];
+    if (!segment.startsWith("@") && !(segment.startsWith("(") && segment.endsWith(")"))) {
+      break;
+    }
+    ownerPosition -= 1;
+  }
+  return ownerPosition;
+}
+
 function getParallelSegments(
   options: ResolveAppPageSegmentConfigOptions,
 ): readonly (AppRouteSegmentConfigModule | null | undefined)[] {
@@ -127,9 +142,10 @@ function resolveDynamicParamsConfig(
     return dynamicParamsConfig;
   }
 
+  const routeSegments = options.routeSegments;
   let lastDynamicPosition = -1;
-  for (let index = options.routeSegments.length - 1; index >= 0; index--) {
-    if (isDynamicSegment(options.routeSegments[index])) {
+  for (let index = routeSegments.length - 1; index >= 0; index--) {
+    if (isDynamicSegment(routeSegments[index])) {
       lastDynamicPosition = index;
       break;
     }
@@ -142,7 +158,10 @@ function resolveDynamicParamsConfig(
   let lastDynamicSegmentHasStaticParams = false;
 
   layouts.forEach((layout, index) => {
-    const ownerPosition = (layoutPositions[index] ?? 0) - 1;
+    const ownerPosition = resolveSegmentConfigOwnerPosition(
+      routeSegments,
+      layoutPositions[index] ?? 0,
+    );
     if (ownerPosition !== lastDynamicPosition) return;
     if (layout?.dynamicParams === false) lastDynamicSegmentIsStaticOnly = true;
     if (typeof layout?.generateStaticParams === "function") {
@@ -157,7 +176,7 @@ function resolveDynamicParamsConfig(
 
   for (const branch of options.parallelBranches ?? []) {
     if (!branch) continue;
-    const branchStartPosition = options.routeSegments.length - (branch.routeSegments?.length ?? 0);
+    const branchStartPosition = routeSegments.length - (branch.routeSegments?.length ?? 0);
     const checkSegment = (
       segment: AppRouteSegmentConfigModule | null | undefined,
       ownerPosition: number,

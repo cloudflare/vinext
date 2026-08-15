@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import type { ViteDevServer } from "vite";
 import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 

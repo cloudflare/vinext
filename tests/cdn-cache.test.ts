@@ -148,7 +148,9 @@ class EdgeCdnAdapter implements CdnCacheAdapter {
 describe("edge CDN adapter integration", () => {
   it("isrGet returns null (origin renders) even after isrSet", async () => {
     setCdnCacheAdapter(new EdgeCdnAdapter());
-    await isrSet("app:/p:html", buildPagesCacheValue("<p>cached</p>", {}), 60, []);
+    await isrSet("app:/p:html", buildPagesCacheValue("<p>cached</p>", {}), {
+      cacheControl: { revalidate: 60 },
+    });
     expect(await isrGet("app:/p:html")).toBeNull();
   });
 
@@ -164,7 +166,9 @@ describe("edge CDN adapter integration", () => {
     const edge = new EdgeCdnAdapter();
     setCdnCacheAdapter(edge);
 
-    await isrSet("app:/p:html", buildPagesCacheValue("<p>x</p>", {}), 60, []);
+    await isrSet("app:/p:html", buildPagesCacheValue("<p>x</p>", {}), {
+      cacheControl: { revalidate: 60 },
+    });
 
     expect(edge.writes).toBe(1);
     expect(set).not.toHaveBeenCalled();
@@ -207,14 +211,14 @@ describe("revalidation propagates to both data cache and CDN adapter", () => {
 
   it("revalidateTag invalidates the data cache and purges the CDN", async () => {
     const { dataRevalidate, edge } = spyAdapters();
-    await revalidateTag("posts");
+    await Promise.resolve(revalidateTag("posts"));
     expect(dataRevalidate).toHaveBeenCalledWith("posts", undefined);
     expect(edge.purges).toEqual(["posts"]);
   });
 
   it("revalidatePath invalidates the data cache and purges the CDN", async () => {
     const { dataRevalidate, edge } = spyAdapters();
-    await revalidatePath("/blog");
+    await Promise.resolve(revalidatePath("/blog"));
     // Same encoded tag is sent to both layers.
     expect(dataRevalidate).toHaveBeenCalledTimes(1);
     const tag = dataRevalidate.mock.calls[0][0];
@@ -226,7 +230,7 @@ describe("revalidation propagates to both data cache and CDN adapter", () => {
     // updateTag may only be called from within a Server Action.
     const previousPhase = setHeadersAccessPhase("action");
     try {
-      await updateTag("cart");
+      await Promise.resolve(updateTag("cart"));
     } finally {
       setHeadersAccessPhase(previousPhase);
     }

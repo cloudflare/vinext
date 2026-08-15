@@ -1,14 +1,23 @@
 import fs from "node:fs";
 
-type PrerenderManifestRoute = {
+export type PrerenderManifestRoute = {
   route: string;
   status?: string;
   revalidate?: number | false;
   expire?: number;
+  /**
+   * Client-router reuse bound resolved by the prerender's `cacheLife`. Absent on
+   * manifests written by older builds, which seed entries without a
+   * client-freshness claim and leave the client on its configured staleTimes.
+   */
+  stale?: number;
   path?: string;
   router?: string;
   fallback?: boolean;
-  headers?: Record<string, string>;
+  headers?: Record<string, string | string[]>;
+  responseStatus?: number;
+  routeSegments?: string[];
+  tags?: string[];
 };
 
 export type PrerenderManifest = {
@@ -16,6 +25,11 @@ export type PrerenderManifest = {
   trailingSlash?: boolean;
   routes?: PrerenderManifestRoute[];
   pregeneratedConcretePaths?: Array<[string, string[]]>;
+};
+
+export type PrerenderedPathSelectionOptions = {
+  includeFallbackShells?: boolean;
+  includeErrorDocuments?: boolean;
 };
 
 export function readPrerenderManifest(manifestPath: string): PrerenderManifest | null {
@@ -32,6 +46,12 @@ export function getRenderedAppRoutes(routes: PrerenderManifestRoute[]): Prerende
   return routes.filter((r) => r.status === "rendered" && r.router === "app");
 }
 
+export function getRenderedMetadataRoutes(
+  routes: PrerenderManifestRoute[],
+): PrerenderManifestRoute[] {
+  return routes.filter((route) => route.status === "rendered" && route.router === "metadata");
+}
+
 function groupRoutesByPattern(routes: PrerenderManifestRoute[]): Map<string, string[]> {
   const byPattern = new Map<string, string[]>();
   for (const r of routes) {
@@ -44,6 +64,17 @@ function groupRoutesByPattern(routes: PrerenderManifestRoute[]): Map<string, str
     }
   }
   return byPattern;
+}
+
+function isErrorDocumentRoute(pathname: string, route: PrerenderManifestRoute): boolean {
+  return (
+    pathname === "/404" ||
+    pathname === "/500" ||
+    pathname === "/_error" ||
+    route.route === "/404" ||
+    route.route === "/500" ||
+    route.route === "/_error"
+  );
 }
 
 /**
@@ -94,4 +125,38 @@ export function buildPregeneratedConcretePathTable(
   });
 
   return Array.from(groupRoutesByPattern(concreteRoutes).entries());
+}
+
+/**
+ * Select concrete URL paths that were rendered by the prerender engine.
+ *
+ * This intentionally includes both App Router and Pages Router entries because
+ * deploy-time cache warmup should exercise the same URLs the prerender phase
+ * proved are statically renderable. PPR fallback-shell placeholder artifacts
+ * and known error documents are excluded by default so warmup does not request
+ * synthetic bracket paths or treat a healthy 404 response as a failed warmup.
+ */
+export function getPrerenderedConcretePaths(
+  manifest: PrerenderManifest,
+  options?: PrerenderedPathSelectionOptions,
+): string[] {
+  const routes = manifest.routes;
+  if (!routes?.length) return [];
+
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const route of routes) {
+    if (route.status !== "rendered") continue;
+    const pathname = route.path ?? route.route;
+    if (!options?.includeFallbackShells && isFallbackShellArtifactPath(pathname, route)) {
+      continue;
+    }
+    if (!options?.includeErrorDocuments && isErrorDocumentRoute(pathname, route)) {
+      continue;
+    }
+    if (seen.has(pathname)) continue;
+    seen.add(pathname);
+    paths.push(pathname);
+  }
+  return paths;
 }

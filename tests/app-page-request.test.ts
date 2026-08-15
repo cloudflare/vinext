@@ -8,13 +8,15 @@ import {
   resolveAppPageGenerateStaticParamsSources,
   validateAppPageDynamicParams,
 } from "../packages/vinext/src/server/app-page-request.js";
+import { cookies, headersContextFromRequest } from "../packages/vinext/src/shims/headers.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 
 describe("app page request helpers", () => {
   it("returns 404 when dynamicParams=false receives unknown params", async () => {
-    const clearRequestContext = vi.fn();
-
     const response = await validateAppPageDynamicParams({
-      clearRequestContext,
       enforceStaticParamsOnly: true,
       async generateStaticParams() {
         return [{ slug: "known-post" }];
@@ -25,14 +27,10 @@ describe("app page request helpers", () => {
 
     expect(response?.status).toBe(404);
     await expect(response?.text()).resolves.toBe("This page could not be found");
-    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("returns 404 when dynamicParams=false has no static params sources", async () => {
-    const clearRequestContext = vi.fn();
-
     const response = await validateAppPageDynamicParams({
-      clearRequestContext,
       enforceStaticParamsOnly: true,
       generateStaticParams: undefined,
       isDynamicRoute: true,
@@ -41,14 +39,10 @@ describe("app page request helpers", () => {
 
     expect(response?.status).toBe(404);
     await expect(response?.text()).resolves.toBe("This page could not be found");
-    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("allows matching static params, including nested parent params", async () => {
-    const clearRequestContext = vi.fn();
-
     const response = await validateAppPageDynamicParams({
-      clearRequestContext,
       enforceStaticParamsOnly: true,
       async generateStaticParams() {
         return [{ item: "shoe" }];
@@ -58,16 +52,49 @@ describe("app page request helpers", () => {
     });
 
     expect(response).toBeNull();
-    expect(clearRequestContext).not.toHaveBeenCalled();
+  });
+
+  it("allows canonical encoded App Page params from generateStaticParams", async () => {
+    const response = await validateAppPageDynamicParams({
+      enforceStaticParamsOnly: true,
+      async generateStaticParams() {
+        return [{ id: "sticks & stones", path: ["a/b", "%61"] }];
+      },
+      isDynamicRoute: true,
+      params: {
+        id: "sticks%20%26%20stones",
+        path: ["a%2Fb", "%2561"],
+      },
+    });
+
+    expect(response).toBeNull();
+  });
+
+  it("does not treat an encoded delimiter as an alias for a literal static value", async () => {
+    const generateStaticParams = async () => [{ id: "a%2Fb" }];
+
+    const encodedLiteral = await validateAppPageDynamicParams({
+      enforceStaticParamsOnly: true,
+      generateStaticParams,
+      isDynamicRoute: true,
+      params: { id: "a%252Fb" },
+    });
+    expect(encodedLiteral).toBeNull();
+
+    const delimiterAlias = await validateAppPageDynamicParams({
+      enforceStaticParamsOnly: true,
+      generateStaticParams,
+      isDynamicRoute: true,
+      params: { id: "a%2Fb" },
+    });
+    expect(delimiterAlias?.status).toBe(404);
   });
 
   it("requires every segment generateStaticParams source to allow the params", async () => {
-    const clearRequestContext = vi.fn();
     const layoutGenerateStaticParams = async () => [{ category: "docs" }];
     const pageGenerateStaticParams = async () => [{ slug: "intro" }];
 
     const response = await validateAppPageDynamicParams({
-      clearRequestContext,
       enforceStaticParamsOnly: true,
       generateStaticParams: [layoutGenerateStaticParams, pageGenerateStaticParams],
       isDynamicRoute: true,
@@ -75,11 +102,9 @@ describe("app page request helpers", () => {
     });
 
     expect(response?.status).toBe(404);
-    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("passes parent-only params to each generateStaticParams source", async () => {
-    const clearRequestContext = vi.fn();
     const categoryGenerateStaticParams = vi.fn(() => [{ category: "docs" }]);
     const itemGenerateStaticParams = vi.fn(
       ({ params }: { params: Record<string, string | string[]> }) => {
@@ -91,7 +116,6 @@ describe("app page request helpers", () => {
     );
 
     const response = await validateAppPageDynamicParams({
-      clearRequestContext,
       enforceStaticParamsOnly: true,
       generateStaticParams: resolveAppPageGenerateStaticParamsSources({
         layouts: [null, { generateStaticParams: categoryGenerateStaticParams }],
@@ -104,14 +128,226 @@ describe("app page request helpers", () => {
     });
 
     expect(response).toBeNull();
-    expect(clearRequestContext).not.toHaveBeenCalled();
     expect(categoryGenerateStaticParams).toHaveBeenCalledWith({ params: {} });
     expect(itemGenerateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
   });
 
+  it("ignores route groups when finding a layout generateStaticParams boundary", async () => {
+    const generateStaticParams = vi.fn(() => [{ region: "SE" }]);
+    const response = await validateAppPageDynamicParams({
+      enforceStaticParamsOnly: true,
+      generateStaticParams: resolveAppPageGenerateStaticParamsSources({
+        layouts: [null, { generateStaticParams }],
+        layoutTreePositions: [0, 2],
+        routeSegments: ["[region]", "(default)", "static-prefetch"],
+      }),
+      isDynamicRoute: true,
+      params: { region: "SE" },
+    });
+
+    expect(response).toBeNull();
+    expect(generateStaticParams).toHaveBeenCalledWith({ params: {} });
+  });
+
+  it("chains parent layout params through a route-group layout", async () => {
+    const regionGenerateStaticParams = vi.fn(() => [{ region: "EU" }]);
+    const languageGenerateStaticParams = vi.fn(
+      ({ params }: { params: Record<string, string | string[]> }) =>
+        params.region === "EU" ? [{ lang: "En" }] : [],
+    );
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [
+        null,
+        { generateStaticParams: regionGenerateStaticParams },
+        { generateStaticParams: languageGenerateStaticParams },
+      ],
+      layoutTreePositions: [0, 1, 2],
+      routeSegments: ["[region]", "(group)", "[lang]"],
+    });
+
+    await expect(
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { region: "EU", lang: "En" },
+      }),
+    ).resolves.toBeNull();
+    expect(regionGenerateStaticParams).toHaveBeenCalledWith({ params: {} });
+    expect(languageGenerateStaticParams).toHaveBeenCalledWith({ params: { region: "EU" } });
+
+    await expect(
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { region: "EU", lang: "en" },
+      }),
+    ).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("validates chained and parallel branch params independently", async () => {
+    const localeGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const slugGenerateStaticParams = vi.fn(() => [{ slug: "static-123" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: localeGenerateStaticParams }],
+      layoutTreePositions: [0, 1],
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: slugGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "gsp", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "gsp", "stories", ":slug"],
+      routeSegments: ["[locale]", "gsp", "stories", "[slug]"],
+    });
+    const validate = (locale: string, slug: string) =>
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale, slug },
+      });
+
+    await expect(validate("en", "static-123")).resolves.toBeNull();
+    await expect(validate("fr", "static-123")).resolves.toMatchObject({ status: 404 });
+    await expect(validate("en", "dynamic-123")).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("keeps primary params when a parallel generator omits that key", async () => {
+    const localeGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const slugGenerateStaticParams = vi.fn(() => [{ slug: "main" }]);
+    const parallelGenerateStaticParams = vi.fn(() => [{ locale: "en" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: localeGenerateStaticParams }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: slugGenerateStaticParams },
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: parallelGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "ownership", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "ownership", "stories", ":slug"],
+      routeSegments: ["[locale]", "ownership", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("main")).resolves.toBeNull();
+    await expect(validate("other")).resolves.toMatchObject({ status: 404 });
+    expect(parallelGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
+  });
+
+  it("preserves ownership for each parallel generator result", async () => {
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: () => [{ locale: "en" }] }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: () => [{ slug: "main" }] },
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: () => [{}, { slug: "parallel" }] }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "ownership", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "ownership", "stories", ":slug"],
+      routeSegments: ["[locale]", "ownership", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("main")).resolves.toBeNull();
+    await expect(validate("parallel")).resolves.toBeNull();
+    await expect(validate("other")).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("preserves primary params when a parallel generator returns no results", async () => {
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: () => [{ locale: "en" }] }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: () => [{ slug: "main" }] },
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: () => [] }],
+          configLayoutTreePositions: [1, 2],
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "empty-ownership", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "empty-ownership", "stories", ":slug"],
+      routeSegments: ["[locale]", "empty-ownership", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("main")).resolves.toBeNull();
+    await expect(validate("other")).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("chains multiple generators within one parallel branch", async () => {
+    const firstGenerateStaticParams = vi.fn(() => [{ slug: "a" }]);
+    const secondGenerateStaticParams = vi.fn(() => [{ slug: "b" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null, { generateStaticParams: () => [{ locale: "en" }] }],
+      layoutTreePositions: [0, 1],
+      page: { generateStaticParams: () => [{ slug: "main" }] },
+      parallelBranches: [
+        {
+          configLayouts: [null, { generateStaticParams: firstGenerateStaticParams }],
+          configLayoutTreePositions: [1, 2],
+          page: { generateStaticParams: secondGenerateStaticParams },
+          paramNames: ["locale", "slug"],
+          patternParts: [":locale", "sequential-ownership", "stories", ":slug"],
+          routeSegments: ["stories", "[slug]"],
+        },
+      ],
+      routePatternParts: [":locale", "sequential-ownership", "stories", ":slug"],
+      routeSegments: ["[locale]", "sequential-ownership", "stories", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { locale: "en", slug },
+      });
+
+    await expect(validate("b")).resolves.toBeNull();
+    await expect(validate("a")).resolves.toMatchObject({ status: 404 });
+    await expect(validate("main")).resolves.toMatchObject({ status: 404 });
+    expect(firstGenerateStaticParams).toHaveBeenCalledWith({ params: { locale: "en" } });
+    expect(secondGenerateStaticParams).toHaveBeenCalledWith({
+      params: { locale: "en", slug: "a" },
+    });
+  });
+
   it("enforces generateStaticParams from a parallel page", async () => {
     const response = await validateAppPageDynamicParams({
-      clearRequestContext() {},
       enforceStaticParamsOnly: true,
       generateStaticParams: resolveAppPageGenerateStaticParamsSources({
         parallelBranches: [
@@ -135,7 +371,6 @@ describe("app page request helpers", () => {
   it("remaps parallel page params before validating generateStaticParams", async () => {
     const generateStaticParams = vi.fn(() => [{ name: "post" }]);
     const response = await validateAppPageDynamicParams({
-      clearRequestContext() {},
       enforceStaticParamsOnly: true,
       generateStaticParams: resolveAppPageGenerateStaticParamsSources({
         parallelBranches: [
@@ -176,7 +411,6 @@ describe("app page request helpers", () => {
     });
     const validate = (slug: string) =>
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         generateStaticParams,
         isDynamicRoute: true,
@@ -196,7 +430,6 @@ describe("app page request helpers", () => {
 
     await expect(
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         async generateStaticParams() {
           throw error;
@@ -214,7 +447,6 @@ describe("app page request helpers", () => {
 
     await expect(
       validateAppPageDynamicParams({
-        clearRequestContext() {},
         enforceStaticParamsOnly: true,
         async generateStaticParams() {
           return Promise.reject(error);
@@ -228,7 +460,6 @@ describe("app page request helpers", () => {
   // Ported from Next.js: packages/next/src/build/static-paths/app.test.ts
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/static-paths/app.test.ts
   it("does not check remaining sources when an earlier generateStaticParams source throws", async () => {
-    const clearRequestContext = vi.fn();
     const throwsSource = vi.fn(() => {
       throw new Error("source 1 failed");
     });
@@ -236,7 +467,6 @@ describe("app page request helpers", () => {
 
     await expect(
       validateAppPageDynamicParams({
-        clearRequestContext,
         enforceStaticParamsOnly: true,
         generateStaticParams: [throwsSource, rejectsSource],
         isDynamicRoute: true,
@@ -244,16 +474,12 @@ describe("app page request helpers", () => {
       }),
     ).rejects.toThrow("source 1 failed");
 
-    expect(clearRequestContext).not.toHaveBeenCalled();
     expect(throwsSource).toHaveBeenCalledTimes(1);
     expect(rejectsSource).not.toHaveBeenCalled();
   });
 
   it("returns 404 when generateStaticParams excludes the requested params", async () => {
-    const clearRequestContext = vi.fn();
-
     const response = await validateAppPageDynamicParams({
-      clearRequestContext,
       enforceStaticParamsOnly: true,
       generateStaticParams: async () => [{ slug: "other" }],
       isDynamicRoute: true,
@@ -261,7 +487,6 @@ describe("app page request helpers", () => {
     });
 
     expect(response?.status).toBe(404);
-    expect(clearRequestContext).toHaveBeenCalledTimes(1);
   });
 
   it("renders intercepted source routes on RSC navigations", async () => {
@@ -586,6 +811,58 @@ describe("resolveAppPageInterceptMatch", () => {
     expect(__loadInterceptLayout).toHaveBeenCalledTimes(1);
     expect(sharedLoadState.page).toBe(interceptPage);
     expect(intercept.interceptLayouts).toEqual([interceptLayout]);
+  });
+
+  it("evaluates intercept page and not-found modules outside the request context", async () => {
+    // Intercept modules are cached on the intercept for the isolate's lifetime
+    // just like route modules, so the first navigation that matches an
+    // intercept must not be able to leak into their module scope.
+    const reads: Record<string, string> = {};
+    const readCookieAtModuleScope = (label: string) => async () => {
+      reads[label] = await cookies().then(
+        (jar) => `read:${jar.get("session")?.value ?? "none"}`,
+        () => "rejected-no-request-context",
+      );
+      return { default: label };
+    };
+    const intercept = {
+      interceptLayouts: [null],
+      __loadInterceptLayouts: [readCookieAtModuleScope("layout")],
+      matchedParams: { id: "123" },
+      page: null,
+      __pageLoader: readCookieAtModuleScope("page"),
+      notFound: null,
+      __loadNotFound: readCookieAtModuleScope("notFound"),
+      slotKey: "modal@app/feed/@modal",
+      sourceRouteIndex: 0,
+    };
+    const request = new Request("https://example.com/photos/123", {
+      headers: { cookie: "session=victim-secret" },
+    });
+    const requestContext = createRequestContext({
+      headersContext: headersContextFromRequest(request),
+    });
+
+    const liveCookie = await runWithRequestContext(requestContext, async () => {
+      const live = (await cookies()).get("session")?.value;
+      await resolveAppPageInterceptMatch({
+        cleanPathname: "/photos/123",
+        currentRoute,
+        findIntercept: () => intercept,
+        getRouteParamNames: (route: { params: string[] }) => route.params,
+        getSourceRoute: () => sourceRoute,
+        isRscRequest: true,
+        toInterceptOpts,
+      });
+      return live;
+    });
+
+    expect(liveCookie).toBe("victim-secret");
+    expect(reads).toEqual({
+      page: "rejected-no-request-context",
+      notFound: "rejected-no-request-context",
+      layout: "rejected-no-request-context",
+    });
   });
 
   it("slices source params down to the source route's declared params", async () => {

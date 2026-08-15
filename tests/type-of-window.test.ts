@@ -6,13 +6,15 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { createBuilder, createServer } from "vite";
+import { createBuilder, parseAst } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import {
+  consumerEnvironmentConditionFilter,
   getTypeofWindowReplacement,
+  replaceConsumerEnvironmentConditions,
   replaceTypeofWindow,
 } from "../packages/vinext/src/plugins/typeof-window.js";
-import { normalizePathSeparators } from "../packages/vinext/src/utils/path.js";
+import { supportsNativeTypeofWindowFolding } from "../packages/vinext/src/utils/vite-version.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -25,75 +27,151 @@ afterEach(async () => {
 });
 
 describe("typeof window compilation", () => {
-  it("does not fold prebundles when plugin instances are reused across servers", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-reuse-"));
+  it("configures the installed Vite typeof window folding strategy", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-define-"));
     temporaryDirectories.push(root);
-    const plugins = [vinext({ react: false, rsc: false })];
-    const transform = async (server: Awaited<ReturnType<typeof createServer>>, id: string) => {
-      const source = `export const browser = typeof window !== "undefined"`;
-      try {
-        return (await server.pluginContainer.transform(source, id))?.code;
-      } catch (error) {
-        const viteError = error as { code?: string; pluginCode?: string };
-        if (viteError.code !== "ERR_OUTDATED_OPTIMIZED_DEP") throw error;
-        return viteError.pluginCode;
-      }
-    };
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      environments: {
+        server: { consumer: "server" },
+      },
+      plugins: [vinext({ react: false, rsc: false })],
+    });
 
-    for (const name of ["first-cache", "second-cache"]) {
-      const cacheDir = path.join(root, name);
-      const server = await createServer({
-        root,
-        cacheDir,
-        configFile: false,
-        logLevel: "silent",
-        plugins,
+    const vitePackage = (await import("vite/package.json", { with: { type: "json" } })).default;
+    const viteVersion = vitePackage.bundledVersions?.vite ?? (await import("vite")).version;
+    const usesNativeFolding = supportsNativeTypeofWindowFolding(
+      viteVersion,
+      vitePackage.bundledVersions?.rolldown,
+    );
+
+    expect(builder.environments.client?.config.define?.["typeof window"]).toBe(
+      usesNativeFolding ? '"object"' : undefined,
+    );
+    expect(builder.environments.server?.config.define?.["typeof window"]).toBe(
+      usesNativeFolding ? '"undefined"' : undefined,
+    );
+  });
+
+  it("filters unrelated process references before invoking JavaScript", () => {
+    const lineContinuation = 'process["brow' + "\\" + '\nser"]';
+    const identityEscape = String.raw`process["brow\ser"]`;
+    expect(consumerEnvironmentConditionFilter.test("process.env.NODE_ENV")).toBe(false);
+    expect(consumerEnvironmentConditionFilter.test("process /* comment */ . browser")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test("process. /* comment */ browser")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test('process["browser"]')).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test('process?.["browser"]')).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test('process?. ["browser"]')).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test('process?. [("browser")]')).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test("(process).browser")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test("browser && process.browser")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test("process.brow\\u0073er")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test("proce\\u0073s.browser")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test(lineContinuation)).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test(identityEscape)).toBe(true);
+    expect(
+      consumerEnvironmentConditionFilter.test("const process = {}; const browser = true"),
+    ).toBe(false);
+  });
+
+  it("folds computed process.browser escape and optional-chain spellings", () => {
+    for (const member of [
+      'process["brow' + "\\" + '\nser"]',
+      String.raw`process["brow\ser"]`,
+      'process?. [("browser")]',
+    ]) {
+      const result = replaceConsumerEnvironmentConditions(`if (${member}) import("browser-only")`, {
+        processBrowser: false,
+        pruneUnreachableImports: true,
       });
 
-      try {
-        const prebundleId = path.join(cacheDir, "deps_ssr/react.js");
-        const prebundleCode = await transform(server, prebundleId);
-        expect(prebundleCode).toContain("typeof window");
-
-        const sourceCode = await transform(server, path.join(root, `${name}.js`));
-        expect(sourceCode).not.toContain("typeof window");
-      } finally {
-        await server.close();
-      }
+      expect(result?.code, member).not.toContain("browser-only");
     }
   });
 
-  it("configures the hook filter to skip the resolved Vite cache directory", async () => {
-    // Normalize the root to forward slashes up front so everything below stays
-    // in the same POSIX space the plugin's exclude regex (and Vite's ids) use.
-    const root = normalizePathSeparators(
-      await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-filter-")),
-    );
+  it("filters large one-sided sources in linear time", () => {
+    const sources = [
+      "process.env.NODE_ENV; ".repeat(40_000),
+      "browser; ".repeat(100_000),
+      `process${" ".repeat(1_000_000)}`,
+      `process["${"a".repeat(1_000_000)}`,
+    ];
+    const start = performance.now();
+    const matches = sources.map((source) => consumerEnvironmentConditionFilter.test(source));
+    const elapsed = performance.now() - start;
+
+    expect(matches).toEqual([false, false, false, false]);
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("uses native folding only from the stable Vite 8.1.4 release", () => {
+    expect(supportsNativeTypeofWindowFolding("8.1.3")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.4-beta.1")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.4")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.1.4+build.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.2.0-beta.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("9.0.0-beta.1")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.3")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.4-beta.1")).toBe(false);
+    expect(supportsNativeTypeofWindowFolding("8.1.2", "1.1.4")).toBe(true);
+    expect(supportsNativeTypeofWindowFolding("8.2.0", "1.1.3")).toBe(false);
+  });
+
+  it("skips custom scan folding for modules in the Vite cache directory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-typeof-window-cache-"));
     temporaryDirectories.push(root);
-    const cacheDir = path.posix.join(root, ".vite-cache[custom]");
-    const server = await createServer({
+    const cacheDir = path.join(root, ".vite-cache[custom]");
+    const builder = await createBuilder({
       root,
       cacheDir,
       configFile: false,
       logLevel: "silent",
       plugins: [vinext({ react: false, rsc: false })],
     });
-
-    try {
-      const plugin = server.config.plugins.find(
-        (candidate) => candidate?.name === "vinext:typeof-window",
-      );
-      if (!plugin?.transform || typeof plugin.transform === "function") {
-        throw new Error("vinext:typeof-window transform hook not found");
-      }
-      const idFilter = plugin.transform.filter?.id as { exclude?: RegExp } | undefined;
-      expect(idFilter?.exclude).toBeInstanceOf(RegExp);
-      expect(idFilter?.exclude?.test(path.posix.join(cacheDir, "deps_ssr/react.js"))).toBe(true);
-      expect(idFilter?.exclude?.test(path.posix.join(root, "app/page.js"))).toBe(false);
-      expect(idFilter?.exclude?.test(`${cacheDir}-other/deps/react.js`)).toBe(false);
-    } finally {
-      await server.close();
+    const plugin = builder.config.plugins.find(
+      (candidate) => candidate.name === "vinext:typeof-window-scan",
+    );
+    if (!plugin?.transform || typeof plugin.transform === "function") {
+      throw new Error("vinext:typeof-window-scan transform hook not found");
     }
+
+    const transform = plugin.transform.handler;
+    const context = {
+      environment: {
+        config: {
+          build: { write: false },
+          cacheDir,
+          consumer: "server",
+        },
+      },
+    };
+    const source = `if (typeof window !== "undefined") import("browser-only")`;
+    const appPageId = path.join(root, "app/page.js");
+
+    expect(
+      await transform.call(context as never, source, path.join(cacheDir, "deps_ssr/react.js")),
+    ).toBeNull();
+    const cachedServerResult = await transform.call(context as never, source, appPageId);
+    expect(cachedServerResult).not.toBeNull();
+    expect(await transform.call(context as never, source, appPageId)).toBe(cachedServerResult);
+
+    const clientContext = {
+      environment: {
+        config: {
+          ...context.environment.config,
+          consumer: "client",
+        },
+      },
+    };
+    const clientResult = await transform.call(clientContext as never, source, appPageId);
+    expect(clientResult).not.toBe(cachedServerResult);
+    expect(await transform.call(clientContext as never, source, appPageId)).toBe(clientResult);
+    expect(clientResult).toMatchObject({ code: expect.stringContaining("browser-only") });
+    expect(
+      await transform.call(context as never, `${source}\nconsole.log("changed")`, appPageId),
+    ).not.toBe(cachedServerResult);
   });
 
   it("only folds references to the global window binding", () => {
@@ -127,6 +205,89 @@ switch (value) {
     expect(result?.code).toContain(";");
     expect(result?.code).toContain('if (typeof window !== "undefined") localWindowOnly()');
     expect(result?.code.match(/typeof window/g)).toHaveLength(6);
+  });
+
+  it("removes process.browser imports before server dependency analysis", () => {
+    const result = replaceConsumerEnvironmentConditions(
+      `if (process.browser) import("browser-only")
+if (process.browser && enabled) import("compound-browser-only")
+if (enabled && process.browser) import("reversed-browser-only")
+if (process?.browser) import("optional-browser-only")
+if (process["browser"]) import("computed-browser-only")
+if (process.brow\\u0073er) import("escaped-property-browser-only")
+if (process["brow\\u0073er"]) import("escaped-computed-browser-only")
+if (proce\\u0073s.browser) import("escaped-process-browser-only")
+if (process?.["browser"]) import("optional-computed-browser-only")
+if (process /* comment */ . browser) import("commented-browser-only")
+if (!process.browser) serverOnly()
+process.browser && enabled && import("also-browser-only")
+import("preserved-effect") && process.browser && import("effect-browser-only")
+if ((function () {}) && process.browser) import("anonymous-effect-browser-only")
+if (effect() && process.browser) primary(); else if (process.browser) import("nested-browser-only")
+const nested = effect() && process.browser ? primary() : process.browser ? import("nested-expression-browser-only") : fallback()
+const selected = process.browser === false ? "server" : "browser"`,
+      { processBrowser: false, pruneUnreachableImports: true },
+    );
+
+    expect(result?.code).not.toContain("browser-only");
+    expect(result?.code).not.toContain("compound-browser-only");
+    expect(result?.code).not.toContain("reversed-browser-only");
+    expect(result?.code).not.toContain("optional-browser-only");
+    expect(result?.code).not.toContain("computed-browser-only");
+    expect(result?.code).not.toContain("escaped-property-browser-only");
+    expect(result?.code).not.toContain("escaped-computed-browser-only");
+    expect(result?.code).not.toContain("escaped-process-browser-only");
+    expect(result?.code).not.toContain("optional-computed-browser-only");
+    expect(result?.code).not.toContain("commented-browser-only");
+    expect(result?.code).not.toContain("effect-browser-only");
+    expect(result?.code).not.toContain("anonymous-effect-browser-only");
+    expect(result?.code).not.toContain("nested-browser-only");
+    expect(result?.code).not.toContain("nested-expression-browser-only");
+    expect(result?.code).toContain('import("preserved-effect")');
+    expect(result?.code).toContain("function () {}");
+    expect(result?.code).toContain("fallback()");
+    expect(() => parseAst(result?.code ?? "")).not.toThrow();
+    expect(result?.code).not.toContain("also-browser-only");
+    expect(result?.code).toContain("serverOnly()");
+    expect(result?.code).toContain('const selected = ("server")');
+    expect(result?.code).not.toContain("process.browser");
+  });
+
+  it("preserves logical operand values outside import analysis", () => {
+    const source = `const falsy = value && typeof window === "object";
+const truthy = value || typeof window === "undefined";`;
+    const result = replaceTypeofWindow(source, "undefined");
+
+    expect(result?.code).toContain('value && "undefined" === "object"');
+    expect(result?.code).toContain('value || "undefined" === "undefined"');
+  });
+
+  it("skips unrelated process references during import analysis", () => {
+    expect(
+      replaceConsumerEnvironmentConditions(
+        `console.log(process.env.NODE_ENV)`,
+        { processBrowser: false, pruneUnreachableImports: true },
+        "example.js",
+      ),
+    ).toBeNull();
+  });
+
+  it("preserves locally bound process.browser references", () => {
+    const result = replaceConsumerEnvironmentConditions(
+      `if (process.browser) globalBrowserOnly()
+function check(process) {
+  if (process.browser) localBrowserOnly()
+}
+{
+  const process = { browser: true }
+  console.log(process.browser)
+}`,
+      { processBrowser: false },
+    );
+
+    expect(result?.code).not.toContain("globalBrowserOnly");
+    expect(result?.code).toContain("if (process.browser) localBrowserOnly()");
+    expect(result?.code).toContain("console.log(process.browser)");
   });
 
   it("removes nested dead branches in the selected branch", () => {

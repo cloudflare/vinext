@@ -17,9 +17,15 @@ import {
   PHASE_PRODUCTION_BUILD,
   PHASE_DEVELOPMENT_SERVER,
 } from "../packages/vinext/src/shims/constants.js";
+import { toSlash } from "pathslash";
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "vinext-config-test-"));
+}
+
+/** Expected canonical (forward-slash) path for resolved-config assertions. */
+function canonical(base: string, relativePath = ""): string {
+  return toSlash(relativePath ? path.join(base, relativePath) : base);
 }
 
 describe("invalid config files", () => {
@@ -111,6 +117,23 @@ describe("deprecated config warnings", () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("resolves both URL-normalization option names", async () => {
+    await expect(resolveNextConfig({ skipProxyUrlNormalize: true })).resolves.toMatchObject({
+      skipProxyUrlNormalize: true,
+    });
+    await expect(resolveNextConfig({ skipMiddlewareUrlNormalize: true })).resolves.toMatchObject({
+      skipProxyUrlNormalize: true,
+    });
+  });
+
+  it("rejects both URL-normalization option names together", async () => {
+    await expect(
+      resolveNextConfig({ skipProxyUrlNormalize: true, skipMiddlewareUrlNormalize: true }),
+    ).rejects.toThrow(
+      "Config options `skipProxyUrlNormalize` and `skipMiddlewareUrlNormalize` cannot be set at the same time.",
+    );
   });
 });
 
@@ -345,16 +368,20 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
     expect(config?.env?.VAL).toBe("json-data");
   });
 
-  it("exposes a CommonJS module/exports object inside next.config.ts", async () => {
-    tmpDir = makeTempDir();
-    fs.writeFileSync(
-      path.join(tmpDir, "next.config.ts"),
-      `module.exports = { env: { VIA: "module.exports" } };\n`,
-    );
+  it.each(["ts", "mts"])(
+    "exposes a CommonJS module/exports object inside next.config.%s under type:module",
+    async (extension) => {
+      tmpDir = makeTempDir();
+      fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+      fs.writeFileSync(
+        path.join(tmpDir, `next.config.${extension}`),
+        `module.exports = { env: { VIA: "module.exports" } };\n`,
+      );
 
-    const config = await loadNextConfig(tmpDir);
-    expect(config?.env?.VIA).toBe("module.exports");
-  });
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.env?.VIA).toBe("module.exports");
+    },
+  );
 
   it("does not inject __dirname when user already declares it", async () => {
     // Regression test for https://github.com/cloudflare/vinext/issues/1345.
@@ -404,6 +431,39 @@ describe("loadNextConfig with CJS globals in next.config.ts", () => {
     const config = await loadNextConfig(tmpDir);
     expect(config?.env?.HAS_REQUIRE).toBe("function");
   });
+
+  it.each(["ts", "mts"])(
+    "preserves require observed with typeof in next.config.%s",
+    async (extension) => {
+      tmpDir = makeTempDir();
+      fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+      fs.writeFileSync(
+        path.join(tmpDir, `next.config.${extension}`),
+        `export default { env: { HAS_REQUIRE: typeof require } };\n`,
+      );
+
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.env?.HAS_REQUIRE).toBe("function");
+    },
+  );
+
+  it.each(["ts", "mts"])(
+    "preserves require used in a default parameter in next.config.%s",
+    async (extension) => {
+      tmpDir = makeTempDir();
+      fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+      fs.writeFileSync(path.join(tmpDir, "data.json"), `{"value":"parameter-default"}`);
+      fs.writeFileSync(
+        path.join(tmpDir, `next.config.${extension}`),
+        `export default function config(_phase, _options, data = require("./data.json")) {\n` +
+          `  return { env: { VALUE: data.value } };\n` +
+          `}\n`,
+      );
+
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.env?.VALUE).toBe("parameter-default");
+    },
+  );
 
   it("loads a pure-ESM next.config.ts without injecting CJS shims", async () => {
     // No __filename / __dirname / require / module / exports references —
@@ -583,6 +643,39 @@ describe("loadNextConfig with tsconfig path aliases", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it.each(["ts", "mts"])(
+    "supports dynamic TypeScript imports from next.config.%s",
+    async (extension) => {
+      // Ported from Next.js:
+      // test/e2e/app-dir/next-config-ts-native-ts/dynamic-import-esm/
+      // test/e2e/app-dir/next-config-ts-native-mts/dynamic-import-esm/
+      // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/next-config-ts-native-ts/dynamic-import-esm/next.config.ts
+      tmpDir = makeTempDir();
+
+      fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+      fs.writeFileSync(path.join(tmpDir, "foo.ts"), `export const foo = "foo";\n`);
+      fs.writeFileSync(
+        path.join(tmpDir, "tsconfig.json"),
+        JSON.stringify({ compilerOptions: { allowImportingTsExtensions: true } }),
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, `next.config.${extension}`),
+        `await Promise.resolve();\n` +
+          `interface module { value: string }\n` +
+          `type require = string;\n` +
+          `const note = "module exports require"; // require is mentioned in a comment\n` +
+          `export default async function config() {\n` +
+          `  const { foo } = await import("./foo.ts");\n` +
+          `  return { env: { FOO: foo, NOTE: note } };\n` +
+          `}\n`,
+      );
+
+      const config = await loadNextConfig(tmpDir);
+      expect(config?.env?.FOO).toBe("foo");
+      expect(config?.env?.NOTE).toBe("module exports require");
+    },
+  );
 
   it("resolves '@/*' imports in next.config.ts from tsconfig paths (no baseUrl)", async () => {
     tmpDir = makeTempDir();
@@ -1097,7 +1190,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
     expect(config.basePath).toBe("/wrapped");
-    expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "config", "request.ts"));
+    expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "config/request.ts"));
   });
 
   it("captures turbopack aliases from wrapped config plugins", async () => {
@@ -1118,7 +1211,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     const rawConfig = await loadNextConfig(tmpDir);
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
-    expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "turbo", "request.ts"));
+    expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "turbo/request.ts"));
   });
 
   it("captures top-level turbopack aliases", async () => {
@@ -1137,7 +1230,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     const rawConfig = await loadNextConfig(tmpDir);
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
-    expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "turbopack", "request.ts"));
+    expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "turbopack/request.ts"));
   });
 
   // Regression test for #1507. Turbopack `resolveAlias` (and webpack
@@ -1189,10 +1282,12 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     const rawConfig = await loadNextConfig(tmpDir);
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
-    expect(config.aliases["current"]).toBe(path.resolve(tmpDir, "."));
-    expect(config.aliases["parent"]).toBe(path.resolve(tmpDir, ".."));
-    expect(config.aliases["explicit"]).toBe(path.join(tmpDir, "turbo", "request.ts"));
-    expect(config.aliases["up"]).toBe(path.resolve(tmpDir, "..", "shared", "request.ts"));
+    expect(config.aliases["current"]).toBe(canonical(path.resolve(tmpDir, ".")));
+    expect(config.aliases["parent"]).toBe(canonical(path.resolve(tmpDir, "..")));
+    expect(config.aliases["explicit"]).toBe(canonical(tmpDir, "turbo/request.ts"));
+    expect(config.aliases["up"]).toBe(
+      canonical(path.resolve(tmpDir, "..", "shared", "request.ts")),
+    );
   });
 
   it("leaves absolute-path turbopack aliases verbatim", async () => {
@@ -1250,7 +1345,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
 
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
-    expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "turbopack", "request.ts"));
+    expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "turbopack/request.ts"));
     expect(consoleWarn).toHaveBeenCalledWith(
       '[vinext] next.config option "webpack" is not yet supported and will be ignored',
     );
@@ -1345,7 +1440,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     const config = await resolveNextConfig(rawConfig, tmpDir);
 
     expect(invocations).toEqual([false, true]);
-    expect(config.aliases["wrapped/config"]).toBe(path.join(tmpDir, "config", "request.ts"));
+    expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "config/request.ts"));
     expect(config.mdx?.remarkPlugins).toEqual([fakeRemarkPlugin]);
   });
 });
@@ -1587,6 +1682,30 @@ describe("resolveNextConfig disableOptimizedLoading", () => {
   });
 });
 
+describe("resolveNextConfig crossOrigin", () => {
+  it("reads supported crossOrigin values", async () => {
+    const anonymous = await resolveNextConfig({ crossOrigin: "anonymous" });
+    const credentials = await resolveNextConfig({ crossOrigin: "use-credentials" });
+    expect(anonymous.crossOrigin).toBe("anonymous");
+    expect(credentials.crossOrigin).toBe("use-credentials");
+  });
+
+  it("warns about unsupported crossOrigin values", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const resolved = await resolveNextConfig({ crossOrigin: "invalid" as "anonymous" });
+
+    expect(resolved.crossOrigin).toBeUndefined();
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("Invalid next.config options detected"),
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"crossOrigin"'));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("https://nextjs.org/docs/messages/invalid-next-config"),
+    );
+  });
+});
+
 describe("resolveNextConfig scrollRestoration", () => {
   it("defaults scrollRestoration to false", async () => {
     const resolved = await resolveNextConfig({});
@@ -1609,12 +1728,34 @@ describe("resolveNextConfig prefetchInlining", () => {
     const enabledByBoolean = await resolveNextConfig({
       experimental: { prefetchInlining: true },
     });
-    expect(enabledByBoolean.prefetchInlining).toBe(true);
+    expect(enabledByBoolean.prefetchInlining).toEqual({
+      maxBundleSize: 10240,
+      maxSize: 2048,
+    });
 
     const enabledByThresholds = await resolveNextConfig({
       experimental: { prefetchInlining: { maxSize: Infinity, maxBundleSize: Infinity } },
     });
-    expect(enabledByThresholds.prefetchInlining).toBe(true);
+    expect(enabledByThresholds.prefetchInlining).toEqual({
+      maxBundleSize: Number.MAX_SAFE_INTEGER,
+      maxSize: Number.MAX_SAFE_INTEGER,
+    });
+
+    const enabledByPartialThresholds = await resolveNextConfig({
+      experimental: { prefetchInlining: { maxSize: 512 } },
+    });
+    expect(enabledByPartialThresholds.prefetchInlining).toEqual({
+      maxBundleSize: 10240,
+      maxSize: 512,
+    });
+
+    const negativeThresholds = await resolveNextConfig({
+      experimental: { prefetchInlining: { maxSize: -1, maxBundleSize: -1 } },
+    });
+    expect(negativeThresholds.prefetchInlining).toEqual({
+      maxBundleSize: -1,
+      maxSize: -1,
+    });
   });
 });
 
@@ -2000,6 +2141,8 @@ describe("detectNextIntlConfig", () => {
       assetPrefix: "",
       basePath: "",
       trailingSlash: false,
+      skipProxyUrlNormalize: false,
+      typescript: {},
       output: "",
       pageExtensions: ["tsx", "ts", "jsx", "js"],
       resolveExtensions: null,
@@ -2017,6 +2160,7 @@ describe("detectNextIntlConfig", () => {
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
+      allowedRevalidateHeaderKeys: [],
       optimizePackageImports: [],
       transpilePackages: [],
       turbopackTranspilePackages: ["geist"],
@@ -2038,6 +2182,8 @@ describe("detectNextIntlConfig", () => {
       sassOptions: null,
       removeConsole: false,
       disableOptimizedLoading: false,
+      crossOrigin: undefined,
+      reactStrictMode: null,
       scrollRestoration: false,
       compilerDefine: {},
       compilerDefineServer: {},
@@ -2076,7 +2222,7 @@ describe("detectNextIntlConfig", () => {
     const resolved = makeResolved();
     detectNextIntlConfig(tmpDir, resolved);
 
-    expect(resolved.aliases["next-intl/config"]).toBe(path.join(tmpDir, "i18n", "request.ts"));
+    expect(resolved.aliases["next-intl/config"]).toBe(canonical(tmpDir, "i18n/request.ts"));
   });
 
   it("auto-detects src/i18n/request.ts", () => {
@@ -2084,9 +2230,7 @@ describe("detectNextIntlConfig", () => {
     const resolved = makeResolved();
     detectNextIntlConfig(tmpDir, resolved);
 
-    expect(resolved.aliases["next-intl/config"]).toBe(
-      path.join(tmpDir, "src", "i18n", "request.ts"),
-    );
+    expect(resolved.aliases["next-intl/config"]).toBe(canonical(tmpDir, "src/i18n/request.ts"));
   });
 
   it("prefers i18n/request.ts over src/i18n/request.ts", () => {
@@ -2099,7 +2243,7 @@ describe("detectNextIntlConfig", () => {
     const resolved = makeResolved();
     detectNextIntlConfig(tmpDir, resolved);
 
-    expect(resolved.aliases["next-intl/config"]).toBe(path.join(tmpDir, "i18n", "request.ts"));
+    expect(resolved.aliases["next-intl/config"]).toBe(canonical(tmpDir, "i18n/request.ts"));
   });
 
   it("detects .js extension variant", () => {
@@ -2107,7 +2251,7 @@ describe("detectNextIntlConfig", () => {
     const resolved = makeResolved();
     detectNextIntlConfig(tmpDir, resolved);
 
-    expect(resolved.aliases["next-intl/config"]).toBe(path.join(tmpDir, "i18n", "request.js"));
+    expect(resolved.aliases["next-intl/config"]).toBe(canonical(tmpDir, "i18n/request.js"));
   });
 
   it("detects .tsx extension variant", () => {
@@ -2115,7 +2259,7 @@ describe("detectNextIntlConfig", () => {
     const resolved = makeResolved();
     detectNextIntlConfig(tmpDir, resolved);
 
-    expect(resolved.aliases["next-intl/config"]).toBe(path.join(tmpDir, "i18n", "request.tsx"));
+    expect(resolved.aliases["next-intl/config"]).toBe(canonical(tmpDir, "i18n/request.tsx"));
   });
 
   // Note: "does nothing when next-intl is not installed" cannot be tested
@@ -2183,7 +2327,7 @@ describe("resolveNextConfig next-intl auto-detection", () => {
     fs.writeFileSync(path.join(tmpDir, "i18n", "request.ts"), "export default {};\n");
 
     const config = await resolveNextConfig(null, tmpDir);
-    expect(config.aliases["next-intl/config"]).toBe(path.join(tmpDir, "i18n", "request.ts"));
+    expect(config.aliases["next-intl/config"]).toBe(canonical(tmpDir, "i18n/request.ts"));
   });
 
   it("explicit webpack alias takes precedence over auto-detection", async () => {
@@ -2215,7 +2359,7 @@ describe("resolveNextConfig next-intl auto-detection", () => {
 
     const config = await resolveNextConfig(rawConfig, tmpDir);
     // Should use the explicit webpack alias, not auto-detected
-    expect(config.aliases["next-intl/config"]).toBe(path.join(tmpDir, "custom", "intl.ts"));
+    expect(config.aliases["next-intl/config"]).toBe(canonical(tmpDir, "custom/intl.ts"));
   });
 });
 
@@ -2595,7 +2739,7 @@ describe("resolveNextConfig cacheHandler", () => {
     const resolved = await resolveNextConfig({
       cacheHandler: pathToFileURL(handlerPath).href,
     });
-    expect(resolved.cacheHandler).toBe(handlerPath);
+    expect(resolved.cacheHandler).toBe(canonical(handlerPath));
   });
 
   it("passes through absolute paths unchanged", async () => {

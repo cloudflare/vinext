@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 describe("Client reference preloading (Issue #256)", () => {
   it("preloading correctly warms the memoize cache", async () => {

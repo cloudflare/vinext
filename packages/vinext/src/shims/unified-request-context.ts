@@ -45,6 +45,10 @@ export type UnifiedRequestContext = {
   /** Per-request cache for cacheForRequest(). Keyed by factory function reference. */
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   requestCache: WeakMap<(...args: any[]) => any, unknown>;
+
+  // ── next/server after() ───────────────────────────────────────────
+  /** Shared lifecycle state for work deferred until the response closes. */
+  afterContext: AfterRequestContext;
 } & VinextHeadersShimState &
   I18nState &
   NavigationState &
@@ -54,6 +58,15 @@ export type UnifiedRequestContext = {
   RouterState &
   HeadState &
   RootParamsState;
+
+export type AfterRequestContext = {
+  callbacks: Array<() => unknown>;
+  responseClosed: boolean;
+  pendingCallbacks: number;
+  pendingPromises: number;
+  completion: Promise<void> | null;
+  resolveCompletion: (() => void) | null;
+};
 
 // ---------------------------------------------------------------------------
 // ALS setup — stored on globalThis via Symbol.for so all Vite environments
@@ -86,6 +99,8 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
   return {
     headersContext: null,
     actionRevalidationKind: 0,
+    pendingRevalidatedTags: new Set<string>(),
+    pendingRevalidations: new Set<Promise<void>>(),
     dynamicUsageDetected: false,
     renderRequestApiUsage: new Set(),
     connectionProbe: null,
@@ -106,16 +121,213 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     currentFetchCacheMode: null,
     currentForceDynamicFetchDefault: false,
     dynamicFetchUrls: new Set<string>(),
+    refreshStaleFetchesInForeground: false,
     isFetchDedupeActive: false,
     currentFetchDedupeEntries: new Map(),
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
     requestCache: new WeakMap(),
+    afterContext: {
+      callbacks: [],
+      responseClosed: false,
+      pendingCallbacks: 0,
+      pendingPromises: 0,
+      completion: null,
+      resolveCompletion: null,
+    },
     ssrContext: null,
     ssrHeadChildren: [],
     documentInitialHead: [],
     rootParams: null,
     ...opts,
   };
+}
+
+function ensureAfterCompletion(ctx: UnifiedRequestContext): void {
+  const state = ctx.afterContext;
+  if (state.resolveCompletion && state.completion) return;
+
+  let resolveCompletion!: () => void;
+  const completion = new Promise<void>((resolve) => {
+    resolveCompletion = resolve;
+  });
+  state.completion = completion;
+  state.resolveCompletion = resolveCompletion;
+  ctx.executionContext?.waitUntil(completion);
+}
+
+function finishAfterCallbacksIfIdle(ctx: UnifiedRequestContext): void {
+  const state = ctx.afterContext;
+  if (
+    !state.responseClosed ||
+    state.pendingCallbacks !== 0 ||
+    state.callbacks.length !== 0 ||
+    !state.resolveCompletion
+  ) {
+    return;
+  }
+
+  const resolveCompletion = state.resolveCompletion;
+  state.resolveCompletion = null;
+  resolveCompletion();
+}
+
+function startAfterCallback(ctx: UnifiedRequestContext, callback: () => unknown): void {
+  const state = ctx.afterContext;
+  ensureAfterCompletion(ctx);
+  state.pendingCallbacks += 1;
+  void Promise.resolve()
+    .then(callback)
+    .catch((error) => {
+      console.error("[vinext] after() task failed:", error);
+    })
+    .finally(() => {
+      state.pendingCallbacks -= 1;
+      finishAfterCallbacksIfIdle(ctx);
+    });
+}
+
+/** Queue a callback until response close, or start it immediately once closed. */
+export function queueAfterCallback(ctx: UnifiedRequestContext, callback: () => unknown): void {
+  ensureAfterCompletion(ctx);
+  if (ctx.afterContext.responseClosed) {
+    startAfterCallback(ctx, callback);
+  } else {
+    ctx.afterContext.callbacks.push(callback);
+  }
+}
+
+/** Track promise-form after() work that can register a callback before settling. */
+export function trackAfterPromise<T>(ctx: UnifiedRequestContext, promise: Promise<T>): Promise<T> {
+  ctx.afterContext.pendingPromises += 1;
+  return promise.finally(() => {
+    ctx.afterContext.pendingPromises -= 1;
+  });
+}
+
+/** Bind a callback to every AsyncLocalStorage context active at registration. */
+export function bindRequestContextSnapshot<T>(
+  ctx: UnifiedRequestContext,
+  callback: () => T,
+): () => T {
+  const constructor = _als.constructor as {
+    snapshot?: () => <TResult>(callback: () => TResult) => TResult;
+  };
+  try {
+    const runInSnapshot = constructor.snapshot?.();
+    if (runInSnapshot) return () => runInSnapshot(callback);
+  } catch {
+    // Runtimes with partial AsyncLocalStorage implementations may not support snapshots.
+  }
+  return () => _als.run(ctx, callback);
+}
+
+/**
+ * Release function-form `after()` work once the response body has closed.
+ * All queued callbacks start together, matching Next.js' unbounded PromiseQueue.
+ */
+export async function closeAfterResponse(ctx: UnifiedRequestContext): Promise<void> {
+  const state = ctx.afterContext;
+  if (!state.responseClosed) {
+    state.responseClosed = true;
+    const callbacks = state.callbacks.splice(0);
+    for (const callback of callbacks) startAfterCallback(ctx, callback);
+    finishAfterCallbacksIfIdle(ctx);
+  }
+  return state.completion ?? Promise.resolve();
+}
+
+/**
+ * Whether this request has function-form `after()` work that still needs to
+ * observe the response body closing.
+ *
+ * Promise-form `after(promise)` is included because its continuation can
+ * register a function-form `after()` before the promise settles. Function-form
+ * work needs the body's close observed because its contract is "run once the
+ * response has been sent". `resolveCompletion` stays non-null for as long as
+ * any callback is queued or in flight, so checking it alongside the explicit
+ * counters keeps this correct on re-entry after callbacks have started.
+ */
+export function requiresResponseCloseTracking(ctx: UnifiedRequestContext): boolean {
+  const state = ctx.afterContext;
+  return (
+    state.callbacks.length > 0 ||
+    state.pendingCallbacks > 0 ||
+    state.pendingPromises > 0 ||
+    state.resolveCompletion !== null
+  );
+}
+
+type ResponseWithFullyBufferedBodyMetadata = Response & {
+  __vinextFullyBufferedBody?: boolean;
+};
+
+/**
+ * Mark a response whose body vinext constructed from a fully in-memory string
+ * or byte array, as opposed to a body handed back by user code, which could
+ * still be producing. With no producer left, no `after()` call can originate
+ * from this body — the one signal that makes it safe for
+ * `closeAfterResponseWithBody()` to skip close tracking.
+ *
+ * Not set for a metadata route's `result instanceof Response` passthrough (a
+ * user `icon.tsx`/`opengraph-image.tsx` can return a streaming
+ * `ImageResponse`) or any handler-returned `new Response(stream)` — those
+ * bodies can still be producing and must keep close tracking.
+ */
+export function markFullyBufferedBody(response: Response): Response {
+  (response as ResponseWithFullyBufferedBodyMetadata).__vinextFullyBufferedBody = true;
+  return response;
+}
+
+function isFullyBufferedBody(response: Response): boolean {
+  return (response as ResponseWithFullyBufferedBodyMetadata).__vinextFullyBufferedBody === true;
+}
+
+/** Preserve the internal buffered-body signal when response metadata is rebuilt. */
+export function preserveFullyBufferedBodyMetadata(source: Response, target: Response): Response {
+  return isFullyBufferedBody(source) ? markFullyBufferedBody(target) : target;
+}
+
+/**
+ * Wrap a response so deferred `after()` callbacks start on stream completion
+ * or cancellation. Skipped only when the body is marked fully buffered (see
+ * `markFullyBufferedBody`) and nothing is currently registered — that lets
+ * the runtime send it with an accurate `Content-Length` instead of chunked
+ * transfer encoding.
+ */
+export function closeAfterResponseWithBody(
+  response: Response,
+  ctx: UnifiedRequestContext,
+): Response {
+  if (!response.body) {
+    // Resolve the after-lifecycle now (a no-op if nothing is queued) so a
+    // callback registered after this call returns doesn't wait forever on a
+    // responseClosed flag nothing else will set.
+    queueMicrotask(() => void closeAfterResponse(ctx));
+    return response;
+  }
+
+  if (isFullyBufferedBody(response) && !requiresResponseCloseTracking(ctx)) {
+    return response;
+  }
+
+  const passthrough = new TransformStream<Uint8Array, Uint8Array>();
+  void response.body.pipeTo(passthrough.writable).then(
+    () => void closeAfterResponse(ctx),
+    () => void closeAfterResponse(ctx),
+  );
+
+  const wrapped = new Response(passthrough.readable, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+  (wrapped as { __vinextStreamedHtmlResponse?: boolean }).__vinextStreamedHtmlResponse = (
+    response as { __vinextStreamedHtmlResponse?: boolean }
+  ).__vinextStreamedHtmlResponse;
+  (wrapped as { __vinextStreamedApiResponse?: boolean }).__vinextStreamedApiResponse = (
+    response as { __vinextStreamedApiResponse?: boolean }
+  ).__vinextStreamedApiResponse;
+  return wrapped;
 }
 
 /**
@@ -163,9 +375,10 @@ export function runWithUnifiedStateMutation<T>(
   if (!parentCtx) return fn();
 
   const childCtx = { ...parentCtx };
-  // NOTE: This is a shallow clone. Array fields (pendingSetCookies,
+  // NOTE: This is a shallow clone. Object/array fields (afterContext, pendingSetCookies,
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), Set
-  // fields (renderRequestApiUsage, cacheableFetchUrls, dynamicFetchUrls),
+  // fields (renderRequestApiUsage, pendingRevalidatedTags, pendingRevalidations,
+  // cacheableFetchUrls, dynamicFetchUrls),
   // Map fields (unstableCacheObservations, _privateCache),
   // requestCache WeakMap, and object fields (headersContext,
   // i18nContext, serverContext, ssrContext, executionContext,

@@ -1,22 +1,35 @@
-import { createElement } from "react";
+import { Suspense, createElement } from "react";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import {
+  prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
-  resolveAppPageHead,
   type ApplyAppPageFileBasedMetadata,
 } from "./app-page-head.js";
+import {
+  resolveHttpAccessFallbackMetadata,
+  resolveHttpAccessFallbackViewport,
+} from "./app-page-http-access-fallback-metadata.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import {
   buildAppPageElements,
   createAppPageSourcePage,
   createAppPageTreePath,
+  resolveAppPageLoadingModuleAtOrAbove,
   type AppPageErrorModule,
   type AppPageModule,
   type AppPageRouteWiringRoute,
   type AppPageSlotOverride,
 } from "./app-page-route-wiring.js";
+import {
+  isAppPageRouteGroupSegment,
+  resolveAppPagePatternStateKey,
+  resolveAppPageRouteStateKey,
+  type AppPageSemanticSegment,
+} from "./app-page-segment-state.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
-import type { AppPageParams } from "./app-page-boundary.js";
+import { resolveAppPageParentHttpAccessBoundary, type AppPageParams } from "./app-page-boundary.js";
+import { resolveAppPageSpecialError } from "./app-page-execution.js";
+import { sanitizeErrorForClient } from "./app-rsc-errors.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
@@ -28,7 +41,16 @@ import {
   makeObservedAppPageSearchParamsThenable,
 } from "./app-page-search-params-observation.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
-import { resolveAppPageBranchParams } from "./app-page-params.js";
+import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
+import {
+  createAppPageRenderDependency,
+  invokeAppComponent,
+  isAppRenderSuspension,
+  isReactOwnedAppComponent,
+  renderAfterAppDependencies,
+  type AppPageRenderDependency,
+} from "./app-render-dependency.js";
+import { isPromiseLike } from "../utils/promise.js";
 
 function resolveInterceptLayoutParams(
   branchSegments: readonly string[],
@@ -41,20 +63,6 @@ function resolveInterceptLayoutParams(
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
 
 type AppPageComponent = NonNullable<AppPageModule["default"]>;
-const REACT_CLIENT_REFERENCE = Symbol.for("react.client.reference");
-
-function isReactOwnedPageComponent(component: AppPageComponent): boolean {
-  if (typeof component !== "function") {
-    return true;
-  }
-  const candidate = component as AppPageComponent & {
-    $$typeof?: symbol;
-    prototype?: { isReactComponent?: unknown };
-  };
-  return (
-    candidate.$$typeof === REACT_CLIENT_REFERENCE || candidate.prototype?.isReactComponent != null
-  );
-}
 
 /**
  * Route shape passed from the generated entry. Extends the wiring route with
@@ -72,16 +80,24 @@ export type AppPageBuildRoute<
 };
 
 export type AppPageInterceptOptions<TModule extends AppPageModule = AppPageModule> = {
+  interceptGraphId?: string | null;
   interceptionContext?: string | null;
   interceptLayouts?: readonly (TModule | null | undefined)[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
   interceptBranchSegments?: readonly string[] | null;
+  interceptLoadings?: readonly (TModule | null | undefined)[] | null;
+  interceptLoadingTreePositions?: readonly number[] | null;
+  interceptNotFoundBranchSegments?: readonly string[] | null;
+  interceptNotFound?: TModule | null;
+  interceptNotFoundTreePosition?: number | null;
   interceptPage?: TModule | null;
   interceptParams?: AppPageParams | null;
   interceptSlotId?: string | null;
   interceptSlotKey?: string | null;
   interceptSourceMatchedUrl?: string | null;
   interceptSourcePageSegments?: readonly string[] | null;
+  interceptTargetPatternParts?: readonly string[] | null;
+  interceptTargetRouteGraphId?: string | null;
 };
 
 export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = {
@@ -101,6 +117,10 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   observePageSearchParamsAccess?: boolean;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
   observeMetadataSearchParamsAccess?: boolean;
+  /** Whether generated metadata may stream into the response body. */
+  serveStreamingMetadata?: boolean;
+  /** Whether streamed render errors must be sanitized for client transport. */
+  isProduction?: boolean;
 };
 
 export type BuildPageElementsOptions<
@@ -133,6 +153,7 @@ export type BuildPageElementsOptions<
   trailingSlash?: boolean;
   /** Serialized next.config `htmlLimitedBots` regexp source. */
   htmlLimitedBots?: string;
+  scriptNonce?: string;
 };
 
 type AppPageNavigationParamModule = {
@@ -198,6 +219,8 @@ export async function buildPageElements<
     renderMode = APP_RSC_RENDER_MODE_NAVIGATION,
     observeMetadataSearchParamsAccess = false,
     observePageSearchParamsAccess = false,
+    serveStreamingMetadata,
+    isProduction = process.env.NODE_ENV === "production",
   } = pageRequest;
 
   const pageModule: AppPageModule | null | undefined = route.page;
@@ -222,10 +245,24 @@ export async function buildPageElements<
   const sourcePageSegments = isSiblingIntercept
     ? opts?.interceptSourcePageSegments
     : route.routeSegments;
+  const semanticPageIdentity = isSiblingIntercept
+    ? route.ids?.route && opts?.interceptGraphId && opts.interceptTargetPatternParts
+      ? {
+          boundSegmentKey: resolveAppPagePatternStateKey(
+            opts.interceptTargetPatternParts,
+            effectiveParams,
+          ),
+          interceptionGraphId: opts.interceptGraphId,
+          sourceBoundSegmentKey: resolveAppPageRouteStateKey(route.routeSegments ?? [], params),
+          sourceRouteGraphId: route.ids.route,
+        }
+      : null
+    : undefined;
 
   const hasPageModule = !!pageModule;
   const renderIdentity = createAppPageRenderIdentity({
     displayPathname,
+    matchedRoutePathname: routePath,
     targetMatchedPathname: routePath,
     interceptionContext: opts?.interceptionContext ?? null,
     interceptSourceMatchedUrl: opts?.interceptSourceMatchedUrl ?? null,
@@ -243,13 +280,11 @@ export async function buildPageElements<
   // page missing its default export would silently render the source page.
   if ((hasPageModule || isSiblingIntercept) && !EffectivePageComponent) {
     let noExportRootLayout: string | null = null;
-    const noExportLayoutIds =
-      route.ids?.layouts ??
-      route.layouts.map((_, index) =>
-        AppElementsWire.encodeLayoutId(
-          createAppPageTreePath(route.routeSegments, route.layoutTreePositions?.[index] ?? 0),
-        ),
-      );
+    const noExportLayoutIds = route.layouts.map((_, index) =>
+      AppElementsWire.encodeLayoutId(
+        createAppPageTreePath(route.routeSegments, route.layoutTreePositions?.[index] ?? 0),
+      ),
+    );
     if (route.layouts?.length > 0) {
       const treePosition = route.layoutTreePositions?.[0] ?? 0;
       noExportRootLayout = createAppPageTreePath(route.routeSegments, treePosition);
@@ -267,66 +302,217 @@ export async function buildPageElements<
     };
   }
 
-  const {
-    hasDynamicMetadata,
-    metadata: resolvedMetadata,
-    pageSearchParams,
-    viewport: resolvedViewport,
-  } = await resolveAppPageHead({
+  const activeParallelRouteHeadInputs = resolveActiveParallelRouteHeadInputs({
+    interceptBranchSegments: opts?.interceptBranchSegments ?? null,
+    interceptLayouts: opts?.interceptLayouts ?? null,
+    interceptLayoutSegments: opts?.interceptLayoutSegments ?? null,
+    interceptNotFoundBranchSegments: opts?.interceptNotFoundBranchSegments ?? null,
+    interceptNotFound: opts?.interceptNotFound ?? null,
+    interceptNotFoundTreePosition: opts?.interceptNotFoundTreePosition ?? null,
+    interceptPage: opts?.interceptPage ?? null,
+    interceptParams: opts?.interceptParams ?? null,
+    interceptSlotKey: opts?.interceptSlotKey ?? null,
+    interceptSourcePageSegments: opts?.interceptSourcePageSegments ?? null,
+    layoutTreePositions: route.layoutTreePositions,
+    params,
+    routeSegments: route.routeSegments ?? [],
+    slotParams: slotParamOverrides,
+    slots: route.slots ?? null,
+  });
+  const primaryParallelRouteHeadInput = isSiblingIntercept
+    ? {
+        head: {
+          layoutModules: opts?.interceptLayouts ?? [],
+          layoutParams: (opts?.interceptLayoutSegments ?? []).map((segments) =>
+            resolveInterceptLayoutParams(
+              opts?.interceptBranchSegments ?? segments,
+              segments,
+              effectiveParams,
+            ),
+          ),
+          pageModule: effectivePageModule ?? null,
+          params: effectiveParams,
+          routeSegments: opts?.interceptSourcePageSegments ?? route.routeSegments ?? [],
+        },
+        ...(opts?.interceptNotFound
+          ? {
+              notFoundModule: opts.interceptNotFound,
+              notFoundParams: resolveAppPageBranchParams(
+                opts.interceptNotFoundBranchSegments ??
+                  opts.interceptBranchSegments ??
+                  route.routeSegments ??
+                  [],
+                opts.interceptNotFoundTreePosition ?? 0,
+                effectiveParams,
+              ),
+            }
+          : {}),
+        ownerTreePosition: route.routeSegments?.length ?? 0,
+      }
+    : null;
+  const parallelRoutes = [
+    ...(primaryParallelRouteHeadInput ? [primaryParallelRouteHeadInput.head] : []),
+    ...activeParallelRouteHeadInputs.map((input) => input.head),
+  ];
+  const metadataSearchParamsObserver = observeMetadataSearchParamsAccess
+    ? createAppPageSearchParamsObserver()
+    : undefined;
+  const preparedHead = prepareAppPageHead({
     applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,
     metadataRoutes,
     pageModule: isSiblingIntercept ? null : (effectivePageModule ?? null),
-    parallelRoutes: [
-      ...resolveActiveParallelRouteHeadInputs({
-        interceptBranchSegments: opts?.interceptBranchSegments ?? null,
-        interceptLayouts: opts?.interceptLayouts ?? null,
-        interceptLayoutSegments: opts?.interceptLayoutSegments ?? null,
-        interceptPage: opts?.interceptPage ?? null,
-        interceptParams: opts?.interceptParams ?? null,
-        interceptSlotKey: opts?.interceptSlotKey ?? null,
-        layoutTreePositions: route.layoutTreePositions,
-        params,
-        routeSegments: route.routeSegments ?? [],
-        slotParams: slotParamOverrides,
-        slots: route.slots ?? null,
-      }),
-      ...(isSiblingIntercept
-        ? [
-            {
-              layoutModules: opts?.interceptLayouts ?? [],
-              layoutParams: (opts?.interceptLayoutSegments ?? []).map((segments) =>
-                resolveInterceptLayoutParams(
-                  opts?.interceptBranchSegments ?? segments,
-                  segments,
-                  effectiveParams,
-                ),
-              ),
-              pageModule: effectivePageModule ?? null,
-              params: effectiveParams,
-              routeSegments: opts?.interceptSourcePageSegments ?? route.routeSegments ?? [],
-            },
-          ]
-        : []),
-    ],
+    parallelRoutes,
     params: effectiveParams,
     routePath: route.pattern,
     routeSegments: route.routeSegments ?? null,
     searchParams,
-    searchParamsObserver: observeMetadataSearchParamsAccess
-      ? createAppPageSearchParamsObserver()
-      : undefined,
+    searchParamsObserver: metadataSearchParamsObserver,
   });
+  const { hasDynamicMetadata, pageSearchParams } = preparedHead;
+  const streamGeneratedHead =
+    serveStreamingMetadata ??
+    shouldServeStreamingMetadata(
+      pageRequest.request.headers.get("user-agent") ?? "",
+      options.htmlLimitedBots,
+    );
+  const metadataPlacement = hasDynamicMetadata && streamGeneratedHead ? "body" : "head";
+  // Streaming HTML and Flight responses share the unresolved promise between
+  // the Suspense tag branch and its in-boundary error outlet. Late navigation
+  // signals remain encoded in the Flight digest; response headers are only an
+  // early optimization and must not make generated metadata block navigation.
+  const shouldDeferMetadata = metadataPlacement === "body";
+  const streamingMetadata = shouldDeferMetadata
+    ? isProduction
+      ? preparedHead.metadata.catch((error) => {
+          throw sanitizeErrorForClient(error, "production");
+        })
+      : preparedHead.metadata
+    : null;
+  // Viewport resolution can keep us below from wiring the paired outlet for
+  // another event-loop turn. Observe an early metadata rejection immediately;
+  // the original promise remains rejected for the real outlet consumer.
+  void streamingMetadata?.catch(() => null);
+
+  const resolveNotFoundFallbackPlanOptions = () => {
+    const routeBoundaryModule = route.notFound;
+    const parentBoundary = resolveAppPageParentHttpAccessBoundary({
+      layoutIndex: route.layouts.length,
+      rootForbiddenModule,
+      rootNotFoundModule,
+      rootUnauthorizedModule,
+      routeForbiddenModules: route.forbiddens,
+      routeNotFoundModules: route.notFounds,
+      routeUnauthorizedModules: route.unauthorizeds,
+      statusCode: 404,
+    });
+    const boundaryModule = routeBoundaryModule ?? parentBoundary.module;
+    const boundaryTreePosition = routeBoundaryModule
+      ? route.notFoundTreePosition
+      : parentBoundary.layoutIndex === null
+        ? null
+        : route.layoutTreePositions?.[parentBoundary.layoutIndex];
+    const boundaryParams =
+      boundaryModule && boundaryTreePosition != null
+        ? resolveAppPageSegmentParams(
+            route.routeSegments ?? [],
+            boundaryTreePosition,
+            effectiveParams,
+          )
+        : {};
+    return {
+      boundaryModule,
+      boundaryParams,
+      layoutModules: route.layouts,
+      layoutTreePositions: route.layoutTreePositions,
+      parallelBranches: activeParallelRouteHeadInputs,
+      params: effectiveParams,
+      primaryParallelBranch: primaryParallelRouteHeadInput,
+      routeSegments: route.routeSegments ?? null,
+    };
+  };
+
+  let viewportErrorOutlet: Promise<never> | null = null;
+  let metadataErrorOutlet: Promise<never> | null = null;
+  const resolveMetadataErrorTags = async (error: unknown) => {
+    const specialError = resolveAppPageSpecialError(error);
+    if (specialError?.kind !== "http-access-fallback") return null;
+
+    // Next resolves the not-found metadata convention for every HTTP access
+    // fallback. Errors from that fallback tag branch are suppressed because
+    // the original digest is still rethrown by the paired outlet.
+    return resolveHttpAccessFallbackMetadata({
+      applyFileBasedMetadata: options.applyFileBasedMetadata,
+      basePath: options.basePath ?? "",
+      ...resolveNotFoundFallbackPlanOptions(),
+      metadataRoutes,
+      routePath: route.pattern,
+    }).catch(() => null);
+  };
+  const [resolvedMetadata, resolvedViewport] = await Promise.all([
+    shouldDeferMetadata
+      ? Promise.resolve(null)
+      : preparedHead.metadata.catch((error) => {
+          metadataErrorOutlet = Promise.reject(
+            isProduction ? sanitizeErrorForClient(error, "production") : error,
+          );
+          void metadataErrorOutlet.catch(() => null);
+          return resolveMetadataErrorTags(error);
+        }),
+    preparedHead.viewport.catch(async (error) => {
+      const specialError = resolveAppPageSpecialError(error);
+
+      viewportErrorOutlet = Promise.reject(
+        isProduction ? sanitizeErrorForClient(error, "production") : error,
+      );
+      void viewportErrorOutlet.catch(() => null);
+      return specialError?.kind === "http-access-fallback"
+        ? resolveHttpAccessFallbackViewport(resolveNotFoundFallbackPlanOptions()).catch(() => ({}))
+        : {};
+    }),
+  ]);
+  const streamingMetadataTags = shouldDeferMetadata
+    ? preparedHead.metadata.catch(resolveMetadataErrorTags)
+    : null;
+  const streamingMetadataOutletInputs = [
+    streamingMetadata,
+    metadataErrorOutlet,
+    viewportErrorOutlet,
+  ]
+    .filter((promise) => promise !== null)
+    .map((promise) => Promise.resolve(promise));
+  const streamingMetadataOutlet =
+    streamingMetadataOutletInputs.length > 0
+      ? Promise.all(streamingMetadataOutletInputs).then(() => null)
+      : null;
+  void streamingMetadataOutlet?.catch(() => null);
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
   const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
+  const pageTreePosition = (sourcePageSegments ?? route.routeSegments ?? []).length;
+  const hasPageLoadingBoundary =
+    resolveAppPageLoadingModuleAtOrAbove(route, pageTreePosition) !== null ||
+    (isSiblingIntercept &&
+      resolveAppPageLoadingModuleAtOrAbove(
+        {
+          loading: null,
+          loadings: opts?.interceptLoadings,
+          loadingTreePositions: opts?.interceptLoadingTreePositions,
+        },
+        pageTreePosition,
+      ) !== null);
+  const pageRenderDependency =
+    EffectivePageComponent && !isReactOwnedAppComponent(EffectivePageComponent)
+      ? createAppPageRenderDependency()
+      : null;
   const createPageElement = (
     PageComponent: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
+    renderDependency?: AppPageRenderDependency | null,
   ) => {
-    if (isReactOwnedPageComponent(PageComponent)) {
+    if (isReactOwnedAppComponent(PageComponent)) {
       const invocationProps = { ...props };
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
@@ -338,9 +524,6 @@ export async function buildPageElements<
       return createElement(PageComponent, invocationProps);
     }
 
-    const ServerPageComponent = PageComponent as unknown as (
-      props: Readonly<Record<string, unknown>>,
-    ) => ReturnType<typeof createElement> | Promise<unknown> | string | number | null;
     const PageInvoker = () => {
       const invocationProps = { ...props };
       if (searchParams) {
@@ -348,7 +531,50 @@ export async function buildPageElements<
           ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
           : makeThenableParams(pageSearchParams);
       }
-      return ServerPageComponent(invocationProps);
+
+      try {
+        const result = invokeAppComponent(PageComponent, invocationProps);
+        if (isPromiseLike(result)) {
+          if (renderDependency) {
+            // A declared-async page reaches its first continuation before this
+            // microtask. That is enough for the Next.js pattern where the page
+            // awaits params and establishes request-scoped state for a parent
+            // layout. Do not wait for the complete page result: doing so turns
+            // an ancestor Suspense boundary into a blocking render.
+            void Promise.resolve().then(() => renderDependency.release());
+          }
+          return Promise.resolve(result).then((resolvedResult) =>
+            renderDependency
+              ? renderAfterAppDependencies(
+                  resolvedResult as React.ReactNode,
+                  renderDependency.resultDependencies,
+                )
+              : (resolvedResult as React.ReactNode),
+          );
+        }
+        renderDependency?.release();
+        return renderDependency
+          ? renderAfterAppDependencies(
+              result as React.ReactNode,
+              renderDependency.resultDependencies,
+            )
+          : result;
+      } catch (error) {
+        if (isAppRenderSuspension(error)) {
+          // React requires its internal use() suspension value to be rethrown
+          // immediately. With loading UI, release from a microtask so the
+          // page-entry Suspense boundary can serialize its fallback. Without
+          // loading UI, the page retry releases the dependency after it can
+          // render, preserving the same page-before-layout ordering as an
+          // ordinary async return.
+          if (renderDependency && hasPageLoadingBoundary) {
+            void Promise.resolve().then(() => renderDependency.release());
+          }
+          throw error;
+        }
+        renderDependency?.release();
+        throw error;
+      }
     };
     return createElement(PageInvoker as unknown as AppPageComponent);
   };
@@ -357,15 +583,6 @@ export async function buildPageElements<
   const mountedSlotIds = mountedSlotsHeader ? new Set(mountedSlotsHeader.split(" ")) : null;
 
   const slotOverrides = buildSlotOverrides(route, params, routePath, opts);
-  const metadataPlacement =
-    hasDynamicMetadata &&
-    shouldServeStreamingMetadata(
-      pageRequest.request.headers.get("user-agent") ?? "",
-      options.htmlLimitedBots,
-    )
-      ? "body"
-      : "head";
-
   // For sibling intercepts, wrap the intercepting page in any layouts that
   // live under the interception marker directory (interceptLayouts). In Next.js
   // the intercepting route's segment layouts wrap the intercepting page; the
@@ -374,25 +591,53 @@ export async function buildPageElements<
   // so a layout.tsx adjacent to the (.) / (..) / (...) marker dir is respected.
   let siblingInterceptElement: ReturnType<typeof createElement> | null =
     isSiblingIntercept && EffectivePageComponent
-      ? createPageElement(EffectivePageComponent, pageProps)
+      ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
       : null;
-  if (isSiblingIntercept && siblingInterceptElement !== null && opts?.interceptLayouts?.length) {
-    for (let i = opts.interceptLayouts.length - 1; i >= 0; i--) {
-      const layoutMod = opts.interceptLayouts[i] as AppPageModule | null | undefined;
-      const LayoutComponent = layoutMod?.default;
-      if (LayoutComponent) {
-        const interceptLayoutSegments = opts.interceptLayoutSegments?.[i] ?? [];
+  if (isSiblingIntercept && siblingInterceptElement !== null) {
+    const layoutIndexesByTreePosition = new Map<number, number[]>();
+    for (const [index, layoutModule] of (opts?.interceptLayouts ?? []).entries()) {
+      if (!layoutModule?.default) continue;
+      const treePosition = opts?.interceptLayoutSegments?.[index]?.length ?? 0;
+      const indexes = layoutIndexesByTreePosition.get(treePosition) ?? [];
+      indexes.push(index);
+      layoutIndexesByTreePosition.set(treePosition, indexes);
+    }
+    const loadingIndexesByTreePosition = new Map<number, number>();
+    for (const [index, loadingModule] of (opts?.interceptLoadings ?? []).entries()) {
+      if (!loadingModule?.default) continue;
+      const treePosition = opts?.interceptLoadingTreePositions?.[index];
+      if (treePosition !== undefined) loadingIndexesByTreePosition.set(treePosition, index);
+    }
+    const treePositions = Array.from(
+      new Set([...layoutIndexesByTreePosition.keys(), ...loadingIndexesByTreePosition.keys()]),
+    ).sort((left, right) => left - right);
+
+    for (let index = treePositions.length - 1; index >= 0; index--) {
+      const treePosition = treePositions[index];
+      const loadingIndex = loadingIndexesByTreePosition.get(treePosition);
+      const LoadingComponent =
+        loadingIndex === undefined ? null : opts?.interceptLoadings?.[loadingIndex]?.default;
+      if (LoadingComponent) {
+        siblingInterceptElement = createElement(
+          Suspense,
+          { fallback: createElement(LoadingComponent) },
+          siblingInterceptElement,
+        );
+      }
+
+      const layoutIndexes = layoutIndexesByTreePosition.get(treePosition) ?? [];
+      for (let layoutOffset = layoutIndexes.length - 1; layoutOffset >= 0; layoutOffset--) {
+        const layoutIndex = layoutIndexes[layoutOffset];
+        const LayoutComponent = opts?.interceptLayouts?.[layoutIndex]?.default;
+        if (!LayoutComponent) continue;
+        const interceptLayoutSegments = opts?.interceptLayoutSegments?.[layoutIndex] ?? [];
         const interceptLayoutParams = resolveInterceptLayoutParams(
-          opts.interceptBranchSegments ?? interceptLayoutSegments,
+          opts?.interceptBranchSegments ?? interceptLayoutSegments,
           interceptLayoutSegments,
           effectiveParams,
         );
-        // Layout component types vary; cast to any to avoid overload-resolution
-        // issues in createElement while preserving runtime safety.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const LC = LayoutComponent as (props: any) => any;
         siblingInterceptElement = createElement(
-          LC,
+          LayoutComponent,
           { params: makeThenableParams(interceptLayoutParams) },
           siblingInterceptElement,
         );
@@ -404,7 +649,7 @@ export async function buildPageElements<
     element: isSiblingIntercept
       ? siblingInterceptElement
       : EffectivePageComponent
-        ? createPageElement(EffectivePageComponent, pageProps)
+        ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
         : null,
     createPageElement,
     // Fall back to vinext's built-in default global error module so that
@@ -418,12 +663,20 @@ export async function buildPageElements<
     mountedSlotIds,
     makeThenableParams,
     matchedParams: params,
+    pageRenderDependency,
     metadataPlacement,
     resolvedMetadata,
     resolvedMetadataPathname: routePath,
     resolvedViewport,
+    scriptNonce: options.scriptNonce,
+    streamingMetadata,
+    streamingMetadataOutlet,
+    streamingMetadataOutletSuspended: streamGeneratedHead,
+    streamingMetadataTags,
     renderIdentity,
     routePath,
+    semanticPageIdentity,
+    semanticInterceptionTargetRouteId: opts?.interceptTargetRouteGraphId ?? null,
     sourcePageSegments,
     rootNotFoundModule: rootNotFoundModule ?? null,
     rootForbiddenModule: rootForbiddenModule ?? null,
@@ -466,8 +719,14 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
   ) {
     overrides[opts.interceptSlotKey] = {
       branchSegments: opts.interceptBranchSegments ?? null,
+      identitySegments: resolveInterceptedSlotIdentitySegments(
+        opts.interceptSourcePageSegments,
+        opts.interceptSlotKey,
+      ),
       layoutModules: opts.interceptLayouts || null,
       layoutSegments: opts.interceptLayoutSegments ?? null,
+      loadingModules: opts.interceptLoadings || null,
+      loadingTreePositions: opts.interceptLoadingTreePositions ?? null,
       pageModule: opts.interceptPage,
       params: opts.interceptParams || routeParams,
       routeSegments: resolveInterceptedSlotSegments(
@@ -486,22 +745,22 @@ function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends 
   return Object.keys(overrides).length > 0 ? overrides : null;
 }
 
-export function resolveInterceptedSlotSegments(
+export const APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS = [
+  { prefix: "(...)", levels: Number.POSITIVE_INFINITY },
+  { prefix: "(..)(..)", levels: 2 },
+  { prefix: "(..)", levels: 1 },
+  { prefix: "(.)", levels: 0 },
+] as const;
+
+function resolveInterceptedSlotSource(
   sourcePageSegments: readonly string[] | null | undefined,
   slotKey: string,
-): readonly string[] | null {
+): Readonly<{
+  marker: (typeof APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS)[number];
+  markerIndex: number;
+  segmentStart: number;
+}> | null {
   if (!sourcePageSegments) return null;
-
-  const markerTraversals = [
-    { prefix: "(...)", levels: Number.POSITIVE_INFINITY },
-    { prefix: "(..)(..)", levels: 2 },
-    { prefix: "(..)", levels: 1 },
-    { prefix: "(.)", levels: 0 },
-  ] as const;
-  const markerIndex = sourcePageSegments.findIndex((segment) =>
-    markerTraversals.some(({ prefix }) => segment.startsWith(prefix)),
-  );
-  if (markerIndex < 0) return null;
 
   const slotPathSeparator = slotKey.indexOf("@");
   const slotPath = slotPathSeparator >= 0 ? slotKey.slice(slotPathSeparator + 1) : "";
@@ -510,7 +769,6 @@ export function resolveInterceptedSlotSegments(
 
   if (
     segmentStart === 0 ||
-    segmentStart > markerIndex ||
     !ownerSegments.every((segment, index) => sourcePageSegments[index] === segment)
   ) {
     let slotName: string | null = null;
@@ -523,8 +781,15 @@ export function resolveInterceptedSlotSegments(
 
     let slotIndex = -1;
     if (slotName) {
-      for (let index = markerIndex - 1; index >= 0; index--) {
-        if (sourcePageSegments[index] === slotName) {
+      for (let index = sourcePageSegments.length - 1; index >= 0; index--) {
+        const hasOwnedMarker = sourcePageSegments
+          .slice(index + 1)
+          .some((segment) =>
+            APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.some(({ prefix }) =>
+              segment.startsWith(prefix),
+            ),
+          );
+        if (sourcePageSegments[index] === slotName && hasOwnedMarker) {
           slotIndex = index;
           break;
         }
@@ -534,14 +799,67 @@ export function resolveInterceptedSlotSegments(
     segmentStart = slotIndex + 1;
   }
 
+  const markerOffset = sourcePageSegments
+    .slice(segmentStart)
+    .findIndex((segment) =>
+      APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.some(({ prefix }) => segment.startsWith(prefix)),
+    );
+  if (markerOffset < 0) return null;
+  const markerIndex = segmentStart + markerOffset;
+  const markerSegment = sourcePageSegments[markerIndex];
+  const marker = APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.find(({ prefix }) =>
+    markerSegment.startsWith(prefix),
+  );
+  return marker ? { marker, markerIndex, segmentStart } : null;
+}
+
+function isInterceptedSlotIdentitySegment(segment: string): boolean {
+  return !segment.startsWith("@");
+}
+
+function isVisibleInterceptedSlotSegment(segment: string): boolean {
+  return isInterceptedSlotIdentitySegment(segment) && !isAppPageRouteGroupSegment(segment);
+}
+
+/**
+ * Resolve the slot's semantic branch: the segments that give the intercepted
+ * slot its identity, with the interception marker split off and each segment
+ * already bound to the param map that owns it (the route's params up to the
+ * marker, the slot's params from the marker on).
+ */
+export function resolveInterceptedSlotIdentitySegments(
+  sourcePageSegments: readonly string[] | null | undefined,
+  slotKey: string,
+): readonly AppPageSemanticSegment[] | null {
+  const source = resolveInterceptedSlotSource(sourcePageSegments, slotKey);
+  if (!source || !sourcePageSegments) return null;
+  const semanticSegments: AppPageSemanticSegment[] = [];
+  let beforeMarker = true;
+  for (let index = source.segmentStart; index < sourcePageSegments.length; index++) {
+    const segment = sourcePageSegments[index];
+    if (!isInterceptedSlotIdentitySegment(segment)) continue;
+    const isMarkerSegment = index === source.markerIndex;
+    semanticSegments.push({
+      marker: isMarkerSegment ? source.marker.prefix : null,
+      paramSource: beforeMarker && !isMarkerSegment ? "route" : "slot",
+      segment: isMarkerSegment ? segment.slice(source.marker.prefix.length) : segment,
+    });
+    if (isMarkerSegment) beforeMarker = false;
+  }
+  return semanticSegments;
+}
+
+export function resolveInterceptedSlotSegments(
+  sourcePageSegments: readonly string[] | null | undefined,
+  slotKey: string,
+): readonly string[] | null {
+  const source = resolveInterceptedSlotSource(sourcePageSegments, slotKey);
+  if (!source || !sourcePageSegments) return null;
+  const { marker, markerIndex, segmentStart } = source;
   const routeSegments = sourcePageSegments
     .slice(segmentStart, markerIndex)
-    .filter(
-      (segment) => !segment.startsWith("@") && !(segment.startsWith("(") && segment.endsWith(")")),
-    );
+    .filter(isVisibleInterceptedSlotSegment);
   const markerSegment = sourcePageSegments[markerIndex];
-  const marker = markerTraversals.find(({ prefix }) => markerSegment.startsWith(prefix));
-  if (!marker) return null;
 
   if (Number.isFinite(marker.levels)) {
     routeSegments.splice(Math.max(0, routeSegments.length - marker.levels), marker.levels);
@@ -551,20 +869,14 @@ export function resolveInterceptedSlotSegments(
 
   const targetSegment = markerSegment.slice(marker.prefix.length);
   if (targetSegment) routeSegments.push(targetSegment);
-
   routeSegments.push(
-    ...sourcePageSegments
-      .slice(markerIndex + 1)
-      .filter(
-        (segment) =>
-          !segment.startsWith("@") && !(segment.startsWith("(") && segment.endsWith(")")),
-      ),
+    ...sourcePageSegments.slice(markerIndex + 1).filter(isVisibleInterceptedSlotSegment),
   );
 
   return routeSegments;
 }
 
-function resolveSlotParamOverrides(
+export function resolveSlotParamOverrides(
   route: AppPageNavigationParamRoute,
   routePath: string,
 ): Readonly<Record<string, AppPageParams>> | null {

@@ -10,7 +10,10 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import { VINEXT_DYNAMIC_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { withEnvVar } from "./env-test-helpers.js";
 
 function createBody(text: string): ReadableStream {
@@ -235,6 +238,42 @@ describe("app page response helpers", () => {
     });
   });
 
+  it("writes force-static HTML responses to cache in production", () => {
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: true,
+        isProduction: true,
+        revalidateSeconds: null,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      cacheState: "MISS",
+      shouldWriteToCache: true,
+    });
+
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        hasScriptNonce: false,
+        isDraftMode: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: true,
+        isProduction: false,
+        revalidateSeconds: null,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      cacheState: "STATIC",
+      shouldWriteToCache: false,
+    });
+  });
+
   it("treats progressive action HTML responses as no-store", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
@@ -452,6 +491,22 @@ describe("app page response helpers", () => {
     expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
   });
 
+  it("keeps the framework rendered path when middleware sets the internal alias header", () => {
+    const middlewareHeaders = new Headers({
+      [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/spoofed?searchParam=wrong"),
+    });
+
+    const response = buildAppPageRscResponse(createBody("flight"), {
+      middlewareContext: { headers: middlewareHeaders, status: null },
+      policy: {},
+      renderedPathAndSearch: "/search-params/target-page?searchParam=rewrittenSearchParam",
+    });
+
+    expect(response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(
+      encodeURIComponent("/search-params/target-page?searchParam=rewrittenSearchParam"),
+    );
+  });
+
   it("keeps the framework compatibility ID when middleware sets the internal header", () => {
     const middlewareHeaders = new Headers({
       [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "middleware-compat",
@@ -494,6 +549,7 @@ describe("app page response helpers", () => {
     middlewareHeaders.set("vary", "Next-Router-State-Tree");
     middlewareHeaders.append("x-extra", "present");
     middlewareHeaders.set("cache-control", "private, max-age=5");
+    middlewareHeaders.set("link", "</middleware.css>; rel=preload; as=style");
 
     const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
       draftCookie: "__prerender_bypass=token; Path=/",
@@ -521,7 +577,8 @@ describe("app page response helpers", () => {
     expect(response.headers.get("x-nextjs-cache")).toBe("HIT");
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
     expect(response.headers.get("link")).toBe(
-      "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
+      "</middleware.css>; rel=preload; as=style, " +
+        "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
     expect(response.headers.get("x-extra")).toBe("present");
     expect(response.headers.get("x-vinext-timing")).toBe("10,2,8");
@@ -573,6 +630,14 @@ describe("mergeMiddlewareResponseHeaders", () => {
 
     expect(target.get("Cache-Control")).toBe("private, max-age=5");
     expect(target.get("X-Custom")).toBe("from-middleware");
+  });
+
+  it("ignores empty middleware Link values", () => {
+    const target = new Headers({ Link: "</framework.css>; rel=preload; as=style" });
+
+    mergeMiddlewareResponseHeaders(target, new Headers({ Link: "" }));
+
+    expect(target.get("link")).toBe("</framework.css>; rel=preload; as=style");
   });
 
   it("appends Set-Cookie headers instead of overriding", () => {

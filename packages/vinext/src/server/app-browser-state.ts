@@ -44,7 +44,7 @@ import type { BfcacheIdMap } from "./app-history-state.js";
 import { createNextBfcacheIdMap } from "./app-bfcache-identity.js";
 
 export {
-  createBfcacheSegmentStateKeyMap,
+  createBfcacheSegmentIdentityMap,
   createInitialBfcacheIdMap,
   createNextBfcacheIdMap,
   preserveBfcacheIdsForMergedElements,
@@ -59,7 +59,6 @@ export {
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
   resolveHistoryTraversalIntent,
-  type BfcacheIdMap,
   type HistoryTraversalIntent,
 } from "./app-history-state.js";
 
@@ -249,6 +248,7 @@ type ResolveServerActionRequestStateOptions = {
   actionId: string;
   basePath: string;
   elements: AppElements;
+  interceptionContext?: string | null;
   previousNextUrl: string | null;
 };
 
@@ -274,10 +274,10 @@ export function resolveServerActionRequestState(
   headers.set(RSC_ACTION_HEADER, options.actionId);
   headers.set(NEXT_ACTION_HEADER, options.actionId);
 
-  const interceptionContext = resolveInterceptionContextFromPreviousNextUrl(
-    options.previousNextUrl,
-    options.basePath,
-  );
+  const interceptionContext =
+    resolveInterceptionContextFromPreviousNextUrl(options.previousNextUrl, options.basePath) ??
+    options.interceptionContext ??
+    null;
   if (interceptionContext !== null) {
     headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, interceptionContext);
   }
@@ -632,11 +632,17 @@ function mergeSkippedLayoutSlotPreservation(options: {
   return preservePreviousSlotIds;
 }
 
-export async function createPendingNavigationCommit(options: {
+type CreatePendingNavigationCommitOptions = {
+  // Baseline for bfcacheId diffing, skip-preservation, and
+  // startedVisibleCommitVersion — not necessarily the live router state.
+  // Navigation callers must pass the state captured when the navigation
+  // began, not a live read, or a later hop's preparation can reuse identities
+  // from a state a detached commit already replaced. HMR is the one caller
+  // that legitimately wants the live state, since it has no prior navigation
+  // start to anchor to.
   currentState: AppRouterState;
   navigationCommitKind?: "authoritative" | "detached";
   navigationId?: number;
-  nextElements: Promise<AppElements>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   operationLane: OperationLane;
   payloadOrigin: AppNavigationPayloadOrigin;
@@ -647,8 +653,12 @@ export async function createPendingNavigationCommit(options: {
   restoredBfcacheIds?: BfcacheIdMap | null;
   reuseCurrentBfcacheIds?: boolean;
   type: "navigate" | "replace" | "traverse";
-}): Promise<PendingNavigationCommit> {
-  const elements = await options.nextElements;
+};
+
+export function createPendingNavigationCommitFromElements(
+  options: CreatePendingNavigationCommitOptions & { nextElements: AppElements },
+): PendingNavigationCommit {
+  const elements = options.nextElements;
   const metadata = AppElementsWire.readMetadata(elements);
   const cacheEntryReuseProof =
     metadata.cacheEntryReuseProof ??
@@ -666,9 +676,7 @@ export async function createPendingNavigationCommit(options: {
       bfcacheIds: createNextBfcacheIdMap({
         current: options.currentState.bfcacheIds,
         currentElements: options.currentState.elements,
-        currentPathname: options.currentState.navigationSnapshot.pathname,
         elements,
-        nextPathname: options.navigationSnapshot.pathname,
         restored: options.restoredBfcacheIds,
         reuseCurrent: options.reuseCurrentBfcacheIds,
       }),
@@ -704,4 +712,13 @@ export async function createPendingNavigationCommit(options: {
     routeId: metadata.routeId,
     skippedLayoutIds: metadata.skippedLayoutIds,
   };
+}
+
+export async function createPendingNavigationCommit(
+  options: CreatePendingNavigationCommitOptions & { nextElements: Promise<AppElements> },
+): Promise<PendingNavigationCommit> {
+  return createPendingNavigationCommitFromElements({
+    ...options,
+    nextElements: await options.nextElements,
+  });
 }

@@ -17,8 +17,8 @@
 import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { useMemo, useState } from "react";
 import { CompatibilityLineChart, type TrendPoint } from "./compatibility-line-chart";
-import { ContributionGrid, type GridCell } from "./contribution-grid";
-import { countByFilter, type RouterFilter } from "./router-buckets";
+import { CompatibilityTableDialog, ContributionGrid, type GridCell } from "./contribution-grid";
+import { cellMatchesFilter, countByFilter, type RouterFilter } from "./router-buckets";
 
 /**
  * Tab definitions for the router filter. Mirrors the bucket logic in
@@ -46,6 +46,10 @@ export function CompatibilityViews({ cells, trend }: { cells: GridCell[]; trend:
   // cells changes, not when filter changes. Counting rules (Mixed cells
   // counted toward both `app` and `pages`) live in ./router-buckets.
   const counts = useMemo(() => countByFilter(cells), [cells]);
+  const filteredCells = useMemo(
+    () => (filter === "all" ? cells : cells.filter((cell) => cellMatchesFilter(cell, filter))),
+    [cells, filter],
+  );
 
   const tabItems = useMemo(
     () =>
@@ -72,7 +76,10 @@ export function CompatibilityViews({ cells, trend }: { cells: GridCell[]; trend:
       </div>
 
       <section>
-        <h3 className="mb-3 text-sm font-medium text-kumo-subtle">Test files</h3>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-medium text-kumo-subtle">Test files</h3>
+          <CompatibilityTableDialog cells={filteredCells} />
+        </div>
         <ContributionGrid cells={cells} filter={filter} />
       </section>
 

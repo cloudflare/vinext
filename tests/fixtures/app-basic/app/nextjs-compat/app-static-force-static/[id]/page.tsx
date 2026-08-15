@@ -10,6 +10,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       <p id="id">{id}</p>
       <p id="headers">{JSON.stringify([...(await headers()).entries()])}</p>
       <p id="cookies">{JSON.stringify((await cookies()).getAll())}</p>
+      <p id="now">{Date.now()}</p>
     </main>
   );
 }

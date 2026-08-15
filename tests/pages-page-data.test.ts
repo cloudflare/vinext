@@ -1,10 +1,29 @@
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  getPagesRouteParams,
+  matchesPagesStaticPath,
   renderPagesIsrHtml,
+  resolvePagesRevalidateSeconds,
   resolvePagesPageData,
   type ResolvePagesPageDataOptions,
 } from "../packages/vinext/src/server/pages-page-data.js";
+import type { IncrementalCacheValue } from "../packages/vinext/src/shims/cache-handler.js";
+
+const expiredPagesRepresentations: Array<[string, IncrementalCacheValue | null]> = [
+  [
+    "PAGES",
+    {
+      kind: "PAGES",
+      html: "<html>expired</html>",
+      pageData: { pageProps: { slug: "expired" } },
+      headers: undefined,
+      status: undefined,
+    },
+  ],
+  ["REDIRECT", { kind: "REDIRECT", props: { pageProps: { __N_REDIRECT: "/old" } } }],
+  ["notFound", null],
+];
 
 function createOptions(
   overrides: Partial<ResolvePagesPageDataOptions> = {},
@@ -63,6 +82,32 @@ function createOptions(
 }
 
 describe("pages page data", () => {
+  it("preserves omitted and explicit false revalidation as indefinite", () => {
+    expect(resolvePagesRevalidateSeconds({})).toBe(false);
+    expect(resolvePagesRevalidateSeconds({ revalidate: false })).toBe(false);
+  });
+
+  // Next.js passes its ServerRouter to App.getInitialProps. Its `route` is the
+  // route pattern, not the concrete URL: packages/next/src/server/render.tsx.
+  it("provides the route pattern to App.getInitialProps router consumers", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: Object.assign(function App() {}, {
+          getInitialProps({ router }: { router: { route: string } }) {
+            return {
+              pageProps: { routeTag: router.route.replaceAll("/", "_") },
+            };
+          },
+        }),
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { routeTag: "_posts_[slug]" },
+    });
+  });
+
   it("preserves non-object pageProps returned by custom app getInitialProps", async () => {
     const result = await resolvePagesPageData(
       createOptions({
@@ -111,6 +156,147 @@ describe("pages page data", () => {
     expect(html).toContain('"page":"/posts/[slug]"');
     expect(html).toContain('"slug":"post"');
     expect(html).toContain('"__vinext":{"hasMiddleware":true}');
+  });
+
+  it("refreshes next/head tags in the regenerated shell without disturbing document markup", async () => {
+    // The collector only yields tags once the page has rendered, so the
+    // regenerated head must come from the callback the render pass invokes
+    // rather than from anything captured beforehand.
+    const collectIsrHeadHTML = vi.fn(() => '<title data-next-head="">fresh</title>');
+
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        '<!DOCTYPE html><html><head><meta charSet="utf-8" data-next-head="" /><title data-next-head="">stale</title><style data-vinext-doc="">.a{}</style></head><body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>',
+      collectIsrHeadHTML,
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: {
+        locale: "en",
+        locales: ["en"],
+        defaultLocale: "en",
+        domainLocales: [],
+      },
+      pageProps: { title: "fresh" },
+      params: { slug: "post" },
+      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
+        await onHeadReady?.();
+        return "<div>fresh-body</div>";
+      }),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(collectIsrHeadHTML).toHaveBeenCalled();
+    expect(html).toContain('<title data-next-head="">fresh</title>');
+    expect(html).not.toContain("stale");
+    // Head markup outside the collector's run belongs to _document and is not
+    // regenerated, so the swap must leave it in place.
+    expect(html).toContain('<style data-vinext-doc="">.a{}</style>');
+    expect(html).toContain("<div>fresh-body</div>");
+  });
+
+  it("leaves the cached head alone when the regeneration collects no head", async () => {
+    const cachedHead = '<title data-next-head="">cached</title>';
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml: `<!DOCTYPE html><html><head>${cachedHead}</head><body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>`,
+      collectIsrHeadHTML: vi.fn(() => ""),
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: {
+        locale: "en",
+        locales: ["en"],
+        defaultLocale: "en",
+        domainLocales: [],
+      },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
+        await onHeadReady?.();
+        return "<div>fresh-body</div>";
+      }),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(html).toContain(cachedHead);
+    expect(html).toContain("<div>fresh-body</div>");
+  });
+
+  it("swaps the whole head run when an inline script body contains a literal </head>", async () => {
+    // A `<script>` body is raw text, and the head serializer only escapes
+    // `</script` — so this string is legal page content, not the closing head
+    // tag. Reading it as markup would end the scan early and leave every tag
+    // after it stale while the fresh head was inserted before it.
+    const inlineScript = '<script data-next-head="">var marker = "</head>";</script>';
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        `<!DOCTYPE html><html><head>${inlineScript}<title data-next-head="">stale</title></head>` +
+        `<body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>`,
+      collectIsrHeadHTML: vi.fn(() => '<title data-next-head="">fresh</title>'),
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
+        await onHeadReady?.();
+        return "<div>fresh-body</div>";
+      }),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(html).toContain('<title data-next-head="">fresh</title>');
+    expect(html).not.toContain("stale");
+    // The stale script belongs to the same collector run, so the swap replaces
+    // it rather than leaving a duplicate behind the fresh head.
+    expect(html).not.toContain("var marker");
+  });
+
+  it("swaps the whole head run when title RCDATA contains a literal </head>", async () => {
+    // `title` is an RCDATA element: only its own `</title>` end tag closes it,
+    // so `</head>` here is text rather than the document-head boundary.
+    const titleWithMarkupText =
+      '<title data-next-head="">stale prefix </head> stale suffix</title>';
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        '<!DOCTYPE html><html><head><meta charset="utf-8" data-next-head="" />' +
+        `${titleWithMarkupText}</head>` +
+        '<body><div id="__next"><div>stale-body</div></div>' +
+        '<script>window.__NEXT_DATA__ = {"old":1}</script></body></html>',
+      collectIsrHeadHTML: vi.fn(() => '<title data-next-head="">fresh</title>'),
+      createPageElement(_pageProps: Record<string, unknown>) {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
+        await onHeadReady?.();
+        return "<div>fresh-body</div>";
+      }),
+      routePattern: "/posts/[slug]",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(html).toContain('<title data-next-head="">fresh</title>');
+    expect(html).not.toContain("stale prefix");
+    expect(html.match(/<title data-next-head="">/g)).toHaveLength(1);
   });
 
   it("preserves custom app props in fallback shells", async () => {
@@ -200,9 +386,7 @@ describe("pages page data", () => {
           pageProps: { fromApp: true, fromStatic: true },
         },
       }),
-      10,
-      undefined,
-      300,
+      { cacheControl: { revalidate: 10, expire: 300 } },
     );
   });
 
@@ -225,6 +409,83 @@ describe("pages page data", () => {
     );
 
     expect(result).toEqual({ kind: "notFound" });
+  });
+
+  // Ported from Next.js: test/e2e/prerender.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/prerender.test.ts
+  it("matches encoded data request paths against string getStaticPaths entries", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: ["/posts/[second]"],
+            };
+          },
+          async getStaticProps({ params }) {
+            return { props: { slug: params?.slug } };
+          },
+        },
+        params: { slug: "[second]" },
+        query: { slug: "[second]" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/%5Bsecond%5D",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      pageProps: { slug: "[second]" },
+    });
+
+    expect(
+      matchesPagesStaticPath(
+        "/docs/a/b",
+        { slug: "a/b" },
+        getPagesRouteParams("/docs/[slug]"),
+        "/docs/a%2Fb",
+      ),
+    ).toBe(false);
+  });
+
+  it("renders unlisted fallback false paths in preview mode without caching them", async () => {
+    const isrSet = vi.fn(async () => {});
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrSet,
+        pageModule: {
+          async getStaticPaths() {
+            return {
+              fallback: false,
+              paths: [{ params: { slug: "known" } }],
+            };
+          },
+          async getStaticProps(context) {
+            return {
+              props: {
+                preview: context.preview,
+                previewData: context.previewData,
+                slug: context.params?.slug,
+              },
+            };
+          },
+        },
+        params: { slug: "missing" },
+        previewData: {},
+        query: { slug: "missing" },
+        route: { isDynamic: true },
+        routeUrl: "/posts/missing",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      isFallback: false,
+      pageProps: { preview: true, previewData: {}, slug: "missing" },
+    });
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -434,6 +695,48 @@ describe("pages page data", () => {
     expect(result).toEqual({ kind: "notFound" });
   });
 
+  it("preserves getServerSideProps headers on a notFound data response", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        createGsspReqRes() {
+          return {
+            req: {},
+            res: {
+              headersSent: false,
+              statusCode: 200,
+              getHeaders() {
+                return {
+                  "Content-Type": "application/vnd.atlas.not-found+json",
+                  "Set-Cookie": ["source=one; Path=/", "source=two; Path=/"],
+                  "Surrogate-Control": "max-age=600s, delta=noop",
+                };
+              },
+            },
+            responsePromise: Promise.resolve(new Response("short-circuit", { status: 202 })),
+          };
+        },
+        pageModule: {
+          async getServerSideProps() {
+            return { notFound: true };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected data response");
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("content-type")).toBe(
+      "application/vnd.atlas.not-found+json",
+    );
+    expect(result.response.headers.getSetCookie()).toEqual([
+      "source=one; Path=/",
+      "source=two; Path=/",
+    ]);
+    expect(result.response.headers.get("surrogate-control")).toBe("max-age=600s, delta=noop");
+  });
+
   it("returns JSON 404 envelope for data requests when getStaticPaths excludes a path", async () => {
     const result = await resolvePagesPageData(
       createOptions({
@@ -459,7 +762,7 @@ describe("pages page data", () => {
     }
     expect(result.response.status).toBe(404);
     expect(result.response.headers.get("content-type")).toBe("application/json");
-    await expect(result.response.text()).resolves.toBe("{}");
+    await expect(result.response.json()).resolves.toEqual({ notFound: true });
   });
 
   it("returns JSON 404 envelope for data requests when getStaticProps returns notFound", async () => {
@@ -480,7 +783,62 @@ describe("pages page data", () => {
     }
     expect(result.response.status).toBe(404);
     expect(result.response.headers.get("content-type")).toBe("application/json");
-    await expect(result.response.text()).resolves.toBe("{}");
+    await expect(result.response.json()).resolves.toEqual({ notFound: true });
+  });
+
+  it("rejects notFound returned by /404 getStaticProps", async () => {
+    await expect(
+      resolvePagesPageData(
+        createOptions({
+          pageModule: {
+            async getStaticProps() {
+              return { notFound: true };
+            },
+          },
+          routePattern: "/404",
+          routeUrl: "/404",
+        }),
+      ),
+    ).rejects.toThrow('The /404 page can not return notFound in "getStaticProps"');
+  });
+
+  it("applies the source getStaticProps cache policy to fresh terminal responses", async () => {
+    const redirect = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticProps() {
+            return {
+              redirect: { destination: "/target", permanent: false },
+              revalidate: 7,
+            };
+          },
+        },
+      }),
+    );
+    expect(redirect.kind).toBe("response");
+    if (redirect.kind !== "response") throw new Error("expected redirect response");
+    expect(redirect.response.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(redirect.response.headers.get("cache-control")).toBe(
+      "s-maxage=7, stale-while-revalidate=293",
+    );
+
+    const notFound = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        pageModule: {
+          async getStaticProps() {
+            return { notFound: true, revalidate: 7 };
+          },
+        },
+      }),
+    );
+    expect(notFound.kind).toBe("response");
+    if (notFound.kind !== "response") throw new Error("expected notFound response");
+    expect(notFound.response.status).toBe(404);
+    expect(notFound.response.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(notFound.response.headers.get("cache-control")).toBe(
+      "s-maxage=7, stale-while-revalidate=293",
+    );
   });
 
   it("returns JSON 404 envelope for data requests when getServerSideProps returns notFound", async () => {
@@ -501,7 +859,7 @@ describe("pages page data", () => {
     }
     expect(result.response.status).toBe(404);
     expect(result.response.headers.get("content-type")).toBe("application/json");
-    await expect(result.response.text()).resolves.toBe("{}");
+    await expect(result.response.json()).resolves.toEqual({ notFound: true });
   });
 
   // Refs #1543: a crawler/bot UA hitting an unlisted `fallback: true` path
@@ -637,6 +995,157 @@ describe("pages page data", () => {
       expect.objectContaining({ revalidateReason: "on-demand" }),
     );
     expect(result).toMatchObject({ kind: "render", pageProps: { slug: "regenerated" } });
+  });
+
+  // Ported from Next.js: test/e2e/prerender.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
+  it("does not generate a missing fallback path when only-generated revalidation is requested", async () => {
+    const getStaticProps = vi.fn(async () => ({ props: { slug: "generated" }, revalidate: 60 }));
+    const result = await resolvePagesPageData(
+      createOptions({
+        isOnDemandRevalidate: true,
+        revalidateOnlyGenerated: true,
+        isrGet: vi.fn().mockResolvedValue(null),
+        pageModule: {
+          getStaticPaths() {
+            return { paths: [], fallback: "blocking" };
+          },
+          getStaticProps,
+        },
+        route: { isDynamic: true },
+        routePattern: "/blocking-fallback/[slug]",
+        routeUrl: "/blocking-fallback/unseen",
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response result");
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
+    expect(getStaticProps).not.toHaveBeenCalled();
+  });
+
+  it("regenerates an existing fallback path when only-generated revalidation is requested", async () => {
+    const getStaticProps = vi.fn(async () => ({ props: { slug: "regenerated" }, revalidate: 60 }));
+    const result = await resolvePagesPageData(
+      createOptions({
+        isOnDemandRevalidate: true,
+        revalidateOnlyGenerated: true,
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: false,
+          value: {
+            cacheControl: { revalidate: 60 },
+            lastModified: 1,
+            value: {
+              kind: "PAGES",
+              html: "<html>cached</html>",
+              pageData: { pageProps: { slug: "cached" } },
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule: { getStaticProps },
+      }),
+    );
+
+    expect(result).toMatchObject({ kind: "render", pageProps: { slug: "regenerated" } });
+    expect(getStaticProps).toHaveBeenCalledOnce();
+  });
+
+  it.each(expiredPagesRepresentations)(
+    "treats an expired %s representation as generated for only-generated revalidation",
+    async (_kind, cachedValue) => {
+      const getStaticProps = vi.fn(async () => ({
+        props: { slug: "regenerated" },
+        revalidate: 60,
+      }));
+      const result = await resolvePagesPageData(
+        createOptions({
+          isOnDemandRevalidate: true,
+          revalidateOnlyGenerated: true,
+          isrGet: vi.fn().mockResolvedValue({
+            isStale: true,
+            isExpired: true,
+            value: {
+              cacheControl: { revalidate: 60, expire: 300 },
+              cacheState: "expired",
+              lastModified: 1,
+              value: cachedValue,
+            },
+          }),
+          pageModule: { getStaticProps },
+        }),
+      );
+
+      expect(result).toMatchObject({ kind: "render", pageProps: { slug: "regenerated" } });
+      expect(getStaticProps).toHaveBeenCalledOnce();
+      expect(getStaticProps).toHaveBeenCalledWith(
+        expect.objectContaining({ revalidateReason: "on-demand" }),
+      );
+    },
+  );
+
+  it.each(expiredPagesRepresentations)(
+    "blocking-regenerates an expired %s representation instead of serving it stale",
+    async (_kind, cachedValue) => {
+      const getStaticProps = vi.fn(async () => ({
+        props: { slug: "regenerated" },
+        revalidate: 60,
+      }));
+      const triggerBackgroundRegeneration = vi.fn();
+      const result = await resolvePagesPageData(
+        createOptions({
+          isrGet: vi.fn().mockResolvedValue({
+            isStale: true,
+            isExpired: true,
+            value: {
+              cacheControl: { revalidate: 60, expire: 300 },
+              cacheState: "expired",
+              lastModified: 1,
+              value: cachedValue,
+            },
+          }),
+          pageModule: { getStaticProps },
+          triggerBackgroundRegeneration,
+        }),
+      );
+
+      expect(result).toMatchObject({ kind: "render", pageProps: { slug: "regenerated" } });
+      expect(getStaticProps).toHaveBeenCalledOnce();
+      expect(triggerBackgroundRegeneration).not.toHaveBeenCalled();
+    },
+  );
+
+  // Ported from Next.js: test/e2e/prerender.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
+  it("reports whether on-demand revalidation of an unlisted fallback:false path succeeded", async () => {
+    const getStaticProps = vi.fn(async () => ({ props: { slug: "generated" }, revalidate: 60 }));
+    const pageModule = {
+      getStaticPaths() {
+        return { paths: [], fallback: false as const };
+      },
+      getStaticProps,
+    };
+    const routeOptions = {
+      isOnDemandRevalidate: true,
+      pageModule,
+      route: { isDynamic: true },
+      routePattern: "/no-fallback/[slug]",
+      routeUrl: "/no-fallback/unseen",
+    };
+
+    const ordinary = await resolvePagesPageData(createOptions(routeOptions));
+    expect(ordinary.kind).toBe("response");
+    if (ordinary.kind !== "response") throw new Error("expected response result");
+    expect(ordinary.response.status).toBe(404);
+    expect(ordinary.onDemandRevalidateSuccess).toBe(false);
+
+    const onlyGenerated = await resolvePagesPageData(
+      createOptions({ ...routeOptions, revalidateOnlyGenerated: true }),
+    );
+    expect(onlyGenerated.kind).toBe("notFound");
+    expect(getStaticProps).not.toHaveBeenCalled();
   });
 
   it("reruns getStaticProps when generated fallback data is stale", async () => {
@@ -871,9 +1380,7 @@ describe("pages page data", () => {
         html: expect.stringContaining("<div>fresh-body</div>"),
         pageData: { pageProps: { title: "fresh" } },
       }),
-      15,
-      undefined,
-      300,
+      { cacheControl: { revalidate: false } },
     );
     expect(isrSet).toHaveBeenCalledWith(
       "pages:/posts/post",
@@ -882,9 +1389,7 @@ describe("pages page data", () => {
         html: expect.stringContaining('"__vinext":{"hasMiddleware":true}'),
         pageData: { pageProps: { title: "fresh" } },
       }),
-      15,
-      undefined,
-      300,
+      { cacheControl: { revalidate: false } },
     );
   });
 
@@ -973,6 +1478,7 @@ describe("pages page data", () => {
         },
       }),
     );
+    if (regeneratedCacheValue?.kind !== "PAGES") throw new Error("expected PAGES cache value");
     expect(regeneratedCacheValue?.html).toContain('"appProp":"from-app"');
     expect(regeneratedCacheValue?.html).toContain('"pageProp":"from-page"');
     expect(regeneratedCacheValue?.html).toContain('"page":"/posts/[slug]"');
@@ -1160,6 +1666,7 @@ describe("pages page data", () => {
 
     expect(isrSet).toHaveBeenCalledOnce();
     const regeneratedCacheValue = isrSet.mock.calls[0]?.[1];
+    if (regeneratedCacheValue?.kind !== "PAGES") throw new Error("expected PAGES cache value");
     expect(regeneratedCacheValue?.html).toContain("<main>fresh 404</main>");
     expect(regeneratedCacheValue?.html).toContain('"__vinext"');
     expect(regeneratedCacheValue?.html).toContain('"pageModuleUrl":"/assets/pages/404.js"');
@@ -1225,6 +1732,7 @@ describe("pages page data", () => {
       kind: "render",
       documentReqRes: null,
       gsspRes: null,
+      isrExpireSeconds: 300,
       isrRevalidateSeconds: 30,
       pageProps: { title: "hello" },
       props: { pageProps: { title: "hello" } },
@@ -1316,6 +1824,102 @@ describe("pages page data", () => {
     expect(received).toBe("on-demand");
   });
 
+  it("passes preview context to getStaticProps and bypasses fresh ISR hits", async () => {
+    let received: unknown = "untouched";
+    const getStaticProps = vi.fn(async (context) => {
+      received = {
+        draftMode: context.draftMode,
+        preview: context.preview,
+        previewData: context.previewData,
+      };
+      return { props: { fromPreview: true } };
+    });
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: false,
+          value: {
+            lastModified: 1,
+            cacheState: "hit",
+            value: {
+              kind: "PAGES",
+              html: "<html>cached</html>",
+              pageData: { pageProps: { cached: true } },
+              headers: undefined,
+              status: undefined,
+            },
+          },
+        }),
+        pageModule: { getStaticProps },
+        previewData: { hello: "world" },
+      }),
+    );
+
+    expect(getStaticProps).toHaveBeenCalledOnce();
+    expect(received).toEqual({
+      draftMode: true,
+      preview: true,
+      previewData: { hello: "world" },
+    });
+    expect(result.kind).toBe("render");
+    if (result.kind !== "render") throw new Error("expected render");
+    expect(result.pageProps).toEqual({ fromPreview: true });
+  });
+
+  it("disables preview context for on-demand getStaticProps regeneration", async () => {
+    let received: unknown = "untouched";
+    await resolvePagesPageData(
+      createOptions({
+        isOnDemandRevalidate: true,
+        pageModule: {
+          async getStaticProps(context) {
+            received = {
+              draftMode: context.draftMode,
+              preview: context.preview,
+              previewData: context.previewData,
+              revalidateReason: context.revalidateReason,
+            };
+            return { props: {} };
+          },
+        },
+        previewData: { hello: "world" },
+      }),
+    );
+
+    expect(received).toEqual({
+      draftMode: undefined,
+      preview: undefined,
+      previewData: undefined,
+      revalidateReason: "on-demand",
+    });
+  });
+
+  it("passes preview context to getServerSideProps", async () => {
+    let received: unknown = "untouched";
+    await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getServerSideProps(context) {
+            received = {
+              draftMode: context.draftMode,
+              preview: context.preview,
+              previewData: context.previewData,
+            };
+            return { props: {} };
+          },
+        },
+        previewData: "draft",
+      }),
+    );
+
+    expect(received).toEqual({
+      draftMode: true,
+      preview: true,
+      previewData: "draft",
+    });
+  });
+
   it("passes revalidateReason: 'stale' to getStaticProps for runtime cache-miss requests", async () => {
     let received: unknown = "untouched";
     await resolvePagesPageData(
@@ -1403,6 +2007,25 @@ describe("pages page data", () => {
     ).rejects.toThrow(
       /Error serializing `\.date` returned from `getStaticProps` in "\/non-json"\.\s*Reason: `object` \("\[object Date\]"\) cannot be serialized as JSON/,
     );
+  });
+
+  it("allows non-serializable getStaticProps props when production SSR validation is disabled", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        pageModule: {
+          async getStaticProps() {
+            return { props: { date: new Date(0) } };
+          },
+        },
+        routePattern: "/non-json",
+        routeUrl: "/non-json",
+        validatePropsSerialization: false,
+      }),
+    );
+
+    expect(result.kind).toBe("render");
+    if (result.kind !== "render") throw new Error("expected render");
+    expect(result.pageProps.date).toBeInstanceOf(Date);
   });
 
   it("throws a Next.js-style error when getServerSideProps returns non-serializable props", async () => {
@@ -1521,6 +2144,55 @@ describe("pages page data", () => {
     expect(body.pageProps.__N_REDIRECT).toBe("/new-page");
   });
 
+  it.each([
+    { isDataReq: false, expectedStatus: 307 },
+    { isDataReq: true, expectedStatus: 200 },
+  ])(
+    "preserves getServerSideProps response headers on redirects (data: $isDataReq)",
+    async ({ isDataReq, expectedStatus }) => {
+      const responseHeaders: Record<string, string | number | boolean | string[]> = {};
+      const response = {
+        headersSent: false,
+        statusCode: 200,
+        getHeaders() {
+          return responseHeaders;
+        },
+        setHeader(name: string, value: string) {
+          responseHeaders[name.toLowerCase()] = value;
+        },
+      };
+      const result = await resolvePagesPageData(
+        createOptions({
+          isDataReq,
+          createGsspReqRes() {
+            return {
+              req: {},
+              res: response,
+              responsePromise: Promise.resolve(new Response("short-circuit", { status: 202 })),
+            };
+          },
+          pageModule: {
+            async getServerSideProps() {
+              response.setHeader("Surrogate-Control", "no-store, delta=noop");
+              return { redirect: { destination: "/new-page", permanent: false } };
+            },
+          },
+        }),
+      );
+
+      expect(result.kind).toBe("response");
+      if (result.kind !== "response") throw new Error("expected response");
+      expect(result.response.status).toBe(expectedStatus);
+      if (isDataReq) {
+        const body = (await result.response.json()) as { pageProps: Record<string, unknown> };
+        expect(body.pageProps.__N_REDIRECT).toBe("/new-page");
+      } else {
+        expect(result.response.headers.get("location")).toBe("/new-page");
+      }
+      expect(result.response.headers.get("surrogate-control")).toBe("no-store, delta=noop");
+    },
+  );
+
   it("includes x-nextjs-deployment-id on redirect data response from getStaticProps", async () => {
     const result = await resolvePagesPageData(
       createOptions({
@@ -1540,6 +2212,30 @@ describe("pages page data", () => {
     expect(result.response.headers.get("x-nextjs-deployment-id")).toBe("test-deploy-abc");
     const body = (await result.response.json()) as { pageProps: Record<string, unknown> };
     expect(body.pageProps.__N_REDIRECT).toBe("/new-page");
+  });
+
+  it("rejects dangerous redirect schemes before emitting a data envelope", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        isDataReq: true,
+        deploymentId: "test-deploy-abc",
+        pageModule: {
+          async getServerSideProps() {
+            return {
+              redirect: { destination: "javascript:globalThis.compromised=true", permanent: false },
+            };
+          },
+        },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(500);
+    expect(result.response.headers.get("location")).toBeNull();
+    expect(result.response.headers.get("cache-control")).toContain("no-store");
+    expect(result.response.headers.get("x-nextjs-deployment-id")).toBe("test-deploy-abc");
+    expect(await result.response.text()).not.toContain("javascript:");
   });
 
   it("omits x-nextjs-deployment-id on redirect/notFound data responses when deploymentId is not set", async () => {

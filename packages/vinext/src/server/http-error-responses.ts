@@ -20,6 +20,20 @@ type ErrorResponseInit = {
   headers?: HeadersInit;
 };
 
+const METHOD_NOT_ALLOWED_BODY_HEADERS = [
+  "content-encoding",
+  "content-length",
+  "content-range",
+  "content-type",
+  "transfer-encoding",
+] as const;
+
+export function sanitizeMethodNotAllowedHeaders(headers: Headers, allowedMethods: string): void {
+  for (const name of METHOD_NOT_ALLOWED_BODY_HEADERS) headers.delete(name);
+  headers.set("Allow", allowedMethods);
+  headers.set("Content-Type", "text/plain; charset=utf-8");
+}
+
 /**
  * Build a 400 Bad Request plain-text response.
  *
@@ -77,10 +91,15 @@ export function notFoundResponse(init?: ErrorResponseInit): Response {
  *
  * @see packages/next/src/server/lib/router-server.ts in `.nextjs-ref`
  */
-export function notFoundStaticAssetResponse(): Response {
+export function notFoundStaticAssetResponse(headers?: HeadersInit): Response {
+  const responseHeaders = new Headers(headers);
+  responseHeaders.delete("content-encoding");
+  responseHeaders.delete("content-length");
+  responseHeaders.delete("transfer-encoding");
+  responseHeaders.set("Content-Type", "text/plain; charset=utf-8");
   return new Response("Not Found", {
     status: 404,
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
+    headers: responseHeaders,
   });
 }
 
@@ -96,7 +115,7 @@ export function methodNotAllowedResponse(
   init?: ErrorResponseInit,
 ): Response {
   const headers = new Headers(init?.headers);
-  headers.set("Allow", allowedMethods);
+  sanitizeMethodNotAllowedHeaders(headers, allowedMethods);
   return new Response("Method Not Allowed", { status: 405, headers });
 }
 

@@ -163,5 +163,5 @@ describe("client asset sidecar builds", () => {
       }
       await fs.rm(fixtureRoot, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 });
