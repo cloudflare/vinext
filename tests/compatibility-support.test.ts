@@ -51,6 +51,14 @@ describe("compatibility suite support policy", () => {
     expect(NON_SUPPORTED_SUITES).toContain(suite);
   });
 
+  it("points the upstream worker suite at its Vite and Cloudflare equivalent", () => {
+    const support = getSuiteSupport("test/e2e/app-dir/worker/worker.test.ts");
+
+    expect(support.status).toBe("needs-vite-equivalent");
+    expect(support.reason).toContain("tests/e2e/nextjs-worker/worker.spec.ts");
+    expect(support.reason).toContain("Cloudflare plugin");
+  });
+
   it("uses canonical Next.js suite paths", () => {
     for (const suite of NON_SUPPORTED_SUITES) {
       expect(suite).toMatch(/^test\/e2e\/.+\.test\.[jt]sx?$/);
