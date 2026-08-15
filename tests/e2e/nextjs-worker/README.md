@@ -11,6 +11,6 @@ only these harness adaptations:
 - `vite.config.ts` registers vinext with `@cloudflare/vite-plugin` and resolves the already-locked
   `@resvg/resvg-wasm@2.4.0`.
 - `next.config.js` uses ESM because vinext production builds require an ESM project.
-- The PNG worker accepts Vite's emitted URL string in addition to Next.js static-image metadata.
-- The Turbopack-only deployment-token request assertion is omitted; all eight behavior tests remain.
+- The deployment-token listener is scoped to worker-owned requests because vinext deliberately keeps
+  ordinary application JavaScript on one unversioned native-ESM module identity.
 - Mechanical formatting and narrow type/lint annotations follow vinext's checked-in test rules.

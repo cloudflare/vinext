@@ -247,6 +247,7 @@ import {
 } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
+import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
@@ -2810,6 +2811,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(!isSSR && !isMultiEnv ? { output: getClientOutputConfig(clientAssetsDir) } : {}),
             }),
           },
+          worker: {
+            // Vite creates a fresh plugin container for every worker bundle.
+            // Vite's config merge appends this factory to both current
+            // factories and legacy plugin arrays, so return only vinext's
+            // plugin here rather than copying user plugins and duplicating them.
+            plugins: () => [
+              createWorkerImageImportsPlugin({ deploymentId: nextConfig.deploymentId }),
+            ],
+          },
           // Let OPTIONS requests pass through Vite's CORS middleware to our
           // route handlers so they can set the Allow header and run user-defined
           // OPTIONS handlers. Without this, Vite's CORS middleware responds to
@@ -2947,6 +2957,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       nextConfig.assetPrefix,
                       nextConfig.deploymentId,
                       context.hostType,
+                      context.hostId,
                     ),
                 },
               }
@@ -3470,6 +3481,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {
           suppressOptionalOptimizeDepsWarnings(config.logger);
         }
+
+        // Keep worker entries and code-split chunks in a distinct output
+        // directory. This must run after Vite merges config hooks: output arrays
+        // are concatenated during config merging, so returning a mapped array
+        // from config() would retain the original unisolated outputs as well.
+        const workerFileNames = `${resolveAssetsDir(nextConfig.assetPrefix ?? "")}/workers/[name]-[hash].js`;
+        const workerOutputs = config.worker.rolldownOptions.output;
+        config.worker.rolldownOptions.output = Array.isArray(workerOutputs)
+          ? (workerOutputs.length > 0 ? workerOutputs : [{}]).map((output) => ({
+              ...output,
+              entryFileNames: workerFileNames,
+              chunkFileNames: workerFileNames,
+            }))
+          : {
+              ...workerOutputs,
+              entryFileNames: workerFileNames,
+              chunkFileNames: workerFileNames,
+            };
 
         // Provide the resolved config to the Sass-aware CSS Modules Loader so
         // it can call Vite's `preprocessCSS` when processing SCSS files

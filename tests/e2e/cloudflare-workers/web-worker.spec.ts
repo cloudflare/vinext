@@ -19,7 +19,9 @@ test("runs an import.meta.url module worker in the deployed example", async ({
   await expect(page.getByTestId("worker-result")).toHaveText("worker replied: echo: ping");
   expect(workerUrls).toHaveLength(1);
   expect(new URL(workerUrls[0]!).protocol).toMatch(/^https?:$/);
-  expect(new URL(workerUrls[0]!).pathname).toMatch(/\/_next\/static\/echo\.worker-[^/]+\.js$/);
+  expect(new URL(workerUrls[0]!).pathname).toMatch(
+    /\/_next\/static\/workers\/echo\.worker-[^/]+\.js$/,
+  );
 
   void consoleErrors;
 });

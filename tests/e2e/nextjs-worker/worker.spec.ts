@@ -4,6 +4,34 @@ import { expect, test } from "../fixtures";
 // https://github.com/vercel/next.js/blob/2fbeebbaca93e8f478d6b9b97a964ac09ec54faf/test/e2e/app-dir/worker/worker.test.ts
 
 test.describe("app dir - workers", () => {
+  let workerStaticRequests: string[];
+
+  test.beforeEach(async ({ page }) => {
+    workerStaticRequests = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (
+        url.pathname.includes("/_next/static/workers/") ||
+        /\/_next\/static\/(?:add|test-image)-/.test(url.pathname)
+      ) {
+        workerStaticRequests.push(url.toString());
+      }
+    });
+  });
+
+  test.afterEach(({ page: _page }, testInfo) => {
+    // A literal public URL is intentionally not bundled into a worker graph.
+    if (testInfo.title.includes("string specifiers")) {
+      expect(workerStaticRequests).toHaveLength(0);
+      return;
+    }
+
+    expect(workerStaticRequests.length).toBeGreaterThan(0);
+    for (const requestUrl of workerStaticRequests) {
+      expect(new URL(requestUrl).searchParams.get("dpl"), requestUrl).toBe("test-deployment-id");
+    }
+  });
+
   test("should support web workers with dynamic imports", async ({ page, consoleErrors }) => {
     await page.goto("/classic");
     await expect(page.locator("#worker-state")).toHaveText("default");
