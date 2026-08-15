@@ -91,7 +91,7 @@ describe("vinext:workerd-import-meta-url-guard (build integration)", () => {
 
     // The long-comment dependency call must be guarded in the final output.
     // Rolldown may minify whitespace and quote style in production chunks.
-    expect(code).toMatch(/import\.meta\.url\s*\?\?\s*["'`]file:\/\/\/["'`]/);
+    expect(code).toMatch(/import\.meta\.url\?\.startsWith\(["'`]file:["'`]\)/);
     // No bare unguarded call may remain, including minified forms.
     expect(code).not.toMatch(/fileURLToPath\(\s*import\.meta\.url\s*\)/);
   });
@@ -102,6 +102,6 @@ describe("vinext:workerd-import-meta-url-guard (build integration)", () => {
     // when one exists.
     if (!(await fs.stat(output.clientDir).catch(() => null))) return;
     const clientCode = await readJavaScriptTree(output.clientDir);
-    expect(clientCode).not.toContain('import.meta.url ?? "file:///"');
+    expect(clientCode).not.toContain('import.meta.url?.startsWith("file:")');
   });
 });

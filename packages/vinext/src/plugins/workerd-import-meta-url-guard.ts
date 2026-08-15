@@ -6,14 +6,14 @@ import { isUnknownRecord as isRecord } from "../utils/record.js";
  * Guard `fileURLToPath(import.meta.url)` / `createRequire(import.meta.url)`
  * call sites so module init survives workerd.
  *
- * workerd does not provide `import.meta.url` for bundled modules (it is
- * undefined), so libraries that resolve paths from it at module init —
+ * workerd exposes `import.meta.url` as the non-file string `"worker"` for
+ * bundled modules, so libraries that resolve paths from it at module init —
  * e.g. findUp-style package.json discovery — crash with "The path argument
  * must be of type string or an instance of URL". This affects both user
  * source and node_modules dependencies.
  *
  * The rewrite is deliberately narrow: only the two call shapes that crash
- * are guarded (`?? "file:///"`); all other import.meta.url usage is left
+ * are guarded with a file-scheme check; all other import.meta.url usage is left
  * untouched, and the fallback merely changes the resolved path — these
  * libraries only walk upwards from it (on workerd, `fileURLToPath("file:///")`
  * yields "/" and findUp terminates immediately). The guard is a no-op on
@@ -23,7 +23,7 @@ import { isUnknownRecord as isRecord } from "../utils/record.js";
  * - Calls are matched by callee name without import-source verification —
  *   a user module shadowing `fileURLToPath`/`createRequire` gets the same
  *   rewrite (harmless on Node; on workerd the argument changes from
- *   `undefined` to `"file:///"`).
+ *   `"worker"` to `"file:///"`).
  * - TS postfix forms (`import.meta.url as string`, `import.meta.url!`) and
  *   computed access (`import.meta["url"]`) are not guarded.
  * - The `"file:///"` fallback is only meaningful under workerd's POSIX-style
@@ -68,10 +68,13 @@ function isChainedImportMetaUrl(node: unknown): boolean {
 export function createWorkerdImportMetaUrlGuardPlugin(): Plugin {
   return {
     name: "vinext:workerd-import-meta-url-guard",
+    applyToEnvironment(environment) {
+      return environment.name !== "client" && environment.config.consumer !== "client";
+    },
     // Runs after TS/JSX transforms so parseAst sees plain JS (same reasoning
-    // as the use-cache transform). No environment filtering: the crash
-    // affects server bundles, and the client bundle is untouched because
-    // browser import.meta.url is defined (`??` is a no-op there).
+    // as the use-cache transform). The crash only affects server bundles;
+    // client environments are excluded above so browser import.meta.url
+    // semantics remain untouched.
     enforce: "post",
     transform: {
       filter: {
@@ -87,8 +90,8 @@ export function createWorkerdImportMetaUrlGuardPlugin(): Plugin {
 
 /**
  * Rewrite `fileURLToPath(import.meta.url)` and `createRequire(import.meta.url)`
- * argument expressions to `import.meta.url ?? "file:///"`. Returns null when
- * nothing changed.
+ * argument expressions to a file-scheme guard. Returns null when nothing
+ * changed.
  */
 export function guardImportMetaUrlCalls(
   code: string,
@@ -117,7 +120,11 @@ export function guardImportMetaUrlCalls(
                 ? (arg as { start: number; end: number })
                 : null;
             if (target) {
-              s.overwrite(target.start, target.end, `import.meta.url ?? "file:///"`);
+              s.overwrite(
+                target.start,
+                target.end,
+                `import.meta.url?.startsWith("file:") ? import.meta.url : "file:///"`,
+              );
               changed = true;
             }
           }
