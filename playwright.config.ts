@@ -443,6 +443,18 @@ const projectServers = {
       timeout: 120_000,
     },
   },
+  "nextjs-worker-cloudflare": {
+    testDir: "./tests/e2e/nextjs-worker",
+    use: { baseURL: "http://localhost:4202" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/cf-app-basic/node_modules node_modules) && npx vp run vinext#build && NEXT_DEPLOYMENT_ID=test-deployment-id npx vp build && NEXT_DEPLOYMENT_ID=test-deployment-id npx wrangler dev --config dist/server/wrangler.json --port 4202",
+      cwd: "./tests/e2e/nextjs-worker/fixture",
+      port: 4202,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
 };
 
 type ProjectName = keyof typeof projectServers;
