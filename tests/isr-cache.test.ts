@@ -410,6 +410,18 @@ describe("ISR expire ceiling", () => {
     });
   });
 
+  it("keeps a newly written entry fresh after the wall clock advances independently", async () => {
+    const initialWallTime = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(initialWallTime + 2_000);
+
+    await isrSet("advanced-wall-clock", buildPagesCacheValue("<html>fresh</html>", {}), {
+      cacheControl: { revalidate: 1 },
+    });
+
+    await expect(isrGet("advanced-wall-clock")).resolves.toMatchObject({ isStale: false });
+  });
+
   it("preserves legacy revalidate context while writing cache-control metadata", async () => {
     let setContext: Record<string, unknown> | undefined;
     setCacheHandler({

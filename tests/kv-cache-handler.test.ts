@@ -309,6 +309,22 @@ describe("KVCacheHandler", () => {
       expect(kv.delete).toHaveBeenCalledWith("cache:bad-reval");
     });
 
+    it("rejects entry with invalid writtenAt type", async () => {
+      store.set(
+        "cache:bad-written-at",
+        JSON.stringify({
+          value: null,
+          tags: [],
+          lastModified: 123,
+          writtenAt: "not-a-number",
+          revalidateAt: null,
+        }),
+      );
+      const result = await handler.get("bad-written-at");
+      expect(result).toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:bad-written-at");
+    });
+
     it("rejects entry with invalid expireAt type", async () => {
       store.set(
         "cache:bad-expire",
@@ -553,6 +569,27 @@ describe("KVCacheHandler", () => {
       vi.setSystemTime(4_500);
       await expect(handler.get("expire-test")).resolves.toBeNull();
       expect(kv.delete).toHaveBeenCalledWith("cache:expire-test");
+    });
+
+    it("keeps a newly written entry fresh after the wall clock advances independently", async () => {
+      const initialWallTime = Date.now();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(initialWallTime + 2_000);
+
+      await handler.set(
+        "advanced-wall-clock",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "fresh", url: "https://example.com/data" },
+          tags: [],
+          revalidate: 1,
+        },
+        { revalidate: 1 },
+      );
+
+      const hit = await handler.get("advanced-wall-clock", { revalidate: 1 });
+      expect(hit?.cacheState).toBeUndefined();
+      expect(hit?.value?.kind).toBe("FETCH");
     });
 
     it("round-trips the client stale claim through stored cacheControl", async () => {

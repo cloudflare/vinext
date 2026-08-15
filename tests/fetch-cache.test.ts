@@ -1248,7 +1248,7 @@ describe("fetch cache shim", () => {
     const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
     const store = (handler as any).store as Map<string, any>;
     for (const [, entry] of store) {
-      entry.lastModified = Date.now() - 2_000;
+      entry.writtenAt = Date.now() - 2_000;
       entry.revalidateAt = Date.now() + 58_000;
     }
     startNewFetchCacheScope();
@@ -1273,7 +1273,7 @@ describe("fetch cache shim", () => {
     const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
     const store = (handler as any).store as Map<string, any>;
     for (const [, entry] of store) {
-      entry.lastModified = Date.now() - 2_000;
+      entry.writtenAt = Date.now() - 2_000;
       entry.revalidateAt = Date.now() + 58_000;
     }
     startNewFetchCacheScope();

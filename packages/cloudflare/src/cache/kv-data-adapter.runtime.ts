@@ -87,6 +87,8 @@ type KVCacheEntry = {
   value: SerializedIncrementalCacheValue | null;
   tags: string[];
   lastModified: number;
+  /** Wall-clock write time used for duration-based cache policy. */
+  writtenAt?: number;
   /** Absolute timestamp (ms) after which the entry is "stale" (but still served). */
   revalidateAt: number | null;
   /** Absolute timestamp (ms) after which the entry must block on fresh render. */
@@ -266,8 +268,11 @@ export class KVCacheHandler implements CacheHandler {
     // Check time-based revalidation — return stale with cacheState.
     const now = Date.now();
     const requestedRevalidate = readPositiveNumberField(_ctx, "revalidate");
+    // Entries written before `writtenAt` was introduced used an epoch-based
+    // `lastModified`, so it remains a compatible fallback for persisted data.
+    const writtenAt = entry.writtenAt ?? entry.lastModified;
     const requestedRevalidateAt =
-      requestedRevalidate === undefined ? null : entry.lastModified + requestedRevalidate * 1000;
+      requestedRevalidate === undefined ? null : writtenAt + requestedRevalidate * 1000;
     const isStale =
       (entry.revalidateAt !== null && now > entry.revalidateAt) ||
       (requestedRevalidateAt !== null && now > requestedRevalidateAt);
@@ -373,14 +378,15 @@ export class KVCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return Promise.resolve();
 
-    const now = getCacheTimestamp();
+    const lastModified = getCacheTimestamp();
+    const writtenAt = Date.now();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
-        ? now + effectiveRevalidate * 1000
+        ? writtenAt + effectiveRevalidate * 1000
         : null;
     const expireAt =
       typeof effectiveExpire === "number" && effectiveExpire > 0
-        ? now + effectiveExpire * 1000
+        ? writtenAt + effectiveExpire * 1000
         : null;
     const cacheControl: CacheControlMetadata | undefined =
       typeof effectiveRevalidate === "number"
@@ -399,7 +405,8 @@ export class KVCacheHandler implements CacheHandler {
     const entry: KVCacheEntry = {
       value: serializable,
       tags,
-      lastModified: now,
+      lastModified,
+      writtenAt,
       revalidateAt,
       expireAt,
       cacheControl,
@@ -570,6 +577,7 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
 
   // Required fields
   if (typeof obj.lastModified !== "number") return null;
+  if (obj.writtenAt !== undefined && typeof obj.writtenAt !== "number") return null;
   if (!Array.isArray(obj.tags)) return null;
   if (obj.revalidateAt !== null && typeof obj.revalidateAt !== "number") return null;
   if (obj.expireAt !== undefined && obj.expireAt !== null && typeof obj.expireAt !== "number") {

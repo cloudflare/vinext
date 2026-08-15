@@ -143,6 +143,8 @@ type MemoryEntry = {
   value: IncrementalCacheValue | null;
   tags: string[];
   lastModified: number;
+  /** Wall-clock write time used for duration-based cache policy. */
+  writtenAt: number;
   revalidateAt: number | null;
   expireAt: number | null;
   cacheControl?: CacheControlMetadata;
@@ -291,7 +293,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
     const requestedRevalidate = readPositiveNumberField(ctx, "revalidate");
     const requestedRevalidateAt =
-      requestedRevalidate === undefined ? null : entry.lastModified + requestedRevalidate * 1000;
+      requestedRevalidate === undefined ? null : entry.writtenAt + requestedRevalidate * 1000;
     const isStale =
       (entry.revalidateAt !== null && now > entry.revalidateAt) ||
       (requestedRevalidateAt !== null && now > requestedRevalidateAt);
@@ -338,14 +340,15 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return;
 
-    const now = getCacheTimestamp();
+    const lastModified = getCacheTimestamp();
+    const writtenAt = Date.now();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
-        ? now + effectiveRevalidate * 1000
+        ? writtenAt + effectiveRevalidate * 1000
         : null;
     const expireAt =
       typeof effectiveExpire === "number" && effectiveExpire > 0
-        ? now + effectiveExpire * 1000
+        ? writtenAt + effectiveExpire * 1000
         : null;
     // Absent fields stay absent rather than becoming explicit `undefined`, so a
     // round trip through a serializing cache adapter cannot turn "no claim"
@@ -364,7 +367,8 @@ export class MemoryCacheHandler implements CacheHandler {
     const entry = {
       value: data,
       tags,
-      lastModified: now,
+      lastModified,
+      writtenAt,
       revalidateAt,
       expireAt,
       cacheControl,
