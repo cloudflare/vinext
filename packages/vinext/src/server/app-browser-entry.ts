@@ -2267,10 +2267,14 @@ function bootstrapHydration(
         // headers. Headerless static-export artifacts carry both values in
         // Flight metadata so an ordinary static host does not need to synthesize
         // framework response headers.
-        const headerlessMetadata =
-          compatibilityIdHeader === null || forceStaticHeader === null
-            ? AppElementsWire.readMetadata(await rscPayload)
-            : null;
+        const needsHeaderlessMetadata =
+          compatibilityIdHeader === null || forceStaticHeader === null;
+        // A prepared prefetch must remain synchronous through its initiating
+        // click. Its decoded elements are already available, so do not insert
+        // an `await` merely to read headerless transport metadata.
+        const headerlessMetadata = needsHeaderlessMetadata
+          ? AppElementsWire.readMetadata(prefetchedElements ?? (await rscPayload))
+          : null;
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
         if (compatibilityIdHeader === null) {
           const compatibilityDecision = resolveRscCompatibilityNavigationDecision({
