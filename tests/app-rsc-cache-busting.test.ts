@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
@@ -109,6 +109,24 @@ describe("App Router RSC cache-busting", () => {
     await expect(createRscRequestUrl("/photos/42", headers)).resolves.toBe(
       `/photos/42?${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}=${hash}`,
     );
+  });
+
+  // Ported from Next.js:
+  // packages/next/src/client/components/router-reducer/set-cache-busting-search-param.test.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/set-cache-busting-search-param.test.ts
+  it("falls back to the legacy FNV hash when Web Crypto is unavailable", async () => {
+    vi.stubGlobal("crypto", {});
+
+    try {
+      const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+      const legacyHash = fnv1a64("0,0,0,0,0,slot:modal:/,0");
+
+      await expect(createRscRequestUrl("/photos/42", headers)).resolves.toBe(
+        `/photos/42?_rsc=${legacyHash}`,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("adds a valued _rsc query for visible App Router state", async () => {
