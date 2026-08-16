@@ -5367,10 +5367,13 @@ export const config = { matcher: ["/protected"] };
 
     // The entry chunk should stay small: it contains the hydration bootstrap
     // and this fixture's generated route table, but not the React framework.
-    // Before code-splitting this was ~200KB+.
+    // Before code-splitting this was ~200KB+. This shared fixture now includes
+    // the two styled-jsx parity routes, so allow their generated route-table
+    // entries while retaining a tight guard against framework code regressing
+    // back into the bootstrap chunk.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(27 * 1024); // < 27 KB
+      expect(entrySize).toBeLessThan(28 * 1024); // < 28 KB
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
