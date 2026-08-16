@@ -10,6 +10,10 @@ import {
 } from "../packages/vinext/src/server/app-page-execution.js";
 import { parseNextRedirectDigest } from "../packages/vinext/src/server/next-error-digest.js";
 import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
+import {
+  hasFrameworkLinkHeaders,
+  markFrameworkLinkHeaders,
+} from "../packages/vinext/src/server/app-response-header-provenance.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -748,6 +752,36 @@ describe("app page execution helpers", () => {
     });
 
     expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("not-found-boundary-html");
+  });
+
+  it("preserves fallback framework Link provenance through metadata status and middleware merges", async () => {
+    const fallbackResponse = new Response("not-found-boundary-html", {
+      status: 404,
+      headers: { Link: "</framework.css>; rel=preload; as=style" },
+    });
+    markFrameworkLinkHeaders(fallbackResponse.headers, fallbackResponse.headers.get("link"));
+
+    const response = await buildAppPageSpecialErrorResponse({
+      clearRequestContext: vi.fn(),
+      isRscRequest: false,
+      middlewareContext: {
+        headers: new Headers({ Link: "</middleware.css>; rel=preload; as=style" }),
+      },
+      renderFallbackPage: async () => fallbackResponse,
+      request: new Request("https://example.com/async/not-found"),
+      specialError: {
+        kind: "http-access-fallback",
+        statusCode: 404,
+        fromMetadata: true,
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("link")).toBe(
+      "</middleware.css>; rel=preload; as=style, </framework.css>; rel=preload; as=style",
+    );
+    expect(hasFrameworkLinkHeaders(response.headers)).toBe(true);
     await expect(response.text()).resolves.toBe("not-found-boundary-html");
   });
 

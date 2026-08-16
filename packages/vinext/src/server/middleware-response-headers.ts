@@ -44,12 +44,19 @@ export function mergeMiddlewareResponseHeaders(
   }
 
   for (const [key, value] of middlewareHeaders) {
-    if (key.toLowerCase() === "vary") {
+    const lowerName = key.toLowerCase();
+    // Next.js only stages truthy middleware response-header values. Keep an
+    // empty Link from erasing config or renderer-owned Link values.
+    if (lowerName === "link" && !value) {
+      continue;
+    }
+
+    if (lowerName === "vary") {
       mergeVaryHeader(target, value);
       continue;
     }
 
-    if (ADDITIVE_RESPONSE_HEADER_NAMES.has(key.toLowerCase())) {
+    if (ADDITIVE_RESPONSE_HEADER_NAMES.has(lowerName)) {
       target.append(key, value);
       continue;
     }

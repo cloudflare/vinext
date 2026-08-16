@@ -399,6 +399,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     initialDevServerError?: unknown;
     layoutModules: readonly (TModule | null | undefined)[];
     navigationParams?: AppPageParams;
+    mirrorNextFlight?: boolean;
     route?: AppPageBoundaryRoute<TModule> | null;
     routePattern?: string;
     status: number;
@@ -447,6 +448,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
             searchParams: requestUrl.searchParams,
             params: options.navigationParams ?? options.route?.params ?? {},
           },
+          mirrorNextFlight: options.mirrorNextFlight,
           rscStream,
           scriptNonce: options.scriptNonce,
           ssrHandler,
@@ -712,6 +714,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     element,
     handleSpecialErrors: true,
     layoutModules: skipLayoutWrapping ? [] : layoutModules,
+    mirrorNextFlight: true,
     navigationParams: options.matchedParams,
     route: skipLayoutWrapping ? null : options.route,
     routePattern: options.route?.pattern,

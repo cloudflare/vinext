@@ -15,6 +15,7 @@ import { setCacheStateHeaders } from "./cache-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { getSetCookieName } from "./cookie-utils.js";
+import { markEdgeRouteHandlerLinkHeaders } from "./app-response-header-provenance.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -50,19 +51,27 @@ function hasMiddlewareHeader(headers: Headers): boolean {
 export function applyRouteHandlerMiddlewareContext(
   response: Response,
   middlewareContext: RouteHandlerMiddlewareContext,
+  options: { appendResponseLink?: boolean } = {},
 ): Response {
+  const responseLink = options.appendResponseLink ? response.headers.get("link") : null;
   if (!middlewareContext.headers && middlewareContext.status == null) {
+    markEdgeRouteHandlerLinkHeaders(response.headers, responseLink);
     return response;
   }
 
   const responseHeaders = new Headers(response.headers);
   mergeMiddlewareResponseHeaders(responseHeaders, middlewareContext.headers);
+  if (responseLink && middlewareContext.headers?.get("link")) {
+    responseHeaders.append("link", responseLink);
+  }
 
-  return new Response(response.body, {
+  const result = new Response(response.body, {
     status: middlewareContext.status ?? response.status,
     statusText: response.statusText,
     headers: responseHeaders,
   });
+  markEdgeRouteHandlerLinkHeaders(result.headers, responseLink);
+  return result;
 }
 
 export function assertSupportedAppRouteHandlerResponse(response: Response): void {

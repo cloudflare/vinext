@@ -1024,9 +1024,16 @@ export async function loadNextConfig(
   const normalizedConfigPath = safeRealpath(path.resolve(configPath));
 
   try {
-    // Load config via Vite's module runner (TS + extensionless import support)
+    // Resolve and invoke the config inside the temporary Vite runner. This
+    // keeps the runner alive while an async config performs deferred imports,
+    // while preserving Vite's TS aliases, CJS shims, and fresh evaluation on
+    // every load.
     const { runnerImport } = await import("vite");
-    const { module: mod } = await runnerImport(configPath, {
+    const virtualConfigId = "virtual:vinext-resolved-next-config";
+    const resolvedVirtualConfigId = `\0${virtualConfigId}`;
+    const configPathLiteral = JSON.stringify(configPath);
+    const phaseLiteral = JSON.stringify(phase);
+    const { module: mod } = await runnerImport<{ default: NextConfig }>(virtualConfigId, {
       root,
       logLevel: "error",
       clearScreen: false,
@@ -1067,6 +1074,24 @@ export async function loadNextConfig(
       // same source produces an `Identifier 'module' has already been
       // declared` syntax error.
       plugins: [
+        {
+          name: "vinext:resolve-next-config-value",
+          resolveId(id: string) {
+            if (id === virtualConfigId) return resolvedVirtualConfigId;
+          },
+          load(id: string) {
+            if (id !== resolvedVirtualConfigId) return;
+            return (
+              `import * as configModule from ${configPathLiteral};\n` +
+              `const cjsModule = configModule[${JSON.stringify(VINEXT_CJS_EXPORTS_KEY)}];\n` +
+              `const cjsInitial = configModule[${JSON.stringify(VINEXT_CJS_INITIAL_KEY)}];\n` +
+              `const cjsExports = cjsModule && cjsModule.exports;\n` +
+              `const cjsValue = cjsExports != null && (cjsExports !== cjsInitial || (typeof cjsExports === "object" && Object.keys(cjsExports).length > 0)) ? cjsExports : undefined;\n` +
+              `const value = cjsValue ?? configModule.default ?? configModule;\n` +
+              `export default typeof value === "function" ? await value(${phaseLiteral}, { defaultConfig: {} }) : value;\n`
+            );
+          },
+        },
         ...(isTypeScriptConfig ? [cjsGlobalsInjectorPlugin(configPath)] : []),
         commonjs({
           filter: (id: string) => {
@@ -1082,7 +1107,7 @@ export async function loadNextConfig(
         }),
       ],
     });
-    return await unwrapConfig(mod, phase);
+    return mod.default as NextConfig;
   } catch (e) {
     // If the error indicates a CJS file loaded in ESM context, retry with
     // createRequire which provides a proper CommonJS environment.

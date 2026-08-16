@@ -122,6 +122,38 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  // Next.js stores CachedFetchData.body as base64:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/patch-fetch.ts
+  it("preserves binary response bodies when replaying the fetch cache", async () => {
+    const url = "https://api.example.com/compressed";
+    const body = new Uint8Array([0x1f, 0x8b, 0x08, 0x00, 0xff, 0x80, 0x00, 0x7f]);
+
+    fetchMock.mockImplementationOnce(async () => {
+      const response = new Response(body, {
+        status: 200,
+        headers: {
+          "content-encoding": "gzip",
+          "content-type": "application/octet-stream",
+        },
+      });
+      Object.defineProperty(response, "url", {
+        value: url,
+        configurable: true,
+        enumerable: true,
+        writable: false,
+      });
+      return response;
+    });
+
+    const cold = await fetch(url, { cache: "force-cache" });
+    expect(new Uint8Array(await cold.arrayBuffer())).toEqual(body);
+
+    const cached = await fetch(url, { cache: "force-cache" });
+    expect(new Uint8Array(await cached.arrayBuffer())).toEqual(body);
+    expect(cached.headers.get("content-encoding")).toBe("gzip");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves Response.url on cached fetch responses", async () => {
     const url = "https://api.example.com/force-url";
 
