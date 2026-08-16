@@ -6,6 +6,7 @@ import {
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
+  canCommitOptimisticRouteTemplate,
   createOptimisticRouteElements,
   createOptimisticRouteTemplate,
   getOptimisticPrefetchSourceKey,
@@ -48,6 +49,13 @@ function route(input: {
 function manifest(
   routes: readonly RouteManifestRoute[],
   slotBindings: readonly RouteManifestSlotBinding[] = [],
+  layouts: readonly {
+    id: string;
+    paramNames: readonly string[];
+    patternParts: readonly string[];
+    rootBoundaryId: null;
+    treePath: string;
+  }[] = [],
 ): RouteManifest {
   return {
     graphVersion: "graph:test" as GraphVersion,
@@ -56,7 +64,7 @@ function manifest(
       defaults: new Map(),
       interceptions: new Map(),
       interceptionsBySlotId: new Map(),
-      layouts: new Map(),
+      layouts: new Map(layouts.map((entry) => [entry.id, entry])),
       pages: new Map(),
       rootBoundaries: new Map(),
       routeHandlers: new Map(),
@@ -516,6 +524,90 @@ describe("App Router optimistic routing", () => {
 
     expect(navigationPayload?.params).toEqual({});
     expect(navigationPayload?.template).toBe(template);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
+  it("does not commit an ancestor loading shell over a retained layout", () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const sharedLayoutId = AppElementsWire.encodeLayoutId("/projects/[projectId]");
+    const currentElements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [rootLayoutId, sharedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: "route:/projects/alpha",
+      }),
+      [rootLayoutId]: createElement("div", null, "root"),
+      [sharedLayoutId]: createElement("section", null, "shared layout"),
+    };
+    const loadingShellElements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [rootLayoutId, sharedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: "route:/projects/alpha/activity",
+      }),
+      [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+      [rootLayoutId]: createElement("div", null, "root"),
+      "page:/projects/:projectId/activity": null,
+      "route:/projects/alpha/activity": createElement("p", null, "Loading"),
+    };
+    const routeManifest = manifest(
+      [
+        route({
+          id: "route:/projects/:projectId/activity",
+          isDynamic: true,
+          paramNames: ["projectId"],
+          pattern: "/projects/:projectId/activity",
+          patternParts: ["projects", ":projectId", "activity"],
+        }),
+      ],
+      [],
+      [
+        {
+          id: sharedLayoutId,
+          paramNames: ["projectId"],
+          patternParts: ["projects", ":projectId"],
+          rootBoundaryId: null,
+          treePath: "/projects/[projectId]",
+        },
+      ],
+    );
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: loadingShellElements,
+      href: "/projects/alpha/activity",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+    if (template === null) {
+      throw new Error("Expected optimistic route template");
+    }
+
+    expect(template.omittedLayoutIds).toEqual([sharedLayoutId]);
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId, sharedLayoutId],
+        currentParams: { projectId: "alpha" },
+        routeManifest,
+        targetParams: { projectId: "alpha" },
+        template,
+      }),
+    ).toBe(false);
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId, sharedLayoutId],
+        currentParams: { projectId: "alpha" },
+        routeManifest,
+        targetParams: { projectId: "beta" },
+        template,
+      }),
+    ).toBe(true);
   });
 
   it("keeps learned templates distinct across mounted slot headers", () => {

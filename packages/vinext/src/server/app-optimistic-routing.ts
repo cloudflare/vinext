@@ -11,6 +11,7 @@ import {
   type AppElementValue,
   type AppElements,
 } from "./app-elements.js";
+import { resolveAppPagePatternStateKey } from "./app-page-segment-state.js";
 
 type OptimisticRouteTrieNode = {
   catchAllChild: { paramName: string; route: RouteManifestRoute } | null;
@@ -28,6 +29,7 @@ type OptimisticRouteMatch = {
 export type OptimisticRouteTemplate = {
   elements: AppElements;
   mountedSlotsHeader: string | null;
+  omittedLayoutIds: readonly string[];
   pageElementIds: readonly string[];
   routeId: string;
 };
@@ -343,6 +345,10 @@ export function createOptimisticRouteTemplate(options: {
   return {
     elements: options.elements,
     mountedSlotsHeader: options.mountedSlotsHeader,
+    omittedLayoutIds:
+      options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === "LoadingBoundary"
+        ? metadata.layoutIds.filter((layoutId) => !Object.hasOwn(options.elements, layoutId))
+        : [],
     pageElementIds,
     routeId: match.route.id,
   };
@@ -354,6 +360,45 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
     elements[pageElementId] = createElement(OptimisticRouteSegment);
   }
   return elements;
+}
+
+/**
+ * A loading-shell prefetch stops at the first loading boundary, so layouts
+ * below that boundary are present in the route metadata but absent from the
+ * rendered shell. Do not commit that ancestor fallback when one of those
+ * omitted layouts is already mounted with the same semantic identity. Next.js
+ * keeps the shared segment active in this case, which also means the ancestor
+ * loading boundary does not re-trigger.
+ */
+export function canCommitOptimisticRouteTemplate(options: {
+  currentElements: AppElements;
+  currentLayoutIds: readonly string[];
+  currentParams: Readonly<Record<string, string | string[]>>;
+  routeManifest: RouteManifest;
+  targetParams: Readonly<Record<string, string | string[]>>;
+  template: OptimisticRouteTemplate;
+}): boolean {
+  if (options.template.omittedLayoutIds.length === 0) {
+    return true;
+  }
+
+  const currentLayoutIds = new Set(options.currentLayoutIds);
+
+  for (const layoutId of options.template.omittedLayoutIds) {
+    if (!currentLayoutIds.has(layoutId)) continue;
+    if (!Object.hasOwn(options.currentElements, layoutId)) continue;
+
+    const layout = options.routeManifest.segmentGraph.layouts.get(layoutId);
+    if (layout === undefined) continue;
+    if (
+      resolveAppPagePatternStateKey(layout.patternParts, options.currentParams) ===
+      resolveAppPagePatternStateKey(layout.patternParts, options.targetParams)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export function resolveOptimisticNavigationPayload(options: {
