@@ -184,7 +184,7 @@ the compatibility report.
 
 Vite has become the default build tool for modern web frameworks — fast HMR, a clean plugin API, native ESM, and a growing ecosystem. With [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-rsc) adding React Server Components support, it's now possible to build a full RSC framework on Vite.
 
-vinext reimplements the Next.js API surface on Vite to find out how much of a real Next.js application can run on a different toolchain. The answer, so far, is that substantial applications can.
+vinext reimplements the Next.js API surface on Vite so existing Next.js applications can run on a different toolchain. The answer, so far, is that substantial applications can.
 
 vinext works everywhere. It natively supports Cloudflare Workers (with `npx @vinext/cloudflare deploy` or `vp exec vinext-cloudflare deploy`, bindings, KV caching), and can be deployed to Vercel, Netlify, AWS, Deno Deploy, and more via the [Nitro](https://v3.nitro.build/) Vite plugin. Native support for additional platforms is [planned](https://github.com/cloudflare/vinext/issues/80).
 
@@ -683,7 +683,7 @@ The KV data adapter reads `env[binding]` at runtime, so add the matching KV name
 }
 ```
 
-Where the data adapter stores entries and serves HIT/STALE itself, the CDN adapter delegates serving to Cloudflare's edge: the origin renders fresh responses and tags them with `Cache-Tag`, and `revalidateTag()` / `revalidatePath()` purge the edge through `ctx.cache.purge({ tags })`. See [examples/workers-cache](examples/workers-cache) for both adapters wired up together.
+While the data adapter can store entries and serve HIT/STALE itself, the CDN adapter delegates serving to Cloudflare's edge: the origin renders fresh responses and tags them with `Cache-Tag`, and `revalidateTag()` / `revalidatePath()` purge the edge through `ctx.cache.purge({ tags })`. See [examples/workers-cache](examples/workers-cache) for both adapters wired up together.
 
 Each builder returns a plain, serializable `{ adapter, options }` descriptor — **it never touches the Workers runtime**, so nothing throws at build or dev time when bindings aren't available. The actual adapter (and its `env` binding lookup) is instantiated lazily on the first request.
 
