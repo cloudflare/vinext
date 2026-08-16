@@ -167,10 +167,12 @@ import {
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
+import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
+import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
@@ -178,6 +180,7 @@ import {
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
+import { createTransitiveExternalsPlugin } from "./plugins/transitive-externals.js";
 // Keep this source-relative: resolving through vinext's package export can read
 // a stale built copy while developing or testing the source tree.
 // oxlint-disable-next-line vinext-local/prefer-import-alias
@@ -244,10 +247,15 @@ import {
 } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
+import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
-import { getTypeofWindowReplacement, replaceTypeofWindow } from "./plugins/typeof-window.js";
+import {
+  consumerEnvironmentConditionFilter,
+  getTypeofWindowReplacement,
+  replaceConsumerEnvironmentConditions,
+} from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { publicFilePathVariants } from "./utils/public-file-path.js";
@@ -304,108 +312,6 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
-
-type UseCacheAstNode = Record<string, unknown> & { type: string };
-
-function isUseCacheAstNode(value: unknown): value is UseCacheAstNode {
-  return (
-    typeof value === "object" && value !== null && typeof Reflect.get(value, "type") === "string"
-  );
-}
-
-function hasInlineUseCacheDirective(node: UseCacheAstNode): boolean {
-  const body =
-    isUseCacheAstNode(node.body) && node.body.type === "BlockStatement" ? node.body : null;
-  if (!body || !Array.isArray(body.body)) return false;
-
-  return body.body.some((statement) => {
-    if (!isUseCacheAstNode(statement) || statement.type !== "ExpressionStatement") return false;
-    const expression = isUseCacheAstNode(statement.expression) ? statement.expression : null;
-    return (
-      expression?.type === "Literal" &&
-      typeof expression.value === "string" &&
-      /^use cache(:\s*\w+)?$/.test(expression.value)
-    );
-  });
-}
-
-function functionAcceptsSecondArgument(node: UseCacheAstNode): boolean {
-  const params = Array.isArray(node.params) ? node.params : [];
-  if (params.length >= 2) return true;
-  return params.some((param) => isUseCacheAstNode(param) && param.type === "RestElement");
-}
-
-function collectInlineUseCacheSecondArgumentUsage(value: unknown): boolean[] {
-  const usage: boolean[] = [];
-
-  function walk(node: unknown): void {
-    if (Array.isArray(node)) {
-      for (const child of node) walk(child);
-      return;
-    }
-    if (!isUseCacheAstNode(node)) return;
-
-    if (
-      (node.type === "FunctionDeclaration" ||
-        node.type === "FunctionExpression" ||
-        node.type === "ArrowFunctionExpression") &&
-      hasInlineUseCacheDirective(node)
-    ) {
-      usage.push(functionAcceptsSecondArgument(node));
-    }
-
-    for (const [key, child] of Object.entries(node)) {
-      if (key === "type" || key === "start" || key === "end" || key === "loc" || key === "parent") {
-        continue;
-      }
-      walk(child);
-    }
-  }
-
-  walk(value);
-  return usage;
-}
-
-function collectFileUseCacheSecondArgumentUsage(body: unknown[]): Map<string, boolean> {
-  const localFunctions = new Map<string, boolean>();
-
-  function collectDeclaration(value: unknown): void {
-    if (!isUseCacheAstNode(value)) return;
-    if (value.type === "FunctionDeclaration") {
-      const id = isUseCacheAstNode(value.id) ? value.id : null;
-      if (id?.type === "Identifier" && typeof id.name === "string") {
-        localFunctions.set(id.name, functionAcceptsSecondArgument(value));
-      }
-      return;
-    }
-    if (value.type !== "VariableDeclaration" || !Array.isArray(value.declarations)) return;
-
-    for (const declaration of value.declarations) {
-      if (!isUseCacheAstNode(declaration) || declaration.type !== "VariableDeclarator") continue;
-      const id = isUseCacheAstNode(declaration.id) ? declaration.id : null;
-      const init = isUseCacheAstNode(declaration.init) ? declaration.init : null;
-      if (
-        id?.type === "Identifier" &&
-        typeof id.name === "string" &&
-        init &&
-        (init.type === "FunctionExpression" || init.type === "ArrowFunctionExpression")
-      ) {
-        localFunctions.set(id.name, functionAcceptsSecondArgument(init));
-      }
-    }
-  }
-
-  for (const statement of body) {
-    if (!isUseCacheAstNode(statement)) continue;
-    collectDeclaration(
-      statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration"
-        ? statement.declaration
-        : statement,
-    );
-  }
-
-  return localFunctions;
-}
 
 function isInsideDirectory(dir: string, filePath: string): boolean {
   const relativePath = path.relative(dir, filePath);
@@ -1522,7 +1428,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
-  let nitroTraceDepsFromServerExternals: string[] = [];
+  let resolvedServerExternalPackages: string[] = [];
+  let pagesTsconfigAliases: Record<string, string> = {};
+  let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let pagesOptimizeEntries: string[] = [];
   const pagesClientAssetsOutputDirs = new Set<string>();
@@ -1660,26 +1568,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // different class identities. Resolving from the project root ensures a
   // single shared vite instance.
   //
-  // Pre-resolve both the main plugin and the /transforms subpath eagerly
-  // so all import() calls in this module use consistent resolution.
+  // Pre-resolve the plugins eagerly so all import() calls in this module use
+  // consistent resolution.
   let resolvedReactPath: string | null = null;
   let resolvedRscPath: string | null = null;
-  let resolvedRscTransformsPath: string | null = null;
   let rscPluginModulePromise: Promise<typeof import("@vitejs/plugin-rsc")> | null = null;
   // Prefer the user's project graph so vinext shares the app's Vite/plugin
   // instances. In source/workspace development, test fixtures may not declare
   // peer deps explicitly, so fall back to vinext's own install location.
   resolvedReactPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-react");
   resolvedRscPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-rsc");
-  resolvedRscTransformsPath = resolveOptionalDependency(
-    earlyBaseDir,
-    "@vitejs/plugin-rsc/transforms",
-  );
 
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
   // will resolve this before processing the plugin list.
   let rscPluginPromise: Promise<Plugin[]> | null = null;
+  let manualUseCachePluginPromise: Promise<Plugin> | null = null;
   if (earlyAppDirExists && autoRsc) {
     if (!resolvedRscPath) {
       throw new Error(
@@ -1692,21 +1596,43 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const rscImport = import(pathToFileURL(resolvedRscPath).href);
     rscPluginModulePromise = rscImport;
     rscPluginPromise = rscImport
-      .then((mod) => {
+      .then(async (mod) => {
         const rsc = mod.default;
-        return rsc({
+        const plugins: Plugin[] = rsc({
           entries: {
             rsc: VIRTUAL_RSC_ENTRY,
             ssr: VIRTUAL_APP_SSR_ENTRY,
             client: VIRTUAL_APP_BROWSER_ENTRY,
           },
         });
+        const useCachePlugin = await createUseCacheCallablePlugin({
+          projectRoot: earlyBaseDir,
+          cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
+            .href,
+          getAppDir: () => appDir,
+          matchesPageExtension: (fileName) => fileMatcher.extensionRegex.test(fileName),
+        });
+        const useServerIndex = plugins.findIndex((plugin) => plugin.name === "rsc:use-server");
+        if (useServerIndex === -1) {
+          throw new Error("vinext: Failed to locate @vitejs/plugin-rsc use-server plugin.");
+        }
+        plugins.splice(useServerIndex, 0, useCachePlugin);
+        return plugins;
       })
       .catch((cause) => {
         throw new Error("vinext: Failed to load @vitejs/plugin-rsc.", {
           cause,
         });
       });
+  } else if (earlyAppDirExists && resolvedRscPath) {
+    rscPluginModulePromise = import(pathToFileURL(resolvedRscPath).href);
+    manualUseCachePluginPromise = createUseCacheCallablePlugin({
+      projectRoot: earlyBaseDir,
+      cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime")).href,
+      getAppDir: () => appDir,
+      matchesPageExtension: (fileName) => fileMatcher.extensionRegex.test(fileName),
+      allowMissingRsc: true,
+    });
   }
 
   async function resolveHasServerActions(
@@ -1876,9 +1802,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
   };
 
-  const cachedTypeofWindowTransform = createTransformCache<
-    ReturnType<typeof getTypeofWindowReplacement>,
-    ReturnType<typeof replaceTypeofWindow>
+  const cachedConsumerConditionTransform = createTransformCache<
+    string,
+    ReturnType<typeof replaceConsumerEnvironmentConditions>
   >();
 
   const plugins: PluginOption[] = [
@@ -2019,6 +1945,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         return isWithinPagesDirectory(canonicalId) && isApiPage(canonicalId);
       },
       serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
+    }),
+    createPagesNodeExternalsPlugin({
+      getRoot: () => root,
+      getPagesDir: () => (hasPagesDir ? pagesDir : null),
+      getAliases: () => nextConfig?.aliases ?? {},
+      getTsconfigAliases: () => pagesTsconfigAliases,
+      getBundledPackages: () => pagesBundledPackages,
+      // Workers and Nitro need a self-contained server bundle. Their runtime
+      // builds intentionally keep package code inside the graph.
+      isEnabled: () => !hasCloudflarePlugin && !hasNitroPlugin,
     }),
     // Resolve `data:text/css[+module],...` imports into virtual CSS files so
     // Vite's CSS pipeline (LightningCSS, CSS modules) processes them instead
@@ -2194,6 +2130,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           : undefined;
         const resolvedTsconfigAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
         tsconfigPathAliases = resolvedTsconfigAliases.vite;
+        pagesTsconfigAliases = tsconfigPathAliases;
         sassTsconfigPathAliases = resolvedTsconfigAliases.sass;
         // Vite's native option discovers tsconfig.json and cannot receive Next's
         // typescript.tsconfigPath. Only auto-enable it for the default config;
@@ -2458,7 +2395,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // packages/next/src/build/define-env.ts.
         // See: https://nextjs.org/docs/app/api-reference/config/next-config-js/compiler#define
         for (const [key, value] of Object.entries(nextConfig.compilerDefine)) {
-          if (key in defines) {
+          if (key in defines || key === "process.browser") {
             throw new Error(
               `The \`compiler.define\` option is configured to replace the \`${key}\` variable. ` +
                 `This variable is either part of a built-in or is already configured.`,
@@ -2473,7 +2410,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // mode predictable: misconfigured projects fail at config resolution
         // instead of producing subtly wrong output.
         for (const key of Object.keys(nextConfig.compilerDefineServer)) {
-          if (key in defines) {
+          if (key in defines || key === "process.browser") {
             throw new Error(
               `The \`compiler.defineServer\` option is configured to replace the \`${key}\` variable. ` +
                 `This variable is either part of a built-in or is already configured.`,
@@ -2663,11 +2600,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(nextConfig?.turbopackTranspilePackages ?? []),
           ...(nextConfig?.optimizePackageImports ?? []),
         ];
+        pagesBundledPackages = new Set(serverTranspilePackages);
         const nextServerExternal = mergeServerExternalPackages(
           nextConfig?.serverExternalPackages,
           serverTranspilePackages,
         );
-        nitroTraceDepsFromServerExternals = nextServerExternal;
+        resolvedServerExternalPackages = nextServerExternal;
         // Detect if this is a multi-environment build (App Router or Cloudflare).
         // In multi-env builds, manualChunks must only be set per-environment
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
@@ -2873,6 +2811,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(!isSSR && !isMultiEnv ? { output: getClientOutputConfig(clientAssetsDir) } : {}),
             }),
           },
+          worker: {
+            // Vite creates a fresh plugin container for every worker bundle.
+            // Vite's config merge appends this factory to both current
+            // factories and legacy plugin arrays, so return only vinext's
+            // plugin here rather than copying user plugins and duplicating them.
+            plugins: () => [
+              createWorkerImageImportsPlugin({ deploymentId: nextConfig.deploymentId }),
+            ],
+          },
           // Let OPTIONS requests pass through Vite's CORS middleware to our
           // route handlers so they can set the Allow header and run user-defined
           // OPTIONS handlers. Without this, Vite's CORS middleware responds to
@@ -3010,6 +2957,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       nextConfig.assetPrefix,
                       nextConfig.deploymentId,
                       context.hostType,
+                      context.hostId,
                     ),
                 },
               }
@@ -3532,6 +3480,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       async configResolved(config) {
         if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {
           suppressOptionalOptimizeDepsWarnings(config.logger);
+        }
+
+        // Keep worker entries and code-split chunks in a distinct output
+        // directory. This must run after Vite merges config hooks: output arrays
+        // are concatenated during config merging, so returning a mapped array
+        // from config() would retain the original unisolated outputs as well.
+        if (config.worker?.rolldownOptions) {
+          const workerFileNames = `${resolveAssetsDir(nextConfig.assetPrefix ?? "")}/workers/[name]-[hash].js`;
+          const workerOutputs = config.worker.rolldownOptions.output;
+          config.worker.rolldownOptions.output = Array.isArray(workerOutputs)
+            ? (workerOutputs.length > 0 ? workerOutputs : [{}]).map((output) => ({
+                ...output,
+                entryFileNames: workerFileNames,
+                chunkFileNames: workerFileNames,
+              }))
+            : {
+                ...workerOutputs,
+                entryFileNames: workerFileNames,
+                chunkFileNames: workerFileNames,
+              };
         }
 
         // Provide the resolved config to the Sass-aware CSS Modules Loader so
@@ -4200,6 +4168,31 @@ export const loadServerActionClient = ${
         // Respect any explicit user/plugin minify choice (including `false`).
         if (config.build?.minify !== undefined) return null;
         return { build: { minify: true } };
+      },
+    },
+    {
+      name: "vinext:server-conditions",
+      enforce: "post",
+
+      configEnvironment(name, config) {
+        if (name !== "rsc" && name !== "ssr") return null;
+
+        // Vinext's RSC and SSR environments render Next.js server code, so
+        // selecting a package's browser export here diverges from Next.js and
+        // can execute a client-only implementation during SSR. Preserve every
+        // host-specific condition, but let ESM imports fall through to their
+        // `import` export instead of `browser`.
+        if (config.resolve?.conditions?.includes("browser")) {
+          config.resolve.conditions = config.resolve.conditions.filter(
+            (condition) => condition !== "browser",
+          );
+        }
+        const optimizerConditions = config.optimizeDeps?.rolldownOptions?.resolve?.conditionNames;
+        if (optimizerConditions?.includes("browser")) {
+          config.optimizeDeps!.rolldownOptions!.resolve!.conditionNames =
+            optimizerConditions.filter((condition) => condition !== "browser");
+        }
+        return null;
       },
     },
     {
@@ -6009,13 +6002,29 @@ export const loadServerActionClient = ${
         },
       },
     },
+    // Consumer-scoped built-ins shared by every Vite environment. Next.js
+    // compiles `process.browser` to true for browser code and false for every
+    // server target. Keep it beside the existing `typeof window` define so
+    // RSC, SSR, Workers, and the client cannot drift onto separate policies.
+    // Optimized dependencies use a separate Rolldown pipeline, so mirror
+    // `process.browser` into that pipeline for both client and server deps.
     {
       name: "vinext:typeof-window",
       configEnvironment(_name, environment) {
-        if (!useNativeTypeofWindowFolding) return null;
+        const isClient = environment.consumer === "client";
+        const processBrowser = isClient ? "true" : "false";
+        const define: Record<string, string> = {
+          "process.browser": processBrowser,
+        };
+        if (useNativeTypeofWindowFolding) {
+          define["typeof window"] = isClient ? '"object"' : '"undefined"';
+        }
         return {
-          define: {
-            "typeof window": environment.consumer === "client" ? '"object"' : '"undefined"',
+          define,
+          optimizeDeps: {
+            rolldownOptions: {
+              transform: { define: { "process.browser": processBrowser } },
+            },
           },
         };
       },
@@ -6032,17 +6041,30 @@ export const loadServerActionClient = ${
       },
       enforce: "post",
       transform: {
-        filter: { code: /\btypeof\s+window\b/ },
+        filter: { code: consumerEnvironmentConditionFilter },
         handler(code, id) {
-          if (useNativeTypeofWindowFolding && this.environment.config.build.write !== false) {
-            return null;
-          }
+          const scansImports = this.environment.config.build.write === false;
+          const replaceTypeofWindow = !useNativeTypeofWindowFolding || scansImports;
+          const replaceProcessBrowser = scansImports;
+          if (!replaceTypeofWindow && !replaceProcessBrowser) return null;
           const cacheDir = `${toSlash(this.environment.config.cacheDir).replace(/\/$/, "")}/`;
           if (toSlash(id).startsWith(cacheDir)) return null;
 
-          const replacement = getTypeofWindowReplacement(this.environment);
-          return cachedTypeofWindowTransform(id, code, replacement, () =>
-            replaceTypeofWindow(code, replacement, id),
+          const typeofWindow = getTypeofWindowReplacement(this.environment);
+          const processBrowser = this.environment.config.consumer === "client";
+          const variant = `${replaceTypeofWindow ? typeofWindow : "-"}:${
+            replaceProcessBrowser ? processBrowser : "-"
+          }`;
+          return cachedConsumerConditionTransform(id, code, variant, () =>
+            replaceConsumerEnvironmentConditions(
+              code,
+              {
+                ...(replaceTypeofWindow ? { typeofWindow } : {}),
+                ...(replaceProcessBrowser ? { processBrowser } : {}),
+                pruneUnreachableImports: scansImports,
+              },
+              id,
+            ),
           );
         },
       },
@@ -6404,189 +6426,6 @@ export const loadServerActionClient = ${
     // IDs through Vite's build manifest so it can emit boundary-scoped preload
     // hints with the request CSP nonce.
     createDynamicPreloadMetadataPlugin(),
-    // "use cache" directive transform:
-    // Detects "use cache" at file-level or function-level and wraps the
-    // exports/functions with registerCachedFunction() from vinext/cache-runtime.
-    // Runs without enforce so it executes after JSX transform (parseAst needs plain JS).
-    {
-      name: "vinext:use-cache",
-
-      transform: {
-        // Hook filter: only invoke JS when code contains 'use cache'.
-        // The vast majority of files don't use this directive.
-        filter: {
-          id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
-            exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
-          },
-          code: "use cache",
-        },
-        async handler(code, id) {
-          // Parse the AST first to check for actual "use cache" directives before
-          // throwing the missing-RSC error. The code filter can
-          // fire on files that contain "use cache" only in comments or string
-          // literals (e.g., in error messages), not as real directives.
-          const ast = parseAst(code);
-
-          // Check for file-level "use cache" directive
-          const cacheDirective = ast.body.find(
-            (node) =>
-              node.type === "ExpressionStatement" &&
-              node.expression?.type === "Literal" &&
-              typeof node.expression.value === "string" &&
-              node.expression.value.startsWith("use cache"),
-          );
-
-          // Keep the declaration shape because Function.length drops default and
-          // rest parameters. Next.js's cache transform likewise records declared
-          // arguments so metadata resolution can decide whether to pass `parent`.
-          const inlineCacheSecondArgumentUsage = cacheDirective
-            ? []
-            : collectInlineUseCacheSecondArgumentUsage(ast.body);
-          const hasInlineCache = inlineCacheSecondArgumentUsage.length > 0;
-
-          if (!cacheDirective && !hasInlineCache) return null;
-
-          if (!resolvedRscTransformsPath) {
-            throw new Error(
-              "vinext: 'use cache' requires @vitejs/plugin-rsc to be installed.\n" +
-                "Run: " +
-                detectPackageManager(process.cwd()) +
-                " @vitejs/plugin-rsc",
-            );
-          }
-          const { transformWrapExport, transformHoistInlineDirective } = await import(
-            pathToFileURL(resolvedRscTransformsPath).href
-          );
-
-          if (cacheDirective) {
-            // File-level "use cache" — wrap function exports with
-            // registerCachedFunction. Page default exports are wrapped directly
-            // (they're leaf components). Layout/template defaults are excluded
-            // because they receive {children} from the framework.
-            // oxlint-disable-next-line typescript/no-explicit-any
-            const directiveValue = (cacheDirective as any).expression.value;
-            const variant =
-              directiveValue === "use cache" ? "" : directiveValue.replace("use cache:", "").trim();
-
-            // Only skip default export wrapping for layouts and templates —
-            // they receive {children} from the framework which requires
-            // temporary reference handling that registerCachedFunction doesn't
-            // support yet. Pages, not-found, loading, error, and default are
-            // leaf components with no {children} prop and can be cached directly.
-            const isLayoutOrTemplate = /\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id);
-            const modulePath = stripViteModuleQuery(id);
-            const moduleFileName = path.basename(modulePath);
-            const isAppPageModule =
-              hasAppDir &&
-              isInsideDirectory(appDir, modulePath) &&
-              path.parse(moduleFileName).name === "page" &&
-              fileMatcher.extensionRegex.test(moduleFileName);
-
-            const runtimeModuleUrl = pathToFileURL(
-              resolveShimModulePath(shimsDir, "cache-runtime"),
-            ).href;
-            const secondArgumentUsage = collectFileUseCacheSecondArgumentUsage(ast.body);
-            const result = transformWrapExport(code, ast, {
-              runtime: (value: string, name: string) => {
-                const runtimeOptions: string[] = [];
-                // A local declaration gives us its exact parameter shape. For
-                // opaque exports (for example `export { fn } from "./impl"`),
-                // match Next.js's unknown-signature behavior and conservatively
-                // treat every argument as used.
-                const acceptsSecondArgument = secondArgumentUsage.get(value) ?? true;
-                runtimeOptions.push(`acceptsSecondArgument: ${acceptsSecondArgument}`);
-                if (name === "default" && isAppPageModule) {
-                  runtimeOptions.push("appPageDefaultExport: true");
-                }
-                const optionsArgument =
-                  runtimeOptions.length > 0 ? `, { ${runtimeOptions.join(", ")} }` : "";
-                return `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)}${optionsArgument})`;
-              },
-              rejectNonAsyncFunction: false,
-              filter: (name: string, meta: { isFunction?: boolean }) => {
-                // Skip non-functions (constants, types, etc.)
-                if (meta.isFunction === false) return false;
-                // Skip the default export on layout/template files — these
-                // receive {children} from the framework, and caching them
-                // requires temporary reference handling for the children slot.
-                // Named exports (e.g. generateMetadata) are still wrapped.
-                if (isLayoutOrTemplate && name === "default") return false;
-                return true;
-              },
-            });
-
-            if (result.exportNames.length > 0) {
-              // Remove the directive itself so it doesn't cause runtime errors
-              const output = result.output;
-              output.overwrite(
-                cacheDirective.start,
-                cacheDirective.end,
-                `/* "use cache" — wrapped by vinext */`,
-              );
-              return {
-                code: output.toString(),
-                map: output.generateMap({ hires: "boundary" }),
-              };
-            }
-
-            // Even if no exports were wrapped, still strip the directive
-            // (e.g., layout/template file with only a default export)
-            const output = new MagicString(code);
-            output.overwrite(
-              cacheDirective.start,
-              cacheDirective.end,
-              `/* "use cache" — handled by vinext */`,
-            );
-            return {
-              code: output.toString(),
-              map: output.generateMap({ hires: "boundary" }),
-            };
-          }
-
-          // Check for function-level "use cache" directives
-          // (e.g., async function getData() { "use cache"; ... })
-          if (hasInlineCache) {
-            const runtimeModuleUrl2 = pathToFileURL(
-              resolveShimModulePath(shimsDir, "cache-runtime"),
-            ).href;
-
-            try {
-              let transformedFunctionIndex = 0;
-              const result = transformHoistInlineDirective(code, ast, {
-                directive: /^use cache(:\s*\w+)?$/,
-                runtime: (value: string, name: string, meta: { directiveMatch: string[] }) => {
-                  const directiveMatch = meta.directiveMatch[0];
-                  const variant =
-                    directiveMatch === "use cache"
-                      ? ""
-                      : directiveMatch.replace("use cache:", "").trim();
-                  const acceptsSecondArgument =
-                    inlineCacheSecondArgumentUsage[transformedFunctionIndex++];
-                  const optionsArgument =
-                    acceptsSecondArgument === undefined
-                      ? ""
-                      : `, { acceptsSecondArgument: ${acceptsSecondArgument} }`;
-                  return `(await import(${JSON.stringify(runtimeModuleUrl2)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)}${optionsArgument})`;
-                },
-                rejectNonAsyncFunction: false,
-              });
-
-              if (result.names.length > 0) {
-                return {
-                  code: result.output.toString(),
-                  map: result.output.generateMap({ hires: "boundary" }),
-                };
-              }
-            } catch {
-              // If hoisting fails (e.g., complex closure), fall through
-            }
-          }
-
-          return null;
-        },
-      },
-    },
     createImportMetaUrlPlugin({
       getRoot: () => root,
     }),
@@ -6604,6 +6443,13 @@ export const loadServerActionClient = ${
     // standalone/node_modules/ — uses the bundler's own import graph instead of
     // fragile regex scanning of emitted files.
     createServerExternalsManifestPlugin(),
+    // Preserve importer-relative package identity for nested copies of
+    // serverExternalPackages. Next.js refuses to externalize these requests
+    // when their importer and project-root resolutions differ.
+    createTransitiveExternalsPlugin({
+      getRoot: () => root,
+      getExternalPackages: () => resolvedServerExternalPackages,
+    }),
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that
@@ -6699,12 +6545,9 @@ export const loadServerActionClient = ${
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
-          if (nitroTraceDepsFromServerExternals.length > 0) {
+          if (resolvedServerExternalPackages.length > 0) {
             nitro.options.traceDeps = [
-              ...new Set([
-                ...(nitro.options.traceDeps ?? []),
-                ...nitroTraceDepsFromServerExternals,
-              ]),
+              ...new Set([...(nitro.options.traceDeps ?? []), ...resolvedServerExternalPackages]),
             ];
           }
 
@@ -7178,6 +7021,8 @@ export const loadServerActionClient = ${
     plugins.push(rscPluginPromise);
     plugins.push(createRscReferenceValidationNormalizerPlugin());
     plugins.push(createRscClientReferenceLoadersPlugin());
+  } else if (manualUseCachePluginPromise) {
+    plugins.push(manualUseCachePluginPromise);
   }
 
   return plugins;

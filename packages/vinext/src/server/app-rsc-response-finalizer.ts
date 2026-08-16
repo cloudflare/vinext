@@ -7,6 +7,7 @@ import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
+import { hasPostConfigLinkHeaders } from "./app-response-header-provenance.js";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -25,6 +26,8 @@ type FinalizeAppRscResponseOptions = {
    * before middleware runs.
    */
   requestContext: RequestContext;
+  /** Response headers emitted by middleware after config matching. */
+  middlewareHeaders?: Headers | null;
 };
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
@@ -58,6 +61,8 @@ export async function applyAppRscConfigHeaders(
     pathname: matchPathname,
     requestContext: options.requestContext,
     basePathState: { basePath: options.basePath, hadBasePath },
+    appendToPostConfigLink: hasPostConfigLinkHeaders(headers),
+    middlewareHeaders: options.middlewareHeaders,
   });
 }
 
@@ -99,8 +104,7 @@ export async function finalizeAppRscResponse(
   // unspecified response is never accidentally edge-cached), while the default
   // origin-managed adapter leaves it absent (unchanged behavior). This runs only
   // when Cache-Control is absent, so it never clobbers a policy a renderer
-  // already applied — including a real `CDN-Cache-Control`. Redirects are
-  // already skipped above.
+  // already applied. Redirects are already skipped above.
   if (!response.headers.has("Cache-Control")) {
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
   }

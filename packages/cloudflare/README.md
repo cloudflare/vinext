@@ -7,7 +7,10 @@ This package provides Cloudflare-specific cache and image backends for vinext:
 
 - **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the
   data cache (`fetch`, `"use cache"`, `unstable_cache`) with a Workers KV
-  namespace. Also used for ISR in the absence of a CDN adapter.
+  namespace.
+- **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — delegates
+  page-level ISR serving and revalidation to Cloudflare Workers Cache. This is
+  opt-in and requires Workers Cache to be enabled in Wrangler config.
 - **`imagesOptimizer()`** (`@vinext/cloudflare/images/images-optimizer`) — backs
   `next/image` transformations with a Cloudflare Images binding.
 
@@ -30,6 +33,25 @@ export default defineConfig({
     cloudflare(),
   ],
 });
+```
+
+### Workers Cache
+
+`cdnAdapter()` is optional. Only configure it when Workers Cache is enabled in
+`wrangler.jsonc`:
+
+```jsonc
+{
+  "cache": {
+    "enabled": true,
+  },
+}
+```
+
+```ts
+import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+
+vinext({ cache: { cdn: cdnAdapter() } });
 ```
 
 ## Deploy

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import {
   canonicalizeRequestPathname,
   canonicalizeRequestUrlPathname,
@@ -1076,6 +1076,51 @@ describe("cloneRequestWithHeaders", () => {
     expect(cloned.redirect).toBe("manual");
   });
 
+  it("preserves keepalive in the foreign-request fallback", () => {
+    const NativeRequest = globalThis.Request;
+    class FallbackRequest extends NativeRequest {
+      constructor(input: URL | RequestInfo, init?: RequestInit) {
+        if (input instanceof NativeRequest || init instanceof NativeRequest) {
+          throw new TypeError("foreign request");
+        }
+        super(input, init);
+      }
+    }
+    vi.stubGlobal("Request", FallbackRequest);
+    try {
+      const original = new NativeRequest("http://localhost", { keepalive: true });
+      const cloned = cloneRequestWithHeaders(original, new Headers());
+      expect(cloned.keepalive).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps body-bearing requests usable in the keepalive fallback", async () => {
+    const NativeRequest = globalThis.Request;
+    class FallbackRequest extends NativeRequest {
+      constructor(input: URL | RequestInfo, init?: RequestInit) {
+        if (input instanceof NativeRequest || init instanceof NativeRequest) {
+          throw new TypeError("foreign request");
+        }
+        super(input, init);
+      }
+    }
+    vi.stubGlobal("Request", FallbackRequest);
+    try {
+      const original = new NativeRequest("http://localhost", {
+        method: "POST",
+        body: "payload",
+        keepalive: true,
+      });
+      const cloned = cloneRequestWithHeaders(original, new Headers());
+      expect(cloned.keepalive).toBe(false);
+      await expect(cloned.text()).resolves.toBe("payload");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("preserves signal", () => {
     const controller = new AbortController();
     const original = new Request("http://localhost", { signal: controller.signal });
@@ -1192,5 +1237,50 @@ describe("cloneRequestWithUrl", () => {
     const original = new Request("http://localhost/path?_rsc=abc", { redirect: "manual" });
     const cloned = cloneRequestWithUrl(original, "http://localhost/path");
     expect(cloned.redirect).toBe("manual");
+  });
+
+  it("preserves keepalive in the foreign-request fallback", () => {
+    const NativeRequest = globalThis.Request;
+    class FallbackRequest extends NativeRequest {
+      constructor(input: URL | RequestInfo, init?: RequestInit) {
+        if (input instanceof NativeRequest || init instanceof NativeRequest) {
+          throw new TypeError("foreign request");
+        }
+        super(input, init);
+      }
+    }
+    vi.stubGlobal("Request", FallbackRequest);
+    try {
+      const original = new NativeRequest("http://localhost/path", { keepalive: true });
+      const cloned = cloneRequestWithUrl(original, "http://localhost/other");
+      expect(cloned.keepalive).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps body-bearing requests usable in the keepalive fallback", async () => {
+    const NativeRequest = globalThis.Request;
+    class FallbackRequest extends NativeRequest {
+      constructor(input: URL | RequestInfo, init?: RequestInit) {
+        if (input instanceof NativeRequest || init instanceof NativeRequest) {
+          throw new TypeError("foreign request");
+        }
+        super(input, init);
+      }
+    }
+    vi.stubGlobal("Request", FallbackRequest);
+    try {
+      const original = new NativeRequest("http://localhost/path", {
+        method: "POST",
+        body: "payload",
+        keepalive: true,
+      });
+      const cloned = cloneRequestWithUrl(original, "http://localhost/other");
+      expect(cloned.keepalive).toBe(false);
+      await expect(cloned.text()).resolves.toBe("payload");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

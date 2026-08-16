@@ -11,6 +11,7 @@ import {
 } from "../packages/vinext/src/server/app-route-handler-response.js";
 import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { hasPostConfigLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 
 function buildCachedRouteValue(
   body: string,
@@ -41,6 +42,11 @@ describe("app route handler response helpers", () => {
       status: 200,
       headers: {
         "content-type": "text/plain",
+        connection: "keep-alive",
+        "content-length": "8",
+        date: "Mon, 10 Aug 2026 00:00:00 GMT",
+        "keep-alive": "timeout=5",
+        "transfer-encoding": "chunked",
         "cache-control": "s-maxage=60, stale-while-revalidate",
         "x-response": "app",
       },
@@ -88,6 +94,26 @@ describe("app route handler response helpers", () => {
       "mw=1; Path=/",
       "mw=2; Path=/; HttpOnly",
     ]);
+    await expect(result.text()).resolves.toBe("hello");
+  });
+
+  it("appends Edge route-handler Link values after middleware", async () => {
+    const response = new Response("hello", {
+      headers: { Link: "</edge-route>; rel=alternate" },
+    });
+    const result = applyRouteHandlerMiddlewareContext(
+      response,
+      {
+        headers: new Headers({ Link: "</middleware>; rel=preload" }),
+        status: null,
+      },
+      { appendResponseLink: true },
+    );
+
+    expect(result.headers.get("link")).toBe(
+      "</middleware>; rel=preload, </edge-route>; rel=alternate",
+    );
+    expect(hasPostConfigLinkHeaders(result.headers)).toBe(true);
     await expect(result.text()).resolves.toBe("hello");
   });
 
@@ -158,6 +184,8 @@ describe("app route handler response helpers", () => {
         "cache-control": "s-maxage=60, stale-while-revalidate",
         "x-vinext-cache": "MISS",
         "x-nextjs-cache": "MISS",
+        "x-next-cache-tags": "private-tag",
+        "x-vinext-metadata-route-cache": "forged",
         "x-middleware-set-cookie": "internal=1; Path=/",
         "x-extra": "kept",
       },
@@ -218,6 +246,8 @@ describe("app route handler response helpers", () => {
     });
 
     const cached = await buildAppRouteCacheValue(original);
+    cached.headers["x-next-cache-tags"] = "private-tag";
+    cached.headers["x-vinext-metadata-route-cache"] = "1";
     const restored = buildRouteHandlerCachedResponse(cached, {
       cacheState: "HIT",
       isHead: false,
@@ -225,6 +255,8 @@ describe("app route handler response helpers", () => {
     });
 
     expect(restored.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+    expect(restored.headers.get("x-next-cache-tags")).toBeNull();
+    expect(restored.headers.get("x-vinext-metadata-route-cache")).toBeNull();
     await expect(restored.text()).resolves.toBe("round trip");
   });
 

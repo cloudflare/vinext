@@ -1227,6 +1227,28 @@ describe("App Router Production server (startProdServer)", () => {
     expect(json).toHaveProperty("message");
   });
 
+  it("preserves config Link headers alongside React preload links", async () => {
+    const res = await fetch(`${baseUrl}/config-link-preload`);
+    const link = res.headers.get("link") ?? "";
+
+    expect(res.status).toBe(200);
+    expect(link).toContain('</llms.txt>; rel="describedby"; type="text/plain"');
+    expect(link).not.toContain("</superseded>");
+    expect(link).toContain("</agent-test.woff2>");
+    expect(link).toContain("rel=preload");
+  });
+
+  it("keeps middleware Link precedence while preserving React preload links", async () => {
+    const res = await fetch(`${baseUrl}/config-link-preload?middleware-link=1`);
+    const link = res.headers.get("link") ?? "";
+
+    expect(res.status).toBe(200);
+    expect(link).toContain('</middleware.css>; rel="preload"; as="style"');
+    expect(link).toContain("</agent-test.woff2>");
+    expect(link).not.toContain("</llms.txt>");
+    expect(link).not.toContain("</superseded>");
+  });
+
   it("routes unmatched API paths through fallback rewrites to App route handlers", async () => {
     const res = await fetch(
       `${baseUrl}/api/pages-fallback-to-app/session/login?client=vinext&mw-auth`,
@@ -2187,6 +2209,113 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res3.headers.get("x-vinext-cache")).toBe("MISS");
     const body3 = await res3.json();
     expect(body3.timestamp).not.toBe(body1.timestamp);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/use-cache-with-server-function-props
+  // ("should be able to use nested cache functions as props").
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-with-server-function-props/use-cache-with-server-function-props.test.ts
+  //
+  // Inline "use cache" functions defined inside a cached component and passed
+  // as props to a client component must (a) serialize as server references in
+  // the RSC payload and (b) resolve back through the production
+  // server-references manifest on the action POST. (b) can only fail in
+  // production builds — the manifest is keyed by the plugin-rsc normalised
+  // reference key and generated from serverReferenceMetaMap — so this test
+  // must run against the built output, not the dev server.
+  it("resolves nested 'use cache' functions passed as props when invoked as actions", async () => {
+    const res = await fetch(`${baseUrl}/use-cache-nested-fn-props`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // React Flight encodes server-function props with the `$h` token used by
+    // this React build's SERVER_DECODE_REFERENCE_PREFIX path. Keep this
+    // assertion next to the action round-trip so the test proves both halves:
+    // the payload uses the server-reference encoding and the decoded reference
+    // resolves through vinext's production manifest below.
+    expect(html).toContain('\\"getDate\\":\\"$h');
+
+    // The flight payload embeds each cached function prop as a server
+    // reference whose id is "<12-hex normalised key>#<hoisted export name>".
+    const refIds = [...new Set(html.match(/[0-9a-f]{12}#\$\$hoist_\d+_[A-Za-z0-9_$]+/g) ?? [])];
+    expect(refIds.length).toBe(3);
+    const [getDateRefId, getRandomRefId, getMessageRefId] = refIds;
+
+    // The fixture's getMessage closes over this string. Match Next.js and
+    // plugin-rsc's "use server" transform by serializing an encrypted binding,
+    // never the plaintext capture, into the Flight payload.
+    const capturedScopeValue = "closure-captured-bound-arg-vinext";
+    expect(html).not.toContain(capturedScopeValue);
+    const encryptedBoundArgs = [
+      ...new Set(
+        [...html.matchAll(/rsc\.push\("[0-9a-f]+:\\"([A-Za-z0-9+/=]{64,})\\"/g)].map(
+          (match) => match[1],
+        ),
+      ),
+    ];
+    expect(encryptedBoundArgs).toHaveLength(2);
+    const encryptedCaptureEnvelopes = encryptedBoundArgs.map((encrypted) => ({
+      type: "use-cache-captures",
+      encrypted,
+    }));
+
+    const invokeAction = async (actionId: string, args: unknown[] = []): Promise<string> => {
+      const actionRes = await fetch(`${baseUrl}/use-cache-nested-fn-props.rsc`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          "x-rsc-action": actionId,
+        },
+        body: JSON.stringify(args),
+      });
+      expect(actionRes.status).toBe(200);
+      expect(actionRes.headers.get("x-nextjs-action-not-found")).toBeNull();
+      const text = await actionRes.text();
+      expect(text).not.toContain("Server action not found");
+      return text;
+    };
+
+    const isoDateRegExp = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/;
+    const date1 = (await invokeAction(getDateRefId)).match(isoDateRegExp)?.[0];
+    expect(date1).toBeDefined();
+
+    // The resolved server reference is the cached wrapper (Next.js parity:
+    // the exported cached binding IS the server reference), so a second
+    // invocation with identical arguments returns the cached value.
+    const date2 = (await invokeAction(getDateRefId)).match(isoDateRegExp)?.[0];
+    expect(date2).toBe(date1);
+
+    const randomText = await invokeAction(getRandomRefId);
+    expect(randomText).toMatch(/\d+\.\d+/);
+
+    // Closure round-trip: the client sends the encrypted binding ahead of the
+    // call args. The server-reference wrapper decrypts it before entering the
+    // cached function, so plaintext values still determine the cache key.
+    const messageRegExpFor = (boundArg: string): RegExp =>
+      new RegExp(`message:${boundArg}:[0-9.e+-]+`);
+    const resolveCapturedMessage = async () => {
+      for (const envelope of encryptedCaptureEnvelopes) {
+        const response = await invokeAction(getMessageRefId, [envelope]);
+        const message = response.match(messageRegExpFor(capturedScopeValue))?.[0];
+        if (message) {
+          return { envelope, message };
+        }
+      }
+    };
+    const capturedMessage = await resolveCapturedMessage();
+    if (!capturedMessage) {
+      throw new Error(`No encrypted binding resolved to ${capturedScopeValue}`);
+    }
+
+    // Cached-invoke semantics for the closure-BOUND path, mirroring the
+    // getDate assertion above so caching is pinned across both paths
+    // (unbound getDate AND bound getMessage): the fixture appends a
+    // Math.random() suffix, so a second invocation with the same bound arg
+    // can only return the identical value if the bound arg produced the same
+    // cache key and the entry was hit (a recompute would change the suffix).
+    const message2 = (await invokeAction(getMessageRefId, [capturedMessage.envelope])).match(
+      messageRegExpFor(capturedScopeValue),
+    )?.[0];
+    expect(message2).toBe(capturedMessage.message);
   });
 
   it("middleware request header overrides still apply after middleware calls headers() first", async () => {
