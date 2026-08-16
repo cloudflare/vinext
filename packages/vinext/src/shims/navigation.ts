@@ -344,6 +344,7 @@ export type PrefetchCacheEntry = {
   pending?: Promise<void>;
   preparedElements?: AppElements;
   prefetchKind?: PrefetchCacheKind;
+  reuseAfterHistoryRestore?: boolean;
   searchAgnosticShell?: boolean;
   size?: number;
   timestamp: number;
@@ -506,7 +507,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   timestamp: number,
   cached: Pick<CachedRscResponse, "dynamicStaleTimeSeconds" | "expiresAt" | "serverStaleTime">,
   fallbackTtlMs: number,
-  honorDynamicStaleTime: boolean,
+  dynamicStaleTime: "verbatim" | "full-prefetch" | "ignore",
 ): number {
   if (isCacheExpiresAt(cached.expiresAt)) {
     return cached.expiresAt;
@@ -518,11 +519,14 @@ function resolvePrefetchedRscResponseExpiresAt(
   // is unresolved. If the render completes with a real cacheLife or dynamic
   // bound, completion metadata replaces the provisional marker below.
   const serverSeconds =
-    cached.serverStaleTime?.kind === "pending" && !honorDynamicStaleTime
+    cached.serverStaleTime?.kind === "pending" && dynamicStaleTime !== "verbatim"
       ? undefined
       : serverStaleTimeSeconds(cached.serverStaleTime);
   if (serverSeconds !== undefined) {
     return timestamp + serverSeconds * 1000;
+  }
+  if (dynamicStaleTime === "ignore") {
+    return timestamp + Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS);
   }
   const seconds = isStaleTimeSeconds(cached.dynamicStaleTimeSeconds)
     ? cached.dynamicStaleTimeSeconds
@@ -538,7 +542,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   // reuse. `prefetch={true}` uses Next's Full fetch strategy, so a config
   // dynamic bound of zero selects STATIC_STALETIME_MS. Nonzero completed
   // dynamic bounds keep their existing per-page expiry.
-  return honorDynamicStaleTime
+  return dynamicStaleTime === "verbatim"
     ? timestamp + seconds * 1000
     : timestamp +
         (seconds === 0
@@ -1103,12 +1107,32 @@ export function invalidatePrefetchCache(): void {
   }
 }
 
+/**
+ * Prevent completed navigation responses from becoming authoritative again
+ * after restoring a history snapshot. Explicit Link/router prefetches remain
+ * consumable. Responses with a positive cache lifetime and interception
+ * responses retain the cache reuse licensed by Next's segment cache.
+ */
+export function disableNavigationResponsePrefetchCacheReuse(): void {
+  let didDemote = false;
+  for (const entry of new Set(getPrefetchCache().values())) {
+    if (entry.prefetchKind === undefined && entry.reuseAfterHistoryRestore !== true) {
+      didDemote ||= entry.cacheForNavigation !== false;
+      entry.cacheForNavigation = false;
+    }
+  }
+  if (didDemote && !isServer) {
+    getNavigationRuntime()?.functions.pingVisibleLinks?.();
+  }
+}
+
 export function seedPrefetchResponseSnapshot(
   rscUrl: string,
   snapshot: CachedRscResponse,
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
   fallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
+  reuseAfterHistoryRestore: boolean = false,
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -1123,6 +1147,7 @@ export function seedPrefetchResponseSnapshot(
     expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
     mountedSlotsHeader,
     outcome: "cache-seeded",
+    reuseAfterHistoryRestore,
     size: snapshot.buffer.byteLength,
     snapshot,
     timestamp,
@@ -1437,8 +1462,8 @@ export function prefetchRscResponse(
   options?: PrefetchOptions,
   behavior: {
     cacheForNavigation?: boolean;
+    dynamicStaleTime?: "verbatim" | "full-prefetch" | "ignore";
     fallbackTtlMs?: number;
-    honorDynamicStaleTime?: boolean;
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
     prepareSnapshot?: (snapshot: CachedRscResponse) => Promise<AppElements>;
@@ -1486,7 +1511,10 @@ export function prefetchRscResponse(
           // data and is never navigation-consumable. Keep it on the prefetch
           // freshness lattice so another search string can reuse the shell;
           // the later navigation response still honors dynamicStaleTime.
-          behavior.honorDynamicStaleTime !== false && behavior.searchAgnosticShell !== true,
+          behavior.searchAgnosticShell === true
+            ? "ignore"
+            : (behavior.dynamicStaleTime ??
+                (behavior.optimisticRouteShell === true ? "ignore" : "verbatim")),
         );
         if (behavior.prepareSnapshot) {
           try {
@@ -1987,6 +2015,10 @@ const _EMPTY_PARAMS: Record<string, string | string[]> = {};
 
 export type ClientNavigationRenderSnapshot = {
   pathname: string;
+  // Preserve the browser URL's raw query spelling for exact navigation
+  // identity. ReadonlyURLSearchParams intentionally canonicalizes `%20` to `+`
+  // when serialized, so it cannot reconstruct the href used for a commit.
+  search: string;
   searchParams: ReadonlyURLSearchParams;
   params: Record<string, string | string[]>;
 };
@@ -2030,14 +2062,14 @@ export function createClientNavigationRenderSnapshot(
 
   return {
     pathname: stripBasePath(url.pathname, __basePath),
+    search: url.search,
     searchParams: new ReadonlyURLSearchParams(url.search),
     params,
   };
 }
 
 export function createSnapshotPathAndSearch(snapshot: ClientNavigationRenderSnapshot): string {
-  const query = snapshot.searchParams.toString();
-  return query === "" ? snapshot.pathname : `${snapshot.pathname}?${query}`;
+  return snapshot.pathname + snapshot.search;
 }
 
 // Module-level fallback for environments without window (tests, SSR).
@@ -2569,6 +2601,7 @@ export async function navigateClientSide(
   // an RSC fetch; everything else proceeds to the RSC navigation below.
   const earlyIntent = navigationPlanner.classifyEarlyNavigationIntent({
     basePath: __basePath,
+    currentUrlSpace: "browser",
     currentHref: window.location.href,
     mode,
     scroll,
@@ -2629,6 +2662,7 @@ export async function navigateClientSide(
         undefined,
         scrollIntent,
         visibleCommitMode,
+        earlyIntent.bypassNavigationCache,
       );
     } else {
       if (mode === "replace") {
@@ -2940,13 +2974,18 @@ const _appRouter: AppRouterInstance = {
                 policy.fallbackTtl === "dynamic"
                   ? DYNAMIC_NAVIGATION_CACHE_TTL
                   : PREFETCH_CACHE_TTL,
-              honorDynamicStaleTime: policy.honorDynamicStaleTime,
+              dynamicStaleTime: policy.dynamicStaleTime,
               optimisticRouteShell: false,
               prefetchKind: "navigation",
               prepareSnapshot: prepareNavigationPrefetchSnapshot,
             }
           : {
               cacheForNavigation: false,
+              fallbackTtlMs:
+                policy.fallbackTtl === "dynamic"
+                  ? DYNAMIC_NAVIGATION_CACHE_TTL
+                  : PREFETCH_CACHE_TTL,
+              dynamicStaleTime: policy.dynamicStaleTime,
               optimisticRouteShell: true,
               prefetchKind: "navigation",
             },
