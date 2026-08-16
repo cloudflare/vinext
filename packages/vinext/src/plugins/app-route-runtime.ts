@@ -1,10 +1,11 @@
 import { readFile } from "node:fs/promises";
 import MagicString from "magic-string";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import { parseAst, type Plugin, type ResolvedConfig } from "vite";
 import type { PluginApi } from "@vitejs/plugin-rsc";
 import type { AppRouteRuntime } from "../build/app-route-runtime.js";
 import { parserLanguageForModule } from "../utils/parser-language.js";
+import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 
 const APP_ROUTE_RUNTIME_QUERY = "__vinext_app_runtime";
 const APP_ROUTE_RUNTIME_REFERENCE_OWNER = "vinext:app-route-runtime";
@@ -13,6 +14,51 @@ const VITE_RSC_ENCRYPTION_KEY_ID = "\0virtual:vite-rsc/encryption-key";
 const SCRIPT_EXTENSION_RE = /\.(?:[cm]?[jt]sx?)$/i;
 const NON_SCRIPT_EXTENSION_RE =
   /\.(?:avif|bmp|css|csv|eot|gif|html?|ico|jpe?g|json|md|mp3|mp4|ogg|otf|pdf|png|svg|tiff?|txt|wav|webm|webp|woff2?|wasm|xml|ya?ml)$/i;
+const NON_EXECUTABLE_SCRIPT_QUERY_KEYS = new Set([
+  "inline",
+  "no-inline",
+  "raw",
+  "sharedworker",
+  "url",
+  "worker",
+]);
+const VINEXT_PACKAGE_ROOT = resolveVinextPackageRoot();
+const FRAMEWORK_RUNTIME_SINGLETON_PATH_RE =
+  /(?:^|\/)node_modules\/(?:\.pnpm\/[^/]+\/node_modules\/)?(?:@vinext\/[^/]+|@vitejs\/plugin-rsc|next|react|react-dom|react-server-dom-webpack|scheduler|vinext)(?:\/|$)/;
+const FRAMEWORK_RUNTIME_SINGLETONS = [
+  "@vitejs/plugin-rsc",
+  "next",
+  "react",
+  "react-dom",
+  "react-server-dom-webpack",
+  "scheduler",
+  "vinext",
+] as const;
+
+function isFrameworkRuntimeSingleton(source: string, resolvedId: string): boolean {
+  const isFrameworkSpecifier =
+    source.startsWith("@vinext/") ||
+    FRAMEWORK_RUNTIME_SINGLETONS.some(
+      (specifier) => source === specifier || source.startsWith(`${specifier}/`),
+    );
+  if (isFrameworkSpecifier) return true;
+
+  const resolvedPathname = toSlash(splitId(resolvedId).pathname);
+  if (
+    resolvedPathname.startsWith("\0vinext-") ||
+    resolvedPathname.startsWith("\0virtual:vinext-") ||
+    resolvedPathname.startsWith("virtual:vinext-")
+  ) {
+    return true;
+  }
+  if (FRAMEWORK_RUNTIME_SINGLETON_PATH_RE.test(resolvedPathname)) return true;
+  if (!path.isAbsolute(resolvedPathname)) return false;
+
+  const relativeToVinext = path.relative(VINEXT_PACKAGE_ROOT, resolvedPathname);
+  return (
+    relativeToVinext === "" || (!relativeToVinext.startsWith("../") && relativeToVinext !== "..")
+  );
+}
 
 function splitId(id: string): { pathname: string; query: string; search: URLSearchParams } {
   const queryIndex = id.indexOf("?");
@@ -117,6 +163,7 @@ export function createAppRouteRuntimeServerReferenceMap(
 function canLoadAsScriptModule(id: string): boolean {
   const { pathname, search } = splitId(id);
   if (pathname === VITE_RSC_ENCRYPTION_KEY_ID) return false;
+  if ([...search.keys()].some((key) => NON_EXECUTABLE_SCRIPT_QUERY_KEYS.has(key))) return false;
   if (pathname.toLowerCase().endsWith(".mdx")) {
     // Plain MDX is executable source after vinext's MDX transform. Preserve
     // query imports such as ?raw/?url as assets; only vinext's own runtime
@@ -131,40 +178,35 @@ function canLoadAsScriptModule(id: string): boolean {
   );
 }
 
-async function hasModuleDirective(
-  id: string,
-  directive: "use client" | "use server",
-): Promise<boolean> {
+type ModuleDirectives = { useClient: boolean; useServer: boolean };
+const NO_MODULE_DIRECTIVES: ModuleDirectives = { useClient: false, useServer: false };
+
+async function readModuleDirectives(id: string): Promise<ModuleDirectives> {
   const pathname = splitId(id).pathname;
-  if (!path.isAbsolute(pathname) || pathname.startsWith("\0")) return false;
+  if (!path.isAbsolute(pathname) || pathname.startsWith("\0")) return NO_MODULE_DIRECTIVES;
 
   let code: string;
   try {
     code = await readFile(pathname, "utf8");
   } catch {
-    return false;
+    return NO_MODULE_DIRECTIVES;
   }
 
   try {
     const ast = parseAst(code, { lang: parserLanguageForModule(pathname) });
+    let useClient = false;
+    let useServer = false;
     for (const statement of ast.body) {
       if (statement.type !== "ExpressionStatement" || typeof statement.directive !== "string") {
         break;
       }
-      if (statement.directive === directive) return true;
+      if (statement.directive === "use client") useClient = true;
+      if (statement.directive === "use server") useServer = true;
     }
+    return { useClient, useServer };
   } catch {
-    return false;
+    return NO_MODULE_DIRECTIVES;
   }
-  return false;
-}
-
-function hasUseClientDirective(id: string): Promise<boolean> {
-  return hasModuleDirective(id, "use client");
-}
-
-function hasUseServerDirective(id: string): Promise<boolean> {
-  return hasModuleDirective(id, "use server");
 }
 
 type AstNode = Record<string, unknown> & { end?: number; start?: number; type?: string };
@@ -234,10 +276,23 @@ export function createAppRouteRuntimePlugin(
   pluginOptions: CreateAppRouteRuntimePluginOptions = {},
 ): Plugin {
   const edgeClientModules = new Set<string>();
+  const moduleDirectives = new Map<string, Promise<ModuleDirectives>>();
+
+  function getModuleDirectives(id: string): Promise<ModuleDirectives> {
+    const pathname = toSlash(splitId(id).pathname);
+    const cached = moduleDirectives.get(pathname);
+    if (cached) return cached;
+    const directives = readModuleDirectives(pathname);
+    moduleDirectives.set(pathname, directives);
+    return directives;
+  }
 
   return {
     name: "vinext:app-route-runtime",
     enforce: "pre",
+    watchChange(id) {
+      moduleDirectives.delete(toSlash(splitId(id).pathname));
+    },
     async resolveId(source, importer, options) {
       if (this.environment?.name === "client") {
         if (!runtimeFromId(source)) return null;
@@ -261,23 +316,31 @@ export function createAppRouteRuntimePlugin(
         return resolved;
       }
 
+      // These packages own shared React/RSC/framework state. Giving them a
+      // second query-qualified identity splits dispatchers, request contexts,
+      // asset transforms, and plugin-rsc registries. The matched user route
+      // graph still receives the runtime qualifier, but stops at this runtime
+      // boundary just as separate Next.js route bundles share their framework
+      // runtime.
+      if (isFrameworkRuntimeSingleton(source, resolved.id)) return resolved;
+
       const canonicalResolvedId = withoutAppRouteRuntime(resolved.id);
-      const isUseClientModule = await hasUseClientDirective(resolved.id);
+      const directives = await getModuleDirectives(resolved.id);
       // The RSC scan stops at a canonical client boundary. Remember that the
       // boundary belongs to an edge route so the following SSR reference scan
       // can carry that reachability through client imports to `use server`.
-      if (runtime === "edge" && isUseClientModule) {
+      if (runtime === "edge" && directives.useClient) {
         edgeClientModules.add(canonicalResolvedId);
       }
       if (isEdgeClientImport) {
-        if (await hasUseServerDirective(resolved.id)) {
+        if (directives.useServer) {
           await pluginOptions.onEdgeServerReference?.(canonicalResolvedId, this.environment.config);
         } else {
           edgeClientModules.add(canonicalResolvedId);
         }
       }
 
-      if (!runtime || isUseClientModule) return resolved;
+      if (!runtime || directives.useClient) return resolved;
       return {
         ...resolved,
         id: withAppRouteRuntime(resolved.id, runtime),

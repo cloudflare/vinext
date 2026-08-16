@@ -38,6 +38,23 @@ describe("vinext:local-fonts plugin", () => {
     expect(plugin.enforce).toBe("pre");
   });
 
+  it("rewrites imports in runtime-qualified modules with loader queries", () => {
+    const plugin = getLocalFontsPlugin();
+    const transformHook = plugin.transform as {
+      filter: { id: { include: RegExp } };
+      handler: Function;
+    };
+    const id = "/app/layout.tsx?loader=active&__vinext_app_runtime=edge";
+    expect(transformHook.filter.id.include.test(id)).toBe(true);
+
+    const result = transformHook.handler.call(
+      plugin,
+      `import localFont from 'next/font/local'; const font = localFont({ src: './font.woff2' });`,
+      id,
+    );
+    expect(result?.code).toContain("__vinext_local_font_0");
+  });
+
   // ── Guard clauses ────────────────────────────────────────────
 
   it("returns null for files without next/font/local", () => {

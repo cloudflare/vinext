@@ -62,12 +62,6 @@ export const SUITE_SUPPORT_POLICY = {
     DEFERRED_PARTIAL_PRERENDERING,
   "test/e2e/app-dir/fallback-shells/fallback-shells.test.ts": DEFERRED_PARTIAL_PRERENDERING,
   "test/e2e/app-dir/next-config/index.test.ts": NEXT_BUNDLER_SPECIFIC,
-  "test/e2e/app-dir/next-after-app-deploy/index.test.ts": {
-    status: "unsupported",
-    feature: "Next.js dual Node.js and legacy Edge Runtime builds",
-    reason:
-      "Vinext uses one Workers/Node-compat server graph and does not implement Next.js's per-route legacy Edge Runtime bundle or route-specific process.env.NEXT_RUNTIME constant. This mixed file couples portable nodejs assertions with legacy edge-runtime variants; cover after() on Workers separately.",
-  },
   "test/e2e/app-dir/prefetch-true-instant/prefetch-true-instant.test.ts":
     DEFERRED_PARTIAL_PRERENDERING,
   "test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts": DEFERRED_PARTIAL_PRERENDERING,

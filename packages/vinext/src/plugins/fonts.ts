@@ -41,6 +41,7 @@ import { buildGoogleFontsUrl } from "../build/google-fonts/build-url.js";
 import { findFontFilesInCss } from "../build/google-fonts/find-font-files-in-css.js";
 import { CONTENT_TYPES } from "../server/static-file-cache.js";
 import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
+import { stripViteModuleQuery } from "../utils/path.js";
 
 /**
  * Thrown when Google Fonts returns a non-2xx response. Distinct from a raw
@@ -716,16 +717,18 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
       // import from next/font/google.
       filter: {
         id: {
-          include: /\.(tsx?|jsx?|mjs)$/,
+          include:
+            /\.(?:tsx?|jsx?|mjs)(?:\?(?:[^#]+&)?__vinext_app_runtime=(?:edge|nodejs)(?:&[^#]*)?)?$/,
         },
         code: "next/font/google",
       },
       async handler(code, id) {
         // Defensive guard — duplicates filter logic
         if (id.startsWith("\0")) return null;
-        if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
+        const sourceId = stripViteModuleQuery(id);
+        if (!sourceId.match(/\.(tsx?|jsx?|mjs)$/)) return null;
         if (!code.includes("next/font/google")) return null;
-        if (id.startsWith(shimsDir)) return null;
+        if (sourceId.startsWith(shimsDir)) return null;
 
         // Read the resolved `build.assetsDir` from the current Vite
         // environment so it can be closed over by the inner
@@ -867,7 +870,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             // with the file path attached so Vite reports the offending
             // call site instead of a generic plugin error.
             const message = err instanceof Error ? err.message : String(err);
-            throw new Error(`[vinext:google-fonts] ${id}: ${message}`);
+            throw new Error(`[vinext:google-fonts] ${sourceId}: ${message}`);
           }
           const axes = getFontAxes(
             family,
@@ -892,7 +895,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
                 // through to a CDN URL that ships the same bad request
                 // to the browser.
                 throw new Error(
-                  `[vinext:google-fonts] ${id}: Google Fonts returned HTTP ${err.status} for ${err.url}.\n${formatGoogleFontsErrorBody(err.responseBody)}`,
+                  `[vinext:google-fonts] ${sourceId}: Google Fonts returned HTTP ${err.status} for ${err.url}.\n${formatGoogleFontsErrorBody(err.responseBody)}`,
                 );
               }
               // Network errors (offline, DNS, AbortError) are recoverable;
@@ -1157,14 +1160,16 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
       // default-import check below keep this from touching unrelated modules.
       filter: {
         id: {
-          include: /\.(tsx?|jsx?|mjs)$/,
+          include:
+            /\.(?:tsx?|jsx?|mjs)(?:\?(?:[^#]+&)?__vinext_app_runtime=(?:edge|nodejs)(?:&[^#]*)?)?$/,
         },
         code: "next/font/local",
       },
       handler(code, id) {
         // Defensive guards — duplicate filter logic
         if (id.startsWith("\0")) return null;
-        if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
+        const sourceId = stripViteModuleQuery(id);
+        if (!sourceId.match(/\.(tsx?|jsx?|mjs)$/)) return null;
         if (!code.includes("next/font/local")) return null;
         // Skip vinext's own shim files — the font-local shim contains example
         // paths in comments that would be incorrectly rewritten. A precise
@@ -1172,7 +1177,7 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
         // substring) is required now that node_modules is no longer excluded,
         // so legitimate third-party packages whose path happens to contain
         // `font-local` are still transformed. Mirrors `createGoogleFontsPlugin`.
-        if (id.startsWith(shimsDir)) return null;
+        if (sourceId.startsWith(shimsDir)) return null;
 
         // Verify there's actually a default import from next/font/local and
         // remember its local binding so family payloads only attach to real

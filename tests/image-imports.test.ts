@@ -137,6 +137,21 @@ describe("vinext:image-imports — transform", () => {
     expect(code).toContain(metaSpecifier + "?vinext-meta");
   }
 
+  it("admits runtime-qualified modules while preserving other loader queries", async () => {
+    const plugin = getImagePlugin();
+    const transformHook = plugin.transform as {
+      filter: { id: { include: RegExp } };
+      handler: Function;
+    };
+    const id = `${fakeId}?loader=active&__vinext_app_runtime=edge`;
+    expect(transformHook.filter.id.include.test(id)).toBe(true);
+
+    const code = `import hero from './test-4x3.png';`;
+    const result = await transformHook.handler.call(plugin, code, id);
+    expect(result).not.toBeNull();
+    expectImageBinding(result.code, "hero", "test-4x3.png");
+  });
+
   it("transforms a PNG import into StaticImageData", async () => {
     const plugin = getImagePlugin();
     const transform = unwrapHook(plugin.transform);

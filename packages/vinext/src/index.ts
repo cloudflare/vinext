@@ -4347,7 +4347,8 @@ export const loadServerActionClient = ${
       transform: {
         filter: {
           id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
+            include:
+              /\.(?:tsx?|jsx?|mjs)(?:\?(?:[^#]+&)?__vinext_app_runtime=(?:edge|nodejs)(?:&[^#]*)?)?$/,
             exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
           },
           code: /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/,
@@ -6309,7 +6310,8 @@ export const loadServerActionClient = ${
         // the JS handler entirely for files that don't match.
         filter: {
           id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
+            include:
+              /\.(?:tsx?|jsx?|mjs)(?:\?(?:[^#]+&)?__vinext_app_runtime=(?:edge|nodejs)(?:&[^#]*)?)?$/,
             exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
           },
           code: new RegExp(`import\\s+\\w+\\s+from\\s+['"][^'"]+\\.(${IMAGE_EXTS})['"]`),
@@ -6338,7 +6340,9 @@ export const loadServerActionClient = ${
           // (`<Foo>bar`) and non-comma generic arrows (`<T>(x) => x`) would throw
           // — which the `catch` below would swallow, silently leaving image
           // imports in those files untransformed.
-          const lang = id.endsWith(".ts") ? "ts" : "tsx";
+          const canonicalId = withoutAppRouteRuntime(id);
+          const sourcePath = canonicalId.split("?", 1)[0];
+          const lang = sourcePath.endsWith(".ts") ? "ts" : "tsx";
           let ast: ReturnType<typeof parseAst>;
           try {
             ast = parseAst(code, { lang });
@@ -6379,10 +6383,10 @@ export const loadServerActionClient = ${
             // since the path is embedded in the ESM module specifier below,
             // which should use forward slashes. fs accepts them on Windows,
             // so existsSync still works.
-            const dir = path.dirname(id);
+            const dir = path.dirname(sourcePath);
             const resolvedImage = importPath.startsWith(".")
               ? path.resolve(dir, importPath)
-              : (await this.resolve(importPath, id, { skipSelf: true }))?.id;
+              : (await this.resolve(importPath, canonicalId, { skipSelf: true }))?.id;
             if (!resolvedImage) continue;
             const absImagePath = toSlash(resolvedImage.split("?", 1)[0]);
 

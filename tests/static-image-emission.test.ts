@@ -60,6 +60,7 @@ type FixtureOptions = {
   basePath?: string;
   assetPrefix?: string;
   deploymentId?: string;
+  routeRuntime?: "edge";
 };
 
 async function createFixture(
@@ -89,7 +90,8 @@ async function createFixture(
   writeFixtureFile(root, "test.svg", SVG_2X3);
   writeFixtureFile(root, "tiny.png", PNG_1X1);
   if (options.basePath || options.assetPrefix || options.deploymentId) {
-    writeFixtureFile(root, "next.config.mjs", `export default ${JSON.stringify(options)};\n`);
+    const { routeRuntime: _, ...nextConfig } = options;
+    writeFixtureFile(root, "next.config.mjs", `export default ${JSON.stringify(nextConfig)};\n`);
   }
 
   const imageMarkup = `
@@ -132,6 +134,7 @@ import ClientImage from "./client-image";
 export default function Page() {
   return <main>${imageMarkup}<ClientImage /></main>;
 }
+${options.routeRuntime ? `\nexport const runtime = ${JSON.stringify(options.routeRuntime)};\n` : ""}
 `,
     );
   } else {
@@ -431,6 +434,10 @@ describe("static image import production emission", () => {
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-image/next-image.test.ts
   it("emits App Router static imports while preserving ordinary asset thresholds", async () => {
     await assertStaticImageProductionParity("app");
+  }, 60_000);
+
+  it("emits Edge App Router static imports while preserving ordinary asset thresholds", async () => {
+    await assertStaticImageProductionParity("app", { routeRuntime: "edge" });
   }, 60_000);
 
   it("emits Pages Router static imports while preserving ordinary asset thresholds", async () => {

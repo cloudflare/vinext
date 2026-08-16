@@ -592,6 +592,24 @@ describe("vinext:google-fonts plugin", () => {
     expect(plugin.enforce).toBe("pre");
   });
 
+  it("rewrites imports in runtime-qualified modules with loader queries", async () => {
+    const plugin = getGoogleFontsPlugin();
+    initPlugin(plugin, { command: "serve" });
+    const transformHook = plugin.transform as {
+      filter: { id: { include: RegExp } };
+      handler: Function;
+    };
+    const id = "/app/layout.tsx?loader=active&__vinext_app_runtime=edge";
+    expect(transformHook.filter.id.include.test(id)).toBe(true);
+
+    const result = await transformHook.handler.call(
+      plugin,
+      `import { Inter } from 'next/font/google';`,
+      id,
+    );
+    expect(result?.code).toContain("virtual:vinext-google-fonts?");
+  });
+
   it("rewrites named font imports in dev mode", async () => {
     // Verifies the import-rewrite path runs in `command: "serve"` (it gates
     // on the transform filter, not on the build mode). The constructor-call

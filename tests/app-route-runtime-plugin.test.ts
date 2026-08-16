@@ -248,6 +248,54 @@ describe("App route runtime module graph", () => {
     });
   });
 
+  it.each([
+    "@vinext/cloudflare",
+    "@vitejs/plugin-rsc/rsc",
+    "next/image",
+    "react",
+    "react/jsx-runtime",
+    "react-dom/server",
+    "react-server-dom-webpack/server.edge",
+    "scheduler",
+    "vinext/server",
+  ])("preserves the canonical %s framework runtime singleton", async (source) => {
+    const plugin = createAppRouteRuntimePlugin();
+    const resolvedId = `/node_modules/${source}/index.js`;
+    const resolve = vi.fn(async () => ({ id: resolvedId }));
+    const resolveId = hookHandler(plugin.resolveId!);
+    const result = await resolveId.call(
+      { resolve } as unknown as ThisParameterType<typeof resolveId>,
+      source,
+      withAppRouteRuntime("/app/edge/page.tsx", "edge"),
+      { attributes: {}, isEntry: false },
+    );
+
+    expect(result).toEqual({ id: resolvedId });
+  });
+
+  it.each([
+    ["#react-alias", "/project/node_modules/react/index.js"],
+    ["/project/node_modules/next/image.js", "/project/node_modules/next/image.js"],
+    ["#vinext-source-alias", path.resolve("packages/vinext/src/shims/image.tsx")],
+    ["/project/image.png?vinext-image-url", "\0vinext-image-url:/project/image.png"],
+    ["virtual:vinext-root-params", "\0virtual:vinext-root-params"],
+  ])(
+    "preserves the canonical framework runtime for %s resolving to %s",
+    async (source, resolvedId) => {
+      const plugin = createAppRouteRuntimePlugin();
+      const resolve = vi.fn(async () => ({ id: resolvedId }));
+      const resolveId = hookHandler(plugin.resolveId!);
+      const result = await resolveId.call(
+        { resolve } as unknown as ThisParameterType<typeof resolveId>,
+        source,
+        withAppRouteRuntime("/app/edge/page.tsx", "edge"),
+        { attributes: {}, isEntry: false },
+      );
+
+      expect(result).toEqual({ id: resolvedId });
+    },
+  );
+
   it("keeps a shared use client boundary on its canonical module id", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-runtime-boundary-"));
     const boundary = path.join(root, "boundary.ts");
@@ -264,6 +312,36 @@ describe("App route runtime module graph", () => {
         { attributes: {}, isEntry: false },
       );
       expect(result).toEqual({ id: boundary });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("invalidates cached module directives when a watched file changes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-runtime-boundary-"));
+    const boundary = path.join(root, "boundary.ts");
+    await fs.writeFile(boundary, `"use client"\nexport const value = 1`);
+    const plugin = createAppRouteRuntimePlugin();
+    const resolve = vi.fn(async () => ({ id: boundary }));
+    const resolveId = hookHandler(plugin.resolveId!);
+    const resolveBoundary = () =>
+      resolveId.call(
+        { resolve } as unknown as ThisParameterType<typeof resolveId>,
+        "./boundary",
+        withAppRouteRuntime("/app/edge/page.tsx", "edge"),
+        { attributes: {}, isEntry: false },
+      );
+
+    try {
+      expect(await resolveBoundary()).toEqual({ id: boundary });
+      await fs.writeFile(boundary, `export const value = 2`);
+      expect(await resolveBoundary()).toEqual({ id: boundary });
+
+      const watchChange = hookHandler(plugin.watchChange!);
+      await watchChange.call({} as ThisParameterType<typeof watchChange>, boundary, {
+        event: "update",
+      });
+      expect(await resolveBoundary()).toEqual({ id: withAppRouteRuntime(boundary, "edge") });
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -322,21 +400,39 @@ describe("App route runtime module graph", () => {
     },
   );
 
-  it("preserves query-based loader semantics while propagating the runtime", async () => {
+  it.each(["raw", "url", "inline", "no-inline", "worker", "sharedworker"])(
+    "preserves the canonical module for the Vite ?%s query",
+    async (query) => {
+      const plugin = createAppRouteRuntimePlugin();
+      const resolvedId = `/app/message.ts?${query}`;
+      const resolve = vi.fn(async () => ({ id: resolvedId }));
+      const resolveId = hookHandler(plugin.resolveId!);
+      const result = await resolveId.call(
+        { resolve } as unknown as ThisParameterType<typeof resolveId>,
+        `./message.ts?${query}`,
+        withAppRouteRuntime("/app/edge/page.tsx", "edge"),
+        { attributes: {}, isEntry: false },
+      );
+
+      expect(result).toEqual({ id: resolvedId });
+      expect(plugin.load).toBeUndefined();
+    },
+  );
+
+  it("preserves custom executable loader queries while propagating the runtime", async () => {
     const plugin = createAppRouteRuntimePlugin();
-    const resolve = vi.fn(async () => ({ id: "/app/message.ts?raw" }));
+    const resolve = vi.fn(async () => ({ id: "/app/message.ts?custom-loader=active" }));
     const resolveId = hookHandler(plugin.resolveId!);
     const result = await resolveId.call(
       { resolve } as unknown as ThisParameterType<typeof resolveId>,
-      "./message.ts?raw",
+      "./message.ts?custom-loader=active",
       withAppRouteRuntime("/app/edge/page.tsx", "edge"),
       { attributes: {}, isEntry: false },
     );
 
     expect(result).toEqual({
-      id: "/app/message.ts?raw&__vinext_app_runtime=edge",
+      id: "/app/message.ts?custom-loader=active&__vinext_app_runtime=edge",
     });
-    expect(plugin.load).toBeUndefined();
   });
 
   it("runtime-qualifies executable MDX while preserving MDX asset queries", async () => {
