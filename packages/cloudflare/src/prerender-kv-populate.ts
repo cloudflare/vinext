@@ -19,6 +19,7 @@ import {
   getRenderedMetadataRoutes,
   readPrerenderManifest,
 } from "vinext/internal/server/prerender-manifest";
+import { readPrerenderDataCacheEntries } from "vinext/internal/server/prerender-data-cache";
 import { normalizePregeneratedPathname } from "vinext/internal/server/pregenerated-concrete-paths";
 import {
   getAppRouteOutputPath,
@@ -38,7 +39,7 @@ export type KVBulkPair = {
 };
 
 type CacheControlMetadata = {
-  revalidate: number;
+  revalidate: number | false;
   expire?: number;
   stale?: number;
 };
@@ -62,7 +63,7 @@ function buildCacheEntry(
   value: Record<string, unknown>,
   tags: string[],
   now: number,
-  revalidateSeconds: number | undefined,
+  revalidateSeconds: number | false | undefined,
   expireSeconds: number | undefined,
   staleSeconds: number | undefined,
 ): string {
@@ -79,7 +80,7 @@ function buildCacheEntry(
     value,
     tags,
     lastModified: now,
-    revalidateAt: revalidateSeconds === undefined ? null : now + revalidateSeconds * 1000,
+    revalidateAt: typeof revalidateSeconds === "number" ? now + revalidateSeconds * 1000 : null,
     expireAt: expireSeconds === undefined ? null : now + expireSeconds * 1000,
     ...(cacheControl ? { cacheControl } : {}),
   });
@@ -115,6 +116,36 @@ export function buildPrerenderKVPairs(
   const trailingSlash = manifest.trailingSlash ?? false;
   const keySpace = createKvKeySpace(options?.appPrefix);
   let routeCount = 0;
+
+  for (const entry of readPrerenderDataCacheEntries(prerenderDir)) {
+    const contextCacheControl =
+      entry.context?.cacheControl && typeof entry.context.cacheControl === "object"
+        ? (entry.context.cacheControl as Record<string, unknown>)
+        : undefined;
+    const revalidate =
+      typeof contextCacheControl?.revalidate === "number" ||
+      contextCacheControl?.revalidate === false
+        ? contextCacheControl.revalidate
+        : entry.value.revalidate;
+    const expire =
+      typeof contextCacheControl?.expire === "number" ? contextCacheControl.expire : undefined;
+    const stale =
+      typeof contextCacheControl?.stale === "number" ? contextCacheControl.stale : undefined;
+    const tags = [
+      ...new Set([
+        ...(entry.value.tags ?? []),
+        ...((entry.context?.tags as string[] | undefined) ?? []),
+      ]),
+    ];
+    const metadata = buildMetadata(tags);
+
+    pairs.push({
+      key: keySpace.entryKey(entry.key),
+      value: buildCacheEntry(entry.value, tags, entry.lastModified, revalidate, expire, stale),
+      ...(typeof revalidate === "number" ? { expiration_ttl: ttlSeconds } : {}),
+      ...(metadata ? { metadata } : {}),
+    });
+  }
 
   for (const route of getRenderedAppRoutes(manifest.routes)) {
     const artifactPathname = route.path ?? route.route;

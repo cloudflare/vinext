@@ -78,6 +78,7 @@ import {
   type ImageConfig,
 } from "./image-optimization.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
+import { hasExplicitNonCacheableResponsePolicy } from "./cache-control.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
@@ -1765,6 +1766,11 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     } catch (error) {
       await closeAfterResponse(requestContext);
       throw error;
+    }
+    if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
+      requestContext.prerenderDataCacheState.commit =
+        !requestContext.prerenderDataCacheState.privateCacheUsed ||
+        !hasExplicitNonCacheableResponsePolicy(response.headers);
     }
     return closeAfterResponseWithBody(response, requestContext);
   };

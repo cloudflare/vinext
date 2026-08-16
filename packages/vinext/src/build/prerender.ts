@@ -72,6 +72,10 @@ import {
   createAppPprFallbackShells,
   markAppPprDynamicFallbackShellHtml,
 } from "../server/app-ppr-fallback-shell.js";
+import {
+  createPrerenderDataCacheHandler,
+  resetPrerenderDataCache,
+} from "../server/prerender-data-cache.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { buildAppRouteCacheValue } from "../server/app-route-handler-response.js";
 import { isMetadataResponseCacheable } from "../server/metadata-route-cache-policy.js";
@@ -94,11 +98,12 @@ function getErrorMessageWithStack(err: Error): string {
 }
 
 async function startOptionalPrerenderServerPool(
-  outDir: string,
+  serverOutDir: string,
   poolSize: number,
+  prerenderDataCacheDir?: string,
 ): Promise<PrerenderServerPool | null> {
   try {
-    return await startPrerenderServerPool(outDir, poolSize);
+    return await startPrerenderServerPool(serverOutDir, poolSize, undefined, prerenderDataCacheDir);
   } catch (e) {
     // The pool is a performance optimization layered over the already-running
     // in-process prerender server. Startup failure is still before any route has
@@ -1048,7 +1053,10 @@ export async function prerenderApp({
   fs.mkdirSync(outDir, { recursive: true });
 
   const previousHandler = getCacheHandler();
-  setCacheHandler(new NoOpCacheHandler());
+  if (mode !== "export") resetPrerenderDataCache(outDir);
+  setCacheHandler(
+    mode === "export" ? new NoOpCacheHandler() : createPrerenderDataCacheHandler(outDir),
+  );
   // VINEXT_PRERENDER=1 tells the prod server to skip instrumentation.register()
   // and enable prerender-only endpoints (/__vinext/prerender/*), while
   // NEXT_PHASE matches Next's static-worker contract for application code.
@@ -1734,7 +1742,11 @@ export async function prerenderApp({
     if (!options._prodServer && prerenderPoolAvailable()) {
       const poolSize = resolvePrerenderPoolSize(urlsToRender.length, concurrency);
       if (poolSize > 1) {
-        renderPool = await startOptionalPrerenderServerPool(path.dirname(serverDir), poolSize);
+        renderPool = await startOptionalPrerenderServerPool(
+          path.dirname(serverDir),
+          poolSize,
+          mode === "export" ? undefined : outDir,
+        );
         if (renderPool) renderPorts = renderPool.ports;
       }
     }

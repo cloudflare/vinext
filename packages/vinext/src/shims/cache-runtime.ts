@@ -136,6 +136,8 @@ export type CacheContext = {
   hasExplicitRevalidate: boolean;
   /** Whether cacheLife() was called with an explicit expire value */
   hasExplicitExpire: boolean;
+  /** Background regeneration stores metadata without affecting the stale caller. */
+  skipPropagation?: boolean;
   /**
    * The first nested public "use cache" invocation with a dynamic cache life
    * (revalidate === 0 or expire < DYNAMIC_EXPIRE) that propagated up to this
@@ -412,6 +414,33 @@ const _privateFallbackState = (_g[_PRIVATE_FALLBACK_KEY] ??= {
   _privateCache: new Map<string, unknown>(),
 } satisfies PrivateCacheState) as PrivateCacheState;
 
+const _USE_CACHE_PENDING_REVALIDATIONS_KEY = Symbol.for("vinext.useCache.pendingRevalidations");
+
+function scheduleUseCacheBackgroundRevalidation(
+  cacheKey: string,
+  refresh: () => Promise<unknown>,
+): void {
+  const pending = (_g[_USE_CACHE_PENDING_REVALIDATIONS_KEY] ??= new Map<
+    string,
+    Promise<void>
+  >()) as Map<string, Promise<void>>;
+  if (pending.has(cacheKey)) return;
+
+  const revalidation = refresh()
+    .then(() => undefined)
+    .catch((error) => {
+      console.error(`[vinext] use cache: background revalidation failed for ${cacheKey}:`, error);
+    });
+  const tracked = revalidation.finally(() => {
+    if (pending.get(cacheKey) === tracked) pending.delete(cacheKey);
+  });
+  pending.set(cacheKey, tracked);
+
+  if (isInsideUnifiedScope()) {
+    getRequestContext().executionContext?.waitUntil(tracked);
+  }
+}
+
 function _getPrivateState(): PrivateCacheState {
   if (isInsideUnifiedScope()) {
     const ctx = getRequestContext();
@@ -565,9 +594,30 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   // Per-request ("use cache: private") caching still works in dev since
   // it's scoped to a single request and doesn't persist across HMR.
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
+  const requestMemoKey = (): void => {};
 
   const cachedFn = (...args: TArgs): Promise<TResult> =>
     trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
+      // Establish private-cache semantics before doing any work that can fail
+      // while deriving the cache key. A non-serializable argument must not
+      // bypass either the public-parent guard or prerender dynamic tracking.
+      if (cacheVariant === "private") {
+        const parentCtx = cacheContextStorage.getStore();
+        if (parentCtx && parentCtx.variant !== "private") {
+          throwPrivateUseCacheInsidePublicUseCacheError();
+        }
+
+        if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
+          // Next.js treats "use cache: private" as dynamic during prerendering:
+          // it is excluded from the static artifact and resolved per request.
+          // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+          if (isInsideUnifiedScope()) {
+            getRequestContext().prerenderDataCacheState.privateCacheUsed = true;
+          }
+          markDynamicUsage();
+        }
+      }
+
       const rsc = await getRscModule();
       const keySeed = getUseCacheKeySeed();
       const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
@@ -613,24 +663,14 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           cacheKey = buildUseCacheKey(id, keySeed, argsKey);
         }
       } catch {
-        // Non-serializable arguments — run without caching
-        return fn(...callArgs);
+        // Non-serializable arguments — run without caching, but retain the
+        // cache scope so nested directives and cache-life propagation keep the
+        // same semantics as serializable calls.
+        return executeWithContext(fn, callArgs, cacheVariant);
       }
 
       // "use cache: private" uses per-request in-memory cache
       if (cacheVariant === "private") {
-        const parentCtx = cacheContextStorage.getStore();
-        if (parentCtx && parentCtx.variant !== "private") {
-          throwPrivateUseCacheInsidePublicUseCacheError();
-        }
-
-        if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
-          // Next.js treats "use cache: private" as dynamic during prerendering:
-          // it is excluded from the static artifact and resolved per request.
-          // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
-          markDynamicUsage();
-        }
-
         const privateCache = _getPrivateState()._privateCache!;
         const privateHit = privateCache.get(cacheKey);
         if (privateHit !== undefined) {
@@ -667,6 +707,120 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // The soft tags are path-derived implicit tags set by the enclosing route
       // handler or page dispatch — see setCurrentFetchSoftTags in fetch-cache.ts.
       const softTags = getCurrentFetchSoftTags();
+      let requestResumeCache:
+        | Map<string, { cacheControl?: CacheControlMetadata; tags: string[]; value: TResult }>
+        | undefined;
+      if (isInsideUnifiedScope()) {
+        const requestCache = getRequestContext().requestCache;
+        requestResumeCache = requestCache.get(requestMemoKey) as typeof requestResumeCache;
+        if (!requestResumeCache) {
+          requestResumeCache = new Map();
+          requestCache.set(requestMemoKey, requestResumeCache);
+        }
+        const resumed = requestResumeCache.get(cacheKey);
+        if (resumed && !_hasPendingRevalidatedTag([...resumed.tags, ...softTags])) {
+          propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
+          propagateCacheTagsToRequest(resumed.tags);
+          recordRequestScopedCacheControl(resumed.cacheControl);
+          return resumed.value;
+        }
+      }
+
+      const refreshAndStore = async (propagateToRequest = true): Promise<TResult> => {
+        let execution: CachedFunctionResult<TResult, SerializedCacheResult | null>;
+        try {
+          execution = await runCachedFunctionWithContext(fn, callArgs, cacheVariant, {
+            collectResult: (value) => serializeCacheResult(value, rsc),
+            skipPropagation: !propagateToRequest,
+          });
+        } catch (error) {
+          await handler.releasePendingSet?.(cacheKey);
+          throw error;
+        }
+        const { result, ctx, effectiveLife, collectedResult } = execution;
+
+        const rootParamNames =
+          ctx.readRootParamNames && ctx.readRootParamNames.size > 0
+            ? addKnownRootParamNames(id, ctx.readRootParamNames)
+            : knownRootParamsByFunctionId.get(id);
+
+        if (propagateToRequest) {
+          recordRequestScopedCacheLife(effectiveLife);
+          // Bubble the cache scope's tags up to the surrounding request so the
+          // enclosing page / route-handler ISR entry is tagged for on-demand
+          // revalidation (issue #1453). `ctx.tags` already includes any nested
+          // child cache's tags via `runCachedFunctionWithContext`.
+          propagateCacheTagsToRequest(ctx.tags);
+        }
+        const revalidateSeconds =
+          effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
+
+        // Serialization ran while the cache ALS was active so lazy Server
+        // Component work is reflected in `ctx` before selecting the final key.
+        if (collectedResult) {
+          try {
+            const cacheValue = {
+              kind: "FETCH",
+              data: {
+                headers: collectedResult.headers,
+                body: collectedResult.body,
+                url: cacheKey,
+              },
+              tags: ctx.tags,
+              revalidate: revalidateSeconds,
+            } satisfies CachedFetchValue;
+            const cacheContext = {
+              fetchCache: true,
+              tags: ctx.tags,
+              cacheControl: {
+                revalidate: revalidateSeconds,
+                expire: effectiveLife.expire,
+                // Persisted so a later hit re-registers the same claim; otherwise
+                // the enclosing render's minimum depends on cache temperature.
+                stale: effectiveLife.stale,
+              },
+            };
+
+            if (rootParamNames && rootParamNames.size > 0 && rootParams) {
+              const specificCacheKey =
+                coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames);
+              const redirectTags = [
+                ...ctx.tags,
+                ...[...rootParamNames].map((name) => ROOT_PARAM_TAG_PREFIX + name),
+              ];
+              await handler.set(
+                coarseCacheKey,
+                {
+                  kind: "FETCH",
+                  data: {
+                    headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
+                    body: "",
+                    url: coarseCacheKey,
+                  },
+                  tags: redirectTags,
+                  revalidate: revalidateSeconds,
+                },
+                { ...cacheContext, tags: redirectTags },
+              );
+              // Write the useful entry last. A bounded LRU that can retain only
+              // one of the pair must keep the specific value, not the redirect.
+              cacheValue.data.url = specificCacheKey;
+              await handler.set(specificCacheKey, cacheValue, cacheContext);
+            } else {
+              await handler.set(cacheKey, cacheValue, cacheContext);
+            }
+          } catch {
+            // A handler failure skips caching but must not fail the render.
+            await handler.releasePendingSet?.(cacheKey);
+          }
+        } else {
+          // Result not serializable — skip caching, still return the result.
+          await handler.releasePendingSet?.(cacheKey);
+        }
+
+        return result;
+      };
+
       // A handler failure (e.g. a transient KV error, or a key the store
       // rejects) must not surface as a render error: fall through to fresh
       // execution so control-flow signals like notFound()/redirect() thrown by
@@ -701,9 +855,19 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       if (
         existing?.value &&
         existing.value.kind === "FETCH" &&
-        existing.cacheState !== "stale" &&
+        existing.cacheState !== "expired" &&
         !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
       ) {
+        // Static generation must never bake a stale cache value into a new
+        // artifact. Next.js treats stale use-cache entries as foreground misses
+        // while prerendering; SWR is only a runtime response optimization.
+        if (
+          existing.cacheState === "stale" &&
+          typeof process !== "undefined" &&
+          process.env.VINEXT_PRERENDER === "1"
+        ) {
+          return refreshAndStore();
+        }
         try {
           propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
           // Surface the cached entry's tags to the surrounding request so the
@@ -721,99 +885,35 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
               { preserveServerReferences: true },
             );
             recordRequestScopedCacheControl(existing.cacheControl);
+            if (existing.cacheState === "stale") {
+              requestResumeCache?.set(cacheKey, {
+                cacheControl: existing.cacheControl,
+                tags: existing.value.tags ?? [],
+                value: result,
+              });
+              scheduleUseCacheBackgroundRevalidation(cacheKey, () => refreshAndStore(false));
+            }
             return result;
           }
           // JSON-serialized entry (legacy or no RSC available)
           const result = JSON.parse(existing.value.data.body);
           recordRequestScopedCacheControl(existing.cacheControl);
+          if (existing.cacheState === "stale") {
+            requestResumeCache?.set(cacheKey, {
+              cacheControl: existing.cacheControl,
+              tags: existing.value.tags ?? [],
+              value: result,
+            });
+            scheduleUseCacheBackgroundRevalidation(cacheKey, () => refreshAndStore(false));
+          }
           return result;
         } catch {
           // Corrupted entry, fall through to re-execute
         }
       }
 
-      // Cache miss (or stale) — execute with context
-      const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
-        fn,
-        callArgs,
-        cacheVariant,
-        (value) => serializeCacheResult(value, rsc),
-      );
-
-      const rootParamNames =
-        ctx.readRootParamNames && ctx.readRootParamNames.size > 0
-          ? addKnownRootParamNames(id, ctx.readRootParamNames)
-          : knownRootParamsByFunctionId.get(id);
-
-      recordRequestScopedCacheLife(effectiveLife);
-      // Bubble the cache scope's tags up to the surrounding request so the
-      // enclosing page / route-handler ISR entry is tagged for on-demand
-      // revalidation (issue #1453). `ctx.tags` already includes any nested
-      // child cache's tags via `runCachedFunctionWithContext`.
-      propagateCacheTagsToRequest(ctx.tags);
-      const revalidateSeconds =
-        effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
-
-      // Serialization ran while the cache ALS was active so lazy Server
-      // Component work is reflected in `ctx` before selecting the final key.
-      if (collectedResult) {
-        try {
-          const cacheValue = {
-            kind: "FETCH",
-            data: {
-              headers: collectedResult.headers,
-              body: collectedResult.body,
-              url: cacheKey,
-            },
-            tags: ctx.tags,
-            revalidate: revalidateSeconds,
-          } satisfies CachedFetchValue;
-          const cacheContext = {
-            fetchCache: true,
-            tags: ctx.tags,
-            cacheControl: {
-              revalidate: revalidateSeconds,
-              expire: effectiveLife.expire,
-              // Persisted so a later hit re-registers the same claim; otherwise
-              // the enclosing render's minimum depends on cache temperature.
-              stale: effectiveLife.stale,
-            },
-          };
-
-          if (rootParamNames && rootParamNames.size > 0 && rootParams) {
-            const specificCacheKey =
-              coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames);
-            const redirectTags = [
-              ...ctx.tags,
-              ...[...rootParamNames].map((name) => ROOT_PARAM_TAG_PREFIX + name),
-            ];
-            await handler.set(
-              coarseCacheKey,
-              {
-                kind: "FETCH",
-                data: {
-                  headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
-                  body: "",
-                  url: coarseCacheKey,
-                },
-                tags: redirectTags,
-                revalidate: revalidateSeconds,
-              },
-              { ...cacheContext, tags: redirectTags },
-            );
-            // Write the useful entry last. A bounded LRU that can retain only
-            // one of the pair must keep the specific value, not the redirect.
-            cacheValue.data.url = specificCacheKey;
-            await handler.set(specificCacheKey, cacheValue, cacheContext);
-          } else {
-            await handler.set(cacheKey, cacheValue, cacheContext);
-          }
-        } catch {
-          // A handler failure skips caching but must not fail the render.
-        }
-      }
-
-      return result;
+      // Cache miss or hard expiry — execute and store in the foreground.
+      return refreshAndStore();
     }, cacheVariant);
 
   // Preserve the original function's arity on the wrapper. The wrapper is
@@ -887,11 +987,13 @@ function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | un
     }
     parentCtx.dynamicNestedCacheError ??= error;
   }
-  _setRequestScopedCacheLife(life);
+  if (!parentCtx?.skipPropagation) _setRequestScopedCacheLife(life);
 }
 
 function recordRequestScopedCacheLife(cacheLife: CacheLifeConfig): void {
-  _setRequestScopedCacheLife(cacheLife);
+  if (!cacheContextStorage.getStore()?.skipPropagation) {
+    _setRequestScopedCacheLife(cacheLife);
+  }
 }
 
 /**
@@ -934,12 +1036,14 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   args: any[],
   variant: string,
 ): Promise<Awaited<ReturnType<T>>> {
-  const {
-    result,
-    ctx: _ctx,
-    effectiveLife,
-  } = await runCachedFunctionWithContext(fn, args, variant);
+  const { result, ctx, effectiveLife } = await runCachedFunctionWithContext(fn, args, variant);
   recordRequestScopedCacheLife(effectiveLife);
+  // Transient executions (dev/draft/private or an uncacheable argument) do not
+  // reach the normal shared-cache MISS publication path. Their tags still
+  // invalidate the enclosing cache/request, exactly as a stored execution's
+  // tags do. The helper deduplicates when runCachedFunctionWithContext already
+  // bubbled them into a parent cache scope.
+  propagateCacheTagsToRequest(ctx.tags);
   return result;
 }
 
@@ -973,7 +1077,7 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
  * inner-vs-outer recording does not affect correctness — the final request
  * stale/revalidate/expire is the min across all caches encountered.
  */
-type CachedFunctionResult<T, TCollected> = {
+type CachedFunctionResult<T, TCollected = never> = {
   result: T;
   ctx: CacheContext;
   effectiveLife: CacheLifeConfig;
@@ -989,9 +1093,14 @@ async function runCachedFunctionWithContext<
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   args: any[],
   variant: string,
-  collectResult?: (result: Awaited<ReturnType<T>>, context: CacheContext) => Promise<TCollected>,
+  options?: {
+    collectResult?: (result: Awaited<ReturnType<T>>, context: CacheContext) => Promise<TCollected>;
+    skipPropagation?: boolean;
+  },
 ): Promise<CachedFunctionResult<Awaited<ReturnType<T>>, TCollected>> {
   const parentCtx = cacheContextStorage.getStore();
+  const skipParentPropagation = options?.skipPropagation === true;
+  const suppressRequestPropagation = skipParentPropagation || parentCtx?.skipPropagation === true;
 
   // Eagerly capture an error at the call site if we're inside a public cache.
   // Private parents are intentionally excluded — "use cache: private" is
@@ -1012,7 +1121,7 @@ async function runCachedFunctionWithContext<
   // bottleneck for cache-heavy workloads, switching to a lazy capture would
   // be the optimization — at the cost of less useful stack frames.
   let eagerError: Error | undefined;
-  if (parentCtx && parentCtx.variant !== "private") {
+  if (!skipParentPropagation && parentCtx && parentCtx.variant !== "private") {
     eagerError = new NestedDynamicUseCacheError();
     if (typeof Error.captureStackTrace === "function") {
       Error.captureStackTrace(eagerError, runCachedFunctionWithContext);
@@ -1028,13 +1137,14 @@ async function runCachedFunctionWithContext<
     hasExplicitExpire: false,
     dynamicNestedCacheError: undefined,
     invalidDynamicUsageError: undefined,
+    skipPropagation: suppressRequestPropagation,
   };
 
   let collectedResult: TCollected | undefined;
   const result = await cacheContextStorage.run(ctx, async () => {
     const value = await fn(...args);
-    if (collectResult) {
-      collectedResult = await collectResult(value, ctx);
+    if (options?.collectResult) {
+      collectedResult = await options.collectResult(value, ctx);
     }
     return value;
   });
@@ -1076,7 +1186,7 @@ async function runCachedFunctionWithContext<
   // threshold checks below would evaluate false, and the throw would never
   // fire. (The `hasExplicit*` guards then independently decide whether to
   // suppress the throw — see the longer comment below.)
-  if (parentCtx) {
+  if (!skipParentPropagation && parentCtx) {
     parentCtx.lifeConfigs.push(effectiveLife);
     // Bubble this inner cache's tags into the parent cache scope so the
     // outer entry (and ultimately the request) is invalidated when a tag
@@ -1100,6 +1210,7 @@ async function runCachedFunctionWithContext<
   // Next.js: see `dynamicNestedCacheError ??=` in
   // packages/next/src/server/use-cache/use-cache-wrapper.ts.
   if (
+    !skipParentPropagation &&
     parentCtx &&
     eagerError &&
     (effectiveLife.revalidate === 0 ||

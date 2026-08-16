@@ -31,7 +31,11 @@
 
 import fs from "node:fs";
 import path from "pathslash";
-import type { CachedAppPageValue, CachedRouteValue } from "vinext/shims/cache-handler";
+import {
+  getDataCacheHandler,
+  type CachedAppPageValue,
+  type CachedRouteValue,
+} from "vinext/shims/cache-handler";
 import {
   appIsrCacheKey,
   isrCacheKey,
@@ -56,6 +60,7 @@ import {
   getRenderedMetadataRoutes,
   isFallbackShellArtifactPath,
 } from "./prerender-manifest.js";
+import { seedPrerenderDataCache } from "./prerender-data-cache.js";
 
 type PrerenderCacheSeedMetadata = {
   expireSeconds?: number;
@@ -115,6 +120,7 @@ export async function seedMemoryCacheFromPrerender(
 
   const trailingSlash = manifest.trailingSlash ?? false;
   const prerenderDir = path.join(serverDir, "prerendered-routes");
+  await seedPrerenderDataCache(prerenderDir, getDataCacheHandler());
   const writeAppPageEntry = options?.writeAppPageEntry ?? createDefaultAppPageEntryWriter();
   const writeAppRouteEntry = options?.writeAppRouteEntry ?? isrSet;
   let seeded = 0;

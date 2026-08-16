@@ -3,6 +3,9 @@ import { fnv1a64 } from "vinext/internal/utils/hash";
 /** Key prefix for tag invalidation timestamps. */
 const TAG_PREFIX = "__tag:";
 
+/** Separate keyspace for profiled stale/deadline markers. */
+const PROFILE_TAG_PREFIX = "__tag_profile:";
+
 /** Key prefix for cache entries. */
 export const ENTRY_PREFIX = "cache:";
 
@@ -19,6 +22,7 @@ export type KvKeySpace = {
   entryPrefix: string;
   entryKey(logicalKey: string): string;
   tagKey(tag: string): string;
+  profileTagKey(tag: string): string;
 };
 
 function kvKeyByteLength(key: string): number {
@@ -33,9 +37,7 @@ function normalizeAppPrefix(appPrefix: string | undefined): string {
   if (!appPrefix) return "";
 
   const prefix = `${appPrefix}:`;
-  const longestCategoryPrefix =
-    ENTRY_PREFIX.length >= TAG_PREFIX.length ? ENTRY_PREFIX : TAG_PREFIX;
-  const shortestHashedKey = `${prefix}${longestCategoryPrefix}${HASHED_KEY_PREFIX}${fnv1a64("")}`;
+  const shortestHashedKey = `${prefix}${PROFILE_TAG_PREFIX}${HASHED_KEY_PREFIX}${fnv1a64("")}`;
   if (kvKeyByteLength(shortestHashedKey) <= KV_KEY_MAX_BYTES) return prefix;
 
   return `__app:${fnv1a64(appPrefix)}:`;
@@ -58,5 +60,6 @@ export function createKvKeySpace(appPrefix: string | undefined): KvKeySpace {
     entryPrefix: `${prefix}${ENTRY_PREFIX}`,
     entryKey: (logicalKey) => buildStorageKey(prefix, ENTRY_PREFIX, logicalKey),
     tagKey: (tag) => buildStorageKey(prefix, TAG_PREFIX, tag),
+    profileTagKey: (tag) => buildStorageKey(prefix, PROFILE_TAG_PREFIX, tag),
   };
 }

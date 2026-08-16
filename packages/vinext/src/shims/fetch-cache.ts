@@ -1331,11 +1331,23 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     // Cache miss — fetch from network
-    const response = await (mustBypassPendingRevalidation
-      ? originalFetch(input, fetchInit)
-      : dedupeFetch(input, fetchInit));
+    let response: Response;
+    try {
+      response = await (mustBypassPendingRevalidation
+        ? originalFetch(input, fetchInit)
+        : dedupeFetch(input, fetchInit));
+    } catch (error) {
+      await handler.releasePendingSet?.(cacheKey);
+      throw error;
+    }
 
-    const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
+    let cacheValue: CachedFetchValue | null;
+    try {
+      cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
+    } catch (error) {
+      await handler.releasePendingSet?.(cacheKey);
+      throw error;
+    }
     if (cacheValue) {
       handler
         .set(cacheKey, cacheValue, {
@@ -1346,6 +1358,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
         .catch((err) => {
           console.error("[vinext] fetch cache write error:", err);
         });
+    } else {
+      await handler.releasePendingSet?.(cacheKey);
     }
 
     return response;

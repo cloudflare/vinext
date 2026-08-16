@@ -102,6 +102,7 @@ describe("KVCacheHandler", () => {
   let handler: KVCacheHandler;
 
   beforeEach(() => {
+    vi.useRealTimers();
     store = new Map();
     kv = createMockKV(store);
     handler = new KVCacheHandler(kv as any);
@@ -212,6 +213,10 @@ describe("KVCacheHandler", () => {
       const tagKey = kv.put.mock.calls.at(-1)![0] as string;
       expect(new TextEncoder().encode(tagKey).length).toBeLessThanOrEqual(512);
       expect(tagKey).toMatch(/^__tag:__hash:[0-9a-f]{16}$/);
+      await handler.revalidateTag(tag, { expire: 60 });
+      const profileTagKey = kv.put.mock.calls.at(-1)![0] as string;
+      expect(new TextEncoder().encode(profileTagKey).length).toBeLessThanOrEqual(512);
+      expect(profileTagKey).toMatch(/^__tag_profile:__hash:[0-9a-f]{16}$/);
 
       store.set(
         "cache:tagged-with-long-tag",
@@ -222,6 +227,7 @@ describe("KVCacheHandler", () => {
 
       expect(await freshHandler.get("tagged-with-long-tag")).not.toBeNull();
       expect(kv.get).toHaveBeenCalledWith(tagKey);
+      expect(kv.get).toHaveBeenCalledWith(profileTagKey);
     });
   });
 
@@ -603,8 +609,119 @@ describe("KVCacheHandler", () => {
     it("revalidateTag persists slash-based path invalidation markers", async () => {
       await handler.revalidateTag(["/revalidate-tag-test", "_N_T_/revalidate-tag-test"]);
 
-      expect(store.get("__tag:/revalidate-tag-test")).toMatch(/^\d+$/);
-      expect(store.get("__tag:_N_T_/revalidate-tag-test")).toMatch(/^\d+$/);
+      expect(JSON.parse(store.get("__tag:/revalidate-tag-test")!)).toEqual({
+        expiredAt: expect.any(Number),
+      });
+      expect(JSON.parse(store.get("__tag:_N_T_/revalidate-tag-test")!)).toEqual({
+        expiredAt: expect.any(Number),
+      });
+    });
+
+    it("serves profiled tag revalidation stale until its expiry", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(2_000);
+      store.set(
+        "cache:profiled-entry",
+        validEntry(
+          {
+            kind: "FETCH",
+            data: { headers: {}, body: "cached", url: "https://example.test/data" },
+            tags: ["profiled"],
+            revalidate: 3600,
+          },
+          { lastModified: 1_000, tags: ["profiled"] },
+        ),
+      );
+
+      await handler.revalidateTag("profiled", { expire: 60 });
+      expect((await handler.get("profiled-entry"))?.cacheState).toBe("stale");
+
+      vi.setSystemTime(62_001);
+      expect(await handler.get("profiled-entry")).toBeNull();
+    });
+
+    it("keeps a value refreshed during a profiled stale window past the old deadline", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(2_000);
+      await handler.set(
+        "profiled-refresh",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "old", url: "https://example.test/data" },
+          tags: ["profiled-refresh"],
+          revalidate: false,
+        },
+        { tags: ["profiled-refresh"] },
+      );
+      await handler.revalidateTag("profiled-refresh", { expire: 60 });
+      expect((await handler.get("profiled-refresh"))?.cacheState).toBe("stale");
+
+      vi.setSystemTime(3_000);
+      await handler.set(
+        "profiled-refresh",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "fresh", url: "https://example.test/data" },
+          tags: ["profiled-refresh"],
+          revalidate: false,
+        },
+        { tags: ["profiled-refresh"] },
+      );
+      vi.setSystemTime(62_001);
+      await expect(handler.get("profiled-refresh")).resolves.toMatchObject({
+        value: { kind: "FETCH", data: { body: "fresh" } },
+      });
+    });
+
+    it("does not weaken a hard invalidation with a later profiled revalidation", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+      await handler.set(
+        "hard-then-profiled",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "old", url: "https://example.test/data" },
+          tags: ["ordered"],
+          revalidate: false,
+        },
+        { tags: ["ordered"] },
+      );
+      vi.setSystemTime(2_000);
+      await handler.revalidateTag("ordered");
+      vi.setSystemTime(3_000);
+      await handler.revalidateTag("ordered", { expire: 60 });
+
+      await expect(handler.get("hard-then-profiled")).resolves.toBeNull();
+    });
+
+    it("keeps concurrent hard and profiled invalidations independently composable", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+      await handler.set(
+        "concurrent-markers",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "old", url: "https://example.test/data" },
+          tags: ["concurrent"],
+          revalidate: false,
+        },
+        { tags: ["concurrent"] },
+      );
+      vi.setSystemTime(2_000);
+      await Promise.all([
+        handler.revalidateTag("concurrent"),
+        handler.revalidateTag("concurrent", { expire: 60 }),
+      ]);
+
+      expect(JSON.parse(store.get("__tag:concurrent")!)).toEqual({
+        expiredAt: expect.any(Number),
+      });
+      expect(JSON.parse(store.get("__tag_profile:concurrent")!)).toEqual({
+        expireAt: expect.any(Number),
+        staleAt: expect.any(Number),
+      });
+      const freshHandler = new KVCacheHandler(kv as any);
+      await expect(freshHandler.get("concurrent-markers")).resolves.toBeNull();
     });
 
     it("slash-based path tags invalidate persisted APP_PAGE entries", async () => {
@@ -686,9 +803,10 @@ describe("KVCacheHandler", () => {
       expect(result).not.toBeNull();
       expect(kv.get).toHaveBeenCalledWith("cache:fetch-entry");
       expect(kv.get).toHaveBeenCalledWith("__tag:_N_T_/posts/hello");
+      expect(kv.get).toHaveBeenCalledWith("__tag_profile:_N_T_/posts/hello");
       expect(kv.get).not.toHaveBeenCalledWith("__tag:bad:tag");
       expect(kv.get).not.toHaveBeenCalledWith("__tag:");
-      expect(kv.get).toHaveBeenCalledTimes(2);
+      expect(kv.get).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -876,8 +994,8 @@ describe("KVCacheHandler", () => {
       const result1 = await handler.get("tagged-page");
       expect(result1).not.toBeNull();
 
-      // kv.get calls: 1 for the entry + 2 for the tags = 3
-      expect(kv.get).toHaveBeenCalledTimes(3);
+      // kv.get calls: 1 entry + hard/profile markers for each of 2 tags = 5
+      expect(kv.get).toHaveBeenCalledTimes(5);
 
       // Reset call counts
       kv.get.mockClear();
@@ -934,14 +1052,14 @@ describe("KVCacheHandler", () => {
         }),
       );
 
-      // First get() — populates local tag cache (entry + tag = 2 calls)
+      // First get() — populates local tag cache (entry + hard/profile markers)
       await shortTtlHandler.get("ttl-page");
-      expect(kv.get).toHaveBeenCalledTimes(2);
+      expect(kv.get).toHaveBeenCalledTimes(3);
       kv.get.mockClear();
 
       // Second get() — TTL is 0ms so entry is already expired; must re-fetch tag from KV
       await shortTtlHandler.get("ttl-page");
-      expect(kv.get).toHaveBeenCalledTimes(2); // entry + tag again
+      expect(kv.get).toHaveBeenCalledTimes(3); // entry + both tag markers again
     });
 
     it("tag invalidation works end-to-end with local cache", async () => {
@@ -1000,11 +1118,12 @@ describe("KVCacheHandler", () => {
       const result = await handler.get("partial-page2");
       expect(result).not.toBeNull();
 
-      // kv.get: 1 for entry + 1 for t3 (t1 was cached). NOT 2 for tags.
-      expect(kv.get).toHaveBeenCalledTimes(2);
-      // Verify the calls are for the entry and t3 only
+      // kv.get: 1 entry + hard/profile markers for t3 (t1 was cached).
+      expect(kv.get).toHaveBeenCalledTimes(3);
+      // Verify the calls are for the entry and t3 only.
       expect(kv.get).toHaveBeenCalledWith("cache:partial-page2");
       expect(kv.get).toHaveBeenCalledWith("__tag:t3");
+      expect(kv.get).toHaveBeenCalledWith("__tag_profile:t3");
     });
 
     it("NaN tag timestamp in local cache treated as invalidation", async () => {
@@ -1060,10 +1179,10 @@ describe("KVCacheHandler", () => {
         }),
       );
 
-      // First get() — populates local tag cache (1 entry + 2 tags = 3 calls)
+      // First get() — populates local tag cache (1 entry + 2 markers per tag)
       const result1 = await handler.get("reset-page");
       expect(result1).not.toBeNull();
-      expect(kv.get).toHaveBeenCalledTimes(3);
+      expect(kv.get).toHaveBeenCalledTimes(5);
       kv.get.mockClear();
 
       // Second get() without reset — tags served from local cache (1 entry only)
@@ -1075,10 +1194,10 @@ describe("KVCacheHandler", () => {
       // Clear the local cache
       handler.resetRequestCache();
 
-      // Third get() after reset — tags must be re-fetched from KV (1 entry + 2 tags = 3 calls)
+      // Third get() after reset — both marker kinds must be re-fetched.
       const result3 = await handler.get("reset-page");
       expect(result3).not.toBeNull();
-      expect(kv.get).toHaveBeenCalledTimes(3);
+      expect(kv.get).toHaveBeenCalledTimes(5);
       expect(kv.get).toHaveBeenCalledWith("cache:reset-page");
       expect(kv.get).toHaveBeenCalledWith("__tag:t1");
       expect(kv.get).toHaveBeenCalledWith("__tag:t2");
@@ -1228,6 +1347,31 @@ describe("KVCacheHandler", () => {
   });
 
   describe("revalidate: 0 skips storage", () => {
+    it("round-trips revalidate false without expiring the KV entry", async () => {
+      await handler.set(
+        "static-data",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "static", url: "" },
+          tags: [],
+          revalidate: false,
+        },
+        { cacheControl: { revalidate: false } },
+      );
+
+      const stored = JSON.parse(store.get("cache:static-data")!);
+      expect(stored).toMatchObject({
+        revalidateAt: null,
+        cacheControl: { revalidate: false },
+      });
+      const putOptions = kv.put.mock.calls.at(-1)?.[2];
+      expect(putOptions?.expirationTtl).toBeUndefined();
+      await expect(handler.get("static-data")).resolves.toMatchObject({
+        cacheControl: { revalidate: false },
+        value: { kind: "FETCH", revalidate: false },
+      });
+    });
+
     it("skips KV write when ctx.revalidate is 0", async () => {
       await handler.set(
         "no-cache-ctx",
@@ -1268,6 +1412,54 @@ describe("KVCacheHandler", () => {
       const result = await handler.get("override-positive");
       expect(result).not.toBeNull();
     });
+  });
+
+  it("keeps a same-millisecond write newer than tag invalidation", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    await handler.set(
+      "same-ms",
+      {
+        kind: "FETCH",
+        data: { headers: {}, body: "before", url: "" },
+        tags: ["same-ms-tag"],
+        revalidate: false,
+      },
+      { tags: ["same-ms-tag"] },
+    );
+    await handler.revalidateTag("same-ms-tag");
+    await handler.set(
+      "same-ms",
+      {
+        kind: "FETCH",
+        data: { headers: {}, body: "after", url: "" },
+        tags: ["same-ms-tag"],
+        revalidate: false,
+      },
+      { tags: ["same-ms-tag"] },
+    );
+
+    await expect(handler.get("same-ms")).resolves.toMatchObject({
+      value: { kind: "FETCH", data: { body: "after" } },
+    });
+    now.mockRestore();
+  });
+
+  it("checks newly requested fetch tags before serving a hit", async () => {
+    await handler.set(
+      "requested-tag",
+      {
+        kind: "FETCH",
+        data: { headers: {}, body: "old", url: "" },
+        tags: ["tag-a"],
+        revalidate: false,
+      },
+      { tags: ["tag-a"] },
+    );
+    await handler.revalidateTag("tag-b");
+
+    await expect(
+      handler.get("requested-tag", { kind: "FETCH", tags: ["tag-b"] }),
+    ).resolves.toBeNull();
   });
 
   // -------------------------------------------------------------------------

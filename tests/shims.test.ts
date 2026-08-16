@@ -7130,6 +7130,140 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(2);
   });
 
+  it("registerCachedFunction serves profiled tag revalidation stale while refreshing", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheLife, cacheTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, getRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const { _markPendingRevalidatedTag, _peekRequestScopedCacheLife } =
+      await import("../packages/vinext/src/shims/cache-request-state.js");
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+
+    const waitUntilPromises: Promise<unknown>[] = [];
+    let callCount = 0;
+    const refreshChild = registerCachedFunction(async () => {
+      cacheTag("refresh-child-tag");
+      cacheLife({ revalidate: 2, expire: 8, stale: 1 });
+      return "child";
+    }, "test:profiled-swr-refresh-child");
+    await refreshChild();
+    const cached = registerCachedFunction(async () => {
+      const value = ++callCount;
+      cacheTag("profiled-swr");
+      if (value > 1) {
+        cacheTag("refresh-only-tag");
+        cacheLife({ revalidate: 5, expire: 10, stale: 1 });
+        await refreshChild();
+      } else {
+        cacheLife({ revalidate: 120, expire: 240, stale: 30 });
+      }
+      if (value > 1) await new Promise((resolve) => setTimeout(resolve, 50));
+      return { value };
+    }, "test:profiled-swr");
+
+    expect(await cached()).toEqual({ value: 1 });
+    await handler.revalidateTag("profiled-swr", { expire: 60 });
+
+    const requestContext = createRequestContext({
+      executionContext: {
+        waitUntil(promise) {
+          waitUntilPromises.push(promise);
+        },
+      },
+    });
+    const result = await runWithRequestContext(requestContext, async () => {
+      const first = await Promise.race([
+        cached(),
+        new Promise((resolve) => setTimeout(() => resolve("blocked"), 10)),
+      ]);
+      if (first === "blocked") return first;
+      await Promise.all(waitUntilPromises);
+      const metadataAfterBackground = {
+        life: _peekRequestScopedCacheLife(),
+        tags: [...getRequestContext().currentRequestTags],
+      };
+      const second = await cached();
+      _markPendingRevalidatedTag("profiled-swr");
+      const afterOwnInvalidation = await cached();
+      return { metadataAfterBackground, values: [first, second, afterOwnInvalidation] };
+    });
+
+    expect(result).not.toBe("blocked");
+    if (result === "blocked") return;
+    expect(result).toEqual({
+      metadataAfterBackground: {
+        life: { expire: 240, revalidate: 120, stale: 30 },
+        tags: ["profiled-swr"],
+      },
+      values: [{ value: 1 }, { value: 1 }, { value: 3 }],
+    });
+    expect(waitUntilPromises).toHaveLength(1);
+    expect(await cached()).toEqual({ value: 3 });
+  });
+
+  it("registerCachedFunction refreshes stale entries in the foreground while prerendering", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+    let callCount = 0;
+    const cached = registerCachedFunction(async () => {
+      cacheTag("prerender-stale");
+      return ++callCount;
+    }, "test:prerender-stale");
+
+    expect(await cached()).toBe(1);
+    await handler.revalidateTag("prerender-stale", { expire: 60 });
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    try {
+      await expect(cached()).resolves.toBe(2);
+      expect(callCount).toBe(2);
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("registerCachedFunction accepts custom-handler fresh cache states", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const set = vi.fn(async () => {});
+    const handler: CacheHandler = {
+      async get() {
+        return {
+          cacheState: "fresh",
+          lastModified: Date.now(),
+          value: {
+            kind: "FETCH",
+            data: { body: JSON.stringify("custom-hit"), headers: {}, url: "custom" },
+            revalidate: false,
+          },
+        };
+      },
+      set,
+      async revalidateTag() {},
+    };
+    setCacheHandler(handler);
+    const execution = vi.fn(async () => "executed");
+
+    try {
+      const cached = registerCachedFunction(execution, "test:custom-fresh-state");
+      await expect(cached()).resolves.toBe("custom-hit");
+      expect(execution).not.toHaveBeenCalled();
+      expect(set).not.toHaveBeenCalled();
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("nested cacheTag bubbles to the outer cache entry even when the inner HITs", async () => {
     // Regression for issue #1453 (nested-HIT path): when an inner "use cache"
     // function HITs the data cache while nested inside an outer cache that is
@@ -7227,6 +7361,36 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  it("marks private prerenders dynamic before a non-serializable cache key fails", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+
+    try {
+      const requestContext = createRequestContext();
+      await runWithRequestContext(requestContext, async () => {
+        let calls = 0;
+        const cached = registerCachedFunction(
+          async (_value: symbol) => ++calls,
+          "test:private-prerender-nonserializable",
+          "private",
+        );
+
+        await expect(cached(Symbol("first"))).resolves.toBe(1);
+        await expect(cached(Symbol("second"))).resolves.toBe(2);
+        expect(consumeDynamicUsage()).toBe(true);
+        expect(requestContext.prerenderDataCacheState.privateCacheUsed).toBe(true);
+      });
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
   it('rejects "use cache: private" nested inside public "use cache"', async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -7256,6 +7420,37 @@ describe('"use cache" runtime', () => {
       } finally {
         setHeadersContext(null);
       }
+    });
+  });
+
+  it("rejects private cache nested inside a public cache with a non-serializable key", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const handler = new MemoryCacheHandler();
+    const set = vi.spyOn(handler, "set");
+    setCacheHandler(handler);
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      let innerCalls = 0;
+      const inner = registerCachedFunction(
+        async () => ++innerCalls,
+        "test:private-nonserializable-inner",
+        "private",
+      );
+      const outer = registerCachedFunction(
+        async (_value: symbol) => inner(),
+        "test:private-nonserializable-outer",
+      );
+
+      await expect(outer(Symbol("request"))).rejects.toThrow(
+        /"use cache: private" must not be used within "use cache"/,
+      );
+      expect(innerCalls).toBe(0);
+      expect(set).not.toHaveBeenCalled();
     });
   });
 
@@ -7463,6 +7658,29 @@ describe('"use cache" runtime', () => {
     await cached(() => {});
     await cached(() => {});
     expect(callCount).toBe(2);
+  });
+
+  it("propagates and deduplicates tags from non-serializable cache calls", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+    const requestContext = createRequestContext();
+
+    await runWithRequestContext(requestContext, async () => {
+      const cached = registerCachedFunction(async (_value: symbol) => {
+        cacheTag("transient-tag", "transient-tag");
+        return "ok";
+      }, "test:nonserializable-tags");
+
+      await cached(Symbol("first"));
+      await cached(Symbol("second"));
+    });
+
+    expect(requestContext.currentRequestTags).toEqual(["transient-tag"]);
   });
 
   it("produces different cache entries for Promise-augmented params with different values", async () => {

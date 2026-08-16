@@ -14,18 +14,22 @@
  */
 import { startProdServer } from "../server/prod-server.js";
 import { NoOpCacheHandler, setCacheHandler } from "vinext/shims/cache-handler";
+import { createPrerenderDataCacheHandler } from "../server/prerender-data-cache.js";
 
 async function main(): Promise<void> {
   const outDir = process.env.VINEXT_PRERENDER_OUTDIR;
   if (!outDir) {
     throw new Error("[vinext] prerender server worker: VINEXT_PRERENDER_OUTDIR not set");
   }
-  // Match the single-process prerender path, which installs a NoOp cache
-  // handler in the build process (prerenderPages/prerenderApp). The cache
-  // handler is a process-global (globalThis + Symbol.for), so setting it here
-  // makes this child render byte-identically to the in-process server — no ISR
-  // / unstable_cache / fetch-cache reuse across routes within a worker.
-  setCacheHandler(new NoOpCacheHandler());
+  // App Router cache-component prerenders share data entries across workers
+  // and persist them for runtime resume seeding. Pages prerenders retain the
+  // existing isolated NoOp behavior.
+  const prerenderDataCacheDir = process.env.VINEXT_PRERENDER_DATA_CACHE_DIR;
+  setCacheHandler(
+    prerenderDataCacheDir
+      ? createPrerenderDataCacheHandler(prerenderDataCacheDir)
+      : new NoOpCacheHandler(),
+  );
   const { port } = await startProdServer({
     port: 0,
     host: "127.0.0.1",

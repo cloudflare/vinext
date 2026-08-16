@@ -33,7 +33,11 @@ import {
   getRequestExecutionContext,
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
-import { isUnknownRecord, readCacheControlNumberField } from "../utils/cache-control-metadata.js";
+import {
+  isUnknownRecord,
+  readCacheControlNumberField,
+  readCacheControlRevalidateField,
+} from "../utils/cache-control-metadata.js";
 import type { KvDataAdapterOptions } from "./kv-data-adapter.js";
 import { createKvKeySpace, type KvKeySpace } from "./kv-key.js";
 
@@ -92,6 +96,15 @@ type KVCacheEntry = {
   expireAt?: number | null;
   /** Effective cache-control policy used for response headers. */
   cacheControl?: CacheControlMetadata;
+};
+
+type TagRevalidation = {
+  /** Hard invalidation generation (updateTag / one-argument revalidateTag). */
+  expiredAt?: number;
+  /** Deadline for entries older than staleAt after a profiled revalidation. */
+  expireAt?: number;
+  /** Profiled invalidation generation. */
+  staleAt?: number;
 };
 
 /** Prefix used by revalidatePath for path-based tags. */
@@ -184,9 +197,11 @@ export class KVCacheHandler implements CacheHandler {
   private ttlSeconds: number;
 
   /** Local in-memory cache for tag invalidation timestamps. Avoids redundant KV reads. */
-  private _tagCache = new Map<string, { timestamp: number; fetchedAt: number }>();
+  private _tagCache = new Map<string, { revalidation: TagRevalidation; fetchedAt: number }>();
   /** TTL (ms) for local tag cache entries. After this, re-fetch from KV. */
   private _tagCacheTtl: number;
+  /** Keep writes ordered when multiple cache operations occur in one millisecond. */
+  private _lastTimestamp = 0;
 
   constructor(
     kvNamespace: KVNamespace,
@@ -213,6 +228,18 @@ export class KVCacheHandler implements CacheHandler {
     return this.keySpace.tagKey(tag);
   }
 
+  private _profileTagKey(tag: string): string {
+    return this.keySpace.profileTagKey(tag);
+  }
+
+  private _nextTimestamp(): number {
+    return (this._lastTimestamp = Math.max(Date.now(), this._lastTimestamp + 1));
+  }
+
+  private _currentTimestamp(): number {
+    return Math.max(Date.now(), this._lastTimestamp);
+  }
+
   async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const kvKey = this._entryKey(key);
     const raw = await this.kv.get(kvKey);
@@ -235,6 +262,7 @@ export class KVCacheHandler implements CacheHandler {
       this._deleteInBackground(kvKey);
       return null;
     }
+    this._lastTimestamp = Math.max(this._lastTimestamp, entry.lastModified);
 
     // Restore ArrayBuffer fields that were base64-encoded for JSON storage
     let restoredValue: IncrementalCacheValue | null = null;
@@ -247,27 +275,40 @@ export class KVCacheHandler implements CacheHandler {
       }
     }
 
-    if (await this._hasRevalidatedTag(validUniqueTags(entry.tags), entry.lastModified)) {
+    const requestedTags = validUniqueTags(readStringArrayField(_ctx, "tags"));
+    const hardTags = validUniqueTags([...entry.tags, ...requestedTags]);
+    if (restoredValue?.kind === "FETCH" && hardTags.length !== entry.tags.length) {
+      // Surface newly requested tags on the hit so enclosing caches carry them.
+      // Do not rewrite the KV entry from this read path: KV has no compare-and-
+      // swap, so a late tag-only write could overwrite a concurrent refresh.
+      restoredValue = { ...restoredValue, tags: hardTags };
+    }
+
+    const hardTagState = await this._getTagRevalidation(hardTags, entry.lastModified);
+    if (hardTagState === "expired") {
       this._deleteInBackground(kvKey);
       return null;
     }
 
     const softTags = validUniqueTags(readStringArrayField(_ctx, "softTags"));
-    if (await this._hasRevalidatedTag(softTags, entry.lastModified)) {
+    const softTagState = await this._getTagRevalidation(softTags, entry.lastModified);
+    if (softTagState === "expired") {
       return null;
     }
 
-    if (entry.expireAt !== undefined && entry.expireAt !== null && Date.now() > entry.expireAt) {
+    const now = this._currentTimestamp();
+    if (entry.expireAt !== undefined && entry.expireAt !== null && now > entry.expireAt) {
       this._deleteInBackground(kvKey);
       return null;
     }
 
     // Check time-based revalidation — return stale with cacheState.
-    const now = Date.now();
     const requestedRevalidate = readPositiveNumberField(_ctx, "revalidate");
     const requestedRevalidateAt =
       requestedRevalidate === undefined ? null : entry.lastModified + requestedRevalidate * 1000;
     const isStale =
+      hardTagState === "stale" ||
+      softTagState === "stale" ||
       (entry.revalidateAt !== null && now > entry.revalidateAt) ||
       (requestedRevalidateAt !== null && now > requestedRevalidateAt);
 
@@ -291,21 +332,23 @@ export class KVCacheHandler implements CacheHandler {
    * Check tag invalidation markers for stored tags or read-time soft tags.
    * Uses a local in-memory cache to avoid redundant KV reads for recently-seen tags.
    */
-  private async _hasRevalidatedTag(tags: string[], lastModified: number): Promise<boolean> {
-    if (tags.length === 0) return false;
+  private async _getTagRevalidation(
+    tags: string[],
+    lastModified: number,
+  ): Promise<"expired" | "stale" | null> {
+    if (tags.length === 0) return null;
 
-    const now = Date.now();
+    const now = this._currentTimestamp();
     const uncachedTags: string[] = [];
+    let stale = false;
 
     // First pass: check local cache for each tag.
     // Delete expired entries to prevent unbounded Map growth in long-lived isolates.
     for (const tag of tags) {
       const cached = this._tagCache.get(tag);
       if (cached && now - cached.fetchedAt < this._tagCacheTtl) {
-        // Local cache hit — check invalidation inline
-        if (Number.isNaN(cached.timestamp) || cached.timestamp >= lastModified) {
-          return true;
-        }
+        if (this._tagIsExpired(cached.revalidation, lastModified, now)) return "expired";
+        if (this._tagIsStale(cached.revalidation, lastModified)) stale = true;
       } else {
         // Expired or absent — evict stale entry and re-fetch from KV
         if (cached) this._tagCache.delete(tag);
@@ -318,25 +361,74 @@ export class KVCacheHandler implements CacheHandler {
     // so subsequent get() calls benefit from the already-fetched results.
     if (uncachedTags.length > 0) {
       const tagResults = await Promise.all(
-        uncachedTags.map((tag) => this.kv.get(this._tagKey(tag))),
+        uncachedTags.map(async (tag) => {
+          const [hard, profile] = await Promise.all([
+            this.kv.get(this._tagKey(tag)),
+            this.kv.get(this._profileTagKey(tag)),
+          ]);
+          return { hard, profile };
+        }),
       );
 
       for (let i = 0; i < uncachedTags.length; i++) {
-        const tagTime = tagResults[i];
-        const tagTimestamp = tagTime ? Number(tagTime) : 0;
-        this._tagCache.set(uncachedTags[i], { timestamp: tagTimestamp, fetchedAt: now });
+        const legacyOrHard = this._parseTagRevalidation(tagResults[i].hard);
+        const profile = this._parseTagRevalidation(tagResults[i].profile);
+        this._tagCache.set(uncachedTags[i], {
+          revalidation: {
+            ...legacyOrHard,
+            ...(profile.staleAt === undefined ? {} : { staleAt: profile.staleAt }),
+            ...(profile.expireAt === undefined ? {} : { expireAt: profile.expireAt }),
+          },
+          fetchedAt: now,
+        });
       }
 
       for (const tag of uncachedTags) {
         const cached = this._tagCache.get(tag);
-        if (!cached || cached.timestamp === 0) continue;
-        if (Number.isNaN(cached.timestamp) || cached.timestamp >= lastModified) {
-          return true;
-        }
+        if (!cached) continue;
+        if (this._tagIsExpired(cached.revalidation, lastModified, now)) return "expired";
+        if (this._tagIsStale(cached.revalidation, lastModified)) stale = true;
       }
     }
 
-    return false;
+    return stale ? "stale" : null;
+  }
+
+  private _parseTagRevalidation(raw: string | null): TagRevalidation {
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (isUnknownRecord(parsed)) {
+        return {
+          ...(typeof parsed.expiredAt === "number" ? { expiredAt: parsed.expiredAt } : {}),
+          ...(typeof parsed.expireAt === "number" ? { expireAt: parsed.expireAt } : {}),
+          ...(typeof parsed.staleAt === "number" ? { staleAt: parsed.staleAt } : {}),
+        };
+      }
+    } catch {
+      // Legacy entries were stored as a bare invalidation timestamp.
+    }
+    const legacyTimestamp = Number(raw);
+    return { expiredAt: legacyTimestamp };
+  }
+
+  private _tagIsExpired(revalidation: TagRevalidation, lastModified: number, now: number): boolean {
+    if (
+      revalidation.expiredAt !== undefined &&
+      (Number.isNaN(revalidation.expiredAt) || revalidation.expiredAt >= lastModified)
+    ) {
+      return true;
+    }
+    return (
+      revalidation.staleAt !== undefined &&
+      revalidation.expireAt !== undefined &&
+      revalidation.expireAt <= now &&
+      revalidation.staleAt >= lastModified
+    );
+  }
+
+  private _tagIsStale(revalidation: TagRevalidation, lastModified: number): boolean {
+    return revalidation.staleAt !== undefined && revalidation.staleAt >= lastModified;
   }
 
   set(
@@ -362,17 +454,21 @@ export class KVCacheHandler implements CacheHandler {
 
     // Resolve effective revalidate — data overrides ctx.
     // revalidate: 0 means "don't cache", so skip storage entirely.
-    let effectiveRevalidate: number | undefined;
+    let effectiveRevalidate: number | false | undefined;
     let effectiveExpire: number | undefined;
-    effectiveRevalidate = readCacheControlNumberField(ctx, "revalidate");
+    effectiveRevalidate = readCacheControlRevalidateField(ctx);
     effectiveExpire = readCacheControlNumberField(ctx, "expire");
     const effectiveStale = readCacheControlNumberField(ctx, "stale");
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
+    } else if (data && "revalidate" in data && data.revalidate === false) {
+      // Preserve a non-expiring value when no context policy was supplied,
+      // but never let it override an explicit `ctx.revalidate: 0` no-store.
+      effectiveRevalidate ??= false;
     }
     if (effectiveRevalidate === 0) return Promise.resolve();
 
-    const now = Date.now();
+    const now = this._nextTimestamp();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
         ? now + effectiveRevalidate * 1000
@@ -382,7 +478,7 @@ export class KVCacheHandler implements CacheHandler {
         ? now + effectiveExpire * 1000
         : null;
     const cacheControl: CacheControlMetadata | undefined =
-      typeof effectiveRevalidate === "number"
+      typeof effectiveRevalidate === "number" || effectiveRevalidate === false
         ? {
             revalidate: effectiveRevalidate,
             ...(effectiveExpire === undefined ? {} : { expire: effectiveExpire }),
@@ -433,24 +529,31 @@ export class KVCacheHandler implements CacheHandler {
     });
   }
 
-  async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
+  async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
-    const now = Date.now();
+    const now = this._nextTimestamp();
     const validTags = tagList.filter((t) => validateTag(t) !== null);
-    // Store invalidation timestamp for each tag
-    // Use a long TTL (30 days) so recent invalidations are always found
+    const markerTtlSeconds = Math.max(30 * 24 * 3600, Math.ceil(durations?.expire ?? 0));
     await Promise.all(
-      validTags.map((tag) =>
-        this.kv.put(this._tagKey(tag), String(now), {
-          expirationTtl: 30 * 24 * 3600,
-        }),
-      ),
+      validTags.map(async (tag) => {
+        const marker: TagRevalidation = durations
+          ? {
+              staleAt: now,
+              expireAt: durations.expire === undefined ? undefined : now + durations.expire * 1000,
+            }
+          : { expiredAt: now };
+        await this.kv.put(
+          durations ? this._profileTagKey(tag) : this._tagKey(tag),
+          JSON.stringify(marker),
+          { expirationTtl: markerTtlSeconds },
+        );
+        const existing = this._tagCache.get(tag)?.revalidation ?? {};
+        const revalidation = durations
+          ? { ...existing, ...marker }
+          : { ...existing, expiredAt: now };
+        this._tagCache.set(tag, { revalidation, fetchedAt: now });
+      }),
     );
-    // Update local tag cache immediately so invalidations are reflected
-    // without waiting for the TTL to expire
-    for (const tag of validTags) {
-      this._tagCache.set(tag, { timestamp: now, fetchedAt: now });
-    }
   }
 
   /**
@@ -576,7 +679,9 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
   }
   if (obj.cacheControl !== undefined) {
     if (!isUnknownRecord(obj.cacheControl)) return null;
-    if (typeof obj.cacheControl.revalidate !== "number") return null;
+    if (typeof obj.cacheControl.revalidate !== "number" && obj.cacheControl.revalidate !== false) {
+      return null;
+    }
     if (obj.cacheControl.expire !== undefined && typeof obj.cacheControl.expire !== "number") {
       return null;
     }
