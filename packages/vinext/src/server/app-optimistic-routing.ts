@@ -3,7 +3,12 @@ import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
 import type { RouteManifest, RouteManifestRoute } from "../routing/app-route-graph.js";
-import { matchRoutePattern } from "../routing/route-pattern.js";
+import { extractRawRoutePatternParams, matchRoutePattern } from "../routing/route-pattern.js";
+import {
+  createNestedBfcacheSlotSegmentId,
+  deriveBfcacheSegmentIdentity,
+  isNestedBfcacheSlotSegmentId,
+} from "./bfcache-identity.js";
 import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache-busting.js";
 import {
   AppElementsWire,
@@ -11,7 +16,11 @@ import {
   type AppElementValue,
   type AppElements,
 } from "./app-elements.js";
-import { resolveAppPagePatternStateKey } from "./app-page-segment-state.js";
+import {
+  canonicalizeAppPageParams,
+  resolveAppPagePatternStateKey,
+  resolveAppPageSemanticSegmentStateKey,
+} from "./app-page-segment-state.js";
 
 type OptimisticRouteTrieNode = {
   catchAllChild: { paramName: string; route: RouteManifestRoute } | null;
@@ -29,6 +38,7 @@ type OptimisticRouteMatch = {
 export type OptimisticRouteTemplate = {
   elements: AppElements;
   mountedSlotsHeader: string | null;
+  omittedBfcacheSegmentIds: readonly string[];
   omittedLayoutIds: readonly string[];
   pageElementIds: readonly string[];
   routeId: string;
@@ -37,7 +47,9 @@ export type OptimisticRouteTemplate = {
 type OptimisticNavigationPayload = {
   elements: AppElements;
   params: Record<string, string | string[]>;
+  routeParams: Record<string, string | string[]>;
   template: OptimisticRouteTemplate;
+  urlParts: readonly string[];
 };
 
 const routeTrieCache = new WeakMap<RouteManifest, OptimisticRouteTrieNode>();
@@ -186,7 +198,10 @@ function matchNode(
   return null;
 }
 
-function hrefToRouteParts(href: string, basePath: string): string[] | null {
+function hrefToRouteParts(
+  href: string,
+  basePath: string,
+): { normalized: string[]; raw: string[] } | null {
   let url: URL;
   try {
     url = new URL(href, "https://vinext.local");
@@ -197,7 +212,11 @@ function hrefToRouteParts(href: string, basePath: string): string[] | null {
   stripRscCacheBustingSearchParam(url);
   const withoutRscSuffix = stripRscSuffix(url.pathname);
   const appPathname = stripBasePath(withoutRscSuffix, basePath);
-  return splitPathnameForRouteMatch(appPathname === "" ? "/" : appPathname);
+  const pathname = appPathname === "" ? "/" : appPathname;
+  return {
+    normalized: splitPathnameForRouteMatch(pathname),
+    raw: pathname.split("/").filter(Boolean),
+  };
 }
 
 export function matchOptimisticRouteManifestRoute(options: {
@@ -208,7 +227,7 @@ export function matchOptimisticRouteManifestRoute(options: {
   const urlParts = hrefToRouteParts(options.href, options.basePath);
   if (urlParts === null) return null;
 
-  const match = matchNode(getRouteTrie(options.routeManifest), urlParts, 0, []);
+  const match = matchNode(getRouteTrie(options.routeManifest), urlParts.normalized, 0, []);
   if (match === null) return null;
 
   decodeMatchedParams(match.params);
@@ -226,15 +245,22 @@ function mergeParams(
 
 function resolveOptimisticNavigationParams(options: {
   match: OptimisticRouteMatch;
+  rawUrlParts: readonly string[];
   routeManifest: RouteManifest;
   urlParts: readonly string[];
-}): Record<string, string | string[]> {
-  const navigationParams: Record<string, string | string[]> = { ...options.match.params };
+}): {
+  navigationParams: Record<string, string | string[]>;
+  routeParams: Record<string, string | string[]>;
+} {
+  const routeParams = extractRawRoutePatternParams(
+    options.match.route.patternParts,
+    options.rawUrlParts,
+  );
+  canonicalizeAppPageParams(routeParams);
+  const navigationParams: Record<string, string | string[]> = { ...routeParams };
+  const routeParamNames = new Set(options.match.route.paramNames);
 
   for (const binding of options.routeManifest.segmentGraph.slotBindings.values()) {
-    // Unlike the server-side resolveSlotParamOverrides, this loop doesn't skip
-    // slots whose slotParamNames are all already route params. That's a no-op
-    // merge in practice (identical values) but keeps client-side logic simpler.
     if (binding.routeId !== options.match.route.id || binding.state !== "active") {
       continue;
     }
@@ -243,20 +269,129 @@ function resolveOptimisticNavigationParams(options: {
     if (!patternParts) {
       continue;
     }
+    if (binding.slotParamNames?.every((name) => routeParamNames.has(name))) {
+      continue;
+    }
 
-    // Slot params are decoded once (from urlParts via splitPathnameForRouteMatch),
-    // matching the server-side resolveSlotParamOverrides decode pass. Route params
-    // are decoded a second time via decodeMatchedParams(match.params) above — a
-    // pre-existing asymmetry that has no practical effect for normal segments but
-    // means an encoded catch-all (%25/%2F) could differ between route and slot
-    // params in the same payload. TODO: converge the decode passes.
     const matched = matchRoutePattern(options.urlParts, patternParts);
     if (matched) {
       mergeParams(navigationParams, matched);
     }
   }
 
-  return navigationParams;
+  return { navigationParams, routeParams };
+}
+
+function collectRenderedBfcacheSegmentIds(
+  value: unknown,
+  candidates: ReadonlySet<string>,
+  rendered: Set<string>,
+  depth = 0,
+): void {
+  if (depth > 100) return;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectRenderedBfcacheSegmentIds(entry, candidates, rendered, depth + 1);
+    }
+    return;
+  }
+  if (!isValidElement(value)) return;
+
+  const props = Reflect.get(value, "props");
+  if (!isUnknownRecord(props)) return;
+  const id = Reflect.get(props, "id");
+  if (typeof id === "string" && candidates.has(id)) {
+    rendered.add(id);
+  }
+  for (const prop of Object.values(props)) {
+    collectRenderedBfcacheSegmentIds(prop, candidates, rendered, depth + 1);
+  }
+}
+
+function getOmittedBfcacheSegmentIds(elements: AppElements): string[] {
+  const identities = AppElementsWire.readMetadata(elements).bfcacheSegmentIdentities;
+  const candidates = new Set(
+    Object.keys(identities).filter(
+      (id) => isNestedBfcacheSlotSegmentId(id) && Object.hasOwn(elements, id),
+    ),
+  );
+  if (candidates.size === 0) return [];
+
+  const rendered = new Set<string>();
+  for (const value of Object.values(elements)) {
+    collectRenderedBfcacheSegmentIds(value, candidates, rendered);
+  }
+  return [...candidates].filter((id) => !rendered.has(id));
+}
+
+function resolveTargetBfcacheSegmentIdentity(options: {
+  routeId: string;
+  routeManifest: RouteManifest;
+  segmentId: string;
+  targetRouteParams: Readonly<Record<string, string | string[]>>;
+  targetUrlParts: readonly string[];
+}): string | undefined {
+  const route = options.routeManifest.segmentGraph.routes.get(options.routeId);
+  if (!route) return undefined;
+  const routeParamNames = new Set(route.paramNames);
+
+  for (const binding of options.routeManifest.segmentGraph.slotBindings.values()) {
+    if (binding.routeId !== options.routeId) continue;
+
+    const needsSlotParamOverride =
+      binding.state === "active" &&
+      binding.slotPatternParts !== undefined &&
+      binding.slotPatternParts.length > 0 &&
+      !binding.slotParamNames?.every((name) => routeParamNames.has(name));
+    const segmentParams = needsSlotParamOverride
+      ? (matchRoutePattern(options.targetUrlParts, binding.slotPatternParts!) ??
+        options.targetRouteParams)
+      : options.targetRouteParams;
+
+    const ownerLayout = binding.ownerLayoutId
+      ? options.routeManifest.segmentGraph.layouts.get(binding.ownerLayoutId)
+      : undefined;
+    const ownerStateKey = ownerLayout
+      ? resolveAppPagePatternStateKey(ownerLayout.patternParts, options.targetRouteParams)
+      : "";
+    const boundSegmentKeys: string[] = [];
+    let level = 0;
+    for (const segment of binding.routeSegments ?? []) {
+      if (segment.startsWith("@")) continue;
+      level += 1;
+      boundSegmentKeys.push(
+        resolveAppPageSemanticSegmentStateKey(
+          { marker: null, paramSource: "slot", segment },
+          segmentParams,
+        ),
+      );
+      if (createNestedBfcacheSlotSegmentId(binding.slotId, level) !== options.segmentId) continue;
+
+      const identityKey = JSON.stringify(boundSegmentKeys);
+      return deriveBfcacheSegmentIdentity({
+        activeRouteGraphId: null,
+        boundSegmentKey: ownerStateKey ? JSON.stringify([ownerStateKey, identityKey]) : identityKey,
+        interceptionTargetRouteGraphId: null,
+        kind: "slot",
+        ownerLayoutGraphId: binding.ownerLayoutId,
+        slotGraphId: binding.slotId,
+        state: binding.state,
+      });
+    }
+
+    if (level === 0 && createNestedBfcacheSlotSegmentId(binding.slotId, 1) === options.segmentId) {
+      return deriveBfcacheSegmentIdentity({
+        activeRouteGraphId: null,
+        boundSegmentKey: ownerStateKey ? JSON.stringify([ownerStateKey, ""]) : "",
+        interceptionTargetRouteGraphId: null,
+        kind: "slot",
+        ownerLayoutGraphId: binding.ownerLayoutId,
+        slotGraphId: binding.slotId,
+        state: binding.state,
+      });
+    }
+  }
+  return undefined;
 }
 
 function elementHasSuspenseFallback(value: unknown, depth = 0): boolean {
@@ -345,6 +480,10 @@ export function createOptimisticRouteTemplate(options: {
   return {
     elements: options.elements,
     mountedSlotsHeader: options.mountedSlotsHeader,
+    omittedBfcacheSegmentIds:
+      options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === "LoadingBoundary"
+        ? getOmittedBfcacheSegmentIds(options.elements)
+        : [],
     omittedLayoutIds:
       options.elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] === "LoadingBoundary"
         ? metadata.layoutIds.filter((layoutId) => !Object.hasOwn(options.elements, layoutId))
@@ -375,14 +514,21 @@ export function canCommitOptimisticRouteTemplate(options: {
   currentLayoutIds: readonly string[];
   currentParams: Readonly<Record<string, string | string[]>>;
   routeManifest: RouteManifest;
-  targetParams: Readonly<Record<string, string | string[]>>;
+  targetRouteParams: Readonly<Record<string, string | string[]>>;
+  targetUrlParts: readonly string[];
   template: OptimisticRouteTemplate;
 }): boolean {
-  if (options.template.omittedLayoutIds.length === 0) {
+  if (
+    options.template.omittedLayoutIds.length === 0 &&
+    options.template.omittedBfcacheSegmentIds.length === 0
+  ) {
     return true;
   }
 
   const currentLayoutIds = new Set(options.currentLayoutIds);
+  const currentIdentities = AppElementsWire.readMetadata(
+    options.currentElements,
+  ).bfcacheSegmentIdentities;
 
   for (const layoutId of options.template.omittedLayoutIds) {
     if (!currentLayoutIds.has(layoutId)) continue;
@@ -390,9 +536,42 @@ export function canCommitOptimisticRouteTemplate(options: {
 
     const layout = options.routeManifest.segmentGraph.layouts.get(layoutId);
     if (layout === undefined) continue;
+    const currentIdentity = currentIdentities[layoutId];
+    if (currentIdentity !== undefined) {
+      const targetIdentity = deriveBfcacheSegmentIdentity({
+        boundSegmentKey: resolveAppPagePatternStateKey(
+          layout.patternParts,
+          options.targetRouteParams,
+        ),
+        graphId: layout.id,
+        kind: "layout",
+        rootBoundaryId: layout.rootBoundaryId,
+      });
+      if (currentIdentity === targetIdentity) return false;
+      continue;
+    }
     if (
       resolveAppPagePatternStateKey(layout.patternParts, options.currentParams) ===
-      resolveAppPagePatternStateKey(layout.patternParts, options.targetParams)
+      resolveAppPagePatternStateKey(layout.patternParts, options.targetRouteParams)
+    ) {
+      return false;
+    }
+  }
+
+  for (const segmentId of options.template.omittedBfcacheSegmentIds) {
+    if (!Object.hasOwn(options.currentElements, segmentId)) continue;
+    const currentIdentity = currentIdentities[segmentId];
+    const targetIdentity = resolveTargetBfcacheSegmentIdentity({
+      routeId: options.template.routeId,
+      routeManifest: options.routeManifest,
+      segmentId,
+      targetRouteParams: options.targetRouteParams,
+      targetUrlParts: options.targetUrlParts,
+    });
+    if (
+      currentIdentity !== undefined &&
+      targetIdentity !== undefined &&
+      currentIdentity === targetIdentity
     ) {
       return false;
     }
@@ -431,13 +610,17 @@ export function resolveOptimisticNavigationPayload(options: {
   if (template === undefined) return null;
   if (template.mountedSlotsHeader !== options.mountedSlotsHeader) return null;
 
+  const { navigationParams, routeParams } = resolveOptimisticNavigationParams({
+    match,
+    rawUrlParts: urlParts.raw,
+    routeManifest: options.routeManifest,
+    urlParts: urlParts.normalized,
+  });
   return {
     elements: createOptimisticRouteElements(template),
-    params: resolveOptimisticNavigationParams({
-      match,
-      routeManifest: options.routeManifest,
-      urlParts,
-    }),
+    params: navigationParams,
+    routeParams,
     template,
+    urlParts: urlParts.normalized,
   };
 }

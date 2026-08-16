@@ -2062,7 +2062,8 @@ function bootstrapHydration(
                 currentLayoutIds: navigationInitiationState.layoutIds,
                 currentParams: navigationInitiationState.navigationSnapshot.params,
                 routeManifest,
-                targetParams: optimisticPayload.params,
+                targetRouteParams: optimisticPayload.routeParams,
+                targetUrlParts: optimisticPayload.urlParts,
                 template: optimisticPayload.template,
               })
             ) {
