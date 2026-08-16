@@ -2,7 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { resolveAppRouteBuildRuntime } from "../packages/vinext/src/build/app-route-runtime.js";
+import {
+  createAppRouteRuntimeFingerprint,
+  resolveAppRouteBuildRuntime,
+} from "../packages/vinext/src/build/app-route-runtime.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 
 const roots: string[] = [];
@@ -77,6 +80,26 @@ function parallelSlot(
 }
 
 describe("App route build runtime", () => {
+  it("changes the route fingerprint only when the effective runtime changes", async () => {
+    const { paths } = await createRouteFiles({
+      "page.tsx": `export default function Page() { return "first" }`,
+    });
+    const routes = [route({ pagePath: paths["page.tsx"] })];
+    const nodeFingerprint = createAppRouteRuntimeFingerprint(routes);
+
+    await fs.writeFile(
+      paths["page.tsx"],
+      `export default function Page() { return "ordinary HMR edit" }`,
+    );
+    expect(createAppRouteRuntimeFingerprint(routes)).toBe(nodeFingerprint);
+
+    await fs.writeFile(
+      paths["page.tsx"],
+      `export const runtime = "edge"; export default function Page() { return "edge" }`,
+    );
+    expect(createAppRouteRuntimeFingerprint(routes)).not.toBe(nodeFingerprint);
+  });
+
   it("extracts static runtime exports without matching comments or strings", async () => {
     const { paths } = await createRouteFiles({
       "layout.tsx": `

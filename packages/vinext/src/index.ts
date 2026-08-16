@@ -44,6 +44,10 @@ import {
 
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
+import {
+  createAppRouteRuntimeFingerprint,
+  resolveAppRouteBuildRuntimes,
+} from "./build/app-route-runtime.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
@@ -1461,6 +1465,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // module's load hook and consumed in renderChunk to patch the generated
   // `__VINEXT_CLASS` stub with a real dispatch table.
   let rscClassificationManifest: RouteClassificationManifest | null = null;
+  // Dev-only snapshot of the runtime-qualified imports generated into the RSC
+  // entry. Ordinary route edits stay on Vite's normal HMR path; only an
+  // effective runtime change needs this virtual entry regenerated.
+  let devAppRouteRuntimeFingerprint: string | null = null;
 
   // Resolve shim paths - works both from source (.ts) and built (.js).
   const shimsDir = path.resolve(__dirname, "shims");
@@ -3891,7 +3899,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // indices in the manifest correspond 1:1 to the route.layouts arrays
             // used during codegen. renderChunk clears this after patching.
             rscClassificationManifest = collectRouteClassificationManifest(routes);
-            return generateRscEntry(
+            // Resolve once immediately before synchronous code generation so
+            // the dev fingerprint describes the exact runtime-qualified
+            // imports baked into this entry.
+            const routeRuntimes = resolveAppRouteBuildRuntimes(routes);
+            const generatedEntry = generateRscEntry(
               appDir,
               routes,
               middlewarePath,
@@ -3941,9 +3953,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       ),
                 globalNotFoundPath,
                 draftModeSecret,
+                routeRuntimes,
               },
               instrumentationPath,
             );
+            if (isServeCommand) {
+              devAppRouteRuntimeFingerprint = createAppRouteRuntimeFingerprint(
+                routes,
+                routeRuntimes,
+              );
+            }
+            return generatedEntry;
           }
           if (id === RESOLVED_ROOT_PARAMS) {
             const routes = hasAppDir
@@ -4566,6 +4586,34 @@ export const loadServerActionClient = ${
           invalidateRootParamsModule();
         }
 
+        let appRouteRuntimeValidation: Promise<void> = Promise.resolve();
+        function revalidateAppRouteRuntime(filePath: string) {
+          if (
+            !hasAppDir ||
+            devAppRouteRuntimeFingerprint === null ||
+            !shouldInvalidateAppRouteFile(appDir, filePath, fileMatcher)
+          ) {
+            return;
+          }
+
+          appRouteRuntimeValidation = appRouteRuntimeValidation
+            .catch(() => {})
+            .then(async () => {
+              const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
+              const routeRuntimes = resolveAppRouteBuildRuntimes(routes);
+              const nextFingerprint = createAppRouteRuntimeFingerprint(routes, routeRuntimes);
+              if (nextFingerprint === devAppRouteRuntimeFingerprint) return;
+              invalidateRscEntryModule();
+            })
+            .catch((error) => {
+              server.config.logger.error(
+                `[vinext] Failed to revalidate App route runtimes: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            });
+        }
+
         let hybridRouteValidation: Promise<void> = Promise.resolve();
         let hybridRouteValidationError: Error | null = null;
         function sendHybridRouteValidationError(error: Error) {
@@ -4765,6 +4813,7 @@ export const loadServerActionClient = ${
           ) {
             invalidatePagesClientAssetsModule();
           }
+          revalidateAppRouteRuntime(filePath);
         });
         server.watcher.on("unlink", (filePath: string) => {
           updatePublicFileRoute(filePath, false);

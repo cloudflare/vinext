@@ -45,6 +45,7 @@ type AppRscManifestCode = {
 
 type BuildAppRscManifestCodeOptions = {
   routes: AppRoute[];
+  routeRuntimes?: readonly AppRouteRuntime[];
   metadataRoutes?: MetadataFileRoute[];
   globalErrorPath?: string | null;
   /**
@@ -262,9 +263,10 @@ function buildRouteEntries(
   routes: AppRoute[],
   imports: ImportAllocator,
   canonicalRuntimePaths: ReadonlySet<string>,
+  routeRuntimes: readonly AppRouteRuntime[],
 ): string[] {
   return routes.map((route, routeIdx) => {
-    const routeRuntime = resolveAppRouteBuildRuntime(route);
+    const routeRuntime = routeRuntimes[routeIdx] ?? resolveAppRouteBuildRuntime(route);
     const runtimeImports: ImportAllocator = {
       ...imports,
       getLazyLoaderVar: (filePath) =>
@@ -590,7 +592,12 @@ export function buildAppRscManifestCode(
   const rootLayoutVars = rootLayoutPaths.map((layoutPath) => imports.getImportVar(layoutPath));
 
   registerRouteModules(options.routes, imports, canonicalRuntimePaths);
-  const routeEntries = buildRouteEntries(options.routes, imports, canonicalRuntimePaths);
+  const routeEntries = buildRouteEntries(
+    options.routes,
+    imports,
+    canonicalRuntimePaths,
+    options.routeRuntimes ?? options.routes.map(resolveAppRouteBuildRuntime),
+  );
   const globalErrorVar = options.globalErrorPath
     ? imports.getImportVar(options.globalErrorPath)
     : null;

@@ -79,3 +79,28 @@ export function resolveAppRouteBuildRuntime(route: AppRoute): AppRouteRuntime {
 
   return "nodejs";
 }
+
+export function resolveAppRouteBuildRuntimes(
+  routes: readonly AppRoute[],
+): readonly AppRouteRuntime[] {
+  return routes.map(resolveAppRouteBuildRuntime);
+}
+
+/**
+ * Build a stable snapshot of the runtime-qualified route loader graph.
+ *
+ * The App Router dev entry bakes each route's effective runtime into its
+ * generated imports. Route module HMR handles ordinary source edits, but a
+ * runtime change needs the virtual entry itself to be regenerated.
+ */
+export function createAppRouteRuntimeFingerprint(
+  routes: readonly AppRoute[],
+  runtimes: readonly AppRouteRuntime[] = resolveAppRouteBuildRuntimes(routes),
+): string {
+  return JSON.stringify(
+    routes.map((route, index) => [
+      route.ids?.route ?? `${route.pattern}\0${route.pagePath ?? route.routePath ?? ""}`,
+      runtimes[index],
+    ]),
+  );
+}

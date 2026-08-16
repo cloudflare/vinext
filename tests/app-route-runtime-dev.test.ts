@@ -156,4 +156,34 @@ export const observedRuntime = process.env.NEXT_RUNTIME
       );
     }
   });
+
+  it("refreshes the route module graph when the runtime export changes", async () => {
+    const routePath = path.join(root, "app", "nodejs", "page.tsx");
+    const routeSource = (runtime?: "edge" | "nodejs") =>
+      `${runtime ? `export const runtime = ${JSON.stringify(runtime)}; ` : ""}export { default } from "../shared/page"`;
+
+    async function waitForRuntime(runtime: "edge" | "nodejs"): Promise<void> {
+      const deadline = Date.now() + 8_000;
+      let lastHtml = "";
+      while (Date.now() < deadline) {
+        const response = await fetch(`${baseUrl}/nodejs?runtime-refresh=${Date.now()}`);
+        lastHtml = await response.text();
+        if (response.status === 200 && lastHtml.includes(`id="shared-mdx-runtime">${runtime}`)) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(lastHtml).toContain(`id="shared-mdx-runtime">${runtime}`);
+    }
+
+    await waitForRuntime("nodejs");
+    await fs.writeFile(routePath, routeSource("edge"));
+    await waitForRuntime("edge");
+    await fs.writeFile(routePath, routeSource("nodejs"));
+    await waitForRuntime("nodejs");
+    await fs.writeFile(routePath, routeSource("edge"));
+    await waitForRuntime("edge");
+    await fs.writeFile(routePath, routeSource());
+    await waitForRuntime("nodejs");
+  }, 30_000);
 });

@@ -20,6 +20,7 @@ import type {
 } from "../config/next-config.js";
 import type { ImageConfig } from "../server/image-optimization.js";
 import type { AppRoute } from "../routing/app-router.js";
+import type { AppRouteRuntime } from "../build/app-route-runtime.js";
 import { generateDevOriginCheckCode } from "../server/dev-origin-check.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import { isProxyFile } from "../server/middleware.js";
@@ -126,6 +127,8 @@ const appPagesBridgePath = resolveEntryPath("../server/app-pages-bridge.js", imp
  * Passed from the Vite plugin where the full next.config.js is loaded.
  */
 type AppRouterConfig = {
+  /** Precomputed effective runtimes aligned with `routes`. */
+  routeRuntimes?: readonly AppRouteRuntime[];
   redirects?: NextRedirect[];
   rewrites?: {
     beforeFiles: NextRewrite[];
@@ -261,6 +264,7 @@ export function generateRscEntry(
   };
   const manifestCode = buildAppRscManifestCode({
     routes,
+    routeRuntimes: config?.routeRuntimes,
     metadataRoutes,
     globalErrorPath,
     globalNotFoundPath:
