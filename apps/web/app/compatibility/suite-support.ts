@@ -120,6 +120,12 @@ export const SUITE_SUPPORT_POLICY = {
   },
   "test/e2e/babel/index.test.ts": NEXT_BUNDLER_SPECIFIC,
   "test/e2e/import-conditions/import-conditions.test.ts": NEXT_RUNTIME_CONDITION_LABELS,
+  "test/e2e/next-head/index.test.ts": {
+    status: "deferred",
+    feature: "Pages Router HTML serialization",
+    reason:
+      "Vinext preserves formatting whitespace between correctly ordered head tags, while the exact Next.js assertion requires contiguous serialized tags.",
+  },
 } as const satisfies Record<string, ScopedSuiteSupport>;
 
 /** Feature labels for the supported failures classified in run 29551314872. */
@@ -175,7 +181,6 @@ const SUPPORTED_SUITE_FEATURES = {
     "Middleware rewrites, query propagation, and trailing slash",
   "test/e2e/middleware-trailing-slash/test/index.test.ts":
     "Middleware rewrites, query propagation, and trailing slash",
-  "test/e2e/next-head/index.test.ts": "Pages Router rendering and data APIs",
   "test/e2e/prerender.test.ts": "ISR, tags, revalidation, and after()",
   "test/e2e/react-version/react-version.test.ts": "React and runtime export conditions",
   "test/e2e/revalidate-reason/revalidate-reason.test.ts": "ISR, tags, revalidation, and after()",

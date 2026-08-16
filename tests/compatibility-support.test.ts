@@ -30,11 +30,11 @@ describe("compatibility suite support policy", () => {
     );
 
     expect(counts).toEqual({
-      deferred: 25,
+      deferred: 26,
       "needs-vite-equivalent": 2,
       unsupported: 6,
     });
-    expect(NON_SUPPORTED_SUITES).toHaveLength(33);
+    expect(NON_SUPPORTED_SUITES).toHaveLength(34);
     expect(CLASSIFIED_SUITES).toHaveLength(69);
     expect(new Set(CLASSIFIED_SUITES).size).toBe(69);
   });
@@ -64,6 +64,15 @@ describe("compatibility suite support policy", () => {
       expect(suite).toMatch(/^test\/e2e\/.+\.test\.[jt]sx?$/);
       expect(getSuiteSupport(suite).reason).toBeTruthy();
     }
+  });
+
+  it("defers non-semantic next/head serialization whitespace", () => {
+    expect(getSuiteSupport("test/e2e/next-head/index.test.ts")).toEqual({
+      status: "deferred",
+      feature: "Pages Router HTML serialization",
+      reason:
+        "Vinext preserves formatting whitespace between correctly ordered head tags, while the exact Next.js assertion requires contiguous serialized tags.",
+    });
   });
 
   it("routes Next.js compiler condition labels to Worker-equivalent coverage", () => {
