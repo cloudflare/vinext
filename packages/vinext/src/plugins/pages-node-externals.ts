@@ -8,6 +8,7 @@ import {
   nodeArray,
   type AstRecord,
 } from "./ast-utils.js";
+import { parserLanguageForModule } from "../utils/parser-language.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 
 type PagesNodeExternalsOptions = {
@@ -84,19 +85,10 @@ function matchesAlias(id: string, aliases: Readonly<Record<string, string>>): bo
   return Object.keys(aliases).some((alias) => id === alias || id.startsWith(`${alias}/`));
 }
 
-function parserLanguage(id: string): "js" | "jsx" | "ts" | "tsx" {
-  const cleanId = stripViteModuleQuery(id).toLowerCase();
-  if (cleanId.endsWith(".tsx")) return "tsx";
-  if (cleanId.endsWith(".ts") || cleanId.endsWith(".mts") || cleanId.endsWith(".cts")) {
-    return "ts";
-  }
-  return "jsx";
-}
-
 function moduleDependencySpecifiers(code: string, id: string): string[] {
   let ast: ReturnType<typeof parseAst>;
   try {
-    ast = parseAst(code, { lang: parserLanguage(id) });
+    ast = parseAst(code, { lang: parserLanguageForModule(id) });
   } catch {
     return [];
   }

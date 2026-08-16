@@ -1,6 +1,6 @@
 import { parseAst } from "vite";
 import { createMiddlewareMissingExportError } from "../server/middleware-runtime.js";
-import { stripViteModuleQuery } from "../utils/path.js";
+import { parserLanguageForModule } from "../utils/parser-language.js";
 
 type AstName = { name?: unknown; value?: unknown } | null | undefined;
 
@@ -21,15 +21,6 @@ type Statement = {
   specifiers?: ExportSpecifier[];
 };
 
-function parserLanguage(id: string): "js" | "jsx" | "ts" | "tsx" {
-  const cleanId = stripViteModuleQuery(id).toLowerCase();
-  if (cleanId.endsWith(".tsx")) return "tsx";
-  if (cleanId.endsWith(".ts") || cleanId.endsWith(".mts") || cleanId.endsWith(".cts")) {
-    return "ts";
-  }
-  return "jsx";
-}
-
 function astName(value: AstName): string | null {
   if (!value) return null;
   if (typeof value.name === "string") return value.name;
@@ -46,7 +37,7 @@ export function hasValidMiddlewareModuleExport(
   // verifies that the expected export name exists, not that its value is
   // callable. The shared runtime validation remains authoritative for values
   // such as `export const proxy = 1` and re-exports from another module.
-  const ast = parseAst(source, { lang: parserLanguage(id) });
+  const ast = parseAst(source, { lang: parserLanguageForModule(id) });
   const expectedExport = isProxy ? "proxy" : "middleware";
 
   for (const statement of ast.body as Statement[]) {

@@ -196,6 +196,19 @@ describe("App route runtime module graph", () => {
     expect(transformOutput(result).code).toBe(`export const runtime = "edge"`);
   });
 
+  it.each(["mts", "cts"])("parses TypeScript syntax in runtime-qualified .%s modules", (ext) => {
+    const plugin = createAppRouteRuntimePlugin();
+    const code = `export const runtime: string = process.env.NEXT_RUNTIME`;
+    const transform = hookHandler(plugin.transform!);
+    const result = transform.call(
+      {} as ThisParameterType<typeof transform>,
+      code,
+      withAppRouteRuntime(`/app/shared.${ext}`, "edge"),
+    );
+
+    expect(transformOutput(result).code).toBe(`export const runtime: string = "edge"`);
+  });
+
   it("does not replace NEXT_RUNTIME text in strings or comments", () => {
     const plugin = createAppRouteRuntimePlugin();
     const code = [
@@ -276,6 +289,38 @@ describe("App route runtime module graph", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    ["use server", "mts", true],
+    ["use client", "cts", false],
+  ] as const)(
+    "parses a %s directive with TypeScript syntax in .%s modules",
+    async (directive, ext, isRuntimeQualified) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-runtime-boundary-"));
+      const boundary = path.join(root, `boundary.${ext}`);
+      await fs.writeFile(
+        boundary,
+        `"${directive}"\nexport const value: string = process.env.NEXT_RUNTIME`,
+      );
+      const plugin = createAppRouteRuntimePlugin();
+      const resolve = vi.fn(async () => ({ id: boundary }));
+      const resolveId = hookHandler(plugin.resolveId!);
+
+      try {
+        const result = await resolveId.call(
+          { resolve } as unknown as ThisParameterType<typeof resolveId>,
+          "./boundary",
+          withAppRouteRuntime("/app/edge/page.tsx", "edge"),
+          { attributes: {}, isEntry: false },
+        );
+        expect(result).toEqual({
+          id: isRuntimeQualified ? withAppRouteRuntime(boundary, "edge") : boundary,
+        });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("preserves query-based loader semantics while propagating the runtime", async () => {
     const plugin = createAppRouteRuntimePlugin();

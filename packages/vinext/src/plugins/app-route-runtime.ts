@@ -4,6 +4,7 @@ import path from "pathslash";
 import { parseAst, type Plugin, type ResolvedConfig } from "vite";
 import type { PluginApi } from "@vitejs/plugin-rsc";
 import type { AppRouteRuntime } from "../build/app-route-runtime.js";
+import { parserLanguageForModule } from "../utils/parser-language.js";
 
 const APP_ROUTE_RUNTIME_QUERY = "__vinext_app_runtime";
 const APP_ROUTE_RUNTIME_REFERENCE_OWNER = "vinext:app-route-runtime";
@@ -144,11 +145,8 @@ async function hasModuleDirective(
     return false;
   }
 
-  const extension = path.extname(pathname).slice(1);
-  const lang =
-    extension === "tsx" || extension === "ts" ? extension : extension === "jsx" ? "jsx" : "js";
   try {
-    const ast = parseAst(code, { lang });
+    const ast = parseAst(code, { lang: parserLanguageForModule(pathname) });
     for (const statement of ast.body) {
       if (statement.type !== "ExpressionStatement" || typeof statement.directive !== "string") {
         break;
@@ -185,12 +183,9 @@ function walkAst(value: unknown, visitor: (node: AstNode) => void): void {
 }
 
 function replaceNextRuntime(code: string, id: string, runtime: AppRouteRuntime) {
-  const extension = path.extname(splitId(id).pathname).slice(1);
-  const lang =
-    extension === "tsx" || extension === "ts" ? extension : extension === "jsx" ? "jsx" : "js";
   let ast: ReturnType<typeof parseAst>;
   try {
-    ast = parseAst(code, { lang });
+    ast = parseAst(code, { lang: parserLanguageForModule(splitId(id).pathname) });
   } catch {
     return null;
   }
