@@ -167,6 +167,7 @@ import {
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
+import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
@@ -246,6 +247,7 @@ import {
 } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
+import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
@@ -1427,6 +1429,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
   let resolvedServerExternalPackages: string[] = [];
+  let pagesTsconfigAliases: Record<string, string> = {};
+  let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let pagesOptimizeEntries: string[] = [];
   const pagesClientAssetsOutputDirs = new Set<string>();
@@ -1942,6 +1946,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
       serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
     }),
+    createPagesNodeExternalsPlugin({
+      getRoot: () => root,
+      getPagesDir: () => (hasPagesDir ? pagesDir : null),
+      getAliases: () => nextConfig?.aliases ?? {},
+      getTsconfigAliases: () => pagesTsconfigAliases,
+      getBundledPackages: () => pagesBundledPackages,
+      // Workers and Nitro need a self-contained server bundle. Their runtime
+      // builds intentionally keep package code inside the graph.
+      isEnabled: () => !hasCloudflarePlugin && !hasNitroPlugin,
+    }),
     // Resolve `data:text/css[+module],...` imports into virtual CSS files so
     // Vite's CSS pipeline (LightningCSS, CSS modules) processes them instead
     // of leaving the data URL as a runtime import that Node/workerd cannot
@@ -2116,6 +2130,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           : undefined;
         const resolvedTsconfigAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
         tsconfigPathAliases = resolvedTsconfigAliases.vite;
+        pagesTsconfigAliases = tsconfigPathAliases;
         sassTsconfigPathAliases = resolvedTsconfigAliases.sass;
         // Vite's native option discovers tsconfig.json and cannot receive Next's
         // typescript.tsconfigPath. Only auto-enable it for the default config;
@@ -2585,6 +2600,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(nextConfig?.turbopackTranspilePackages ?? []),
           ...(nextConfig?.optimizePackageImports ?? []),
         ];
+        pagesBundledPackages = new Set(serverTranspilePackages);
         const nextServerExternal = mergeServerExternalPackages(
           nextConfig?.serverExternalPackages,
           serverTranspilePackages,
@@ -2795,6 +2811,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(!isSSR && !isMultiEnv ? { output: getClientOutputConfig(clientAssetsDir) } : {}),
             }),
           },
+          worker: {
+            // Vite creates a fresh plugin container for every worker bundle.
+            // Vite's config merge appends this factory to both current
+            // factories and legacy plugin arrays, so return only vinext's
+            // plugin here rather than copying user plugins and duplicating them.
+            plugins: () => [
+              createWorkerImageImportsPlugin({ deploymentId: nextConfig.deploymentId }),
+            ],
+          },
           // Let OPTIONS requests pass through Vite's CORS middleware to our
           // route handlers so they can set the Allow header and run user-defined
           // OPTIONS handlers. Without this, Vite's CORS middleware responds to
@@ -2932,6 +2957,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       nextConfig.assetPrefix,
                       nextConfig.deploymentId,
                       context.hostType,
+                      context.hostId,
                     ),
                 },
               }
@@ -3454,6 +3480,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       async configResolved(config) {
         if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {
           suppressOptionalOptimizeDepsWarnings(config.logger);
+        }
+
+        // Keep worker entries and code-split chunks in a distinct output
+        // directory. This must run after Vite merges config hooks: output arrays
+        // are concatenated during config merging, so returning a mapped array
+        // from config() would retain the original unisolated outputs as well.
+        if (config.worker?.rolldownOptions) {
+          const workerFileNames = `${resolveAssetsDir(nextConfig.assetPrefix ?? "")}/workers/[name]-[hash].js`;
+          const workerOutputs = config.worker.rolldownOptions.output;
+          config.worker.rolldownOptions.output = Array.isArray(workerOutputs)
+            ? (workerOutputs.length > 0 ? workerOutputs : [{}]).map((output) => ({
+                ...output,
+                entryFileNames: workerFileNames,
+                chunkFileNames: workerFileNames,
+              }))
+            : {
+                ...workerOutputs,
+                entryFileNames: workerFileNames,
+                chunkFileNames: workerFileNames,
+              };
         }
 
         // Provide the resolved config to the Sass-aware CSS Modules Loader so
@@ -4122,6 +4168,31 @@ export const loadServerActionClient = ${
         // Respect any explicit user/plugin minify choice (including `false`).
         if (config.build?.minify !== undefined) return null;
         return { build: { minify: true } };
+      },
+    },
+    {
+      name: "vinext:server-conditions",
+      enforce: "post",
+
+      configEnvironment(name, config) {
+        if (name !== "rsc" && name !== "ssr") return null;
+
+        // Vinext's RSC and SSR environments render Next.js server code, so
+        // selecting a package's browser export here diverges from Next.js and
+        // can execute a client-only implementation during SSR. Preserve every
+        // host-specific condition, but let ESM imports fall through to their
+        // `import` export instead of `browser`.
+        if (config.resolve?.conditions?.includes("browser")) {
+          config.resolve.conditions = config.resolve.conditions.filter(
+            (condition) => condition !== "browser",
+          );
+        }
+        const optimizerConditions = config.optimizeDeps?.rolldownOptions?.resolve?.conditionNames;
+        if (optimizerConditions?.includes("browser")) {
+          config.optimizeDeps!.rolldownOptions!.resolve!.conditionNames =
+            optimizerConditions.filter((condition) => condition !== "browser");
+        }
+        return null;
       },
     },
     {

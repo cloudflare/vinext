@@ -9,6 +9,8 @@
 
 export type SuiteSupportStatus = "supported" | "deferred" | "needs-vite-equivalent" | "unsupported";
 
+export const VITE_EQUIVALENT_LABEL = "Vite-equivalent required";
+
 export type SuiteSupport = {
   status: SuiteSupportStatus;
   feature: string | null;
@@ -114,7 +116,7 @@ export const SUITE_SUPPORT_POLICY = {
     status: "needs-vite-equivalent",
     feature: "Browser Web Workers and emitted worker assets",
     reason:
-      "Web Worker behavior needs Vite and Rolldown coverage; Next.js deployment-token assertions are not portable.",
+      "The exact Next.js v16.2.6 suite retains a suite-wide beforePageLoad hook requiring a deployment token on every /_next/ request. tests/e2e/nextjs-worker/worker.spec.ts provides the Vite, Rolldown, and Cloudflare plugin equivalent while scoping deployment-token assertions to the isolated worker graph.",
   },
   "test/e2e/babel/index.test.ts": NEXT_BUNDLER_SPECIFIC,
   "test/e2e/import-conditions/import-conditions.test.ts": VITE_RUNTIME_CONDITIONS,

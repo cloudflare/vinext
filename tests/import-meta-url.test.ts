@@ -87,6 +87,18 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result?.code).toContain(`const url = "file:///ROOT/pages/index.tsx"`);
   });
 
+  it("preserves Vite's coerced import.meta.url base for emitted worker URLs", () => {
+    // Regression: https://github.com/cloudflare/vinext/issues/2600
+    const result = rewriteImportMetaUrl(
+      'new Worker(new URL(/* @vite-ignore */ "/_next/static/echo.worker.js", "" + import.meta.url));',
+      pagePath,
+      linkedRoot,
+      "client",
+    );
+
+    expect(result).toBeNull();
+  });
+
   it("rewrites optional chained import.meta.url reads", () => {
     const result = rewriteImportMetaUrl(
       `export const url = import.meta?.url;\n`,

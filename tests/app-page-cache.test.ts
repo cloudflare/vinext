@@ -243,7 +243,7 @@ describe("app page cache helpers", () => {
     expect(response?.headers.get("X-Vinext-Cache")).toBe("HIT");
   });
 
-  it("replays prerendered Link headers before middleware overrides", () => {
+  it("replays prerendered Link headers after middleware Link values", () => {
     const cachedValue = buildCachedAppPageValue("<h1>cached</h1>");
     cachedValue.headers = {
       link: "</font.woff2>; rel=preload; as=font",
@@ -256,7 +256,9 @@ describe("app page cache helpers", () => {
       revalidateSeconds: 60,
     });
 
-    expect(response?.headers.get("link")).toBe("</middleware.css>; rel=preload; as=style");
+    expect(response?.headers.get("link")).toBe(
+      "</middleware.css>; rel=preload; as=style, </font.woff2>; rel=preload; as=font",
+    );
   });
 
   it("merges middleware response headers into cached RSC responses", async () => {

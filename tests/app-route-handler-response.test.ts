@@ -11,6 +11,7 @@ import {
 } from "../packages/vinext/src/server/app-route-handler-response.js";
 import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { hasPostConfigLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 
 function buildCachedRouteValue(
   body: string,
@@ -93,6 +94,26 @@ describe("app route handler response helpers", () => {
       "mw=1; Path=/",
       "mw=2; Path=/; HttpOnly",
     ]);
+    await expect(result.text()).resolves.toBe("hello");
+  });
+
+  it("appends Edge route-handler Link values after middleware", async () => {
+    const response = new Response("hello", {
+      headers: { Link: "</edge-route>; rel=alternate" },
+    });
+    const result = applyRouteHandlerMiddlewareContext(
+      response,
+      {
+        headers: new Headers({ Link: "</middleware>; rel=preload" }),
+        status: null,
+      },
+      { appendResponseLink: true },
+    );
+
+    expect(result.headers.get("link")).toBe(
+      "</middleware>; rel=preload, </edge-route>; rel=alternate",
+    );
+    expect(hasPostConfigLinkHeaders(result.headers)).toBe(true);
     await expect(result.text()).resolves.toBe("hello");
   });
 

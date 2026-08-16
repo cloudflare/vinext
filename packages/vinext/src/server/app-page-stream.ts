@@ -8,6 +8,7 @@ import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js
 import type { RootParams } from "vinext/shims/root-params";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
+import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 
 export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 
@@ -291,7 +292,7 @@ export async function renderAppPageHtmlStream(
 export async function renderAppPageHtmlResponse(
   options: RenderAppPageHtmlResponseOptions,
 ): Promise<Response> {
-  const { htmlStream } = await renderAppPageHtmlStream(options);
+  const { htmlStream, linkHeader: reactLinkHeader } = await renderAppPageHtmlStream(options);
 
   // Defer clearRequestContext() until the stream is fully consumed by the HTTP
   // layer. Calling it synchronously here would race the lazy RSC/SSR pipeline:
@@ -308,16 +309,22 @@ export async function renderAppPageHtmlResponse(
 
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
-  if (options.fontLinkHeader) {
-    headers.set("Link", options.fontLinkHeader);
+  mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
+  const frameworkLinkHeader = buildAppPageLinkHeader(
+    reactLinkHeader,
+    options.fontLinkHeader,
+    options.reactMaxHeadersLength,
+  );
+  if (frameworkLinkHeader) {
+    headers.append("Link", frameworkLinkHeader);
   }
 
-  mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
-
-  return new Response(safeStream, {
+  const response = new Response(safeStream, {
     status: options.status,
     headers,
   });
+  markFrameworkLinkHeaders(response.headers, frameworkLinkHeader);
+  return response;
 }
 
 export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
