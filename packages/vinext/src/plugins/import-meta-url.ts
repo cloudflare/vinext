@@ -1,4 +1,5 @@
-// Rewrites module-identity globals so they survive bundling, matching Next.js:
+// Rewrites module-identity globals so they survive bundling with a portable
+// server-runtime policy:
 //   - project-source `import.meta.url` reads become source-module URLs
 //   - dependency `import.meta.url` reads use source identity while unbundled
 //     and emitted-chunk identity once bundled
@@ -13,6 +14,11 @@
 //      breaking Vite's asset detection for that expression. Only the direct
 //      `new URL("./file", import.meta.url)` form is preserved.
 // Both are edge cases that are unlikely in real Next.js apps.
+//
+// Next.js/Webpack bakes dependency source URLs into server bundles. Vinext
+// deliberately uses emitted identity for bundled dependencies instead: source
+// paths do not exist in Workers and must not leak from the build host, while an
+// emitted URL remains meaningful after relocating Node and Nitro output.
 import { parseAst, type Plugin } from "vite";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
@@ -85,6 +91,20 @@ const TRANSFORMABLE_SCRIPT_EXTENSIONS = new Set([
   ".ts",
   ".tsx",
 ]);
+// This block-comment expression cannot span an earlier closing delimiter. Keep
+// it deterministic: this regex runs in native hook filters and the JS fast
+// guard, so nested repetition around a lazy `.*?` would permit exponential
+// backtracking on repeated comments followed by a near-match.
+const BLOCK_COMMENT_PATTERN = String.raw`\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/`;
+const JAVASCRIPT_TRIVIA_PATTERN = String.raw`(?:\s|${BLOCK_COMMENT_PATTERN}|\/\/[^\r\n\u2028\u2029]*)*`;
+const UNICODE_IDENTIFIER_ESCAPE_PATTERN = String.raw`\\u(?:[\dA-Fa-f]{4}|\{[\dA-Fa-f]+\})`;
+const IMPORT_META_URL_CANDIDATE_PATTERN = String.raw`\bimport${JAVASCRIPT_TRIVIA_PATTERN}\.${JAVASCRIPT_TRIVIA_PATTERN}meta${JAVASCRIPT_TRIVIA_PATTERN}\??\.${JAVASCRIPT_TRIVIA_PATTERN}(?:u|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:r|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:l|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})`;
+const IMPORT_META_URL_CANDIDATE_RE = new RegExp(IMPORT_META_URL_CANDIDATE_PATTERN, "u");
+const SOURCE_IDENTITY_FILTER_RE = new RegExp(
+  `${IMPORT_META_URL_CANDIDATE_PATTERN}|__filename|__dirname`,
+  "u",
+);
+
 export function createImportMetaUrlPlugin(options: {
   getRoot: () => string | undefined;
 }): ImportMetaUrlCapability {
@@ -164,7 +184,7 @@ export function createImportMetaUrlPlugin(options: {
           include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
           exclude: VIRTUAL_MODULE_ID_RE,
         },
-        code: /import\.meta(?:\.|\?\.)url|__filename|__dirname/,
+        code: SOURCE_IDENTITY_FILTER_RE,
       },
       handler(code, id) {
         // Keep this before module-id canonicalization and package-scope work.
@@ -272,7 +292,7 @@ export function createImportMetaUrlPlugin(options: {
     transform: {
       filter: {
         id: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
-        code: /import\.meta(?:\.|\?\.)url|__filename|__dirname/,
+        code: SOURCE_IDENTITY_FILTER_RE,
       },
       handler(code, id) {
         if (!mayContainSourceIdentityToken(code)) return null;
@@ -445,18 +465,33 @@ function finalizeEmittedModuleIdentity(
   }
   if (!changed) return null;
   const needsUrl = usedFields.has("url");
+  const needsPath = usedFields.has("__filename") || usedFields.has("__dirname");
   const runtimePreamble = [
     `import * as ${processNamespaceBinding} from "node:process";`,
-    `import * as ${fsNamespaceBinding} from "node:fs";`,
+    ...(needsPath ? [`import * as ${fsNamespaceBinding} from "node:fs";`] : []),
     ...(needsUrl ? [`import * as ${urlNamespaceBinding} from "node:url";`] : []),
     `const ${identityBinding} = (() => {`,
-    `  const filename = import.meta.filename;`,
-    `  const native = typeof filename === "string" && ${fsNamespaceBinding}.existsSync(filename);`,
-    `  const resolvedFilename = native ? filename : ${emittedPathFallback};`,
+    ...(needsPath
+      ? [
+          `  const filename = import.meta.filename;`,
+          `  const native = typeof filename === "string" && ${fsNamespaceBinding}.existsSync(filename);`,
+          `  const resolvedFilename = native ? filename : ${emittedPathFallback};`,
+        ]
+      : [`  const runtimeUrl = import.meta.url;`]),
     `  return {`,
-    `    filename: resolvedFilename,`,
-    `    dirname: native ? import.meta.dirname : ${emittedDirFallback},`,
-    ...(needsUrl ? [`    url: ${urlNamespaceBinding}.pathToFileURL(resolvedFilename).href,`] : []),
+    ...(needsPath
+      ? [
+          `    filename: resolvedFilename,`,
+          `    dirname: native ? import.meta.dirname : ${emittedDirFallback},`,
+        ]
+      : []),
+    ...(needsUrl
+      ? [
+          needsPath
+            ? `    url: ${urlNamespaceBinding}.pathToFileURL(resolvedFilename).href,`
+            : `    url: typeof runtimeUrl === "string" && runtimeUrl.startsWith("file:") ? runtimeUrl : ${urlNamespaceBinding}.pathToFileURL(${emittedPathFallback}).href,`,
+        ]
+      : []),
     `  };`,
     `})();`,
     "",
@@ -646,7 +681,7 @@ function transformableModuleCanonicalId(id: string, rootPaths: RootPaths): strin
 }
 
 function mayContainImportMetaUrl(code: string): boolean {
-  return code.includes("import.meta.url") || code.includes("import.meta?.url");
+  return IMPORT_META_URL_CANDIDATE_RE.test(code);
 }
 
 function mayContainSourceIdentityToken(code: string): boolean {
