@@ -717,6 +717,35 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
   });
 
+  test("restores a shallow entry after a hash-only push", async ({ page }) => {
+    // Next.js keeps pushState and hash navigation entries traversable together:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
+    await page.goto(`${BASE}/shallow-test`);
+
+    await page.waitForFunction(
+      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
+      null,
+      { timeout: 10000 },
+    );
+
+    await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+    );
+    await page.locator('[data-testid="push-hash"]').click({ noWaitAfter: true });
+    await expect.poll(() => new URL(page.url()).hash).toBe("#content");
+
+    await page.locator('[data-testid="shallow-to-about"]').click();
+    await expect(page.locator("h1#app-page")).toHaveText("About");
+
+    await page.goBack();
+    await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+    );
+    await expect.poll(() => new URL(page.url()).hash).toBe("#content");
+  });
+
   test("restores a shallow tree when a multi-entry traversal lands on the current URL", async ({
     page,
   }) => {

@@ -233,6 +233,43 @@ describe("AppBrowserHistoryController hash-only navigation", () => {
     expect(readHistoryStateTraversalIndex(writtenState)).toBe(1);
     expect(controller.currentHistoryTraversalIndex).toBe(1);
   });
+
+  it("carries a durable shallow snapshot into a hash-only push", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+      initialHref: "https://example.com/shallow-test",
+    });
+    const shallowState = createRouterState({ routeId: "route:/shallow-test" });
+
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/shallow-test/sub",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/shallow-test/sub",
+      snapshotState: shallowState,
+    });
+    controller.commitHashOnlyNavigation("/shallow-test/sub#content", "push", false);
+    const hashHistoryState = store.pushed[1]?.state;
+
+    controller.commitHistoryTraversalIndex(3);
+    controller.invalidateRestorableClientState();
+
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: hashHistoryState,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(shallowState);
+  });
 });
 
 describe("AppBrowserHistoryController history metadata sync", () => {

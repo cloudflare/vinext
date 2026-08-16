@@ -77,6 +77,14 @@ export class HistoryStateSnapshotCache<TState> {
     this.#durableSnapshots.delete(historyIndex);
   }
 
+  copyDurable(fromHistoryIndex: number | null, toHistoryIndex: number | null): void {
+    if (fromHistoryIndex === null || toHistoryIndex === null) return;
+    const state = this.#durableSnapshots.get(fromHistoryIndex);
+    if (state === undefined) return;
+    this.#snapshots.delete(toHistoryIndex);
+    this.#durableSnapshots.set(toHistoryIndex, state);
+  }
+
   remember(options: {
     bfcacheVersion: number;
     durable?: boolean;
@@ -214,6 +222,13 @@ export class RestorableClientStateController<TState> {
 
   supersedeDurableHistoryStateSnapshot(historyIndex: number | null): void {
     this.#snapshots.supersedeDurable(historyIndex);
+  }
+
+  copyDurableHistoryStateSnapshot(
+    fromHistoryIndex: number | null,
+    toHistoryIndex: number | null,
+  ): void {
+    this.#snapshots.copyDurable(fromHistoryIndex, toHistoryIndex);
   }
 
   rememberHistoryStateSnapshot(options: {

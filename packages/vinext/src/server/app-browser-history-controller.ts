@@ -262,6 +262,10 @@ export class AppBrowserHistoryController {
     } else {
       this.#pushHistoryState(nextHistoryState, href);
       this.#restorableClientState.pruneHistoryStateSnapshotsAfter(previousHistoryIndex);
+      this.#restorableClientState.copyDurableHistoryStateSnapshot(
+        previousHistoryIndex,
+        navigationHistoryIndex,
+      );
     }
     this.commitHistoryTraversalIndex(navigationHistoryIndex);
   }

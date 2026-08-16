@@ -37,6 +37,10 @@ export default function ShallowTestPage() {
         Go to Home
       </button>
 
+      <button data-testid="push-hash" onClick={() => router.push("#content")}>
+        Push #content
+      </button>
+
       <button
         data-testid="push-about-path"
         onClick={() => window.history.pushState(null, "", "/about")}
@@ -70,6 +74,8 @@ export default function ShallowTestPage() {
       >
         Push combined params
       </button>
+
+      <h2 id="content">Content</h2>
     </main>
   );
 }
