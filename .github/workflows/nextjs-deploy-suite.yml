@@ -280,6 +280,11 @@ jobs:
         env:
           CI: true
           NEXT_TEST_MODE: deploy
+          # Next.js sets this private build variable for its own dev/start
+          # harnesses. The deploy fixture build needs the equivalent so
+          # test-only client request metadata (such as fetch priority) is
+          # compiled into the app under test.
+          __NEXT_TEST_MODE: e2e
           NEXT_E2E_TEST_TIMEOUT: "240000"
           NEXT_EXTERNAL_TESTS_FILTERS: ${{ github.workspace }}/nextjs-deploy-manifest.json
           VINEXT_DIR: ${{ github.workspace }}

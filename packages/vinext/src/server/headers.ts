@@ -87,6 +87,9 @@ export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context
 /** RSC render mode (e.g. "navigation", "prefetch"). */
 export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
 
+/** Stable visible-router-state variant for RSC cache busting. */
+export const VINEXT_RSC_STATE_FINGERPRINT_HEADER = "X-Vinext-Rsc-State-Fingerprint";
+
 /** Disabled-by-default client hint describing already-held App Router payload entries. */
 export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";
 
@@ -205,6 +208,7 @@ export const FLIGHT_HEADERS: readonly string[] = [
   "next-router-prefetch",
   "next-hmr-refresh",
   "next-router-segment-prefetch",
+  "x-vinext-rsc-state-fingerprint",
 ];
 
 // ---------------------------------------------------------------------------

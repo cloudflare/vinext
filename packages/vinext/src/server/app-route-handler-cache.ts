@@ -36,6 +36,7 @@ type ReadAppRouteHandlerCacheOptions = {
   i18n?: NextI18nConfig | null;
   trailingSlash?: boolean;
   isAutoHead: boolean;
+  appendResponseLink?: boolean;
   isrDebug?: AppRouteDebugLogger;
   isrGet: RouteHandlerCacheGetter;
   isrRouteKey: (pathname: string) => string;
@@ -97,6 +98,7 @@ export async function readAppRouteHandlerCacheResponse(
           revalidateSeconds: options.revalidateSeconds,
         }),
         options.middlewareContext,
+        { appendResponseLink: options.appendResponseLink },
       );
     }
 
@@ -161,6 +163,7 @@ export async function readAppRouteHandlerCacheResponse(
           revalidateSeconds: options.revalidateSeconds,
         }),
         options.middlewareContext,
+        { appendResponseLink: options.appendResponseLink },
       );
     }
   } catch (routeCacheError) {

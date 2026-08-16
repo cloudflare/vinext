@@ -19,6 +19,10 @@ export type NavigationContext = {
   pathname: string;
   searchParams: URLSearchParams;
   params: Record<string, string | string[]>;
+  /** SSR-only static-generation state. Client navigation payloads omit it. */
+  isStaticGeneration?: boolean;
+  /** `dynamic = "force-static"` suppresses the static useSearchParams bailout. */
+  isForceStatic?: boolean;
 };
 
 type NavigationContextsGlobal = typeof globalThis & {
