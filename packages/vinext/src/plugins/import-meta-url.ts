@@ -1,5 +1,7 @@
 // Rewrites module-identity globals so they survive bundling, matching Next.js:
-//   - direct `import.meta.url` reads become source-module URLs
+//   - project-source `import.meta.url` reads become source-module URLs
+//   - dependency `import.meta.url` reads use source identity while unbundled
+//     and emitted-chunk identity once bundled
 //   - server-side free `__filename` / `__dirname` reads become the emitted
 //     module path once bundled (or the native source path when unbundled)
 //
@@ -56,17 +58,17 @@ type ImportMetaUrlCacheEntry = {
   results: Map<ModuleIdentityTransformKind, { value: RewriteResult | null }>;
 };
 
-type DependencyFormatCacheEntry = {
+type DependencyModuleCacheEntry = {
   canonicalRoot: string | undefined;
-  value: string | null;
+  value: { canonicalId: string; isCommonJs: boolean } | null;
 };
 
 export type ImportMetaUrlCapability = {
-  /** The Vite app plugin. Owns source, dev-dependency, and build-chunk identity. */
+  /** The Vite app plugin. Owns project, dependency, and emitted-chunk identity. */
   vitePlugin: Plugin;
   /** Thin adapter for Vite's independent dependency-optimizer Rolldown pipeline. */
   optimizeDepsPlugin: Plugin;
-  /** Cached dependency-format classifier shared by both plugin pipelines. */
+  /** Cached dependency identity/format classifier shared by both plugin pipelines. */
   isBundledCommonJsDependencyId: (id: string) => boolean;
 };
 
@@ -92,37 +94,45 @@ export function createImportMetaUrlPlugin(options: {
   // allocating and hashing a composite string containing both full paths.
   // Replacing the entry also bounds each raw id to one source/path combination.
   const transformCache = new Map<string, ImportMetaUrlCacheEntry>();
-  // Package metadata is immutable for the lifetime of a Vite config. A config
+  // Canonical dependency paths and package metadata are immutable for the lifetime of a Vite config. A config
   // restart creates a new capability and cache, so package.json edits are not
   // retained across restarts. Cap the rare token-bearing dependency set to
   // avoid retaining arbitrary ids from long-running dev servers.
-  const dependencyFormatCache = new Map<string, DependencyFormatCacheEntry>();
-  // Raw CommonJS cannot contain import.meta before Rolldown lowers it. Keep two
-  // private per-capability string literals behind an own getter, then replace
-  // only those return values after lowering. Unlike a bare literal, the marker
-  // cannot fold into a surrounding `__dirname + "/file"` expression.
+  const dependencyModuleCache = new Map<string, DependencyModuleCacheEntry>();
+  // Raw CommonJS cannot contain import.meta before Rolldown lowers it. Keep
+  // private per-capability string literals behind own getters, then replace
+  // only those return values after lowering. Unlike a bare literal, a marker
+  // cannot fold into a surrounding `__dirname + "/file"` expression or a
+  // `fileURLToPath(import.meta.url)` call.
   // The fixed-size provenance state stays valid for cached transforms and every
   // output of the capability.
-  const emittedCjsGlobals = createEmittedCjsGlobals();
-  function commonJsDependencyCanonicalId(id: string): string | null {
+  const emittedModuleIdentity = createEmittedModuleIdentity();
+  function dependencyModule(id: string): DependencyModuleCacheEntry["value"] {
     const cleanId = cleanModuleId(id);
     const paths = getRootPaths();
-    const cached = dependencyFormatCache.get(cleanId);
+    const cached = dependencyModuleCache.get(cleanId);
     if (cached && cached.canonicalRoot === paths?.canonicalRoot) {
       return cached.value;
     }
     const dependency = canonicalDependencyModuleId(cleanId, paths);
     const result =
-      dependency && isCommonJsDependency(dependency.canonicalId, dependency.allowUnpackaged)
-        ? dependency.canonicalId
-        : null;
+      dependency === null
+        ? null
+        : {
+            canonicalId: dependency.canonicalId,
+            isCommonJs: isCommonJsDependency(dependency.canonicalId, dependency.allowUnpackaged),
+          };
     setBoundedCacheEntry(
-      dependencyFormatCache,
+      dependencyModuleCache,
       cleanId,
       { canonicalRoot: paths?.canonicalRoot, value: result },
       MAX_DEPENDENCY_FORMAT_CACHE_ENTRIES,
     );
     return result;
+  }
+  function commonJsDependencyCanonicalId(id: string): string | null {
+    const dependency = dependencyModule(id);
+    return dependency?.isCommonJs ? dependency.canonicalId : null;
   }
 
   function getRootPaths(): RootPaths | undefined {
@@ -146,7 +156,7 @@ export function createImportMetaUrlPlugin(options: {
       // Package scope and symlink targets can change while a dev server stays
       // alive. The next rare CJS-global-bearing dependency reclassifies from
       // disk; ordinary transforms still use the cache between watch events.
-      dependencyFormatCache.clear();
+      dependencyModuleCache.clear();
     },
     transform: {
       filter: {
@@ -163,16 +173,28 @@ export function createImportMetaUrlPlugin(options: {
         if (!mayContainSourceIdentityToken(code)) return null;
 
         const cleanId = cleanModuleId(id);
-        if (mayContainServerCjsGlobal(code) && this.environment?.config?.consumer !== "client") {
-          const canonicalId = commonJsDependencyCanonicalId(cleanId);
-          if (canonicalId) {
-            return rewriteCjsGlobals(
-              code,
-              canonicalId,
-              this.environment.mode === "dev"
-                ? sourcePathCjsGlobalInitializers(canonicalId)
-                : emittedCjsGlobals.initializers,
-            );
+        const isServer = this.environment?.config?.consumer !== "client";
+        if (isServer) {
+          const dependency = dependencyModule(cleanId);
+          if (dependency) {
+            const importMetaUrlReplacement = mayContainImportMetaUrl(code)
+              ? this.environment.mode === "dev"
+                ? JSON.stringify(pathToFileURL(dependency.canonicalId).href)
+                : emittedModuleIdentity.importMetaUrlInitializer
+              : undefined;
+            const cjsGlobalInitializers =
+              dependency.isCommonJs && mayContainServerCjsGlobal(code)
+                ? this.environment.mode === "dev"
+                  ? sourcePathCjsGlobalInitializers(dependency.canonicalId)
+                  : emittedModuleIdentity.cjsGlobalInitializers
+                : undefined;
+            if (importMetaUrlReplacement !== undefined || cjsGlobalInitializers) {
+              return rewriteModuleIdentity(code, {
+                id: dependency.canonicalId,
+                importMetaUrlReplacement,
+                cjsGlobalInitializers,
+              });
+            }
           }
         }
         if (isNodeModulesId(cleanId)) return null;
@@ -220,7 +242,7 @@ export function createImportMetaUrlPlugin(options: {
           paths,
           environment,
           this.environment.mode === "build" && mayContainServerCjsGlobal(code)
-            ? emittedCjsGlobals.initializers
+            ? emittedModuleIdentity.cjsGlobalInitializers
             : sourcePathCjsGlobalInitializers(canonicalId),
         );
         entry.results.set(transformKind, { value });
@@ -233,7 +255,11 @@ export function createImportMetaUrlPlugin(options: {
         if (this.environment?.config.consumer !== "server" || outputOptions.format !== "es") {
           return null;
         }
-        return finalizeEmittedCjsGlobals(code, emittedCjsGlobals.replacements, chunk.fileName);
+        return finalizeEmittedModuleIdentity(
+          code,
+          emittedModuleIdentity.replacements,
+          chunk.fileName,
+        );
       },
     },
   };
@@ -246,21 +272,33 @@ export function createImportMetaUrlPlugin(options: {
     transform: {
       filter: {
         id: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
-        code: /__filename|__dirname/,
+        code: /import\.meta(?:\.|\?\.)url|__filename|__dirname/,
       },
       handler(code, id) {
-        if (!mayContainServerCjsGlobal(code)) return null;
-        const canonicalId = commonJsDependencyCanonicalId(id);
-        return canonicalId
-          ? rewriteCjsGlobals(code, canonicalId, emittedCjsGlobals.initializers)
-          : null;
+        if (!mayContainSourceIdentityToken(code)) return null;
+        const dependency = dependencyModule(id);
+        if (!dependency) return null;
+        return rewriteModuleIdentity(code, {
+          id: dependency.canonicalId,
+          importMetaUrlReplacement: mayContainImportMetaUrl(code)
+            ? emittedModuleIdentity.importMetaUrlInitializer
+            : undefined,
+          cjsGlobalInitializers:
+            dependency.isCommonJs && mayContainServerCjsGlobal(code)
+              ? emittedModuleIdentity.cjsGlobalInitializers
+              : undefined,
+        });
       },
     },
     renderChunk: {
       order: "post",
       handler(code, chunk, outputOptions) {
         if (outputOptions.format !== "es") return null;
-        return finalizeEmittedCjsGlobals(code, emittedCjsGlobals.replacements, chunk.fileName);
+        return finalizeEmittedModuleIdentity(
+          code,
+          emittedModuleIdentity.replacements,
+          chunk.fileName,
+        );
       },
     },
   };
@@ -328,46 +366,56 @@ function rewriteCanonicalSourceIdentity(
 
 type CjsGlobalInitializers = Record<CjsGlobalName, string>;
 
-function createEmittedCjsGlobals(): {
-  initializers: CjsGlobalInitializers;
-  replacements: ReadonlyMap<string, CjsGlobalName>;
+type EmittedModuleIdentityField = CjsGlobalName | "url";
+
+function createEmittedModuleIdentity(): {
+  cjsGlobalInitializers: CjsGlobalInitializers;
+  importMetaUrlInitializer: string;
+  replacements: ReadonlyMap<string, EmittedModuleIdentityField>;
 } {
   const nonce = randomUUID().replaceAll("-", "");
-  const filenameMarker = `__VINEXT_EMITTED_CJS_FILENAME_${nonce}__`;
-  const dirnameMarker = `__VINEXT_EMITTED_CJS_DIRNAME_${nonce}__`;
+  const filenameMarker = `__VINEXT_EMITTED_MODULE_FILENAME_${nonce}__`;
+  const dirnameMarker = `__VINEXT_EMITTED_MODULE_DIRNAME_${nonce}__`;
+  const urlMarker = `__VINEXT_EMITTED_MODULE_URL_${nonce}__`;
   const filenameSentinel = JSON.stringify(filenameMarker);
   const dirnameSentinel = JSON.stringify(dirnameMarker);
+  const urlSentinel = JSON.stringify(urlMarker);
   return {
-    initializers: {
-      __filename: emittedCjsPathInitializer(filenameSentinel),
-      __dirname: emittedCjsPathInitializer(dirnameSentinel),
+    cjsGlobalInitializers: {
+      __filename: emittedModuleIdentityInitializer(filenameSentinel),
+      __dirname: emittedModuleIdentityInitializer(dirnameSentinel),
     },
+    importMetaUrlInitializer: emittedModuleIdentityInitializer(urlSentinel),
     replacements: new Map([
       [filenameSentinel, "__filename"],
       [dirnameSentinel, "__dirname"],
+      [urlSentinel, "url"],
     ]),
   };
 }
 
-function emittedCjsPathInitializer(sentinel: string): string {
+function emittedModuleIdentityInitializer(sentinel: string): string {
   return `({ get value() { return ${sentinel}; } }).value`;
 }
 
-function finalizeEmittedCjsGlobals(
+function finalizeEmittedModuleIdentity(
   code: string,
-  emittedCjsGlobalSentinels: ReadonlyMap<string, CjsGlobalName>,
+  emittedIdentitySentinels: ReadonlyMap<string, EmittedModuleIdentityField>,
   fileName: string,
 ): RewriteResult | null {
-  if (!code.includes("__VINEXT_EMITTED_CJS_")) return null;
-  const runtimeBindings = new Set(code.match(/\b__vinext_cjs_(?:process|fs|identity)_*\b/g) ?? []);
+  if (!code.includes("__VINEXT_EMITTED_MODULE_")) return null;
+  const runtimeBindings = new Set(
+    code.match(/\b__vinext_module_(?:process|fs|url|identity)_*\b/g) ?? [],
+  );
   function selectRuntimeBinding(base: string): string {
     let binding = base;
     while (runtimeBindings.has(binding)) binding += "_";
     return binding;
   }
-  const processNamespaceBinding = selectRuntimeBinding("__vinext_cjs_process");
-  const fsNamespaceBinding = selectRuntimeBinding("__vinext_cjs_fs");
-  const identityBinding = selectRuntimeBinding("__vinext_cjs_identity");
+  const processNamespaceBinding = selectRuntimeBinding("__vinext_module_process");
+  const fsNamespaceBinding = selectRuntimeBinding("__vinext_module_fs");
+  const urlNamespaceBinding = selectRuntimeBinding("__vinext_module_url");
+  const identityBinding = selectRuntimeBinding("__vinext_module_identity");
   const emittedFileName = toSlash(fileName).replace(/^\.\//, "").replace(/^\/+/, "");
   const processCwd = `${processNamespaceBinding}.cwd()`;
   const emittedPathFallback = emittedFileName
@@ -378,30 +426,37 @@ function finalizeEmittedCjsGlobals(
     emittedDirName === "."
       ? processCwd
       : `(${processCwd}.replace(/[\\\\/]$/, "") + ${JSON.stringify(`/${emittedDirName}`)})`;
-  const replacements: CjsGlobalInitializers = {
+  const replacements: Record<EmittedModuleIdentityField, string> = {
     __filename: `${identityBinding}.filename`,
     __dirname: `${identityBinding}.dirname`,
+    url: `${identityBinding}.url`,
   };
   const output = new MagicString(code);
   let changed = false;
-  for (const [sentinel, globalName] of emittedCjsGlobalSentinels) {
+  const usedFields = new Set<EmittedModuleIdentityField>();
+  for (const [sentinel, field] of emittedIdentitySentinels) {
     let start = code.indexOf(sentinel);
     while (start !== -1) {
-      output.overwrite(start, start + sentinel.length, replacements[globalName]);
+      output.overwrite(start, start + sentinel.length, replacements[field]);
       changed = true;
+      usedFields.add(field);
       start = code.indexOf(sentinel, start + sentinel.length);
     }
   }
   if (!changed) return null;
+  const needsUrl = usedFields.has("url");
   const runtimePreamble = [
     `import * as ${processNamespaceBinding} from "node:process";`,
     `import * as ${fsNamespaceBinding} from "node:fs";`,
+    ...(needsUrl ? [`import * as ${urlNamespaceBinding} from "node:url";`] : []),
     `const ${identityBinding} = (() => {`,
     `  const filename = import.meta.filename;`,
     `  const native = typeof filename === "string" && ${fsNamespaceBinding}.existsSync(filename);`,
+    `  const resolvedFilename = native ? filename : ${emittedPathFallback};`,
     `  return {`,
-    `    filename: native ? filename : ${emittedPathFallback},`,
+    `    filename: resolvedFilename,`,
     `    dirname: native ? import.meta.dirname : ${emittedDirFallback},`,
+    ...(needsUrl ? [`    url: ${urlNamespaceBinding}.pathToFileURL(resolvedFilename).href,`] : []),
     `  };`,
     `})();`,
     "",
@@ -415,14 +470,6 @@ function finalizeEmittedCjsGlobals(
     code: output.toString(),
     map: output.generateMap({ hires: "boundary" }),
   };
-}
-
-function rewriteCjsGlobals(
-  code: string,
-  id: string,
-  cjsGlobalInitializers: CjsGlobalInitializers,
-): RewriteResult | null {
-  return rewriteModuleIdentity(code, { id, cjsGlobalInitializers });
 }
 
 function rewriteModuleIdentity(

@@ -33,11 +33,16 @@ async function createHybridFixture(
   root: string;
   canonicalRoot: string;
   cjsPackageDir: string;
+  esmPackageDir: string;
   linkedCjsPackageDir: string;
+  lexicalCjsPackageDir: string;
+  lexicalEsmPackageDir: string;
+  lexicalLinkedCjsPackageDir: string;
 }> {
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   const root = path.join(fixtureRoot, "app");
   const cjsPackageDir = path.join(root, "vendor/node_modules/cjs-path-identity");
+  const esmPackageDir = path.join(root, "vendor/node_modules/esm-import-meta-identity");
   const linkedCjsPackageDir = path.join(fixtureRoot, "packages/linked-cjs-identity");
   await fs.mkdir(root, { recursive: true });
   await Promise.all([
@@ -45,6 +50,7 @@ async function createHybridFixture(
     fs.mkdir(path.join(root, "pages"), { recursive: true }),
     fs.mkdir(path.join(root, "lib/node_modules"), { recursive: true }),
     fs.mkdir(cjsPackageDir, { recursive: true }),
+    fs.mkdir(esmPackageDir, { recursive: true }),
     fs.mkdir(linkedCjsPackageDir, { recursive: true }),
     fs.symlink(nodeModules, path.join(root, "node_modules"), "junction"),
   ]);
@@ -64,13 +70,27 @@ async function createHybridFixture(
     ),
     fs.writeFile(
       path.join(root, "app/page.tsx"),
-      `export default function Page() { return "app"; }\n`,
+      `import esmIdentity from "../vendor/node_modules/esm-import-meta-identity/index.js";
+
+export default function Page() {
+  return <>
+    <p id="app-esm-url">{esmIdentity.url}</p>
+    <p id="app-esm-filename">{esmIdentity.filename}</p>
+    <p id="app-esm-dirname">{esmIdentity.dirname}</p>
+    <p id="app-esm-consistent">{String(esmIdentity.consistent)}</p>
+    <p id="app-esm-require-builtin">{String(esmIdentity.requireBuiltin)}</p>
+    <p id="app-esm-require-package">{String(esmIdentity.requirePackage)}</p>
+    <p id="app-esm-filename-readable">{String(esmIdentity.filenameReadable)}</p>
+  </>;
+}
+`,
     ),
     fs.writeFile(
       path.join(root, "lib/identity.ts"),
       `import path from "node:path";
 import regeneratorRuntimePath from ${JSON.stringify(options.nextDependencySpecifier ?? NEXT_CJS_PATH_SPECIFIER)};
 import dependencyIdentity from "../vendor/node_modules/cjs-path-identity/index.js";
+import esmIdentity from "../vendor/node_modules/esm-import-meta-identity/index.js";
 import localIdentity from "./local-identity.cjs";
 import linkedIdentity from "linked-cjs-identity";
 
@@ -82,6 +102,13 @@ export function readIdentity() {
     nestedRuntimePath: path.join(dependencyIdentity.nested.dirname, "nested-runtime.js"),
     localRuntimePath: path.join(localIdentity.dirname, "local-runtime.js"),
     linkedRuntimePath: path.join(linkedIdentity.dirname, "linked-runtime.js"),
+    esmUrl: esmIdentity.url,
+    esmFilename: esmIdentity.filename,
+    esmDirname: esmIdentity.dirname,
+    esmConsistent: esmIdentity.consistent,
+    esmRequireBuiltin: esmIdentity.requireBuiltin,
+    esmRequirePackage: esmIdentity.requirePackage,
+    esmFilenameReadable: esmIdentity.filenameReadable,
     shadowedProcess: localIdentity.shadowedProcess,
     shadowedGlobalThis: localIdentity.shadowedGlobalThis,
     filenameReadable: localIdentity.filenameReadable,
@@ -125,8 +152,9 @@ try {
   exports.filenameReadable = false;
 }
 exports.userMarkerTypes =
-  typeof globalThis.__VINEXT_EMITTED_CJS_FILENAME__ + ":" +
-  typeof globalThis.__VINEXT_EMITTED_CJS_DIRNAME__;
+  typeof globalThis.__VINEXT_EMITTED_MODULE_FILENAME__ + ":" +
+  typeof globalThis.__VINEXT_EMITTED_MODULE_DIRNAME__ + ":" +
+  typeof globalThis.__VINEXT_EMITTED_MODULE_URL__;
 `,
     ),
     fs.writeFile(
@@ -143,6 +171,13 @@ export default function Page(props: ReturnType<typeof readIdentity>) {
     <p id="nested-runtime-path">{props.nestedRuntimePath}</p>
     <p id="local-runtime-path">{props.localRuntimePath}</p>
     <p id="linked-runtime-path">{props.linkedRuntimePath}</p>
+    <p id="esm-url">{props.esmUrl}</p>
+    <p id="esm-filename">{props.esmFilename}</p>
+    <p id="esm-dirname">{props.esmDirname}</p>
+    <p id="esm-consistent">{String(props.esmConsistent)}</p>
+    <p id="esm-require-builtin">{String(props.esmRequireBuiltin)}</p>
+    <p id="esm-require-package">{String(props.esmRequirePackage)}</p>
+    <p id="esm-filename-readable">{String(props.esmFilenameReadable)}</p>
     <p id="identity-types">{props.types}</p>
     <p id="identity-consistent">{String(props.consistent)}</p>
     <p id="shadowed-process">{props.shadowedProcess}</p>
@@ -187,6 +222,45 @@ exports.consistent = path.dirname(__filename) === __dirname;
 `,
     ),
     fs.writeFile(
+      path.join(esmPackageDir, "package.json"),
+      JSON.stringify({ name: "esm-import-meta-identity", type: "module", main: "index.js" }),
+    ),
+    fs.writeFile(
+      path.join(esmPackageDir, "index.js"),
+      // Mirrors Payload's top-level ESM initialization patterns:
+      // https://github.com/payloadcms/payload/blob/main/packages/payload/src/index.ts
+      // https://github.com/payloadcms/payload/blob/main/packages/drizzle/src/sqlite/requireDrizzleKit.ts
+      `import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+
+const url = import.meta.url;
+const filename = fileURLToPath(import.meta.url);
+const require = createRequire(import.meta.url);
+let filenameReadable = false;
+let requirePackage = false;
+try {
+  filenameReadable = fs.statSync(filename).isFile();
+} catch {}
+try {
+  // Payload later uses this require for drizzle-kit/api. Node-based runtimes
+  // retain a package tree, so exercise package-relative resolution there too.
+  requirePackage = typeof require("react").createElement === "function";
+} catch {}
+
+export default {
+  url,
+  filename,
+  dirname: path.dirname(filename),
+  consistent: path.dirname(fileURLToPath(url)) === path.dirname(filename),
+  requireBuiltin: typeof require("node:path").join === "function",
+  requirePackage,
+  filenameReadable,
+};
+`,
+    ),
+    fs.writeFile(
       path.join(linkedCjsPackageDir, "package.json"),
       JSON.stringify({ name: "linked-cjs-identity", type: "commonjs", main: "index.cjs" }),
     ),
@@ -210,7 +284,11 @@ module.exports = { value: 1 };
     root,
     canonicalRoot,
     cjsPackageDir: path.join(canonicalRoot, "vendor/node_modules/cjs-path-identity"),
+    esmPackageDir: path.join(canonicalRoot, "vendor/node_modules/esm-import-meta-identity"),
     linkedCjsPackageDir: toSlash(await fs.realpath(linkedCjsPackageDir)),
+    lexicalCjsPackageDir: cjsPackageDir,
+    lexicalEsmPackageDir: esmPackageDir,
+    lexicalLinkedCjsPackageDir: linkedCjsPackageDir,
   };
 }
 
@@ -306,7 +384,7 @@ function htmlValue(html: string, id: string): string {
   return value;
 }
 
-function expectFunctionalIdentity(html: string): void {
+function expectFunctionalIdentity(html: string, options: { requirePackage?: boolean } = {}): void {
   expect(htmlValue(html, "identity-types")).toBe(
     "string,string,string:string,string:string,string:string,string:string",
   );
@@ -314,15 +392,42 @@ function expectFunctionalIdentity(html: string): void {
   expect(htmlValue(html, "shadowed-process")).toBe("local-process");
   expect(htmlValue(html, "shadowed-global-this")).toBe("local-globalThis");
   expect(path.basename(htmlValue(html, "concatenated-path"))).toBe("concatenated.js");
-  expect(htmlValue(html, "concatenated-path")).not.toContain("__VINEXT_EMITTED_CJS_");
-  expect(htmlValue(html, "user-marker-types")).toBe("undefined:undefined");
+  expect(htmlValue(html, "concatenated-path")).not.toContain("__VINEXT_EMITTED_MODULE_");
+  expect(htmlValue(html, "user-marker-types")).toBe("undefined:undefined:undefined");
   expect(path.basename(htmlValue(html, "dependency-runtime-path"))).toBe("dependency-runtime.js");
   expect(path.basename(htmlValue(html, "nested-runtime-path"))).toBe("nested-runtime.js");
   expect(path.basename(htmlValue(html, "local-runtime-path"))).toBe("local-runtime.js");
   expect(path.basename(htmlValue(html, "linked-runtime-path"))).toBe("linked-runtime.js");
+  const esmUrl = htmlValue(html, "esm-url");
+  const esmFilename = htmlValue(html, "esm-filename");
+  expect(esmUrl).toBe(pathToFileURL(esmFilename).href);
+  expect(esmFilename).not.toBe("/");
+  expect(htmlValue(html, "esm-dirname")).toBe(path.dirname(esmFilename));
+  expect(htmlValue(html, "esm-consistent")).toBe("true");
+  expect(htmlValue(html, "esm-require-builtin")).toBe("true");
+  if (options.requirePackage !== undefined) {
+    expect(htmlValue(html, "esm-require-package")).toBe(String(options.requirePackage));
+  }
 }
 
-describe("bundled CJS globals on the hybrid Node development runtime", () => {
+function expectAppEsmIdentity(
+  html: string,
+  options: { requirePackage?: boolean } = {},
+): { filename: string; readable: string } {
+  const url = htmlValue(html, "app-esm-url");
+  const filename = htmlValue(html, "app-esm-filename");
+  expect(url).toBe(pathToFileURL(filename).href);
+  expect(filename).not.toBe("/");
+  expect(htmlValue(html, "app-esm-dirname")).toBe(path.dirname(filename));
+  expect(htmlValue(html, "app-esm-consistent")).toBe("true");
+  expect(htmlValue(html, "app-esm-require-builtin")).toBe("true");
+  if (options.requirePackage !== undefined) {
+    expect(htmlValue(html, "app-esm-require-package")).toBe(String(options.requirePackage));
+  }
+  return { filename, readable: htmlValue(html, "app-esm-filename-readable") };
+}
+
+describe("bundled module identity on the hybrid Node development runtime", () => {
   let root = "";
   let canonicalRoot = "";
   let server: ViteDevServer | undefined;
@@ -391,7 +496,18 @@ export default function Page() {
     expect(htmlValue(html, "linked-runtime-path")).toContain(
       path.join(path.dirname(canonicalRoot), "packages/linked-cjs-identity"),
     );
-    expectFunctionalIdentity(html);
+    expectFunctionalIdentity(html, { requirePackage: true });
+    expect(htmlValue(html, "esm-filename")).toContain(
+      path.join(canonicalRoot, "vendor/node_modules/esm-import-meta-identity/index.js"),
+    );
+    expect(htmlValue(html, "esm-filename-readable")).toBe("true");
+    const appResponse = await fetch(`${baseUrl}/`);
+    expect(appResponse.status).toBe(200);
+    const appIdentity = expectAppEsmIdentity(await appResponse.text(), { requirePackage: true });
+    expect(appIdentity.filename).toContain(
+      path.join(canonicalRoot, "vendor/node_modules/esm-import-meta-identity/index.js"),
+    );
+    expect(appIdentity.readable).toBe("true");
     const linkedClientResponse = await fetch(`${baseUrl}/linked-cjs-client`);
     expect(linkedClientResponse.status).toBe(200);
     expect(await linkedClientResponse.text()).toContain('<p id="linked-client-value">1</p>');
@@ -401,25 +517,37 @@ export default function Page() {
     expect(clientModule?.code).toContain("[vite-plugin-commonjs] export-runtime-S");
     const optimizedBundle = await readJavaScriptTree(cacheDir);
     expect(optimizedBundle).toContain("import.meta.dirname");
-    expect(optimizedBundle).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
+    expect(optimizedBundle).not.toMatch(
+      /__VINEXT_EMITTED_MODULE_(?:(?:FILE|DIR)NAME|URL)_[a-f0-9]{32}__/,
+    );
     expect(optimizedBundle).not.toContain("var __dirname = void 0");
   });
 });
 
-describe("bundled CJS globals on the hybrid Node production runtime", () => {
+describe("bundled module identity on the hybrid Node production runtime", () => {
   let root = "";
   let canonicalRoot = "";
   let cjsPackageDir = "";
+  let esmPackageDir = "";
   let linkedCjsPackageDir = "";
+  let lexicalCjsPackageDir = "";
+  let lexicalEsmPackageDir = "";
+  let lexicalLinkedCjsPackageDir = "";
   let server: Server | undefined;
   let baseUrl = "";
   let serverBundle = "";
 
   beforeAll(async () => {
-    ({ root, canonicalRoot, cjsPackageDir, linkedCjsPackageDir } = await createHybridFixture(
-      "vinext-cjs-globals-node-prod-",
-      ROOT_NODE_MODULES,
-    ));
+    ({
+      root,
+      canonicalRoot,
+      cjsPackageDir,
+      esmPackageDir,
+      linkedCjsPackageDir,
+      lexicalCjsPackageDir,
+      lexicalEsmPackageDir,
+      lexicalLinkedCjsPackageDir,
+    } = await createHybridFixture("vinext-cjs-globals-node-prod-", ROOT_NODE_MODULES));
     const builder = await createBuilder({
       root,
       configFile: false,
@@ -462,19 +590,33 @@ describe("bundled CJS globals on the hybrid Node production runtime", () => {
     expect(htmlValue(html, "nested-runtime-path")).toContain(
       path.join(canonicalRoot, "dist/server"),
     );
-    expectFunctionalIdentity(html);
+    expectFunctionalIdentity(html, { requirePackage: true });
     expect(htmlValue(html, "filename-readable")).toBe("true");
+    expect(htmlValue(html, "esm-filename")).toContain(path.join(canonicalRoot, "dist/server"));
+    expect(htmlValue(html, "esm-filename-readable")).toBe("true");
     expectPathAbsent(serverBundle, cjsPackageDir);
+    expectPathAbsent(serverBundle, esmPackageDir);
     expectPathAbsent(serverBundle, linkedCjsPackageDir);
-    expect(serverBundle).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
+    expectPathAbsent(serverBundle, lexicalCjsPackageDir);
+    expectPathAbsent(serverBundle, lexicalEsmPackageDir);
+    expectPathAbsent(serverBundle, lexicalLinkedCjsPackageDir);
+    expect(serverBundle).not.toMatch(
+      /__VINEXT_EMITTED_MODULE_(?:(?:FILE|DIR)NAME|URL)_[a-f0-9]{32}__/,
+    );
 
     const staticResponse = await fetch(`${baseUrl}/cjs-dependency-globals-static`);
     expect(staticResponse.status).toBe(200);
-    expectFunctionalIdentity(await staticResponse.text());
+    expectFunctionalIdentity(await staticResponse.text(), { requirePackage: true });
+
+    const appResponse = await fetch(`${baseUrl}/`);
+    expect(appResponse.status).toBe(200);
+    const appIdentity = expectAppEsmIdentity(await appResponse.text(), { requirePackage: true });
+    expect(appIdentity.filename).toContain(path.join(canonicalRoot, "dist/server"));
+    expect(appIdentity.readable).toBe("true");
   });
 });
 
-describe("bundled CJS globals on the Cloudflare development runtime", () => {
+describe("bundled module identity on the Cloudflare development runtime", () => {
   let root = "";
   let server: ViteDevServer | undefined;
   let baseUrl = "";
@@ -515,30 +657,50 @@ describe("bundled CJS globals on the Cloudflare development runtime", () => {
     await removeHybridFixture(root);
   });
 
-  it("executes the real CJS graph in workerd", async () => {
+  it("executes the real CJS and ESM graphs in workerd", async () => {
     const response = await fetch(`${baseUrl}/cjs-dependency-globals`);
     const html = await response.text();
     expect(response.status, html).toBe(200);
     expectFunctionalIdentity(html);
-    expect(html).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
+    expect(path.basename(htmlValue(html, "esm-filename"))).toMatch(/\.js$/);
+    expect(htmlValue(html, "esm-filename-readable")).toBe("false");
+    expect(html).not.toMatch(/__VINEXT_EMITTED_MODULE_(?:(?:FILE|DIR)NAME|URL)_[a-f0-9]{32}__/);
+
+    const appResponse = await fetch(`${baseUrl}/`);
+    const appHtml = await appResponse.text();
+    expect(appResponse.status, appHtml).toBe(200);
+    const appIdentity = expectAppEsmIdentity(appHtml);
+    expect(path.basename(appIdentity.filename)).toMatch(/\.js$/);
+    expect(appIdentity.readable).toBe("false");
   });
 });
 
-describe("bundled CJS globals on the Cloudflare Workers runtime", () => {
+describe("bundled module identity on the Cloudflare Workers runtime", () => {
   let root = "";
   let canonicalRoot = "";
   let cjsPackageDir = "";
+  let esmPackageDir = "";
   let linkedCjsPackageDir = "";
+  let lexicalCjsPackageDir = "";
+  let lexicalEsmPackageDir = "";
+  let lexicalLinkedCjsPackageDir = "";
   let worker: { url: Promise<URL>; dispose(): Promise<void> } | undefined;
   let baseUrl = "";
   let workerBundle = "";
 
   beforeAll(async () => {
-    ({ root, canonicalRoot, cjsPackageDir, linkedCjsPackageDir } = await createHybridFixture(
-      "vinext-cjs-globals-worker-",
-      CLOUDFLARE_NODE_MODULES,
-      { nextDependencySpecifier: NEXT_CJS_PATH_FILE },
-    ));
+    ({
+      root,
+      canonicalRoot,
+      cjsPackageDir,
+      esmPackageDir,
+      linkedCjsPackageDir,
+      lexicalCjsPackageDir,
+      lexicalEsmPackageDir,
+      lexicalLinkedCjsPackageDir,
+    } = await createHybridFixture("vinext-cjs-globals-worker-", CLOUDFLARE_NODE_MODULES, {
+      nextDependencySpecifier: NEXT_CJS_PATH_FILE,
+    }));
     await fs.writeFile(
       path.join(root, "wrangler.jsonc"),
       JSON.stringify({
@@ -601,32 +763,61 @@ describe("bundled CJS globals on the Cloudflare Workers runtime", () => {
     expect(htmlValue(html, "linked-runtime-path")).toBe("/bundle/linked-runtime.js");
     expectFunctionalIdentity(html);
     expect(htmlValue(html, "filename-readable")).toBe("true");
+    expect(htmlValue(html, "esm-filename")).toMatch(/^\/bundle\/.+\.js$/);
+    expect(htmlValue(html, "esm-filename-readable")).toBe("true");
     expectPathAbsent(workerBundle, cjsPackageDir);
+    expectPathAbsent(workerBundle, esmPackageDir);
     expectPathAbsent(workerBundle, linkedCjsPackageDir);
-    expect(workerBundle).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
+    expectPathAbsent(workerBundle, lexicalCjsPackageDir);
+    expectPathAbsent(workerBundle, lexicalEsmPackageDir);
+    expectPathAbsent(workerBundle, lexicalLinkedCjsPackageDir);
+    expect(workerBundle).not.toMatch(
+      /__VINEXT_EMITTED_MODULE_(?:(?:FILE|DIR)NAME|URL)_[a-f0-9]{32}__/,
+    );
     expectPathAbsent(html, canonicalRoot);
+    expectPathAbsent(html, root);
 
     const staticResponse = await fetch(`${baseUrl}/cjs-dependency-globals-static`);
     expect(staticResponse.status).toBe(200);
     expectFunctionalIdentity(await staticResponse.text());
+
+    const appResponse = await fetch(`${baseUrl}/`);
+    const appHtml = await appResponse.text();
+    expect(appResponse.status, appHtml).toBe(200);
+    const appIdentity = expectAppEsmIdentity(appHtml);
+    expect(appIdentity.filename).toMatch(/^\/bundle\/.+\.js$/);
+    expect(appIdentity.readable).toBe("true");
+    expectPathAbsent(appHtml, canonicalRoot);
+    expectPathAbsent(appHtml, root);
   });
 });
 
-describe("bundled CJS globals on the Nitro Node runtime", () => {
+describe("bundled module identity on the Nitro Node runtime", () => {
   let root = "";
   let canonicalRoot = "";
   let cjsPackageDir = "";
+  let esmPackageDir = "";
   let linkedCjsPackageDir = "";
+  let lexicalCjsPackageDir = "";
+  let lexicalEsmPackageDir = "";
+  let lexicalLinkedCjsPackageDir = "";
   let serverProcess: ChildProcess | undefined;
   let baseUrl = "";
   let nitroBundle = "";
 
   beforeAll(async () => {
-    ({ root, canonicalRoot, cjsPackageDir, linkedCjsPackageDir } = await createHybridFixture(
-      "vinext-cjs-globals-nitro-",
-      NITRO_NODE_MODULES,
-      { nextDependencySpecifier: NEXT_CJS_PATH_FILE },
-    ));
+    ({
+      root,
+      canonicalRoot,
+      cjsPackageDir,
+      esmPackageDir,
+      linkedCjsPackageDir,
+      lexicalCjsPackageDir,
+      lexicalEsmPackageDir,
+      lexicalLinkedCjsPackageDir,
+    } = await createHybridFixture("vinext-cjs-globals-nitro-", NITRO_NODE_MODULES, {
+      nextDependencySpecifier: NEXT_CJS_PATH_FILE,
+    }));
     const nitroModule = (await import(
       pathToFileURL(path.join(root, "node_modules/nitro/dist/vite.mjs")).href
     )) as { nitro(): Plugin[] };
@@ -673,10 +864,24 @@ describe("bundled CJS globals on the Nitro Node runtime", () => {
     expect(htmlValue(html, "nested-runtime-path")).toContain(
       path.join(canonicalRoot, ".output/server"),
     );
-    expectFunctionalIdentity(html);
+    expectFunctionalIdentity(html, { requirePackage: true });
     expect(htmlValue(html, "filename-readable")).toBe("true");
+    expect(htmlValue(html, "esm-filename")).toContain(path.join(canonicalRoot, ".output/server"));
+    expect(htmlValue(html, "esm-filename-readable")).toBe("true");
     expectPathAbsent(nitroBundle, cjsPackageDir);
+    expectPathAbsent(nitroBundle, esmPackageDir);
     expectPathAbsent(nitroBundle, linkedCjsPackageDir);
-    expect(nitroBundle).not.toMatch(/__VINEXT_EMITTED_CJS_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
+    expectPathAbsent(nitroBundle, lexicalCjsPackageDir);
+    expectPathAbsent(nitroBundle, lexicalEsmPackageDir);
+    expectPathAbsent(nitroBundle, lexicalLinkedCjsPackageDir);
+    expect(nitroBundle).not.toMatch(
+      /__VINEXT_EMITTED_MODULE_(?:(?:FILE|DIR)NAME|URL)_[a-f0-9]{32}__/,
+    );
+
+    const appResponse = await fetch(`${baseUrl}/`);
+    expect(appResponse.status).toBe(200);
+    const appIdentity = expectAppEsmIdentity(await appResponse.text(), { requirePackage: true });
+    expect(appIdentity.filename).toContain(path.join(canonicalRoot, ".output/server"));
+    expect(appIdentity.readable).toBe("true");
   });
 });
