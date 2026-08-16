@@ -212,9 +212,11 @@ function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
  * not preserve a synthetic `kind: "require-call"` passed through `this.resolve`.
  */
 type IdResolverFactory = typeof createIdResolver;
+type CommonJsTransformFilter = (id: string) => boolean | undefined;
 
 export function createRequireConditionResolutionPlugin(
   createResolver: IdResolverFactory = createIdResolver,
+  commonjsTransformFilter?: CommonJsTransformFilter,
 ): Plugin {
   // Vite reuses this plugin instance across its RSC, SSR, and client
   // environments, so the synthetic identity has to resolve in each graph.
@@ -257,6 +259,19 @@ export function createRequireConditionResolutionPlugin(
     transform: {
       filter: { id: TRANSFORMABLE_ID_RE, code: LITERAL_REQUIRE_RE },
       async handler(code, id) {
+        const cleanId = stripViteModuleQuery(id);
+        const commonjsDisposition = commonjsTransformFilter?.(cleanId);
+        // Only pre-resolve calls that the following vite-plugin-commonjs pass
+        // will turn into static imports. Ordinary dependencies and project
+        // .cjs/.cts files are left to Vite/Rolldown, which already preserves
+        // require conditions. Synthetic targets return true from the shared
+        // filter so their nested conditional requires still recurse.
+        if (
+          commonjsDisposition === false ||
+          (commonjsDisposition !== true && cleanId.includes("node_modules"))
+        ) {
+          return null;
+        }
         const requires = collectLiteralRequires(code, id);
         if (requires.length === 0 || !resolveImport || !resolveRequire) return null;
 

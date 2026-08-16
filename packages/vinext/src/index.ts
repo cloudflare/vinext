@@ -11,7 +11,7 @@ import type {
   UserConfig,
   ViteDevServer,
 } from "vite";
-import { createLogger, parseAst, transformWithOxc } from "vite";
+import { createIdResolver, createLogger, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
   apiRouter,
@@ -1827,7 +1827,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
     // Preserve the `require` package-export condition before the CommonJS
     // transform below turns literal require() calls into static imports.
-    createRequireConditionResolutionPlugin(),
+    createRequireConditionResolutionPlugin(createIdResolver, commonjsTransformFilter),
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     //

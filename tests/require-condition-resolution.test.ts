@@ -2,7 +2,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { createRequireConditionResolutionPlugin } from "../packages/vinext/src/plugins/require-condition-resolution.js";
+import {
+  createRequireConditionResolutionPlugin,
+  isConditionalRequireScriptModuleId,
+} from "../packages/vinext/src/plugins/require-condition-resolution.js";
 
 // Ported from Next.js: test/e2e/app-dir/client-module-with-package-type/index.test.ts
 // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/client-module-with-package-type/index.test.ts
@@ -12,22 +15,26 @@ type TestResolve = (
   importer: string,
   isRequire: boolean,
 ) => Promise<string | undefined>;
+type TestFilter = (id: string) => boolean | undefined;
 
-function createPlugin(resolve: TestResolve) {
+function createPlugin(
+  resolve: TestResolve,
+  filter: TestFilter = (id) => (isConditionalRequireScriptModuleId(id) ? true : undefined),
+) {
   const createResolver = vi.fn(
     (_config: unknown, options?: { isRequire?: boolean }) =>
       (_environment: unknown, specifier: string, importer?: string) =>
         resolve(specifier, importer ?? "", options?.isRequire === true),
   );
-  const plugin = createRequireConditionResolutionPlugin(createResolver as never);
+  const plugin = createRequireConditionResolutionPlugin(createResolver as never, filter);
   const configResolved = plugin.configResolved;
   if (typeof configResolved !== "function") throw new Error("missing configResolved hook");
   void configResolved.call({} as never, {} as never);
   return plugin;
 }
 
-function createTransform(resolve: TestResolve) {
-  const hook = createPlugin(resolve).transform;
+function createTransform(resolve: TestResolve, filter?: TestFilter) {
+  const hook = createPlugin(resolve, filter).transform;
   const handler = typeof hook === "function" ? hook : hook?.handler;
   return handler!.bind({ environment: {} } as never) as (
     code: string,
@@ -53,6 +60,36 @@ describe("vinext:require-condition-resolution", () => {
       'require("/app/node_modules/library/index.cjs.vinext-require.js")',
     );
   });
+
+  it("skips ordinary node_modules that the CommonJS transform ignores", async () => {
+    const resolve = vi.fn(async () => "/app/node_modules/nested/index.cjs");
+    const transform = createTransform(resolve);
+
+    expect(
+      await transform(
+        `module.exports = require("nested");`,
+        "/app/node_modules/dependency/index.js",
+      ),
+    ).toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it.each(["cjs", "cts"])(
+    "skips project .%s files that the CommonJS transform ignores",
+    async (extension) => {
+      const resolve = vi.fn(async () => "/app/node_modules/library/index.cjs");
+      const filter = vi.fn((id: string) =>
+        /\.c[jt]s$/i.test(id) && !id.includes("node_modules") ? false : undefined,
+      );
+      const transform = createTransform(resolve, filter);
+
+      expect(
+        await transform(`module.exports = require("library");`, `/app/config.${extension}`),
+      ).toBeNull();
+      expect(filter).toHaveBeenCalledWith(`/app/config.${extension}`);
+      expect(resolve).not.toHaveBeenCalled();
+    },
+  );
 
   it("resolves import and require branches independently", async () => {
     const resolve = vi.fn(async (specifier: string, _importer: string, isRequire: boolean) =>
@@ -163,6 +200,24 @@ describe("vinext:require-condition-resolution", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("rewrites nested package requires in synthetic targets", async () => {
+    const resolve = vi.fn(async (specifier: string, _importer: string, isRequire: boolean) =>
+      isRequire
+        ? `/app/node_modules/${specifier}/index.cjs`
+        : `/app/node_modules/${specifier}/index.mjs`,
+    );
+    const transform = createTransform(resolve);
+
+    const outer = await transform(`module.exports = require("outer");`, "/app/page.tsx");
+    const outerId = "/app/node_modules/outer/index.cjs.vinext-require.js";
+    expect(outer?.code).toContain(JSON.stringify(outerId));
+
+    const inner = await transform(`module.exports = require("inner");`, outerId);
+    expect(inner?.code).toContain(
+      JSON.stringify("/app/node_modules/inner/index.cjs.vinext-require.js"),
+    );
   });
 
   it("preserves JSON module typing for a conditional require target", async () => {
