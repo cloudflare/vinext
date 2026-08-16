@@ -225,6 +225,23 @@ describe("next/navigation shim", () => {
     expect(typeof nav.useRouter).toBe("function");
   });
 
+  it("preserves raw search spelling in client navigation snapshots", async () => {
+    const nav = await import("../packages/vinext/src/shims/navigation.js");
+
+    const percentEncoded = nav.createClientNavigationRenderSnapshot(
+      "https://example.com/search?q=%20",
+      {},
+    );
+    const plusEncoded = nav.createClientNavigationRenderSnapshot(
+      "https://example.com/search?q=+",
+      {},
+    );
+
+    expect(nav.createSnapshotPathAndSearch(percentEncoded)).toBe("/search?q=%20");
+    expect(nav.createSnapshotPathAndSearch(plusEncoded)).toBe("/search?q=+");
+    expect(percentEncoded.searchParams.toString()).toBe(plusEncoded.searchParams.toString());
+  });
+
   // Next.js parity: next/navigation's useRouter reads AppRouterContext and
   // throws when it is rendered outside the App Router provider.
   // Ported from Next.js:
@@ -17352,6 +17369,19 @@ describe("Pages Router concurrent navigation", () => {
     return "/@fs/" + toSlash(absolutePath);
   }
 
+  function buildDevNotFoundHtml(notFoundSrcPage: string, pageModuleUrl?: string): string {
+    return `<html><head></head><body><script id="__NEXT_DATA__" type="application/json">${safeJsonStringify(
+      {
+        props: { pageProps: { statusCode: 404 } },
+        page: "/404",
+        query: {},
+        isFallback: false,
+        notFoundSrcPage,
+        __vinext: pageModuleUrl ? { pageModuleUrl } : {},
+      },
+    )}</script></body></html>`;
+  }
+
   function getFetchHref(url: RequestInfo | URL): string {
     if (typeof url === "string") return url;
     if (url instanceof URL) return url.href;
@@ -18554,6 +18584,114 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("soft-renders a development GSSP notFound response at the requested route", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(buildDevNotFoundHtml("/gssp-not-found/[slug]", pageModuleUrl), {
+          status: 404,
+        }),
+    );
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      await expect(Router.push("/gssp-not-found/first?hiding=true")).resolves.toBe(true);
+
+      expect(render).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/gssp-not-found/[slug]",
+        query: { hiding: "true", slug: "first" },
+      });
+      expect(win.location.href).toBe("http://localhost/gssp-not-found/first?hiding=true");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("soft-renders a development GSSP notFound with the default error page", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(buildDevNotFoundHtml("/gssp-not-found"), {
+          status: 404,
+        }),
+    );
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      await expect(Router.push("/gssp-not-found?hiding=true")).resolves.toBe(true);
+
+      expect(render).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/gssp-not-found",
+        query: { hiding: "true" },
+      });
+      expect(win.location.href).toBe("http://localhost/gssp-not-found?hiding=true");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not commit a development notFound route after a newer navigation wins", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    const staleLoader = createDeferred<{ default: () => null }>();
+    const loadStale404 = vi.fn(() => staleLoader.promise);
+    Object.assign(win, {
+      __VINEXT_PAGE_LOADERS__: { "/404": loadStale404 },
+    });
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const href = getFetchHref(input);
+      if (href.startsWith("/gssp-not-found/")) {
+        return new Response(buildDevNotFoundHtml("/gssp-not-found/[slug]"), {
+          status: 404,
+        });
+      }
+      return new Response(buildNavHtml("/about", pageModuleUrl));
+    });
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      const staleNavigation = Router.push("/gssp-not-found/first?hiding=true");
+      await vi.waitFor(() => expect(loadStale404).toHaveBeenCalledTimes(1));
+
+      await expect(Router.push("/about")).resolves.toBe(true);
+      staleLoader.resolve({ default: () => null });
+      await expect(staleNavigation).resolves.toBe(true);
+
+      expect(win.__NEXT_DATA__.page).toBe("/about");
+      expect(win.__NEXT_DATA__.query).toEqual({});
+      expect(win.location.href).toBe("http://localhost/about");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("last push() wins when two overlap — superseded navigation does not render", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -19708,6 +19846,92 @@ describe("Pages Router concurrent navigation", () => {
       } else {
         (globalThis as any).window = previousWindow;
       }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("soft-renders a middleware SSG notFound response with the registered error page", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    const pageLoader = vi.fn(async () => ({ default: () => null }));
+    const getErrorInitialProps = vi.fn((ctx: { pathname: string; query: unknown }) => ({
+      fromCustomError: true,
+      pathname: ctx.pathname,
+      query: ctx.query,
+      statusCode: 404,
+    }));
+    const CustomError = Object.assign(() => null, { getInitialProps: getErrorInitialProps });
+    const errorLoader = vi.fn(async () => ({ default: CustomError }));
+    Object.assign(win.location, { origin: "http://localhost" });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    Object.assign(win, {
+      __VINEXT_PAGE_PATTERNS__: ["/ssg/[slug]"],
+      __VINEXT_PAGE_LOADERS__: {
+        "/ssg/[slug]": pageLoader,
+        "/_error": errorLoader,
+      },
+      __VINEXT_PAGES_SSG_PATTERNS__: ["/ssg/[slug]"],
+      __VINEXT_PAGES_SSP_PATTERNS__: [],
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/_next/data/build-1/ssg/not-found-1.json") {
+        return new Response('{"notFound":true}', { status: 404 });
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      await expect(Router.push("/ssg/not-found-1")).resolves.toBe(true);
+
+      expect(fetch).toHaveBeenNthCalledWith(
+        1,
+        "/_next/data/build-1/ssg/not-found-1.json",
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-nextjs-data": "1" }),
+        }),
+      );
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(pageLoader).not.toHaveBeenCalled();
+      expect(errorLoader).toHaveBeenCalledOnce();
+      expect(getErrorInitialProps).toHaveBeenCalledWith(
+        expect.objectContaining({
+          asPath: "/ssg/not-found-1",
+          pathname: "/_error",
+          query: { slug: "not-found-1" },
+        }),
+      );
+      expect(render).toHaveBeenCalledOnce();
+      expect(treeContainsReactType(render.mock.calls[0]?.[0], CustomError)).toBe(true);
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/ssg/[slug]",
+        query: { slug: "not-found-1" },
+        props: {
+          pageProps: {
+            fromCustomError: true,
+            pathname: "/_error",
+            query: { slug: "not-found-1" },
+            statusCode: 404,
+          },
+        },
+      });
+      expect(win.location.href).toBe("http://localhost/ssg/not-found-1");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
       globalThis.fetch = originalFetch;
     }
   });

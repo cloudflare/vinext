@@ -5744,6 +5744,68 @@ describe("app browser entry previousNextUrl helpers", () => {
     ]);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app/index.test.ts
+  it("reuses a matching server template seed when its child state identity changes", async () => {
+    const previousTemplate = React.createElement("h1", null, "template seed 1");
+    const nextTemplate = React.createElement("h1", null, "template seed 2");
+    const templateId = "template:/template/servercomponent";
+    const state = createState({
+      bfcacheIds: { [templateId]: "_b_1_" },
+      elements: createResolvedElements("route:/template/page", "/", null, {
+        [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: {
+          [templateId]: '["template","template-graph","root","index"]',
+        },
+        [templateId]: previousTemplate,
+      }),
+      routeId: "route:/template/page",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: {
+          [templateId]: '["template","template-graph","root","other"]',
+        },
+        [templateId]: nextTemplate,
+        "page:/template/other": React.createElement("main", null, "other"),
+      },
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/other",
+    });
+
+    expect(nextState.bfcacheIds[templateId]).not.toBe(state.bfcacheIds[templateId]);
+    expect(nextState.elements[templateId]).toBe(previousTemplate);
+  });
+
+  it("installs fresh server template output when its own dynamic param changes", async () => {
+    const templateId = "template:/template/[section]";
+    const previousTemplate = React.createElement("h1", null, "alpha template");
+    const nextTemplate = React.createElement("h1", null, "beta template");
+    const state = createState({
+      elements: createResolvedElements("route:/template/[section]", "/", null, {
+        [templateId]: previousTemplate,
+      }),
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/template/alpha",
+        { section: "alpha" },
+      ),
+      routeId: "route:/template/[section]",
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: { [templateId]: nextTemplate },
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/template/beta",
+        { section: "beta" },
+      ),
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/[section]",
+      targetHref: "https://example.com/template/beta",
+    });
+
+    expect(nextState.elements[templateId]).toBe(nextTemplate);
+  });
+
   it("installs fresh same-layout output on refresh commits", async () => {
     const previousLayout = React.createElement("div", null, "previous layout");
     const nextLayout = React.createElement("div", null, "refreshed layout");
