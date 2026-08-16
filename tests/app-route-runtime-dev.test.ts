@@ -14,6 +14,10 @@ describe("App route NEXT_RUNTIME development parity", () => {
   beforeAll(async () => {
     root = await fs.mkdtemp(path.join(import.meta.dirname, ".tmp-app-route-runtime-dev-"));
     await fs.writeFile(path.join(root, "package.json"), `{"type":"module"}`);
+    await fs.writeFile(
+      path.join(root, "next.config.mjs"),
+      `export default { pageExtensions: ["js", "jsx", "ts", "tsx", "mdx"] }`,
+    );
     await fs.symlink(
       path.resolve(import.meta.dirname, "../node_modules"),
       path.join(root, "node_modules"),
@@ -21,6 +25,7 @@ describe("App route NEXT_RUNTIME development parity", () => {
     );
     await fs.mkdir(path.join(root, "app", "shared"), { recursive: true });
     await fs.mkdir(path.join(root, "app", "edge"), { recursive: true });
+    await fs.mkdir(path.join(root, "app", "edge-mdx"), { recursive: true });
     await fs.mkdir(path.join(root, "app", "nodejs"), { recursive: true });
     await fs.writeFile(
       path.join(root, "app", "layout.tsx"),
@@ -29,6 +34,13 @@ describe("App route NEXT_RUNTIME development parity", () => {
     await fs.writeFile(
       path.join(root, "app", "shared", "action-runtime.ts"),
       `export const dependencyRuntime = process.env.NEXT_RUNTIME`,
+    );
+    await fs.writeFile(
+      path.join(root, "app", "shared", "runtime.mdx"),
+      `export const mdxRuntime = process.env.NEXT_RUNTIME
+
+<span id="shared-mdx-runtime">{mdxRuntime}</span>
+`,
     );
     await fs.writeFile(
       path.join(root, "app", "shared", "actions.ts"),
@@ -54,7 +66,8 @@ describe("App route NEXT_RUNTIME development parity", () => {
       path.join(root, "app", "shared", "page.tsx"),
       `
         import { SharedClient } from "./client"
-        export default function Page() { return <SharedClient /> }
+        import SharedMdxRuntime from "./runtime.mdx"
+        export default function Page() { return <><SharedMdxRuntime /><SharedClient /></> }
       `,
     );
     await fs.writeFile(
@@ -65,6 +78,16 @@ describe("App route NEXT_RUNTIME development parity", () => {
       path.join(root, "app", "nodejs", "page.tsx"),
       `export const runtime = "nodejs"; export { default } from "../shared/page"`,
     );
+    await fs.writeFile(
+      path.join(root, "app", "edge-mdx", "page.mdx"),
+      `export const runtime = "edge"
+export const observedRuntime = process.env.NEXT_RUNTIME
+
+# Edge MDX route
+
+<span id="edge-mdx-runtime">{observedRuntime}</span>
+`,
+    );
 
     ({ server, baseUrl } = await startFixtureServer(root, { appRouter: true }));
   }, 30_000);
@@ -72,6 +95,20 @@ describe("App route NEXT_RUNTIME development parity", () => {
   afterAll(async () => {
     await server?.close();
     if (root) await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("compiles shared and route MDX in the matched runtime", async () => {
+    const edgePage = await fetch(`${baseUrl}/edge`);
+    expect(edgePage.status).toBe(200);
+    expect(await edgePage.text()).toContain('id="shared-mdx-runtime">edge');
+
+    const nodePage = await fetch(`${baseUrl}/nodejs`);
+    expect(nodePage.status).toBe(200);
+    expect(await nodePage.text()).toContain('id="shared-mdx-runtime">nodejs');
+
+    const edgeMdxPage = await fetch(`${baseUrl}/edge-mdx`);
+    expect(edgeMdxPage.status).toBe(200);
+    expect(await edgeMdxPage.text()).toContain('id="edge-mdx-runtime">edge');
   });
 
   it("dispatches a client-imported shared action in the matched route runtime", async () => {

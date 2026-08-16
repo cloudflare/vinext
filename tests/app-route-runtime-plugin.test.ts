@@ -294,6 +294,33 @@ describe("App route runtime module graph", () => {
     expect(plugin.load).toBeUndefined();
   });
 
+  it("runtime-qualifies executable MDX while preserving MDX asset queries", async () => {
+    const plugin = createAppRouteRuntimePlugin();
+    const resolve = vi.fn(async (source: string) => ({
+      id: source.includes("?raw") ? "/app/content.mdx?raw" : "/app/content.mdx",
+    }));
+    const resolveId = hookHandler(plugin.resolveId!);
+    const context = { resolve } as unknown as ThisParameterType<typeof resolveId>;
+    const importer = withAppRouteRuntime("/app/edge/page.tsx", "edge");
+
+    await expect(
+      resolveId.call(context, "./content.mdx", importer, {
+        attributes: {},
+        isEntry: false,
+      }),
+    ).resolves.toEqual({
+      id: "/app/content.mdx?__vinext_app_runtime=edge",
+    });
+    await expect(
+      resolveId.call(context, "./content.mdx?raw", importer, {
+        attributes: {},
+        isEntry: false,
+      }),
+    ).resolves.toEqual({
+      id: "/app/content.mdx?raw",
+    });
+  });
+
   it.each([
     ["Node built-in", "node:fs"],
     ["configured external package", "external-package"],

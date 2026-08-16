@@ -4900,12 +4900,16 @@ describe("Plugin config", () => {
     expect(typeof mdxProxy.transform.handler).toBe("function");
     const { include, exclude } = mdxProxy.transform.filter.id;
     expect(include.test("/app/page.mdx") && !exclude.test("/app/page.mdx")).toBe(true);
+    expect(
+      include.test("/app/page.mdx?__vinext_app_runtime=edge") &&
+        !exclude.test("/app/page.mdx?__vinext_app_runtime=edge"),
+    ).toBe(true);
     expect(include.test("./foo.ts")).toBe(false);
     // Config proxy is inert when no MDX files are detected (mdxDelegate is null)
     expect(mdxConfigProxy.config({}, { command: "build", mode: "production" })).toBeUndefined();
   });
 
-  it("vinext:mdx filter skips ids that contain a query string (regression: ?raw)", () => {
+  it("vinext:mdx filter admits only its internal runtime query", () => {
     // @mdx-js/rollup strips the query before matching the file extension, so it
     // would compile "foo.mdx?raw" as MDX and return compiled JSX instead of raw
     // text. The id filter must exclude any id with a "?" so the handler never
@@ -4921,8 +4925,12 @@ describe("Plugin config", () => {
     expect(matches("/app/page.mdx?inline")).toBe(false);
     expect(matches("/app/page.mdx?v=123")).toBe(false);
     expect(matches("/app/page.mdx?mdx")).toBe(false);
+    expect(matches("/app/page.mdx?raw&__vinext_app_runtime=edge")).toBe(false);
     // Edge case: query value contains .mdx but isn't the extension
     expect(matches("/app/page.mdx?something.mdx")).toBe(false);
+    // Runtime isolation remains executable MDX, not a user asset query.
+    expect(matches("/app/page.mdx?__vinext_app_runtime=edge")).toBe(true);
+    expect(matches("/app/page.mdx?__vinext_app_runtime=nodejs")).toBe(true);
     // Plain .mdx still matches the filter
     expect(matches("/app/page.mdx")).toBe(true);
   });

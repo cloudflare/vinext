@@ -97,6 +97,25 @@ describe("App route build runtime", () => {
     ).toBe("edge");
   });
 
+  it("extracts MDX ESM runtime exports without matching fenced examples", async () => {
+    const { paths } = await createRouteFiles({
+      "edge.mdx": `export const runtime =
+  "edge"
+
+# Edge content
+`,
+      "example.mdx": `# Runtime documentation
+
+\`\`\`tsx
+export const runtime = "edge"
+\`\`\`
+`,
+    });
+
+    expect(resolveAppRouteBuildRuntime(route({ pagePath: paths["edge.mdx"] }))).toBe("edge");
+    expect(resolveAppRouteBuildRuntime(route({ pagePath: paths["example.mdx"] }))).toBe("nodejs");
+  });
+
   it("does not inherit layout runtime for route handlers", async () => {
     const { paths } = await createRouteFiles({
       "layout.tsx": `export const runtime = "edge"`,

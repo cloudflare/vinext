@@ -173,6 +173,7 @@ import {
   createAppRouteRuntimeServerReferenceMap,
   registerAppRouteRuntimeDevServerReference,
   registerAppRouteRuntimeServerReferences,
+  withoutAppRouteRuntime,
 } from "./plugins/app-route-runtime.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
@@ -1794,13 +1795,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     name: "vinext:mdx",
     enforce: "pre",
     transform: {
-      filter: { id: { include: /\.mdx$/i, exclude: /\?/ } },
+      filter: {
+        id: {
+          include: /\.mdx(?:\?[^#]*)?$/i,
+          exclude: /\?(?!__vinext_app_runtime=(?:edge|nodejs)$)/,
+        },
+      },
       async handler(code, id, options) {
+        const canonicalId = withoutAppRouteRuntime(id);
+        // The native filter admits plain MDX and the one internal query used
+        // to isolate edge route graphs. Preserve all user query semantics.
+        if (canonicalId.includes("?")) return;
         const delegate = mdxDelegate ?? (await ensureMdxDelegate("on-demand"));
         if (delegate?.transform) {
           const hook = delegate.transform;
           const transform = typeof hook === "function" ? hook : hook.handler;
-          return transform.call(this, code, id, options);
+          return transform.call(this, code, canonicalId, options);
         }
 
         if (!hasUserMdxPlugin) {
@@ -1830,6 +1840,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   >();
 
   const plugins: PluginOption[] = [
+    // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
+    // that use @/*, #/*, or baseUrl imports work out of the box.
+    // Vite 8+ supports this natively via resolve.tsconfigPaths.
+    createStyledJsxPlugin(earlyBaseDir),
+    // Compile MDX to JSX before @vitejs/plugin-react handles the generated
+    // component and injects Fast Refresh registration in dev.
+    mdxProxyPlugin,
+    // Runtime-qualified MDX must be compiled before NEXT_RUNTIME is stamped in
+    // its generated JavaScript, while this pre-enforced transform still runs
+    // before Vite's server-side define replacement.
     createAppRouteRuntimePlugin({
       async onEdgeServerReference(importId, config) {
         edgeServerReferenceImportIds.add(importId);
@@ -1841,13 +1861,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         registerAppRouteRuntimeDevServerReference(pluginApi.manager.serverReferences, importId);
       },
     }),
-    // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
-    // that use @/*, #/*, or baseUrl imports work out of the box.
-    // Vite 8+ supports this natively via resolve.tsconfigPaths.
-    createStyledJsxPlugin(earlyBaseDir),
-    // Compile MDX to JSX before @vitejs/plugin-react handles the generated
-    // component and injects Fast Refresh registration in dev.
-    mdxProxyPlugin,
     // React Fast Refresh + JSX transform for client components.
     reactPluginPromise,
     // Next.js ignores requests without any statically known path component

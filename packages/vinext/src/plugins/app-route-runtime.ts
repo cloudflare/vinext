@@ -11,7 +11,7 @@ const VITE_RSC_ENCRYPTION_KEY_ID = "\0virtual:vite-rsc/encryption-key";
 
 const SCRIPT_EXTENSION_RE = /\.(?:[cm]?[jt]sx?)$/i;
 const NON_SCRIPT_EXTENSION_RE =
-  /\.(?:avif|bmp|css|csv|eot|gif|html?|ico|jpe?g|json|md|mdx|mp3|mp4|ogg|otf|pdf|png|svg|tiff?|txt|wav|webm|webp|woff2?|wasm|xml|ya?ml)$/i;
+  /\.(?:avif|bmp|css|csv|eot|gif|html?|ico|jpe?g|json|md|mp3|mp4|ogg|otf|pdf|png|svg|tiff?|txt|wav|webm|webp|woff2?|wasm|xml|ya?ml)$/i;
 
 function splitId(id: string): { pathname: string; query: string; search: URLSearchParams } {
   const queryIndex = id.indexOf("?");
@@ -23,7 +23,7 @@ function splitId(id: string): { pathname: string; query: string; search: URLSear
   };
 }
 
-function withoutAppRouteRuntime(id: string): string {
+export function withoutAppRouteRuntime(id: string): string {
   const { pathname, query } = splitId(id);
   const remainingQuery = query
     .split("&")
@@ -114,8 +114,14 @@ export function createAppRouteRuntimeServerReferenceMap(
 }
 
 function canLoadAsScriptModule(id: string): boolean {
-  const pathname = splitId(id).pathname;
+  const { pathname, search } = splitId(id);
   if (pathname === VITE_RSC_ENCRYPTION_KEY_ID) return false;
+  if (pathname.toLowerCase().endsWith(".mdx")) {
+    // Plain MDX is executable source after vinext's MDX transform. Preserve
+    // query imports such as ?raw/?url as assets; only vinext's own runtime
+    // qualifier is allowed to remain on a script-classified MDX module.
+    return [...search.keys()].every((key) => key === APP_ROUTE_RUNTIME_QUERY);
+  }
   return (
     pathname.startsWith("\0") ||
     pathname.startsWith("virtual:") ||

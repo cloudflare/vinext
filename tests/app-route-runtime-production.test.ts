@@ -23,6 +23,10 @@ describe("App route NEXT_RUNTIME production parity", () => {
   beforeAll(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-app-route-runtime-prod-"));
     await fs.writeFile(path.join(root, "package.json"), `{"type":"module"}`);
+    await fs.writeFile(
+      path.join(root, "next.config.mjs"),
+      `export default { pageExtensions: ["js", "jsx", "ts", "tsx", "mdx"] }`,
+    );
     await fs.symlink(
       path.resolve(import.meta.dirname, "../node_modules"),
       path.join(root, "node_modules"),
@@ -31,6 +35,7 @@ describe("App route NEXT_RUNTIME production parity", () => {
     await fs.mkdir(path.join(root, "app", "shared"), { recursive: true });
     await fs.mkdir(path.join(root, "app", "nodejs"), { recursive: true });
     await fs.mkdir(path.join(root, "app", "edge"), { recursive: true });
+    await fs.mkdir(path.join(root, "app", "edge-mdx"), { recursive: true });
     await fs.mkdir(path.join(root, "app", "edge", "node_modules", "runtime-probe"), {
       recursive: true,
     });
@@ -79,11 +84,19 @@ describe("App route NEXT_RUNTIME production parity", () => {
       `export const actionDependencyRuntime = process.env.NEXT_RUNTIME`,
     );
     await fs.writeFile(
+      path.join(root, "app", "shared", "runtime.mdx"),
+      `export const mdxRuntime = process.env.NEXT_RUNTIME
+
+<span id="shared-mdx-runtime">{mdxRuntime}</span>
+`,
+    );
+    await fs.writeFile(
       path.join(root, "app", "shared", "page.tsx"),
       `
         import { SharedClient } from "./client"
+        import SharedMdxRuntime from "./runtime.mdx"
         export default async function Page() {
-          return <><div id="runtime">{process.env.NEXT_RUNTIME}</div><SharedClient /></>
+          return <><div id="runtime">{process.env.NEXT_RUNTIME}</div><SharedMdxRuntime /><SharedClient /></>
         }
       `,
     );
@@ -111,6 +124,16 @@ describe("App route NEXT_RUNTIME production parity", () => {
         globalThis.__vinextClientRuntime = "client-runtime:" + process.env.NEXT_RUNTIME
         export function ClientRuntime() { return null }
       `,
+    );
+    await fs.writeFile(
+      path.join(root, "app", "edge-mdx", "page.mdx"),
+      `export const runtime = "edge"
+export const observedRuntime = process.env.NEXT_RUNTIME
+
+# Edge MDX route
+
+<span id="edge-mdx-runtime">{observedRuntime}</span>
+`,
     );
     await fs.writeFile(
       path.join(root, "app", "edge", "node_modules", "runtime-probe", "package.json"),
@@ -217,6 +240,7 @@ describe("App route NEXT_RUNTIME production parity", () => {
     const nodeHtml = await (nodeResponse as Response).text();
     expect(nodeHtml).toContain('id="runtime">nodejs');
     expect(nodeHtml).toContain('id="root-runtime">nodejs');
+    expect(nodeHtml).toContain('id="shared-mdx-runtime">nodejs');
 
     const beforeEdgeRequest = Number(
       (globalThis as { __vinextRootLayoutEvaluations?: number }).__vinextRootLayoutEvaluations ?? 0,
@@ -226,6 +250,7 @@ describe("App route NEXT_RUNTIME production parity", () => {
     const edgeHtml = await (edgeResponse as Response).text();
     expect(edgeHtml).toContain('id="runtime">edge');
     expect(edgeHtml).toContain('id="root-runtime">edge');
+    expect(edgeHtml).toContain('id="shared-mdx-runtime">edge');
     edgeRootLayoutEvaluationCount = Number(
       (globalThis as { __vinextRootLayoutEvaluations?: number }).__vinextRootLayoutEvaluations ?? 0,
     );
@@ -234,6 +259,12 @@ describe("App route NEXT_RUNTIME production parity", () => {
     const fakeEdgeResponse = await handler(new Request("http://localhost/fake-edge"));
     expect(fakeEdgeResponse).toBeInstanceOf(Response);
     expect(await (fakeEdgeResponse as Response).text()).toContain('id="runtime">nodejs');
+  });
+
+  it("compiles an edge-qualified MDX route in its matched runtime", async () => {
+    const response = await handler(new Request("http://localhost/edge-mdx"));
+    expect(response).toBeInstanceOf(Response);
+    expect(await (response as Response).text()).toContain('id="edge-mdx-runtime">edge');
   });
 
   it("keeps route handlers on node when only their layout is edge", async () => {

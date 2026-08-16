@@ -4,6 +4,38 @@ import { extractExportConstString } from "./report.js";
 
 export type AppRouteRuntime = "edge" | "nodejs";
 
+function extractMdxEsmSource(source: string): string {
+  const lines = source.split(/\r?\n/);
+  const blocks: string[] = [];
+  let fence: { marker: string; length: number } | null = null;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    const leadingWhitespace = line.match(/^[ \t]*/)?.[0] ?? "";
+    const trimmed = line.slice(leadingWhitespace.length);
+    const fenceMatch = /^(`{3,}|~{3,})/.exec(trimmed);
+    if (fenceMatch && leadingWhitespace.length <= 3) {
+      const marker = fenceMatch[1]![0]!;
+      const length = fenceMatch[1]!.length;
+      if (!fence) fence = { marker, length };
+      else if (marker === fence.marker && length >= fence.length) fence = null;
+      continue;
+    }
+    if (fence || leadingWhitespace.length > 3 || !/^(?:export|import)\s/.test(trimmed)) {
+      continue;
+    }
+
+    const block: string[] = [];
+    while (index < lines.length && lines[index]!.trim() !== "") {
+      block.push(lines[index]!);
+      index += 1;
+    }
+    blocks.push(block.join("\n"));
+  }
+
+  return blocks.join("\n");
+}
+
 function readSegmentRuntime(filePath: string): AppRouteRuntime | null {
   let source: string;
   try {
@@ -12,7 +44,10 @@ function readSegmentRuntime(filePath: string): AppRouteRuntime | null {
     return null;
   }
 
-  const runtime = extractExportConstString(source, "runtime");
+  const analyzableSource = filePath.toLowerCase().endsWith(".mdx")
+    ? extractMdxEsmSource(source)
+    : source;
+  const runtime = extractExportConstString(analyzableSource, "runtime");
   if (runtime === "edge" || runtime === "experimental-edge") return "edge";
   if (runtime === "nodejs") return "nodejs";
   return null;
