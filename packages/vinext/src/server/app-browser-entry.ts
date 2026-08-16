@@ -28,6 +28,7 @@ import {
   createCachedRscResponseSnapshot,
   createClientNavigationRenderSnapshot,
   deletePrefetchResponseSnapshot,
+  disableNavigationResponsePrefetchCacheReuse,
   DYNAMIC_NAVIGATION_CACHE_TTL,
   PREFETCH_CACHE_TTL,
   getClientNavigationRenderContext,
@@ -128,8 +129,11 @@ import {
 import { AppBrowserHistoryController } from "./app-browser-history-controller.js";
 import {
   createVisitedResponseCacheEntry,
+  deleteAllVisitedResponseCacheEntries,
+  deleteInvalidatedHistoryRestoreEntries,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
+  hasNavigationResponseHistoryLifetime,
   isVisitedResponseCacheEntryFresh,
   type VisitedResponseCacheEntry,
 } from "./app-visited-response-cache.js";
@@ -390,6 +394,15 @@ function restoreHistoryStateSnapshot(
   });
   if (!restored) return false;
 
+  // History entries restore their own visible tree, but a later Link click is
+  // a new navigation. Demote unbounded response snapshots published by the
+  // route we just left while retaining explicit prefetches and responses whose
+  // segment-cache lifetime licenses reuse. Advance the generation first so an
+  // async publication already waiting on a response body cannot repopulate a
+  // departed unbounded response after the caches are pruned.
+  clientNavigationCacheGeneration += 1;
+  deleteInvalidatedHistoryRestoreEntries(visitedResponseCache);
+  disableNavigationResponsePrefetchCacheReuse();
   commitClientNavigationState(navId, { releaseSnapshot: false });
   return true;
 }
@@ -769,9 +782,14 @@ function storeVisitedResponseSnapshot(
   elements?: AppElements,
   seedPrefetchCache: boolean = true,
   prefetchSnapshot: CachedRscResponse = snapshot,
+  reuseAfterHistoryRestore: boolean = false,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
-  visitedResponseCache.delete(cacheKey);
+  // Router-state fingerprints intentionally give requests for the same visible
+  // route distinct cache-busting URLs. A newly committed response supersedes
+  // every older fingerprint variant; leaving one behind lets normalized lookup
+  // replay stale page output after a later navigation.
+  deleteAllVisitedResponseCacheEntries(visitedResponseCache, rscUrl, interceptionContext);
   evictVisitedResponseCacheIfNeeded();
   const now = Date.now();
   const entry = createVisitedResponseCacheEntry({
@@ -781,6 +799,7 @@ function storeVisitedResponseSnapshot(
     mountedSlotsHeader: requestMountedSlotsHeader,
     params,
     response: snapshot,
+    reuseAfterHistoryRestore,
   });
   visitedResponseCache.set(cacheKey, entry);
   if (seedPrefetchCache) {
@@ -790,6 +809,7 @@ function storeVisitedResponseSnapshot(
       interceptionContext,
       requestMountedSlotsHeader,
       prefetchFallbackTtlMs,
+      reuseAfterHistoryRestore,
     );
   }
   return () => {
@@ -802,10 +822,9 @@ function storeVisitedResponseSnapshot(
   };
 }
 
-// Build the absolute current-document href the early-intent planner compares
-// against the navigation target. The committed snapshot carries a base-stripped
-// pathname plus parsed search params; the planner re-strips the base (a no-op on
-// an already-stripped path) so both sides reduce to the same canonical form.
+// Build the absolute app-relative href the early-intent planner compares
+// against the browser-space navigation target. The committed snapshot already
+// has basePath stripped; its explicit URL-space tag prevents a second strip.
 function clientNavigationSnapshotHref(snapshot: ClientNavigationRenderSnapshot): string {
   return `${window.location.origin}${createSnapshotPathAndSearch(snapshot)}`;
 }
@@ -1570,6 +1589,9 @@ function bootstrapHydration(
           mountedSlotsHeader,
           elements,
           false,
+          snapshot,
+          initialRscBootstrap?.initialCacheKind === "static" ||
+            metadata.interceptionContext !== null,
         );
       });
     })
@@ -1655,6 +1677,7 @@ function bootstrapHydration(
     traversalIntent?: HistoryTraversalIntent,
     scrollIntent?: AppRouterScrollIntent | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
+    initialBypassNavigationCache?: boolean,
   ): Promise<void> {
     abortSupersededNavigation();
     const navigationAbortController = new AbortController();
@@ -1759,10 +1782,16 @@ function bootstrapHydration(
         // already short-circuited before reaching this loop, so for a "navigate"
         // here the decision is always a flight navigation and only its
         // cache-bypass bit is consumed.
+        const usesInitialNavigationCachePolicy =
+          navigationKind === "navigate" &&
+          currentHref === href &&
+          redirectCount === redirectDepth &&
+          initialBypassNavigationCache !== undefined;
         const earlyIntentDecision =
-          navigationKind === "navigate"
+          navigationKind === "navigate" && !usesInitialNavigationCachePolicy
             ? navigationPlanner.classifyEarlyNavigationIntent({
                 basePath: __basePath,
+                currentUrlSpace: "appRelativeSnapshot",
                 currentHref: clientNavigationSnapshotHref(
                   navigationInitiationState.navigationSnapshot,
                 ),
@@ -1773,9 +1802,10 @@ function bootstrapHydration(
                 targetHref: url.href,
               })
             : null;
-        const shouldBypassNavigationCache =
-          earlyIntentDecision?.kind === "flightNavigation" &&
-          earlyIntentDecision.bypassNavigationCache;
+        const shouldBypassNavigationCache = usesInitialNavigationCachePolicy
+          ? initialBypassNavigationCache
+          : earlyIntentDecision?.kind === "flightNavigation" &&
+            earlyIntentDecision.bypassNavigationCache;
         // The client reuse manifest is excluded from VINEXT_RSC_VARY_HEADER, so
         // it never affects the cache-busting URL. Defer producing it until the
         // visited-response cache miss is confirmed below — its producer iterates
@@ -2331,6 +2361,7 @@ function bootstrapHydration(
               undefined,
               true,
               prefetchSnapshot,
+              true,
             );
           } else {
             const state = committedState;
@@ -2355,6 +2386,7 @@ function bootstrapHydration(
               committedElements,
               true,
               prefetchSnapshot,
+              interceptionContext !== null || hasNavigationResponseHistoryLifetime(snapshot),
             );
           }
         } catch {

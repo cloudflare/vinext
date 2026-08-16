@@ -11,10 +11,19 @@ export type VisitedResponseCacheEntry = {
   mountedSlotsHeader: string | null;
   params: Record<string, string | string[]>;
   response: CachedRscResponse;
+  reuseAfterHistoryRestore: boolean;
 };
 
 export const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
 export const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
+
+export function hasNavigationResponseHistoryLifetime(snapshot: CachedRscResponse): boolean {
+  const dynamicStaleTime =
+    snapshot.completedDynamicStaleTimeSeconds ?? snapshot.dynamicStaleTimeSeconds;
+  return dynamicStaleTime !== undefined
+    ? dynamicStaleTime > 0
+    : snapshot.serverStaleTime !== undefined;
+}
 
 export function createVisitedResponseCacheEntry(options: {
   elements?: AppElements;
@@ -23,6 +32,7 @@ export function createVisitedResponseCacheEntry(options: {
   mountedSlotsHeader?: string | null;
   params: Record<string, string | string[]>;
   response: CachedRscResponse;
+  reuseAfterHistoryRestore?: boolean;
 }): VisitedResponseCacheEntry {
   return {
     createdAt: options.now,
@@ -35,6 +45,7 @@ export function createVisitedResponseCacheEntry(options: {
     mountedSlotsHeader: options.mountedSlotsHeader ?? null,
     params: options.params,
     response: options.response,
+    reuseAfterHistoryRestore: options.reuseAfterHistoryRestore === true,
   };
 }
 
@@ -112,4 +123,25 @@ export function deleteVisitedResponseCacheEntry(
   const match = findVisitedResponseCacheEntry(cache, rscUrl, interceptionContext);
   if (!match) return false;
   return cache.delete(match.cacheKey);
+}
+
+export function deleteAllVisitedResponseCacheEntries(
+  cache: Map<string, VisitedResponseCacheEntry>,
+  rscUrl: string,
+  interceptionContext: string | null,
+): number {
+  let deleted = 0;
+  while (deleteVisitedResponseCacheEntry(cache, rscUrl, interceptionContext)) {
+    deleted++;
+  }
+  return deleted;
+}
+
+export function deleteInvalidatedHistoryRestoreEntries(
+  cache: Map<string, VisitedResponseCacheEntry>,
+): void {
+  for (const [cacheKey, entry] of cache) {
+    if (entry.reuseAfterHistoryRestore) continue;
+    cache.delete(cacheKey);
+  }
 }
