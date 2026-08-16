@@ -3,6 +3,7 @@ import type { AppRoute } from "../routing/app-router.js";
 import { extractExportConstString } from "./report.js";
 
 export type AppRouteRuntime = "edge" | "nodejs";
+type ReadSegmentRuntime = (filePath: string) => AppRouteRuntime | null;
 
 function extractMdxEsmSource(source: string): string {
   const lines = source.split(/\r?\n/);
@@ -53,15 +54,18 @@ function readSegmentRuntime(filePath: string): AppRouteRuntime | null {
   return null;
 }
 
-export function resolveAppRouteBuildRuntime(route: AppRoute): AppRouteRuntime {
+function resolveAppRouteBuildRuntimeWithReader(
+  route: AppRoute,
+  readRuntime: ReadSegmentRuntime,
+): AppRouteRuntime {
   if (route.routePath) {
-    return readSegmentRuntime(route.routePath) ?? "nodejs";
+    return readRuntime(route.routePath) ?? "nodejs";
   }
 
   let primaryRuntime: AppRouteRuntime | null = null;
   for (const filePath of [...route.layouts, route.pagePath]) {
     if (!filePath) continue;
-    primaryRuntime = readSegmentRuntime(filePath) ?? primaryRuntime;
+    primaryRuntime = readRuntime(filePath) ?? primaryRuntime;
   }
   if (primaryRuntime) return primaryRuntime;
 
@@ -72,7 +76,7 @@ export function resolveAppRouteBuildRuntime(route: AppRoute): AppRouteRuntime {
     const activePagePath = slot.pagePath ?? slot.defaultPath;
     for (const filePath of [slot.layoutPath, ...(slot.configLayoutPaths ?? []), activePagePath]) {
       if (!filePath) continue;
-      const runtime = readSegmentRuntime(filePath);
+      const runtime = readRuntime(filePath);
       if (runtime) return runtime;
     }
   }
@@ -80,10 +84,21 @@ export function resolveAppRouteBuildRuntime(route: AppRoute): AppRouteRuntime {
   return "nodejs";
 }
 
+export function resolveAppRouteBuildRuntime(route: AppRoute): AppRouteRuntime {
+  return resolveAppRouteBuildRuntimeWithReader(route, readSegmentRuntime);
+}
+
 export function resolveAppRouteBuildRuntimes(
   routes: readonly AppRoute[],
 ): readonly AppRouteRuntime[] {
-  return routes.map(resolveAppRouteBuildRuntime);
+  const runtimeByPath = new Map<string, AppRouteRuntime | null>();
+  const readRuntime = (filePath: string): AppRouteRuntime | null => {
+    if (runtimeByPath.has(filePath)) return runtimeByPath.get(filePath) ?? null;
+    const runtime = readSegmentRuntime(filePath);
+    runtimeByPath.set(filePath, runtime);
+    return runtime;
+  };
+  return routes.map((route) => resolveAppRouteBuildRuntimeWithReader(route, readRuntime));
 }
 
 /**

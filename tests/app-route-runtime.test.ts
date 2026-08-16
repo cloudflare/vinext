@@ -1,10 +1,12 @@
+import nodeFs from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   createAppRouteRuntimeFingerprint,
   resolveAppRouteBuildRuntime,
+  resolveAppRouteBuildRuntimes,
 } from "../packages/vinext/src/build/app-route-runtime.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 
@@ -80,6 +82,25 @@ function parallelSlot(
 }
 
 describe("App route build runtime", () => {
+  it("reads shared segment config once across a multi-route resolution", async () => {
+    const { paths } = await createRouteFiles({
+      "layout.tsx": `export const runtime = "edge"`,
+      "first/page.tsx": `export default function Page() { return null }`,
+      "second/page.tsx": `export default function Page() { return null }`,
+    });
+    const readFile = vi.spyOn(nodeFs, "readFileSync");
+
+    resolveAppRouteBuildRuntimes([
+      route({ layouts: [paths["layout.tsx"]], pagePath: paths["first/page.tsx"] }),
+      route({ layouts: [paths["layout.tsx"]], pagePath: paths["second/page.tsx"] }),
+    ]);
+
+    expect(
+      readFile.mock.calls.filter(([filePath]) => filePath === paths["layout.tsx"]),
+    ).toHaveLength(1);
+    readFile.mockRestore();
+  });
+
   it("changes the route fingerprint only when the effective runtime changes", async () => {
     const { paths } = await createRouteFiles({
       "page.tsx": `export default function Page() { return "first" }`,

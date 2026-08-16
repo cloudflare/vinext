@@ -43,7 +43,10 @@ import {
 } from "./server/image-optimization.js";
 
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
-import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
+import {
+  shouldInvalidateAppRouteFile,
+  shouldRevalidateAppRouteRuntimeFile,
+} from "./server/dev-route-files.js";
 import {
   createAppRouteRuntimeFingerprint,
   resolveAppRouteBuildRuntimes,
@@ -4591,7 +4594,7 @@ export const loadServerActionClient = ${
           if (
             !hasAppDir ||
             devAppRouteRuntimeFingerprint === null ||
-            !shouldInvalidateAppRouteFile(appDir, filePath, fileMatcher)
+            !shouldRevalidateAppRouteRuntimeFile(appDir, filePath, fileMatcher)
           ) {
             return;
           }
