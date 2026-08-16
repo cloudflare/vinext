@@ -129,6 +129,73 @@ const minimalAppRoutes: AppRoute[] = [
 // ── App Router manifest construction ─────────────────────────────────
 
 describe("App Router generated manifest construction", () => {
+  it("isolates edge route modules with an edge runtime module graph", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-route-runtime-"));
+    const rootLayout = path.join(root, "app/layout.tsx");
+    const rootNotFound = path.join(root, "app/not-found.tsx");
+    const edgeLayout = path.join(root, "app/edge/layout.tsx");
+    const sharedPage = path.join(root, "app/shared/page.tsx");
+    fs.mkdirSync(path.dirname(edgeLayout), { recursive: true });
+    fs.mkdirSync(path.dirname(sharedPage), { recursive: true });
+    fs.writeFileSync(
+      rootLayout,
+      `export default function Layout({ children }) { return children }`,
+    );
+    fs.writeFileSync(rootNotFound, `export default function NotFound() { return null }`);
+    fs.writeFileSync(
+      edgeLayout,
+      `export const runtime = "edge"; export { default } from "../layout"`,
+    );
+    fs.writeFileSync(
+      sharedPage,
+      `export default function Page() { return process.env.NEXT_RUNTIME }`,
+    );
+
+    const base = minimalAppRoutes[0]!;
+    try {
+      const manifest = buildAppRscManifestCode({
+        routes: [
+          {
+            ...base,
+            pattern: "/node",
+            pagePath: sharedPage,
+            layouts: [rootLayout],
+            notFoundPath: rootNotFound,
+            notFoundPaths: [rootNotFound],
+          },
+          {
+            ...base,
+            pattern: "/edge",
+            pagePath: sharedPage,
+            layouts: [rootLayout, edgeLayout],
+            layoutErrorPaths: [null, null],
+            notFoundPath: rootNotFound,
+            notFoundPaths: [rootNotFound, null],
+            forbiddenPaths: [null, null],
+            unauthorizedPaths: [null, null],
+            layoutTreePositions: [0, 1],
+          },
+        ],
+      });
+      const imports = manifest.imports.join("\n");
+      expect(imports).toContain(`import(${JSON.stringify(sharedPage)})`);
+      expect(imports).toContain(
+        `import(${JSON.stringify(`${sharedPage}?__vinext_app_runtime=edge`)})`,
+      );
+      expect(imports).toContain(
+        `import(${JSON.stringify(`${edgeLayout}?__vinext_app_runtime=edge`)})`,
+      );
+      expect(imports).toContain(
+        `import(${JSON.stringify(`${rootLayout}?__vinext_app_runtime=edge`)})`,
+      );
+      expect(imports).toContain(
+        `import(${JSON.stringify(`${rootNotFound}?__vinext_app_runtime=edge`)})`,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("registers the host React instance before the App Router browser runtime", () => {
     const code = generateBrowserEntry();
     const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
@@ -652,10 +719,10 @@ describe("App Router generated manifest construction", () => {
     });
 
     const imports = manifest.imports.join("\n");
-    // The root layout stays eager (`import * as`, always needed for every
-    // render) and is additionally referenced by a lazy loader for the route's
-    // `layouts` array, so its path appears in both an eager and a lazy import.
-    expect(imports.match(/\/tmp\/test\/app\/layout\.tsx/g)).toHaveLength(2);
+    // Root boundaries stay eager and their route loader resolves the same
+    // namespace object, avoiding a second evaluated module instance.
+    expect(imports.match(/\/tmp\/test\/app\/layout\.tsx/g)).toHaveLength(1);
+    expect(imports).toMatch(/const load_\d+ = \(\) => Promise\.resolve\(mod_\d+\);/);
     // Every per-route module — pages, route handlers, layouts, templates,
     // boundaries and intercepting pages/layouts — is emitted as a lazy `() =>
     // import()` loader. Only the always-needed root boundaries (root layout,
@@ -1333,6 +1400,20 @@ describe("App Router entry templates", () => {
     expect(code).not.toMatch(
       /import \{\s*handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,/,
     );
+  });
+
+  it("maps canonical client action ids to the matched edge route runtime", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      serverActionRuntimeMap: { "canonical-reference": "edge-reference" },
+    });
+
+    expect(code).toContain(
+      'const __serverActionRuntimeMap = {"canonical-reference":"edge-reference"}',
+    );
+    expect(code).toContain(
+      "__resolveServerActionRuntimeId(\n            actionReferenceId,\n            __actionIsEdgeRuntime,",
+    );
+    expect(code).toContain("__serverActionRuntimeMap,\n            import.meta.env.DEV,");
   });
 
   it("generateRscEntry omits server action imports when no server references were found", () => {
