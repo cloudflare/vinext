@@ -1353,12 +1353,18 @@ describe("prefetch cache eviction", () => {
     });
     (globalThis as any).fetch = fetch;
 
-    for (let index = 0; index < 5; index++) {
+    // Occupy every low-priority slot before scheduling the request whose
+    // promotion this test exercises. Prefetch setup hashes the RSC request
+    // asynchronously, so starting all five together does not guarantee that
+    // dashboard-4 is the request left in the queue.
+    for (let index = 0; index < 4; index++) {
       appRouterInstance.prefetch(`/dashboard-${index}`);
     }
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 4);
+    appRouterInstance.prefetch("/dashboard-4");
 
     // Four slots are occupied and none of their bodies have been read, so the
-    // fifth request has not been issued — but all five entries are registered.
+    // queued request has not been issued — but its entry is registered.
     await waitForPrefetchSetup(
       () =>
         fetch.mock.calls.length === 4 &&

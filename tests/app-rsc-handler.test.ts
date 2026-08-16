@@ -3145,6 +3145,36 @@ describe("createAppRscHandler", () => {
     expect(dispatched?.searchParams.toString()).toBe("tab=latest");
   });
 
+  it.each([
+    { name: "Node", runtime: undefined },
+    { name: "Edge", runtime: "edge" },
+  ])("preserves Workers cf metadata for $name route handlers", async ({ runtime }) => {
+    const route = createPageRoute({
+      page: null,
+      pattern: "/api/inspect",
+      routeHandler: { GET: () => new Response("route"), runtime },
+      routeSegments: ["api", "inspect"],
+    });
+    const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
+      async () => new Response("route", { status: 200 }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedRouteHandler,
+      matchRoute: (pathname: string) =>
+        pathname === "/api/inspect" ? { params: {}, route } : null,
+    });
+    const request = new Request("https://example.test/docs/api/inspect");
+    const cf = { country: "AU" };
+    Object.defineProperty(request, "cf", { value: cf, enumerable: true });
+
+    const response = await handler(request, null);
+
+    expect(response.status).toBe(200);
+    const dispatched = dispatchMatchedRouteHandler.mock.calls[0]?.[0];
+    expect(Reflect.get(dispatched!.request, "cf")).toBe(cf);
+  });
+
   it("serves full-route RSC payloads at HTML URLs marked by RSC header alone", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/ppr-root-param-rsc-fallback/ppr-root-param-rsc-fallback.test.ts

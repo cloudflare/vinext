@@ -824,6 +824,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               rootParams: options.rootParams,
               route: revalidationTarget.route,
               waitForAllReady: true,
+              isForceStatic: revalidationDynamicConfig === "force-static",
             });
             options.clearRequestContext();
             return {

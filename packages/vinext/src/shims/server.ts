@@ -26,7 +26,7 @@ import {
   trackAfterPromise,
 } from "./unified-request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
-import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { hasBasePath, removeTrailingSlash, stripBasePath } from "../utils/base-path.js";
 
 /** @deprecated Import ImageResponse from `next/og` instead. */
 export function ImageResponse(): never {
@@ -473,6 +473,13 @@ export class NextURL {
   private _applyTrailingSlash(pathname: string): string {
     // Never strip or add a slash to the root path.
     if (pathname === "" || pathname === "/") return pathname;
+    const pathnameWithoutBasePath = this._basePath
+      ? stripBasePath(pathname, this._basePath)
+      : pathname;
+    // Internal Next.js assets retain their request shape. In particular,
+    // missing build manifests still run middleware without acquiring a slash
+    // from `trailingSlash: true`.
+    if (pathnameWithoutBasePath.startsWith("/_next/")) return removeTrailingSlash(pathname);
     if (this._trailingSlash) {
       return pathname.endsWith("/") ? pathname : pathname + "/";
     }

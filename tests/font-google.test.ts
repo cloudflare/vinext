@@ -1464,6 +1464,27 @@ describe("_rewriteCachedFontCssToServedUrls", () => {
     expect(out).toContain("format('woff2')");
   });
 
+  it.runIf(process.platform === "win32")(
+    "matches writer-normalized CSS when the cache directory uses native Windows separators",
+    () => {
+      // Regression for the 0.0.50 / 0.2.1 shape reported in #2933: the CSS
+      // writer used forward slashes while configResolved retained backslashes.
+      // Next.js emits font URLs under /_next/static/media rather than leaking
+      // the build machine's filesystem path:
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/next-font/index.test.ts
+      const cacheDir = path.join("C:\\", "Users", "me", "project", ".vinext", "fonts");
+      const canonicalCacheDir = cacheDir.replaceAll("\\", "/");
+      const css = `src: url(${canonicalCacheDir}/geist-abc/geist-def.woff2) format('woff2');`;
+
+      const out = rewriteCachedFontCssToServedUrls(css, cacheDir);
+
+      expect(out).toBe(
+        "src: url(/_next/static/_vinext_fonts/geist-abc/geist-def.woff2) format('woff2');",
+      );
+      expect(out).not.toContain("C:/Users/me/project/.vinext/fonts");
+    },
+  );
+
   it("rewrites every occurrence when the same path appears multiple times", () => {
     // The broken path can appear in the same cached CSS via the cyrillic /
     // latin-ext / latin @font-face blocks Google Fonts returns per family,
