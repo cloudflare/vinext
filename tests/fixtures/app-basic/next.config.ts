@@ -90,6 +90,13 @@ const nextConfig: NextConfig = {
         destination: "/about",
         permanent: false,
       },
+      // Ported from Next.js v16.2.6:
+      // test/e2e/app-dir/rsc-query-routing/next.config.js
+      {
+        source: "/nextjs-compat/rsc-query-routing/redirect/source",
+        destination: "/nextjs-compat/rsc-query-routing/redirect/dest",
+        permanent: true,
+      },
     ];
   },
 
@@ -171,6 +178,12 @@ const nextConfig: NextConfig = {
           source: "/rewritten-use-pathname",
           destination: "/nextjs-compat/hooks-search",
         },
+        // Ported from Next.js v16.2.6:
+        // test/e2e/app-dir/rsc-query-routing/next.config.js
+        {
+          source: "/nextjs-compat/rsc-query-routing/rewrite/source",
+          destination: "/nextjs-compat/rsc-query-routing/rewrite/dest",
+        },
       ],
       fallback: [
         // Used by Vitest: app-router.test.ts — fallback rewrite gated on a
@@ -223,6 +236,23 @@ const nextConfig: NextConfig = {
         headers: [
           { key: "X-Action-Source-Only", value: "yes" },
           { key: "X-Action-Header-Collision", value: "source" },
+        ],
+      },
+      // Regression for #2788: this discovery Link must coexist with the
+      // React preload Link emitted by app/config-link-preload/page.tsx.
+      // Both rules match intentionally: Next.js keeps the last non-cookie
+      // config value before middleware and framework response headers run.
+      {
+        source: "/config-link-preload",
+        headers: [{ key: "Link", value: '</superseded>; rel="describedby"' }],
+      },
+      {
+        source: "/config-link-preload",
+        headers: [
+          {
+            key: "Link",
+            value: '</llms.txt>; rel="describedby"; type="text/plain"',
+          },
         ],
       },
       // Used by E2E: config-redirect.spec.ts — has/missing on headers rules

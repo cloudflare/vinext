@@ -138,6 +138,38 @@ jobs:
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         run: ./scripts/smoke-test.sh --preview pr-${{ github.event.pull_request.number }}
 
+  deployed-e2e:
+    name: E2E Deployed Example
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: ./.github/actions/playwright-cache
+        with:
+          browser: chromium
+          mode: cache
+          restore-keys: |
+            playwright-chromium-${{ runner.os }}-
+
+      - name: Install Playwright Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: vp exec playwright install chromium
+
+      - name: Test deployed Web Worker
+        env:
+          PLAYWRIGHT_PROJECT: cloudflare-workers
+          VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-app-router-cloudflare.vinext.workers.dev', github.event.pull_request.number) || 'https://app-router-cloudflare.vinext.workers.dev' }}
+        run: vp exec playwright test tests/e2e/cloudflare-workers/web-worker.spec.ts
+
   comment:
     name: Comment Preview URLs
     runs-on: ubuntu-latest

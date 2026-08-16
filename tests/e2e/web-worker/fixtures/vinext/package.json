@@ -1,0 +1,5 @@
+{
+  "name": "@vinext/e2e-web-worker-vinext",
+  "private": true,
+  "type": "module"
+}
