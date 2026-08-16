@@ -31,6 +31,15 @@ function getStartTags(html: string, tagName: string): string[] {
   return tags;
 }
 
+function expectFragmentsInOrder(html: string, fragments: string[]): void {
+  let previousIndex = -1;
+  for (const fragment of fragments) {
+    const index = html.indexOf(fragment);
+    expect(index, `missing or out-of-order fragment: ${fragment}`).toBeGreaterThan(previousIndex);
+    previousIndex = index;
+  }
+}
+
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
@@ -497,6 +506,56 @@ describe("pages page response", () => {
     );
     expect(generatedScript).toContain('crossorigin="anonymous"');
     expect(generatedPreload).toContain('crossorigin="anonymous"');
+  });
+
+  it("places collected head tags before custom Document children", async () => {
+    // Ported from Next.js: test/e2e/next-head/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/next-head/index.test.ts
+    const common = createCommonOptions();
+    common.renderDocumentToString.mockResolvedValue(
+      '<!DOCTYPE html><html><head data-theme="dark"><meta name="document-child" content="1" /></head>' +
+        '<body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>',
+    );
+    common.options.getSSRHeadHTML = vi.fn(
+      () =>
+        '<meta charset="utf-8" data-next-head="" />' +
+        '<meta name="viewport" content="width=device-width" data-next-head="" />' +
+        '<meta name="page-head" content="1" data-next-head="" />',
+    );
+
+    const response = await renderPagesPageResponse(common.options);
+    const html = await response.text();
+    const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+
+    expect(headContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
+    expectFragmentsInOrder(headContents, [
+      'charset="utf-8"',
+      'name="viewport"',
+      'name="page-head"',
+      'name="document-child"',
+    ]);
+  });
+
+  it("places collected head tags before generated font tags without a custom Document", async () => {
+    // Ported from Next.js: packages/next/src/pages/_document.tsx
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/pages/_document.tsx
+    const common = createCommonOptions();
+    common.options.getSSRHeadHTML = vi.fn(
+      () =>
+        '<meta charset="utf-8" data-next-head="" />' +
+        '<meta name="viewport" content="width=device-width" data-next-head="" />' +
+        '<meta name="page-head" content="1" data-next-head="" />',
+    );
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: null,
+    });
+    const html = await response.text();
+    const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+
+    expect(headContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
+    expectFragmentsInOrder(headContents, ['name="page-head"', 'rel="stylesheet"', 'as="font"']);
   });
 
   it("renders page before collecting SSR head HTML to prevent style race conditions", async () => {
@@ -981,7 +1040,7 @@ describe("pages page response", () => {
       const text = await new Response(stream).text();
       // The document shell render still needs the NEXT placeholders.
       if (!text.includes("data-collected")) {
-        return '<!DOCTYPE html><html><head></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>';
+        return '<!DOCTYPE html><html><head><meta name="document-child" content="1" /></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>';
       }
       return text;
     });
@@ -999,6 +1058,9 @@ describe("pages page response", () => {
     // The collected <style> tag landed in the head.
     expect(html).toContain('data-collected="true"');
     expect(html).toContain(".x{color:red}");
+    expect(html.indexOf('name="document-child"')).toBeLessThan(
+      html.indexOf('data-collected="true"'),
+    );
     // The body still rendered.
     expect(html).toContain("<p>page</p>");
   });

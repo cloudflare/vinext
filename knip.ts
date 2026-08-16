@@ -29,7 +29,17 @@ function entriesFromPackageJson(relativePath: string): string[] {
 export default {
   workspaces: {
     ".": {
-      entry: ["scripts/*.{js,ts,mjs,mts}", "tests/**/*.test.ts", "tests/helpers.ts"],
+      entry: [
+        "scripts/*.{js,ts,mjs,mts}",
+        "tests/**/*.test.ts",
+        "tests/helpers.ts",
+        // Filesystem route entries in the standalone Vite/Worker fixture.
+        "tests/e2e/cloudflare-workers/fixture/app/**/route.ts",
+        // Isolated E2E fixtures loaded through Playwright server commands and
+        // Vite's filesystem route/worker discovery rather than static imports.
+        "tests/e2e/web-worker/fixtures/**/{vite.config.ts,*.worker.ts}",
+        "tests/e2e/nextjs-worker/fixture/**/*.{js,ts,tsx}",
+      ],
       project: ["tests/**/*.{js,ts}", "!tests/fixtures/**"],
     },
     "packages/vinext": {
@@ -126,6 +136,11 @@ export default {
 
     // probed via require.resolve
     "next-intl",
+
+    // Isolated E2E fixtures are not workspace packages. Their Vite configs
+    // resolve these already-locked dependencies from existing workspace installs.
+    "@cloudflare/vite-plugin",
+    "@resvg/resvg-wasm",
 
     // internal module name, not an actual dependency
     "private-next-instrumentation-client",

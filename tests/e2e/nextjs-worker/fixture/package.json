@@ -1,0 +1,5 @@
+{
+  "name": "@vinext/e2e-nextjs-worker",
+  "private": true,
+  "type": "module"
+}

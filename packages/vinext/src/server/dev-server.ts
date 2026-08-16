@@ -300,6 +300,8 @@ async function streamPageToResponse(
     extraHeaders?: Record<string, string | string[]>;
     /** Called after renderToReadableStream resolves (shell ready) to collect head HTML */
     getHeadHTML: () => string;
+    /** Called after the shell renders to collect metadata emitted at the tail of `<head>`. */
+    getTailHeadHTML?: () => string;
     /**
      * Build the React tree with optional App/Component enhancers applied.
      * Used by the Pages Router `_document.getInitialProps` contract:
@@ -341,6 +343,7 @@ async function streamPageToResponse(
     statusCode,
     extraHeaders,
     getHeadHTML,
+    getTailHeadHTML,
     enhancePageElement,
     scriptNonce,
     documentContext,
@@ -434,9 +437,17 @@ async function streamPageToResponse(
 
   // Now that the shell has rendered (and any _document.getInitialProps
   // has injected its tags), collect head HTML.
-  let headHTML = getHeadHTML();
+  const headHTML = getHeadHTML();
+  // Head content can legally include arbitrary inline script/style text, so
+  // fixed sentinels would be user-collidable and could truncate the extracted
+  // block. A per-response UUID keeps the transform markers unambiguous.
+  const ssrHeadMarkerId = randomUUID();
+  const ssrHeadStartMarker = `<!--VINEXT_SSR_HEAD_START:${ssrHeadMarkerId}-->`;
+  const ssrHeadEndMarker = `<!--VINEXT_SSR_HEAD_END:${ssrHeadMarkerId}-->`;
+  let tailHeadHTML = getTailHeadHTML?.() ?? "";
   if (documentRenderPage.status === "rendered" && documentRenderPage.stylesHTML) {
-    headHTML += `\n  ${documentRenderPage.stylesHTML}`;
+    if (tailHeadHTML) tailHeadHTML += "\n  ";
+    tailHeadHTML += documentRenderPage.stylesHTML;
   }
 
   // Build the document shell with a placeholder for the body
@@ -482,11 +493,12 @@ async function streamPageToResponse(
     );
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
-    // Inject head tags
-    if (headHTML || fontHeadHTML || generatedAssetHeadHTML) {
+    if (headHTML || fontHeadHTML || generatedAssetHeadHTML || tailHeadHTML) {
       docHtml = docHtml.replace(
         "</head>",
-        `  ${protectAssetTags(fontHeadHTML)}${protectAssetTags(headHTML)}\n  ${generatedAssetHeadHTML}\n</head>`,
+        `${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}` +
+          `  ${protectAssetTags(fontHeadHTML)}\n  ${generatedAssetHeadHTML}\n` +
+          `  ${protectAssetTags(tailHeadHTML)}\n</head>`,
       );
     }
     // Inject scripts: replace placeholder or append before </body>
@@ -504,8 +516,10 @@ async function streamPageToResponse(
     shellTemplate = `<!DOCTYPE html>
 <html>
 <head>
-  ${protectAssetTags(fontHeadHTML)}${protectAssetTags(headHTML)}
+  ${ssrHeadStartMarker}${protectAssetTags(headHTML)}${ssrHeadEndMarker}
+  ${protectAssetTags(fontHeadHTML)}
   ${generatedAssetHeadHTML}
+  ${protectAssetTags(tailHeadHTML)}
 </head>
 <body>
   <div id="__next">${STREAM_BODY_MARKER}</div>
@@ -527,6 +541,25 @@ async function streamPageToResponse(
     }),
     protectedAssetMarker,
   );
+  // Keep collected head tags in the template while Vite transforms it, then
+  // move the transformed block ahead of Vite's prepended dev scripts and any
+  // custom Document children. This preserves both Vite's HTML transforms and
+  // Next.js's canonical charset, viewport, and user-tag ordering.
+  const ssrHeadStart = transformedShell.indexOf(ssrHeadStartMarker);
+  const ssrHeadEnd = transformedShell.indexOf(ssrHeadEndMarker);
+  if (ssrHeadStart !== -1 && ssrHeadEnd > ssrHeadStart) {
+    const transformedHeadHTML = transformedShell.slice(
+      ssrHeadStart + ssrHeadStartMarker.length,
+      ssrHeadEnd,
+    );
+    transformedShell =
+      transformedShell.slice(0, ssrHeadStart) +
+      transformedShell.slice(ssrHeadEnd + ssrHeadEndMarker.length);
+    transformedShell = transformedShell.replace(
+      /<head(?:\s[^>]*)?>/i,
+      (openingHead) => `${openingHead}${transformedHeadHTML}`,
+    );
+  }
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
@@ -723,6 +756,7 @@ export function createSSRHandler(
 
     const errorPageContext = {
       basePath,
+      clientTraceMetadata,
       locale: locale ?? currentDefaultLocale,
       locales: i18nConfig?.locales,
       defaultLocale: currentDefaultLocale,
@@ -1685,15 +1719,12 @@ export function createSSRHandler(
           // after renderToReadableStream resolves). Head tags from Suspense
           // children arrive late — this matches Next.js behavior.
           //
-          // Trace metadata is appended after Head shim output so it always
-          // lands in the final document head. When clientTraceMetadata is
-          // unset (the common case) this is a no-op.
-          getHeadHTML: () => {
-            const headHTML =
-              typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "";
-            const traceHTML = getClientTraceMetadataHTML(clientTraceMetadata);
-            return traceHTML ? `${headHTML}\n  ${traceHTML}` : headHTML;
-          },
+          getHeadHTML: () =>
+            typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
+          // Next.js renders trace metadata after custom Document children and
+          // generated assets, immediately before Document styles. Keep it out
+          // of the collected Head block that dev hoists to the top.
+          getTailHeadHTML: () => getClientTraceMetadataHTML(clientTraceMetadata),
           setDocumentInitialHead:
             typeof headShim.setDocumentInitialHead === "function"
               ? headShim.setDocumentInitialHead
@@ -1783,6 +1814,7 @@ async function renderErrorPage(
   reactStrictMode = false,
   context: {
     basePath: string;
+    clientTraceMetadata?: readonly string[];
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
@@ -2017,8 +2049,25 @@ async function renderErrorPage(
           }
           return createErrorElement(FinalApp, FinalComponent);
         },
-        getHeadHTML: () =>
-          typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
+        getHeadHTML: () => {
+          const headHTML =
+            typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "";
+          if (DocumentComponent) return headHTML;
+
+          // A missing framework Document still needs the canonical default
+          // head, while the shared buffered renderer must remain in charge of
+          // collecting request-local styled-jsx output.
+          let defaultHeadHTML = "";
+          if (!/<meta\b[^>]*\bcharset\s*=/i.test(headHTML)) {
+            defaultHeadHTML += '<meta charset="utf-8" />';
+          }
+          if (!/<meta\b[^>]*\bname=["']viewport["']/i.test(headHTML)) {
+            defaultHeadHTML +=
+              '<meta name="viewport" content="width=device-width, initial-scale=1" />';
+          }
+          return defaultHeadHTML + headHTML;
+        },
+        getTailHeadHTML: () => getClientTraceMetadataHTML(context.clientTraceMetadata),
         setDocumentInitialHead:
           typeof headShim.setDocumentInitialHead === "function"
             ? headShim.setDocumentInitialHead

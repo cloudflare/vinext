@@ -11,6 +11,7 @@ import type { CacheControlMetadata } from "vinext/shims/cache-handler";
 import type { RenderObservation } from "./cache-proof.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { readStreamAsText } from "../utils/text-stream.js";
+import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageRscCacheKeyBuilder = (
@@ -48,6 +49,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
+  linkHeader: string | null;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
@@ -208,7 +210,7 @@ export function finalizeAppPageHtmlCacheResponse(
         cacheTags: pageTags,
         state: observationState,
       });
-      const linkHeader = response.headers.get("link");
+      const linkHeader = options.linkHeader;
       const writes = [
         options.isrSet(
           htmlKey,
@@ -243,11 +245,13 @@ export function finalizeAppPageHtmlCacheResponse(
 
   options.waitUntil?.(cachePromise);
 
-  return new Response(streamForClient, {
+  const clientResponse = new Response(streamForClient, {
     status: response.status,
     statusText: response.statusText,
     headers: clientHeaders,
   });
+  markFrameworkLinkHeaders(clientResponse.headers, options.linkHeader);
+  return clientResponse;
 }
 
 export function finalizeAppPageRscCacheResponse(

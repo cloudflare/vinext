@@ -1654,12 +1654,23 @@ describe("readPagesRouterEntrySource", () => {
           canceled = true;
         },
       }),
-      { status: 404, headers: { "content-type": "text/html" } },
+      {
+        status: 404,
+        headers: {
+          "content-length": "12",
+          "content-type": "text/html",
+          "req-url-path": "/_next/static/build/_devMiddlewareManifest.json?foo=1",
+        },
+      },
     );
 
     const finalized = finalizeMissingStaticAssetResponse(routed404, true);
     expect(finalized.status).toBe(404);
     expect(finalized.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(finalized.headers.get("content-length")).toBeNull();
+    expect(finalized.headers.get("req-url-path")).toBe(
+      "/_next/static/build/_devMiddlewareManifest.json?foo=1",
+    );
     expect(await finalized.text()).toBe("Not Found");
     await vi.waitFor(() => expect(canceled).toBe(true));
 
@@ -1668,6 +1679,15 @@ describe("readPagesRouterEntrySource", () => {
 
     const regular404 = new Response("rendered 404", { status: 404 });
     expect(finalizeMissingStaticAssetResponse(regular404, false)).toBe(regular404);
+  });
+
+  it("finalizes missing build-asset 404s in both Node production routers", () => {
+    const content = fs.readFileSync(
+      path.join(import.meta.dirname, "../packages/vinext/src/server/prod-server.ts"),
+      "utf8",
+    );
+
+    expect(content.match(/finalizeMissingStaticAssetResponse\(/g)).toHaveLength(2);
   });
 
   it("resolveStaticAssetSignal fetches and merges static asset responses with middleware status", async () => {

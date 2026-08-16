@@ -485,23 +485,90 @@ describe("plugin-rsc inline use-cache references", () => {
     },
   );
 
-  it("rejects primitive exports from file-level cache modules", async () => {
-    // Ported from Next.js: crates/next-custom-transforms/tests/errors/server-actions/server-graph/14/input.js
-    // https://github.com/vercel/next.js/blob/canary/crates/next-custom-transforms/tests/errors/server-actions/server-graph/14/input.js
-    const plugins = await getPlugins();
-    await configurePluginRsc(plugins);
-    const plugin = plugins.find(
-      (candidate) => candidate.name === "vinext:server-function-directives",
-    )!;
-    const transform = unwrapHook(plugin.transform)!;
-    await expect(
-      transform.call(
-        { environment: { name: "rsc", mode: "build" } },
-        [`"use cache";`, `export const value = 1;`].join("\n"),
-        moduleId,
-      ),
-    ).rejects.toThrow(/non async function/);
-  });
+  it.each(["rsc", "ssr", "client"])(
+    "allows scalar route segment config exports from file-level cache pages in the %s graph",
+    async (environmentName) => {
+      // Ported from Next.js: vercel/next.js#97181
+      // https://github.com/vercel/next.js/commit/c0c64a0ab154853f4c792fb7b22a81d1b04ce073
+      const plugins = await getPlugins();
+      const manager = await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const transform = unwrapHook(plugin.transform)!;
+      const pageModuleId = path.join(APP_FIXTURE_DIR, "app", "cached-page", "page.tsx");
+      const result = await transform.call(
+        { environment: { name: environmentName, mode: "build" } },
+        [
+          `"use cache";`,
+          `export const revalidate = 60;`,
+          `export const dynamic = "force-static";`,
+          `export const metadata = { title: "Cached page" };`,
+          `export default async function Page() { return null; }`,
+        ].join("\n"),
+        pageModuleId,
+      );
+
+      if (environmentName === "rsc") {
+        expect(result!.code).toContain(`export const revalidate = 60;`);
+        expect(result!.code).toContain(`export const dynamic = "force-static";`);
+        expect(result!.code).toContain(`export const metadata = { title: "Cached page" };`);
+      } else {
+        // Non-RSC graphs contain only callable server-reference proxies. Route
+        // config and metadata stay server-only and must not become references.
+        expect(result!.code).not.toContain("#revalidate");
+        expect(result!.code).not.toContain("#dynamic");
+        expect(result!.code).not.toContain("#metadata");
+      }
+      expect(manager.serverReferences.metaMap.get(pageModuleId)!.exportNames).not.toEqual(
+        expect.arrayContaining(["revalidate", "dynamic", "metadata"]),
+      );
+    },
+  );
+
+  it.each(["rsc", "ssr", "client"])(
+    "still rejects class exports from file-level cache modules in the %s graph",
+    async (environmentName) => {
+      // Next.js continues to reject class declarations in file-level cache modules.
+      // https://github.com/vercel/next.js/blob/c0c64a0ab154853f4c792fb7b22a81d1b04ce073/crates/next-custom-transforms/src/transforms/server_actions.rs#L1954-L1960
+      const plugins = await getPlugins();
+      await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const transform = unwrapHook(plugin.transform)!;
+
+      await expect(
+        transform.call(
+          { environment: { name: environmentName, mode: "build" } },
+          [`"use cache";`, `export class Config {}`].join("\n"),
+          moduleId,
+        ),
+      ).rejects.toThrow(/non async function/);
+    },
+  );
+
+  it.each(["rsc", "ssr", "client"])(
+    "still rejects default scalar exports from file-level cache modules in the %s graph",
+    async (environmentName) => {
+      // Next.js only relaxes named variable literals; non-function defaults remain invalid.
+      // https://github.com/vercel/next.js/blob/c0c64a0ab154853f4c792fb7b22a81d1b04ce073/crates/next-custom-transforms/src/transforms/server_actions.rs#L2081-L2107
+      const plugins = await getPlugins();
+      await configurePluginRsc(plugins);
+      const plugin = plugins.find(
+        (candidate) => candidate.name === "vinext:server-function-directives",
+      )!;
+      const transform = unwrapHook(plugin.transform)!;
+
+      await expect(
+        transform.call(
+          { environment: { name: environmentName, mode: "build" } },
+          [`"use cache";`, `export default 1;`].join("\n"),
+          moduleId,
+        ),
+      ).rejects.toThrow(/non async function/);
+    },
+  );
 
   it.each(["use cache:remote", "use cache remote", "use cache : remote"])(
     "rejects malformed cache directive %s",
@@ -608,6 +675,29 @@ describe("plugin-rsc inline use-cache references", () => {
         moduleId,
       ),
     ).rejects.toThrow(/cannot contain both/);
+  });
+
+  it("still rejects scalar exports from file-level use-server modules", async () => {
+    // Next.js keeps this restriction because every export from a "use server"
+    // file becomes a callable server reference.
+    // https://github.com/vercel/next.js/commit/c0c64a0ab154853f4c792fb7b22a81d1b04ce073
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const useServerPlugin = plugins.find((candidate) => candidate.name === "rsc:use-server")!;
+    const transform = unwrapHook(useServerPlugin.transform)!;
+
+    await expect(
+      transform.call(
+        {
+          environment: { name: "rsc", mode: "build" },
+          error(error: unknown): never {
+            throw error;
+          },
+        },
+        [`"use server";`, `export const value = 1;`].join("\n"),
+        moduleId,
+      ),
+    ).rejects.toThrow(/non async function/);
   });
 
   it("returns a source map for transformed modules", async () => {
