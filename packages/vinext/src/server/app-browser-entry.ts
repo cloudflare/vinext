@@ -129,6 +129,7 @@ import {
 import { AppBrowserHistoryController } from "./app-browser-history-controller.js";
 import {
   createVisitedResponseCacheEntry,
+  deleteAllVisitedResponseCacheEntries,
   deleteInvalidatedHistoryRestoreEntries,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
@@ -784,7 +785,11 @@ function storeVisitedResponseSnapshot(
   reuseAfterHistoryRestore: boolean = false,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
-  visitedResponseCache.delete(cacheKey);
+  // Router-state fingerprints intentionally give requests for the same visible
+  // route distinct cache-busting URLs. A newly committed response supersedes
+  // every older fingerprint variant; leaving one behind lets normalized lookup
+  // replay stale page output after a later navigation.
+  deleteAllVisitedResponseCacheEntries(visitedResponseCache, rscUrl, interceptionContext);
   evictVisitedResponseCacheIfNeeded();
   const now = Date.now();
   const entry = createVisitedResponseCacheEntry({

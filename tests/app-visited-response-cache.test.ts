@@ -3,6 +3,7 @@ import {
   MAX_TRAVERSAL_CACHE_TTL,
   VISITED_RESPONSE_CACHE_TTL,
   createVisitedResponseCacheEntry,
+  deleteAllVisitedResponseCacheEntries,
   deleteInvalidatedHistoryRestoreEntries,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
@@ -25,6 +26,26 @@ function createCachedResponse(overrides: Partial<CachedRscResponse> = {}): Cache
 }
 
 describe("visited response cache freshness", () => {
+  it("deletes every cache-busting variant when a visible route response is replaced", () => {
+    const entry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse(),
+    });
+    const cache = new Map([
+      ["/dashboard?_rsc=initial", entry],
+      ["/dashboard?_rsc=state-a", entry],
+      ["/dashboard?_rsc=state-b\0/interception", entry],
+      ["/other?_rsc=state-c", entry],
+    ]);
+
+    expect(deleteAllVisitedResponseCacheEntries(cache, "/dashboard?_rsc=latest", null)).toBe(2);
+    expect([...cache.keys()]).toEqual([
+      "/dashboard?_rsc=state-b\0/interception",
+      "/other?_rsc=state-c",
+    ]);
+  });
+
   it("recognizes positive server and dynamic history lifetimes", () => {
     expect(hasNavigationResponseHistoryLifetime(createCachedResponse())).toBe(false);
     expect(

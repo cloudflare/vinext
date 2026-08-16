@@ -125,6 +125,18 @@ export function deleteVisitedResponseCacheEntry(
   return cache.delete(match.cacheKey);
 }
 
+export function deleteAllVisitedResponseCacheEntries(
+  cache: Map<string, VisitedResponseCacheEntry>,
+  rscUrl: string,
+  interceptionContext: string | null,
+): number {
+  let deleted = 0;
+  while (deleteVisitedResponseCacheEntry(cache, rscUrl, interceptionContext)) {
+    deleted++;
+  }
+  return deleted;
+}
+
 export function deleteInvalidatedHistoryRestoreEntries(
   cache: Map<string, VisitedResponseCacheEntry>,
 ): void {
