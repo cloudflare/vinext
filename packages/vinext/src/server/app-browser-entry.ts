@@ -106,6 +106,7 @@ import {
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
 } from "./app-browser-supplemental-refresh.js";
+import { createAppBrowserNavigationAbortCoordinator } from "./app-browser-navigation-abort.js";
 import {
   consumeInitialFormState,
   createVinextHydrateRootOptions,
@@ -1829,12 +1830,7 @@ function bootstrapHydration(
   }
   markInitialAppRouterBootstrapHydrated();
 
-  let activeNavigationAbortController: AbortController | null = null;
-
-  function abortSupersededNavigation(): void {
-    activeNavigationAbortController?.abort();
-    activeNavigationAbortController = null;
-  }
+  const navigationAbortCoordinator = createAppBrowserNavigationAbortCoordinator();
 
   const navigateRsc: NavigationRuntimeNavigate = async function navigateRsc(
     href: string,
@@ -1848,9 +1844,7 @@ function bootstrapHydration(
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
   ): Promise<void> {
     serverActionSupplementalRefreshCoordinator.abortAll();
-    abortSupersededNavigation();
-    const navigationAbortController = new AbortController();
-    activeNavigationAbortController = navigationAbortController;
+    const navigationAbortHandle = navigationAbortCoordinator.begin();
     let pendingRouterState: PendingBrowserRouterState | null = null;
     // Hoist navId above try so the catch and finally blocks can reference it.
     const navId = browserNavigationController.beginNavigation();
@@ -1966,6 +1960,8 @@ function bootstrapHydration(
               return true;
             })
           : [];
+        const hasSupplementalRefresh =
+          persistedRefreshInterceptions.length > 0 || persistedSourcePageRefreshes.length > 0;
         if (navigationKind === "refresh") {
           historyController.syncCurrentHistoryStatePreviousNextUrl(
             requestPreviousNextUrl,
@@ -2338,7 +2334,7 @@ function bootstrapHydration(
             headers: requestHeaders,
             credentials: "include",
             priority: "auto",
-            signal: navigationAbortController.signal,
+            signal: navigationAbortHandle.signal,
           });
         }
 
@@ -2405,6 +2401,16 @@ function bootstrapHydration(
           continue;
         }
 
+        // A normal navigation no longer has safely abortable work after its
+        // Flight response is accepted. Aborting fetch at this point tears down
+        // the response body underneath createFromFetch and reports an unhandled
+        // BodyStreamBuffer AbortError. The navigation id still prevents a late
+        // decoded payload from committing. Refreshes retain ownership because
+        // their supplemental branch requests use the same signal until commit.
+        if (!hasSupplementalRefresh) {
+          navigationAbortHandle.release();
+        }
+
         // navParams falls back to {} on a missing or malformed header.
         const navParams: Record<string, string | string[]> =
           parseEncodedJsonHeader<Record<string, string | string[]>>(
@@ -2451,8 +2457,6 @@ function bootstrapHydration(
           : decodeAppElementsPromise(
               createFromFetch<AppWireElements>(Promise.resolve(reactResponse)),
             );
-        const hasSupplementalRefresh =
-          persistedRefreshInterceptions.length > 0 || persistedSourcePageRefreshes.length > 0;
         if (hasSupplementalRefresh) {
           const supplemental = persistedRefreshInterceptions.map(
             (interception) => (signal: AbortSignal) =>
@@ -2476,7 +2480,7 @@ function bootstrapHydration(
           rscPayload = resolveSupplementalRefreshes({
             merge: mergeRefreshedParallelSlot,
             primary: Promise.resolve(rscPayload),
-            signal: navigationAbortController.signal,
+            signal: navigationAbortHandle.signal,
             supplemental,
           }).then(requireCompleteSupplementalRefresh);
         }
@@ -2497,9 +2501,7 @@ function bootstrapHydration(
             // mounted tree even if a Suspense boundary is still consuming it.
             // A later navigation may supersede future cache publication, but
             // it must not abort the already-visible stream.
-            if (activeNavigationAbortController === navigationAbortController) {
-              activeNavigationAbortController = null;
-            }
+            navigationAbortHandle.release();
           },
           operationLane: toOperationLane(navigationKind),
           params: navParams,
@@ -2640,9 +2642,7 @@ function bootstrapHydration(
       });
       performHardNavigationForScrollIntent(errorDecision.url);
     } finally {
-      if (activeNavigationAbortController === navigationAbortController) {
-        activeNavigationAbortController = null;
-      }
+      navigationAbortHandle.release();
       // Single settlement site: covers normal return, early returns on stale-id
       // checks, and error paths. The finally runs even when the catch returns.
       // settlePendingBrowserRouterState is idempotent via the settled flag.
@@ -2730,7 +2730,7 @@ function bootstrapHydration(
     const snapshotNavigationId = browserNavigationController.beginNavigation();
     if (
       restoreHistoryStateSnapshot(event.state, snapshotNavigationId, () => {
-        abortSupersededNavigation();
+        navigationAbortCoordinator.abortActive();
         notifyAppRouterTransitionStart(href, "traverse");
       })
     ) {
