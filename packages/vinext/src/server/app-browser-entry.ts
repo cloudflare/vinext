@@ -1677,6 +1677,7 @@ function bootstrapHydration(
     traversalIntent?: HistoryTraversalIntent,
     scrollIntent?: AppRouterScrollIntent | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
+    initialBypassNavigationCache?: boolean,
   ): Promise<void> {
     abortSupersededNavigation();
     const navigationAbortController = new AbortController();
@@ -1781,8 +1782,13 @@ function bootstrapHydration(
         // already short-circuited before reaching this loop, so for a "navigate"
         // here the decision is always a flight navigation and only its
         // cache-bypass bit is consumed.
+        const usesInitialNavigationCachePolicy =
+          navigationKind === "navigate" &&
+          currentHref === href &&
+          redirectCount === redirectDepth &&
+          initialBypassNavigationCache !== undefined;
         const earlyIntentDecision =
-          navigationKind === "navigate"
+          navigationKind === "navigate" && !usesInitialNavigationCachePolicy
             ? navigationPlanner.classifyEarlyNavigationIntent({
                 basePath: __basePath,
                 currentUrlSpace: "appRelativeSnapshot",
@@ -1796,9 +1802,10 @@ function bootstrapHydration(
                 targetHref: url.href,
               })
             : null;
-        const shouldBypassNavigationCache =
-          earlyIntentDecision?.kind === "flightNavigation" &&
-          earlyIntentDecision.bypassNavigationCache;
+        const shouldBypassNavigationCache = usesInitialNavigationCachePolicy
+          ? initialBypassNavigationCache
+          : earlyIntentDecision?.kind === "flightNavigation" &&
+            earlyIntentDecision.bypassNavigationCache;
         // The client reuse manifest is excluded from VINEXT_RSC_VARY_HEADER, so
         // it never affects the cache-busting URL. Defer producing it until the
         // visited-response cache miss is confirmed below — its producer iterates

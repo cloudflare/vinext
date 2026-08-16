@@ -2656,6 +2656,7 @@ export async function navigateClientSide(
         undefined,
         scrollIntent,
         visibleCommitMode,
+        earlyIntent.bypassNavigationCache,
       );
     } else {
       if (mode === "replace") {

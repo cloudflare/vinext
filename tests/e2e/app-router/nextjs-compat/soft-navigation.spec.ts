@@ -41,4 +41,27 @@ test.describe("soft Link navigation", () => {
     await expect(page.getByTestId("soft-replace-render-id")).not.toHaveText(firstId!);
     expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
   });
+
+  test("an identical non-empty hash bypasses a reusable route response", async ({ page }) => {
+    const pathname = "/nextjs-compat/link-soft-hash-cacheable";
+    await page.goto(`${BASE}${pathname}#section`);
+    await waitForAppRouterHydration(page);
+
+    const rscRequests: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (
+        url.pathname === pathname &&
+        url.searchParams.has("_rsc") &&
+        request.headers()["rsc"] === "1"
+      ) {
+        rscRequests.push(url.href);
+      }
+    });
+
+    await page.getByTestId("soft-hash-cacheable-link").click();
+
+    await expect.poll(() => rscRequests.length).toBe(1);
+    expect(page.url()).toBe(`${BASE}${pathname}#section`);
+  });
 });
