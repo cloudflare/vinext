@@ -1,6 +1,6 @@
 {
   "name": "vinext",
-  "version": "1.0.0-beta.5",
+  "version": "1.0.0-beta.6",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "license": "MIT",
   "repository": {
@@ -177,7 +177,6 @@
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
     "@vinext/types": "workspace:^",
-    "image-size": "catalog:",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
     "vite-plugin-commonjs": "catalog:",
@@ -190,6 +189,7 @@
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
     "am-i-vibing": "catalog:",
+    "image-size": "catalog:",
     "pathslash": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",

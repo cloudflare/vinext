@@ -549,6 +549,7 @@ describe("app page response helpers", () => {
     middlewareHeaders.set("vary", "Next-Router-State-Tree");
     middlewareHeaders.append("x-extra", "present");
     middlewareHeaders.set("cache-control", "private, max-age=5");
+    middlewareHeaders.set("link", "</middleware.css>; rel=preload; as=style");
 
     const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
       draftCookie: "__prerender_bypass=token; Path=/",
@@ -576,7 +577,8 @@ describe("app page response helpers", () => {
     expect(response.headers.get("x-nextjs-cache")).toBe("HIT");
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
     expect(response.headers.get("link")).toBe(
-      "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
+      "</middleware.css>; rel=preload; as=style, " +
+        "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
     expect(response.headers.get("x-extra")).toBe("present");
     expect(response.headers.get("x-vinext-timing")).toBe("10,2,8");
@@ -628,6 +630,14 @@ describe("mergeMiddlewareResponseHeaders", () => {
 
     expect(target.get("Cache-Control")).toBe("private, max-age=5");
     expect(target.get("X-Custom")).toBe("from-middleware");
+  });
+
+  it("ignores empty middleware Link values", () => {
+    const target = new Headers({ Link: "</framework.css>; rel=preload; as=style" });
+
+    mergeMiddlewareResponseHeaders(target, new Headers({ Link: "" }));
+
+    expect(target.get("link")).toBe("</framework.css>; rel=preload; as=style");
   });
 
   it("appends Set-Cookie headers instead of overriding", () => {
