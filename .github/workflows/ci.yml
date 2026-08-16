@@ -561,6 +561,18 @@ jobs:
             label: app-front-redirect-issue
             shardIndex: 1
             shardTotal: 1
+          - project: web-worker-vinext
+            label: web-worker-vinext
+            shardIndex: 1
+            shardTotal: 1
+          - project: web-worker-cloudflare
+            label: web-worker-cloudflare
+            shardIndex: 1
+            shardTotal: 1
+          - project: nextjs-worker-cloudflare
+            label: nextjs-worker-cloudflare
+            shardIndex: 1
+            shardTotal: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -42,7 +42,9 @@ export function finalizeMissingStaticAssetResponse(
 ): Response {
   if (!missingBuildAsset || response.status !== 404) return response;
   cancelResponseBody(response);
-  return notFoundStaticAssetResponse();
+  // The missing asset still ran through middleware before route handling.
+  // Replace the rendered 404 body without dropping headers middleware added.
+  return notFoundStaticAssetResponse(response.headers);
 }
 
 function buildHeaderRecord(

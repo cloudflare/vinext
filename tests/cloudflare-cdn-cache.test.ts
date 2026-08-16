@@ -192,6 +192,7 @@ describe("CloudflareCdnCacheAdapter", () => {
         },
         isrSet,
         revalidateSeconds: 60,
+        linkHeader: null,
         waitUntil(promise) {
           pendingCacheWrites.push(promise);
         },

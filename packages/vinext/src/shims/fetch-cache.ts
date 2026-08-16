@@ -19,6 +19,8 @@
  *   await runWithFetchCache(async () => { ... render ... });
  */
 
+import { Buffer } from "node:buffer";
+
 import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
@@ -43,7 +45,7 @@ import {
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v4";
+const CACHE_KEY_PREFIX = "v5";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 // "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
@@ -656,7 +658,7 @@ async function buildFetchCacheValue(
   if (response.status !== 200) return null;
 
   const responseForCache = options?.cloneForReturn === false ? response : response.clone();
-  const body = await responseForCache.text();
+  const body = Buffer.from(await responseForCache.arrayBuffer()).toString("base64");
   const headers: Record<string, string> = {};
   responseForCache.headers.forEach((v, k) => {
     if (k.toLowerCase() === "set-cookie") return;
@@ -995,7 +997,7 @@ function buildCachedFetchResponse(
   data: CachedFetchValue["data"],
   input: string | URL | Request,
 ): Response {
-  const response = new Response(data.body, {
+  const response = new Response(Buffer.from(data.body, "base64"), {
     status: data.status ?? 200,
     headers: data.headers,
   });

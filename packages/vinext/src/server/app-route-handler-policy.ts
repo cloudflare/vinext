@@ -11,6 +11,7 @@ export type AppRouteHandlerModule = {
   dynamic?: string;
   fetchCache?: unknown;
   revalidate?: unknown;
+  runtime?: string;
 } & RouteHandlerModule;
 
 type AppRouteHandlerFunction = (...args: unknown[]) => unknown;

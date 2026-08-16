@@ -25,7 +25,7 @@ import { Table } from "@cloudflare/kumo/components/table";
 import { Table as TableIcon, X } from "@phosphor-icons/react";
 import type { FileStatus, RouterKind } from "@/app/lib/db/schema";
 import { cellMatchesFilter, type RouterFilter } from "./router-buckets";
-import type { SuiteSupportStatus } from "./suite-support";
+import { VITE_EQUIVALENT_LABEL, type SuiteSupportStatus } from "./suite-support";
 
 // (Tabs / filter UI now lives in compatibility-views.tsx; the grid receives
 // the active filter as a prop. Filter semantics — what each value means and
@@ -66,14 +66,14 @@ const LABELS: Record<DisplayStatus, string> = {
   fail: "Fail",
   skip: "Skipped by Next.js",
   deferred: "Deferred",
-  "needs-vite-equivalent": "Needs Vite-equivalent coverage",
+  "needs-vite-equivalent": VITE_EQUIVALENT_LABEL,
   unsupported: "Unsupported by vinext",
 };
 
 const SUPPORT_LABELS: Record<SuiteSupportStatus, string> = {
   supported: "Supported",
   deferred: "Deferred",
-  "needs-vite-equivalent": "Needs Vite-equivalent coverage",
+  "needs-vite-equivalent": VITE_EQUIVALENT_LABEL,
   unsupported: "Unsupported by vinext",
 };
 
@@ -206,7 +206,7 @@ export function CompatibilityTableDialog({ cells }: { cells: GridCell[] }) {
             <Select.Option value="all">All classifications</Select.Option>
             <Select.Option value="supported">Supported</Select.Option>
             <Select.Option value="deferred">Deferred</Select.Option>
-            <Select.Option value="needs-vite-equivalent">Needs Vite equivalent</Select.Option>
+            <Select.Option value="needs-vite-equivalent">{VITE_EQUIVALENT_LABEL}</Select.Option>
             <Select.Option value="unsupported">Unsupported</Select.Option>
           </Select>
           <Select
