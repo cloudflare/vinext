@@ -506,7 +506,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   timestamp: number,
   cached: Pick<CachedRscResponse, "dynamicStaleTimeSeconds" | "expiresAt" | "serverStaleTime">,
   fallbackTtlMs: number,
-  honorDynamicStaleTime: boolean,
+  dynamicStaleTime: "verbatim" | "full-prefetch" | "ignore",
 ): number {
   if (isCacheExpiresAt(cached.expiresAt)) {
     return cached.expiresAt;
@@ -518,11 +518,14 @@ function resolvePrefetchedRscResponseExpiresAt(
   // is unresolved. If the render completes with a real cacheLife or dynamic
   // bound, completion metadata replaces the provisional marker below.
   const serverSeconds =
-    cached.serverStaleTime?.kind === "pending" && !honorDynamicStaleTime
+    cached.serverStaleTime?.kind === "pending" && dynamicStaleTime !== "verbatim"
       ? undefined
       : serverStaleTimeSeconds(cached.serverStaleTime);
   if (serverSeconds !== undefined) {
     return timestamp + serverSeconds * 1000;
+  }
+  if (dynamicStaleTime === "ignore") {
+    return timestamp + Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS);
   }
   const seconds = isStaleTimeSeconds(cached.dynamicStaleTimeSeconds)
     ? cached.dynamicStaleTimeSeconds
@@ -538,7 +541,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   // reuse. `prefetch={true}` uses Next's Full fetch strategy, so a config
   // dynamic bound of zero selects STATIC_STALETIME_MS. Nonzero completed
   // dynamic bounds keep their existing per-page expiry.
-  return honorDynamicStaleTime
+  return dynamicStaleTime === "verbatim"
     ? timestamp + seconds * 1000
     : timestamp +
         (seconds === 0
@@ -1437,8 +1440,8 @@ export function prefetchRscResponse(
   options?: PrefetchOptions,
   behavior: {
     cacheForNavigation?: boolean;
+    dynamicStaleTime?: "verbatim" | "full-prefetch" | "ignore";
     fallbackTtlMs?: number;
-    honorDynamicStaleTime?: boolean;
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
     prepareSnapshot?: (snapshot: CachedRscResponse) => Promise<AppElements>;
@@ -1486,7 +1489,10 @@ export function prefetchRscResponse(
           // data and is never navigation-consumable. Keep it on the prefetch
           // freshness lattice so another search string can reuse the shell;
           // the later navigation response still honors dynamicStaleTime.
-          behavior.honorDynamicStaleTime !== false && behavior.searchAgnosticShell !== true,
+          behavior.searchAgnosticShell === true
+            ? "ignore"
+            : (behavior.dynamicStaleTime ??
+                (behavior.optimisticRouteShell === true ? "ignore" : "verbatim")),
         );
         if (behavior.prepareSnapshot) {
           try {
@@ -2940,13 +2946,18 @@ const _appRouter: AppRouterInstance = {
                 policy.fallbackTtl === "dynamic"
                   ? DYNAMIC_NAVIGATION_CACHE_TTL
                   : PREFETCH_CACHE_TTL,
-              honorDynamicStaleTime: policy.honorDynamicStaleTime,
+              dynamicStaleTime: policy.dynamicStaleTime,
               optimisticRouteShell: false,
               prefetchKind: "navigation",
               prepareSnapshot: prepareNavigationPrefetchSnapshot,
             }
           : {
               cacheForNavigation: false,
+              fallbackTtlMs:
+                policy.fallbackTtl === "dynamic"
+                  ? DYNAMIC_NAVIGATION_CACHE_TTL
+                  : PREFETCH_CACHE_TTL,
+              dynamicStaleTime: policy.dynamicStaleTime,
               optimisticRouteShell: true,
               prefetchKind: "navigation",
             },

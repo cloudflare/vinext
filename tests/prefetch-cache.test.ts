@@ -1285,6 +1285,61 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(fetchedUrl, null, null)).toBeNull();
   });
 
+  it("keeps automatic loading shells on the static window across dynamic bounds (#2937)", async () => {
+    // Next.js parity:
+    // test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    // A loading-boundary prefetch contains static shell data. Next keeps that
+    // shell cached when the same Link is hovered again, even though the
+    // default dynamic stale time reported by the server is zero.
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: true, patternParts: ["items", ":slug"], isDynamic: true },
+    ];
+    const dynamicStaleTimes = new Map([
+      ["alpha", 0],
+      ["bravo", 60],
+      ["charlie", 600],
+    ]);
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(toRscUrlString(input), "http://localhost").pathname;
+      const slug = pathname.split("/").at(-1);
+      const dynamicStaleTime = slug === undefined ? undefined : dynamicStaleTimes.get(slug);
+      if (dynamicStaleTime === undefined) throw new Error(`Unexpected prefetch URL: ${pathname}`);
+      return new Response("loading shell", {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_DYNAMIC_STALE_TIME_HEADER]: String(dynamicStaleTime),
+        },
+      });
+    });
+    (globalThis as any).fetch = fetch;
+
+    for (const [slug, dynamicStaleTime] of dynamicStaleTimes) {
+      appRouterInstance.prefetch(`/items/${slug}`);
+      await waitForPrefetchSetup(() =>
+        Array.from(getPrefetchCache().values()).some(
+          (entry) =>
+            entry.snapshot?.dynamicStaleTimeSeconds === dynamicStaleTime &&
+            entry.outcome === "cache-seeded" &&
+            entry.pending === undefined,
+        ),
+      );
+
+      const entry = Array.from(getPrefetchCache().values()).find(
+        (candidate) => candidate.snapshot?.dynamicStaleTimeSeconds === dynamicStaleTime,
+      );
+      expect(entry).toBeDefined();
+      if (!entry) return;
+      expect(entry.cacheForNavigation).toBe(false);
+      expect(entry.optimisticRouteShell).toBe(true);
+      expect(entry.expiresAt).toBe(entry.timestamp + PREFETCH_CACHE_TTL);
+    }
+
+    appRouterInstance.prefetch("/items/alpha");
+    await settlePrefetchSetup();
+    expect(fetch).toHaveBeenCalledTimes(dynamicStaleTimes.size);
+  });
+
   it("dedupes pending and fresh Cache Components encoded dynamic router.prefetch calls but refetches after expiry", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
@@ -1547,6 +1602,33 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
   });
 
+  it("defaults optimistic loading shells to the static prefetch window", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/implicit-loading-shell.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("loading shell", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { cacheForNavigation: false, optimisticRouteShell: true },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    const entry = getPrefetchCache().get(rscUrl);
+    expect(entry?.prefetchKind).toBe("loading-shell");
+    expect(entry?.expiresAt).toBe(now + PREFETCH_CACHE_TTL);
+  });
+
   it("expires a zero dynamic stale time immediately instead of flooring it", async () => {
     // Every dynamic render emits this header (app-page-render.ts defaults it
     // to `experimental.staleTimes.dynamic`, which is 0). Next keeps the two
@@ -1665,7 +1747,7 @@ describe("prefetch cache eviction", () => {
       null,
       null,
       undefined,
-      { fallbackTtlMs: staticStaleTimeMs, honorDynamicStaleTime: false },
+      { fallbackTtlMs: staticStaleTimeMs, dynamicStaleTime: "full-prefetch" },
     );
     await getPrefetchCache().get(rscUrl)?.pending;
 
@@ -1690,7 +1772,7 @@ describe("prefetch cache eviction", () => {
       null,
       null,
       undefined,
-      { fallbackTtlMs: 300_000, honorDynamicStaleTime: false },
+      { fallbackTtlMs: 300_000, dynamicStaleTime: "full-prefetch" },
     );
     await getPrefetchCache().get(rscUrl)?.pending;
 
