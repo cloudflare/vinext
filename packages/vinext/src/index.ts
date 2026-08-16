@@ -169,6 +169,7 @@ import {
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
+import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
@@ -181,6 +182,7 @@ import {
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
+import { createTransitiveExternalsPlugin } from "./plugins/transitive-externals.js";
 // Keep this source-relative: resolving through vinext's package export can read
 // a stale built copy while developing or testing the source tree.
 // oxlint-disable-next-line vinext-local/prefer-import-alias
@@ -248,10 +250,15 @@ import {
 } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
 import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
+import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
-import { getTypeofWindowReplacement, replaceTypeofWindow } from "./plugins/typeof-window.js";
+import {
+  consumerEnvironmentConditionFilter,
+  getTypeofWindowReplacement,
+  replaceConsumerEnvironmentConditions,
+} from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { publicFilePathVariants } from "./utils/public-file-path.js";
@@ -1424,7 +1431,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
-  let nitroTraceDepsFromServerExternals: string[] = [];
+  let resolvedServerExternalPackages: string[] = [];
+  let pagesTsconfigAliases: Record<string, string> = {};
+  let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let pagesOptimizeEntries: string[] = [];
   const pagesClientAssetsOutputDirs = new Set<string>();
@@ -1796,9 +1805,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
   };
 
-  const cachedTypeofWindowTransform = createTransformCache<
-    ReturnType<typeof getTypeofWindowReplacement>,
-    ReturnType<typeof replaceTypeofWindow>
+  const cachedConsumerConditionTransform = createTransformCache<
+    string,
+    ReturnType<typeof replaceConsumerEnvironmentConditions>
   >();
 
   const plugins: PluginOption[] = [
@@ -1939,6 +1948,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         return isWithinPagesDirectory(canonicalId) && isApiPage(canonicalId);
       },
       serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
+    }),
+    createPagesNodeExternalsPlugin({
+      getRoot: () => root,
+      getPagesDir: () => (hasPagesDir ? pagesDir : null),
+      getAliases: () => nextConfig?.aliases ?? {},
+      getTsconfigAliases: () => pagesTsconfigAliases,
+      getBundledPackages: () => pagesBundledPackages,
+      // Workers and Nitro need a self-contained server bundle. Their runtime
+      // builds intentionally keep package code inside the graph.
+      isEnabled: () => !hasCloudflarePlugin && !hasNitroPlugin,
     }),
     // Resolve `data:text/css[+module],...` imports into virtual CSS files so
     // Vite's CSS pipeline (LightningCSS, CSS modules) processes them instead
@@ -2116,6 +2135,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           : undefined;
         const resolvedTsconfigAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
         tsconfigPathAliases = resolvedTsconfigAliases.vite;
+        pagesTsconfigAliases = tsconfigPathAliases;
         sassTsconfigPathAliases = resolvedTsconfigAliases.sass;
         // Vite's native option discovers tsconfig.json and cannot receive Next's
         // typescript.tsconfigPath. Only auto-enable it for the default config;
@@ -2380,7 +2400,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // packages/next/src/build/define-env.ts.
         // See: https://nextjs.org/docs/app/api-reference/config/next-config-js/compiler#define
         for (const [key, value] of Object.entries(nextConfig.compilerDefine)) {
-          if (key in defines) {
+          if (key in defines || key === "process.browser") {
             throw new Error(
               `The \`compiler.define\` option is configured to replace the \`${key}\` variable. ` +
                 `This variable is either part of a built-in or is already configured.`,
@@ -2395,7 +2415,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // mode predictable: misconfigured projects fail at config resolution
         // instead of producing subtly wrong output.
         for (const key of Object.keys(nextConfig.compilerDefineServer)) {
-          if (key in defines) {
+          if (key in defines || key === "process.browser") {
             throw new Error(
               `The \`compiler.defineServer\` option is configured to replace the \`${key}\` variable. ` +
                 `This variable is either part of a built-in or is already configured.`,
@@ -2585,11 +2605,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(nextConfig?.turbopackTranspilePackages ?? []),
           ...(nextConfig?.optimizePackageImports ?? []),
         ];
+        pagesBundledPackages = new Set(serverTranspilePackages);
         const nextServerExternal = mergeServerExternalPackages(
           nextConfig?.serverExternalPackages,
           serverTranspilePackages,
         );
-        nitroTraceDepsFromServerExternals = nextServerExternal;
+        resolvedServerExternalPackages = nextServerExternal;
         // Detect if this is a multi-environment build (App Router or Cloudflare).
         // In multi-env builds, manualChunks must only be set per-environment
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
@@ -2795,6 +2816,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(!isSSR && !isMultiEnv ? { output: getClientOutputConfig(clientAssetsDir) } : {}),
             }),
           },
+          worker: {
+            // Vite creates a fresh plugin container for every worker bundle.
+            // Vite's config merge appends this factory to both current
+            // factories and legacy plugin arrays, so return only vinext's
+            // plugin here rather than copying user plugins and duplicating them.
+            plugins: () => [
+              createWorkerImageImportsPlugin({ deploymentId: nextConfig.deploymentId }),
+            ],
+          },
           // Let OPTIONS requests pass through Vite's CORS middleware to our
           // route handlers so they can set the Allow header and run user-defined
           // OPTIONS handlers. Without this, Vite's CORS middleware responds to
@@ -2932,6 +2962,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       nextConfig.assetPrefix,
                       nextConfig.deploymentId,
                       context.hostType,
+                      context.hostId,
                     ),
                 },
               }
@@ -3454,6 +3485,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       async configResolved(config) {
         if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {
           suppressOptionalOptimizeDepsWarnings(config.logger);
+        }
+
+        // Keep worker entries and code-split chunks in a distinct output
+        // directory. This must run after Vite merges config hooks: output arrays
+        // are concatenated during config merging, so returning a mapped array
+        // from config() would retain the original unisolated outputs as well.
+        if (config.worker?.rolldownOptions) {
+          const workerFileNames = `${resolveAssetsDir(nextConfig.assetPrefix ?? "")}/workers/[name]-[hash].js`;
+          const workerOutputs = config.worker.rolldownOptions.output;
+          config.worker.rolldownOptions.output = Array.isArray(workerOutputs)
+            ? (workerOutputs.length > 0 ? workerOutputs : [{}]).map((output) => ({
+                ...output,
+                entryFileNames: workerFileNames,
+                chunkFileNames: workerFileNames,
+              }))
+            : {
+                ...workerOutputs,
+                entryFileNames: workerFileNames,
+                chunkFileNames: workerFileNames,
+              };
         }
 
         // Provide the resolved config to the Sass-aware CSS Modules Loader so
@@ -4122,6 +4173,31 @@ export const loadServerActionClient = ${
         // Respect any explicit user/plugin minify choice (including `false`).
         if (config.build?.minify !== undefined) return null;
         return { build: { minify: true } };
+      },
+    },
+    {
+      name: "vinext:server-conditions",
+      enforce: "post",
+
+      configEnvironment(name, config) {
+        if (name !== "rsc" && name !== "ssr") return null;
+
+        // Vinext's RSC and SSR environments render Next.js server code, so
+        // selecting a package's browser export here diverges from Next.js and
+        // can execute a client-only implementation during SSR. Preserve every
+        // host-specific condition, but let ESM imports fall through to their
+        // `import` export instead of `browser`.
+        if (config.resolve?.conditions?.includes("browser")) {
+          config.resolve.conditions = config.resolve.conditions.filter(
+            (condition) => condition !== "browser",
+          );
+        }
+        const optimizerConditions = config.optimizeDeps?.rolldownOptions?.resolve?.conditionNames;
+        if (optimizerConditions?.includes("browser")) {
+          config.optimizeDeps!.rolldownOptions!.resolve!.conditionNames =
+            optimizerConditions.filter((condition) => condition !== "browser");
+        }
+        return null;
       },
     },
     {
@@ -5931,13 +6007,29 @@ export const loadServerActionClient = ${
         },
       },
     },
+    // Consumer-scoped built-ins shared by every Vite environment. Next.js
+    // compiles `process.browser` to true for browser code and false for every
+    // server target. Keep it beside the existing `typeof window` define so
+    // RSC, SSR, Workers, and the client cannot drift onto separate policies.
+    // Optimized dependencies use a separate Rolldown pipeline, so mirror
+    // `process.browser` into that pipeline for both client and server deps.
     {
       name: "vinext:typeof-window",
       configEnvironment(_name, environment) {
-        if (!useNativeTypeofWindowFolding) return null;
+        const isClient = environment.consumer === "client";
+        const processBrowser = isClient ? "true" : "false";
+        const define: Record<string, string> = {
+          "process.browser": processBrowser,
+        };
+        if (useNativeTypeofWindowFolding) {
+          define["typeof window"] = isClient ? '"object"' : '"undefined"';
+        }
         return {
-          define: {
-            "typeof window": environment.consumer === "client" ? '"object"' : '"undefined"',
+          define,
+          optimizeDeps: {
+            rolldownOptions: {
+              transform: { define: { "process.browser": processBrowser } },
+            },
           },
         };
       },
@@ -5954,17 +6046,30 @@ export const loadServerActionClient = ${
       },
       enforce: "post",
       transform: {
-        filter: { code: /\btypeof\s+window\b/ },
+        filter: { code: consumerEnvironmentConditionFilter },
         handler(code, id) {
-          if (useNativeTypeofWindowFolding && this.environment.config.build.write !== false) {
-            return null;
-          }
+          const scansImports = this.environment.config.build.write === false;
+          const replaceTypeofWindow = !useNativeTypeofWindowFolding || scansImports;
+          const replaceProcessBrowser = scansImports;
+          if (!replaceTypeofWindow && !replaceProcessBrowser) return null;
           const cacheDir = `${toSlash(this.environment.config.cacheDir).replace(/\/$/, "")}/`;
           if (toSlash(id).startsWith(cacheDir)) return null;
 
-          const replacement = getTypeofWindowReplacement(this.environment);
-          return cachedTypeofWindowTransform(id, code, replacement, () =>
-            replaceTypeofWindow(code, replacement, id),
+          const typeofWindow = getTypeofWindowReplacement(this.environment);
+          const processBrowser = this.environment.config.consumer === "client";
+          const variant = `${replaceTypeofWindow ? typeofWindow : "-"}:${
+            replaceProcessBrowser ? processBrowser : "-"
+          }`;
+          return cachedConsumerConditionTransform(id, code, variant, () =>
+            replaceConsumerEnvironmentConditions(
+              code,
+              {
+                ...(replaceTypeofWindow ? { typeofWindow } : {}),
+                ...(replaceProcessBrowser ? { processBrowser } : {}),
+                pruneUnreachableImports: scansImports,
+              },
+              id,
+            ),
           );
         },
       },
@@ -6343,6 +6448,13 @@ export const loadServerActionClient = ${
     // standalone/node_modules/ — uses the bundler's own import graph instead of
     // fragile regex scanning of emitted files.
     createServerExternalsManifestPlugin(),
+    // Preserve importer-relative package identity for nested copies of
+    // serverExternalPackages. Next.js refuses to externalize these requests
+    // when their importer and project-root resolutions differ.
+    createTransitiveExternalsPlugin({
+      getRoot: () => root,
+      getExternalPackages: () => resolvedServerExternalPackages,
+    }),
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that
@@ -6438,12 +6550,9 @@ export const loadServerActionClient = ${
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
-          if (nitroTraceDepsFromServerExternals.length > 0) {
+          if (resolvedServerExternalPackages.length > 0) {
             nitro.options.traceDeps = [
-              ...new Set([
-                ...(nitro.options.traceDeps ?? []),
-                ...nitroTraceDepsFromServerExternals,
-              ]),
+              ...new Set([...(nitro.options.traceDeps ?? []), ...resolvedServerExternalPackages]),
             ];
           }
 

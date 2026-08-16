@@ -1790,6 +1790,12 @@ function bootstrapHydration(
           fetchPriority: "auto",
           interceptionContext: requestInterceptionContext,
           mountedSlotsHeader,
+          routerState: {
+            pathAndSearch: createSnapshotPathAndSearch(
+              navigationInitiationState.navigationSnapshot,
+            ),
+            routeId: navigationInitiationState.routeId,
+          },
         });
         const rewrittenNavigationHref =
           navigationKind === "navigate" && HAS_CLIENT_REWRITES

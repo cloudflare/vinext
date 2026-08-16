@@ -25,7 +25,7 @@ import { describe, it, expect, afterAll } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { build, createBuilder } from "vite";
+import { build, createBuilder, resolveConfig } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import {
   isAbsoluteAssetPrefix,
@@ -123,6 +123,27 @@ describe("renderVinextBuiltUrl", () => {
     );
   });
 
+  it("versions worker entries and worker-owned assets without versioning app chunks", () => {
+    expect(
+      renderVinextBuiltUrl(
+        "_next/static/workers/image-worker.js",
+        "",
+        "dpl_123",
+        "js",
+        "_next/static/chunks/page.js",
+      ),
+    ).toBe("/_next/static/workers/image-worker.js?dpl=dpl_123");
+    expect(
+      renderVinextBuiltUrl(
+        "_next/static/test-image.png",
+        "",
+        "dpl_123",
+        "js",
+        "_next/static/workers/image-worker.js",
+      ),
+    ).toBe("/_next/static/test-image.png?dpl=dpl_123");
+  });
+
   it("combines path asset prefixes and deployment IDs", () => {
     expect(renderVinextBuiltUrl("cdn/_next/static/chunk.js", "/cdn", "dpl_123")).toBe(
       "/cdn/_next/static/chunk.js?dpl=dpl_123",
@@ -148,6 +169,70 @@ describe("renderVinextBuiltUrl", () => {
 
     expect(renderBuiltUrl).toBeTypeOf("function");
     expect(renderBuiltUrl("_next/static/chunk.js", {})).toBe("/_next/static/chunk.js?dpl=dpl_123");
+  });
+
+  it.each(["array", "factory"] as const)(
+    "preserves %s worker plugins and output arrays without duplication",
+    async (pluginShape) => {
+      const userWorkerPlugin = { name: "user-worker-plugin" };
+      const config = await resolveConfig(
+        {
+          root: APP_FIXTURE_DIR,
+          configFile: false,
+          plugins: [vinext({ nextConfig: () => ({ deploymentId: "dpl_123" }) })],
+          worker: {
+            plugins:
+              pluginShape === "array"
+                ? // Vite 8 retains runtime compatibility with the Vite 7 array shape.
+                  ([userWorkerPlugin] as any)
+                : () => [userWorkerPlugin],
+            rolldownOptions: {
+              output: [{ exports: "named" }, { sourcemap: true }],
+            },
+          },
+        },
+        "build",
+      );
+
+      const outputs = config.worker.rolldownOptions.output;
+      expect(outputs).toHaveLength(2);
+      expect(outputs).toEqual([
+        expect.objectContaining({
+          exports: "named",
+          entryFileNames: "_next/static/workers/[name]-[hash].js",
+          chunkFileNames: "_next/static/workers/[name]-[hash].js",
+        }),
+        expect.objectContaining({
+          sourcemap: true,
+          entryFileNames: "_next/static/workers/[name]-[hash].js",
+          chunkFileNames: "_next/static/workers/[name]-[hash].js",
+        }),
+      ]);
+
+      const workerConfig = await config.worker.plugins([]);
+      const names = workerConfig.plugins.map((plugin) => plugin.name);
+      expect(names.filter((name) => name === "user-worker-plugin")).toHaveLength(1);
+      expect(names.filter((name) => name === "vinext:worker-image-imports")).toHaveLength(1);
+    },
+  );
+
+  it("installs isolated worker filenames for an empty output array", async () => {
+    const config = await resolveConfig(
+      {
+        root: APP_FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext({ nextConfig: () => ({ deploymentId: "dpl_123" }) })],
+        worker: { rolldownOptions: { output: [] } },
+      },
+      "build",
+    );
+
+    expect(config.worker.rolldownOptions.output).toEqual([
+      expect.objectContaining({
+        entryFileNames: "_next/static/workers/[name]-[hash].js",
+        chunkFileNames: "_next/static/workers/[name]-[hash].js",
+      }),
+    ]);
   });
 });
 

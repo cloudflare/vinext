@@ -13,6 +13,28 @@ import { NextResponse } from "../packages/vinext/src/shims/server.js";
 // ---------------------------------------------------------------------------
 
 describe("executeMiddleware propagates trailingSlash to NextURL", () => {
+  it("keeps an internal file request in its original non-trailing shape", async () => {
+    let observedUrl: string | undefined;
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        middleware: (request: Request) => {
+          observedUrl = request.url;
+          return new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+      request: new Request(
+        "http://localhost/_next/static/build-id/_devMiddlewareManifest.json?foo=1",
+      ),
+      trailingSlash: true,
+    });
+
+    expect(result.continue).toBe(true);
+    expect(observedUrl).toBe(
+      "http://localhost/_next/static/build-id/_devMiddlewareManifest.json?foo=1",
+    );
+  });
+
   it("emits Location with trailing slash when middleware redirects via request.nextUrl (trailingSlash: true)", async () => {
     const result = await executeMiddleware({
       isProxy: false,
