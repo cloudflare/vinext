@@ -90,6 +90,11 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   response.headers.set("x-mw-pathname", pathname);
   response.headers.set("x-mw-ran", "true");
 
+  if (pathname === "/config-link-preload" && request.nextUrl.searchParams.has("middleware-link")) {
+    response.headers.set("Link", '</middleware.css>; rel="preload"; as="style"');
+    return response;
+  }
+
   if (sessionToken) {
     response.headers.set("x-mw-has-session", "true");
   }
@@ -464,6 +469,7 @@ export const config = {
     "/nextjs-compat/action-forward-loop",
     "/nextjs-compat/action-node-mw",
     "/metadata-icons-stream/:path*",
+    "/config-link-preload",
     "/use-client-page-pathname/:path*",
     "/rsc-fetch-redirect-src",
     "/rsc-fetch-error-target",

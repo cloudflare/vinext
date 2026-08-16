@@ -561,6 +561,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
   request: Request,
   preMiddlewareRequestContext: RequestContext,
+  middlewareContext: AppRscMiddlewareContext,
   isDataRequest: boolean,
   isMiddlewareDataRequest: boolean,
   pagesDataRequest: Request | null,
@@ -728,11 +729,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const isolatedMiddlewareRequest = isolatedMiddlewareSource
     ? requestWithoutRscCacheBustingSearchParam(requestWithoutRscSuffix(isolatedMiddlewareSource))
     : undefined;
-  const middlewareContext: AppRscMiddlewareContext = {
-    headers: null,
-    requestHeaders: null,
-    status: null,
-  };
   let didMiddlewareRewrite = false;
   let didMiddlewareRewritePathname = false;
 
@@ -1521,7 +1517,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // object (always `{}` for non-dynamic) so `useParams()` etc. still see
       // an object shape; only the user-facing handler context surfaces null.
       params: route.isDynamic ? renderParams : null,
-      request: new Request(routeHandlerUrl, routeHandlerRequest),
+      request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),
       route,
       searchParams: resolvedSearchParams,
     });
@@ -1726,6 +1722,11 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
         async () => {
           ensureFetchPatch();
           const preMiddlewareRequestContext = requestContextFromRequest(request);
+          const middlewareContext: AppRscMiddlewareContext = {
+            headers: null,
+            requestHeaders: null,
+            status: null,
+          };
           let response: Response;
 
           try {
@@ -1733,6 +1734,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
               options,
               request,
               preMiddlewareRequestContext,
+              middlewareContext,
               isPagesDataRequest,
               isPagesDataRequest,
               pagesDataRequest,
@@ -1750,6 +1752,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             basePath: options.basePath,
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
+            middlewareHeaders: middlewareContext.headers,
             requestContext: preMiddlewareRequestContext,
           });
         },

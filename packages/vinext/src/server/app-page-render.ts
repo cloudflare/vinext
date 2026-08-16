@@ -1062,6 +1062,8 @@ export async function renderAppPageLifecycle(
             ? false
             : undefined,
         waitForAllReady: shouldWaitForAllReady,
+        isStaticGeneration: options.isPrerender === true,
+        isForceStatic: options.isForceStatic,
       });
     },
     renderSpecialErrorResponse(specialError) {
@@ -1274,6 +1276,7 @@ export async function renderAppPageLifecycle(
         isForceStatic: options.isForceStatic,
         revalidateSeconds,
       }),
+      linkHeader: linkHeader ?? null,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
       },

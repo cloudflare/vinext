@@ -1093,6 +1093,7 @@ describe("Pages Router Link onClick semantics", () => {
       href: string;
       as?: string;
       replace: boolean;
+      shallow?: boolean;
       interpolateDynamicRoute?: boolean;
     }[] = [];
     vi.doMock(
@@ -1108,6 +1109,7 @@ describe("Pages Router Link onClick semantics", () => {
             href: string;
             as?: string;
             replace: boolean;
+            shallow?: boolean;
             interpolateDynamicRoute?: boolean;
           };
         }) => {
@@ -1115,6 +1117,7 @@ describe("Pages Router Link onClick semantics", () => {
             href: navigation.href,
             ...(navigation.as === undefined ? undefined : { as: navigation.as }),
             replace: navigation.replace,
+            ...(navigation.shallow ? { shallow: true } : undefined),
             ...(navigation.interpolateDynamicRoute ? { interpolateDynamicRoute: true } : undefined),
           });
         },
@@ -1221,6 +1224,17 @@ describe("Pages Router Link onClick semantics", () => {
     expect(result.clickEvent.defaultPrevented).toBe(true);
     // ...and the Pages Router navigation is actually scheduled.
     expect(result.pagesRouterCalls).toEqual([{ href: "/", replace: false }]);
+  });
+
+  it("forwards shallow Pages links to the router", async () => {
+    const result = await renderPagesRouterLinkAndClick({
+      href: "/sha?hello=world",
+      props: { shallow: true },
+    });
+
+    expect(result.pagesRouterCalls).toEqual([
+      { href: "/sha?hello=world", replace: false, shallow: true },
+    ]);
   });
 
   it("resolves hash-only URL objects against the current locale-free asPath", async () => {
@@ -1542,6 +1556,55 @@ describe("Link prefetch scheduling", () => {
           credentials: "include",
           priority: "low",
         }),
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps shallow hybrid App Router links eligible for viewport prefetch", async () => {
+    vi.stubEnv("__VINEXT_HAS_PAGES_ROUTER", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      props: { shallow: true },
+    });
+
+    try {
+      expect(observer.observe).toHaveBeenCalledWith(result.anchor);
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/viewport-prefetch-target",
+        expect.objectContaining({ priority: "low" }),
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("keeps shallow hybrid App Router links eligible for immediate intent prefetch", async () => {
+    vi.stubEnv("__VINEXT_HAS_PAGES_ROUTER", "true");
+    const requestAnimationFrame = vi.fn(() => 1);
+    const result = await renderIsolatedLink({
+      href: "/intent-prefetch-target",
+      nodeEnv: "production",
+      props: { shallow: true },
+      windowOverrides: { requestAnimationFrame },
+    });
+
+    try {
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(requestAnimationFrame).not.toHaveBeenCalled();
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/intent-prefetch-target",
+        expect.objectContaining({ priority: "high" }),
       );
     } finally {
       result.restoreNodeEnv();
@@ -3046,6 +3109,82 @@ describe("Link prefetch scheduling", () => {
           rel: "prefetch",
         },
       ]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("cancels a queued Pages Router intent prefetch when the link is clicked", async () => {
+    let scheduledFrame: (() => void) | null = null;
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/pages-click-intent-prefetch-target",
+      nodeEnv: "production",
+      props: {
+        onClick: (event: CapturedClickEvent) => event.preventDefault(),
+      },
+      windowOverrides: {
+        __NEXT_DATA__: {
+          __vinext: {
+            pageModuleUrl: "/_next/static/chunks/pages/current.js",
+          },
+        },
+        requestAnimationFrame: vi.fn((callback: () => void) => {
+          scheduledFrame = callback;
+          return 1;
+        }),
+        cancelAnimationFrame: vi.fn(() => {
+          scheduledFrame = null;
+        }),
+      },
+    });
+
+    try {
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      expect(scheduledFrame).not.toBeNull();
+
+      const clickEvent = {
+        button: 0,
+        currentTarget: { hasAttribute: () => false, target: "" },
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      } satisfies CapturedClickEvent;
+      await result.capturedAnchorProps.onClick?.(clickEvent);
+      await flushPrefetchTasks();
+
+      expect(clickEvent.defaultPrevented).toBe(true);
+      expect(scheduledFrame).toBeNull();
+      expect(result.fetch).not.toHaveBeenCalled();
+      expect(result.pagePrefetchLinks).toEqual([]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("does not prefetch shallow Pages Router links on intent", async () => {
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "/pages-shallow-intent-prefetch-target?hello=world",
+      nodeEnv: "production",
+      props: { shallow: true },
+      windowOverrides: {
+        __NEXT_DATA__: {
+          __vinext: {
+            pageModuleUrl: "/_next/static/chunks/pages/current.js",
+          },
+        },
+      },
+    });
+
+    try {
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      result.capturedAnchorProps.onTouchStart?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(result.fetch).not.toHaveBeenCalled();
+      expect(result.pagePrefetchLinks).toEqual([]);
     } finally {
       result.restoreNodeEnv();
     }
