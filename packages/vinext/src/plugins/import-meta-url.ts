@@ -323,7 +323,7 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
     if (isNewUrlExpression(value)) {
       const args = nodeArray(value.arguments);
       for (let index = 0; index < args.length; index += 1) {
-        if (index === 1 && isImportMetaUrlOrChainedNode(args[index])) continue;
+        if (index === 1 && isImportMetaUrlBaseNode(args[index])) continue;
         visit(args[index]);
       }
       // The callee is always the bare `URL` identifier (see isNewUrlExpression),
@@ -572,6 +572,25 @@ function isImportMetaUrlOrChainedNode(value: unknown): value is AstRange {
   if (isImportMetaUrlNode(value)) return true;
   return (
     isAstRecord(value) && value.type === "ChainExpression" && isImportMetaUrlNode(value.expression)
+  );
+}
+
+function isImportMetaUrlBaseNode(value: unknown): boolean {
+  if (isImportMetaUrlOrChainedNode(value)) return true;
+
+  // Vite rewrites worker constructors to:
+  //   new URL(emittedWorkerUrl, "" + import.meta.url)
+  // Preserve that generated base just like the direct asset-expression form.
+  // Replacing it with our source-identity file URL would make the browser
+  // resolve the emitted worker against file:// instead of the deployment origin.
+  return (
+    isAstRecord(value) &&
+    value.type === "BinaryExpression" &&
+    value.operator === "+" &&
+    isAstRecord(value.left) &&
+    value.left.type === "Literal" &&
+    value.left.value === "" &&
+    isImportMetaUrlOrChainedNode(value.right)
   );
 }
 

@@ -169,6 +169,7 @@ export async function dispatchAppRouteHandler(
   const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);
   const isDevelopment = options.isDevelopment ?? process.env.NODE_ENV === "development";
   const isProduction = options.isProduction ?? process.env.NODE_ENV === "production";
+  const appendResponseLink = handler.runtime === "edge" || handler.runtime === "experimental-edge";
   // Middleware may enable or disable draft mode before dispatch. Prefer the
   // live headers context over the original request cookie, and retain the
   // pending transition now so a force-static context replacement or cache HIT
@@ -186,7 +187,9 @@ export async function dispatchAppRouteHandler(
     });
     options.clearRequestContext();
     return applyDraftModeCachePolicy(
-      applyRouteHandlerMiddlewareContext(finalized, options.middlewareContext),
+      applyRouteHandlerMiddlewareContext(finalized, options.middlewareContext, {
+        appendResponseLink,
+      }),
       isDraftMode || hasDraftModeTransition,
     );
   };
@@ -259,6 +262,7 @@ export async function dispatchAppRouteHandler(
       i18n: options.i18n,
       trailingSlash: options.trailingSlash,
       isAutoHead,
+      appendResponseLink,
       isrDebug: options.isrDebug,
       isrGet: options.isrGet,
       isrRouteKey: options.isrRouteKey,

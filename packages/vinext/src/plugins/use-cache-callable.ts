@@ -128,7 +128,9 @@ function isAppPageDefaultExport(
 function shouldTransformModuleExport(name: string, id: string, meta: ModuleExportMeta): boolean {
   if (
     meta.isFunction === false &&
-    (meta.valueNode?.type === "ObjectExpression" || meta.valueNode?.type === "ArrayExpression")
+    ((name !== "default" && meta.valueNode?.type === "Literal") ||
+      meta.valueNode?.type === "ObjectExpression" ||
+      meta.valueNode?.type === "ArrayExpression")
   ) {
     return false;
   }

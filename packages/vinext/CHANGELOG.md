@@ -1,5 +1,61 @@
 # vinext
 
+## 1.0.0-beta.6
+
+### Features
+
+- **Use Cache:** support callable cached functions with rsc plugin api (#2156)
+
+### Bug Fixes
+
+#### App Router
+
+- reject unverified Worker prerender params (#2901)
+- preserve request.cf in route handlers (#2886)
+- preserve valued RSC queries through routing (#2883)
+- bail out static search params rendering (#2882)
+- expose not-found fallback flight payload (#2349)
+- prefetch root-param segment trees (#2856)
+- preserve full prefetch stale windows (#2851)
+
+#### Build
+
+- support Pages Router ESM externals (#2877)
+- preserve server export conditions (#2918)
+- bundle image-size in vinext (#2913)
+- define process.browser per environment (#2899)
+- preserve transitive external versions (#2887)
+
+#### Cache
+
+- preserve binary fetch response bodies (#2907)
+- ISR cache should store the framework preload header (#2900)
+- vary use cache entries by root params (#2847)
+- keep encoded dynamic prefetches learning-only (#2866)
+- delegate CDN header cleanup to adapters (#2797)
+
+#### Misc
+
+- **Headers:** preserve config Link headers alongside React preload links (#2791)
+- **Pages:** keep charset first in custom document heads (#2909)
+- **Font:** not emitting 400 as default value when font weight is omitted (#2796)
+- **Use Cache:** allow literal exports from use-cache files (#2906)
+- **Router:** preserve basePath in Pages Router events (#2888)
+- **RSC:** preserve BOM bytes in embedded Flight chunks (#2905)
+- **Pages:** align middleware rewrite navigation (#2891)
+- **Config:** preserve native TypeScript dynamic imports (#2353)
+- **Prerender:** cache use-cache metadata routes (#2848)
+- **Prerender:** expose the production build phase (#2846)
+
+### Contributors
+
+- @james-elicx
+- @lyzno1
+- @MaxtuneLee
+- @NathanDrake2406
+- @NriotHrreion
+- @ting-hong-shieh
+
 ## 1.0.0-beta.5
 
 ### Features
