@@ -1,5 +1,6 @@
 import { buildRouteTrie, trieMatchRaw } from "../routing/route-trie.js";
 import {
+  extractRawRoutePatternParams,
   matchRoutePattern,
   matchRoutePatternRaw,
   matchRoutePatternPrefix,
@@ -10,6 +11,7 @@ import {
   splitPathnameForRouteMatch,
   splitPathSegments,
 } from "../routing/utils.js";
+import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
 
 /**
  * Sentinel slot key used for sibling-style interception entries.
@@ -166,23 +168,6 @@ function appRscInterceptionSourcePathnameParts(pathname: string): string[] {
   });
 }
 
-function canonicalizeAppPageParam(value: string): string {
-  try {
-    return encodeURIComponent(decodeURIComponent(value));
-  } catch {
-    return value;
-  }
-}
-
-function canonicalizeAppPageParams(params: AppRscRouteParams): void {
-  for (const key of Object.keys(params)) {
-    const value = params[key];
-    params[key] = Array.isArray(value)
-      ? value.map(canonicalizeAppPageParam)
-      : canonicalizeAppPageParam(value);
-  }
-}
-
 function isAppRouteHandlerRoute(route: AppRscRouteForMatching): boolean {
   // Generated manifests retain the lazy loader before the first request and
   // hydrate routeHandler afterwards. Classification must not change when that
@@ -201,39 +186,6 @@ function normalizeMatchedParamsForRoute(result: {
   }
 }
 
-function extractRawParamsForMatchedRoute(
-  patternParts: readonly string[],
-  pathnameParts: readonly string[],
-): AppRscRouteParams {
-  // Route selection uses the normalized pathname so encoded static segments
-  // cannot alias filesystem routes. Param values come from the encoded URL
-  // parts, matching Next.js client/route-params.ts before the route-kind-
-  // specific canonicalize/decode step below.
-  const params = createRouteParams();
-  let pathnameIndex = 0;
-
-  for (const part of patternParts) {
-    if (!part.startsWith(":")) {
-      pathnameIndex += 1;
-      continue;
-    }
-
-    const isCatchAll = part.endsWith("+") || part.endsWith("*");
-    const paramName = part.slice(1, isCatchAll ? -1 : undefined);
-    if (isCatchAll) {
-      const remaining = pathnameParts.slice(pathnameIndex);
-      if (remaining.length > 0) params[paramName] = [...remaining];
-      break;
-    }
-
-    const value = pathnameParts[pathnameIndex];
-    if (value !== undefined) params[paramName] = value;
-    pathnameIndex += 1;
-  }
-
-  return params;
-}
-
 export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   routes: Route[],
 ): {
@@ -250,7 +202,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       const rawParts = appRscPathnameParts(url, true);
       const result = trieMatchRaw(routeTrie, appRscPathnameParts(url, false));
       if (!result) return null;
-      result.params = extractRawParamsForMatchedRoute(result.route.patternParts, rawParts);
+      result.params = extractRawRoutePatternParams(result.route.patternParts, rawParts);
       normalizeMatchedParamsForRoute(result);
       return result;
     },
@@ -368,7 +320,7 @@ function matchSlotOwnerSourceParams(
   const exact = matchRoutePatternRaw(sourceParts, patternParts);
   if (exact !== null) return exact;
   if (!descendantsAllowed || !matchRoutePatternPrefix(sourceParts, patternParts)) return null;
-  return extractRawParamsForMatchedRoute(patternParts, sourceParts);
+  return extractRawRoutePatternParams(patternParts, sourceParts);
 }
 
 /**

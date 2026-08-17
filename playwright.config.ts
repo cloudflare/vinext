@@ -57,7 +57,11 @@ const projectServers = {
   },
   "app-router-isr-prod": {
     testDir: "./tests/e2e",
-    testMatch: ["app-router/isr.spec.ts", "app-router-prod/use-cache.spec.ts"],
+    testMatch: [
+      "app-router/isr.spec.ts",
+      "app-router-prod/static-hydration.spec.ts",
+      "app-router-prod/use-cache.spec.ts",
+    ],
     use: { baseURL: "http://localhost:4198" },
     server: {
       command:
@@ -376,14 +380,16 @@ const projectServers = {
   "app-router-encoded-basepath-i18n": {
     testDir: "./tests/e2e/app-router-encoded-basepath-i18n",
     use: { baseURL: "http://localhost:4196" },
-    server: {
-      command:
-        "VINEXT_ENCODED_PATH_BASEPATH_I18N=1 npx vp run vinext#build && VINEXT_ENCODED_PATH_BASEPATH_I18N=1 node ../../../packages/vinext/dist/cli.js build && VINEXT_ENCODED_PATH_BASEPATH_I18N=1 node ../../../packages/vinext/dist/cli.js start --port 4196",
-      cwd: "./tests/fixtures/app-basic",
-      port: 4196,
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
+    server: process.env.VINEXT_BASEPATH_E2E_BASE_URL
+      ? undefined
+      : {
+          command:
+            "VINEXT_ENCODED_PATH_BASEPATH_I18N=1 npx vp run vinext#build && VINEXT_ENCODED_PATH_BASEPATH_I18N=1 node ../../../packages/vinext/dist/cli.js build && VINEXT_ENCODED_PATH_BASEPATH_I18N=1 node ../../../packages/vinext/dist/cli.js start --port 4196",
+          cwd: "./tests/fixtures/app-basic",
+          port: 4196,
+          reuseExistingServer: !process.env.CI,
+          timeout: 120_000,
+        },
   },
   "pages-router-complex": {
     // Compatibility target exercising the convoluted patterns of large,
@@ -499,7 +505,7 @@ export default defineConfig({
         .map((name) => projectServers[name].server)
         .filter(
           (server): server is NonNullable<(typeof projectServers)[ProjectName]["server"]> =>
-            server !== null,
+            server != null,
         )
         .map((server) => [server.port, server]),
     ).values(),

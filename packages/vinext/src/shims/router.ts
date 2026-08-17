@@ -1561,6 +1561,12 @@ type NavigateClientOptions = {
   locale?: string;
   isHydrationQueryUpdate?: boolean;
   /**
+   * Route state to preserve while rendering an error-route component. A
+   * getServerSideProps/getStaticProps notFound transition renders /404, but
+   * Next.js keeps pathname/route/query/asPath pointed at the requested route.
+   */
+  nextDataRouteState?: Pick<VinextNextData, "page" | "query">;
+  /**
    * The history mode of the originating navigation. Used when a gSSP/gSP data
    * response carries a `__N_REDIRECT` marker so the re-entrant navigation to
    * the redirect destination preserves push-vs-replace semantics, matching
@@ -2347,6 +2353,71 @@ async function navigateClientData(
     throw new InternalNavigationRedirect(redirectedUrl);
   }
 
+  if (res.status === 404) {
+    let isNotFound = false;
+    try {
+      const notFoundBody = (await res.clone().json()) as unknown;
+      isNotFound = isUnknownRecord(notFoundBody) && notFoundBody.notFound === true;
+    } catch {
+      // A stale build/data URL can return a non-JSON 404. Keep the existing
+      // deploy-skew hard-navigation fallback for that response shape.
+    }
+
+    if (isNotFound) {
+      const customNotFoundLoader = window.__VINEXT_PAGE_LOADERS__?.["/404"];
+      if (!customNotFoundLoader) {
+        // Fetching /404 is not safe when the app has no custom 404 page: a
+        // dynamic Pages route (for example /[id]) can claim that URL. Load the
+        // registered /_error component instead, then retain the requested
+        // route state when committing it. The generated loader map points to
+        // either the app's custom _error or vinext's built-in error page.
+        const errorLoader = window.__VINEXT_PAGE_LOADERS__?.["/_error"];
+        const errorTarget: PagesDataTarget = {
+          ...initialTarget,
+          pattern: "/_error",
+          pagePath: "/_error",
+          dataKind: "none",
+          loader: errorLoader ?? (() => import("next/error")),
+        };
+        const pageModule = await loadTargetPageModule(errorTarget, url, "Data navigation failed");
+        assertStillCurrent();
+        const PageComponent = pageModule.default;
+        if (!isPageComponent(PageComponent)) {
+          scheduleHardNavigationAndThrow(
+            url,
+            "Data navigation failed: error page default export is not a component",
+          );
+        }
+        const appComponent = await loadPagesAppComponent();
+        assertStillCurrent();
+        const props = await loadComponentOnlyProps(PageComponent, appComponent, errorTarget, url);
+        assertStillCurrent();
+        await renderPagesNavigationTarget(url, initialTarget, props, options, assertStillCurrent, {
+          appComponent,
+          pageModule,
+        });
+        return;
+      }
+      const notFoundFetchUrl = resolvePagesErrorHtmlFetchUrl("/404", initialTarget.locale);
+      if (!notFoundFetchUrl) {
+        scheduleHardNavigationAndThrow(url, "Data navigation failed: no 404 route available");
+      }
+      const requestedQuery = mergeRouteParamsIntoQuery(
+        parseQueryString(initialTarget.search),
+        initialTarget.params,
+      );
+      await navigateClientHtml(url, notFoundFetchUrl, controller, navId, assertStillCurrent, {
+        ...options,
+        allowNotFoundResponse: true,
+        nextDataRouteState: {
+          page: initialTarget.pattern,
+          query: requestedQuery,
+        },
+      });
+      return;
+    }
+  }
+
   if (!res.ok) {
     if (options.isHydrationQueryUpdate) {
       return;
@@ -2457,7 +2528,14 @@ async function navigateClientHtml(
     }
   }
 
-  if (!res.ok && !(options.allowNotFoundResponse === true && res.status === 404)) {
+  // A development notFound render needs its __NEXT_DATA__.notFoundSrcPage
+  // marker before we can distinguish it from an ordinary route-miss 404.
+  // Keep rejecting every other non-OK response before reading its body.
+  if (
+    !res.ok &&
+    res.status !== 404 &&
+    !(options.allowNotFoundResponse === true && res.status === 404)
+  ) {
     // Set window.location.href first so the browser navigates to the correct
     // page even if the caller suppresses the error.  The assignment schedules
     // the navigation asynchronously (as a task), so synchronous routeChangeError
@@ -2479,10 +2557,57 @@ async function navigateClientHtml(
   // Extract __NEXT_DATA__ from the HTML
   const nextDataJson = extractVinextNextDataJson(html);
   if (!nextDataJson) {
+    if (!res.ok && options.allowNotFoundResponse !== true) {
+      scheduleHardNavigationAndThrow(
+        browserUrl,
+        `Navigation failed: ${res.status} ${res.statusText}`,
+      );
+    }
     scheduleHardNavigationAndThrow(url, "Navigation failed: missing __NEXT_DATA__ in response");
   }
 
   const nextData = parseVinextNextDataJson(nextDataJson);
+  let nextDataRouteState = options.nextDataRouteState;
+  let isDevelopmentNotFound = false;
+  if (
+    res.status === 404 &&
+    options.allowNotFoundResponse !== true &&
+    (nextData.page === "/404" || nextData.page === "/_error") &&
+    typeof nextData.notFoundSrcPage === "string"
+  ) {
+    const requestedPathname = getLocalPathname(browserUrl);
+    let requestedUrl: URL | null = null;
+    try {
+      requestedUrl = new URL(browserUrl, window.location.href);
+    } catch {
+      // Invalid local URLs retain the normal hard-navigation fallback below.
+    }
+    const sourcePathname = requestedPathname
+      ? removeNavigationLocalePrefix(requestedPathname)
+      : null;
+    const routeParams = sourcePathname
+      ? extractRouteParamsFromPath(nextData.notFoundSrcPage, sourcePathname)
+      : null;
+    if (requestedUrl && routeParams !== null) {
+      isDevelopmentNotFound = true;
+      nextDataRouteState = {
+        page: nextData.notFoundSrcPage,
+        query: mergeRouteParamsIntoQuery(parseQueryString(requestedUrl.search), routeParams),
+      };
+    }
+  }
+
+  if (
+    !res.ok &&
+    !(options.allowNotFoundResponse === true && res.status === 404) &&
+    !isDevelopmentNotFound
+  ) {
+    scheduleHardNavigationAndThrow(
+      browserUrl,
+      `Navigation failed: ${res.status} ${res.statusText}`,
+    );
+  }
+
   const props = nextData.props && typeof nextData.props === "object" ? nextData.props : {};
   // Keep the HTML fallback transport aligned with the manifest/data paths.
   // Next.js installs this cloned object into routeInfo.props before rendering.
@@ -2512,6 +2637,11 @@ async function navigateClientHtml(
     // the extracted chunk URL directly can evaluate a duplicate module when
     // the router runtime is split across entry and page chunks.
     pageModule = await loader();
+  } else if (!pageModuleUrl && isDevelopmentNotFound) {
+    // A project without a custom 404 has no filesystem module URL to expose.
+    // Keep the default error shim lazy so ordinary Pages navigations do not
+    // pull it into the common client path.
+    pageModule = await import("next/error");
   } else if (!pageModuleUrl) {
     scheduleHardNavigationAndThrow(browserUrl, "Navigation failed: no page module URL found");
   } else {
@@ -2575,8 +2705,9 @@ async function navigateClientHtml(
   // stable Pages Router commit boundary before routeChangeComplete, matching
   // Next.js's client Root callback without remounting the page tree.
   options.beforeHistoryChange?.();
-  window.__NEXT_DATA__ = nextData;
-  applyVinextLocaleGlobals(window, nextData);
+  const committedNextData = nextDataRouteState ? { ...nextData, ...nextDataRouteState } : nextData;
+  window.__NEXT_DATA__ = committedNextData;
+  applyVinextLocaleGlobals(window, committedNextData);
   await renderPagesRouterElement(element, options.scroll);
   assertStillCurrent();
 }

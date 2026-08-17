@@ -16,6 +16,7 @@ import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { tryRealpathSync } from "../build/ssr-manifest.js";
+import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
 import {
   collectBindingNames,
@@ -24,9 +25,12 @@ import {
   isAstRecord,
   isIdentifierNamed,
   nodeArray,
+  SCRIPT_MODULE_ID_RE,
+  scriptParserLanguage,
   type AstRange,
   type AstRecord,
 } from "./ast-utils.js";
+import { magicStringTransformResult } from "./transform-result.js";
 
 type ImportMetaUrlEnvironment = "client" | "server";
 
@@ -48,17 +52,6 @@ type ImportMetaUrlCacheEntry = {
   results: Map<ImportMetaUrlEnvironment, { value: RewriteResult | null }>;
 };
 
-const TRANSFORMABLE_SCRIPT_EXTENSIONS = new Set([
-  ".cjs",
-  ".cts",
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".mts",
-  ".ts",
-  ".tsx",
-]);
-
 export function createDynamicImportUrlPlugin(): Plugin {
   return {
     name: "vinext:dynamic-import-url",
@@ -66,7 +59,7 @@ export function createDynamicImportUrlPlugin(): Plugin {
     transform: {
       filter: {
         id: {
-          include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
+          include: SCRIPT_MODULE_ID_RE,
           exclude: VIRTUAL_MODULE_ID_RE,
         },
         code: /\bimport\s*\(\s*(?:new\s+URL\s*\(|\/)/,
@@ -106,8 +99,8 @@ export function createImportMetaUrlPlugin(options: { getRoot: () => string | und
     transform: {
       filter: {
         id: {
-          include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
-          exclude: [/[\\/]node_modules[\\/]/, VIRTUAL_MODULE_ID_RE],
+          include: SCRIPT_MODULE_ID_RE,
+          exclude: [NODE_MODULES_PATH_RE, VIRTUAL_MODULE_ID_RE],
         },
         code: /import\.meta(?:\.|\?\.)url|__filename|__dirname/,
       },
@@ -167,9 +160,12 @@ export function rewriteImportMetaUrl(
 // Test-only entry point. Delegates to the same pre-transform used by the
 // production plugin so tests cover the ordering-sensitive Vite integration.
 export function rewriteDynamicImportUrls(code: string, id: string): RewriteResult | null {
+  const lang = scriptParserLanguage(id);
+  if (lang === null) return null;
+
   let ast: unknown;
   try {
-    ast = parseAst(code, { lang: parserLanguageForModuleId(id) });
+    ast = parseAst(code, { lang });
   } catch {
     return null;
   }
@@ -185,18 +181,7 @@ export function rewriteDynamicImportUrls(code: string, id: string): RewriteResul
       JSON.stringify(dynamicImport.specifier),
     );
   }
-  return {
-    code: output.toString(),
-    map: output.generateMap({ hires: "boundary" }),
-  };
-}
-
-function parserLanguageForModuleId(id: string): "jsx" | "ts" | "tsx" {
-  const cleanId = cleanModuleId(id).toLowerCase();
-  if (cleanId.endsWith(".ts") || cleanId.endsWith(".mts") || cleanId.endsWith(".cts")) {
-    return "ts";
-  }
-  return cleanId.endsWith(".tsx") ? "tsx" : "jsx";
+  return magicStringTransformResult(output);
 }
 
 // Test-only entry point. Mirrors the plugin's server eligibility checks and
@@ -256,10 +241,7 @@ function rewriteCanonicalSourceIdentity(
   }
 
   if (!changed) return null;
-  return {
-    code: output.toString(),
-    map: output.generateMap({ hires: "boundary" }),
-  };
+  return magicStringTransformResult(output);
 }
 
 type DynamicImportUrlSpecifier = AstRange & { specifier: string };
@@ -323,7 +305,7 @@ function getDynamicImportUrlSpecifier(source: unknown): string | null {
 }
 
 function cleanModuleId(id: string): string {
-  return id.split("?", 1)[0];
+  return stripViteModuleQuery(id);
 }
 
 function createRootPaths(root: string, options: { outputDirs?: string[] } = {}): RootPaths {
@@ -348,7 +330,7 @@ function transformableModuleCanonicalId(id: string, rootPaths: RootPaths): strin
   // isPathWithin check below provides a second safety net in case a
   // symlink causes the canonical path to land outside node_modules.
   if (slashedInputId.includes("/node_modules/")) return null;
-  if (!TRANSFORMABLE_SCRIPT_EXTENSIONS.has(path.extname(slashedInputId))) return null;
+  if (scriptParserLanguage(slashedInputId) === null) return null;
 
   const canonicalId = canonicalizePath(id);
   if (!isPathWithin(canonicalId, rootPaths.canonicalRoot)) return null;
