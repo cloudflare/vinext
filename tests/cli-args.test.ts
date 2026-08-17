@@ -2,7 +2,7 @@
  * CLI argument parser tests.
  *
  * Tests the parseArgs function extracted from cli.ts, validating that:
- *  - Value-taking flags (`--port`, `--hostname`) error on missing values
+ *  - Value-taking flags (`--port`, `--hostname`, `--mode`) error on missing values
  *  - Value-taking flags error when the next arg is another flag
  *  - `--port` uses strict integer parsing (Number, not parseInt) and range checks
  *  - `--flag=value` forms work correctly
@@ -45,6 +45,30 @@ describe("boolean flags", () => {
 });
 
 // ─── --port flag ────────────────────────────────────────────────────────────
+
+describe("--mode", () => {
+  it("parses a build mode value", () => {
+    expect(parseArgs(["--mode", "staging"])).toMatchObject({ mode: "staging" });
+  });
+
+  it("parses --mode=value form", () => {
+    expect(parseArgs(["--mode=test"])).toMatchObject({ mode: "test" });
+  });
+
+  it("throws when --mode has no value", () => {
+    expect(() => parseArgs(["--mode"])).toThrow("--mode requires a value, but none was provided.");
+  });
+
+  it("throws when --mode value is another flag", () => {
+    expect(() => parseArgs(["--mode", "--verbose"])).toThrow(
+      '--mode requires a value, but got "--verbose" which looks like another flag.',
+    );
+  });
+
+  it("throws when --mode= has empty value", () => {
+    expect(() => parseArgs(["--mode="])).toThrow("--mode requires a value, but none was provided.");
+  });
+});
 
 describe("--port / -p", () => {
   it("parses a numeric port value", () => {
@@ -280,6 +304,15 @@ describe("combined flags", () => {
 });
 
 // ─── Positional arguments ───────────────────────────────────────────────────
+
+describe("build flags", () => {
+  it("parses build mode alongside precompress", () => {
+    expect(parseArgs(["--mode", "staging", "--precompress"])).toMatchObject({
+      mode: "staging",
+      precompress: true,
+    });
+  });
+});
 
 describe("positional arguments", () => {
   it("keeps positional arguments for commands with directory targets", () => {

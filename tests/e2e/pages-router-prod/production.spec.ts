@@ -40,6 +40,50 @@ test.describe("Pages Router Production Build", () => {
     expect(nextData.props.pageProps.message).toBe("Hello from getServerSideProps");
   });
 
+  test("omits gssp from __NEXT_DATA__ for non-GSSP pages", async ({ page }) => {
+    // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/getserversideprops/test/index.test.ts
+    await page.goto(`${BASE}/about`);
+    const nextData = await page.evaluate(() => (window as any).__NEXT_DATA__);
+    expect("gssp" in nextData).toBe(false);
+  });
+
+  for (const href of ["/gssp-not-found?hiding=true", "/gssp-not-found/first?hiding=true"]) {
+    test(`renders the 404 page on GSSP client navigation to ${href}`, async ({ page }) => {
+      // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
+      // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/getserversideprops/test/index.test.ts
+      await page.goto(`${BASE}/`);
+      await page.evaluate((target) => (window as any).next.router.push(target), href);
+      await expect(page.getByTestId("error-title")).toBeVisible();
+      expect(page.url()).toContain(href);
+    });
+  }
+
+  test("preserves requested dynamic route state while rendering GSSP notFound", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/`);
+    await page.evaluate(() =>
+      (window as any).next.router.push("/gssp-not-found/first?hiding=true"),
+    );
+    await expect(page.getByTestId("error-title")).toBeVisible();
+
+    const state = await page.evaluate(() => ({
+      pathname: (window as any).next.router.pathname,
+      route: (window as any).next.router.route,
+      query: (window as any).next.router.query,
+      asPath: (window as any).next.router.asPath,
+      nextDataPage: (window as any).__NEXT_DATA__.page,
+    }));
+    expect(state).toEqual({
+      pathname: "/gssp-not-found/[slug]",
+      route: "/gssp-not-found/[slug]",
+      query: { hiding: "true", slug: "first" },
+      asPath: "/gssp-not-found/first?hiding=true",
+      nextDataPage: "/gssp-not-found/[slug]",
+    });
+  });
+
   test("API route returns JSON", async ({ request }) => {
     const response = await request.get(`${BASE}/api/hello`);
     expect(response.status()).toBe(200);
@@ -146,6 +190,16 @@ test.describe("Pages Router Production Build", () => {
     expect(jsRes.status()).toBe(200);
     expect(jsRes.headers()["content-type"]).toContain("javascript");
     expect(jsRes.headers()["cache-control"]).toContain("immutable");
+
+    const unsupported = await request.post(`${BASE}${jsPath}`);
+    expect(unsupported.status()).toBe(405);
+    expect(unsupported.headers()["allow"]).toBe("GET, HEAD");
+
+    const unsupportedConditional = await request.post(`${BASE}${jsPath}`, {
+      headers: { "If-None-Match": jsRes.headers()["etag"] ?? "*" },
+    });
+    expect(unsupportedConditional.status()).toBe(405);
+    expect(unsupportedConditional.headers()["allow"]).toBe("GET, HEAD");
   });
 
   test("large responses include compression headers", async ({ request }) => {

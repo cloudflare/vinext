@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  canonicalizeAppPageParams,
   resolveAppPageLeafSegmentStateKey,
+  resolveAppPagePatternStateKey,
   resolveAppPageRouteStateKey,
   resolveAppPageSegmentStateKey,
+  resolveAppPageTemplateStateKey,
 } from "../packages/vinext/src/server/app-page-segment-state.js";
 
 describe("app page segment state keys", () => {
@@ -77,5 +80,58 @@ describe("app page segment state keys", () => {
         parts: [],
       }),
     ).toBe("parts||oc");
+
+    const first = { parts: ["a/b", "c"] };
+    const second = { parts: ["a", "b/c"] };
+    canonicalizeAppPageParams(first);
+    canonicalizeAppPageParams(second);
+    expect(first).toEqual({ parts: ["a%2Fb", "c"] });
+    expect(second).toEqual({ parts: ["a", "b%2Fc"] });
+    expect(resolveAppPageRouteStateKey(["docs", "[...parts]"], first)).not.toBe(
+      resolveAppPageRouteStateKey(["docs", "[...parts]"], second),
+    );
+  });
+
+  it("canonicalizes interception pattern params with their full target path", () => {
+    expect(
+      resolveAppPagePatternStateKey([":lang", "photo", ":id"], {
+        lang: "en",
+        id: "42",
+      }),
+    ).toBe(JSON.stringify(["lang|en|d", "photo", "id|42|d"]));
+    expect(
+      resolveAppPagePatternStateKey(["docs", ":parts+"], {
+        parts: ["guides", "routing"],
+      }),
+    ).toBe(JSON.stringify(["docs", "parts|guides/routing|c"]));
+    expect(resolveAppPagePatternStateKey(["docs", ":parts*"], {})).toBe(
+      JSON.stringify(["docs", "parts||oc"]),
+    );
+  });
+
+  it("uses the owning dynamic segment for leaf templates", () => {
+    expect(resolveAppPageTemplateStateKey(["docs", "[slug]"], 1, { slug: "launch" })).toBe(
+      JSON.stringify(["docs", "slug|launch|d"]),
+    );
+    expect(resolveAppPageTemplateStateKey(["docs", "[slug]"], 2, { slug: "launch" })).toBe(
+      JSON.stringify(["docs", "slug|launch|d"]),
+    );
+  });
+
+  it("includes dynamic ancestors in non-leaf template state", () => {
+    expect(resolveAppPageTemplateStateKey(["[tenant]", "settings"], 1, { tenant: "a" })).toBe(
+      JSON.stringify(["tenant|a|d", "settings"]),
+    );
+    expect(resolveAppPageTemplateStateKey(["[tenant]", "settings"], 1, { tenant: "b" })).toBe(
+      JSON.stringify(["tenant|b|d", "settings"]),
+    );
+    expect(
+      resolveAppPageTemplateStateKey(["[tenant]", "(group)", "settings"], 1, {
+        tenant: "a",
+      }),
+    ).toBe(JSON.stringify(["tenant|a|d", "(group)"]));
+    expect(resolveAppPageTemplateStateKey(["(stable)", "[id]"], 0, { id: "a" })).toBe(
+      JSON.stringify(["(stable)"]),
+    );
   });
 });

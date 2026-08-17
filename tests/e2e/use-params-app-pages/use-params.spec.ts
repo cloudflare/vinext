@@ -1,6 +1,9 @@
 // Ported from Next.js: test/e2e/app-dir/use-params/use-params.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-params/use-params.test.ts
+import type { Request } from "@playwright/test";
 import { expect, test } from "@playwright/test";
+
+import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
 
 test.describe("use-params", () => {
   test("should work for single dynamic param", async ({ page, baseURL }) => {
@@ -24,12 +27,14 @@ test.describe("use-params", () => {
 
   test("should work for single dynamic param client navigating", async ({ page, baseURL }) => {
     await page.goto(`${baseURL}/`);
+    await waitForAppRouterHydration(page);
     await page.locator("#to-a").click();
     await expect(page.locator("#param-id")).toHaveText("a");
   });
 
   test("should work for nested dynamic params client navigating", async ({ page, baseURL }) => {
     await page.goto(`${baseURL}/`);
+    await waitForAppRouterHydration(page);
     await page.locator("#to-a-b").click();
     await expect(page.locator("#param-id")).toHaveText("a");
     await expect(page.locator("#param-id2")).toHaveText("b");
@@ -50,6 +55,7 @@ test.describe("use-params", () => {
     // render the catch-all's path array. Falls back to a document navigation
     // so the Pages handler renders the page.
     await page.goto(`${baseURL}/`);
+    await waitForAppRouterHydration(page);
     await page.locator("#to-pages").click();
     await expect(page).toHaveURL(/\/pages-dir\/foobar$/);
     await expect(page.locator("#params")).toHaveText('"foobar"');
@@ -63,6 +69,7 @@ test.describe("use-params", () => {
     // hard-navigate to the Pages document instead of sending an RSC
     // request that the App catch-all would otherwise answer.
     await page.goto(`${baseURL}/`);
+    await waitForAppRouterHydration(page);
     await page.locator("#router-push-pages").click();
     await expect(page).toHaveURL(/\/pages-dir\/foobar$/);
     await expect(page.locator("#params")).toHaveText('"foobar"');
@@ -75,6 +82,7 @@ test.describe("use-params", () => {
 
   test("earlier static App segment wins for Link navigation", async ({ page, baseURL }) => {
     await page.goto(`${baseURL}/`);
+    await waitForAppRouterHydration(page);
     await page.locator("#to-app-priority").click();
     await expect(page).toHaveURL(/\/account\/details$/);
     await expect(page.locator("#route-owner")).toHaveText("app");
@@ -82,6 +90,7 @@ test.describe("use-params", () => {
 
   test("earlier static App segment wins for router.push", async ({ page, baseURL }) => {
     await page.goto(`${baseURL}/`);
+    await waitForAppRouterHydration(page);
     await page.locator("#router-push-app-priority").click();
     await expect(page).toHaveURL(/\/account\/details$/);
     await expect(page.locator("#route-owner")).toHaveText("app");
@@ -96,15 +105,27 @@ test.describe("use-params", () => {
     // hit the App root catch-all's RSC handler and warm an unusable
     // cache entry, so the prefetch should be a no-op.
     await page.goto(`${baseURL}/`);
+    await waitForAppRouterHydration(page);
 
-    const rscRequests: string[] = [];
+    const requests: Request[] = [];
     page.on("request", (req) => {
-      if (req.url().includes(".rsc")) {
-        rscRequests.push(req.url());
-      }
+      requests.push(req);
     });
 
     await page.locator("#router-prefetch-pages").click();
+
+    // Positive control. A strict-zero assertion cannot tell "the hybrid
+    // check short-circuited the prefetch" apart from "the click landed
+    // before React committed, so the handler never ran and prefetch() was
+    // never called" — the second passes vacuously. The button's handler
+    // also prefetches /prefetch-control, which is App-owned and is not the
+    // target of any <Link> on this page, so nothing but this handler can
+    // produce an RSC request for it.
+    await expect
+      .poll(() => requests.some((req) => isAppRouterRscRequestForPath(req, "/prefetch-control")), {
+        message: "the prefetch handler never ran, so the assertion below would pass vacuously",
+      })
+      .toBe(true);
 
     // Give the network layer a chance to flush anything the resolver
     // accidentally started. The assertion is a strict zero RSC requests
@@ -113,13 +134,16 @@ test.describe("use-params", () => {
     // URL).
     await page.waitForTimeout(250);
     expect(
-      rscRequests.filter((u) => u.includes("/pages-dir/foobar")),
-      `unexpected RSC prefetch: ${rscRequests.join("\n")}`,
+      requests
+        .filter((req) => isAppRouterRscRequestForPath(req, "/pages-dir/foobar"))
+        .map((req) => req.url()),
+      `observed requests:\n${requests.map((req) => req.url()).join("\n")}`,
     ).toEqual([]);
   });
 
   test("shouldn't rerender host component when prefetching", async ({ page, baseURL }) => {
     await page.goto(`${baseURL}/rerenders/foobar`);
+    await waitForAppRouterHydration(page);
     const initialRandom = await page.locator("#random").textContent();
     await page.locator("a").hover();
     await expect(page.locator("#random")).toHaveText(initialRandom ?? "");

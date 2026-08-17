@@ -1,6 +1,6 @@
 import type { NextI18nConfig } from "../config/next-config.js";
 import type { HeadersAccessPhase } from "vinext/shims/headers";
-import type { ISRCacheEntry } from "./isr-cache.js";
+import { isrCacheControl, type ISRCacheEntry } from "./isr-cache.js";
 import type { RouteHandlerMiddlewareContext } from "./app-route-handler-response.js";
 import {
   applyRouteHandlerMiddlewareContext,
@@ -36,6 +36,7 @@ type ReadAppRouteHandlerCacheOptions = {
   i18n?: NextI18nConfig | null;
   trailingSlash?: boolean;
   isAutoHead: boolean;
+  appendResponseLink?: boolean;
   isrDebug?: AppRouteDebugLogger;
   isrGet: RouteHandlerCacheGetter;
   isrRouteKey: (pathname: string) => string;
@@ -97,6 +98,7 @@ export async function readAppRouteHandlerCacheResponse(
           revalidateSeconds: options.revalidateSeconds,
         }),
         options.middlewareContext,
+        { appendResponseLink: options.appendResponseLink },
       );
     }
 
@@ -140,13 +142,12 @@ export async function readAppRouteHandlerCacheResponse(
             options.getCollectedFetchTags(),
           );
           const routeCacheValue = await buildAppRouteCacheValue(response);
-          await options.isrSet(
-            routeKey,
-            routeCacheValue,
-            options.revalidateSeconds,
-            routeTags,
-            options.expireSeconds,
-          );
+          await options.isrSet(routeKey, routeCacheValue, {
+            cacheControl: isrCacheControl(options.revalidateSeconds, {
+              expireSeconds: options.expireSeconds,
+            }),
+            tags: routeTags,
+          });
           options.isrDebug?.("route regen complete", routeKey);
         });
       });
@@ -162,6 +163,7 @@ export async function readAppRouteHandlerCacheResponse(
           revalidateSeconds: options.revalidateSeconds,
         }),
         options.middlewareContext,
+        { appendResponseLink: options.appendResponseLink },
       );
     }
   } catch (routeCacheError) {

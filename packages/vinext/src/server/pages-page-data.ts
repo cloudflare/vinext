@@ -12,11 +12,15 @@ import type {
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { buildMissIsrCacheControl, decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
-import { buildPagesCacheValue, type ISRCacheEntry } from "./isr-cache.js";
+import {
+  buildPagesCacheValue,
+  isrCacheControl,
+  type ISRCacheEntry,
+  type IsrWritePolicy,
+} from "./isr-cache.js";
 import type { PagesPreviewData } from "./pages-preview.js";
 import {
   buildPagesNextDataScript,
-  etagMatches,
   generatePagesETag,
   isPagesStreamingBot,
   requestsNoCache,
@@ -24,6 +28,7 @@ import {
   type PagesI18nRenderContext,
   type PagesNextDataExtras,
 } from "./pages-page-response.js";
+import { matchesIfNoneMatch } from "./http-conditional.js";
 import {
   createPagesGetInitialPropsRouter,
   hasPagesGetInitialProps,
@@ -225,12 +230,16 @@ export type PagesPageModule = {
 type RenderPagesIsrHtmlOptions = {
   buildId: string | null;
   cachedHtml: string;
+  collectIsrHeadHTML?: (() => string) | undefined;
   createPageElement: (props: Record<string, unknown>) => ReactNode;
   i18n: PagesI18nRenderContext;
   pageProps: Record<string, unknown>;
   props?: Record<string, unknown>;
   params: Record<string, unknown>;
-  renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
+  renderIsrPassToStringAsync: (
+    element: ReactNode,
+    onHeadReady?: () => Promise<void>,
+  ) => Promise<string>;
   routePattern: string;
   safeJsonStringify: (value: unknown) => string;
   vinext?: VinextNextData["__vinext"];
@@ -261,9 +270,7 @@ export type ResolvePagesPageDataOptions = {
   isrSet: (
     key: string,
     data: CachedPagesValue | CachedRedirectValue | null,
-    revalidateSeconds: number | false,
-    tags?: string[],
-    expireSeconds?: number,
+    policy: IsrWritePolicy,
   ) => Promise<void>;
   expireSeconds?: number;
   /**
@@ -334,7 +341,16 @@ export type ResolvePagesPageDataOptions = {
     renderFn: () => Promise<void>,
     errorContext?: { routerKind: "Pages Router"; routePath: string; routeType: "render" },
   ) => void;
-  renderIsrPassToStringAsync: (element: ReactNode) => Promise<string>;
+  renderIsrPassToStringAsync: (
+    element: ReactNode,
+    onHeadReady?: () => Promise<void>,
+  ) => Promise<string>;
+  /**
+   * Serializes the `<head>` collected by an ISR regeneration render. Called
+   * inside that render's head scope so the regenerated shell can pick up
+   * `next/head` output derived from the refreshed `getStaticProps` data.
+   */
+  collectIsrHeadHTML?: (() => string) | undefined;
   vinext?: VinextNextData["__vinext"];
   nextData?: PagesNextDataExtras;
   /**
@@ -386,6 +402,8 @@ type ResolvePagesPageDataResponseResult = {
 
 type ResolvePagesPageDataNotFoundResult = {
   kind: "notFound";
+  /** Headers set by getServerSideProps before it returned notFound. */
+  responseHeaders?: Record<string, string | number | boolean | string[]>;
   /** Current getStaticProps cache lifetime, when this is an SSG result. */
   revalidateSeconds?: number | false;
   expireSeconds?: number;
@@ -417,15 +435,51 @@ function buildPagesNotFoundResult(
   revalidateSeconds?: number | false,
   cacheState?: "MISS" | "HIT" | "STALE",
   expireSeconds?: number,
+  responseHeaders?: Record<string, string | number | boolean | string[]>,
 ): ResolvePagesPageDataResponseResult | ResolvePagesPageDataNotFoundResult {
   if (options.isDataReq) {
     return {
       kind: "response",
-      response: buildPagesDataNotFoundResponse(options.deploymentId),
+      response: mergePagesNotFoundSourceHeaders(
+        buildPagesDataNotFoundResponse(options.deploymentId),
+        responseHeaders,
+      ),
     };
   }
 
-  return { kind: "notFound", revalidateSeconds, expireSeconds, cacheState };
+  return {
+    kind: "notFound",
+    revalidateSeconds,
+    expireSeconds,
+    cacheState,
+    responseHeaders,
+  };
+}
+
+export function mergePagesNotFoundSourceHeaders(
+  response: Response,
+  sourceHeaders: Record<string, string | number | boolean | string[]> | undefined,
+): Response {
+  if (!sourceHeaders) return response;
+
+  const headers = new Headers(response.headers);
+
+  for (const [name, value] of Object.entries(sourceHeaders)) {
+    const lowerName = name.toLowerCase();
+    if (lowerName === "set-cookie") {
+      headers.delete("set-cookie");
+      const cookies = Array.isArray(value) ? value : [value];
+      for (const cookie of cookies) headers.append("set-cookie", String(cookie));
+    } else {
+      headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
+    }
+  }
+
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
 }
 
 function applyPagesTerminalMissHeaders(
@@ -696,6 +750,7 @@ function buildPagesRedirectResponse(
   >,
   props: PagesRenderProps = { pageProps: {} },
   method: "getStaticProps" | "getServerSideProps" = "getStaticProps",
+  responseHeaders?: Headers,
 ): Response {
   const resolved = resolvePagesRedirect(redirect, {
     method,
@@ -709,10 +764,9 @@ function buildPagesRedirectResponse(
   // executable schemes here: a data navigation would otherwise assign a
   // request-controlled `javascript:` URL to `window.location.href`.
   if (isDangerousScheme(resolved.destination)) {
-    const headers = new Headers({
-      "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
-      "Content-Type": "text/plain; charset=utf-8",
-    });
+    const headers = new Headers(responseHeaders);
+    headers.set("Cache-Control", "private, no-cache, no-store, max-age=0, must-revalidate");
+    headers.set("Content-Type", "text/plain; charset=utf-8");
     if (options.deploymentId) {
       headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, options.deploymentId);
     }
@@ -722,21 +776,33 @@ function buildPagesRedirectResponse(
   if (options.isDataReq) {
     // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on all
     // `_next/data` redirect exits for deployment-skew protection.
-    const init: ResponseInit & { headers: Record<string, string> } = { headers: {} };
+    const headers = new Headers(responseHeaders);
     if (options.deploymentId) {
-      init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = options.deploymentId;
+      headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, options.deploymentId);
     }
-    return buildNextDataPropsJsonResponse(redirectProps, options.safeJsonStringify, init);
+    return buildNextDataPropsJsonResponse(redirectProps, options.safeJsonStringify, { headers });
   }
 
   const location = resolvePagesRedirectLocation(resolved, options.basePath);
+  const headers = new Headers(responseHeaders);
+  headers.set("Location", location);
+  if (resolved.statusCode === 308) headers.set("Refresh", `0;url=${location}`);
   return new Response(location, {
     status: resolved.statusCode,
-    headers: {
-      Location: location,
-      ...(resolved.statusCode === 308 ? { Refresh: `0;url=${location}` } : {}),
-    },
+    headers,
   });
+}
+
+function getPagesGsspResponseHeaders(res: PagesGsspResponse): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(res.getHeaders())) {
+    if (Array.isArray(value)) {
+      for (const item of value) headers.append(name, item);
+    } else {
+      headers.set(name, String(value));
+    }
+  }
+  return headers;
 }
 
 function buildCachedPagesRedirectResponse(
@@ -973,7 +1039,7 @@ function applyBotETagAndCheck(
   const etag = generatePagesETag(html);
   cachedResponse.headers.set("ETag", etag);
   const noCacheRequested = requestsNoCache(options.requestCacheControl);
-  if (!noCacheRequested && options.ifNoneMatch && etagMatches(etag, options.ifNoneMatch)) {
+  if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
     return {
       kind: "response",
       response: new Response(null, {
@@ -983,6 +1049,76 @@ function applyBotETagAndCheck(
     };
   }
   return null;
+}
+
+/**
+ * Matches one serialized `next/head` tag. `getSSRHeadHTML()` stamps every tag
+ * it emits with `data-next-head=""` (see `shims/head.ts`), which is the same
+ * marker Next.js uses to reconcile the head on the client — so it is a stable
+ * anchor for finding the collector's output inside an already-rendered shell.
+ *
+ * Raw-content tags are safe to match non-greedily: `headChildToHTML()` escapes
+ * closing-tag sequences in `<style>`/`<script>` bodies, so the first `</style>`
+ * encountered is always the real terminator.
+ */
+const SSR_HEAD_TAG_PATTERN =
+  /<(title|meta|link|style|script|base|noscript)\b[^>]*?\sdata-next-head=""[^>]*?(?:\/>|>[\s\S]*?<\/\1>)/g;
+
+/**
+ * Matches a whole head element whose body may contain markup-looking text.
+ * Script/style are raw-text elements, title is RCDATA, and noscript is raw
+ * text while scripting is enabled. In all four, a literal `</head>` does not
+ * close the document head. `headChildToHTML()` only escapes the element's own
+ * closing sequence for script/style, while `dangerouslySetInnerHTML` may leave
+ * `</head>` intact in any of them.
+ */
+const HEAD_TEXT_ELEMENT_PATTERN = /<(script|style|title|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi;
+
+/**
+ * Replace the `next/head` region of a cached shell with a freshly collected
+ * one.
+ *
+ * ISR regeneration re-renders the page body but reuses the cached shell, so
+ * without this the `<head>` stays frozen at whatever the first cache-filling
+ * render produced — a page whose `<title>`/meta derive from `getStaticProps`
+ * data would serve an updated body under permanently stale metadata.
+ *
+ * The collector emits its tags as one contiguous run (`ssrHeadHTML` is
+ * concatenated ahead of trace meta and `_document` styles in
+ * `buildPagesShellHtml`), so replacing first-match-start through
+ * last-match-end swaps exactly that run and leaves `_document`-owned head
+ * markup either side of it untouched.
+ *
+ * Only the `next/head` run refreshes. `_document`-rendered head children and
+ * CSS-in-JS `styles` still come from the cached shell, because regeneration
+ * never re-renders `_document` — refreshing those means running the full
+ * document pipeline on regeneration the way Next.js does.
+ */
+function refreshCachedHeadTags(cachedHtml: string, freshHead: string): string {
+  // An empty collection means the render produced no head at all; leave the
+  // cached head alone rather than deleting the tags we do have.
+  if (!freshHead) return cachedHtml;
+
+  // Blank out raw-text/RCDATA elements before locating the boundary so a
+  // `</head>` string inside one is not mistaken for the closing tag — that
+  // would truncate the scan and leave stale tags behind the fresh head. The
+  // replacement is length-preserving, so the index still maps onto
+  // `cachedHtml`.
+  const headEnd = cachedHtml
+    .replace(HEAD_TEXT_ELEMENT_PATTERN, (element) => " ".repeat(element.length))
+    .indexOf("</head>");
+  if (headEnd < 0) return cachedHtml;
+
+  const matches = [...cachedHtml.slice(0, headEnd).matchAll(SSR_HEAD_TAG_PATTERN)];
+  const first = matches[0];
+  const last = matches[matches.length - 1];
+  if (!first || !last || first.index === undefined || last.index === undefined) {
+    return cachedHtml;
+  }
+
+  return (
+    cachedHtml.slice(0, first.index) + freshHead + cachedHtml.slice(last.index + last[0].length)
+  );
 }
 
 function rewritePagesCachedHtml(
@@ -1020,8 +1156,14 @@ function rewritePagesCachedHtml(
 
 export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Promise<string> {
   const renderProps = options.props ?? { pageProps: options.pageProps };
+  const collectHead = options.collectIsrHeadHTML;
+  let freshHead = "";
   const freshBody = await options.renderIsrPassToStringAsync(
     options.createPageElement(renderProps),
+    collectHead &&
+      (async () => {
+        freshHead = collectHead();
+      }),
   );
   const nextDataScript = buildPagesNextDataScript({
     buildId: options.buildId,
@@ -1038,7 +1180,11 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
     vinext: options.vinext,
   });
 
-  return rewritePagesCachedHtml(options.cachedHtml, freshBody, nextDataScript);
+  return rewritePagesCachedHtml(
+    refreshCachedHeadTags(options.cachedHtml, freshHead),
+    freshBody,
+    nextDataScript,
+  );
 }
 
 export async function resolvePagesPageData(
@@ -1222,12 +1368,20 @@ export async function resolvePagesPageData(
           options,
           renderProps,
           "getServerSideProps",
+          getPagesGsspResponseHeaders(res),
         ),
       };
     }
 
     if (result?.notFound) {
-      return buildPagesNotFoundResult(options);
+      const responseHeaders = res.getHeaders();
+      return buildPagesNotFoundResult(
+        options,
+        undefined,
+        undefined,
+        undefined,
+        Object.keys(responseHeaders).length > 0 ? responseHeaders : undefined,
+      );
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getServerSideProps", data.props)`
@@ -1301,15 +1455,15 @@ export async function resolvePagesPageData(
                   kind: "REDIRECT",
                   props: buildPagesRedirectProps(redirect, freshRenderProps),
                 },
-                revalidateSeconds,
-                undefined,
-                expireSeconds,
+                { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
               );
               return;
             }
 
             if (freshResult.notFound) {
-              await options.isrSet(cacheKey, null, revalidateSeconds, undefined, expireSeconds);
+              await options.isrSet(cacheKey, null, {
+                cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }),
+              });
               return;
             }
 
@@ -1331,6 +1485,7 @@ export async function resolvePagesPageData(
                 props: freshRenderProps,
                 params: options.params,
                 renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
+                collectIsrHeadHTML: options.collectIsrHeadHTML,
                 routePattern: options.routePattern,
                 safeJsonStringify: options.safeJsonStringify,
                 nextData: options.nextData,
@@ -1339,9 +1494,7 @@ export async function resolvePagesPageData(
               await options.isrSet(
                 cacheKey,
                 buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
-                revalidateSeconds,
-                undefined,
-                expireSeconds,
+                { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
               );
               return;
             }
@@ -1359,9 +1512,7 @@ export async function resolvePagesPageData(
                 headers: undefined,
                 status: undefined,
               },
-              revalidateSeconds,
-              undefined,
-              expireSeconds,
+              { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
             );
           });
         },
@@ -1585,9 +1736,7 @@ export async function resolvePagesPageData(
             kind: "REDIRECT",
             props: buildPagesRedirectProps(redirect, renderProps),
           },
-          revalidateSeconds,
-          undefined,
-          expireSeconds,
+          { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
         );
         applyPagesTerminalMissHeaders(response, revalidateSeconds, pathname, expireSeconds);
       }
@@ -1601,7 +1750,9 @@ export async function resolvePagesPageData(
       const revalidateSeconds = resolvePagesRevalidateSeconds(result, options.routeUrl);
       const expireSeconds = resolvePagesExpireSeconds(result, options.expireSeconds);
       if (previewData === false) {
-        await options.isrSet(cacheKey, null, revalidateSeconds, undefined, expireSeconds);
+        await options.isrSet(cacheKey, null, {
+          cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }),
+        });
       }
       const notFoundResult = buildPagesNotFoundResult(
         options,
@@ -1661,9 +1812,7 @@ export async function resolvePagesPageData(
           headers: undefined,
           status: undefined,
         },
-        revalidateSeconds,
-        undefined,
-        isrExpireSeconds,
+        { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds: isrExpireSeconds }) },
       );
     }
   }

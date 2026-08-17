@@ -22,9 +22,11 @@ import type {
   VinextLinkPrefetchRoute,
   VinextPagesLinkPrefetchRoute,
 } from "../client/vinext-next-data.js";
+import { toClientRewrites } from "../client/client-rewrites.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 import { toSlash } from "pathslash";
 import { hasExportedName, type StaticMiddlewareMatcher } from "../build/report.js";
+import { resolveClientRuntimeModule } from "./runtime-entry-module.js";
 
 /**
  * Project a Pages `Route` down to the public `VinextPagesLinkPrefetchRoute`
@@ -91,6 +93,8 @@ export async function generateClientEntry(
     )
   ).filter((pattern): pattern is string => pattern !== null);
   const instrumentationClientPath = options.instrumentationClientPath ?? null;
+  const clientRewrites = toClientRewrites(nextConfig.rewrites);
+  const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
 
   // Build a map of route pattern -> dynamic import.
   // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
@@ -112,9 +116,11 @@ export async function generateClientEntry(
   const appFileBase = appFilePath ?? undefined;
 
   // Refs #1474: Side-effect-import the user's `instrumentation-client.{ts,js}`
-  // (when present at project root or in `src/`) BEFORE any other module so its
-  // top-level statements run before `hydrateRoot()` is called. Mirrors
-  // Next.js's `page-bootstrap.ts`, which side-effect-imports
+  // (when present at project root or in `src/`) before the Pages application
+  // runtime so its top-level statements run before `hydrateRoot()` is called.
+  // The framework-owned React instance bootstrap is intentionally earlier so
+  // Module Federation remotes observe the host React from instrumentation too.
+  // This mirrors Next.js's `page-bootstrap.ts`, which side-effect-imports
   // `require-instrumentation-client` ahead of `initialize`/`hydrate`
   // (.nextjs-ref/packages/next/src/client/page-bootstrap.ts L1).
   //
@@ -140,7 +146,8 @@ export async function generateClientEntry(
   // Next.js's `process.env.__NEXT_STRICT_MODE` branch in `client/index.tsx`.
   const reactStrictModeEnabled = nextConfig.reactStrictMode === true;
 
-  return `${userInstrumentationImport}${reactPreambleImport}
+  return `import ${JSON.stringify(reactInstanceBootstrapPath)};
+${userInstrumentationImport}${reactPreambleImport}
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
@@ -204,7 +211,7 @@ window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(appPrefetchRoutes)};
 // so whichever entry runs first emits the Pages manifest.
 window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(pagesPrefetchRoutes)};
 window.__VINEXT_CLIENT_REDIRECTS__ = ${JSON.stringify(nextConfig.redirects)};
-window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(nextConfig.rewrites)};
+window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(clientRewrites)};
 
 const nextDataElement = document.getElementById("__NEXT_DATA__");
 if (nextDataElement?.textContent) {
@@ -299,13 +306,18 @@ async function hydrate() {
   window.__NEXT_HYDRATED_AT = hydratedAt;
   window.__NEXT_HYDRATED_CB?.();
 
-  if (nextData.isFallback) {
+  const initialMatchesMiddleware =
+    nextData.__vinext?.hasMiddleware === true || nextData.__vinext?.hasRewrites === true;
+  const shouldHydrateQuery =
+    nextData.isFallback ||
+    (nextData.gsp === true && (initialMatchesMiddleware || window.location.search !== ""));
+  if (shouldHydrateQuery) {
     const currentUrl = window.location.pathname + window.location.search + window.location.hash;
-    const routeUrl = nextData.__vinext?.routeUrl;
+    const routeUrl = nextData.isFallback ? nextData.__vinext?.routeUrl : undefined;
     await Router.replace(
       routeUrl || currentUrl,
       routeUrl ? currentUrl : undefined,
-      { _h: 1, scroll: false },
+      { _h: 1, scroll: false, shallow: !nextData.isFallback && !initialMatchesMiddleware },
     );
   }
 }

@@ -42,7 +42,9 @@ export function finalizeMissingStaticAssetResponse(
 ): Response {
   if (!missingBuildAsset || response.status !== 404) return response;
   cancelResponseBody(response);
-  return notFoundStaticAssetResponse();
+  // The missing asset still ran through middleware before route handling.
+  // Replace the rendered 404 body without dropping headers middleware added.
+  return notFoundStaticAssetResponse(response.headers);
 }
 
 function buildHeaderRecord(
@@ -146,8 +148,23 @@ export async function resolveStaticAssetSignal(
   const assetResponse = await options.fetchAsset(assetPath);
   // Only preserve the middleware/status-layer override when we actually got a
   // real asset response back. If the asset lookup misses (404/other non-ok),
-  // keep that filesystem result instead of masking it with the signal status.
+  // or returns a partial response, keep that filesystem result instead of
+  // masking its status while retaining mismatched range headers and body.
   const statusOverride =
-    assetResponse.ok && signalResponse.status !== 200 ? signalResponse.status : undefined;
+    assetResponse.ok && assetResponse.status !== 206 && signalResponse.status !== 200
+      ? signalResponse.status
+      : undefined;
   return mergeHeaders(assetResponse, extraHeaders, statusOverride);
+}
+
+/** Retarget a Worker asset request without dropping its conditional/range fields. */
+export function createStaticAssetRequest(assetPath: string, sourceRequest: Request): Request {
+  const assetUrl = new URL(assetPath, sourceRequest.url);
+  if (sourceRequest.method === "GET" || sourceRequest.method === "HEAD") {
+    return new Request(assetUrl, sourceRequest);
+  }
+  return new Request(assetUrl, {
+    method: sourceRequest.method,
+    headers: sourceRequest.headers,
+  });
 }

@@ -1,6 +1,6 @@
 import { parseAst } from "vite";
 import { createMiddlewareMissingExportError } from "../server/middleware-runtime.js";
-import { stripViteModuleQuery } from "../utils/path.js";
+import { getAstName, scriptParserLanguage } from "./ast-utils.js";
 
 type AstName = { name?: unknown; value?: unknown } | null | undefined;
 
@@ -21,22 +21,6 @@ type Statement = {
   specifiers?: ExportSpecifier[];
 };
 
-function parserLanguage(id: string): "js" | "jsx" | "ts" | "tsx" {
-  const cleanId = stripViteModuleQuery(id).toLowerCase();
-  if (cleanId.endsWith(".tsx")) return "tsx";
-  if (cleanId.endsWith(".ts") || cleanId.endsWith(".mts") || cleanId.endsWith(".cts")) {
-    return "ts";
-  }
-  return "jsx";
-}
-
-function astName(value: AstName): string | null {
-  if (!value) return null;
-  if (typeof value.name === "string") return value.name;
-  if (typeof value.value === "string") return value.value;
-  return null;
-}
-
 export function hasValidMiddlewareModuleExport(
   source: string,
   id: string,
@@ -46,7 +30,7 @@ export function hasValidMiddlewareModuleExport(
   // verifies that the expected export name exists, not that its value is
   // callable. The shared runtime validation remains authoritative for values
   // such as `export const proxy = 1` and re-exports from another module.
-  const ast = parseAst(source, { lang: parserLanguage(id) });
+  const ast = parseAst(source, { lang: scriptParserLanguage(id) ?? "jsx" });
   const expectedExport = isProxy ? "proxy" : "middleware";
 
   for (const statement of ast.body as Statement[]) {
@@ -54,16 +38,19 @@ export function hasValidMiddlewareModuleExport(
     if (statement.type !== "ExportNamedDeclaration") continue;
 
     const declaration = statement.declaration;
-    if (declaration?.type === "FunctionDeclaration" && astName(declaration.id) === expectedExport) {
+    if (
+      declaration?.type === "FunctionDeclaration" &&
+      getAstName(declaration.id) === expectedExport
+    ) {
       return true;
     }
     if (declaration?.type === "VariableDeclaration") {
       for (const declarator of declaration.declarations ?? []) {
-        if (astName(declarator.id) === expectedExport) return true;
+        if (getAstName(declarator.id) === expectedExport) return true;
       }
     }
     for (const specifier of statement.specifiers ?? []) {
-      if (astName(specifier.exported ?? specifier.local) === expectedExport) return true;
+      if (getAstName(specifier.exported ?? specifier.local) === expectedExport) return true;
     }
   }
 

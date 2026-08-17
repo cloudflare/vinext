@@ -1,14 +1,17 @@
 import type { AppMiddlewareContext } from "./app-middleware.js";
+import type { EdgeApiExecutionRuntime } from "./edge-api-runtime.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
+import { mergeHeaders } from "./worker-utils.js";
 
 export type PagesEntry = {
   handleApiRoute?: (
     request: Request,
     url: string,
-    ctx?: unknown,
-    trustedRevalidateOrigin?: string,
+    ctx: unknown,
+    trustedRevalidateOrigin: string | undefined,
+    edgeRuntime: EdgeApiExecutionRuntime,
   ) => Promise<Response> | Response;
   matchApiRoute?: (url: string, request: Request) => PagesRouteMatch | null;
   matchPageRoute?: (url: string, request: Request) => PagesRouteMatch | null;
@@ -78,6 +81,30 @@ type RenderPagesFallbackOptions = {
   url: URL;
 };
 
+function applyPagesMiddlewareContext(
+  response: Response,
+  middlewareContext: AppMiddlewareContext,
+): Response {
+  if (!middlewareContext.headers && middlewareContext.status === null) {
+    return response;
+  }
+
+  const middlewareHeaders: Record<string, string | string[]> = {};
+  if (middlewareContext.headers) {
+    for (const [key, value] of middlewareContext.headers) {
+      if (key.toLowerCase() !== "set-cookie") {
+        middlewareHeaders[key] = value;
+      }
+    }
+    const cookies = middlewareContext.headers.getSetCookie();
+    if (cookies.length > 0) {
+      middlewareHeaders["set-cookie"] = cookies;
+    }
+  }
+
+  return mergeHeaders(response, middlewareHeaders, middlewareContext.status ?? undefined);
+}
+
 /**
  * Fallback handler to route App Router requests to the Pages Router when no App Router route matches.
  */
@@ -139,11 +166,13 @@ export async function renderPagesFallback(
         return null;
       }
     }
+    const executionContext = getRequestExecutionContext();
     const pagesApiResponse = await pagesEntry.handleApiRoute(
       pagesRequest,
       pagesUrl,
       undefined,
-      getRequestExecutionContext()?.trustedRevalidateOrigin ?? new URL(pagesRequest.url).origin,
+      executionContext?.trustedRevalidateOrigin ?? new URL(pagesRequest.url).origin,
+      executionContext?.hostRuntime ?? "node",
     );
     const draftCookie = getDraftModeCookieHeader();
     return applyDraftModeCookie(
@@ -186,7 +215,10 @@ export async function renderPagesFallback(
         middlewareContext.requestHeaders,
       );
   if (pagesRes.status === 404 && pageMatch === null) return null;
-  return applyDraftModeCookie(pagesRes, getDraftModeCookieHeader());
+  return applyDraftModeCookie(
+    applyPagesMiddlewareContext(pagesRes, middlewareContext),
+    getDraftModeCookieHeader(),
+  );
 }
 
 /**

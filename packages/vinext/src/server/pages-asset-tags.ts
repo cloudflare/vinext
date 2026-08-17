@@ -109,6 +109,7 @@ type CollectAssetTagsOptions = {
   basePath?: string;
   assetPrefix?: string;
   deploymentId?: string;
+  crossOrigin?: string;
 };
 
 /**
@@ -136,6 +137,10 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   // upstream tests (e.g. test/e2e/optimized-loading) assert the literal `defer`
   // attribute, and adding it preserves parity without changing browser behaviour.
   const deferAttr = options.disableOptimizedLoading ? "" : " defer";
+  const scriptCrossOriginAttr = options.crossOrigin
+    ? ` crossorigin="${options.crossOrigin}"`
+    : " crossorigin";
+  const preloadCrossOriginAttr = options.crossOrigin ? ` crossorigin="${options.crossOrigin}"` : "";
 
   // SSR-manifest / client-entry values are base-anchored (so the lazy-chunk
   // membership test below matches the base-anchored lazy chunk registry), but
@@ -165,14 +170,24 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
   const clientEntry = runtimeAssets.clientEntry;
   if (clientEntry) {
     seen.add(clientEntry);
-    tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(clientEntry) + '" />');
+    tags.push(
+      '<link rel="modulepreload"' +
+        nonceAttr +
+        ' href="' +
+        href(clientEntry) +
+        '"' +
+        preloadCrossOriginAttr +
+        " />",
+    );
     tags.push(
       '<script type="module"' +
         deferAttr +
         nonceAttr +
         ' src="' +
         href(clientEntry) +
-        '" crossorigin></script>',
+        '"' +
+        scriptCrossOriginAttr +
+        "></script>",
     );
   }
 
@@ -237,14 +252,24 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
         // Membership test uses the base-anchored `tf` (same key-space as
         // lazy chunk registry), NOT the re-anchored href.
         if (lazySet && lazySet.has(tf)) continue;
-        tags.push('<link rel="modulepreload"' + nonceAttr + ' href="' + href(tf) + '" />');
+        tags.push(
+          '<link rel="modulepreload"' +
+            nonceAttr +
+            ' href="' +
+            href(tf) +
+            '"' +
+            preloadCrossOriginAttr +
+            " />",
+        );
         tags.push(
           '<script type="module"' +
             deferAttr +
             nonceAttr +
             ' src="' +
             href(tf) +
-            '" crossorigin></script>',
+            '"' +
+            scriptCrossOriginAttr +
+            "></script>",
         );
       }
     }

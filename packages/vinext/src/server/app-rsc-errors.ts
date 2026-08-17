@@ -36,6 +36,12 @@ export function hasDigest(error: unknown): error is { digest: unknown } {
 const BAILOUT_TO_CSR_DIGEST = "BAILOUT_TO_CLIENT_SIDE_RENDERING";
 const DYNAMIC_SERVER_USAGE_DIGEST = "DYNAMIC_SERVER_USAGE";
 
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = Reflect.get(error, "name");
+  return name === "AbortError" || name === "ResponseAborted";
+}
+
 /**
  * vinext's mirror of Next.js's `getDigestForWellKnownError`: returns the digest
  * string only when the error is a genuine control-flow signal — a redirect,
@@ -112,6 +118,12 @@ export function createRscOnErrorHandler(
   return (error) => {
     const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
 
+    // Ported from Next.js: packages/next/src/server/app-render/create-error-handler.tsx
+    // Expected response/HMR cancellations are not render failures.
+    if (isAbortError(error)) {
+      return undefined;
+    }
+
     // Well-known control-flow signals (redirect / notFound / bailout-to-CSR /
     // dynamic-server) carry a recognized digest and are not real failures:
     // return the digest and skip reporting, exactly like Next.js. A digest on
@@ -159,6 +171,21 @@ export function createRscOnErrorHandler(
         options.requestInfo,
         options.errorContext,
       );
+    }
+
+    // Surface the error on the dev-server terminal. In Next.js the instrumentation
+    // wrapper (`onInstrumentationRequestError`) logs render errors in development
+    // regardless of user instrumentation; vinext's `reportRequestError` above is a
+    // no-op when no `onRequestError` hook is registered, so without this a server
+    // render error would be swallowed silently in the dev server. The `!hasDigest`
+    // guard intentionally suppresses every digest-bearing error, including repeat
+    // RSC callbacks after this handler stamps the error with a digest below.
+    if (nodeEnv !== "production" && error && !hasDigest(error)) {
+      const loggableError =
+        typeof error === "object" && ORIGINAL_SERVER_ERROR in error
+          ? Reflect.get(error, ORIGINAL_SERVER_ERROR)
+          : error;
+      console.error("[vinext] Server render error:", loggableError);
     }
 
     // A non-signal error that already carries a digest keeps it as-is (matching

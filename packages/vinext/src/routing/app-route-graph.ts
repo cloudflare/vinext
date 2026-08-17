@@ -13,6 +13,8 @@ import { validateRoutePatterns } from "./route-validation.js";
 import { compareStrings } from "../utils/compare.js";
 
 type InterceptingRoute = {
+  /** Graph-owned identity for this interception edge. */
+  id?: string;
   /** The interception convention: "." | ".." | "../.." | "..." */
   convention: string;
   /** The URL pattern this intercepts (e.g. "/photos/:id") */
@@ -651,11 +653,9 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
     // The synthetic slotId is stored on each InterceptingRoute.
     for (const ir of route.siblingIntercepts) {
       if (!ir.slotId) continue;
-      const id = createAppRouteGraphInterceptionId(
-        ir.slotId,
-        ir.sourceMatchPattern,
-        ir.targetPattern,
-      );
+      const id =
+        ir.id ??
+        createAppRouteGraphInterceptionId(ir.slotId, ir.sourceMatchPattern, ir.targetPattern);
       interceptions.set(id, {
         id,
         sourcePattern: ir.sourceMatchPattern,
@@ -2601,6 +2601,11 @@ function discoverSiblingInterceptingRoutes(
         );
         for (const ir of results) {
           ir.slotId = createAppRouteGraphSiblingInterceptSlotId(ir.sourceMatchPattern);
+          ir.id = createAppRouteGraphInterceptionId(
+            ir.slotId,
+            ir.sourceMatchPattern,
+            ir.targetPattern,
+          );
           // Find the route that serves the parentDir. Fall back to scanning all
           // routes that live under parentDir (handles the case where the route
           // pattern is a catch-all like /templates/:catchAll+ rather than /templates).
@@ -2987,7 +2992,9 @@ function computeInterceptTarget(
       return null;
   }
 
-  // Add the intercept segment and any nested path segments
+  // Add the intercept segment and any nested path segments. Next.js resolves
+  // only the first interception marker; later marker-shaped names remain part
+  // of the intercepted route string.
   const nestedParts = path.relative(interceptRoot, currentDir).split(path.sep).filter(Boolean);
   const allSegments = [...baseParts, interceptSegment, ...nestedParts];
 

@@ -74,6 +74,27 @@ function getInlineStyleText(html: string): string {
   return styles.join("\n");
 }
 
+async function rawHttpRequest(
+  url: URL,
+  options: { method?: string; headers?: Record<string, string> } = {},
+): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, options, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => {
+        resolve({
+          status: response.statusCode ?? 0,
+          headers: response.headers,
+          body: Buffer.concat(chunks),
+        });
+      });
+    });
+    request.on("error", reject);
+    request.end();
+  });
+}
+
 async function withCountingFetchTarget<T>(
   fn: (targetUrl: string, getRequestCount: () => number) => Promise<T>,
 ): Promise<T> {
@@ -328,6 +349,170 @@ describe("App Router Production server (startProdServer)", () => {
     const html = await res.text();
     expect(html).toContain("Welcome to App Router");
     expect(html).toContain("<script");
+  });
+
+  it("keeps source-page paths and cache observations out of document HTML", async () => {
+    const res = await fetch(`${baseUrl}/features`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("route group");
+    expect(html).not.toContain("__sourcePage");
+    expect(html).not.toContain("/(marketing)/features/page");
+    expect(html).not.toContain("__renderObservation");
+    expect(html).not.toContain("_N_T_/(marketing)");
+  });
+
+  it("bundles a static CommonJS request encoded with String.fromCharCode", async () => {
+    const res = await fetch(`${baseUrl}/char-code-require`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("loaded from a character-code require");
+  });
+
+  it("serves static asset byte ranges from the identity representation", async () => {
+    const html = await (await fetch(`${baseUrl}/`)).text();
+    const href = html.match(/["'](\/_next\/static\/[^"']+\.(?:js|css))["']/)?.[1];
+    if (!href) throw new Error("Expected the production HTML to reference a static asset");
+
+    const assetUrl = new URL(href, baseUrl);
+    const full = await fetch(assetUrl);
+    const fullBody = new Uint8Array(await full.arrayBuffer());
+    expect(fullBody.byteLength).toBeGreaterThan(10);
+    expect(full.headers.get("accept-ranges")).toBe("bytes");
+    expect(full.headers.get("last-modified")).not.toBeNull();
+
+    const partial = await fetch(assetUrl, {
+      headers: { Range: "bytes=2-9", "Accept-Encoding": "br, gzip" },
+    });
+    expect(partial.status).toBe(206);
+    expect(partial.headers.get("content-range")).toBe(`bytes 2-9/${fullBody.byteLength}`);
+    expect(partial.headers.get("content-length")).toBe("8");
+    expect(partial.headers.get("content-encoding")).toBeNull();
+    expect(new Uint8Array(await partial.arrayBuffer())).toEqual(fullBody.subarray(2, 10));
+
+    const hugeEnd = await fetch(assetUrl, {
+      headers: { Range: "bytes=2-9007199254740992" },
+    });
+    expect(hugeEnd.status).toBe(206);
+    expect(hugeEnd.headers.get("content-range")).toBe(
+      `bytes 2-${fullBody.length - 1}/${fullBody.length}`,
+    );
+    expect(new Uint8Array(await hugeEnd.arrayBuffer())).toEqual(fullBody.subarray(2));
+
+    const matchingIfRange = await fetch(assetUrl, {
+      headers: {
+        Range: "bytes=2-9",
+        "If-Range": full.headers.get("last-modified")!,
+      },
+    });
+    expect(matchingIfRange.status).toBe(206);
+    expect(new Uint8Array(await matchingIfRange.arrayBuffer())).toEqual(fullBody.subarray(2, 10));
+
+    const futureIfRange = await fetch(assetUrl, {
+      headers: {
+        Range: "bytes=2-9",
+        "If-Range": "Thu, 01 Jan 2099 00:00:00 GMT",
+      },
+    });
+    expect(futureIfRange.status).toBe(206);
+    expect(futureIfRange.headers.get("content-range")).toBe(`bytes 2-9/${fullBody.byteLength}`);
+    expect(new Uint8Array(await futureIfRange.arrayBuffer())).toEqual(fullBody.subarray(2, 10));
+
+    const invalidIfRange = await fetch(assetUrl, {
+      headers: {
+        Range: "bytes=2-9",
+        "If-Range": "Sun, 31 Feb 2099 00:00:00 GMT",
+      },
+    });
+    expect(invalidIfRange.status).toBe(200);
+    expect(invalidIfRange.headers.get("content-range")).toBeNull();
+    expect(new Uint8Array(await invalidIfRange.arrayBuffer())).toEqual(fullBody);
+
+    const unsatisfiable = await fetch(assetUrl, {
+      headers: { Range: "bytes=9007199254740992-" },
+    });
+    expect(unsatisfiable.status).toBe(416);
+    expect(unsatisfiable.headers.get("content-range")).toBe(`bytes */${fullBody.byteLength}`);
+
+    const head = await fetch(assetUrl, {
+      method: "HEAD",
+      headers: { Range: "bytes=2-9" },
+    });
+    expect(head.status).toBe(206);
+    expect(head.headers.get("content-range")).toBe(`bytes 2-9/${fullBody.byteLength}`);
+    expect(head.headers.get("content-length")).toBe("8");
+    expect((await head.arrayBuffer()).byteLength).toBe(0);
+  });
+
+  it("evaluates static asset preconditions before byte ranges", async () => {
+    const html = await (await fetch(`${baseUrl}/`)).text();
+    const href = html.match(/["'](\/_next\/static\/[^"']+\.(?:js|css))["']/)?.[1];
+    if (!href) throw new Error("Expected the production HTML to reference a static asset");
+
+    const assetUrl = new URL(href, baseUrl);
+    const full = await rawHttpRequest(assetUrl);
+    const etag = full.headers.etag;
+    const lastModified = full.headers["last-modified"];
+    if (!etag || !lastModified) throw new Error("Expected static validators");
+
+    const notModified = await rawHttpRequest(assetUrl, {
+      headers: { "If-None-Match": etag, Range: "bytes=0-2" },
+    });
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers["content-range"]).toBeUndefined();
+    expect(notModified.body).toHaveLength(0);
+
+    const failed = await rawHttpRequest(assetUrl, {
+      headers: { "If-Match": '"different"', Range: "bytes=0-2" },
+    });
+    expect(failed.status).toBe(412);
+    expect(failed.headers["content-range"]).toBeUndefined();
+    expect(failed.body).toHaveLength(0);
+
+    expect(etag).toMatch(/^W\//);
+    const matchingIfMatch = await rawHttpRequest(assetUrl, {
+      headers: { "If-Match": etag },
+    });
+    expect(matchingIfMatch.status).toBe(200);
+    expect(matchingIfMatch.body).toEqual(full.body);
+
+    const range = await rawHttpRequest(assetUrl, {
+      headers: {
+        "If-Match": "*",
+        "If-Unmodified-Since": "Thu, 01 Jan 1970 00:00:00 GMT",
+        Range: "bytes=0-2",
+      },
+    });
+    expect(range.status).toBe(206);
+    expect(range.body).toEqual(full.body.subarray(0, 3));
+
+    const head = await rawHttpRequest(assetUrl, {
+      method: "HEAD",
+      headers: { "If-Modified-Since": lastModified },
+    });
+    expect(head.status).toBe(304);
+    expect(head.body).toHaveLength(0);
+
+    const unsafe = await rawHttpRequest(assetUrl, { method: "POST" });
+    expect(unsafe.status).toBe(405);
+    expect(unsafe.headers.allow).toBe("GET, HEAD");
+
+    const unsafeConditional = await rawHttpRequest(assetUrl, {
+      method: "POST",
+      headers: { "If-None-Match": etag },
+    });
+    expect(unsafeConditional.status).toBe(405);
+    expect(unsafeConditional.headers.allow).toBe("GET, HEAD");
+
+    const forcedRange = await rawHttpRequest(assetUrl, {
+      headers: {
+        "Cache-Control": "no-cache",
+        "If-None-Match": etag,
+        Range: "bytes=0-2",
+      },
+    });
+    expect(forcedRange.status).toBe(206);
+    expect(forcedRange.body).toEqual(full.body.subarray(0, 3));
   });
 
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
@@ -931,7 +1116,7 @@ describe("App Router Production server (startProdServer)", () => {
   // (and `revalidate = false`) should produce a stable cached response. Two
   // requests must return identical HTML bytes; the first MISS render writes
   // to the cache and the second is a HIT. This was historically broken
-  // because `resolveAppPageCacheWritePolicy` rejected non-finite revalidate
+  // because `resolveAppPageCacheControl` rejected non-finite revalidate
   // intervals, so indefinite-cache pages re-rendered on every request.
   it("export const revalidate = Infinity: second request is a HIT with identical HTML", async () => {
     const res1 = await fetch(`${baseUrl}/revalidate-infinity-test`);
@@ -965,6 +1150,28 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).toContain('id="middleware-header">hello-from-middleware<');
     expect(html).toContain('"authorization":null');
     expect(html).toContain('"cookie":null');
+  });
+
+  it("lets a concrete Pages data route win a middleware rewrite over an App catch-all", async () => {
+    // Next.js merges Pages and App matchers before applying dynamic-route
+    // precedence, so this concrete Pages route wins over app/docs/[...slug].
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-matcher-managers/default-route-matcher-manager.ts
+    const buildId = fs.readFileSync(path.join(outDir, "server", "BUILD_ID"), "utf8").trim();
+    const res = await fetch(`${baseUrl}/_next/data/${buildId}/pages-data-rewrite-source.json`, {
+      headers: { "x-nextjs-data": "1" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-nextjs-rewrite")).toBe("/docs/pages-data-rewrite-target");
+    expect(res.headers.get("cache-control")).toContain("private");
+    expect(res.headers.getSetCookie()).toEqual([
+      "pages-rewrite-session=middleware; Path=/",
+      "pages-rewrite-session=gssp; Path=/",
+    ]);
+    expect(await res.json()).toEqual({
+      pageProps: { message: "concrete Pages GSSP" },
+      __N_SSP: true,
+    });
   });
 
   it("serves Pages Router edge API ImageResponse routes in hybrid production", async () => {
@@ -1018,6 +1225,47 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json).toHaveProperty("message");
+  });
+
+  it("preserves config Link headers alongside React preload links", async () => {
+    const res = await fetch(`${baseUrl}/config-link-preload`);
+    const link = res.headers.get("link") ?? "";
+
+    expect(res.status).toBe(200);
+    expect(link).toContain('</llms.txt>; rel="describedby"; type="text/plain"');
+    expect(link).not.toContain("</superseded>");
+    expect(link).toContain("</agent-test.woff2>");
+    expect(link).toContain("rel=preload");
+  });
+
+  it("keeps middleware Link precedence while preserving React preload links", async () => {
+    const res = await fetch(`${baseUrl}/config-link-preload?middleware-link=1`);
+    const link = res.headers.get("link") ?? "";
+
+    expect(res.status).toBe(200);
+    expect(link).toContain('</middleware.css>; rel="preload"; as="style"');
+    expect(link).toContain("</agent-test.woff2>");
+    expect(link).not.toContain("</llms.txt>");
+    expect(link).not.toContain("</superseded>");
+  });
+
+  it("routes unmatched API paths through fallback rewrites to App route handlers", async () => {
+    const res = await fetch(
+      `${baseUrl}/api/pages-fallback-to-app/session/login?client=vinext&mw-auth`,
+      {
+        headers: { "x-api-fallback-handoff": "preserved" },
+      },
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      body: null,
+      cookie: "mw-api-fallback-user=1",
+      header: "preserved",
+      pathname: "/api/pages-fallback-to-app/session/login",
+      query: { client: "vinext", from: "fallback", "mw-auth": "" },
+      slugs: ["session", "login"],
+    });
   });
 
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
@@ -1236,6 +1484,14 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("image/svg+xml");
     expect(await res.text()).toContain("vinext");
+  });
+
+  it("returns 405 for unsupported methods on existing public files", async () => {
+    const res = await fetch(`${baseUrl}/logo/logo.svg`, { method: "POST" });
+
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("GET, HEAD");
+    expect(await res.text()).toBe("Method Not Allowed");
   });
 
   it("serves public files under basePath and 404s without it", async () => {
@@ -1953,6 +2209,113 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res3.headers.get("x-vinext-cache")).toBe("MISS");
     const body3 = await res3.json();
     expect(body3.timestamp).not.toBe(body1.timestamp);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/use-cache-with-server-function-props
+  // ("should be able to use nested cache functions as props").
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-with-server-function-props/use-cache-with-server-function-props.test.ts
+  //
+  // Inline "use cache" functions defined inside a cached component and passed
+  // as props to a client component must (a) serialize as server references in
+  // the RSC payload and (b) resolve back through the production
+  // server-references manifest on the action POST. (b) can only fail in
+  // production builds — the manifest is keyed by the plugin-rsc normalised
+  // reference key and generated from serverReferenceMetaMap — so this test
+  // must run against the built output, not the dev server.
+  it("resolves nested 'use cache' functions passed as props when invoked as actions", async () => {
+    const res = await fetch(`${baseUrl}/use-cache-nested-fn-props`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // React Flight encodes server-function props with the `$h` token used by
+    // this React build's SERVER_DECODE_REFERENCE_PREFIX path. Keep this
+    // assertion next to the action round-trip so the test proves both halves:
+    // the payload uses the server-reference encoding and the decoded reference
+    // resolves through vinext's production manifest below.
+    expect(html).toContain('\\"getDate\\":\\"$h');
+
+    // The flight payload embeds each cached function prop as a server
+    // reference whose id is "<12-hex normalised key>#<hoisted export name>".
+    const refIds = [...new Set(html.match(/[0-9a-f]{12}#\$\$hoist_\d+_[A-Za-z0-9_$]+/g) ?? [])];
+    expect(refIds.length).toBe(3);
+    const [getDateRefId, getRandomRefId, getMessageRefId] = refIds;
+
+    // The fixture's getMessage closes over this string. Match Next.js and
+    // plugin-rsc's "use server" transform by serializing an encrypted binding,
+    // never the plaintext capture, into the Flight payload.
+    const capturedScopeValue = "closure-captured-bound-arg-vinext";
+    expect(html).not.toContain(capturedScopeValue);
+    const encryptedBoundArgs = [
+      ...new Set(
+        [...html.matchAll(/rsc\.push\("[0-9a-f]+:\\"([A-Za-z0-9+/=]{64,})\\"/g)].map(
+          (match) => match[1],
+        ),
+      ),
+    ];
+    expect(encryptedBoundArgs).toHaveLength(2);
+    const encryptedCaptureEnvelopes = encryptedBoundArgs.map((encrypted) => ({
+      type: "use-cache-captures",
+      encrypted,
+    }));
+
+    const invokeAction = async (actionId: string, args: unknown[] = []): Promise<string> => {
+      const actionRes = await fetch(`${baseUrl}/use-cache-nested-fn-props.rsc`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          "x-rsc-action": actionId,
+        },
+        body: JSON.stringify(args),
+      });
+      expect(actionRes.status).toBe(200);
+      expect(actionRes.headers.get("x-nextjs-action-not-found")).toBeNull();
+      const text = await actionRes.text();
+      expect(text).not.toContain("Server action not found");
+      return text;
+    };
+
+    const isoDateRegExp = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/;
+    const date1 = (await invokeAction(getDateRefId)).match(isoDateRegExp)?.[0];
+    expect(date1).toBeDefined();
+
+    // The resolved server reference is the cached wrapper (Next.js parity:
+    // the exported cached binding IS the server reference), so a second
+    // invocation with identical arguments returns the cached value.
+    const date2 = (await invokeAction(getDateRefId)).match(isoDateRegExp)?.[0];
+    expect(date2).toBe(date1);
+
+    const randomText = await invokeAction(getRandomRefId);
+    expect(randomText).toMatch(/\d+\.\d+/);
+
+    // Closure round-trip: the client sends the encrypted binding ahead of the
+    // call args. The server-reference wrapper decrypts it before entering the
+    // cached function, so plaintext values still determine the cache key.
+    const messageRegExpFor = (boundArg: string): RegExp =>
+      new RegExp(`message:${boundArg}:[0-9.e+-]+`);
+    const resolveCapturedMessage = async () => {
+      for (const envelope of encryptedCaptureEnvelopes) {
+        const response = await invokeAction(getMessageRefId, [envelope]);
+        const message = response.match(messageRegExpFor(capturedScopeValue))?.[0];
+        if (message) {
+          return { envelope, message };
+        }
+      }
+    };
+    const capturedMessage = await resolveCapturedMessage();
+    if (!capturedMessage) {
+      throw new Error(`No encrypted binding resolved to ${capturedScopeValue}`);
+    }
+
+    // Cached-invoke semantics for the closure-BOUND path, mirroring the
+    // getDate assertion above so caching is pinned across both paths
+    // (unbound getDate AND bound getMessage): the fixture appends a
+    // Math.random() suffix, so a second invocation with the same bound arg
+    // can only return the identical value if the bound arg produced the same
+    // cache key and the entry was hit (a recompute would change the suffix).
+    const message2 = (await invokeAction(getMessageRefId, [capturedMessage.envelope])).match(
+      messageRegExpFor(capturedScopeValue),
+    )?.[0];
+    expect(message2).toBe(capturedMessage.message);
   });
 
   it("middleware request header overrides still apply after middleware calls headers() first", async () => {

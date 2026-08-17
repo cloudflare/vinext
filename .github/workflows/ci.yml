@@ -479,6 +479,13 @@ jobs:
             }
           - {
               os: ubuntu-latest,
+              project: pages-router-complex,
+              label: pages-router-complex,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
               project: pages-router-basepath-dev,
               label: pages-router-basepath-dev,
               shardIndex: 1,
@@ -649,6 +656,27 @@ jobs:
               os: ubuntu-latest,
               project: app-front-redirect-issue,
               label: app-front-redirect-issue,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: web-worker-vinext,
+              label: web-worker-vinext,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: web-worker-cloudflare,
+              label: web-worker-cloudflare,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: nextjs-worker-cloudflare,
+              label: nextjs-worker-cloudflare,
               shardIndex: 1,
               shardTotal: 1,
             }
@@ -661,6 +689,13 @@ jobs:
             }
           - {
               os: windows-latest,
+              project: pages-router-complex,
+              label: pages-router-complex,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
               project: pages-router-basepath-dev,
               label: pages-router-basepath-dev,
               shardIndex: 1,
@@ -831,6 +866,27 @@ jobs:
               os: windows-latest,
               project: app-front-redirect-issue,
               label: app-front-redirect-issue,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: web-worker-vinext,
+              label: web-worker-vinext,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: web-worker-cloudflare,
+              label: web-worker-cloudflare,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: nextjs-worker-cloudflare,
+              label: nextjs-worker-cloudflare,
               shardIndex: 1,
               shardTotal: 1,
             }

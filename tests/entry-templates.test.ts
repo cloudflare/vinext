@@ -23,6 +23,7 @@ import { buildAppRouteGraph } from "../packages/vinext/src/routing/app-route-gra
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
+import { createPagesDevHydrationScript } from "../packages/vinext/src/server/pages-dev-hydration.js";
 
 // ── Minimal App Router route fixtures ─────────────────────────────────
 // Use stable absolute paths so tests don't depend on the machine.
@@ -128,15 +129,63 @@ const minimalAppRoutes: AppRoute[] = [
 // ── App Router manifest construction ─────────────────────────────────
 
 describe("App Router generated manifest construction", () => {
-  it("embeds client rewrite rules in the App browser entry", () => {
+  it("registers the host React instance before the App Router browser runtime", () => {
+    const code = generateBrowserEntry();
+    const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
+    const navigationRuntimeIndex = code.indexOf("navigation-runtime");
+    const browserRuntimeIndex = code.indexOf("app-browser-entry");
+
+    expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(navigationRuntimeIndex).toBeGreaterThanOrEqual(0);
+    expect(browserRuntimeIndex).toBeGreaterThanOrEqual(0);
+    expect(reactBootstrapIndex).toBeLessThan(navigationRuntimeIndex);
+    expect(reactBootstrapIndex).toBeLessThan(browserRuntimeIndex);
+  });
+
+  it("embeds only client-safe rewrite data in the App browser entry", () => {
     const code = generateBrowserEntry([], null, [], {
-      afterFiles: [],
-      beforeFiles: [{ source: "/legacy", destination: "/about" }],
-      fallback: [],
+      afterFiles: [
+        {
+          source: "/conditional",
+          destination: "/about",
+          has: [{ type: "query", key: "preview", value: "1" }],
+        },
+      ],
+      beforeFiles: [
+        {
+          source: "/external",
+          destination: "https://internal.example/proxy?token=external-destination-canary",
+        },
+        {
+          source: "/header",
+          destination: "/header-target-canary",
+          has: [{ type: "header", key: "x-origin-auth", value: "header-secret-canary" }],
+        },
+      ],
+      fallback: [
+        {
+          source: "/missing-cookie",
+          destination: "/about",
+          missing: [{ type: "cookie", key: "session", value: "missing-condition-canary" }],
+        },
+        {
+          source: "/cookie",
+          destination: "/cookie-target-canary",
+          has: [{ type: "cookie", key: "internal-access", value: "cookie-secret-canary" }],
+        },
+      ],
     });
 
-    expect(code).toContain('window.__VINEXT_CLIENT_REWRITES__ = {"afterFiles":[],"beforeFiles"');
-    expect(code).toContain('"source":"/legacy","destination":"/about"');
+    expect(code).toContain('"source":"/conditional","destination":"/about"');
+    expect(code).toContain('"has":[{"type":"query","key":"preview","value":"1"}]');
+    expect(code).toContain('"requiresServerEvaluation":true');
+    expect(code).not.toContain("internal.example");
+    expect(code).not.toContain("external-destination-canary");
+    expect(code).not.toContain("missing-condition-canary");
+    expect(code).not.toContain("header-target-canary");
+    expect(code).not.toContain("header-secret-canary");
+    expect(code).not.toContain("cookie-target-canary");
+    expect(code).not.toContain("cookie-secret-canary");
   });
 
   it("embeds the Link auto-prefetch route manifest in the browser entry", () => {
@@ -363,6 +412,75 @@ describe("App Router generated manifest construction", () => {
         routeSegments: ["slow-intercept"],
       }).canPrefetchLoadingShell,
     ).toBe(false);
+  });
+
+  it("does not advertise an already-shared root loading boundary for nested static routes", () => {
+    const route = {
+      ...minimalAppRoutes[0],
+      pattern: "/static-page",
+      patternParts: ["static-page"],
+      routeSegments: ["static-page"],
+      loadingPath: null,
+      loadingPaths: ["/tmp/test/app/loading.tsx"],
+      loadingTreePositions: [0],
+    } satisfies AppRoute;
+
+    expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(false);
+  });
+
+  it("advertises a parallel slot root loading boundary because it is not shared", () => {
+    const route = {
+      ...minimalAppRoutes[0],
+      pattern: "/parallel",
+      patternParts: ["parallel"],
+      parallelSlots: [
+        {
+          id: "slot:modal:/parallel",
+          key: "modal@parallel/@modal",
+          name: "modal",
+          ownerDir: "/tmp/test/app/parallel/@modal",
+          ownerTreePath: "/parallel",
+          ownerTreePosition: 1,
+          hasPage: false,
+          pagePath: null,
+          defaultPath: "/tmp/test/app/parallel/@modal/default.tsx",
+          layoutPath: null,
+          loadingPath: null,
+          loadingPaths: ["/tmp/test/app/parallel/@modal/loading.tsx"],
+          loadingTreePositions: [0],
+          errorPath: null,
+          interceptingRoutes: [],
+          layoutIndex: 0,
+          routeSegments: null,
+        },
+      ],
+      routeSegments: ["parallel"],
+    } satisfies AppRoute;
+
+    expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(true);
+  });
+
+  it("marks root-param routes for concrete route-tree prefetching", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    const route = {
+      ...minimalAppRoutes[0],
+      pattern: "/:rootParam",
+      patternParts: [":rootParam"],
+      routeSegments: [":rootParam"],
+      isDynamic: true,
+      params: ["rootParam"],
+      rootParamNames: ["rootParam"],
+      loadingPath: "/tmp/test/app/[rootParam]/loading.tsx",
+    } satisfies AppRoute;
+
+    expect(toLinkPrefetchRoute(route)).toEqual(
+      expect.objectContaining({
+        canPrefetchLoadingShell: true,
+        hasRootParams: true,
+      }),
+    );
   });
 
   it("advertises sibling-intercept loading only on the target route", () => {
@@ -961,6 +1079,16 @@ describe("App Router generated manifest construction", () => {
 // ── App Router entry template error paths ────────────────────────────
 
 describe("App Router entry templates", () => {
+  it("promotes interception-only RSC targets before not-found dispatch", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain("matchInterceptRoute(pathname, sourcePathname)");
+    expect(code).toContain("const intercept = findIntercept(pathname, sourcePathname)");
+    expect(code).toContain("const route = routes[intercept.sourceRouteIndex]");
+    expect(code).toContain("intercept.sourceMatchedParams");
+    expect(code).toContain("return { route, params }");
+  });
+
   it("installs server globals before App Router user modules are imported", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
@@ -1089,9 +1217,14 @@ describe("App Router entry templates", () => {
     expect(withoutMiddleware).not.toContain("app-middleware.js");
     expect(withoutMiddleware).not.toContain("runMiddleware(");
     expect(withMiddleware).toContain("app-middleware.js");
-    expect(withMiddleware).toContain("runMiddleware({ cleanPathname, context, hadBasePath");
+    expect(withMiddleware).toContain(
+      "runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath",
+    );
     expect(withMiddleware).toContain("return __applyAppMiddleware({");
     expect(withMiddleware).toContain("hadBasePath,");
+    expect(withMiddleware).toContain("externalRewriteRequest,");
+    expect(withMiddleware).toContain("middlewareRequest,");
+    expect(withMiddleware).toContain("validateExternalRewriteRequest,");
   });
 
   it("generateRscEntry only includes the PPR runtime when Cache Components is enabled", () => {
@@ -1172,7 +1305,26 @@ describe("App Router entry templates", () => {
 
   it("generateRscEntry defers route-handler and server-action runtimes", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    const routeCode = generateRscEntry(
+      "/tmp/test/app",
+      [
+        {
+          ...minimalAppRoutes[0],
+          pagePath: null,
+          routePath: "/tmp/test/app/api/route.ts",
+        },
+      ],
+      null,
+      [],
+      null,
+      "",
+      false,
+    );
 
+    expect(code).not.toContain("app-route-request-built-ins.js");
+    expect(routeCode.indexOf("app-route-request-built-ins.js")).toBeLessThan(
+      routeCode.indexOf("/tmp/test/app/api/route.ts"),
+    );
     expect(code).toContain('const __loadAppRouteHandlerDispatch = () => import("');
     expect(code).toContain('const __loadAppServerActionExecution = () => import("');
     expect(code).toContain("await __loadAppRouteHandlerDispatch()");
@@ -1288,6 +1440,98 @@ describe("App Router entry templates", () => {
 // ── Pages Router entry template runtime bootstrap ─────────────────────
 
 describe("Pages Router entry template", () => {
+  it("embeds only client-safe rewrite data in the Pages browser entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-rewrites-"));
+
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({
+          rewrites: async () => ({
+            afterFiles: [
+              {
+                source: "/conditional",
+                destination: "/about",
+                has: [{ type: "query", key: "preview", value: "1" }],
+              },
+            ],
+            beforeFiles: [
+              {
+                source: "/external",
+                destination: "https://internal.example/proxy?token=external-destination-canary",
+              },
+              {
+                source: "/header",
+                destination: "/header-target-canary",
+                has: [{ type: "header", key: "x-origin-auth", value: "header-secret-canary" }],
+              },
+            ],
+            fallback: [
+              {
+                source: "/missing-cookie",
+                destination: "/about",
+                missing: [{ type: "cookie", key: "session", value: "missing-condition-canary" }],
+              },
+              {
+                source: "/cookie",
+                destination: "/cookie-target-canary",
+                has: [{ type: "cookie", key: "internal-access", value: "cookie-secret-canary" }],
+              },
+            ],
+          }),
+        }),
+        createValidFileMatcher(),
+      );
+
+      expect(code).toContain('"source":"/conditional","destination":"/about"');
+      expect(code).toContain('"has":[{"type":"query","key":"preview","value":"1"}]');
+      expect(code).toContain('"requiresServerEvaluation":true');
+      expect(code).not.toContain("internal.example");
+      expect(code).not.toContain("external-destination-canary");
+      expect(code).not.toContain("missing-condition-canary");
+      expect(code).not.toContain("header-target-canary");
+      expect(code).not.toContain("header-secret-canary");
+      expect(code).not.toContain("cookie-target-canary");
+      expect(code).not.toContain("cookie-secret-canary");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("embeds the build-time public-file inventory", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-public-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        null,
+        ["/static.txt"],
+      );
+
+      expect(code).toContain('export const publicFiles = new Set(["/static.txt"]);');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports trusted _next/data classification from URL normalization", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-data-entry-"));
     const pagesDir = path.join(tmpDir, "pages");
@@ -1309,6 +1553,7 @@ describe("Pages Router entry template", () => {
         await resolveNextConfig({
           basePath: "/root",
           generateBuildId: () => "test-build-id",
+          skipProxyUrlNormalize: true,
         }),
         createValidFileMatcher(),
         middlewarePath,
@@ -1317,9 +1562,10 @@ describe("Pages Router entry template", () => {
 
       expect(code).toContain("export function normalizeDataRequest(request)");
       expect(code).toContain(
-        "vinextConfig.basePath,\n    hasMiddleware && vinextConfig.trailingSlash",
+        "vinextConfig.basePath,\n    __shouldAddTrailingSlashToPagesDataPath(\n      hasMiddleware,\n      vinextConfig.trailingSlash,\n      vinextConfig.skipProxyUrlNormalize",
       );
       expect(code).toContain("export const hasMiddleware = true");
+      expect(code).toContain('"skipProxyUrlNormalize":true');
       expect(code).not.toContain('request.headers.get("x-nextjs-data")');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1491,14 +1737,37 @@ describe("Pages Router entry template", () => {
       // side-effect import (no `from`, no `as`) so its top-level statements
       // execute when the client entry module is evaluated.
       const userImportIndex = code.indexOf(`import ${JSON.stringify(instrumentationClientPath)}`);
+      const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
       const hydrateRootIndex = code.indexOf("hydrateRoot(");
 
+      expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
       expect(userImportIndex).toBeGreaterThanOrEqual(0);
       expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+      expect(reactBootstrapIndex).toBeLessThan(userImportIndex);
       expect(userImportIndex).toBeLessThan(hydrateRootIndex);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("registers the host React instance before Pages Router dev hydration", () => {
+    const code = createPagesDevHydrationScript({
+      appModuleSource: "/tmp/test/pages/_app.tsx",
+      pageModuleSource: "/tmp/test/pages/index.tsx",
+      reactStrictMode: false,
+    });
+    const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
+    const instrumentationIndex = code.indexOf('import "vinext/instrumentation-client"');
+    const pageImportIndex = code.indexOf('await import("/tmp/test/pages/index.tsx")');
+    const hydrateRootIndex = code.indexOf("hydrateRoot(");
+
+    expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(instrumentationIndex).toBeGreaterThanOrEqual(0);
+    expect(pageImportIndex).toBeGreaterThanOrEqual(0);
+    expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+    expect(reactBootstrapIndex).toBeLessThan(instrumentationIndex);
+    expect(reactBootstrapIndex).toBeLessThan(pageImportIndex);
+    expect(reactBootstrapIndex).toBeLessThan(hydrateRootIndex);
   });
 
   it("omits the user instrumentation-client import when no file is present", async () => {
@@ -1655,12 +1924,19 @@ describe("Pages Router entry template", () => {
       expect(code).not.toContain("pageProps: rawPageProps,");
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
       expect(code).toContain("await hydrationCommitted;");
-      expect(code).toContain("if (nextData.isFallback) {");
-      expect(code).toContain("const routeUrl = nextData.__vinext?.routeUrl;");
+      expect(code).toContain("const shouldHydrateQuery =");
+      expect(code).toContain("const initialMatchesMiddleware =");
+      expect(code).toContain("nextData.__vinext?.hasMiddleware === true");
+      expect(code).toContain("nextData.__vinext?.hasRewrites === true");
+      expect(code).toContain(
+        "const routeUrl = nextData.isFallback ? nextData.__vinext?.routeUrl : undefined;",
+      );
       expect(code).toContain("await Router.replace(");
       expect(code).toContain("routeUrl || currentUrl,");
       expect(code).toContain("routeUrl ? currentUrl : undefined,");
-      expect(code).toContain("{ _h: 1, scroll: false },");
+      expect(code).toContain(
+        "{ _h: 1, scroll: false, shallow: !nextData.isFallback && !initialMatchesMiddleware },",
+      );
       expect(code).not.toContain("function VinextHydrationMarker");
       expect(code).not.toContain("React.createElement(VinextHydrationMarker");
       expect(code).toContain("hydrateRoot(container, element, hydrateRootOptions)");

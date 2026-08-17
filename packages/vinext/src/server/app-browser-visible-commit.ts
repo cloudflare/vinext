@@ -1,12 +1,15 @@
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
 import type { RouteManifest } from "../routing/app-route-graph.js";
 import { mergeElements } from "vinext/shims/slot";
+import { resolveAppPageRouteStateKey } from "./app-page-segment-state.js";
 import {
+  AppElementsWire,
   normalizeAppElementsSlotBindings,
   type AppElements,
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import {
+  createBfcacheSegmentIdentityMap,
   createPendingNavigationCommit,
   preserveBfcacheIdsForMergedElements,
   resolvePendingNavigationCommitDispositionDecision,
@@ -70,6 +73,21 @@ type ClassifiedPendingNavigationCommit = {
   pending: PendingNavigationCommit;
   trace: NavigationTrace;
 };
+
+function hasSameServerTemplateSeedIdentity(
+  id: string,
+  currentSnapshot: ClientNavigationRenderSnapshot,
+  nextSnapshot: ClientNavigationRenderSnapshot,
+): boolean {
+  const parsed = AppElementsWire.parseElementKey(id);
+  if (parsed?.kind !== "template") return false;
+
+  const templateSegments = parsed.treePath.split("/").filter(Boolean);
+  return (
+    resolveAppPageRouteStateKey(templateSegments, currentSnapshot.params) ===
+    resolveAppPageRouteStateKey(templateSegments, nextSnapshot.params)
+  );
+}
 
 export function applyApprovedVisibleCommit(
   state: AppRouterState,
@@ -174,6 +192,12 @@ function reduceApprovedVisibleCommitState(
             );
           })
         : [];
+      const previousBfcacheIdentities = createBfcacheSegmentIdentityMap({
+        elements: state.elements,
+      });
+      const preservePreviousBfcacheIdIds = preservePreviousSlotIds.filter(
+        (id) => previousBfcacheIdentities[id] !== undefined,
+      );
       const hmrPreservedSlotOwnerLayoutIds =
         action.operation.lane === "hmr"
           ? bfcacheCompatiblePreserveElementIds.filter((id) =>
@@ -199,10 +223,34 @@ function reduceApprovedVisibleCommitState(
         action.operation.lane === "hmr"
           ? hmrUniquePreserveElementIds
           : bfcacheCompatiblePreserveElementIds;
+      // Next stores a server template's rendered seed on the persistent layout
+      // router. The template's child-segment state key may change to remount
+      // client state without replacing that seed. Compare only params bound by
+      // the template's own route prefix; refresh/HMR or a changed owner param
+      // still installs fresh server output.
+      const preserveTemplateIds =
+        action.reuseCurrentBfcacheIds &&
+        (action.operation.lane === "navigation" ||
+          action.operation.lane === "traverse" ||
+          action.operation.lane === "server-action")
+          ? Object.keys(state.elements).filter(
+              (id) =>
+                Object.hasOwn(action.elements, id) &&
+                hasSameServerTemplateSeedIdentity(
+                  id,
+                  state.navigationSnapshot,
+                  action.navigationSnapshot,
+                ),
+            )
+          : [];
+      const mergedPreserveElementIds =
+        preserveTemplateIds.length === 0
+          ? preserveElementIds
+          : [...new Set([...preserveElementIds, ...preserveTemplateIds])];
       const mergedElements = mergeElements(state.elements, action.elements, {
         clearAbsentSlots: action.type === "traverse" || !action.reuseCurrentBfcacheIds,
         preserveAbsentSlots: action.reuseCurrentBfcacheIds && commit.decision.preserveAbsentSlots,
-        preserveElementIds,
+        preserveElementIds: mergedPreserveElementIds,
         preservePreviousSlotIds,
       });
       return commitVisibleRouterState(
@@ -212,6 +260,8 @@ function reduceApprovedVisibleCommitState(
             elements: mergedElements,
             next: action.bfcacheIds,
             previous: action.reuseCurrentBfcacheIds ? state.bfcacheIds : {},
+            preservedElementIds: preservePreviousSlotIds,
+            preservePreviousIds: preservePreviousBfcacheIdIds,
           }),
           elements: mergedElements,
           interception: action.interception,

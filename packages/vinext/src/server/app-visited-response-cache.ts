@@ -1,5 +1,6 @@
 import { resolveCachedRscResponseExpiresAt, type CachedRscResponse } from "vinext/shims/navigation";
-import type { AppElements } from "./app-elements.js";
+import { AppElementsWire, type AppElements } from "./app-elements.js";
+import { stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
 
 type VisitedResponseCacheNavigationKind = "navigate" | "refresh" | "traverse";
 
@@ -10,10 +11,19 @@ export type VisitedResponseCacheEntry = {
   mountedSlotsHeader: string | null;
   params: Record<string, string | string[]>;
   response: CachedRscResponse;
+  reuseAfterHistoryRestore: boolean;
 };
 
 export const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
 export const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
+
+export function hasNavigationResponseHistoryLifetime(snapshot: CachedRscResponse): boolean {
+  const dynamicStaleTime =
+    snapshot.completedDynamicStaleTimeSeconds ?? snapshot.dynamicStaleTimeSeconds;
+  return dynamicStaleTime !== undefined
+    ? dynamicStaleTime > 0
+    : snapshot.serverStaleTime !== undefined;
+}
 
 export function createVisitedResponseCacheEntry(options: {
   elements?: AppElements;
@@ -22,6 +32,7 @@ export function createVisitedResponseCacheEntry(options: {
   mountedSlotsHeader?: string | null;
   params: Record<string, string | string[]>;
   response: CachedRscResponse;
+  reuseAfterHistoryRestore?: boolean;
 }): VisitedResponseCacheEntry {
   return {
     createdAt: options.now,
@@ -34,6 +45,7 @@ export function createVisitedResponseCacheEntry(options: {
     mountedSlotsHeader: options.mountedSlotsHeader ?? null,
     params: options.params,
     response: options.response,
+    reuseAfterHistoryRestore: options.reuseAfterHistoryRestore === true,
   };
 }
 
@@ -53,4 +65,83 @@ export function isVisitedResponseCacheEntryFresh(
   }
 
   return entry.expiresAt > options.now;
+}
+
+function normalizeVisitedResponseCacheLookupUrl(rscUrl: string): string | null {
+  try {
+    const url = new URL(rscUrl, "http://vinext.local");
+    stripRscCacheBustingSearchParam(url);
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
+function parseVisitedResponseCacheKey(cacheKey: string): {
+  interceptionContext: string | null;
+  rscUrl: string;
+} {
+  const separatorIndex = cacheKey.indexOf("\0");
+  if (separatorIndex === -1) {
+    return { interceptionContext: null, rscUrl: cacheKey };
+  }
+  return {
+    interceptionContext: cacheKey.slice(separatorIndex + 1),
+    rscUrl: cacheKey.slice(0, separatorIndex),
+  };
+}
+
+export function findVisitedResponseCacheEntry(
+  cache: Map<string, VisitedResponseCacheEntry>,
+  rscUrl: string,
+  interceptionContext: string | null,
+): { cacheKey: string; entry: VisitedResponseCacheEntry } | null {
+  const exactCacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const exactEntry = cache.get(exactCacheKey);
+  if (exactEntry) {
+    return { cacheKey: exactCacheKey, entry: exactEntry };
+  }
+
+  const normalizedTarget = normalizeVisitedResponseCacheLookupUrl(rscUrl);
+  if (normalizedTarget === null) return null;
+
+  for (const [cacheKey, entry] of cache) {
+    const source = parseVisitedResponseCacheKey(cacheKey);
+    if (source.interceptionContext !== interceptionContext) continue;
+    if (normalizeVisitedResponseCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
+    return { cacheKey, entry };
+  }
+
+  return null;
+}
+
+export function deleteVisitedResponseCacheEntry(
+  cache: Map<string, VisitedResponseCacheEntry>,
+  rscUrl: string,
+  interceptionContext: string | null,
+): boolean {
+  const match = findVisitedResponseCacheEntry(cache, rscUrl, interceptionContext);
+  if (!match) return false;
+  return cache.delete(match.cacheKey);
+}
+
+export function deleteAllVisitedResponseCacheEntries(
+  cache: Map<string, VisitedResponseCacheEntry>,
+  rscUrl: string,
+  interceptionContext: string | null,
+): number {
+  let deleted = 0;
+  while (deleteVisitedResponseCacheEntry(cache, rscUrl, interceptionContext)) {
+    deleted++;
+  }
+  return deleted;
+}
+
+export function deleteInvalidatedHistoryRestoreEntries(
+  cache: Map<string, VisitedResponseCacheEntry>,
+): void {
+  for (const [cacheKey, entry] of cache) {
+    if (entry.reuseAfterHistoryRestore) continue;
+    cache.delete(cacheKey);
+  }
 }

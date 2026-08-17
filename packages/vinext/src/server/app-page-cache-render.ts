@@ -52,6 +52,7 @@ export type RenderAppPageCacheArtifactsOptions = {
   rootParams?: RootParams;
   route: AppPageCacheRoute;
   waitForAllReady?: boolean;
+  isForceStatic?: boolean;
 };
 
 export type RenderAppPageCacheArtifactsResult = {
@@ -94,6 +95,8 @@ export async function renderAppPageCacheArtifacts(
       reactMaxHeadersLength: options.reactMaxHeadersLength,
       rootParams: options.rootParams,
       waitForAllReady: options.waitForAllReady,
+      isStaticGeneration: true,
+      isForceStatic: options.isForceStatic,
       ...(rscCapture.sideStream
         ? {
             sideStream: rscCapture.sideStream,
@@ -155,7 +158,11 @@ export async function renderAppPageCacheArtifacts(
     tags,
     cacheControl:
       typeof cacheLife?.revalidate === "number"
-        ? { revalidate: cacheLife.revalidate, expire: cacheLife.expire }
+        ? // `stale` must survive regeneration: this producer feeds
+          // resolveRegeneratedAppPageCacheControl, and dropping it here would
+          // widen client reuse back to the configured fallback after the first
+          // background regen.
+          { revalidate: cacheLife.revalidate, expire: cacheLife.expire, stale: cacheLife.stale }
         : undefined,
   };
 

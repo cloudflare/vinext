@@ -351,8 +351,10 @@ describe("Image srcSet generation", () => {
         height: 16,
       }),
     );
-    expect(html).toContain(`${optUrlHtml("/icon.png", 16)} 1x`);
-    expect(html).toContain(`${optUrlHtml("/icon.png", 32)} 2x`);
+    // Next.js 16 removed 16 from the defaults. Both the 1x and 2x targets
+    // therefore snap to 32 and collapse into one candidate.
+    expect(html).toContain(`${optUrlHtml("/icon.png", 32)} 1x`);
+    expect(html).not.toContain(optUrlHtml("/icon.png", 16));
   });
 
   it("does not generate srcSet for fill mode", () => {

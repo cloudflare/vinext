@@ -10,13 +10,21 @@
 import fs from "node:fs";
 import path from "node:path";
 import { appIsrCacheKey } from "vinext/internal/server/isr-cache";
-import { buildAppPageCacheTags } from "vinext/internal/server/app-page-cache";
+import {
+  buildAppPageCacheTags,
+  buildAppRouteCacheTags,
+} from "vinext/internal/server/app-page-cache";
 import {
   getRenderedAppRoutes,
+  getRenderedMetadataRoutes,
   readPrerenderManifest,
 } from "vinext/internal/server/prerender-manifest";
 import { normalizePregeneratedPathname } from "vinext/internal/server/pregenerated-concrete-paths";
-import { getOutputPath, getRscOutputPath } from "vinext/internal/utils/prerender-output-paths";
+import {
+  getAppRouteOutputPath,
+  getOutputPath,
+  getRscOutputPath,
+} from "vinext/internal/utils/prerender-output-paths";
 import { createKvKeySpace } from "./cache/kv-key.js";
 
 /** Default KV expiration TTL used by KVCacheHandler for revalidating entries. */
@@ -32,6 +40,7 @@ export type KVBulkPair = {
 type CacheControlMetadata = {
   revalidate: number;
   expire?: number;
+  stale?: number;
 };
 
 function resolveContainedFile(rootDir: string, relativePath: string): string {
@@ -55,13 +64,16 @@ function buildCacheEntry(
   now: number,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
+  staleSeconds: number | undefined,
 ): string {
   const cacheControl: CacheControlMetadata | undefined =
     revalidateSeconds === undefined
       ? undefined
-      : expireSeconds === undefined
-        ? { revalidate: revalidateSeconds }
-        : { revalidate: revalidateSeconds, expire: expireSeconds };
+      : {
+          revalidate: revalidateSeconds,
+          ...(expireSeconds === undefined ? {} : { expire: expireSeconds }),
+          ...(staleSeconds === undefined ? {} : { stale: staleSeconds }),
+        };
 
   return JSON.stringify({
     value,
@@ -123,8 +135,10 @@ export function buildPrerenderKVPairs(
     if (typeof route.revalidate === "number" && route.revalidate <= 0) continue;
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
+    const staleSeconds =
+      typeof route.stale === "number" && route.stale >= 0 ? route.stale : undefined;
     const expirationTtl = revalidateSeconds === undefined ? undefined : ttlSeconds;
-    const tags = buildAppPageCacheTags(cachePathname, []);
+    const tags = buildAppPageCacheTags(cachePathname, route.tags ?? []);
     const metadata = buildMetadata(tags);
     const htmlKey = appIsrCacheKey(cachePathname, "html", manifest.buildId);
     const rscKey = appIsrCacheKey(cachePathname, "rsc", manifest.buildId);
@@ -141,6 +155,7 @@ export function buildPrerenderKVPairs(
         now,
         revalidateSeconds,
         expireSeconds,
+        staleSeconds,
       ),
       ...(expirationTtl !== undefined ? { expiration_ttl: expirationTtl } : {}),
       ...(metadata ? { metadata } : {}),
@@ -160,12 +175,57 @@ export function buildPrerenderKVPairs(
           now,
           revalidateSeconds,
           expireSeconds,
+          staleSeconds,
         ),
         ...(expirationTtl !== undefined ? { expiration_ttl: expirationTtl } : {}),
         ...(metadata ? { metadata } : {}),
       });
     }
 
+    routeCount++;
+  }
+
+  for (const route of getRenderedMetadataRoutes(manifest.routes)) {
+    const pathname = route.path ?? route.route;
+    let artifactPath: string;
+    try {
+      artifactPath = resolveContainedFile(prerenderDir, getAppRouteOutputPath(pathname));
+    } catch (error) {
+      console.warn(
+        `[vinext] Skipping metadata prerender KV seed for ${pathname}: ${formatUnknownError(error)}`,
+      );
+      continue;
+    }
+    if (!fs.existsSync(artifactPath)) continue;
+
+    const cachePathname = normalizePregeneratedPathname(pathname);
+    if (typeof route.revalidate === "number" && route.revalidate <= 0) continue;
+    const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
+    const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
+    const staleSeconds =
+      typeof route.stale === "number" && route.stale >= 0 ? route.stale : undefined;
+    const expirationTtl = revalidateSeconds === undefined ? undefined : ttlSeconds;
+    const tags = buildAppRouteCacheTags(cachePathname, route.tags ?? [], route.routeSegments ?? []);
+    const metadata = buildMetadata(tags);
+    const routeKey = appIsrCacheKey(cachePathname, "route", manifest.buildId);
+    pairs.push({
+      key: keySpace.entryKey(routeKey),
+      value: buildCacheEntry(
+        {
+          kind: "APP_ROUTE",
+          body: fs.readFileSync(artifactPath).toString("base64"),
+          headers: route.headers ?? {},
+          status: route.responseStatus ?? 200,
+        },
+        tags,
+        now,
+        revalidateSeconds,
+        expireSeconds,
+        staleSeconds,
+      ),
+      ...(expirationTtl !== undefined ? { expiration_ttl: expirationTtl } : {}),
+      ...(metadata ? { metadata } : {}),
+    });
     routeCount++;
   }
 

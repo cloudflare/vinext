@@ -23,9 +23,10 @@ import {
   getRequestContext,
   isInsideUnifiedScope,
   queueAfterCallback,
+  trackAfterPromise,
 } from "./unified-request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
-import { hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { hasBasePath, removeTrailingSlash, stripBasePath } from "../utils/base-path.js";
 
 /** @deprecated Import ImageResponse from `next/og` instead. */
 export function ImageResponse(): never {
@@ -131,11 +132,12 @@ export class NextRequest extends Request {
     // not a valid RequestInit property.
     const { nextConfig: _nextConfig, ...requestInit } = init ?? {};
     if (input instanceof Request) {
-      // Keep caller-owned request bodies readable after wrapping. Middleware and
-      // route-handler plumbing may need the source Request after this wrapper runs.
-      const requestInput =
-        requestInit.body === undefined && input.body && !input.bodyUsed ? input.clone() : input;
-      super(requestInput, requestInit);
+      // Transfer the body like Next.js does (`super(input, init)`). Cloning here
+      // would tee the stream, and the branch left on `input` buffers the entire
+      // body in memory because nothing reads or cancels it. Callers that need
+      // the source request to stay readable must branch it themselves and
+      // cancel the branch they do not consume.
+      super(input, requestInit);
       const cf = Reflect.get(input, "cf");
       if (cf !== undefined) {
         Object.defineProperty(this, "cf", {
@@ -471,6 +473,13 @@ export class NextURL {
   private _applyTrailingSlash(pathname: string): string {
     // Never strip or add a slash to the root path.
     if (pathname === "" || pathname === "/") return pathname;
+    const pathnameWithoutBasePath = this._basePath
+      ? stripBasePath(pathname, this._basePath)
+      : pathname;
+    // Internal Next.js assets retain their request shape. In particular,
+    // missing build manifests still run middleware without acquiring a slash
+    // from `trailingSlash: true`.
+    if (pathnameWithoutBasePath.startsWith("/_next/")) return removeTrailingSlash(pathname);
     if (this._trailingSlash) {
       return pathname.endsWith("/") ? pathname : pathname + "/";
     }
@@ -1243,9 +1252,12 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
     if (task == null || typeof (task as PromiseLike<T>).then !== "function") {
       throw new TypeError("`after()`: Argument must be a promise or a function");
     }
-    const guarded = Promise.resolve(task).catch((error) => {
-      console.error("[vinext] after() task failed:", error);
-    });
+    const guarded = trackAfterPromise(
+      requestContext,
+      Promise.resolve(task).catch((error) => {
+        console.error("[vinext] after() task failed:", error);
+      }),
+    );
     getRequestExecutionContext()?.waitUntil(guarded);
     return;
   }

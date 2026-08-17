@@ -1,9 +1,12 @@
 import { Fragment, Suspense, type ComponentType, type ReactNode } from "react";
 import {
   AppElementsWire,
+  APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_ROOT_LAYOUT_KEY,
   APP_STATIC_SIBLINGS_KEY,
   normalizeAppElementsSlotBindings,
+  type AppElementValue,
   type AppElements,
   type AppElementsInterception,
   type AppElementsSlotBinding,
@@ -18,6 +21,7 @@ import {
 } from "vinext/shims/error-boundary";
 import { AppRouterScrollTarget } from "vinext/shims/app-router-scroll";
 import DefaultGlobalError from "vinext/shims/default-global-error";
+import DefaultNotFound from "vinext/shims/default-not-found";
 import type { AppRouteSemanticIds } from "../routing/app-route-graph.js";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import {
@@ -27,7 +31,9 @@ import {
   type Metadata,
   type Viewport,
 } from "vinext/shims/metadata";
-import { Children, ParallelSlot, Slot } from "vinext/shims/slot";
+import { BfcacheSegmentBoundary, Children, ParallelSlot, Slot } from "vinext/shims/slot";
+import { StreamedIconsInsertion } from "vinext/shims/streamed-icons";
+import { createInlineScriptTag, escapeHtmlAttr } from "./html.js";
 import type { AppPageParams } from "./app-page-boundary.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
@@ -35,7 +41,8 @@ import {
   createAppRenderDependency,
   registerAppElementRenderDependencies,
   renderAfterAppDependencies,
-  renderWithAppDependencyBarrier,
+  renderAppComponentWithDependencyBarrier,
+  type AppPageRenderDependency,
   type AppRenderDependency,
 } from "./app-render-dependency.js";
 import {
@@ -46,15 +53,18 @@ import {
 import { probeReactServerSubtree } from "./app-page-probe.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import {
   APP_PAGE_SEGMENT_KEY,
   resolveAppPageChildSegments,
-  resolveAppPageRouteStateKey,
   resolveAppPageSegmentStateKey,
+  resolveAppPageTemplateStateKey,
+  type AppPageSemanticSegment,
 } from "./app-page-segment-state.js";
+import { createAppPageSegmentPlan } from "./app-page-segment-plan.js";
 import type { AppPageRenderIdentity } from "./app-page-render-identity.js";
 
 export { resolveAppPageChildSegments } from "./app-page-segment-state.js";
@@ -70,6 +80,7 @@ type AppPageComponent = ComponentType<AppPageComponentProps>;
 type AppPageErrorComponent = ComponentType<{ error: unknown; reset: () => void }>;
 const APP_PAGE_LAYOUT_PROBE_CHILD = <Fragment />;
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as AppPageErrorComponent;
+const DEFAULT_NOT_FOUND_COMPONENT = DefaultNotFound as AppPageComponent;
 
 function resolveSlotLayoutParams(
   routeSegments: readonly string[],
@@ -87,7 +98,7 @@ export type AppPageErrorModule = Record<string, unknown> & {
   default?: AppPageErrorComponent | null | undefined;
 };
 
-type AppPageRouteWiringSlot<
+export type AppPageRouteWiringSlot<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
@@ -150,6 +161,7 @@ export type AppPageRouteWiringRoute<
    */
   slots?: Readonly<Record<string, AppPageRouteWiringSlot<TModule, TErrorModule>>> | null;
   childrenSlot?: {
+    /** Graph-owned semantic identity; the wire address is derived from ownerTreePath. */
     id: string;
     ownerTreePath: string;
     state: AppElementsSlotBinding["state"];
@@ -173,6 +185,8 @@ export type AppPageRouteWiringRoute<
 
 export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> = {
   branchSegments?: readonly string[] | null;
+  /** Route-matcher-resolved semantic branch, aligned with the flattened branch. */
+  identitySegments?: readonly AppPageSemanticSegment[] | null;
   layoutSegments?: readonly (readonly string[])[] | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
   loadingModules?: readonly (TModule | null | undefined)[] | null;
@@ -188,7 +202,7 @@ export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> =
   routeSegments?: readonly string[] | null;
 };
 
-type AppPageLayoutEntry<
+export type AppPageLayoutEntry<
   TModule extends AppPageModule = AppPageModule,
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
@@ -215,6 +229,7 @@ type BuildAppPageRouteElementOptions<
   resolvedMetadata: Metadata | null;
   resolvedMetadataPathname?: string;
   resolvedViewport: Viewport;
+  scriptNonce?: string;
   streamingMetadata?: Promise<Metadata | null> | null;
   streamingMetadataOutlet?: Promise<unknown> | null;
   streamingMetadataOutletSuspended?: boolean;
@@ -228,6 +243,7 @@ type BuildAppPageRouteElementOptions<
     component: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
   ) => ReactNode;
+  pageRenderDependency?: AppPageRenderDependency | null;
   searchParams?: unknown;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
 };
@@ -245,10 +261,17 @@ type BuildAppPageElementsOptions<
   renderIdentity?: AppPageRenderIdentity;
   renderMode?: AppRscRenderMode;
   routePath: string;
+  semanticPageIdentity?: Readonly<{
+    boundSegmentKey: string;
+    interceptionGraphId: string;
+    sourceBoundSegmentKey: string;
+    sourceRouteGraphId: string;
+  }> | null;
+  semanticInterceptionTargetRouteId?: string | null;
   sourcePageSegments?: readonly string[] | null;
 };
 
-type AppPageTemplateEntry<TModule extends AppPageModule = AppPageModule> = {
+export type AppPageTemplateEntry<TModule extends AppPageModule = AppPageModule> = {
   id: string;
   templateModule?: TModule | null | undefined;
   treePath: string;
@@ -449,22 +472,50 @@ function createAppPageLoadingEntries<TModule extends AppPageModule>(
   });
 }
 
+export function resolveAppPageLoadingModuleAtOrAbove<TModule extends AppPageModule>(
+  route: Pick<AppPageRouteWiringRoute<TModule>, "loading" | "loadings" | "loadingTreePositions">,
+  treePosition: number,
+): TModule | null {
+  let nearest: AppPageLoadingEntry<TModule> | null = null;
+  for (const entry of createAppPageLoadingEntries(route)) {
+    if (
+      entry.treePosition <= treePosition &&
+      getDefaultExport(entry.loadingModule) !== null &&
+      (nearest === null || entry.treePosition > nearest.treePosition)
+    ) {
+      nearest = entry;
+    }
+  }
+
+  if (nearest?.loadingModule) {
+    return nearest.loadingModule;
+  }
+  return getDefaultExport(route.loading) === null ? null : (route.loading ?? null);
+}
+
 function getPrefetchLoadingEntry<TModule extends AppPageModule>(
   route: Pick<
     AppPageRouteWiringRoute<TModule>,
     "loading" | "loadings" | "loadingTreePositions" | "routeSegments"
   >,
 ): AppPageLoadingEntry<TModule> | null {
-  let firstEntry: AppPageLoadingEntry<TModule> | null = null;
+  let rootEntry: AppPageLoadingEntry<TModule> | null = null;
+  let firstNestedEntry: AppPageLoadingEntry<TModule> | null = null;
   for (const [index, loadingModule] of (route.loadings ?? []).entries()) {
     if (!getDefaultExport(loadingModule)) continue;
     const treePosition = route.loadingTreePositions?.[index];
     if (treePosition === undefined) continue;
-    if (firstEntry === null || treePosition < firstEntry.treePosition) {
-      firstEntry = { loadingModule, treePosition };
+    if (treePosition === 0) {
+      rootEntry ??= { loadingModule, treePosition };
+    } else if (firstNestedEntry === null || treePosition < firstNestedEntry.treePosition) {
+      firstNestedEntry = { loadingModule, treePosition };
     }
   }
-  if (firstEntry) return firstEntry;
+  // The root layout is already shared for a client-side prefetch. Prefer the
+  // first loading boundary below it, falling back to the root loading UI only
+  // when no nested boundary exists.
+  if (firstNestedEntry) return firstNestedEntry;
+  if (rootEntry) return rootEntry;
 
   // Legacy/eager route fixtures may only expose the leaf loading field.
   return getDefaultExport(route.loading)
@@ -552,13 +603,13 @@ function createAppPageParallelSlotEntries<
 }
 
 function resolveAppPageSlotId(slot: AppPageRouteWiringSlot, treePath: string): string {
-  const slotId = AppElementsWire.encodeSlotId(slot.name, treePath);
-  if (slot.id && slot.id !== slotId) {
-    throw new Error(
-      `[vinext] App Router slot id mismatch for @${slot.name}: graph id ${slot.id} does not match wire id ${slotId}`,
-    );
-  }
-  return slotId;
+  return AppElementsWire.encodeSlotId(slot.name, treePath);
+}
+
+function resolveAppPageChildrenSlotId(
+  childrenSlot: NonNullable<AppPageRouteWiringRoute["childrenSlot"]>,
+): string {
+  return AppElementsWire.encodeSlotId("children", childrenSlot.ownerTreePath);
 }
 
 function resolveAppPageSlotBindingState(
@@ -583,7 +634,7 @@ function createAppPageSlotBindings<
   ) => AppPageSlotOverride<TModule> | undefined,
   options: {
     interception: AppElementsInterception | null;
-    interceptionContext: string | null;
+    routeId: string;
     routePath: string;
   },
 ): readonly AppElementsSlotBinding[] {
@@ -592,9 +643,11 @@ function createAppPageSlotBindings<
     const ownerLayoutId = layoutEntries.find(
       (layoutEntry) => layoutEntry.treePath === route.childrenSlot?.ownerTreePath,
     )?.id;
+    const slotId = resolveAppPageChildrenSlotId(route.childrenSlot);
     bindings.push({
+      ...(route.childrenSlot.state === "active" ? { activeRouteId: options.routeId } : {}),
       ownerLayoutId: ownerLayoutId ?? null,
-      slotId: route.childrenSlot.id,
+      slotId,
       state: route.childrenSlot.state,
     });
   }
@@ -641,31 +694,80 @@ function createAppPageRouteHead(
   );
 }
 
+function hasStreamedIcons(metadata: Metadata): boolean {
+  const icons = metadata.icons;
+  if (!icons) return false;
+  if (typeof icons === "string" || icons instanceof URL || Array.isArray(icons)) {
+    return !Array.isArray(icons) || icons.length > 0;
+  }
+  if ("url" in icons) return true;
+  return Boolean(icons.shortcut || icons.icon || icons.apple || icons.other);
+}
+
+function createStreamedIconKey(pathname: string, metadataHtml: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < metadataHtml.length; index++) {
+    hash ^= metadataHtml.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${pathname}:${(hash >>> 0).toString(36)}`;
+}
+
+const STREAMED_ICON_KEY_PLACEHOLDER = "vinext-pending-streamed-icon-key";
+
+const REINSERT_STREAMED_ICONS_SCRIPT = `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el));const a='data-vinext-streamed-icon',o=el=>{const m=el.getAttribute(a),i=m.lastIndexOf(':');return Number(m.slice(i+1))};[...document.querySelectorAll('link['+a+']')].sort((l,r)=>o(l)-o(r)).forEach(el=>document.head.appendChild(el))`;
+
 export function createAppPageRouteBodyMetadata(
   metadata: Metadata | null,
   pathname: string,
   metadataPlacement: "body" | "head",
   trailingSlash?: boolean,
+  scriptNonce?: string,
 ): ReactNode {
   if (!metadata || metadataPlacement !== "body") return null;
+  const streamedIconKey = hasStreamedIcons(metadata) ? STREAMED_ICON_KEY_PLACEHOLDER : undefined;
+  const renderedMetadataHtml = renderMetadataToHtml(metadata, pathname, {
+    trailingSlash,
+    streamedIconKey,
+  });
+  const metadataKey = streamedIconKey ? createStreamedIconKey(pathname, renderedMetadataHtml) : "";
+  const metadataHtml = streamedIconKey
+    ? renderedMetadataHtml.replaceAll(
+        `<link data-vinext-streamed-icon="${STREAMED_ICON_KEY_PLACEHOLDER}:`,
+        `<link data-vinext-streamed-icon="${escapeHtmlAttr(metadataKey)}:`,
+      )
+    : renderedMetadataHtml;
+  const parserInsertedMetadataHtml =
+    metadataHtml + createInlineScriptTag(REINSERT_STREAMED_ICONS_SCRIPT, scriptNonce);
   return (
-    <div
-      hidden
-      dangerouslySetInnerHTML={{
-        __html: renderMetadataToHtml(metadata, pathname, { trailingSlash }),
-      }}
-    />
+    <>
+      <div
+        hidden
+        suppressHydrationWarning
+        dangerouslySetInnerHTML={{
+          __html: parserInsertedMetadataHtml,
+        }}
+      />
+      <StreamedIconsInsertion metadataKey={metadataKey} />
+    </>
   );
 }
 
 async function AppPageStreamingMetadata(props: {
   metadata: Promise<Metadata | null>;
   pathname: string;
+  scriptNonce?: string;
   trailingSlash?: boolean;
 }): Promise<ReactNode> {
   try {
     const metadata = await props.metadata;
-    return createAppPageRouteBodyMetadata(metadata, props.pathname, "body", props.trailingSlash);
+    return createAppPageRouteBodyMetadata(
+      metadata,
+      props.pathname,
+      "body",
+      props.trailingSlash,
+      props.scriptNonce,
+    );
   } catch {
     // The matching outlet below rethrows inside the route's error boundaries.
     // Keeping the tag outlet successful lets already-flushed HTML remain valid.
@@ -712,13 +814,14 @@ export function buildAppPageElements<
     renderIdentity?.interceptionContext ?? options.interceptionContext ?? null;
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
   const routeSegments = options.route.routeSegments ?? [];
-  const routeResetKey = resolveAppPageRouteStateKey(routeSegments, options.matchedParams);
   const routeId =
     renderIdentity?.routeId ??
     AppElementsWire.encodeRouteId(options.routePath, interceptionContext);
   const pageId =
     renderIdentity?.pageId ?? AppElementsWire.encodePageId(options.routePath, interceptionContext);
-  const pageElementId = options.route.childrenSlot?.id ?? pageId;
+  const pageElementId = options.route.childrenSlot
+    ? resolveAppPageChildrenSlotId(options.route.childrenSlot)
+    : pageId;
   const streamingMetadataBodyId = options.streamingMetadata
     ? `__vinext_streaming_metadata_body:${routeId}`
     : null;
@@ -751,7 +854,11 @@ export function buildAppPageElements<
     }
     return nearest;
   };
+  const isPrefetchEmpty = renderMode === APP_RSC_RENDER_MODE_PREFETCH_EMPTY;
   const isPrefetchLoadingShell = renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+  // Loading-shell prefetches intentionally omit the page, so they cannot wait
+  // on a dependency that only the page invocation can release.
+  const pageRenderDependency = isPrefetchLoadingShell ? null : options.pageRenderDependency;
   const prefetchLoadingEntry = isPrefetchLoadingShell
     ? getPrefetchLoadingEntry(options.route)
     : null;
@@ -811,6 +918,17 @@ export function buildAppPageElements<
 
     return undefined;
   };
+  const interception = renderIdentity?.interception ?? options.interception ?? null;
+  const slotBindings = createAppPageSlotBindings(
+    options.route,
+    layoutEntries,
+    resolveSlotOverride,
+    {
+      interception,
+      routeId,
+      routePath: options.routePath,
+    },
+  );
   const prefetchSlotLoadingEntries = isPrefetchLoadingShell
     ? Object.entries(options.route.slots ?? {}).flatMap(([slotKey, slot]) => {
         const override = resolveSlotOverride(slotKey, slot.name) ?? null;
@@ -832,29 +950,59 @@ export function buildAppPageElements<
     : null;
   const includesPrefetchTreePosition = (treePosition: number): boolean =>
     prefetchCutoffTreePosition === null || treePosition <= prefetchCutoffTreePosition;
-  const elements: Record<
-    string,
-    | ReactNode
-    | string
-    | null
-    | AppElementsInterception
-    | readonly AppElementsSlotBinding[]
-    | readonly string[]
-  > = {
-    ...AppElementsWire.createMetadataEntries({
-      interception: renderIdentity?.interception ?? options.interception ?? null,
-      interceptionContext,
-      layoutIds: options.route.ids?.layouts ?? layoutEntries.map((entry) => entry.id),
-      rootLayoutTreePath,
-      routeId,
-      sourcePage: createAppPageSourcePage(options.sourcePageSegments ?? routeSegments),
-      slotBindings: createAppPageSlotBindings(options.route, layoutEntries, resolveSlotOverride, {
-        interception: renderIdentity?.interception ?? options.interception ?? null,
-        interceptionContext,
-        routePath: options.routePath,
-      }),
-    }),
-  };
+  const segmentPlan = createAppPageSegmentPlan({
+    includeSlot(ownerTreePosition, targetTreePosition) {
+      if (isPrefetchEmpty) return false;
+      if (!isPrefetchLoadingShell) return true;
+      return prefetchLoadingEntry
+        ? ownerTreePosition <= prefetchLoadingEntry.treePosition
+        : includesPrefetchTreePosition(targetTreePosition);
+    },
+    interception,
+    layoutEntries,
+    matchedParams: options.matchedParams,
+    pageElementId,
+    resolveSlotOverride,
+    rootLayoutTreePath,
+    route: options.route,
+    routeSegments,
+    semanticPageIdentity: options.semanticPageIdentity,
+    semanticInterceptionTargetRouteId: options.semanticInterceptionTargetRouteId ?? null,
+    slotBindings,
+    templateEntries,
+  });
+  const routeResetKey = segmentPlan.routeResetKey;
+  const slotPlansByKey = new Map(segmentPlan.slots.map((slot) => [slot.key, slot]));
+  const resolveRouteSegmentResetKey = (treePosition: number): string =>
+    resolveAppPageSegmentStateKey(routeSegments, treePosition, options.matchedParams);
+  const metadataEntries = AppElementsWire.createMetadataEntries({
+    bfcacheSegmentIdentities: segmentPlan.bfcacheSegmentIdentities,
+    interception,
+    interceptionContext,
+    layoutIds: layoutEntries.map((entry) => entry.id),
+    rootLayoutTreePath,
+    routeId,
+    sourcePage: createAppPageSourcePage(options.sourcePageSegments ?? routeSegments),
+    slotBindings,
+  });
+  if (isPrefetchEmpty) {
+    return {
+      ...metadataEntries,
+      [APP_LAYOUT_IDS_KEY]: [],
+      [APP_ROOT_LAYOUT_KEY]: null,
+      [pageElementId]: null,
+      [routeId]: null,
+    };
+  }
+  const elements: Record<string, AppElementValue> = {};
+  // Synthetic nested segment entries carry membership independently of the
+  // proof map. If identity metadata is absent or rejected atomically, the
+  // browser can still discover these ids and mint conservative fresh keys.
+  for (const slotPlan of segmentPlan.slots) {
+    for (const segment of slotPlan.nestedBfcacheSegments) {
+      elements[segment.id] = null;
+    }
+  }
   // Surface static-sibling info on the wire so the client router can decide
   // whether a cached dynamic-route prefetch can be reused when navigating to a
   // static sibling URL. Mirrors Next.js's loader-tree `staticSiblings` tuple
@@ -869,6 +1017,7 @@ export function buildAppPageElements<
       <AppPageStreamingMetadata
         metadata={options.streamingMetadataTags ?? options.streamingMetadata}
         pathname={options.resolvedMetadataPathname ?? options.routePath}
+        scriptNonce={options.scriptNonce}
         trailingSlash={options.trailingSlash}
       />
     );
@@ -878,8 +1027,8 @@ export function buildAppPageElements<
       <AppPageMetadataOutlet metadata={options.streamingMetadataOutlet} />
     );
   }
-  const getEffectiveSlotParams = (slotKey: string, slotName: string): AppPageParams =>
-    resolveSlotOverride(slotKey, slotName)?.params ?? options.matchedParams;
+  const getEffectiveSlotParams = (slotKey: string, _slotName: string): AppPageParams =>
+    slotPlansByKey.get(slotKey)?.params ?? options.matchedParams;
 
   for (const treePosition of orderedTreePositions) {
     if (isPrefetchLoadingShell && !includesPrefetchTreePosition(treePosition)) continue;
@@ -907,6 +1056,8 @@ export function buildAppPageElements<
     pageDependencies.push(templateDependency);
   }
 
+  pageRenderDependency?.setResultDependencies(pageDependencies);
+
   const routeLoadingComponent = getDefaultExport(options.route.loading);
   const prefetchLoadingComponent = getDefaultExport(prefetchLoadingEntry?.loadingModule);
   const shouldRenderPrefetchLoadingShell =
@@ -920,9 +1071,29 @@ export function buildAppPageElements<
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
   }
 
+  const pageLoadingModule = resolveAppPageLoadingModuleAtOrAbove(
+    options.route,
+    routeSegments.length,
+  );
+  // The page and route are sibling values in vinext's flat Flight record. The
+  // route-level Suspense below cannot catch the page value suspending while the
+  // record itself is serialized, so the page entry needs its own boundary to
+  // expose the fallback. Once <Slot> reconnects the entries this is nested
+  // inside the route boundary; that duplication is an intentional transport
+  // artifact, not two independently selected loading conventions.
+  const PageLoadingComponent = pageRenderDependency ? getDefaultExport(pageLoadingModule) : null;
+  const pageElement = PageLoadingComponent ? (
+    <Suspense key={routeResetKey} fallback={<PageLoadingComponent />}>
+      {options.element}
+    </Suspense>
+  ) : (
+    options.element
+  );
   elements[pageElementId] = isPrefetchLoadingShell
     ? null
-    : renderAfterAppDependencies(options.element, pageDependencies);
+    : pageRenderDependency
+      ? pageElement
+      : renderAfterAppDependencies(pageElement, pageDependencies);
 
   for (const templateEntry of templateEntries) {
     if (isPrefetchLoadingShell && !includesPrefetchTreePosition(templateEntry.treePosition)) {
@@ -935,10 +1106,9 @@ export function buildAppPageElements<
     const TemplateComponent = templateComponent;
     const templateDependency = templateDependenciesById.get(templateEntry.id);
     let templateElement: ReactNode = templateDependency ? (
-      renderWithAppDependencyBarrier(
-        <TemplateComponent>
-          <Children />
-        </TemplateComponent>,
+      renderAppComponentWithDependencyBarrier(
+        TemplateComponent,
+        { children: <Children /> },
         templateDependency,
       )
     ) : (
@@ -950,21 +1120,17 @@ export function buildAppPageElements<
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
     if (ancestorLoadingComponent && ancestorLoadingEntry) {
       const AncestorLoadingComponent = ancestorLoadingComponent;
-      const loadingResetKey = resolveAppPageSegmentStateKey(
-        routeSegments,
-        ancestorLoadingEntry.treePosition,
-        options.matchedParams,
-      );
+      const loadingResetKey = resolveRouteSegmentResetKey(ancestorLoadingEntry.treePosition);
       templateElement = (
         <Suspense key={loadingResetKey || routeResetKey} fallback={<AncestorLoadingComponent />}>
           {templateElement}
         </Suspense>
       );
     }
-    elements[templateEntry.id] = renderAfterAppDependencies(
-      templateElement,
-      templateDependenciesBeforeById.get(templateEntry.id) ?? [],
-    );
+    elements[templateEntry.id] = renderAfterAppDependencies(templateElement, [
+      ...(pageRenderDependency ? [pageRenderDependency] : []),
+      ...(templateDependenciesBeforeById.get(templateEntry.id) ?? []),
+    ]);
   }
 
   for (let index = 0; index < layoutEntries.length; index++) {
@@ -1008,10 +1174,9 @@ export function buildAppPageElements<
     const LayoutComponent = layoutComponent;
     const layoutDependency = layoutDependenciesByIndex.get(index);
     let layoutElement: ReactNode = layoutDependency ? (
-      renderWithAppDependencyBarrier(
-        <LayoutComponent {...layoutProps}>
-          <Children />
-        </LayoutComponent>,
+      renderAppComponentWithDependencyBarrier(
+        LayoutComponent,
+        { ...layoutProps, children: <Children /> },
         layoutDependency,
       )
     ) : (
@@ -1023,51 +1188,43 @@ export function buildAppPageElements<
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
     if (ancestorLoadingComponent && ancestorLoadingEntry) {
       const AncestorLoadingComponent = ancestorLoadingComponent;
-      const loadingResetKey = resolveAppPageSegmentStateKey(
-        routeSegments,
-        ancestorLoadingEntry.treePosition,
-        options.matchedParams,
-      );
+      const loadingResetKey = resolveRouteSegmentResetKey(ancestorLoadingEntry.treePosition);
       layoutElement = (
         <Suspense key={loadingResetKey || routeResetKey} fallback={<AncestorLoadingComponent />}>
           {layoutElement}
         </Suspense>
       );
     }
-    elements[layoutEntry.id] = renderAfterAppDependencies(
-      layoutElement,
-      layoutDependenciesBefore[index] ?? [],
-    );
+    elements[layoutEntry.id] = renderAfterAppDependencies(layoutElement, [
+      ...(pageRenderDependency ? [pageRenderDependency] : []),
+      ...(layoutDependenciesBefore[index] ?? []),
+    ]);
   }
 
-  for (const [slotKey, slot] of Object.entries(options.route.slots ?? {})) {
-    const slotName = slot.name;
-    const targetIndex = slot.layoutIndex >= 0 ? slot.layoutIndex : layoutEntries.length - 1;
-    const targetTreePosition = layoutEntries[targetIndex]?.treePosition ?? 0;
-    const ownerTreePosition = slot.ownerTreePosition ?? targetTreePosition;
+  for (const slotPlan of segmentPlan.slots) {
+    const {
+      branchSegments,
+      includedInPayload,
+      nestedBfcacheSegments,
+      ownerTreePosition,
+      params: slotParams,
+      resetKey: slotResetKey,
+      routeSegments: slotRouteSegments,
+      slot,
+      slotId,
+      slotOverride,
+      targetIndex,
+    } = slotPlan;
     const isOwnedAtRoutePrefetchCutoff =
       isPrefetchLoadingShell &&
       prefetchLoadingEntry !== null &&
       ownerTreePosition === prefetchLoadingEntry.treePosition;
-    if (
-      isPrefetchLoadingShell &&
-      (prefetchLoadingEntry
-        ? ownerTreePosition > prefetchLoadingEntry.treePosition
-        : !includesPrefetchTreePosition(targetTreePosition))
-    ) {
-      continue;
-    }
-    const treePath = layoutEntries[targetIndex]?.treePath ?? "/";
-    const slotId = resolveAppPageSlotId(slot, treePath);
-    const slotOverride = resolveSlotOverride(slotKey, slotName);
-    const slotParams = getEffectiveSlotParams(slotKey, slotName);
-    const slotRouteSegments = slotOverride?.routeSegments ?? slot.routeSegments ?? [];
+    if (!includedInPayload) continue;
     const slotOwnerParams = resolveAppPageSegmentParams(
       options.route.routeSegments,
       layoutEntries[targetIndex]?.treePosition ?? 0,
       options.matchedParams,
     );
-    const slotResetKey = resolveAppPageRouteStateKey(slotRouteSegments, slotParams);
     const hasSlotTreeOverride =
       slotOverride?.pageModule != null || slotOverride?.layoutModules !== undefined;
     const slotLoadingEntries = createAppPageSlotLoadingEntries(
@@ -1129,8 +1286,14 @@ export function buildAppPageElements<
             const SlotComponent = slotComponent!;
             return <SlotComponent {...slotProps} />;
           })();
+      if (overrideOrPageComponent) {
+        // Named parallel-slot entries flatten the slot page and its layout
+        // chain into one wire element. Key only the page leaf so dynamic
+        // siblings reset page-local client state while the surrounding slot
+        // layouts keep their state, matching Next.js segment ownership.
+        slotElement = <Fragment key={slotResetKey}>{slotElement}</Fragment>;
+      }
     }
-    const branchSegments = slotOverride?.branchSegments ?? slotRouteSegments;
     const branchLayouts = new Map<
       number,
       { component: AppPageComponent; params: AppPageParams }[]
@@ -1194,6 +1357,9 @@ export function buildAppPageElements<
         ...branchLayouts.keys(),
         ...branchLoadings.keys(),
         ...(slotErrorComponent ? [0] : []),
+        ...nestedBfcacheSegments.flatMap((segment) =>
+          segment.treePosition === null ? [] : [segment.treePosition],
+        ),
       ]),
     )
       .filter(
@@ -1204,6 +1370,19 @@ export function buildAppPageElements<
       .sort((left, right) => left - right);
     for (let index = branchTreePositions.length - 1; index >= 0; index--) {
       const treePosition = branchTreePositions[index];
+      const nestedBfcacheSegment = nestedBfcacheSegments.find(
+        (segment) => segment.treePosition === treePosition,
+      );
+      if (nestedBfcacheSegment) {
+        slotElement = (
+          <BfcacheSegmentBoundary
+            id={nestedBfcacheSegment.id}
+            stateKey={nestedBfcacheSegment.stateKey}
+          >
+            {slotElement}
+          </BfcacheSegmentBoundary>
+        );
+      }
       const loadingComponents = prefetchSlotLoadingEntry
         ? []
         : (branchLoadings.get(treePosition) ?? []);
@@ -1241,6 +1420,24 @@ export function buildAppPageElements<
       }
     }
 
+    const unalignedBfcacheSegment = nestedBfcacheSegments.find(
+      (segment) => segment.treePosition === null,
+    );
+    if (unalignedBfcacheSegment) {
+      // Interception branches can have a marker-bearing filesystem shape that
+      // cannot be aligned safely with the semantic target route. Wrap the
+      // complete flattened branch so no intercept layout can retain stale
+      // state, while still publishing a distinct leaf BFCache id.
+      slotElement = (
+        <BfcacheSegmentBoundary
+          id={unalignedBfcacheSegment.id}
+          stateKey={unalignedBfcacheSegment.stateKey}
+        >
+          {slotElement}
+        </BfcacheSegmentBoundary>
+      );
+    }
+
     // A loading convention on the owning segment applies to every parallel
     // child slot, not only the flattened `children` branch. The slot payload is
     // serialized as a separate element entry, so the boundary must wrap this
@@ -1251,11 +1448,7 @@ export function buildAppPageElements<
     const ownerLoadingComponent = getDefaultExport(ownerLoadingEntry?.loadingModule);
     if (ownerLoadingComponent && ownerLoadingEntry) {
       const OwnerLoadingComponent = ownerLoadingComponent;
-      const ownerResetKey = resolveAppPageSegmentStateKey(
-        routeSegments,
-        ownerLoadingEntry.treePosition,
-        options.matchedParams,
-      );
+      const ownerResetKey = resolveRouteSegmentResetKey(ownerLoadingEntry.treePosition);
       slotElement = (
         <Suspense key={ownerResetKey || slotResetKey} fallback={<OwnerLoadingComponent />}>
           {slotElement}
@@ -1263,10 +1456,10 @@ export function buildAppPageElements<
       );
     }
 
-    elements[slotId] = renderAfterAppDependencies(
-      slotElement,
-      targetIndex >= 0 ? (slotDependenciesByLayoutIndex[targetIndex] ?? []) : [],
-    );
+    elements[slotId] = renderAfterAppDependencies(slotElement, [
+      ...(pageRenderDependency ? [pageRenderDependency] : []),
+      ...(targetIndex >= 0 ? (slotDependenciesByLayoutIndex[targetIndex] ?? []) : []),
+    ]);
   }
 
   let routeChildren: ReactNode = (
@@ -1344,8 +1537,18 @@ export function buildAppPageElements<
     errorEntries.length > 0 ? errorEntries[errorEntries.length - 1].errorModule : null;
   // Next.js nesting (outer to inner): Error > Unauthorized > Forbidden > NotFound > children.
   // Building bottom-up means NotFoundBoundary must wrap first, then Forbidden, Unauthorized, Error.
-  const notFoundComponent =
+  // Next's app loader injects its built-in not-found convention when the app has
+  // no custom fallback. Keep the equivalent boundary around late client-side
+  // signals such as a streaming MetadataOutlet rejection.
+  const configuredNotFoundComponent =
     getDefaultExport(options.route.notFound) ?? getDefaultExport(options.rootNotFoundModule);
+  // The built-in convention belongs to the root layout's children slot. Keep
+  // the route-level fallback only for layoutless synthetic/test routes.
+  const defaultNotFoundOwnerLayoutId =
+    configuredNotFoundComponent === null ? (layoutEntries[0]?.id ?? null) : null;
+  const notFoundComponent =
+    configuredNotFoundComponent ??
+    (defaultNotFoundOwnerLayoutId === null ? DEFAULT_NOT_FOUND_COMPONENT : null);
   if (notFoundComponent) {
     const NotFoundComponent = notFoundComponent;
     routeChildren = (
@@ -1392,11 +1595,7 @@ export function buildAppPageElements<
     : orderedTreePositions;
   for (let index = renderedTreePositions.length - 1; index >= 0; index--) {
     const treePosition = renderedTreePositions[index];
-    const segmentResetKey = resolveAppPageSegmentStateKey(
-      routeSegments,
-      treePosition,
-      options.matchedParams,
-    );
+    const segmentResetKey = resolveRouteSegmentResetKey(treePosition);
     let segmentChildren: ReactNode = routeChildren;
     const layoutEntry = layoutEntriesByTreePosition.get(treePosition);
     const templateEntry = templateEntriesByTreePosition.get(treePosition);
@@ -1423,7 +1622,9 @@ export function buildAppPageElements<
     // Building bottom-up means Loading must wrap the leaf subtree first, then
     // access/error boundaries, Template, and finally the Layout slot.
     if (layoutEntry) {
-      const layoutNotFoundComponent = getDefaultExport(layoutEntry.notFoundModule);
+      const layoutNotFoundComponent =
+        getDefaultExport(layoutEntry.notFoundModule) ??
+        (layoutEntry.id === defaultNotFoundOwnerLayoutId ? DEFAULT_NOT_FOUND_COMPONENT : null);
       if (layoutNotFoundComponent) {
         const LayoutNotFoundComponent = layoutNotFoundComponent;
         segmentChildren = (
@@ -1469,8 +1670,18 @@ export function buildAppPageElements<
     }
 
     if (templateEntry && getDefaultExport(templateEntry.templateModule)) {
+      const templateStateKey = resolveAppPageTemplateStateKey(
+        routeSegments,
+        templateEntry.treePosition,
+        options.matchedParams,
+      );
       segmentChildren = (
-        <Slot id={templateEntry.id} key={segmentResetKey}>
+        <Slot
+          id={templateEntry.id}
+          key={
+            String(process.env.__NEXT_CACHE_COMPONENTS) === "true" ? undefined : templateStateKey
+          }
+        >
           {segmentChildren}
         </Slot>
       );
@@ -1545,7 +1756,7 @@ export function buildAppPageElements<
     </GlobalErrorBoundary>
   );
 
-  elements[routeId] = (
+  const routeElement = (
     <>
       {createAppPageRouteHead(
         options.resolvedMetadata,
@@ -1560,11 +1771,33 @@ export function buildAppPageElements<
         options.resolvedMetadataPathname ?? options.routePath,
         metadataPlacement,
         options.trailingSlash,
+        options.scriptNonce,
       )}
       {createAppPageStreamingMetadataBody(streamingMetadataBodyId)}
     </>
   );
+  elements[routeId] = pageRenderDependency
+    ? renderAfterAppDependencies(routeElement, [pageRenderDependency])
+    : routeElement;
 
+  // Merge only after rendering is complete so metadata never participates in
+  // element construction, without copying the rendered element map on return.
+  Object.assign(
+    elements,
+    metadataEntries,
+    options.route.staticSiblings && options.route.staticSiblings.length > 0
+      ? { [APP_STATIC_SIBLINGS_KEY]: options.route.staticSiblings }
+      : {},
+    shouldRenderPrefetchLoadingShell
+      ? {
+          // Client loading components serialize as module references in Flight. Keep
+          // a durable marker in the shell payload so external router tests and
+          // diagnostics can recognize this as a loading-boundary response without
+          // requiring source text to appear in client component references.
+          [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        }
+      : {},
+  );
   registerAppElementRenderDependencies(elements, renderDependenciesByElementId);
   return elements;
 }

@@ -10,6 +10,7 @@ import type { NextRequest } from "vinext/shims/server";
 import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import { runWithRootParamsUsage } from "vinext/shims/root-params";
 import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
+import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
 import {
   createStaticGenerationHeadersContext,
   getAppRouteStaticGenerationErrorMessage,
@@ -21,6 +22,7 @@ import {
   shouldWriteAppRouteHandlerCache,
   type AppRouteHandlerModule,
 } from "./app-route-handler-policy.js";
+import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
 import {
   applyRouteHandlerMiddlewareContext,
   applyRouteHandlerRevalidateHeader,
@@ -56,9 +58,7 @@ export type AppRouteHandlerFunction = (
 export type RouteHandlerCacheSetter = (
   key: string,
   data: CachedRouteValue,
-  revalidateSeconds: number,
-  tags: string[],
-  expireSeconds?: number,
+  policy: IsrWritePolicy,
 ) => Promise<void>;
 type AppRouteErrorReporter = (
   error: Error,
@@ -98,11 +98,13 @@ export function applyDraftModeCachePolicy(response: Response, isDraftMode: boole
 
   const headers = new Headers(response.headers);
   applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
-  return new Response(response.body, {
+  const result = new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers,
   });
+  copyLinkHeaderProvenance(response.headers, result.headers);
+  return result;
 }
 
 type ExecuteAppRouteHandlerOptions = {
@@ -192,6 +194,10 @@ export async function executeAppRouteHandler(
   options: ExecuteAppRouteHandlerOptions,
 ): Promise<Response> {
   const previousHeadersPhase = options.setHeadersAccessPhase("route-handler");
+  const middlewareMergeOptions = {
+    appendResponseLink:
+      options.handler.runtime === "edge" || options.handler.runtime === "experimental-edge",
+  };
 
   try {
     let handlerResult: RunAppRouteHandlerResult;
@@ -227,7 +233,7 @@ export async function executeAppRouteHandler(
       markKnownDynamicAppRoute(options.routePattern);
     }
 
-    // The route's cache tags, shared by the response Cache-Tag header (so edge
+    // The route's cache tags, shared by the adapter's response policy (so edge
     // adapters can purge by tag) and the ISR write below. Cheap + side-effect free.
     const routeTags = options.buildPageCacheTags(
       options.cleanPathname,
@@ -278,13 +284,12 @@ export async function executeAppRouteHandler(
       const routeWritePromise = (async () => {
         try {
           const routeCacheValue = await buildAppRouteCacheValue(routeClone);
-          await options.isrSet(
-            routeKey,
-            routeCacheValue,
-            revalidateSeconds,
-            routeTags,
-            options.expireSeconds,
-          );
+          await options.isrSet(routeKey, routeCacheValue, {
+            cacheControl: isrCacheControl(revalidateSeconds, {
+              expireSeconds: options.expireSeconds,
+            }),
+            tags: routeTags,
+          });
           options.isrDebug?.("route cache written", routeKey);
         } catch (cacheErr) {
           console.error("[vinext] ISR route cache write error:", cacheErr);
@@ -303,6 +308,7 @@ export async function executeAppRouteHandler(
           isHead: options.isAutoHead,
         }),
         options.middlewareContext,
+        middlewareMergeOptions,
       ),
       shouldApplyDraftPolicy,
     );
@@ -336,6 +342,7 @@ export async function executeAppRouteHandler(
               },
             ),
             options.middlewareContext,
+            middlewareMergeOptions,
           ),
           shouldApplyDraftPolicy,
         );
@@ -345,6 +352,7 @@ export async function executeAppRouteHandler(
         applyRouteHandlerMiddlewareContext(
           new Response(null, { status: specialError.statusCode }),
           options.middlewareContext,
+          middlewareMergeOptions,
         ),
         shouldApplyDraftPolicy,
       );
@@ -369,6 +377,7 @@ export async function executeAppRouteHandler(
       applyRouteHandlerMiddlewareContext(
         new Response(null, { status: 500 }),
         options.middlewareContext,
+        middlewareMergeOptions,
       ),
       shouldApplyDraftPolicy,
     );

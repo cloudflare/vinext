@@ -171,14 +171,16 @@ describe("App Router dynamic requests", () => {
     if (!transform || typeof transform === "function") {
       throw new Error("dynamic request transform hook not found");
     }
-    const runTransform = (consumer: "client" | "server", id: string) =>
-      transform.handler.call(
-        { environment: { config: { consumer } } } as never,
-        "import(request)",
-        id,
-      );
+    const runTransform = (consumer: "client" | "server", id: string, code = "import(request)") =>
+      transform.handler.call({ environment: { config: { consumer } } } as never, code, id);
 
-    expect(runTransform("server", "/app/page.tsx")).toBeTruthy();
+    const cachedServerResult = runTransform("server", "/app/page.tsx");
+    expect(cachedServerResult).toBeTruthy();
+    expect(runTransform("server", "/app/page.tsx")).toBe(cachedServerResult);
+    expect(runTransform("server", "/app/page.tsx", "import(otherRequest)")).not.toBe(
+      cachedServerResult,
+    );
+    expect(runTransform("server", "/app/other.tsx")).not.toBe(cachedServerResult);
     expect(runTransform("client", "/app/page.tsx")).toBeNull();
     expect(
       runTransform("client", "/app/node_modules/dynamic-request-dependency/index.js"),
@@ -788,6 +790,40 @@ function withDeclaration(value = require(request)) {
       "/app/node_modules/dynamic-request-dependency/index.js",
     )?.code;
     expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(2);
+  });
+
+  it("resolves static require requests encoded with String.fromCharCode", () => {
+    // Regression for the downstream patch in nodejs/nodejs.org@30ca20133337398e6707bb2cb21df450d6d9da04.
+    const transformed = _transformVeryDynamicRequests(
+      "const loaded = require(String.fromCharCode(46, 47, 118, 97, 108, 117, 101));",
+      "/app/load.js",
+    )?.code;
+
+    expect(transformed).toContain('require("./value")');
+    expect(transformed).not.toContain("MODULE_NOT_FOUND");
+  });
+
+  it("does not evaluate shadowed or non-literal String.fromCharCode calls", () => {
+    const transformed = _transformVeryDynamicRequests(
+      `function load(String) {
+  return require(String.fromCharCode(46, 47, 118, 97, 108, 117, 101));
+}
+require(String.fromCharCode(...codeUnits));`,
+      "/app/load.js",
+    )?.code;
+
+    expect(transformed).not.toContain('require("./value")');
+    expect(transformed?.match(/MODULE_NOT_FOUND/g)).toHaveLength(2);
+  });
+
+  it("matches literal require handling for empty and root character-code requests", () => {
+    const transformed = _transformVeryDynamicRequests(
+      "require(String.fromCharCode()); require(String.fromCharCode(47));",
+      "/app/load.js",
+    )?.code;
+
+    expect(transformed).toContain('require("")');
+    expect(transformed?.match(/MODULE_NOT_FOUND/g)).toHaveLength(1);
   });
 
   it("serves guarded fully dynamic requests in pages and route handlers during development", async () => {

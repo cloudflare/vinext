@@ -21,6 +21,7 @@ let _ssrHeadChildren: React.ReactNode[] = [];
 let _documentInitialHead: React.ReactNode[] = [];
 /** @internal — exposed for unit tests of the client head projection. */
 export const _clientHeadChildren = new Map<symbol, React.ReactNode>();
+let _clientHeadSyncScheduled = false;
 
 let _getSSRHeadChildren = (): React.ReactNode[] => _ssrHeadChildren;
 let _resetSSRHeadImpl = (): void => {
@@ -424,6 +425,56 @@ export function _applyHeadPropsToElement(
 }
 
 /**
+ * Compare an existing head element with a newly-created projection.
+ *
+ * Chromium and Firefox hide the nonce HTML attribute after a node is inserted
+ * under CSP while preserving the `nonce` property. Normalize that browser
+ * behavior before comparing so unchanged nonce-bearing scripts/styles are not
+ * removed, re-executed, and appended at the end of `<head>`.
+ *
+ * Ported from Next.js: packages/next/src/client/head-manager.ts.
+ */
+export function isEqualHeadNode(oldTag: Element, newTag: Element): boolean {
+  if (
+    typeof HTMLElement !== "undefined" &&
+    oldTag instanceof HTMLElement &&
+    newTag instanceof HTMLElement
+  ) {
+    const nonce = newTag.getAttribute("nonce");
+    if (nonce && !oldTag.getAttribute("nonce")) {
+      const cloneTag = newTag.cloneNode(true) as HTMLElement;
+      cloneTag.setAttribute("nonce", "");
+      cloneTag.nonce = nonce;
+      return nonce === oldTag.nonce && oldTag.isEqualNode(cloneTag);
+    }
+  }
+
+  return oldTag.isEqualNode(newTag);
+}
+
+function scheduleClientHeadSync(): void {
+  if (_clientHeadSyncScheduled) return;
+  _clientHeadSyncScheduled = true;
+  queueMicrotask(() => {
+    _clientHeadSyncScheduled = false;
+    _syncClientHead();
+  });
+}
+
+/** @internal — register/update one mounted Head instance and batch reconciliation. */
+export function _updateClientHeadInstance(instanceId: symbol, children: React.ReactNode): void {
+  _clientHeadChildren.delete(instanceId);
+  _clientHeadChildren.set(instanceId, children);
+  scheduleClientHeadSync();
+}
+
+/** @internal — unregister one mounted Head instance and batch reconciliation. */
+export function _removeClientHeadInstance(instanceId: symbol): void {
+  _clientHeadChildren.delete(instanceId);
+  scheduleClientHeadSync();
+}
+
+/**
  * Reconcile the document <head> against the desired projection.
  *
  * Mirrors Next.js's client `head-manager.ts` `updateElements()`: rather than
@@ -452,9 +503,27 @@ export function _syncClientHead(): void {
   const charsetEl = headEl.querySelector("meta[charset]");
   if (charsetEl) oldTags.add(charsetEl);
 
+  const desiredHead = reduceHeadChildren([...defaultHead(), ..._clientHeadChildren.values()]);
+  const title = desiredHead.find((child) => child.type === "title");
+  const titleChildren = (title?.props as { children?: React.ReactNode } | undefined)?.children;
+  const titleText =
+    typeof titleChildren === "string"
+      ? titleChildren
+      : Array.isArray(titleChildren)
+        ? titleChildren.join("")
+        : "";
+  if (document.title !== titleText) document.title = titleText;
+
+  // Next.js owns <title> through document.title rather than the element diff.
+  // Preserve the existing SSR title node and its position in the document.
+  for (const oldTag of oldTags) {
+    if (oldTag.tagName.toLowerCase() === "title") oldTags.delete(oldTag);
+  }
+
   const newTags: Element[] = [];
-  for (const child of reduceHeadChildren([...defaultHead(), ..._clientHeadChildren.values()])) {
+  for (const child of desiredHead) {
     if (typeof child.type !== "string") continue;
+    if (child.type === "title") continue;
 
     const domEl = document.createElement(child.type);
     _applyHeadPropsToElement(domEl, child.props as Record<string, unknown>);
@@ -463,15 +532,9 @@ export function _syncClientHead(): void {
     // Reuse an identical node already in <head> so its DOM position (and thus
     // the head ordering produced by SSR) is preserved.
     //
-    // Note: Next.js routes <title> through document.title rather than
-    // updateElements(), so a title node never moves. We reconcile <title> like
-    // any other tag — on hydration with an unchanged title it is reused in
-    // place via isEqualNode (the common case), and only on a client-side title
-    // *change* does the old node get removed and the new one appended. The
-    // position of <title> in <head> is not observable, so this is cosmetic.
     let isNew = true;
     for (const oldTag of oldTags) {
-      if (oldTag.isEqualNode(domEl)) {
+      if (isEqualHeadNode(oldTag, domEl)) {
         oldTags.delete(oldTag);
         isNew = false;
         break;
@@ -495,6 +558,14 @@ export function _syncClientHead(): void {
   // charset is prepended and only prepended. Don't "fix" this back to match
   // Next.js's sequence. (This branch only runs on client-only navigation; on
   // SSR hydration the charset is reused in place via isEqualNode above.)
+  // Next.js reconciles changed tag types in this fixed order. Preserve JSX
+  // order within each type while matching that cross-type insertion contract.
+  const tagTypeOrder = ["meta", "base", "link", "style", "script", "noscript"];
+  const getTagTypeOrder = (tag: Element): number => {
+    const index = tagTypeOrder.indexOf(tag.tagName.toLowerCase());
+    return index === -1 ? Number.POSITIVE_INFINITY : index;
+  };
+  newTags.sort((left, right) => getTagTypeOrder(left) - getTagTypeOrder(right));
   for (const newTag of newTags) {
     if (newTag.tagName.toLowerCase() === "meta" && newTag.getAttribute("charset") !== null) {
       headEl.prepend(newTag);
@@ -522,14 +593,23 @@ function Head({ children }: HeadProps): React.ReactElement {
   // oxlint-disable-next-line react-hooks/rules-of-hooks
   useEffect(() => {
     const instanceId = headInstanceIdRef.current!;
-    _clientHeadChildren.set(instanceId, children);
-    _syncClientHead();
-
     return () => {
-      _clientHeadChildren.delete(instanceId);
-      _syncClientHead();
+      _removeClientHeadInstance(instanceId);
     };
-  }, [children]);
+  }, []);
+
+  // Keep updates separate from unmount cleanup. A children-dependent cleanup
+  // would remove the old projection before every render, so even unchanged
+  // tags would be recreated at the end of <head> during Fast Refresh.
+  // oxlint-disable-next-line react-hooks/rules-of-hooks
+  useEffect(() => {
+    const instanceId = headInstanceIdRef.current!;
+    // Next.js removes the previous props.children registration and re-adds the
+    // updated one, making the most recently updated Head instance win dedupe.
+    // Batch every Head update/unmount in this passive-effects flush so a
+    // replacement instance can register before the final projection is diffed.
+    _updateClientHeadInstance(instanceId, children);
+  });
 
   return React.createElement(React.Fragment);
 }

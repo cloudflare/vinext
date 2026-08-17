@@ -3,6 +3,11 @@ import React from "react";
 import ReactDOMServer from "react-dom/server";
 import { createAppFallbackRenderer } from "../packages/vinext/src/server/app-fallback-renderer.js";
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
+import { cookies, headersContextFromRequest } from "../packages/vinext/src/shims/headers.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -36,6 +41,8 @@ function createRenderer(overrides?: {
   sanitizeErrorForClient?: (error: Error) => Error;
   globalNotFoundModule?: { default: React.ComponentType<any> } | null;
   globalNotFoundEnabled?: boolean;
+  /** Takes precedence over `globalNotFoundModule`, for observing the loader call itself. */
+  globalNotFoundLoader?: () => Promise<{ default: React.ComponentType<any> } | null>;
   rootLayoutModules?: readonly ({ default: React.ComponentType<any> } | null | undefined)[];
   rootNotFoundModule?: { default: React.ComponentType<any> } | null;
   rscRenderer?: (
@@ -78,9 +85,11 @@ function createRenderer(overrides?: {
       globalErrorModule: null,
       globalNotFoundEnabled:
         overrides?.globalNotFoundEnabled ?? overrides?.globalNotFoundModule != null,
-      loadGlobalNotFoundModule: overrides?.globalNotFoundModule
-        ? async () => overrides.globalNotFoundModule ?? null
-        : null,
+      loadGlobalNotFoundModule:
+        overrides?.globalNotFoundLoader ??
+        (overrides?.globalNotFoundModule
+          ? async () => overrides.globalNotFoundModule ?? null
+          : null),
       makeThenableParams<T>(params: T) {
         return params;
       },
@@ -251,7 +260,7 @@ describe("app fallback renderer factory", () => {
     );
 
     const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
-    expect(payload.__sourcePage).toBe("/foo/bar/(..)(..)hoge/page");
+    expect(payload.__srcPage).toEqual(["foo", "bar", "(..)(..)hoge", "page"]);
   });
 
   it("passes request to createRscOnErrorHandler at call time", async () => {
@@ -353,7 +362,7 @@ describe("app fallback renderer factory", () => {
     );
 
     const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
-    expect(payload.__sourcePage).toBe("/foo/bar/(..)(..)hoge/page");
+    expect(payload.__srcPage).toEqual(["foo", "bar", "(..)(..)hoge", "page"]);
   });
 
   it("uses opts.layouts override instead of route.layouts", async () => {
@@ -654,6 +663,44 @@ describe("app fallback renderer with globalNotFoundModule", () => {
     expect(html).toContain("global-not-found");
     // Root layout was NOT applied — it would have rendered <html lang="en">.
     expect(html).not.toContain('lang="en"');
+  });
+
+  it("loads global-not-found outside the request context that triggered the 404", async () => {
+    // The module is imported once per worker and cached, so if its top-level
+    // scope could read the 404-triggering request, that first visitor's data
+    // would be baked in for everyone after them.
+    let moduleScopeCookieAccess = "loader-not-called";
+    const { renderer } = createRenderer({
+      globalNotFoundEnabled: true,
+      globalNotFoundLoader: async () => {
+        moduleScopeCookieAccess = await cookies().then(
+          (jar) => `read:${jar.get("session")?.value ?? "none"}`,
+          () => "rejected-no-request-context",
+        );
+        return globalNotFoundModule;
+      },
+      rootLayoutModules: [rootLayoutModule],
+    });
+    const request = new Request("https://example.com/does-not-exist", {
+      headers: { cookie: "session=victim-secret" },
+    });
+    const requestContext = createRequestContext({
+      headersContext: headersContextFromRequest(request),
+    });
+
+    const liveCookie = await runWithRequestContext(requestContext, async () => {
+      // Read first: proves the request context really is active around the
+      // 404 render, so the assertion below is isolation, not an absent context.
+      const live = (await cookies()).get("session")?.value;
+      await renderer.renderNotFound(null, false, request, undefined, undefined, {
+        headers: null,
+        status: null,
+      });
+      return live;
+    });
+
+    expect(liveCookie).toBe("victim-secret");
+    expect(moduleScopeCookieAccess).toBe("rejected-no-request-context");
   });
 
   it("uses the route's not-found.tsx boundary when notFound() is called from a page", async () => {

@@ -62,9 +62,9 @@ const __imageDeviceSizes: number[] = (() => {
 })();
 const __imageSizes: number[] = (() => {
   try {
-    return JSON.parse(process.env.__VINEXT_IMAGE_SIZES ?? "[16,32,48,64,96,128,256,384]");
+    return JSON.parse(process.env.__VINEXT_IMAGE_SIZES ?? "[32,48,64,96,128,256,384]");
   } catch {
-    return [16, 32, 48, 64, 96, 128, 256, 384];
+    return [32, 48, 64, 96, 128, 256, 384];
   }
 })();
 /**

@@ -239,6 +239,7 @@ type BuildViteConfigMetadata = {
 async function loadBuildViteConfigMetadata(
   vite: ViteModule,
   root: string,
+  mode: string,
 ): Promise<BuildViteConfigMetadata> {
   if (!hasViteConfig(root)) {
     return { nextConfig: null, prerenderConfig: null, routeRootConfig: null };
@@ -246,11 +247,7 @@ async function loadBuildViteConfigMetadata(
 
   // Read the raw user config before the multi-environment build so
   // `build.emptyOutDir: false` remains an escape hatch for vinext's upfront clean.
-  const loaded = await vite.loadConfigFromFile(
-    { command: "build", mode: "production" },
-    undefined,
-    root,
-  );
+  const loaded = await vite.loadConfigFromFile({ command: "build", mode }, undefined, root);
   const emptyOutDir = loaded?.config.build?.emptyOutDir;
   return {
     emptyOutDir: typeof emptyOutDir === "boolean" ? emptyOutDir : undefined,
@@ -265,7 +262,11 @@ async function loadBuildViteConfigMetadata(
  * project, Vite will merge our config with it (theirs takes precedence).
  * If there's no vite.config, this provides everything needed.
  */
-function buildViteConfig(overrides: Record<string, unknown> = {}, logger?: import("vite").Logger) {
+function buildViteConfig(
+  overrides: Record<string, unknown> = {},
+  logger?: import("vite").Logger,
+  mode?: string,
+) {
   const hasConfig = hasViteConfig(process.cwd());
 
   // If a vite.config exists, let Vite load it — only set root and overrides.
@@ -275,6 +276,7 @@ function buildViteConfig(overrides: Record<string, unknown> = {}, logger?: impor
   if (hasConfig) {
     return {
       root: process.cwd(),
+      ...(mode ? { mode } : {}),
       ...(logger ? { customLogger: logger } : {}),
       ...overrides,
     };
@@ -285,6 +287,7 @@ function buildViteConfig(overrides: Record<string, unknown> = {}, logger?: impor
   // so we only need vinext() in the plugins array.
   const config: Record<string, unknown> = {
     root: process.cwd(),
+    ...(mode ? { mode } : {}),
     configFile: false,
     plugins: [vinext()],
     // Deduplicate React packages to prevent "Invalid hook call" errors
@@ -466,6 +469,14 @@ async function dev() {
 async function buildApp() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("build");
+  const buildMode = parsed.mode ?? "production";
+
+  // Vite modes select config and dotenv files independently of NODE_ENV.
+  // Seed production semantics before dotenv/config loading, but preserve an
+  // explicit caller value just like Next.js and normal process-env precedence.
+  if (!process.env.NODE_ENV) {
+    Reflect.set(process.env, "NODE_ENV", "production");
+  }
 
   if (parsed.precompress) {
     process.env.VINEXT_PRECOMPRESS = "1";
@@ -473,7 +484,7 @@ async function buildApp() {
 
   loadDotenv({
     root: process.cwd(),
-    mode: "production",
+    mode: buildMode,
   });
 
   // Ensure "type": "module" in package.json before Vite loads vite.config.ts.
@@ -491,7 +502,7 @@ async function buildApp() {
 
   const root = toSlash(process.cwd());
   const isApp = hasAppDir(root);
-  const buildConfigMetadata = await loadBuildViteConfigMetadata(vite, root);
+  const buildConfigMetadata = await loadBuildViteConfigMetadata(vite, root, buildMode);
   const rawNextConfig = buildConfigMetadata.nextConfig
     ? await resolveNextConfigInput(buildConfigMetadata.nextConfig, PHASE_PRODUCTION_BUILD)
     : await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
@@ -587,7 +598,7 @@ async function buildApp() {
   }
   await runWithPreviewBuildCredentials(async () => {
     try {
-      const config = buildViteConfig({}, logger);
+      const config = buildViteConfig({}, logger, buildMode);
       const builder = await vite.createBuilder(config);
       await builder.buildApp();
 
@@ -611,7 +622,7 @@ async function buildApp() {
         let userTransformPlugins: import("vite").PluginOption[] = [];
         if (hasViteConfig(process.cwd())) {
           const loaded = await vite.loadConfigFromFile(
-            { command: "build", mode: "production", isSsrBuild: true },
+            { command: "build", mode: buildMode, isSsrBuild: true },
             undefined,
             root,
           );
@@ -638,6 +649,7 @@ async function buildApp() {
         }
         await vite.build({
           root,
+          mode: buildMode,
           configFile: false,
           plugins: [...userTransformPlugins, vinext({ disableAppRouter: true })],
           resolve: {
@@ -909,6 +921,7 @@ function printHelp(cmd?: string) {
                          to vinext({ prerender: true }) and takes priority.
     --prerender-concurrency <count>
                          Maximum number of routes to pre-render in parallel
+    --mode <mode>        Load .env.<mode>* files and pass mode to Vite
     --precompress        Precompress static assets at build time (.br, .gz, .zst)
     -h, --help           Show this help
 `);

@@ -148,7 +148,9 @@ class EdgeCdnAdapter implements CdnCacheAdapter {
 describe("edge CDN adapter integration", () => {
   it("isrGet returns null (origin renders) even after isrSet", async () => {
     setCdnCacheAdapter(new EdgeCdnAdapter());
-    await isrSet("app:/p:html", buildPagesCacheValue("<p>cached</p>", {}), 60, []);
+    await isrSet("app:/p:html", buildPagesCacheValue("<p>cached</p>", {}), {
+      cacheControl: { revalidate: 60 },
+    });
     expect(await isrGet("app:/p:html")).toBeNull();
   });
 
@@ -164,7 +166,9 @@ describe("edge CDN adapter integration", () => {
     const edge = new EdgeCdnAdapter();
     setCdnCacheAdapter(edge);
 
-    await isrSet("app:/p:html", buildPagesCacheValue("<p>x</p>", {}), 60, []);
+    await isrSet("app:/p:html", buildPagesCacheValue("<p>x</p>", {}), {
+      cacheControl: { revalidate: 60 },
+    });
 
     expect(edge.writes).toBe(1);
     expect(set).not.toHaveBeenCalled();

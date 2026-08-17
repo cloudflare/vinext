@@ -178,6 +178,13 @@ describe("next-intl", () => {
 
   afterAll(() => stopFixtureDevServer(proc));
 
+  it("negotiates the root locale through middleware", async () => {
+    const { html, status } = await fetchPage("/");
+    expect(status).toBe(200);
+    expect(html).toContain('<html lang="en"');
+    expect(html).toContain("Hello World");
+  });
+
   it("renders English SSR content", async () => {
     const { html, status } = await fetchPage("/en");
     expect(status).toBe(200);
@@ -188,6 +195,8 @@ describe("next-intl", () => {
   });
 
   it("renders German SSR content", async () => {
+    // The fixture mirrors nodejs.org's wildcard package export:
+    // import(`@vinext-test/next-intl/locales/${locale}.json`).
     const { html, status } = await fetchPage("/de");
     expect(status).toBe(200);
     expect(html).toContain('<html lang="de"');

@@ -4,11 +4,13 @@ import {
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
 import {
+  NEXT_CACHE_TAGS_HEADER,
+  NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
-  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_STALE_TIME_PENDING_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./headers.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -19,6 +21,8 @@ import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
+import { applyPrerenderCacheLifeHeader } from "./prerender-cache-life-header.js";
+import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 
 export type AppPageMiddlewareContext = {
   headers: Headers | null;
@@ -40,6 +44,8 @@ type AppPageResponsePolicy = {
 type AppPagePrerenderCacheLife = {
   expire?: number;
   revalidate?: number;
+  /** Client-router dimension — see `resolveClientStaleTimeSeconds`. */
+  stale?: number;
 };
 
 type ResolveAppPageResponsePolicyBaseOptions = {
@@ -67,7 +73,10 @@ type AppPageHtmlResponsePolicy = {
 } & AppPageResponsePolicy;
 
 type BuildAppPageRscResponseOptions = {
+  cacheTags?: readonly string[];
   dynamicStaleTimeSeconds?: number;
+  /** The render is being captured for a cache write but streams before its cacheLife resolves. */
+  staleTimePending?: boolean;
   isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   mountedSlotsHeader?: string | null;
@@ -79,6 +88,7 @@ type BuildAppPageRscResponseOptions = {
 };
 
 type BuildAppPageHtmlResponseOptions = {
+  cacheTags?: readonly string[];
   draftCookie?: string | null;
   /** Combined preload `Link` header value (React hints + font preloads), already capped. */
   linkHeader?: string;
@@ -117,23 +127,25 @@ function applyDynamicStaleTimeHeader(headers: Headers, dynamicStaleTimeSeconds?:
   }
 }
 
-function applyPrerenderCacheLifeHeader(
+/**
+ * Only ever set from a *completed* render's cacheLife (cache replay or
+ * prerender seed) — `use cache` scopes keep resolving after headers commit,
+ * so a streaming response can never carry it.
+ */
+export function applyClientStaleTimeHeader(
   headers: Headers,
-  requestCacheLife: AppPagePrerenderCacheLife | null | undefined,
+  staleTimeSeconds: number | undefined,
 ): void {
-  if (!requestCacheLife) return;
-  const payload: AppPagePrerenderCacheLife = {};
-  if (
-    typeof requestCacheLife.revalidate === "number" &&
-    Number.isFinite(requestCacheLife.revalidate)
-  ) {
-    payload.revalidate = requestCacheLife.revalidate;
+  if (staleTimeSeconds === undefined) return;
+  headers.set(NEXT_ROUTER_STALE_TIME_HEADER, String(Math.floor(staleTimeSeconds)));
+}
+
+function applyPrerenderCacheTagsHeader(headers: Headers, cacheTags: readonly string[] | undefined) {
+  if (cacheTags && cacheTags.length > 0) {
+    // Match Next.js's static-generation side channel. Tags are already
+    // canonicalized by buildAppPageTags before reaching response shaping.
+    headers.set(NEXT_CACHE_TAGS_HEADER, cacheTags.join(","));
   }
-  if (typeof requestCacheLife.expire === "number" && Number.isFinite(requestCacheLife.expire)) {
-    payload.expire = requestCacheLife.expire;
-  }
-  if (payload.revalidate === undefined && payload.expire === undefined) return;
-  headers.set(VINEXT_PRERENDER_CACHE_LIFE_HEADER, JSON.stringify(payload));
 }
 
 export function resolveAppPageRscResponsePolicy(
@@ -300,6 +312,9 @@ export function buildAppPageRscResponse(
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
   applyDynamicStaleTimeHeader(headers, options.dynamicStaleTimeSeconds);
+  if (options.staleTimePending) {
+    headers.set(VINEXT_STALE_TIME_PENDING_HEADER, "1");
+  }
   if (options.policy.cacheControl) {
     headers.set("Cache-Control", options.policy.cacheControl);
   }
@@ -316,6 +331,7 @@ export function buildAppPageRscResponse(
   applyRscCompatibilityIdHeader(headers);
   applyRscDeploymentIdHeader(headers);
   applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
+  applyPrerenderCacheTagsHeader(headers, options.cacheTags);
 
   applyTimingHeader(headers, options.timing);
 
@@ -345,17 +361,19 @@ export function buildAppPageHtmlResponse(
   if (options.draftCookie) {
     headers.append("Set-Cookie", options.draftCookie);
   }
-  if (options.linkHeader) {
-    headers.set("Link", options.linkHeader);
-  }
-
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+  if (options.linkHeader) {
+    headers.append("Link", options.linkHeader);
+  }
   applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
+  applyPrerenderCacheTagsHeader(headers, options.cacheTags);
 
   applyTimingHeader(headers, options.timing);
 
-  return new Response(body, {
+  const response = new Response(body, {
     status: options.middlewareContext.status ?? 200,
     headers,
   });
+  markFrameworkLinkHeaders(response.headers, options.linkHeader);
+  return response;
 }

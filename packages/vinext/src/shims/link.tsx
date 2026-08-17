@@ -47,8 +47,6 @@ import {
   navigatePagesRouterLinkWithFallback,
   resolvePagesRouterQueryOnlyHref,
 } from "../client/pages-router-link-navigation.js";
-import { createRouteTrieCache, matchRouteWithTrie } from "../routing/route-matching.js";
-import { stripBasePath } from "../utils/base-path.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import {
   getPagesMiddlewareDataHref,
@@ -57,6 +55,11 @@ import {
 } from "./internal/pages-data-target.js";
 import { interpolateDynamicRouteHref, resolveDynamicRouteHref } from "./internal/interpolate-as.js";
 import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
+import {
+  canAutoPrefetchFullAppRoute,
+  resolveAutoAppRoutePrefetch,
+  resolveFullAppRoutePrefetch,
+} from "./internal/app-route-prefetch-policy.js";
 import { RouterContext } from "./internal/router-context.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 import {
@@ -78,6 +81,29 @@ type NavigateEvent = {
 
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
+
+type NavigationModule = typeof import("./navigation.js");
+type HybridClientRouteOwnerModule = typeof import("./internal/hybrid-client-route-owner.js");
+
+let loadedNavigationModule: NavigationModule | null = null;
+let navigationModulePromise: Promise<NavigationModule> | null = null;
+let loadedHybridClientRouteOwnerModule: HybridClientRouteOwnerModule | null = null;
+let hybridClientRouteOwnerModulePromise: Promise<HybridClientRouteOwnerModule> | null = null;
+
+function loadNavigationModule(): Promise<NavigationModule> {
+  return (navigationModulePromise ??= import("./navigation.js").then((module) => {
+    loadedNavigationModule = module;
+    return module;
+  }));
+}
+
+function loadHybridClientRouteOwnerModule(): Promise<HybridClientRouteOwnerModule> {
+  return (hybridClientRouteOwnerModulePromise ??=
+    import("./internal/hybrid-client-route-owner.js").then((module) => {
+      loadedHybridClientRouteOwnerModule = module;
+      return module;
+    }));
+}
 
 export type LinkProps<_RouteInferType = unknown> = {
   href: string | UrlObject;
@@ -173,7 +199,6 @@ const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** trailingSlash from next.config.js, injected by the plugin at build time */
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
 const __prefetchInlining: boolean = process.env.__VINEXT_PREFETCH_INLINING === "true";
-const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 
 function resolveHref(href: LinkProps["href"]): string {
   if (typeof href === "string") return href;
@@ -309,104 +334,12 @@ export function resolveLinkPrefetchMode(
   return "auto";
 }
 
-function toSameOriginRouteHref(href: string): string | null {
-  if (typeof window === "undefined") return null;
-
-  let url: URL;
-  try {
-    url = new URL(href, window.location.href);
-  } catch {
-    return null;
-  }
-
-  if (url.origin !== window.location.origin) return null;
-
-  return `${stripBasePath(url.pathname, __basePath)}${url.search}`;
-}
+// Re-exported so the public test surface of this shim is unchanged after the
+// policy helpers moved to internal/app-route-prefetch-policy.ts.
+export { canAutoPrefetchFullAppRoute, resolveAutoAppRoutePrefetch };
 
 function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
   return hasAppNavigationRuntime() ? "app" : "pages";
-}
-
-function resolveMatchedAutoAppRoutePrefetch(route: VinextLinkPrefetchRoute): {
-  cacheForNavigation: boolean;
-  prefetchShellFirst: boolean;
-  shouldPrefetch: boolean;
-} {
-  const hasLoadingShell = route.canPrefetchLoadingShell;
-  return {
-    // Automatic prefetches are only unsafe as authoritative navigation
-    // payloads for dynamic routes whose active parallel branches must be
-    // derived from the click-time target tree. Other concrete dynamic URLs can
-    // match Next.js's full-prefetch behavior, including client-param routes.
-    cacheForNavigation: !hasLoadingShell && route.requiresDynamicNavigationRequest !== true,
-    prefetchShellFirst: !route.isDynamic,
-    shouldPrefetch: true,
-  };
-}
-
-export function canAutoPrefetchFullAppRoute(href: string): boolean {
-  if (typeof window === "undefined") return false;
-
-  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
-  if (!routes) return false;
-
-  const routeHref = toSameOriginRouteHref(href);
-  if (routeHref === null) return false;
-
-  const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
-  if (!match) return false;
-
-  return resolveAutoAppRoutePrefetch(href).cacheForNavigation;
-}
-
-export function resolveAutoAppRoutePrefetch(href: string): {
-  cacheForNavigation: boolean;
-  prefetchShellFirst: boolean;
-  shouldPrefetch: boolean;
-} {
-  if (typeof window === "undefined") {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
-  }
-
-  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
-  if (!routes) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
-  }
-
-  const routeHref = toSameOriginRouteHref(href);
-  if (routeHref === null) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
-  }
-
-  const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
-  if (!match) {
-    return { cacheForNavigation: false, prefetchShellFirst: false, shouldPrefetch: false };
-  }
-
-  const prefetch = resolveMatchedAutoAppRoutePrefetch(match.route);
-  const url = new URL(routeHref, "http://vinext.local");
-  if (url.search !== "") {
-    return {
-      ...prefetch,
-      cacheForNavigation: false,
-      prefetchShellFirst: true,
-    };
-  }
-
-  return prefetch;
-}
-
-function resolveFullAppRoutePrefetch(): {
-  cacheForNavigation: true;
-  prefetchShellFirst: boolean;
-  shouldPrefetch: true;
-} {
-  return {
-    cacheForNavigation: true,
-    prefetchShellFirst: true,
-    shouldPrefetch: true,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +397,19 @@ function prefetchUrl(
   ) {
     return;
   }
+  if (
+    mode === "auto" &&
+    priority === "low" &&
+    target.origin === window.location.origin &&
+    target.pathname === window.location.pathname &&
+    target.search !== window.location.search &&
+    target.hash !== ""
+  ) {
+    // Match Next.js's same-page query+hash behavior: the visible Link does not
+    // issue its query RSC request during viewport prefetch. The click remains
+    // authoritative and fetches the changed search state before scrolling.
+    return;
+  }
 
   const runPrefetch = () => {
     void (async () => {
@@ -481,14 +427,12 @@ function prefetchUrl(
           headersModule,
           hybridRouteOwner,
         ] = await Promise.all([
-          import("./navigation.js"),
+          loadNavigationModule(),
           import("../server/app-elements.js"),
           import("../server/app-rsc-cache-busting.js"),
           import("../server/app-rsc-render-mode.js"),
           import("../server/headers.js"),
-          HAS_PAGES_ROUTER || HAS_CLIENT_REWRITES
-            ? import("./internal/hybrid-client-route-owner.js")
-            : null,
+          HAS_PAGES_ROUTER || HAS_CLIENT_REWRITES ? loadHybridClientRouteOwnerModule() : null,
         ]);
         // A pointer-intent prefetch and its click navigation can start in the
         // same event turn. If navigation won the module-loading race, do not
@@ -499,14 +443,18 @@ function prefetchUrl(
           getPrefetchCache,
           getPrefetchedUrls,
           getMountedSlotsHeader,
+          createAppPrefetchRequestHeaders,
+          discardLearningOnlyPrefetchCacheEntry,
+          fetchRouteTreeGatedPrefetch,
+          hasFreshLearningOnlyPrefetchCacheEntry,
           hasSearchAgnosticPrefetchShellForRoute,
           hasPrefetchCacheEntryForNavigation,
-          peekPrefetchResponseForNavigation,
           prefetchRscResponse,
-          restoreRscResponse,
+          prepareNavigationPrefetchSnapshot,
+          DYNAMIC_NAVIGATION_CACHE_TTL,
           PREFETCH_CACHE_TTL,
         } = navigation;
-        const { createRscRequestHeaders, createRscRequestUrl } = rscCacheBusting;
+        const { createRscRequestUrl } = rscCacheBusting;
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
           NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -532,9 +480,7 @@ function prefetchUrl(
         const autoPrefetch =
           mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchPolicyHref)
-            : mode === "full-after-shell"
-              ? { cacheForNavigation: true, prefetchShellFirst: true, shouldPrefetch: true }
-              : resolveFullAppRoutePrefetch();
+            : resolveFullAppRoutePrefetch();
         if (!autoPrefetch.shouldPrefetch) return;
 
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
@@ -550,8 +496,10 @@ function prefetchUrl(
             interceptionContext,
             mountedSlotsHeader,
           );
-        const headers = createRscRequestHeaders({
+        const headers = createAppPrefetchRequestHeaders({
           interceptionContext,
+          fetchPriority: priority,
+          prefetchKind: mode === "full" ? "full" : "auto",
           renderMode: isOptimisticRouteShellPrefetch
             ? hasSearchAgnosticShell
               ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
@@ -564,7 +512,12 @@ function prefetchUrl(
           headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
         }
         const shouldSendSegmentPrefetchHeaders = isOptimisticRouteShellPrefetch || mode === "auto";
-        if (__prefetchInlining && autoPrefetch.cacheForNavigation) {
+        const requiresRouteTreePrefetch = autoPrefetch.requiresRouteTreePrefetch === true;
+        if (
+          (__prefetchInlining || requiresRouteTreePrefetch) &&
+          mode === "auto" &&
+          autoPrefetch.cacheForNavigation
+        ) {
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/__PAGE__");
         } else if (shouldSendSegmentPrefetchHeaders) {
@@ -580,31 +533,32 @@ function prefetchUrl(
             : [];
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
-        if (prefetched.has(cacheKey)) {
-          if (!autoPrefetch.cacheForNavigation) {
-            return;
-          }
-
-          const existing = getPrefetchCache().get(cacheKey);
-          if (existing?.cacheForNavigation === false) {
-            existing.cacheForNavigation = true;
-          }
+        if (autoPrefetch.cacheForNavigation) {
+          discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
+        }
+        if (
+          !autoPrefetch.cacheForNavigation &&
+          hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)
+        ) {
+          return;
         }
         const fetchFullRscPayload = () =>
           scheduleAppPrefetchFetch(
-            () =>
+            (signal) =>
               fetch(rscUrl, {
                 headers,
                 credentials: "include",
                 priority,
+                signal,
                 // @ts-expect-error — purpose is a valid fetch option in some browsers
                 purpose: "prefetch",
               }),
             priority,
           );
         const fetchLoadingShellForReuse = async (): Promise<void> => {
-          const shellHeaders = createRscRequestHeaders({
+          const shellHeaders = createAppPrefetchRequestHeaders({
             interceptionContext,
+            fetchPriority: priority,
             renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
           });
           shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
@@ -621,11 +575,12 @@ function prefetchUrl(
             prefetchRscResponse(
               shellRscUrl,
               scheduleAppPrefetchFetch(
-                () =>
+                (signal) =>
                   fetch(shellRscUrl, {
                     headers: shellHeaders,
                     credentials: "include",
                     priority,
+                    signal,
                     // @ts-expect-error — purpose is a valid fetch option in some browsers
                     purpose: "prefetch",
                   }),
@@ -645,8 +600,9 @@ function prefetchUrl(
           await shellEntry?.pending?.catch(() => {});
         };
         const fetchAliasCacheHitProbe = async (): Promise<Response> => {
-          const probeHeaders = createRscRequestHeaders({
+          const probeHeaders = createAppPrefetchRequestHeaders({
             interceptionContext,
+            fetchPriority: priority,
             renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
           });
           probeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
@@ -698,7 +654,9 @@ function prefetchUrl(
         // timing so duplicate visible links see the full payload as already
         // pending while tests/userland can still observe the later data fetch.
         const gateViaRouteTree =
-          __prefetchInlining && mode === "auto" && autoPrefetch.prefetchShellFirst;
+          (__prefetchInlining || requiresRouteTreePrefetch) &&
+          mode === "auto" &&
+          autoPrefetch.prefetchShellFirst;
         const gateViaExplicitSearchShell =
           mode === "full" &&
           hasSearchParams &&
@@ -714,75 +672,30 @@ function prefetchUrl(
                   await fetchLoadingShellForReuse();
                   return fetchFullRscPayload();
                 }
-                const shellHeaders = createRscRequestHeaders({
-                  interceptionContext,
-                  renderMode: undefined,
-                });
-                shellHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
-                shellHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
-                if (mountedSlotsHeader) {
-                  shellHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
-                }
-                const shellRscUrl = await createRscRequestUrl(fullHref, shellHeaders);
-                const shellCacheKey = AppElementsWire.encodeCacheKey(
-                  shellRscUrl,
-                  interceptionContext,
-                );
-                const shellCache = getPrefetchCache();
-                let shellEntry = shellCache.get(shellCacheKey);
-                if (shellEntry === undefined) {
-                  getPrefetchedUrls().add(shellCacheKey);
-                  prefetchRscResponse(
-                    shellRscUrl,
+                return fetchRouteTreeGatedPrefetch({
+                  fetchFullRscPayload,
+                  fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>
                     scheduleAppPrefetchFetch(
-                      () =>
-                        fetch(shellRscUrl, {
-                          headers: shellHeaders,
+                      (signal) =>
+                        fetch(routeTreeRscUrl, {
+                          headers: routeTreeHeaders,
                           credentials: "include",
                           priority,
+                          signal,
                           // @ts-expect-error — purpose is a valid fetch option in some browsers
                           purpose: "prefetch",
                         }),
                       priority,
                     ),
-                    interceptionContext,
-                    mountedSlotsHeader,
-                    undefined,
-                    {
-                      cacheForNavigation: false,
-                      optimisticRouteShell: false,
-                      prefetchKind: "route-tree",
-                    },
-                  );
-                  shellEntry = shellCache.get(shellCacheKey);
-                }
-                await shellEntry?.pending?.catch(() => {});
-                const renderedPathAndSearch = shellEntry?.snapshot?.renderedPathAndSearch;
-                if (renderedPathAndSearch) {
-                  const renderedRscUrl = await createRscRequestUrl(renderedPathAndSearch, headers);
-                  const cachedRenderedResponse = peekPrefetchResponseForNavigation(
-                    renderedRscUrl,
-                    interceptionContext,
-                    mountedSlotsHeader,
-                  );
-                  if (cachedRenderedResponse) {
-                    return restoreRscResponse(cachedRenderedResponse);
-                  }
-                }
-                return scheduleAppPrefetchFetch(
-                  () =>
-                    fetch(rscUrl, {
-                      headers,
-                      credentials: "include",
-                      priority,
-                      // @ts-expect-error — purpose is a valid fetch option in some browsers
-                      purpose: "prefetch",
-                    }),
-                  priority,
-                );
+                  fullHref,
+                  headers,
+                  interceptionContext,
+                  mountedSlotsHeader,
+                });
               })()
             : fetchFullRscPayload();
         if (
+          !__prefetchInlining &&
           mode === "full" &&
           autoPrefetch.cacheForNavigation &&
           autoPrefetch.prefetchShellFirst &&
@@ -799,9 +712,16 @@ function prefetchUrl(
           undefined,
           {
             cacheForNavigation: autoPrefetch.cacheForNavigation,
-            fallbackTtlMs: PREFETCH_CACHE_TTL,
+            fallbackTtlMs:
+              autoPrefetch.fallbackTtl === "dynamic"
+                ? DYNAMIC_NAVIGATION_CACHE_TTL
+                : PREFETCH_CACHE_TTL,
+            dynamicStaleTime: autoPrefetch.dynamicStaleTime,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
             prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
+            prepareSnapshot: autoPrefetch.cacheForNavigation
+              ? prepareNavigationPrefetchSnapshot
+              : undefined,
             searchAgnosticShell: isAutomaticSearchParamShell && !hasSearchAgnosticShell,
           },
         );
@@ -821,7 +741,7 @@ function prefetchUrl(
           const middlewareDataHref =
             fullRouteHref === fullHref
               ? dataTarget.middlewareDataHref
-              : (getPagesMiddlewareDataHref(fullHref, __basePath) ?? undefined);
+              : (getPagesMiddlewareDataHref(fullHref, __basePath, { locale }) ?? undefined);
           prefetchPagesData({ ...dataTarget, middlewareDataHref });
         } else {
           // The target is not a Pages Router route — mark it on the Pages
@@ -860,7 +780,7 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
   if (typeof window === "undefined") return;
   if (!hasAppNavigationRuntime()) return;
   const [{ getPrefetchCache }, { stripRscCacheBustingSearchParam, stripRscSuffix }] =
-    await Promise.all([import("./navigation.js"), import("../server/app-rsc-cache-busting.js")]);
+    await Promise.all([loadNavigationModule(), import("../server/app-rsc-cache-busting.js")]);
 
   let target: URL;
   try {
@@ -1186,7 +1106,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   const pagesAsHref = asHref ?? dynamicRouteHref?.as;
   const unresolvedHref = pagesAsHref ?? hrefStr;
   const rawResolvedHref =
-    typeof unresolvedHref === "string" && unresolvedHref.startsWith("#")
+    typeof unresolvedHref === "string" &&
+    unresolvedHref.startsWith("#") &&
+    !getNavigationRuntime()?.functions.navigate
       ? resolvePagesQueryOnlyHref(unresolvedHref)
       : unresolvedHref;
   const concreteRouteHref = HAS_PAGES_ROUTER
@@ -1241,6 +1163,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Track pending state for useLinkStatus()
   const [pending, setPending] = useState(false);
   const mountedRef = useRef(true);
+  const pendingPagesIntentPrefetchRef = useRef<(() => void) | null>(null);
   // Stable setter so the global navigation registry can reset this link's
   // pending state from another navigation without depending on render identity.
   const setPendingRef = useRef<PendingLinkSetter | null>(null);
@@ -1254,6 +1177,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     const setter = setPendingRef.current;
     return () => {
       mountedRef.current = false;
+      pendingPagesIntentPrefetchRef.current?.();
+      pendingPagesIntentPrefetchRef.current = null;
       // Drop our setter from the global registry on unmount so a later
       // navigation never calls into an unmounted component.
       if (setter) clearLinkForCurrentNavigation(setter);
@@ -1264,10 +1189,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // In App Router, null/undefined/"auto" is automatic prefetch and true opts
   // into a full RSC prefetch, matching Next.js's public prefetch contract.
   const internalRef = useRef<HTMLAnchorElement | null>(null);
-  const prefetchMode = resolveLinkPrefetchMode(prefetchProp, isDangerous);
+  // A shallow Pages navigation only mutates the current route's visible URL;
+  // it must not issue a data prefetch for that URL. Besides wasting a request,
+  // such a prefetch would run middleware/getServerSideProps even though the
+  // shallow transition itself deliberately skips them.
+  const prefetchRouterMode = getLinkPrefetchRouterMode();
+  const isShallowPagesLink = prefetchRouterMode === "pages" && shallow;
+  const effectivePrefetchProp = isShallowPagesLink ? false : prefetchProp;
+  const prefetchMode = resolveLinkPrefetchMode(effectivePrefetchProp, isDangerous);
   const shouldViewportPrefetch = canLinkPrefetch({
     nodeEnv: process.env.NODE_ENV,
-    prefetch: prefetchProp,
+    prefetch: effectivePrefetchProp,
     isDangerous,
   });
 
@@ -1311,7 +1243,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
               currentOrigin: window.location.origin,
             }) ?? undefined),
       queuedViewportPrefetch: false,
-      routerMode: getLinkPrefetchRouterMode(),
+      routerMode: prefetchRouterMode,
       viewportPrefetched: false,
     };
     observedLinkPrefetches.set(node, instance);
@@ -1323,15 +1255,23 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       visibleLinkPrefetches.delete(instance);
       instance.isVisible = false;
     };
-  }, [shouldViewportPrefetch, prefetchMode, normalizedHref, normalizedRouteHref, locale]);
+  }, [
+    shouldViewportPrefetch,
+    prefetchMode,
+    prefetchRouterMode,
+    normalizedHref,
+    normalizedRouteHref,
+    locale,
+  ]);
 
   const prefetchOnIntent = useCallback(() => {
     if (
+      isShallowPagesLink ||
       !canLinkIntentPrefetch({
         nodeEnv: process.env.NODE_ENV,
-        prefetch: prefetchProp,
+        prefetch: effectivePrefetchProp,
         isDangerous,
-        routerMode: getLinkPrefetchRouterMode(),
+        routerMode: prefetchRouterMode,
       })
     ) {
       return;
@@ -1352,35 +1292,53 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       locale,
     );
   }, [
-    prefetchProp,
+    effectivePrefetchProp,
     isDangerous,
+    isShallowPagesLink,
     prefetchMode,
+    prefetchRouterMode,
     normalizedHref,
     normalizedRouteHref,
     locale,
     unstable_dynamicOnHover,
   ]);
 
+  const schedulePrefetchOnIntent = useCallback(() => {
+    if (prefetchRouterMode !== "pages" || typeof window.requestAnimationFrame !== "function") {
+      prefetchOnIntent();
+      return;
+    }
+
+    pendingPagesIntentPrefetchRef.current?.();
+    const frame = window.requestAnimationFrame(() => {
+      pendingPagesIntentPrefetchRef.current = null;
+      prefetchOnIntent();
+    });
+    pendingPagesIntentPrefetchRef.current = () => window.cancelAnimationFrame(frame);
+  }, [prefetchOnIntent, prefetchRouterMode]);
+
   const handleMouseEnter = useCallback(
     (e: MouseEvent<HTMLAnchorElement>) => {
       onMouseEnter?.(e);
-      prefetchOnIntent();
+      schedulePrefetchOnIntent();
     },
-    [onMouseEnter, prefetchOnIntent],
+    [onMouseEnter, schedulePrefetchOnIntent],
   );
 
   const handleTouchStart = useCallback(
     (e: TouchEvent<HTMLAnchorElement>) => {
       onTouchStart?.(e);
-      prefetchOnIntent();
+      schedulePrefetchOnIntent();
     },
-    [onTouchStart, prefetchOnIntent],
+    [onTouchStart, schedulePrefetchOnIntent],
   );
 
   const handleClick = async (
     e: MouseEvent<HTMLAnchorElement>,
     options: { skipLinkOnClick?: boolean } = {},
   ) => {
+    pendingPagesIntentPrefetchRef.current?.();
+    pendingPagesIntentPrefetchRef.current = null;
     // In legacyBehavior, the onClick prop on <Link> itself is ignored — the
     // child's onClick is the one that runs (and Next.js even warns when
     // `onClick` is passed to <Link> alongside `legacyBehavior`). Skip the
@@ -1485,13 +1443,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // is no RSC stream to suspend on, so the soft-navigation bookkeeping
     // (`setPending`, `setLinkForCurrentNavigation`) would be a no-op at best
     // and a stale `useLinkStatus` indicator at worst.
-    const hybridOwner =
+    const hybridOwnerModule =
       HAS_PAGES_ROUTER && hasAppNavigationRuntime
-        ? (await import("./internal/hybrid-client-route-owner.js")).resolveHybridClientRouteOwner(
-            navigateHref,
-            __basePath,
-          )
+        ? (loadedHybridClientRouteOwnerModule ?? (await loadHybridClientRouteOwnerModule()))
         : null;
+    const hybridOwner = hybridOwnerModule?.resolveHybridClientRouteOwner(navigateHref, __basePath);
     if (
       HAS_PAGES_ROUTER &&
       hasAppNavigationRuntime &&
@@ -1508,7 +1464,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // App Router: delegate to navigateClientSide which handles scroll save,
     // hash-only changes, RSC fetch, and two-phase URL commit.
     if (hasAppNavigationRuntime) {
-      const { navigateClientSide } = await import("./navigation.js");
+      const { navigateClientSide } = loadedNavigationModule ?? (await loadNavigationModule());
       const setter = setPendingRef.current;
       // Register this link as the one driving the current navigation. This
       // resets any previously-pending link (e.g. a different link clicked
@@ -1516,7 +1472,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       if (setter) setLinkForCurrentNavigation(setter);
       setPending(true);
       React.startTransition(() => {
-        void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, true).finally(
+        void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, false).finally(
           () => {
             if (mountedRef.current) setPending(false);
             if (setter) clearLinkForCurrentNavigation(setter);

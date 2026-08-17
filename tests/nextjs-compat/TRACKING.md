@@ -187,39 +187,39 @@ Ported from: https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir
 **Local**: `tests/nextjs-compat/metadata.test.ts`
 **Fixtures**: `fixtures/app-basic/app/nextjs-compat/metadata-*`
 
-| #     | Next.js Test                               | Vinext Status | Notes                                                                |
+| # | Next.js Test | Vinext Status | Notes |
 | ----- | ------------------------------------------ | ------------- | -------------------------------------------------------------------- | ----------------------------------- |
-| 1     | Title in head                              | PASS          | `<title>this is the page title</title>`                              |
-| 2     | Description meta tag                       | PASS          |                                                                      |
-| 3     | Title template from layout                 | PASS          | `"%s                                                                 | Layout"` template applied correctly |
-| 4     | Title template to child page               | PASS          | `"Extra Page                                                         | Layout"`                            |
-| 5     | Generator meta tag                         | PASS          |                                                                      |
-| 6     | Application-name meta tag                  | PASS          |                                                                      |
-| 7     | Referrer meta tag                          | PASS          |                                                                      |
-| 8     | Keywords meta tag                          | PASS          | Joins with ", " (space after comma) vs Next.js "," — both valid      |
-| 9     | Author meta tags                           | PASS          | Multiple author tags rendered                                        |
-| 10    | Creator meta tag                           | PASS          |                                                                      |
-| 11    | Publisher meta tag                         | PASS          |                                                                      |
-| 12    | Robots meta tag                            | PASS          |                                                                      |
-| 13    | Format-detection meta tag                  | PASS          |                                                                      |
-| 14    | og:title                                   | PASS          |                                                                      |
-| 15    | og:description                             | PASS          |                                                                      |
-| 16    | og:url                                     | PASS          |                                                                      |
-| 17    | og:site_name                               | PASS          |                                                                      |
-| 18    | og:type                                    | PASS          |                                                                      |
-| 19    | og:image                                   | PASS          |                                                                      |
-| 20    | og:image:width/height                      | PASS          |                                                                      |
-| 21    | twitter:card                               | PASS          |                                                                      |
-| 22    | twitter:title                              | PASS          |                                                                      |
-| 23    | twitter:description                        | PASS          |                                                                      |
-| 24    | twitter:image                              | PASS          |                                                                      |
-| 25    | Complex robots (noindex, googlebot)        | PASS          |                                                                      |
-| 26    | Googlebot meta tag                         | PASS          |                                                                      |
-| 27    | Canonical link                             | PASS          |                                                                      |
-| 28    | Hreflang alternate links                   | PASS          | React renders as `hrefLang` (camelCase)                              |
-| 29    | generateMetadata with params (title)       | PASS          | Dynamic slug resolved                                                |
-| 30    | generateMetadata with params (description) | PASS          |                                                                      |
-| 31-45 | Various N/A tests                          | N/A (x15)     | Browser-only (client nav), file-based images, HMR, cache dedup, etc. |
+| 1 | Title in head | PASS | `<title>this is the page title</title>` |
+| 2 | Description meta tag | PASS | |
+| 3 | Title template from layout | PASS | `"%s                                                                 | Layout"` template applied correctly |
+| 4 | Title template to child page | PASS | `"Extra Page                                                         | Layout"` |
+| 5 | Generator meta tag | PASS | |
+| 6 | Application-name meta tag | PASS | |
+| 7 | Referrer meta tag | PASS | |
+| 8 | Keywords meta tag | PASS | Joins with ", " (space after comma) vs Next.js "," — both valid |
+| 9 | Author meta tags | PASS | Multiple author tags rendered |
+| 10 | Creator meta tag | PASS | |
+| 11 | Publisher meta tag | PASS | |
+| 12 | Robots meta tag | PASS | |
+| 13 | Format-detection meta tag | PASS | |
+| 14 | og:title | PASS | |
+| 15 | og:description | PASS | |
+| 16 | og:url | PASS | |
+| 17 | og:site_name | PASS | |
+| 18 | og:type | PASS | |
+| 19 | og:image | PASS | |
+| 20 | og:image:width/height | PASS | |
+| 21 | twitter:card | PASS | |
+| 22 | twitter:title | PASS | |
+| 23 | twitter:description | PASS | |
+| 24 | twitter:image | PASS | |
+| 25 | Complex robots (noindex, googlebot) | PASS | |
+| 26 | Googlebot meta tag | PASS | |
+| 27 | Canonical link | PASS | |
+| 28 | Hreflang alternate links | PASS | React renders as `hrefLang` (camelCase) |
+| 29 | generateMetadata with params (title) | PASS | Dynamic slug resolved |
+| 30 | generateMetadata with params (description) | PASS | |
+| 31-45 | Various N/A tests | N/A (x15) | Browser-only (client nav), file-based images, HMR, cache dedup, etc. |
 
 **Result: 30/30 pass, 0 skip, 15 N/A (browser-only, file-based images, HMR)**
 
@@ -318,16 +318,16 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 
 **Local**: `tests/e2e/app-router/nextjs-compat/metadata.spec.ts`
 
-| #   | Test                                                     | Status | Notes                                               |
+| # | Test | Status | Notes |
 | --- | -------------------------------------------------------- | ------ | --------------------------------------------------- | -------------------------- |
-| 1   | document.title matches metadata export                   | PASS   | `toHaveTitle("this is the page title")`             |
-| 2   | description meta tag is present in DOM                   | PASS   | `meta[name="description"]` queried in browser       |
-| 3   | title template applies correctly                         | PASS   | `"Page                                              | Layout"` in document.title |
-| 4   | title template applies to child page                     | PASS   | `"Extra Page                                        | Layout"`                   |
-| 5   | OpenGraph meta tags present in DOM                       | PASS   | og:title, og:description, og:type verified          |
-| 6   | Twitter card meta tags present in DOM                    | PASS   | twitter:card, twitter:title verified                |
-| 7   | generateMetadata renders correct title for dynamic route | PASS   | `"params - my-slug"`                                |
-| 8   | title updates on client-side navigation                  | PASS   | Link click -> document.title updates without reload |
+| 1 | document.title matches metadata export | PASS | `toHaveTitle("this is the page title")` |
+| 2 | description meta tag is present in DOM | PASS | `meta[name="description"]` queried in browser |
+| 3 | title template applies correctly | PASS | `"Page                                              | Layout"` in document.title |
+| 4 | title template applies to child page | PASS | `"Extra Page                                        | Layout"` |
+| 5 | OpenGraph meta tags present in DOM | PASS | og:title, og:description, og:type verified |
+| 6 | Twitter card meta tags present in DOM | PASS | twitter:card, twitter:title verified |
+| 7 | generateMetadata renders correct title for dynamic route | PASS | `"params - my-slug"` |
+| 8 | title updates on client-side navigation | PASS | Link click -> document.title updates without reload |
 
 **Result: 8/8 pass, 0 skip**
 

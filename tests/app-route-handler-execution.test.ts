@@ -199,7 +199,7 @@ describe("app route handler execution helpers", () => {
     const isrSetCalls: Array<{
       key: string;
       expireSeconds: number | undefined;
-      revalidateSeconds: number;
+      revalidateSeconds: number | false;
       tags: string[];
     }> = [];
     const phaseCalls: string[] = [];
@@ -244,9 +244,14 @@ describe("app route handler execution helpers", () => {
       isrRouteKey(pathname) {
         return "route:" + pathname;
       },
-      async isrSet(key, value, revalidateSeconds, tags, expireSeconds) {
+      async isrSet(key, value, policy) {
         expect(value.kind).toBe("APP_ROUTE");
-        isrSetCalls.push({ key, expireSeconds, revalidateSeconds, tags });
+        isrSetCalls.push({
+          key,
+          expireSeconds: policy.cacheControl.expire,
+          revalidateSeconds: policy.cacheControl.revalidate,
+          tags: policy.tags ?? [],
+        });
       },
       markDynamicUsage: dynamicUsage.markDynamicUsage,
       method: "GET",
