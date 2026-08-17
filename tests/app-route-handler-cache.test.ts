@@ -375,6 +375,40 @@ describe("app route handler cache helpers", () => {
     expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
   });
 
+  it("skips regeneration writes when a stale handler enumerates a request without cf", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const routePattern = "/api/stale-cf-reflection-" + Date.now();
+    const scheduledRegens: Array<() => Promise<void>> = [];
+    let wroteCache = false;
+
+    await readAppRouteHandlerCacheResponse(
+      createReadOptions({
+        cleanPathname: "/api/stale-cf-reflection",
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        handlerFn(request) {
+          return Response.json({ hasCf: Object.keys(request).includes("cf") });
+        },
+        async isrGet() {
+          return buildISRCacheEntry(buildCachedRouteValue("from-stale"), true);
+        },
+        async isrSet() {
+          wroteCache = true;
+        },
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        routePattern,
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRegens.push(renderFn);
+        },
+      }),
+    );
+
+    expect(scheduledRegens).toHaveLength(1);
+    await scheduledRegens[0]!();
+
+    expect(wroteCache).toBe(false);
+    expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
+  });
+
   it("rejects invalid route handler responses during background regeneration", async () => {
     const dynamicUsage = createDynamicUsageState();
     const scheduledRegens: Array<() => Promise<void>> = [];

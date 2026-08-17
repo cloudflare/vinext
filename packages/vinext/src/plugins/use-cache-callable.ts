@@ -7,7 +7,8 @@ import type {
   TransformHoistInlineDirectiveMeta,
 } from "@vitejs/plugin-rsc/transforms";
 import { parseAstAsync, type Plugin } from "vite";
-import { stripViteModuleQuery } from "../utils/path.js";
+import { isPathInside, NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
+import { magicStringTransformResult } from "./transform-result.js";
 
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
 type Program = Awaited<ReturnType<typeof parseAstAsync>>;
@@ -28,7 +29,6 @@ type CacheWrapperOptions = {
 
 const PLUGIN_NAME = "vinext:server-function-directives";
 const SOURCE_MODULE_ID_RE = /\.(?:tsx?|jsx?|mjs)(?:\?.*)?$/;
-const DEPENDENCY_MODULE_ID_RE = /[\\/]node_modules[\\/]/;
 const RESOLVED_VIRTUAL_MODULE_ID_RE = new RegExp(`^${String.fromCharCode(0)}`);
 const USE_CACHE_DIRECTIVE = /^use cache(?:: ([^\s].*))?$/;
 const USE_CACHE_DIRECTIVE_CANDIDATE = /^use cache.*$/;
@@ -103,11 +103,6 @@ function acceptsSecondArgument(
   );
 }
 
-function isInsideDirectory(directory: string, filePath: string): boolean {
-  const relativePath = path.relative(directory, filePath);
-  return relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
-}
-
 function isAppPageDefaultExport(
   options: Options,
   id: string,
@@ -119,7 +114,7 @@ function isAppPageDefaultExport(
   const modulePath = stripViteModuleQuery(id);
   const moduleFileName = path.basename(modulePath);
   return (
-    isInsideDirectory(appDir, modulePath) &&
+    isPathInside(appDir, modulePath) &&
     path.parse(moduleFileName).name === "page" &&
     options.matchesPageExtension(moduleFileName)
   );
@@ -128,7 +123,9 @@ function isAppPageDefaultExport(
 function shouldTransformModuleExport(name: string, id: string, meta: ModuleExportMeta): boolean {
   if (
     meta.isFunction === false &&
-    (meta.valueNode?.type === "ObjectExpression" || meta.valueNode?.type === "ArrayExpression")
+    ((name !== "default" && meta.valueNode?.type === "Literal") ||
+      meta.valueNode?.type === "ObjectExpression" ||
+      meta.valueNode?.type === "ArrayExpression")
   ) {
     return false;
   }
@@ -223,7 +220,7 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
       filter: {
         id: {
           include: SOURCE_MODULE_ID_RE,
-          exclude: [DEPENDENCY_MODULE_ID_RE, RESOLVED_VIRTUAL_MODULE_ID_RE],
+          exclude: [NODE_MODULES_PATH_RE, RESOLVED_VIRTUAL_MODULE_ID_RE],
         },
       },
       async handler(code, id) {
@@ -289,10 +286,7 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           result.output.prepend(
             `import * as $$ReactClient from "@vitejs/plugin-rsc/react/${runtimeEnvironment}";\n`,
           );
-          return {
-            code: result.output.toString(),
-            map: result.output.generateMap({ hires: "boundary", source: id }),
-          };
+          return magicStringTransformResult(result.output, { hires: "boundary", source: id });
         }
 
         const wrap = (
@@ -364,10 +358,7 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
             .filter(Boolean)
             .join("\n") + "\n",
         );
-        return {
-          code: result.output.toString(),
-          map: result.output.generateMap({ hires: "boundary", source: id }),
-        };
+        return magicStringTransformResult(result.output, { hires: "boundary", source: id });
       },
     },
   };

@@ -111,6 +111,25 @@ function getPackageName(id: string): string | null {
  */
 export function createClientManualChunks(shimsDir: string, preserveRouteBoundaries = false) {
   return function clientManualChunks(id: string): string | undefined {
+    // Check the shims prefix before the node_modules branch: for an installed
+    // copy the shims live under <app>/node_modules/vinext/dist/shims/, so the
+    // node_modules early return would otherwise swallow them and the "vinext"
+    // chunk would never form, leaving the shims to graph-based splitting that
+    // can place them in a static import cycle with the browser entry chunk.
+    //
+    // `shimsDir` is slash-normalized with a trailing slash; the bundler-provided
+    // id can carry native backslashes on Windows, so slash it before matching.
+    const slashedId = toSlash(id);
+    if (slashedId.startsWith(shimsDir)) {
+      if (preserveRouteBoundaries) {
+        const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
+        const extensionIndex = relativeId.lastIndexOf(".");
+        const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
+        if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
+      }
+      return "vinext";
+    }
+
     // React framework — always loaded, shared across all pages.
     // Isolating React into its own chunk is the single highest-value
     // split: it's ~130KB compressed, loaded on every page, and its
@@ -129,9 +148,6 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
         // example that does). Split those entrypoints into their own chunk
         // so the server renderer loads lazily, only on routes that use it,
         // instead of weighing down first paint on every page.
-        // Windows ids carry backslashes, so slash-normalize before matching
-        // the "react-dom/" separator (same convention as getPackageName).
-        const slashedId = toSlash(id);
         const sub = slashedId.slice(slashedId.lastIndexOf("react-dom/") + "react-dom/".length);
         if (
           sub.startsWith("server.") ||
@@ -150,19 +166,6 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
       // shared chunks (typically 5-15) based on actual import patterns,
       // with good compression efficiency.
       return undefined;
-    }
-
-    // `shimsDir` is slash-normalized with a trailing slash; the bundler-provided
-    // id can carry native backslashes on Windows, so slash it before matching.
-    const slashedId = toSlash(id);
-    if (slashedId.startsWith(shimsDir)) {
-      if (preserveRouteBoundaries) {
-        const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
-        const extensionIndex = relativeId.lastIndexOf(".");
-        const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
-        if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
-      }
-      return "vinext";
     }
 
     return undefined;

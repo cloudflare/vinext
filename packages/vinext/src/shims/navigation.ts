@@ -62,7 +62,11 @@ import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
-import { markPprFallbackShellDynamicBoundary } from "./ppr-fallback-shell.js";
+import {
+  getPprFallbackShellState,
+  markPprFallbackShellDynamicBoundary,
+} from "./ppr-fallback-shell.js";
+import { BailoutToCSRError as NavigationBailoutToCSRError } from "./navigation-errors.js";
 import type { AppRscRenderMode } from "../server/app-rsc-render-mode.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
@@ -340,6 +344,7 @@ export type PrefetchCacheEntry = {
   pending?: Promise<void>;
   preparedElements?: AppElements;
   prefetchKind?: PrefetchCacheKind;
+  reuseAfterHistoryRestore?: boolean;
   searchAgnosticShell?: boolean;
   size?: number;
   timestamp: number;
@@ -404,6 +409,21 @@ export function getPrefetchCache(): Map<string, PrefetchCacheEntry> {
     window.__VINEXT_RSC_PREFETCH_CACHE__ = new Map<string, PrefetchCacheEntry>();
   }
   return window.__VINEXT_RSC_PREFETCH_CACHE__;
+}
+
+/**
+ * Read an exact prefetch entry without allowing a settled stale value to
+ * steer a later request. Timers are an eviction optimization, not a freshness
+ * guarantee: background throttling can leave an expired route-tree entry in
+ * the Map until the next foreground read.
+ */
+export function getFreshPrefetchCacheEntry(cacheKey: string): PrefetchCacheEntry | undefined {
+  const cache = getPrefetchCache();
+  const entry = cache.get(cacheKey);
+  if (entry === undefined || entry.pending) return entry;
+  if (resolvePrefetchCacheEntryExpiresAt(entry) > Date.now()) return entry;
+  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
+  return undefined;
 }
 
 /**
@@ -487,7 +507,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   timestamp: number,
   cached: Pick<CachedRscResponse, "dynamicStaleTimeSeconds" | "expiresAt" | "serverStaleTime">,
   fallbackTtlMs: number,
-  honorDynamicStaleTime: boolean,
+  dynamicStaleTime: "verbatim" | "full-prefetch" | "ignore",
 ): number {
   if (isCacheExpiresAt(cached.expiresAt)) {
     return cached.expiresAt;
@@ -495,9 +515,18 @@ function resolvePrefetchedRscResponseExpiresAt(
   // Next's runtime-prefetch stale time comes from the completed cacheLife
   // claim. `staleTimes.dynamic` independently bounds visited/BFCache reuse and
   // is only the prefetch fallback when the render made no cacheLife claim.
-  const serverSeconds = serverStaleTimeSeconds(cached.serverStaleTime);
+  // A full prefetch uses the static window while a provisional cacheLife claim
+  // is unresolved. If the render completes with a real cacheLife or dynamic
+  // bound, completion metadata replaces the provisional marker below.
+  const serverSeconds =
+    cached.serverStaleTime?.kind === "pending" && dynamicStaleTime !== "verbatim"
+      ? undefined
+      : serverStaleTimeSeconds(cached.serverStaleTime);
   if (serverSeconds !== undefined) {
     return timestamp + serverSeconds * 1000;
+  }
+  if (dynamicStaleTime === "ignore") {
+    return timestamp + Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS);
   }
   const seconds = isStaleTimeSeconds(cached.dynamicStaleTimeSeconds)
     ? cached.dynamicStaleTimeSeconds
@@ -510,12 +539,15 @@ function resolvePrefetchedRscResponseExpiresAt(
   // An automatic prefetch takes a dynamic render's bound verbatim, including
   // below the 30s floor: Next's `computeDynamicStaleAt` never floors it, so a
   // `0` must expire the entry now rather than license 30s of credentialed
-  // reuse. `prefetch={true}` is an explicit opt-in to caching dynamic content,
-  // and Next reuses a `full` prefetch for the floored static window, so it
-  // keeps the floor.
-  return honorDynamicStaleTime
+  // reuse. `prefetch={true}` uses Next's Full fetch strategy, so a config
+  // dynamic bound of zero selects STATIC_STALETIME_MS. Nonzero completed
+  // dynamic bounds keep their existing per-page expiry.
+  return dynamicStaleTime === "verbatim"
     ? timestamp + seconds * 1000
-    : timestamp + Math.max(seconds * 1000, MIN_PREFETCH_STALE_TIME_MS);
+    : timestamp +
+        (seconds === 0
+          ? Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS)
+          : Math.max(seconds * 1000, MIN_PREFETCH_STALE_TIME_MS));
 }
 
 function resolvePrefetchCacheEntryExpiresAt(entry: PrefetchCacheEntry): number {
@@ -664,6 +696,29 @@ export function hasPrefetchCacheEntryForNavigation(
     match.entry,
     options.notifyInvalidation ?? true,
   );
+  return false;
+}
+
+/**
+ * Return whether the exact learning-only Link prefetch is still usable.
+ * Pending entries dedupe concurrent Links; settled entries only suppress a
+ * remount while their response-derived freshness window remains active.
+ */
+export function hasFreshLearningOnlyPrefetchCacheEntry(
+  rscUrl: string,
+  interceptionContext: string | null = null,
+): boolean {
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  const cache = getPrefetchCache();
+  const entry = cache.get(cacheKey);
+  if (entry?.cacheForNavigation !== false) return false;
+
+  if (entry.pending !== undefined || resolvePrefetchCacheEntryExpiresAt(entry) > Date.now()) {
+    touchPrefetchCacheEntry(cache, cacheKey, entry);
+    return true;
+  }
+
+  deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, entry, true);
   return false;
 }
 
@@ -1052,12 +1107,32 @@ export function invalidatePrefetchCache(): void {
   }
 }
 
+/**
+ * Prevent completed navigation responses from becoming authoritative again
+ * after restoring a history snapshot. Explicit Link/router prefetches remain
+ * consumable. Responses with a positive cache lifetime and interception
+ * responses retain the cache reuse licensed by Next's segment cache.
+ */
+export function disableNavigationResponsePrefetchCacheReuse(): void {
+  let didDemote = false;
+  for (const entry of new Set(getPrefetchCache().values())) {
+    if (entry.prefetchKind === undefined && entry.reuseAfterHistoryRestore !== true) {
+      didDemote ||= entry.cacheForNavigation !== false;
+      entry.cacheForNavigation = false;
+    }
+  }
+  if (didDemote && !isServer) {
+    getNavigationRuntime()?.functions.pingVisibleLinks?.();
+  }
+}
+
 export function seedPrefetchResponseSnapshot(
   rscUrl: string,
   snapshot: CachedRscResponse,
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
   fallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
+  reuseAfterHistoryRestore: boolean = false,
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -1072,6 +1147,7 @@ export function seedPrefetchResponseSnapshot(
     expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
     mountedSlotsHeader,
     outcome: "cache-seeded",
+    reuseAfterHistoryRestore,
     size: snapshot.buffer.byteLength,
     snapshot,
     timestamp,
@@ -1230,11 +1306,15 @@ function parseRenderedPathAndSearchHeader(value: string | null): string | null {
  */
 export async function snapshotRscResponse(response: Response): Promise<CachedRscResponse> {
   try {
-    return createCachedRscResponseSnapshot(response, await response.arrayBuffer());
+    const snapshot = createCachedRscResponseSnapshot(response, await response.arrayBuffer());
+    const expiresAt = restoredRscResponseExpiresAt.get(response);
+    return expiresAt === undefined ? snapshot : { ...snapshot, expiresAt };
   } finally {
     releaseAppPrefetchFetchSlot(response);
   }
 }
+
+const restoredRscResponseExpiresAt = new WeakMap<Response, number>();
 
 /**
  * Reconstruct a Response from a cached RSC snapshot.
@@ -1280,10 +1360,14 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
     );
   }
 
-  return new Response(copy ? cached.buffer.slice(0) : cached.buffer, {
+  const response = new Response(copy ? cached.buffer.slice(0) : cached.buffer, {
     status: 200,
     headers,
   });
+  if (isCacheExpiresAt(cached.expiresAt)) {
+    restoredRscResponseExpiresAt.set(response, cached.expiresAt);
+  }
+  return response;
 }
 
 /**
@@ -1303,6 +1387,67 @@ export async function prepareNavigationPrefetchSnapshot(
 }
 
 /**
+ * Gate a navigation-reusable prefetch behind the route-tree request shared by
+ * `<Link>` and `router.prefetch()`. Callers retain control of fetch scheduling
+ * and request-only options while freshness, deduplication, and alias reuse stay
+ * identical across both entry points.
+ */
+export async function fetchRouteTreeGatedPrefetch(options: {
+  fetchFullRscPayload: () => Promise<Response>;
+  fetchRouteTree: (rscUrl: string, headers: Headers) => Promise<Response>;
+  fullHref: string;
+  headers: Headers;
+  interceptionContext: string | null;
+  mountedSlotsHeader: string | null;
+}): Promise<Response> {
+  const {
+    fetchFullRscPayload,
+    fetchRouteTree,
+    fullHref,
+    headers,
+    interceptionContext,
+    mountedSlotsHeader,
+  } = options;
+  const routeTreeHeaders = new Headers(headers);
+  routeTreeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+  routeTreeHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
+  const routeTreeRscUrl = await createRscRequestUrl(fullHref, routeTreeHeaders);
+  const routeTreeCacheKey = AppElementsWire.encodeCacheKey(routeTreeRscUrl, interceptionContext);
+  let routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
+  if (routeTreeEntry === undefined) {
+    getPrefetchedUrls().add(routeTreeCacheKey);
+    prefetchRscResponse(
+      routeTreeRscUrl,
+      fetchRouteTree(routeTreeRscUrl, routeTreeHeaders),
+      interceptionContext,
+      mountedSlotsHeader,
+      undefined,
+      {
+        cacheForNavigation: false,
+        optimisticRouteShell: false,
+        prefetchKind: "route-tree",
+      },
+    );
+    routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
+  }
+  await routeTreeEntry?.pending?.catch(() => {});
+  routeTreeEntry = getFreshPrefetchCacheEntry(routeTreeCacheKey);
+  const renderedPathAndSearch = routeTreeEntry?.snapshot?.renderedPathAndSearch;
+  if (renderedPathAndSearch) {
+    const renderedRscUrl = await createRscRequestUrl(renderedPathAndSearch, headers);
+    const cachedRenderedResponse = peekPrefetchResponseForNavigation(
+      renderedRscUrl,
+      interceptionContext,
+      mountedSlotsHeader,
+    );
+    if (cachedRenderedResponse) {
+      return restoreRscResponse(cachedRenderedResponse);
+    }
+  }
+  return fetchFullRscPayload();
+}
+
+/**
  * Prefetch an RSC response and snapshot it for later consumption.
  * Stores the in-flight promise so immediate clicks can await it instead
  * of firing a duplicate fetch.
@@ -1317,8 +1462,8 @@ export function prefetchRscResponse(
   options?: PrefetchOptions,
   behavior: {
     cacheForNavigation?: boolean;
+    dynamicStaleTime?: "verbatim" | "full-prefetch" | "ignore";
     fallbackTtlMs?: number;
-    honorDynamicStaleTime?: boolean;
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
     prepareSnapshot?: (snapshot: CachedRscResponse) => Promise<AppElements>;
@@ -1366,7 +1511,10 @@ export function prefetchRscResponse(
           // data and is never navigation-consumable. Keep it on the prefetch
           // freshness lattice so another search string can reuse the shell;
           // the later navigation response still honors dynamicStaleTime.
-          behavior.honorDynamicStaleTime !== false && behavior.searchAgnosticShell !== true,
+          behavior.searchAgnosticShell === true
+            ? "ignore"
+            : (behavior.dynamicStaleTime ??
+                (behavior.optimisticRouteShell === true ? "ignore" : "verbatim")),
         );
         if (behavior.prepareSnapshot) {
           try {
@@ -1867,6 +2015,10 @@ const _EMPTY_PARAMS: Record<string, string | string[]> = {};
 
 export type ClientNavigationRenderSnapshot = {
   pathname: string;
+  // Preserve the browser URL's raw query spelling for exact navigation
+  // identity. ReadonlyURLSearchParams intentionally canonicalizes `%20` to `+`
+  // when serialized, so it cannot reconstruct the href used for a commit.
+  search: string;
   searchParams: ReadonlyURLSearchParams;
   params: Record<string, string | string[]>;
 };
@@ -1910,14 +2062,14 @@ export function createClientNavigationRenderSnapshot(
 
   return {
     pathname: stripBasePath(url.pathname, __basePath),
+    search: url.search,
     searchParams: new ReadonlyURLSearchParams(url.search),
     params,
   };
 }
 
 export function createSnapshotPathAndSearch(snapshot: ClientNavigationRenderSnapshot): string {
-  const query = snapshot.searchParams.toString();
-  return query === "" ? snapshot.pathname : `${snapshot.pathname}?${query}`;
+  return snapshot.pathname + snapshot.search;
 }
 
 // Module-level fallback for environments without window (tests, SSR).
@@ -2067,6 +2219,18 @@ export function usePathname(): string {
  */
 export function useSearchParams(): ReadonlyURLSearchParams {
   if (isServer) {
+    const ctx = getNavigationContext();
+    if (
+      ctx?.isStaticGeneration === true &&
+      ctx.isForceStatic !== true &&
+      getPprFallbackShellState() === null
+    ) {
+      // Next.js treats a client component reading useSearchParams during a
+      // static render as a client-render boundary. Throwing its canonical
+      // control-flow error lets React render the nearest Suspense fallback
+      // into the static HTML while the browser fills in the real URL values.
+      throw new NavigationBailoutToCSRError("useSearchParams()");
+    }
     markPprFallbackShellDynamicBoundary();
     // During SSR for "use client" components, the navigation context may not be set.
     // getServerSearchParamsSnapshot also covers the Pages Router compat shim.
@@ -2437,6 +2601,7 @@ export async function navigateClientSide(
   // an RSC fetch; everything else proceeds to the RSC navigation below.
   const earlyIntent = navigationPlanner.classifyEarlyNavigationIntent({
     basePath: __basePath,
+    currentUrlSpace: "browser",
     currentHref: window.location.href,
     mode,
     scroll,
@@ -2497,6 +2662,7 @@ export async function navigateClientSide(
         undefined,
         scrollIntent,
         visibleCommitMode,
+        earlyIntent.bypassNavigationCache,
       );
     } else {
       if (mode === "replace") {
@@ -2713,6 +2879,7 @@ const _appRouter: AppRouterInstance = {
           ? resolveFullAppRoutePrefetch()
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
       const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
+      const requiresRouteTreePrefetch = policy.requiresRouteTreePrefetch === true;
       // The call-time header snapshot defaults to AUTO/learning semantics.
       // A full reusable prefetch is the one policy that suppresses this header.
       if (reusable && kind === "full") {
@@ -2720,7 +2887,10 @@ const _appRouter: AppRouterInstance = {
       }
       if (reusable && kind === "auto") {
         headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
-        headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, __prefetchInlining ? "/__PAGE__" : "1");
+        headers.set(
+          NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+          __prefetchInlining || requiresRouteTreePrefetch ? "/__PAGE__" : "1",
+        );
       }
       // Both derive from the same headers and neither feeds the other, so the
       // rewrite variant is generated alongside rather than after.
@@ -2754,13 +2924,12 @@ const _appRouter: AppRouterInstance = {
         ) {
           return;
         }
-      } else if (prefetched.has(cacheKey)) {
+      } else if (hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)) {
         attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
         return;
       }
       prefetched.add(cacheKey);
-      prefetchRscResponse(
-        rscUrl,
+      const fetchFullRscPayload = () =>
         scheduleAppPrefetchFetch(
           (signal) =>
             fetch(rscUrl, {
@@ -2770,7 +2939,31 @@ const _appRouter: AppRouterInstance = {
               signal,
             }),
           "low",
-        ),
+        );
+      const fetchPromise =
+        reusable && kind === "auto" && requiresRouteTreePrefetch
+          ? fetchRouteTreeGatedPrefetch({
+              fetchFullRscPayload,
+              fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>
+                scheduleAppPrefetchFetch(
+                  (signal) =>
+                    fetch(routeTreeRscUrl, {
+                      headers: routeTreeHeaders,
+                      credentials: "include",
+                      priority: "low" as RequestInit["priority"],
+                      signal,
+                    }),
+                  "low",
+                ),
+              fullHref,
+              headers,
+              interceptionContext,
+              mountedSlotsHeader,
+            })
+          : fetchFullRscPayload();
+      prefetchRscResponse(
+        rscUrl,
+        fetchPromise,
         interceptionContext,
         mountedSlotsHeader,
         options,
@@ -2781,13 +2974,18 @@ const _appRouter: AppRouterInstance = {
                 policy.fallbackTtl === "dynamic"
                   ? DYNAMIC_NAVIGATION_CACHE_TTL
                   : PREFETCH_CACHE_TTL,
-              honorDynamicStaleTime: policy.honorDynamicStaleTime,
+              dynamicStaleTime: policy.dynamicStaleTime,
               optimisticRouteShell: false,
               prefetchKind: "navigation",
               prepareSnapshot: prepareNavigationPrefetchSnapshot,
             }
           : {
               cacheForNavigation: false,
+              fallbackTtlMs:
+                policy.fallbackTtl === "dynamic"
+                  ? DYNAMIC_NAVIGATION_CACHE_TTL
+                  : PREFETCH_CACHE_TTL,
+              dynamicStaleTime: policy.dynamicStaleTime,
               optimisticRouteShell: true,
               prefetchKind: "navigation",
             },

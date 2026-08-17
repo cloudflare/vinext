@@ -5,6 +5,9 @@ import path, { toSlash } from "pathslash";
 import { isUnknownRecord as isRecord } from "../utils/record.js";
 import { hasTrailingComma } from "../utils/has-trailing-comma.js";
 import { relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
+import { stripViteModuleQuery } from "../utils/path.js";
+import { getAstName, stringLiteralValue, walkAst } from "./ast-utils.js";
+import { magicStringTransformResult } from "./transform-result.js";
 
 type AstRecord = Record<string, unknown>;
 
@@ -34,40 +37,10 @@ function getBoolean(node: AstRecord, key: string): boolean {
   return node[key] === true;
 }
 
-function nodeName(node: unknown): string | null {
-  if (!isRecord(node)) return null;
-  const name = node.name;
-  if (typeof name === "string") return name;
-  const value = node.value;
-  return typeof value === "string" ? value : null;
-}
-
-function nodeStringValue(node: unknown): string | null {
-  if (!isRecord(node)) return null;
-  const value = node.value;
-  return typeof value === "string" ? value : null;
-}
-
-function walkAst(value: unknown, visitor: (node: AstRecord) => void): void {
-  if (!isRecord(value)) return;
-  visitor(value);
-
-  for (const [key, child] of Object.entries(value)) {
-    if (key === "parent") continue;
-    if (Array.isArray(child)) {
-      for (const item of child) {
-        walkAst(item, visitor);
-      }
-    } else if (isRecord(child)) {
-      walkAst(child, visitor);
-    }
-  }
-}
-
 function importSource(node: AstRecord): string | null {
   const source = node.source;
   if (!isRecord(source)) return null;
-  return nodeStringValue(source);
+  return stringLiteralValue(source);
 }
 
 function isNextDynamicSource(source: string | null): boolean {
@@ -86,7 +59,7 @@ function collectDynamicImportLocals(ast: unknown): Set<string> {
     for (const specifier of getArray(node, "specifiers")) {
       if (!isRecord(specifier)) continue;
       if (getString(specifier, "type") !== "ImportDefaultSpecifier") continue;
-      const local = nodeName(specifier.local);
+      const local = getAstName(specifier.local);
       if (local) locals.add(local);
     }
   }
@@ -164,7 +137,7 @@ function collectBlockScopedBindingNames(body: readonly unknown[]): Set<string> {
     }
 
     if (type === "FunctionDeclaration" || type === "ClassDeclaration") {
-      const name = nodeName(statement.id);
+      const name = getAstName(statement.id);
       if (name) names.add(name);
     }
   }
@@ -219,7 +192,7 @@ function collectFunctionScopeBindingNames(node: AstRecord): Set<string> {
   const names = new Set<string>();
 
   if (getString(node, "type") === "FunctionExpression") {
-    const name = nodeName(node.id);
+    const name = getAstName(node.id);
     if (name) names.add(name);
   }
 
@@ -323,7 +296,7 @@ function visitDynamicCalls(
 
   if (type === "ClassDeclaration" || type === "ClassExpression") {
     const names = new Set<string>();
-    const name = nodeName(value.id);
+    const name = getAstName(value.id);
     if (name) names.add(name);
     visitChildren(value, withoutBindings(dynamicLocals, names), visitor);
     return;
@@ -353,7 +326,7 @@ function collectImportSpecifiers(node: unknown): string[] {
 
   walkAst(node, (item) => {
     if (getString(item, "type") === "ImportExpression") {
-      const specifier = nodeStringValue(item.source);
+      const specifier = stringLiteralValue(item.source);
       if (specifier && !seen.has(specifier)) {
         seen.add(specifier);
         specifiers.push(specifier);
@@ -365,7 +338,7 @@ function collectImportSpecifiers(node: unknown): string[] {
     const callee = item.callee;
     if (!isRecord(callee) || getString(callee, "type") !== "Import") return;
     const firstArg = getArray(item, "arguments")[0];
-    const specifier = nodeStringValue(firstArg);
+    const specifier = stringLiteralValue(firstArg);
     if (specifier && !seen.has(specifier)) {
       seen.add(specifier);
       specifiers.push(specifier);
@@ -378,7 +351,7 @@ function collectImportSpecifiers(node: unknown): string[] {
 function propertyKeyName(property: unknown): string | null {
   if (!isRecord(property)) return null;
   if (getBoolean(property, "computed")) return null;
-  return nodeName(property.key);
+  return getAstName(property.key);
 }
 
 function objectProperties(node: unknown): AstRecord[] {
@@ -476,12 +449,7 @@ function cleanResolvedId(id: string): string {
     start += 1;
   }
 
-  return toSlash(
-    id
-      .slice(start)
-      .replace(/^\/@fs\//, "/")
-      .split("?")[0],
-  );
+  return toSlash(stripViteModuleQuery(id.slice(start).replace(/^\/@fs\//, "/")));
 }
 
 // `toManifestModuleId` runs once per resolved specifier but `root` is constant
@@ -663,10 +631,7 @@ export async function transformNextDynamicPreloadMetadata(
   await Promise.all(pending);
 
   if (!changed) return null;
-  return {
-    code: output.toString(),
-    map: output.generateMap({ hires: "boundary" }),
-  };
+  return magicStringTransformResult(output);
 }
 
 export function createDynamicPreloadMetadataPlugin(): Plugin {

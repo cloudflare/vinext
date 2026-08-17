@@ -26,6 +26,7 @@ declare global {
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 
 const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
+const ENCODED_PATH_DELIMITER_RE = /%(?:2f|5c)/i;
 
 /**
  * How an App Router prefetch for a given href should behave: whether to issue
@@ -34,16 +35,17 @@ const linkPrefetchRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>
  */
 export type AppRoutePrefetchPolicy = {
   cacheForNavigation: boolean;
-  fallbackTtl: "dynamic" | "static";
   /**
-   * Whether a dynamic render's stale-time bound applies verbatim, including
-   * below the 30s prefetch floor. Automatic prefetches take it verbatim, so a
-   * dynamic `0` is never reused. `prefetch={true}` opts into caching dynamic
-   * content and keeps the floored static window, mirroring Next's split
-   * between `auto` and `full` in `getPrefetchEntryCacheStatus`.
+   * How the dynamic stale-time signal affects this prefetch. Navigation data
+   * takes it verbatim, explicit full prefetches fall back to the static window
+   * only when it is zero, and loading shells ignore it because their contents
+   * are static.
    */
-  honorDynamicStaleTime: boolean;
+  dynamicStaleTime: "verbatim" | "full-prefetch" | "ignore";
+  fallbackTtl: "dynamic" | "static";
   prefetchShellFirst: boolean;
+  /** Fetch the route tree before the concrete page segment. */
+  requiresRouteTreePrefetch?: true;
   shouldPrefetch: boolean;
 };
 
@@ -65,8 +67,8 @@ function toSameOriginRouteHref(href: string): string | null {
 /** Href the manifest does not cover: no request, nothing reusable. */
 const NO_APP_ROUTE_PREFETCH: AppRoutePrefetchPolicy = {
   cacheForNavigation: false,
+  dynamicStaleTime: "verbatim",
   fallbackTtl: "static",
-  honorDynamicStaleTime: true,
   prefetchShellFirst: false,
   shouldPrefetch: false,
 };
@@ -88,22 +90,45 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   if (!match) return NO_APP_ROUTE_PREFETCH;
 
   const route = match.route;
+  const requiresRouteTreePrefetch =
+    String(process.env.__NEXT_CACHE_COMPONENTS) === "true" && route.hasRootParams === true;
   // A search-param href renders query-specific output, so its payload can only
   // ever be a shell — never reusable by a navigation to the same route.
-  const hasSearchParams = new URL(routeHref, "http://vinext.local").search !== "";
+  const routeUrl = new URL(routeHref, "http://vinext.local");
+  const hasSearchParams = routeUrl.search !== "";
+  // A Cache Components dynamic href with an encoded path delimiter must stay
+  // in the learning-only Segment Cache. The server decodes the param while the
+  // client cache key retains its encoded spelling; publishing that payload for
+  // navigation reuse would make the two segment identities disagree. A
+  // root-level dynamic route also stays learning-only: Next's unencoded control
+  // for this case still performs a dynamic request during navigation. Ordinary
+  // prefixed dynamic hrefs do not have either constraint and remain reusable.
+  //
+  // Next.js parity:
+  // test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
+  const isFullyDynamicRootRoute =
+    route.patternParts.length === 1 && route.patternParts[0]?.startsWith(":");
+  const hasCacheComponentsLearningOnlyDynamicPath =
+    route.isDynamic &&
+    String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
+    (ENCODED_PATH_DELIMITER_RE.test(routeUrl.pathname) ||
+      (isFullyDynamicRootRoute && !requiresRouteTreePrefetch));
+  const cacheForNavigation =
+    !hasSearchParams &&
+    !hasCacheComponentsLearningOnlyDynamicPath &&
+    (requiresRouteTreePrefetch ||
+      (!route.canPrefetchLoadingShell && route.requiresDynamicNavigationRequest !== true));
   return {
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
     // Routes with loading boundaries prefetch a shell first so navigation can
     // commit loading.js immediately. Dynamic routes without loading-shell
     // fallbacks can be cached for navigation unless their active parallel
     // branches must be derived from the click-time target tree.
-    cacheForNavigation:
-      !hasSearchParams &&
-      !route.canPrefetchLoadingShell &&
-      route.requiresDynamicNavigationRequest !== true,
+    cacheForNavigation,
+    dynamicStaleTime: cacheForNavigation ? "verbatim" : "ignore",
     fallbackTtl: "static",
-    honorDynamicStaleTime: true,
-    prefetchShellFirst: hasSearchParams || !route.isDynamic,
+    prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,
+    ...(requiresRouteTreePrefetch ? { requiresRouteTreePrefetch: true } : {}),
     shouldPrefetch: true,
   };
 }
@@ -111,8 +136,8 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
 export function resolveFullAppRoutePrefetch(): AppRoutePrefetchPolicy {
   return {
     cacheForNavigation: true,
+    dynamicStaleTime: "full-prefetch",
     fallbackTtl: "static",
-    honorDynamicStaleTime: false,
     prefetchShellFirst: true,
     shouldPrefetch: true,
   };

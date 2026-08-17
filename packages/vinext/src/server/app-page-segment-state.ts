@@ -18,6 +18,23 @@ type AppPageSegmentParam = {
   type: AppPageSegmentParamType;
 };
 
+function canonicalizeAppPageParam(value: string): string {
+  try {
+    return encodeURIComponent(decodeURIComponent(value));
+  } catch {
+    return value;
+  }
+}
+
+export function canonicalizeAppPageParams(params: AppPageParams): void {
+  for (const key of Object.keys(params)) {
+    const value = params[key];
+    params[key] = Array.isArray(value)
+      ? value.map(canonicalizeAppPageParam)
+      : canonicalizeAppPageParam(value);
+  }
+}
+
 function formatParamSegmentValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) {
     return value.join("/");
