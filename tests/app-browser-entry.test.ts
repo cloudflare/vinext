@@ -32,6 +32,7 @@ import {
   hydrateRootInTransition,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
+import { shouldWaitForSamePathSearchNavigationResponse } from "../packages/vinext/src/server/app-browser-navigation-response.js";
 import {
   peekSettledPrefetchResponseForNavigation,
   preserveCommittedPrefetchExpiry,
@@ -839,6 +840,35 @@ describe("app browser entry inline CSS cleanup", () => {
 });
 
 describe("app browser entry navigation scheduling", () => {
+  it("waits for same-path programmatic search responses without broadening other navigation modes", () => {
+    const currentSnapshot = {
+      ...createClientNavigationRenderSnapshot("https://example.com/base/products?provider=8", {}),
+      pathname: "/products",
+    };
+    const classify = (overrides: {
+      navigationKind?: "navigate" | "traverse" | "refresh";
+      programmaticTransition?: boolean;
+      target?: string;
+    }) =>
+      shouldWaitForSamePathSearchNavigationResponse({
+        basePath: "/base",
+        currentSnapshot,
+        navigationKind: overrides.navigationKind ?? "navigate",
+        programmaticTransition: overrides.programmaticTransition ?? true,
+        targetUrl: new URL(overrides.target ?? "https://example.com/base/products?provider=9"),
+      });
+
+    expect(classify({})).toBe(true);
+    expect(classify({ target: "https://example.com/base/products" })).toBe(true);
+    expect(classify({ programmaticTransition: false })).toBe(false);
+    expect(classify({ navigationKind: "traverse" })).toBe(false);
+    expect(classify({ navigationKind: "refresh" })).toBe(false);
+    expect(classify({ target: "https://example.com/base/details?provider=9" })).toBe(false);
+    expect(classify({ target: "https://example.com/base/products?provider=8#reviews" })).toBe(
+      false,
+    );
+  });
+
   it("peeks at a settled prefetch without transferring ownership before reuse planning", () => {
     const snapshot = {
       buffer: new ArrayBuffer(0),

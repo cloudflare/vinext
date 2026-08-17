@@ -88,6 +88,7 @@ import {
   type PendingBrowserRouterState,
 } from "./app-browser-navigation-controller.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
+import { shouldWaitForSamePathSearchNavigationResponse } from "./app-browser-navigation-response.js";
 import {
   resolveManifestNavigationInterceptionContext,
   resolveMiddlewareRewriteNavigationInterceptionContext,
@@ -2254,6 +2255,26 @@ function bootstrapHydration(
         );
         const cacheBufferPromise = new Response(cacheBranch).arrayBuffer();
         void cacheBufferPromise.catch(() => {});
+
+        // A same-path useRouter transition retains the client subtree that may
+        // own an optimistic update. Resolving its router-state promise from the
+        // first Flight model while later chunks are still arriving can leave
+        // that render entangled with the optimistic transition indefinitely.
+        // Next's uncached navigation path waits for fetchServerResponse before
+        // resolving the router action, retaining the old content in the
+        // meantime. Consume the cache branch to the same completion boundary;
+        // React's tee is then fully buffered when createFromFetch starts below.
+        if (
+          shouldWaitForSamePathSearchNavigationResponse({
+            basePath: __basePath,
+            currentSnapshot: navigationInitiationState.navigationSnapshot,
+            navigationKind,
+            programmaticTransition,
+            targetUrl: url,
+          })
+        ) {
+          await cacheBufferPromise;
+        }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
