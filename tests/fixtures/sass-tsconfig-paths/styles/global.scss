@@ -1,0 +1,14 @@
+@use "@tokens" as tokens;
+@use "@tokens/colors" as theme;
+@use "@tokens/special/colors" as special;
+@use "@palette-colors-tokens" as fallback;
+@use "../vendor/node_modules/example/entry" as dependency;
+@import url("https://example.com/external.css");
+
+.alias-probe {
+  color: tokens.$foreground;
+  background: theme.$background;
+  border-color: special.$border;
+  outline-color: fallback.$accent;
+  text-decoration-color: dependency.$dependency-color;
+}

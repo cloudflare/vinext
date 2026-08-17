@@ -24,6 +24,7 @@ import {
 import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
+import { getAppRouteOutputPath } from "../packages/vinext/src/utils/prerender-output-paths.js";
 
 const PAGES_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
 const APP_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/app-basic");
@@ -222,6 +223,177 @@ describe("extractRscPayloadFromPrerenderedHtml", () => {
 });
 
 describe("prerenderApp — RSC extraction", () => {
+  it("requests metadata routes through basePath while writing basePath-free artifacts", async () => {
+    const root = tmpDir("vinext-prerender-metadata-basepath-");
+    const outDir = path.join(root, "out");
+    const requestedPaths: string[] = [];
+    const server = createServer((req, res) => {
+      requestedPaths.push(req.url ?? "");
+      if (req.url === "/__vinext/prerender/metadata-routes") {
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify([{ path: "/robots.txt", routePattern: "/robots.txt", routeSegments: [] }]),
+        );
+        return;
+      }
+      if (req.url === "/docs/robots.txt") {
+        res.setHeader("content-type", "text/plain");
+        res.setHeader("cache-control", "public, max-age=0, must-revalidate");
+        res.setHeader("x-next-cache-tags", "metadata-user-tag");
+        res.setHeader("x-vinext-prerender-cache-life", '{"revalidate":900}');
+        res.end("User-Agent: *\nAllow: /buildtime\n");
+        return;
+      }
+      res.statusCode = 404;
+      res.end("<html>not found</html>");
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const config = await resolveNextConfig({ basePath: "/docs" });
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: [],
+        metadataRoutes: [
+          {
+            type: "robots",
+            isDynamic: true,
+            filePath: path.join(root, "app", "robots.ts"),
+            routePrefix: "",
+            routeSegments: [],
+            servedUrl: "/robots.txt",
+            contentType: "text/plain",
+          },
+        ],
+        outDir,
+        config,
+        _prodServer: { server, port },
+      });
+
+      expect(requestedPaths).toContain("/docs/robots.txt");
+      expect(requestedPaths).not.toContain("/robots.txt");
+      const metadataResult = findRoute(result.routes, "/robots.txt");
+      expect(metadataResult).toMatchObject({
+        status: "rendered",
+        router: "metadata",
+        tags: ["metadata-user-tag"],
+      });
+      if (metadataResult?.status === "rendered") {
+        expect(metadataResult.headers?.["x-next-cache-tags"]).toBeUndefined();
+      }
+      expect(fs.readFileSync(path.join(outDir, "robots.txt.route"), "utf8")).toContain(
+        "/buildtime",
+      );
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not seed metadata artifacts for no-cache or no-store responses", async () => {
+    const root = tmpDir("vinext-prerender-metadata-cache-admission-");
+    const outDir = path.join(root, "out");
+    const server = createServer((req, res) => {
+      if (req.url === "/__vinext/prerender/metadata-routes") {
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify([
+            {
+              path: "/manifest.webmanifest",
+              routePattern: "/manifest.webmanifest",
+              routeSegments: [],
+            },
+            { path: "/icon", routePattern: "/icon", routeSegments: [] },
+          ]),
+        );
+        return;
+      }
+      if (req.url === "/manifest.webmanifest") {
+        res.setHeader("content-type", "application/manifest+json");
+        res.setHeader("cache-control", "no-cache");
+        res.end('{"name":"runtime"}');
+        return;
+      }
+      if (req.url === "/icon") {
+        res.setHeader("content-type", "image/png");
+        res.setHeader("cache-control", "no-store");
+        res.end("runtime image");
+        return;
+      }
+      res.statusCode = 404;
+      res.end("<html>not found</html>");
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const config = await resolveNextConfig({});
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: [],
+        metadataRoutes: [
+          {
+            type: "manifest",
+            isDynamic: true,
+            filePath: path.join(root, "app", "manifest.ts"),
+            routePrefix: "",
+            routeSegments: [],
+            servedUrl: "/manifest.webmanifest",
+            contentType: "application/manifest+json",
+          },
+          {
+            type: "icon",
+            isDynamic: true,
+            filePath: path.join(root, "app", "icon.tsx"),
+            routePrefix: "",
+            routeSegments: [],
+            servedUrl: "/icon",
+            contentType: "image/png",
+          },
+        ],
+        outDir,
+        config,
+        _prodServer: { server, port },
+      });
+
+      expect(findRoute(result.routes, "/manifest.webmanifest")).toMatchObject({
+        status: "skipped",
+        reason: "dynamic",
+      });
+      expect(findRoute(result.routes, "/icon")).toMatchObject({
+        status: "skipped",
+        reason: "dynamic",
+      });
+      expect(fs.existsSync(path.join(outDir, "manifest.webmanifest.route"))).toBe(false);
+      expect(fs.existsSync(path.join(outDir, "icon.route"))).toBe(false);
+
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(outDir, "vinext-prerender.json"), "utf8"),
+      ) as { routes: Array<{ route: string; status: string }> };
+      expect(manifest.routes).toEqual(
+        expect.arrayContaining([
+          { route: "/manifest.webmanifest", status: "skipped", reason: "dynamic" },
+          { route: "/icon", status: "skipped", reason: "dynamic" },
+        ]),
+      );
+      expect(
+        manifest.routes.some(
+          (route) =>
+            route.status === "rendered" &&
+            (route.route === "/manifest.webmanifest" || route.route === "/icon"),
+        ),
+      ).toBe(false);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("writes the .rsc file from rendered HTML without a second RSC request", async () => {
     const root = tmpDir("vinext-prerender-rsc-dedupe-");
     const outDir = path.join(root, "out");
@@ -706,6 +878,41 @@ describe("prerenderPages — default mode (pages-basic)", () => {
 });
 
 describe("writePrerenderIndex", () => {
+  it("writes metadata artifact paths and response metadata without page classification", () => {
+    expect(getAppRouteOutputPath("/products/sitemap/1.xml")).toBe("products/sitemap/1.xml.route");
+
+    const dir = tmpDir("vinext-prerender-metadata-index-");
+    writePrerenderIndex(
+      [
+        {
+          route: "/robots.txt",
+          status: "rendered",
+          outputFiles: [getAppRouteOutputPath("/robots.txt")],
+          revalidate: false,
+          router: "metadata",
+          routeSegments: ["robots"],
+          headers: { "content-type": "text/plain" },
+          responseStatus: 200,
+        },
+      ],
+      dir,
+      { buildId: "metadata-build" },
+    );
+
+    const index = JSON.parse(fs.readFileSync(path.join(dir, "vinext-prerender.json"), "utf-8"));
+    expect(index.routes[0]).toEqual({
+      route: "/robots.txt",
+      status: "rendered",
+      revalidate: false,
+      router: "metadata",
+      routeSegments: ["robots"],
+      headers: { "content-type": "text/plain" },
+      responseStatus: 200,
+    });
+    expect(index.pregeneratedConcretePaths).toEqual([]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("carries the resolved cacheLife stale into the written index", () => {
     // Regression: seedMemoryCacheFromPrerender reads `route.stale` from
     // vinext-prerender.json — dropping it here silently reverts seeded cache
@@ -806,6 +1013,7 @@ describe("prerenderPages — export mode (pages-basic)", () => {
 describe("prerenderApp — default mode (app-basic)", () => {
   let outDir: string;
   let results: PrerenderRouteResult[];
+  let nextPhaseAfterPrerender: string | undefined;
 
   beforeAll(async () => {
     const rscBundlePath = await buildAppFixture(APP_FIXTURE);
@@ -819,14 +1027,22 @@ describe("prerenderApp — default mode (app-basic)", () => {
     const routes = await appRouter(appDir);
     const config = await resolveNextConfig({});
 
-    const prerenderResult = await prerenderApp({
-      mode: "default",
-      rscBundlePath,
-      routes,
-      outDir,
-      config,
-    });
-    results = prerenderResult.routes;
+    const previousNextPhase = process.env.NEXT_PHASE;
+    process.env.NEXT_PHASE = "phase-production-server";
+    try {
+      const prerenderResult = await prerenderApp({
+        mode: "default",
+        rscBundlePath,
+        routes,
+        outDir,
+        config,
+      });
+      results = prerenderResult.routes;
+      nextPhaseAfterPrerender = process.env.NEXT_PHASE;
+    } finally {
+      if (previousNextPhase === undefined) delete process.env.NEXT_PHASE;
+      else process.env.NEXT_PHASE = previousNextPhase;
+    }
   }, 120_000);
 
   afterAll(() => {
@@ -842,6 +1058,24 @@ describe("prerenderApp — default mode (app-basic)", () => {
       expect(r.outputFiles).toContain("static-test.html");
       expect(r.outputFiles).toContain("static-test.rsc");
     }
+  });
+
+  it("emits the nearest Suspense fallback when useSearchParams bails out during prerender", () => {
+    // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+    const route = "/nextjs-compat/use-search-params-static-bailout";
+    expect(findRoute(results, route)).toMatchObject({
+      route,
+      status: "rendered",
+      revalidate: false,
+    });
+
+    const html = fs.readFileSync(
+      path.join(outDir, "nextjs-compat/use-search-params-static-bailout.html"),
+      "utf8",
+    );
+    expect(html).toContain('<p id="search-params-suspense">search params suspense</p>');
+    expect(html).not.toContain('id="search-params-value"');
   });
 
   it("renders revalidate=Infinity page as static", () => {
@@ -915,6 +1149,18 @@ describe("prerenderApp — default mode (app-basic)", () => {
     const html = fs.readFileSync(path.join(outDir, "use-cache-test.html"), "utf-8");
     expect(html).toContain('"initialCacheKind":"static"');
     expect(html).toContain('"staleTimeSeconds":30');
+  });
+
+  it("renders inline server actions during the production build phase", () => {
+    const r = findRoute(results, "/prerender-inline-server-action");
+    expect(r).toMatchObject({
+      route: "/prerender-inline-server-action",
+      status: "rendered",
+    });
+
+    const html = fs.readFileSync(path.join(outDir, "prerender-inline-server-action.html"), "utf-8");
+    expect(html).toContain('<div id="phase">at buildtime</div>');
+    expect(nextPhaseAfterPrerender).toBe("phase-production-server");
   });
 
   it("records collected App Router cache tags for cache seeding", () => {

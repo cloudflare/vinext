@@ -56,8 +56,8 @@ const projectServers = {
     server: appRouterServer,
   },
   "app-router-isr-prod": {
-    testDir: "./tests/e2e/app-router",
-    testMatch: "isr.spec.ts",
+    testDir: "./tests/e2e",
+    testMatch: ["app-router/isr.spec.ts", "app-router-prod/use-cache.spec.ts"],
     use: { baseURL: "http://localhost:4198" },
     server: {
       command:
@@ -165,15 +165,18 @@ const projectServers = {
       "**/app-router/instrumentation.spec.ts",
       "**/og-image.spec.ts",
     ],
-    use: { baseURL: "http://localhost:4176" },
-    server: {
-      // Build app-router-cloudflare with Vite, then serve with wrangler dev (miniflare)
-      command: "npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4176",
-      cwd: "./examples/app-router-cloudflare",
-      port: 4176,
-      reuseExistingServer: !process.env.CI,
-      timeout: 60_000,
-    },
+    use: { baseURL: process.env.VINEXT_E2E_BASE_URL ?? "http://localhost:4176" },
+    server: process.env.VINEXT_E2E_BASE_URL
+      ? null
+      : {
+          // Build app-router-cloudflare with Vite, then serve with wrangler dev (miniflare)
+          command:
+            "npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4176",
+          cwd: "./examples/app-router-cloudflare",
+          port: 4176,
+          reuseExistingServer: !process.env.CI,
+          timeout: 60_000,
+        },
   },
   "cloudflare-sentry-app": {
     testDir: "./tests/e2e",
@@ -373,14 +376,16 @@ const projectServers = {
   "app-router-encoded-basepath-i18n": {
     testDir: "./tests/e2e/app-router-encoded-basepath-i18n",
     use: { baseURL: "http://localhost:4196" },
-    server: {
-      command:
-        "VINEXT_ENCODED_PATH_BASEPATH_I18N=1 npx vp run vinext#build && VINEXT_ENCODED_PATH_BASEPATH_I18N=1 node ../../../packages/vinext/dist/cli.js build && VINEXT_ENCODED_PATH_BASEPATH_I18N=1 node ../../../packages/vinext/dist/cli.js start --port 4196",
-      cwd: "./tests/fixtures/app-basic",
-      port: 4196,
-      reuseExistingServer: !process.env.CI,
-      timeout: 120_000,
-    },
+    server: process.env.VINEXT_BASEPATH_E2E_BASE_URL
+      ? undefined
+      : {
+          command:
+            "VINEXT_ENCODED_PATH_BASEPATH_I18N=1 npx vp run vinext#build && VINEXT_ENCODED_PATH_BASEPATH_I18N=1 node ../../../packages/vinext/dist/cli.js build && VINEXT_ENCODED_PATH_BASEPATH_I18N=1 node ../../../packages/vinext/dist/cli.js start --port 4196",
+          cwd: "./tests/fixtures/app-basic",
+          port: 4196,
+          reuseExistingServer: !process.env.CI,
+          timeout: 120_000,
+        },
   },
   "pages-router-complex": {
     // Compatibility target exercising the convoluted patterns of large,
@@ -414,6 +419,42 @@ const projectServers = {
       port: 4197,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
+    },
+  },
+  "web-worker-vinext": {
+    testDir: "./tests/e2e/web-worker",
+    use: { baseURL: "http://localhost:4200" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../../../../fixtures/app-basic/node_modules node_modules) && npx vp run vinext#build && node ../../../../../packages/vinext/dist/cli.js build && node ../../../../../packages/vinext/dist/cli.js start --port 4200",
+      cwd: "./tests/e2e/web-worker/fixtures/vinext",
+      port: 4200,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
+  "web-worker-cloudflare": {
+    testDir: "./tests/e2e/web-worker",
+    use: { baseURL: "http://localhost:4201" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../../../../fixtures/cf-app-basic/node_modules node_modules) && npx vp run vinext#build && npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4201",
+      cwd: "./tests/e2e/web-worker/fixtures/cloudflare",
+      port: 4201,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
+  "nextjs-worker-cloudflare": {
+    testDir: "./tests/e2e/nextjs-worker",
+    use: { baseURL: "http://localhost:4202" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/cf-app-basic/node_modules node_modules) && npx vp run vinext#build && NEXT_DEPLOYMENT_ID=test-deployment-id npx vp build && NEXT_DEPLOYMENT_ID=test-deployment-id npx wrangler dev --config dist/server/wrangler.json --port 4202",
+      cwd: "./tests/e2e/nextjs-worker/fixture",
+      port: 4202,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
     },
   },
 };
@@ -460,7 +501,7 @@ export default defineConfig({
         .map((name) => projectServers[name].server)
         .filter(
           (server): server is NonNullable<(typeof projectServers)[ProjectName]["server"]> =>
-            server !== null,
+            server != null,
         )
         .map((server) => [server.port, server]),
     ).values(),

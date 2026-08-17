@@ -585,6 +585,8 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
       cache: request.cache,
       mode: request.mode,
       credentials: request.credentials,
+      // Undici rejects keepalive with an exposed ReadableStream body.
+      keepalive: request.body === null && request.keepalive,
       referrer: request.referrer,
       referrerPolicy: request.referrerPolicy,
     };
@@ -624,6 +626,8 @@ export function cloneRequestWithUrl(request: Request, url: string): Request {
       cache: request.cache,
       mode: request.mode,
       credentials: request.credentials,
+      // Undici rejects keepalive with an exposed ReadableStream body.
+      keepalive: request.body === null && request.keepalive,
       referrer: request.referrer,
       referrerPolicy: request.referrerPolicy,
     };

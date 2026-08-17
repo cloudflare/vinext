@@ -21,6 +21,7 @@ import {
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
+  VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -366,6 +367,8 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
     options: HandleProgressiveActionRequestOptions<TRoute>,
   ) => Promise<Response | ProgressiveActionFormStateResult | null>;
   handleMetadataRouteRequest?: (cleanPathname: string) => Promise<Response | null>;
+  isMetadataRoutePath?: (cleanPathname: string) => boolean | Promise<boolean>;
+  getPrerenderMetadataRoutePaths?: () => Promise<unknown>;
   createPprFallbackShells?: (
     route: Pick<AppRscHandlerRoute, "params" | "pattern" | "rootParamNames">,
     params: AppPageParams,
@@ -558,6 +561,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
   request: Request,
   preMiddlewareRequestContext: RequestContext,
+  middlewareContext: AppRscMiddlewareContext,
   isDataRequest: boolean,
   isMiddlewareDataRequest: boolean,
   pagesDataRequest: Request | null,
@@ -614,13 +618,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   if (
     pathname === VINEXT_PRERENDER_STATIC_PARAMS_PATH ||
-    pathname === VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH
+    pathname === VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH ||
+    pathname === VINEXT_PRERENDER_METADATA_ROUTES_PATH
   ) {
     const { handleAppPrerenderEndpoint } = await import("./app-prerender-endpoints.js");
     const prerenderEndpointResponse = await handleAppPrerenderEndpoint(request, {
       isPrerenderEnabled() {
         return process.env.VINEXT_PRERENDER === "1";
       },
+      getMetadataRoutePaths: options.getPrerenderMetadataRoutePaths,
       loadPagesRoutes: options.loadPrerenderPagesRoutes,
       pathname,
       rootParamNamesByPattern: options.rootParamNamesByPattern,
@@ -629,12 +635,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (prerenderEndpointResponse) return prerenderEndpointResponse;
   }
 
-  const trailingSlashRedirect = normalizeTrailingSlash(
-    requestCleanPathname,
-    hadBasePath ? options.basePath : "",
-    options.trailingSlash,
-    url.search,
-  );
+  const metadataBypassesTrailingSlash =
+    options.trailingSlash &&
+    options.isMetadataRoutePath &&
+    (await options.isMetadataRoutePath(cleanPathname));
+  const trailingSlashRedirect = metadataBypassesTrailingSlash
+    ? null
+    : normalizeTrailingSlash(
+        requestCleanPathname,
+        hadBasePath ? options.basePath : "",
+        options.trailingSlash,
+        url.search,
+      );
   if (trailingSlashRedirect) return trailingSlashRedirect;
 
   // Default-locale path normalisation (issue #1336, item 4). Next.js
@@ -717,11 +729,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const isolatedMiddlewareRequest = isolatedMiddlewareSource
     ? requestWithoutRscCacheBustingSearchParam(requestWithoutRscSuffix(isolatedMiddlewareSource))
     : undefined;
-  const middlewareContext: AppRscMiddlewareContext = {
-    headers: null,
-    requestHeaders: null,
-    status: null,
-  };
   let didMiddlewareRewrite = false;
   let didMiddlewareRewritePathname = false;
 
@@ -1510,7 +1517,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // object (always `{}` for non-dynamic) so `useParams()` etc. still see
       // an object shape; only the user-facing handler context surfaces null.
       params: route.isDynamic ? renderParams : null,
-      request: new Request(routeHandlerUrl, routeHandlerRequest),
+      request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),
       route,
       searchParams: resolvedSearchParams,
     });
@@ -1715,6 +1722,11 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
         async () => {
           ensureFetchPatch();
           const preMiddlewareRequestContext = requestContextFromRequest(request);
+          const middlewareContext: AppRscMiddlewareContext = {
+            headers: null,
+            requestHeaders: null,
+            status: null,
+          };
           let response: Response;
 
           try {
@@ -1722,6 +1734,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
               options,
               request,
               preMiddlewareRequestContext,
+              middlewareContext,
               isPagesDataRequest,
               isPagesDataRequest,
               pagesDataRequest,
@@ -1739,6 +1752,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             basePath: options.basePath,
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
+            middlewareHeaders: middlewareContext.headers,
             requestContext: preMiddlewareRequestContext,
           });
         },

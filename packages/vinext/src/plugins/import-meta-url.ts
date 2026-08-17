@@ -16,6 +16,7 @@ import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { tryRealpathSync } from "../build/ssr-manifest.js";
+import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
 import {
   collectBindingNames,
@@ -24,9 +25,12 @@ import {
   isAstRecord,
   isIdentifierNamed,
   nodeArray,
+  SCRIPT_MODULE_ID_RE,
+  scriptParserLanguage,
   type AstRange,
   type AstRecord,
 } from "./ast-utils.js";
+import { magicStringTransformResult } from "./transform-result.js";
 
 type ImportMetaUrlEnvironment = "client" | "server";
 
@@ -48,16 +52,6 @@ type ImportMetaUrlCacheEntry = {
   results: Map<ImportMetaUrlEnvironment, { value: RewriteResult | null }>;
 };
 
-const TRANSFORMABLE_SCRIPT_EXTENSIONS = new Set([
-  ".cjs",
-  ".cts",
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".mts",
-  ".ts",
-  ".tsx",
-]);
 export function createImportMetaUrlPlugin(options: { getRoot: () => string | undefined }): Plugin {
   let rootPaths: RootPaths | undefined;
   let outputDirs: string[] = [];
@@ -86,8 +80,8 @@ export function createImportMetaUrlPlugin(options: { getRoot: () => string | und
     transform: {
       filter: {
         id: {
-          include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
-          exclude: [/[\\/]node_modules[\\/]/, VIRTUAL_MODULE_ID_RE],
+          include: SCRIPT_MODULE_ID_RE,
+          exclude: [NODE_MODULES_PATH_RE, VIRTUAL_MODULE_ID_RE],
         },
         code: /import\.meta(?:\.|\?\.)url|__filename|__dirname/,
       },
@@ -201,14 +195,11 @@ function rewriteCanonicalSourceIdentity(
   }
 
   if (!changed) return null;
-  return {
-    code: output.toString(),
-    map: output.generateMap({ hires: "boundary" }),
-  };
+  return magicStringTransformResult(output);
 }
 
 function cleanModuleId(id: string): string {
-  return id.split("?", 1)[0];
+  return stripViteModuleQuery(id);
 }
 
 function createRootPaths(root: string, options: { outputDirs?: string[] } = {}): RootPaths {
@@ -233,7 +224,7 @@ function transformableModuleCanonicalId(id: string, rootPaths: RootPaths): strin
   // isPathWithin check below provides a second safety net in case a
   // symlink causes the canonical path to land outside node_modules.
   if (slashedInputId.includes("/node_modules/")) return null;
-  if (!TRANSFORMABLE_SCRIPT_EXTENSIONS.has(path.extname(slashedInputId))) return null;
+  if (scriptParserLanguage(slashedInputId) === null) return null;
 
   const canonicalId = canonicalizePath(id);
   if (!isPathWithin(canonicalId, rootPaths.canonicalRoot)) return null;
@@ -323,7 +314,7 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
     if (isNewUrlExpression(value)) {
       const args = nodeArray(value.arguments);
       for (let index = 0; index < args.length; index += 1) {
-        if (index === 1 && isImportMetaUrlOrChainedNode(args[index])) continue;
+        if (index === 1 && isImportMetaUrlBaseNode(args[index])) continue;
         visit(args[index]);
       }
       // The callee is always the bare `URL` identifier (see isNewUrlExpression),
@@ -572,6 +563,25 @@ function isImportMetaUrlOrChainedNode(value: unknown): value is AstRange {
   if (isImportMetaUrlNode(value)) return true;
   return (
     isAstRecord(value) && value.type === "ChainExpression" && isImportMetaUrlNode(value.expression)
+  );
+}
+
+function isImportMetaUrlBaseNode(value: unknown): boolean {
+  if (isImportMetaUrlOrChainedNode(value)) return true;
+
+  // Vite rewrites worker constructors to:
+  //   new URL(emittedWorkerUrl, "" + import.meta.url)
+  // Preserve that generated base just like the direct asset-expression form.
+  // Replacing it with our source-identity file URL would make the browser
+  // resolve the emitted worker against file:// instead of the deployment origin.
+  return (
+    isAstRecord(value) &&
+    value.type === "BinaryExpression" &&
+    value.operator === "+" &&
+    isAstRecord(value.left) &&
+    value.left.type === "Literal" &&
+    value.left.value === "" &&
+    isImportMetaUrlOrChainedNode(value.right)
   );
 }
 

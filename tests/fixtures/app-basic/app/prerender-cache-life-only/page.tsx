@@ -2,7 +2,7 @@
 
 import { cacheLife } from "next/cache";
 
-export default function PrerenderCacheLifeOnlyPage() {
+export default async function PrerenderCacheLifeOnlyPage() {
   cacheLife({ revalidate: 1, expire: 3 });
 
   return (

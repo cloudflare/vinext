@@ -3,7 +3,21 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vite-plus/test";
 
-describe("Next.js deploy harness logging", () => {
+describe("Next.js deploy harness", () => {
+  it("enables Next.js test-only client instrumentation in deploy shards", () => {
+    const workflow = fs.readFileSync(
+      path.resolve(".github/workflows/nextjs-deploy-suite.yml"),
+      "utf8",
+    );
+    const deployShard = workflow.match(
+      /- name: Run deploy shard[\s\S]*?\n      - name: Upload test results/,
+    )?.[0];
+
+    expect(deployShard).toBeDefined();
+    expect(deployShard).toContain("NEXT_TEST_MODE: deploy");
+    expect(deployShard).toContain("__NEXT_TEST_MODE: e2e");
+  });
+
   it("does not recursively append failure diagnostics to deploy logs", () => {
     const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
     const cleanup = script.match(

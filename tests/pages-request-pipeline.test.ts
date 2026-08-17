@@ -1183,6 +1183,42 @@ describe("API routes", () => {
     expect(result.type).toBe("api");
     if (result.type !== "api") return;
     expect(result.apiUrl).toBe("/api/users");
+    expect(result.configRewriteFired).toBe(false);
+  });
+
+  it("distinguishes locale-normalized API lookup from a config rewrite", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/fr/api/users"),
+      baseDeps({
+        i18nConfig: {
+          defaultLocale: "en",
+          locales: ["en", "fr"],
+        },
+      }),
+    );
+
+    expect(result.type).toBe("api");
+    if (result.type !== "api") return;
+    expect(result.apiUrl).toBe("/api/users");
+    expect(result.configRewriteFired).toBe(false);
+  });
+
+  it("marks API intents reached through config rewrites", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/legacy/users"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [{ source: "/legacy/:path*", destination: "/api/:path*" }],
+          afterFiles: [],
+          fallback: [],
+        },
+      }),
+    );
+
+    expect(result.type).toBe("api");
+    if (result.type !== "api") return;
+    expect(result.apiUrl).toBe("/api/users");
+    expect(result.configRewriteFired).toBe(true);
   });
 
   // 12. API route with handleApi present → {type:"response"}
@@ -1196,6 +1232,68 @@ describe("API routes", () => {
     expect(handleApi).toHaveBeenCalledWith(expect.any(Request), "/api/users", null);
     // API responses default a missing content-type to octet-stream, not text/html.
     expect(result.defaultContentType).toBe("application/octet-stream");
+  });
+
+  it("continues to fallback rewrites when an API path has no route match", async () => {
+    const matchApiRoute = vi.fn().mockReturnValue(null);
+    const proxyExternal = vi.fn(async () => new Response("upstream"));
+    const result = await runPagesRequest(
+      makeRequest("/api/session?client=vinext", { "x-use-fallback": "yes" }),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [],
+          fallback: [
+            {
+              source: "/api/:path*",
+              has: [{ type: "header", key: "x-use-fallback", value: "yes" }],
+              destination: "https://upstream.example/auth/:path*?from=config",
+            },
+          ],
+        },
+        matchApiRoute,
+        proxyExternal,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    await expect(result.response.text()).resolves.toBe("upstream");
+    expect(matchApiRoute).toHaveBeenCalledWith("/api/session?client=vinext", expect.any(Request));
+    expect(proxyExternal).toHaveBeenCalledWith(
+      expect.any(Request),
+      "https://upstream.example/auth/session?from=config",
+    );
+  });
+
+  it("does not apply fallback rewrites when an API route matches", async () => {
+    const matchApiRoute = vi.fn().mockReturnValue({
+      route: { isDynamic: false, pattern: "/api/session" },
+    });
+    const handleApi = vi.fn(async () => new Response("local api"));
+    const proxyExternal = vi.fn(async () => new Response("upstream"));
+    const result = await runPagesRequest(
+      makeRequest("/api/session"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [],
+          fallback: [
+            {
+              source: "/api/:path*",
+              destination: "https://upstream.example/:path*",
+            },
+          ],
+        },
+        handleApi,
+        matchApiRoute,
+        proxyExternal,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    expect(handleApi).toHaveBeenCalledOnce();
+    expect(proxyExternal).not.toHaveBeenCalled();
   });
 
   it("tags page renders with a text/html content-type default", async () => {
@@ -1902,6 +2000,8 @@ describe("fallback rewrites on 404", () => {
         },
         serveFilesystemRoute,
         handleApi,
+        matchApiRoute: (url) =>
+          url === "/api/hello" ? { route: { isDynamic: false, pattern: "/api/hello" } } : null,
         renderPage: makeRenderPage(404),
       }),
     );
