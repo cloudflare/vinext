@@ -1,7 +1,7 @@
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
 import { stripBasePath } from "../utils/base-path.js";
 
-export function shouldWaitForSamePathSearchNavigationResponse(options: {
+export function shouldRecoverSamePathSearchCommitOnResponseCompletion(options: {
   basePath: string;
   currentSnapshot: ClientNavigationRenderSnapshot;
   navigationKind: "navigate" | "traverse" | "refresh";

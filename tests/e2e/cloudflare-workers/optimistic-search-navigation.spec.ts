@@ -22,6 +22,18 @@ async function expectDocumentPreserved(page: Page) {
   );
 }
 
+async function trackProviderResultsFallback(page: Page) {
+  await page.evaluate(() => {
+    const recordFallback = () => {
+      if (document.querySelector('[data-testid="provider-results-loading"]')) {
+        document.documentElement.dataset.optimisticNavigationFallback = "shown";
+      }
+    };
+    recordFallback();
+    new MutationObserver(recordFallback).observe(document.body, { childList: true, subtree: true });
+  });
+}
+
 async function expectProvider(page: Page, provider: string | null) {
   const expectedUrl = provider ? `${ROUTE}?provider=${provider}` : ROUTE;
   await expect(page).toHaveURL(expectedUrl);
@@ -110,6 +122,16 @@ test.describe("optimistic same-path search navigation", () => {
 
     await page.goto(ROUTE);
     await markDocument(page);
+    await trackProviderResultsFallback(page);
+    const initialHistoryLength = await page.evaluate(() => window.history.length);
+
+    await page.getByTestId("provider-netflix").click();
+    await expect(page.getByTestId("client-provider")).toHaveText("8");
+    await expect(page.getByTestId("server-provider")).toHaveText("none");
+    await expect(page.getByTestId("navigation-pending")).toHaveText("true");
+    await expectProvider(page, "8");
+    await page.getByTestId("provider-netflix").click();
+    await expectProvider(page, null);
 
     for (let cycle = 0; cycle < 5; cycle += 1) {
       for (const provider of providers) {
@@ -120,5 +142,11 @@ test.describe("optimistic same-path search navigation", () => {
         await expectProvider(page, null);
       }
     }
+
+    await expect(page.locator("html")).not.toHaveAttribute(
+      "data-optimistic-navigation-fallback",
+      "shown",
+    );
+    expect(await page.evaluate(() => window.history.length)).toBe(initialHistoryLength + 32);
   });
 });

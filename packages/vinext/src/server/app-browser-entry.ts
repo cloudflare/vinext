@@ -88,7 +88,7 @@ import {
   type PendingBrowserRouterState,
 } from "./app-browser-navigation-controller.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
-import { shouldWaitForSamePathSearchNavigationResponse } from "./app-browser-navigation-response.js";
+import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
 import {
   resolveManifestNavigationInterceptionContext,
   resolveMiddlewareRewriteNavigationInterceptionContext,
@@ -618,6 +618,7 @@ type RenderNavigationPayloadOptions = {
   historyUpdateMode: HistoryUpdateMode | undefined;
   navigationCommitKind?: "authoritative" | "detached";
   navigationInitiationState: AppRouterState;
+  navigationResponseCompletion?: Promise<unknown>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   navId: number;
   onCommittedState?: (state: AppRouterState) => void;
@@ -645,6 +646,7 @@ async function renderNavigationPayload(
     historyUpdateMode: options.historyUpdateMode,
     navigationCommitKind: options.navigationCommitKind,
     navigationInitiationState: options.navigationInitiationState,
+    navigationResponseCompletion: options.navigationResponseCompletion,
     navigationSnapshot: options.navigationSnapshot,
     navId: options.navId,
     nextElements: options.payload,
@@ -2256,26 +2258,6 @@ function bootstrapHydration(
         const cacheBufferPromise = new Response(cacheBranch).arrayBuffer();
         void cacheBufferPromise.catch(() => {});
 
-        // A same-path useRouter transition retains the client subtree that may
-        // own an optimistic update. Resolving its router-state promise from the
-        // first Flight model while later chunks are still arriving can leave
-        // that render entangled with the optimistic transition indefinitely.
-        // Next's uncached navigation path waits for fetchServerResponse before
-        // resolving the router action, retaining the old content in the
-        // meantime. Consume the cache branch to the same completion boundary;
-        // React's tee is then fully buffered when createFromFetch starts below.
-        if (
-          shouldWaitForSamePathSearchNavigationResponse({
-            basePath: __basePath,
-            currentSnapshot: navigationInitiationState.navigationSnapshot,
-            navigationKind,
-            programmaticTransition,
-            targetUrl: url,
-          })
-        ) {
-          await cacheBufferPromise;
-        }
-
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
         if (prefetchedElements) {
@@ -2296,6 +2278,15 @@ function bootstrapHydration(
           navigationCommitKind: detachedNavigationCommits ? "authoritative" : undefined,
           navigationInitiationState,
           navigationSnapshot,
+          navigationResponseCompletion: shouldRecoverSamePathSearchCommitOnResponseCompletion({
+            basePath: __basePath,
+            currentSnapshot: navigationInitiationState.navigationSnapshot,
+            navigationKind,
+            programmaticTransition,
+            targetUrl: url,
+          })
+            ? cacheBufferPromise
+            : undefined,
           navId,
           onCommittedState: (state) => {
             committedState = state;

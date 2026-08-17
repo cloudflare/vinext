@@ -99,6 +99,7 @@ type BrowserNavigationPayloadOptions = {
   historyUpdateMode: HistoryUpdateMode | undefined;
   navigationCommitKind?: "authoritative" | "detached";
   navigationInitiationState: AppRouterState;
+  navigationResponseCompletion?: Promise<unknown>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   navId: number;
   nextElements: Promise<AppElements> | AppElements;
@@ -159,6 +160,7 @@ type BrowserNavigationController = {
    * navigation would otherwise be lost.
    */
   drainPrePaintEffects(renderId: number): void;
+  commitNavigationRender(renderId: number): void;
   clearCommittedNavigationFailureTargets(renderId: number): void;
   NavigationCommitSignal(
     this: void,
@@ -484,6 +486,11 @@ export function createAppBrowserNavigationController(
     }
   }
 
+  function commitNavigationRender(renderId: number): void {
+    drainPrePaintEffects(renderId);
+    settleNavigationCommits(renderId, true);
+  }
+
   function clearCommittedNavigationFailureTargets(renderId: number): void {
     for (const [pendingId, targetHref] of pendingNavigationFailureTargets) {
       if (pendingId > renderId) {
@@ -551,8 +558,7 @@ export function createAppBrowserNavigationController(
     }, [renderId]);
 
     useLayoutEffect(() => {
-      drainPrePaintEffects(renderId);
-      settleNavigationCommits(renderId, true);
+      commitNavigationRender(renderId);
 
       return () => {
         // Settle pending renders without publishing their candidate state when
@@ -857,6 +863,25 @@ export function createAppBrowserNavigationController(
           ? "synchronous"
           : (options.visibleCommitMode ?? "transition"),
       );
+      if (options.navigationResponseCompletion) {
+        // Keep the live Flight branch streaming. If React commits it normally,
+        // NavigationCommitSignal removes this render from the pending map
+        // before the cache tee reaches EOF. A retained optimistic subtree can
+        // otherwise leave the fully received candidate uncommitted; publish it
+        // synchronously only as that terminal recovery path.
+        void options.navigationResponseCompletion.then(
+          () => {
+            if (!isCurrentNavigation(options.navId) || !hasBrowserRouterState()) return;
+            const pendingCommit = pendingNavigationCommits.get(renderId);
+            const committedState = pendingCommit?.committedState;
+            if (!committedState) return;
+            flushSync(() => {
+              getBrowserRouterStateSetter()(committedState);
+            });
+          },
+          () => {},
+        );
+      }
     } catch (error) {
       pendingNavigationFailureTargets.delete(renderId);
       pendingNavigationPrePaintEffects.delete(renderId);
@@ -998,6 +1023,7 @@ export function createAppBrowserNavigationController(
     commitSameUrlNavigatePayload,
     hmrReplaceTree,
     drainPrePaintEffects,
+    commitNavigationRender,
     clearCommittedNavigationFailureTargets,
     NavigationCommitSignal,
   };
