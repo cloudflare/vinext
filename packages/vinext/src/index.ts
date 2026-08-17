@@ -275,7 +275,7 @@ import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
-import { stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
+import { isPathInside, stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
 import {
   assertSupportedViteVersion,
   getDepOptimizeNodeEnvOptions,
@@ -316,11 +316,6 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
-
-function isInsideDirectory(dir: string, filePath: string): boolean {
-  const relativePath = path.relative(dir, filePath);
-  return relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
-}
 
 function hasServerOnlyMarkerImport(code: string): boolean {
   if (!code.includes("server-only")) return false;
@@ -1911,7 +1906,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // symlinks resolve these files outside node_modules, so skip them
           // explicitly instead of parsing the whole runtime again as possible
           // JSX on every cold request.
-          if (isInsideDirectory(__dirname, cleanId)) return;
+          if (isPathInside(__dirname, cleanId)) return;
 
           // Inside node_modules, restrict the JSX transform to files that carry
           // a React directive. `@vitejs/plugin-rsc` only parses such modules

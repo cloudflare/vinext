@@ -9,6 +9,10 @@ import {
   isAstRecord,
   isIdentifierNamed,
   nodeArray,
+  SCRIPT_MODULE_ID_RE,
+  scriptParserLanguage,
+  staticStringValue,
+  unwrapExpression,
   type AstRecord,
 } from "./ast-utils.js";
 import {
@@ -21,21 +25,11 @@ import {
   isFunctionNode,
   type AstScope,
 } from "./ast-scope.js";
+import { magicStringTransformResult } from "./transform-result.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 
-const TRANSFORMABLE_ID_RE = /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/i;
 const LITERAL_REQUIRE_RE = /\brequire\s*\(/;
 const CONDITIONAL_REQUIRE_SCRIPT_ID_RE = /\.vinext-require\.(?:js|jsx|ts|tsx)$/i;
-const TRANSPARENT_EXPRESSIONS = new Set([
-  "ChainExpression",
-  "ParenthesizedExpression",
-  "TSAsExpression",
-  "TSInstantiationExpression",
-  "TSNonNullExpression",
-  "TSSatisfiesExpression",
-  "TSTypeAssertion",
-]);
-
 type LiteralRequire = {
   argument: AstRecord & { start: number; end: number };
   specifier: string;
@@ -56,37 +50,9 @@ function syntheticModuleType(id: string): SyntheticModuleType {
   return "js";
 }
 
-function parserLanguage(id: string): "js" | "jsx" | "ts" | "tsx" {
-  const cleanId = id.split("?", 1)[0].toLowerCase();
-  if (cleanId.endsWith(".tsx")) return "tsx";
-  if (cleanId.endsWith(".ts") || cleanId.endsWith(".mts") || cleanId.endsWith(".cts")) {
-    return "ts";
-  }
-  return "jsx";
-}
-
-function unwrapExpression(value: unknown): AstRecord | null {
-  const node = isAstRecord(value) ? value : null;
-  if (!node || !TRANSPARENT_EXPRESSIONS.has(node.type)) return node;
-  return unwrapExpression(node.expression);
-}
-
 function literalString(value: unknown): string | null {
   const node = unwrapExpression(value);
-  if (
-    (node?.type === "Literal" || node?.type === "StringLiteral") &&
-    typeof node.value === "string"
-  ) {
-    return node.value;
-  }
-  if (node?.type !== "TemplateLiteral" || nodeArray(node.expressions).length !== 0) return null;
-  const quasiCandidate = nodeArray(node.quasis)[0];
-  const quasi = isAstRecord(quasiCandidate) ? quasiCandidate : null;
-  const quasiValue = quasi && typeof quasi.value === "object" ? quasi.value : null;
-  if (!quasiValue) return null;
-  const cooked = Reflect.get(quasiValue, "cooked");
-  const raw = Reflect.get(quasiValue, "raw");
-  return typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : null;
+  return staticStringValue(node);
 }
 
 function isPackageSpecifier(specifier: string): boolean {
@@ -102,7 +68,7 @@ function isPackageSpecifier(specifier: string): boolean {
 function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
   let ast: ReturnType<typeof parseAst>;
   try {
-    ast = parseAst(code, { lang: parserLanguage(id) });
+    ast = parseAst(code, { lang: scriptParserLanguage(id) ?? "jsx" });
   } catch {
     return [];
   }
@@ -257,7 +223,7 @@ export function createRequireConditionResolutionPlugin(
       }
     },
     transform: {
-      filter: { id: TRANSFORMABLE_ID_RE, code: LITERAL_REQUIRE_RE },
+      filter: { id: SCRIPT_MODULE_ID_RE, code: LITERAL_REQUIRE_RE },
       async handler(code, id) {
         const cleanId = stripViteModuleQuery(id);
         const commonjsDisposition = commonjsTransformFilter?.(cleanId);
@@ -304,10 +270,7 @@ export function createRequireConditionResolutionPlugin(
           changed = true;
         }
         if (!changed) return null;
-        return {
-          code: output.toString(),
-          map: output.generateMap({ hires: "boundary", source: id }),
-        };
+        return magicStringTransformResult(output, { hires: "boundary", source: id });
       },
     },
   };
