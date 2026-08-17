@@ -974,8 +974,8 @@ export function createSSRHandler(
 
           if (fallback === false && !isValidPath && requestPreviewData === false) {
             if (isDataReq) {
-              // Data requests get a JSON 404 so the client router can
-              // hard-navigate instead of trying to parse HTML as JSON.
+              // Data requests get Next.js's canonical notFound JSON so the
+              // client router can render the 404 route without parsing HTML.
               // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
               // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
               const deploymentId =
@@ -1177,7 +1177,10 @@ export function createSSRHandler(
               undefined,
               undefined,
               reactStrictMode,
-              errorPageContext,
+              {
+                ...errorPageContext,
+                notFoundSrcPage: patternToNextFormat(route.pattern),
+              },
             );
             return;
           }
@@ -1342,7 +1345,10 @@ export function createSSRHandler(
               undefined,
               undefined,
               reactStrictMode,
-              errorPageContext,
+              {
+                ...errorPageContext,
+                notFoundSrcPage: patternToNextFormat(route.pattern),
+              },
             );
             return;
           }
@@ -1783,6 +1789,8 @@ async function renderErrorPage(
     locales?: string[];
     defaultLocale?: string;
     crossOrigin?: string;
+    /** Original Pages route that produced this development-only notFound render. */
+    notFoundSrcPage?: string;
   } = { basePath: "" },
 ): Promise<void> {
   attachPagesRequestCookies(req);
@@ -1959,9 +1967,15 @@ async function renderErrorPage(
         [appAssetPath, errorAssetPath],
         nonceAttr,
       );
+      const errorModuleUrl = errorAssetPath
+        ? createPagesDevModuleUrl(server.config.root, errorAssetPath, server.config.base)
+        : null;
       const errorModuleSource = errorAssetPath
         ? createPagesDevModuleUrl(server.config.root, errorAssetPath, "/")
         : "next/error";
+      const appModuleUrl = appAssetPath
+        ? createPagesDevModuleUrl(server.config.root, appAssetPath, server.config.base)
+        : null;
       const appModuleSource = appAssetPath
         ? createPagesDevModuleUrl(server.config.root, appAssetPath, "/")
         : null;
@@ -1972,6 +1986,11 @@ async function renderErrorPage(
           query: parseQuery(url),
           buildId: process.env.__VINEXT_BUILD_ID,
           isFallback: false,
+          notFoundSrcPage: context.notFoundSrcPage,
+          __vinext: {
+            pageModuleUrl: errorModuleUrl ?? undefined,
+            appModuleUrl: appModuleUrl ?? undefined,
+          },
         },
       )}</script>`;
       const errorHydrationScript = createPagesDevHydrationScript({
