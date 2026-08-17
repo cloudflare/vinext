@@ -122,11 +122,26 @@ describe("rewriteAppPprFallbackShellHtmlNavigation", () => {
     expect(html).toContain('params:{"locale":"en","slug":"new-post"}');
     expect(html).toContain('"pathname":"/en/blog/new-post"');
     expect(html).toContain('"searchParams":[["preview","1"]]');
+    expect(html).toContain("searchParamsFromBrowser:true");
     const paramsIndex = html.indexOf('params:{"locale":"en","slug":"new-post"}');
     const headCloseIndex = html.indexOf("</head>");
     expect(paramsIndex).toBeGreaterThanOrEqual(0);
     expect(headCloseIndex).toBeGreaterThanOrEqual(0);
     expect(paramsIndex).toBeLessThan(headCloseIndex);
+  });
+
+  it("keeps force-static fallback-shell search params server-owned", () => {
+    const html = rewriteAppPprFallbackShellHtmlNavigation({
+      html: "<html><head></head><body>shell</body></html>",
+      isForceStatic: true,
+      params: { slug: "new-post" },
+      pathname: "/blog/new-post",
+      searchParams: new URLSearchParams([["preview", "1"]]),
+    });
+
+    expect(html).toContain("searchParamsFromBrowser:false");
+    expect(html).toContain('"searchParams":[]');
+    expect(html).not.toContain('"preview","1"');
   });
 
   it("appends actual request metadata after cached placeholder metadata", () => {

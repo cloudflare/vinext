@@ -9583,7 +9583,12 @@ describe("double-encoded path handling in middleware", () => {
       "utf8",
     );
     expect(routeMatchingSource).toContain("trieMatchRaw(routeTrie");
-    expect(routeMatchingSource).toContain("encodeURIComponent(decodeURIComponent(value))");
+    expect(routeMatchingSource).toContain("canonicalizeAppPageParams(result.params)");
+    const segmentStateSource = await readFile(
+      new URL("../packages/vinext/src/server/app-page-segment-state.ts", import.meta.url),
+      "utf8",
+    );
+    expect(segmentStateSource).toContain("encodeURIComponent(decodeURIComponent(value))");
   });
 
   it("App Router middleware receives a Request with the original encoded pathname", async () => {

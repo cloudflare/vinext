@@ -32,6 +32,7 @@ import {
   hydrateRootInTransition,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
+import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "../packages/vinext/src/server/app-browser-navigation-response.js";
 import {
   peekSettledPrefetchResponseForNavigation,
   preserveCommittedPrefetchExpiry,
@@ -841,6 +842,35 @@ describe("app browser entry inline CSS cleanup", () => {
 });
 
 describe("app browser entry navigation scheduling", () => {
+  it("recovers completed same-path search responses without broadening other modes", () => {
+    const currentSnapshot = {
+      ...createClientNavigationRenderSnapshot("https://example.com/base/products?provider=8", {}),
+      pathname: "/products",
+    };
+    const classify = (overrides: {
+      navigationKind?: "navigate" | "traverse" | "refresh";
+      programmaticTransition?: boolean;
+      target?: string;
+    }) =>
+      shouldRecoverSamePathSearchCommitOnResponseCompletion({
+        basePath: "/base",
+        currentSnapshot,
+        navigationKind: overrides.navigationKind ?? "navigate",
+        programmaticTransition: overrides.programmaticTransition ?? true,
+        targetUrl: new URL(overrides.target ?? "https://example.com/base/products?provider=9"),
+      });
+
+    expect(classify({})).toBe(true);
+    expect(classify({ target: "https://example.com/base/products" })).toBe(true);
+    expect(classify({ programmaticTransition: false })).toBe(false);
+    expect(classify({ navigationKind: "traverse" })).toBe(false);
+    expect(classify({ navigationKind: "refresh" })).toBe(false);
+    expect(classify({ target: "https://example.com/base/details?provider=9" })).toBe(false);
+    expect(classify({ target: "https://example.com/base/products?provider=8#reviews" })).toBe(
+      false,
+    );
+  });
+
   it("peeks at a settled prefetch without transferring ownership before reuse planning", () => {
     const snapshot = {
       buffer: new ArrayBuffer(0),
@@ -3592,6 +3622,181 @@ describe("app browser navigation controller", () => {
     } finally {
       detach();
     }
+  });
+
+  it("recovers an uncommitted navigation after its streamed response completes", async () => {
+    const { controller, detach, setBrowserRouterState, stateRef } = createControllerHarness();
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+    const commitEffect = vi.fn();
+    let resolveResponse!: () => void;
+    const navigationResponseCompletion = new Promise<void>((resolve) => {
+      resolveResponse = resolve;
+    });
+
+    try {
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationResponseCompletion,
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/dashboard?provider=8",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard?provider=8",
+        navId: controller.beginNavigation(),
+      });
+
+      await expect(pendingRouterState.promise).resolves.toMatchObject({ renderId: 1 });
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
+
+      resolveResponse();
+      await Promise.resolve();
+
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(2);
+      expect(setBrowserRouterState).toHaveBeenLastCalledWith(stateRef.current);
+      expect(stateRef.current.renderId).toBe(1);
+
+      controller.commitNavigationRender(1);
+      await expect(renderPromise).resolves.toBe("committed");
+      expect(commitEffect).toHaveBeenCalledTimes(1);
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(2);
+    } finally {
+      detach();
+    }
+  });
+
+  it("suppresses response-completion recovery after the render already committed", async () => {
+    const { controller, detach, setBrowserRouterState } = createControllerHarness();
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+    const commitEffect = vi.fn();
+    let resolveResponse!: () => void;
+    const navigationResponseCompletion = new Promise<void>((resolve) => {
+      resolveResponse = resolve;
+    });
+
+    try {
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationResponseCompletion,
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/dashboard?provider=8",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard?provider=8",
+        navId: controller.beginNavigation(),
+      });
+
+      await expect(pendingRouterState.promise).resolves.toBeDefined();
+      controller.commitNavigationRender(1);
+      await expect(renderPromise).resolves.toBe("committed");
+      resolveResponse();
+      await Promise.resolve();
+
+      expect(commitEffect).toHaveBeenCalledTimes(1);
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
+    } finally {
+      detach();
+    }
+  });
+
+  it("does not recover a completed response after a newer navigation starts", async () => {
+    const { controller, detach, setBrowserRouterState, stateRef } = createControllerHarness();
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+    let resolveResponse!: () => void;
+    const navigationResponseCompletion = new Promise<void>((resolve) => {
+      resolveResponse = resolve;
+    });
+    const navId = controller.beginNavigation();
+
+    try {
+      void renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationResponseCompletion,
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard?provider=8",
+        navId,
+      });
+
+      await expect(pendingRouterState.promise).resolves.toBeDefined();
+      controller.beginNavigation();
+      resolveResponse();
+      await Promise.resolve();
+
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
+    } finally {
+      detach();
+    }
+  });
+
+  it("does not recover a completed response after the browser root detaches", async () => {
+    const { controller, detach, setBrowserRouterState, stateRef } = createControllerHarness();
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+    let resolveResponse!: () => void;
+    const navigationResponseCompletion = new Promise<void>((resolve) => {
+      resolveResponse = resolve;
+    });
+
+    void renderCurrentStateNavigationPayload(controller, {
+      actionType: "navigate",
+      createNavigationCommitEffect: () => () => {},
+      historyUpdateMode: "push",
+      navigationResponseCompletion,
+      navigationSnapshot: stateRef.current.navigationSnapshot,
+      nextElements: Promise.resolve(
+        createResolvedElements("route:/dashboard", "/", null, {
+          "page:/dashboard": React.createElement("main", null, "dashboard"),
+        }),
+      ),
+      operationLane: "navigation",
+      params: {},
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      pendingRouterState,
+      previousNextUrl: null,
+      targetHref: "https://example.com/dashboard?provider=8",
+      navId: controller.beginNavigation(),
+    });
+
+    await expect(pendingRouterState.promise).resolves.toBeDefined();
+    detach();
+    resolveResponse();
+    await Promise.resolve();
+
+    expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
   });
 
   it("hard-navigates cache-restored payloads missing cache-entry proof metadata", async () => {

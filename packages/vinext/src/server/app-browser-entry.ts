@@ -88,6 +88,7 @@ import {
   type PendingBrowserRouterState,
 } from "./app-browser-navigation-controller.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
+import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
 import {
   resolveManifestNavigationInterceptionContext,
   resolveMiddlewareRewriteNavigationInterceptionContext,
@@ -194,6 +195,7 @@ import {
   resolvePrefetchNavigationResponseUrl,
 } from "./app-browser-prefetch-response.js";
 import {
+  canCommitOptimisticRouteTemplate,
   createOptimisticRouteTemplate,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
@@ -733,6 +735,7 @@ type RenderNavigationPayloadOptions = {
   historyUpdateMode: HistoryUpdateMode | undefined;
   navigationCommitKind?: "authoritative" | "detached";
   navigationInitiationState: AppRouterState;
+  navigationResponseCompletion?: Promise<unknown>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   navId: number;
   onCommittedState?: (state: AppRouterState) => void;
@@ -760,6 +763,7 @@ async function renderNavigationPayload(
     historyUpdateMode: options.historyUpdateMode,
     navigationCommitKind: options.navigationCommitKind,
     navigationInitiationState: options.navigationInitiationState,
+    navigationResponseCompletion: options.navigationResponseCompletion,
     navigationSnapshot: options.navigationSnapshot,
     navId: options.navId,
     nextElements: options.payload,
@@ -1437,6 +1441,19 @@ function restoreHydrationNavigationContext(
   });
 }
 
+function restoreEmbeddedHydrationNavigationContext(
+  pathname: string,
+  searchParams: SearchParamInput,
+  params: Record<string, string | string[]>,
+  searchParamsFromBrowser: boolean,
+): void {
+  restoreHydrationNavigationContext(
+    pathname,
+    searchParamsFromBrowser ? window.location.search : searchParams,
+    params,
+  );
+}
+
 function restorePopstateScrollPosition(
   state: unknown,
   options?: {
@@ -1632,7 +1649,12 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
     applyClientParams(rsc.params);
   }
   if (rsc.nav) {
-    restoreHydrationNavigationContext(rsc.nav.pathname, rsc.nav.searchParams, params);
+    restoreEmbeddedHydrationNavigationContext(
+      rsc.nav.pathname,
+      rsc.nav.searchParams,
+      params,
+      rsc.searchParamsFromBrowser === true,
+    );
   }
 }
 
@@ -2308,7 +2330,18 @@ function bootstrapHydration(
               templates: optimisticRouteTemplates,
             });
 
-            if (optimisticPayload !== null) {
+            if (
+              optimisticPayload !== null &&
+              canCommitOptimisticRouteTemplate({
+                currentElements: navigationInitiationState.elements,
+                currentLayoutIds: navigationInitiationState.layoutIds,
+                currentParams: navigationInitiationState.navigationSnapshot.params,
+                routeManifest,
+                targetRouteParams: optimisticPayload.routeParams,
+                targetUrlParts: optimisticPayload.urlParts,
+                template: optimisticPayload.template,
+              })
+            ) {
               detachedNavigationCommits = true;
               const optimisticNavigationSnapshot = createClientNavigationRenderSnapshot(
                 currentHref,
@@ -2524,6 +2557,15 @@ function bootstrapHydration(
           navigationCommitKind: detachedNavigationCommits ? "authoritative" : undefined,
           navigationInitiationState,
           navigationSnapshot,
+          navigationResponseCompletion: shouldRecoverSamePathSearchCommitOnResponseCompletion({
+            basePath: __basePath,
+            currentSnapshot: navigationInitiationState.navigationSnapshot,
+            navigationKind,
+            programmaticTransition,
+            targetUrl: url,
+          })
+            ? cacheBufferPromise
+            : undefined,
           navId,
           onCommittedState: (state) => {
             committedState = state;
