@@ -31,6 +31,7 @@ import fs from "node:fs";
 import { escapeRegExp } from "../utils/regex.js";
 import { lastSignificantChar } from "../utils/has-trailing-comma.js";
 import MagicString from "magic-string";
+import { magicStringTransformResult } from "./transform-result.js";
 import {
   buildFallbackFontFace,
   getFallbackFontOverrideMetrics,
@@ -1056,10 +1057,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
         }
 
         if (!hasChanges) return null;
-        return {
-          code: s.toString(),
-          map: s.generateMap({ hires: "boundary" }),
-        };
+        return magicStringTransformResult(s);
       },
     },
 
@@ -1251,10 +1249,7 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
           s.prepend(imports.join("\n") + "\n");
         }
 
-        return {
-          code: s.toString(),
-          map: s.generateMap({ hires: "boundary" }),
-        };
+        return magicStringTransformResult(s);
       },
     },
   } satisfies Plugin;

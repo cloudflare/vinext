@@ -2056,6 +2056,13 @@ export default class CustomDocument extends Document {
   it("returns 404 for paths not in getStaticPaths when fallback is false", async () => {
     const res = await fetch(`${baseUrl}/blog/nonexistent-post`);
     expect(res.status).toBe(404);
+
+    const html = await res.text();
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json"(?: nonce="[^"]+")?>([\s\S]*?)<\/script>/,
+    );
+    expect(nextDataMatch).toBeTruthy();
+    expect(JSON.parse(nextDataMatch![1]!)).not.toHaveProperty("notFoundSrcPage");
   });
 
   it("renders an empty optional catch-all path from getStaticPaths in dev", async () => {

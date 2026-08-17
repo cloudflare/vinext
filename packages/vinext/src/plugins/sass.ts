@@ -28,6 +28,7 @@ import path, { toSlash } from "pathslash";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { preprocessCSS, type PreprocessCSSResult, type ResolvedConfig } from "vite";
 import { markCssUrlAssetReferences, rebaseCssUrlAssetReferences } from "../build/css-url-assets.js";
+import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 
 type AdditionalData = string | ((source: string, filename: string) => string | Promise<string>);
 
@@ -44,7 +45,6 @@ export type SassTsconfigPathAlias = {
 };
 
 const URL_SCHEME_RE = /^[A-Za-z][A-Za-z\d+.-]*:/;
-const NODE_MODULES_PATH_RE = /(?:^|\/)node_modules(?:\/|$)/;
 
 type SassFileImporterContext = {
   containingUrl?: URL | null;

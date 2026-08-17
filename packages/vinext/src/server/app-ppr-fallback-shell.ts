@@ -134,15 +134,21 @@ export function createAppPprFallbackShells(
 
 export function rewriteAppPprFallbackShellHtmlNavigation(options: {
   html: string;
+  isForceStatic?: boolean;
   params: Record<string, string | string[]>;
   pathname: string;
   searchParams: URLSearchParams;
 }): string {
   const metadataScript = createInlineScriptTag(
-    createNavigationRuntimeRscMetadataScript(options.params, {
-      pathname: options.pathname,
-      searchParams: [...options.searchParams.entries()],
-    }),
+    createNavigationRuntimeRscMetadataScript(
+      options.params,
+      {
+        pathname: options.pathname,
+        searchParams: options.isForceStatic ? [] : [...options.searchParams.entries()],
+      },
+      undefined,
+      options.isForceStatic !== true,
+    ),
   );
 
   const headCloseIndex = options.html.indexOf("</head>");

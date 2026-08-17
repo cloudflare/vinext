@@ -4,8 +4,8 @@ import path, { toSlash } from "pathslash";
 import { parseAst, type Plugin, type ResolvedConfig } from "vite";
 import type { PluginApi } from "@vitejs/plugin-rsc";
 import type { AppRouteRuntime } from "../build/app-route-runtime.js";
-import { parserLanguageForModule } from "../utils/parser-language.js";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
+import { scriptParserLanguage, walkAst } from "./ast-utils.js";
 
 const APP_ROUTE_RUNTIME_QUERY = "__vinext_app_runtime";
 const APP_ROUTE_RUNTIME_REFERENCE_OWNER = "vinext:app-route-runtime";
@@ -193,7 +193,7 @@ async function readModuleDirectives(id: string): Promise<ModuleDirectives> {
   }
 
   try {
-    const ast = parseAst(code, { lang: parserLanguageForModule(pathname) });
+    const ast = parseAst(code, { lang: scriptParserLanguage(pathname) ?? "jsx" });
     let useClient = false;
     let useServer = false;
     for (const statement of ast.body) {
@@ -211,30 +211,17 @@ async function readModuleDirectives(id: string): Promise<ModuleDirectives> {
 
 type AstNode = Record<string, unknown> & { end?: number; start?: number; type?: string };
 
-function walkAst(value: unknown, visitor: (node: AstNode) => void): void {
-  if (Array.isArray(value)) {
-    for (const item of value) walkAst(item, visitor);
-    return;
-  }
-  if (!value || typeof value !== "object") return;
-  const node = value as AstNode;
-  if (typeof node.type === "string") visitor(node);
-  for (const [key, child] of Object.entries(node)) {
-    if (key !== "parent") walkAst(child, visitor);
-  }
-}
-
 function replaceNextRuntime(code: string, id: string, runtime: AppRouteRuntime) {
   let ast: ReturnType<typeof parseAst>;
   try {
-    ast = parseAst(code, { lang: parserLanguageForModule(splitId(id).pathname) });
+    ast = parseAst(code, { lang: scriptParserLanguage(splitId(id).pathname) ?? "jsx" });
   } catch {
     return null;
   }
 
   const output = new MagicString(code);
   let changed = false;
-  walkAst(ast.body, (node) => {
+  walkAst(ast, (node) => {
     if (node.type !== "MemberExpression" || node.computed !== false) return;
     const property = node.property as AstNode & { name?: unknown };
     const object = node.object as AstNode & {

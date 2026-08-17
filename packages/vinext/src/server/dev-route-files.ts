@@ -1,5 +1,6 @@
 import path from "pathslash";
 import type { ValidFileMatcher } from "../routing/file-matcher.js";
+import { isPathInside } from "../utils/path.js";
 import { matchMetadataFileBaseName, METADATA_FILE_MAP } from "./metadata-routes.js";
 
 const APP_ROUTER_STRUCTURE_FILES = [
@@ -15,11 +16,6 @@ const APP_ROUTER_STRUCTURE_FILES = [
   "unauthorized",
 ];
 const APP_ROUTE_RUNTIME_FILES = ["page", "route", "layout", "default"];
-
-function isInsideDirectory(dir: string, filePath: string): boolean {
-  const relativePath = path.relative(dir, filePath);
-  return relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
-}
 
 function relativeParts(dir: string, filePath: string): string[] {
   return path.relative(dir, filePath).split(path.sep).filter(Boolean);
@@ -92,7 +88,7 @@ export function shouldInvalidateAppRouteFile(
   filePath: string,
   matcher: ValidFileMatcher,
 ): boolean {
-  if (!isInsideDirectory(appDir, filePath)) return false;
+  if (!isPathInside(appDir, filePath)) return false;
 
   const parts = relativeParts(appDir, filePath);
   if (parts.length === 0 || isPrivateAppPath(parts)) return false;
@@ -112,7 +108,7 @@ export function shouldRevalidateAppRouteRuntimeFile(
   filePath: string,
   matcher: ValidFileMatcher,
 ): boolean {
-  if (!isInsideDirectory(appDir, filePath)) return false;
+  if (!isPathInside(appDir, filePath)) return false;
 
   const parts = relativeParts(appDir, filePath);
   if (parts.length === 0 || isPrivateAppPath(parts)) return false;

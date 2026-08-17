@@ -5,28 +5,21 @@ import path, { toSlash } from "pathslash";
 import { parseAst, type Alias, type Plugin } from "vite";
 import {
   DYNAMIC_IMPORT_PRESCAN,
-  forEachAstChild,
   hasRange,
   isAstRecord,
   nodeArray,
+  SCRIPT_MODULE_ID_RE,
+  scriptParserLanguage,
+  walkAst,
   type AstRecord,
 } from "./ast-utils.js";
 import { createTransformCache } from "./transform-cache.js";
+import { magicStringTransformResult } from "./transform-result.js";
+import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { escapeRegExp } from "../utils/regex.js";
 
 const MODULE_EXTENSIONS = [".mjs", ".js", ".mts", ".ts", ".jsx", ".tsx", ".json"];
-const TRANSFORMABLE_EXTENSIONS = new Set([
-  ".mjs",
-  ".js",
-  ".mts",
-  ".ts",
-  ".jsx",
-  ".tsx",
-  ".cjs",
-  ".cts",
-]);
-
 type ExtensionlessImport = {
   start: number;
   end: number;
@@ -94,8 +87,8 @@ export function createExtensionlessDynamicImportPlugin(): Plugin {
     transform: {
       filter: {
         id: {
-          include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/i,
-          exclude: /[\\/]node_modules[\\/]/,
+          include: SCRIPT_MODULE_ID_RE,
+          exclude: NODE_MODULES_PATH_RE,
         },
         code: DYNAMIC_IMPORT_PRESCAN,
       },
@@ -127,7 +120,7 @@ function transformExtensionlessImports(
   id: string,
   config: TransformConfig,
 ): TransformResult {
-  const lang = langForId(id)!;
+  const lang = scriptParserLanguage(id)!;
 
   let ast: unknown;
   try {
@@ -151,21 +144,7 @@ function transformExtensionlessImports(
     );
   }
 
-  return {
-    code: output.toString(),
-    map: output.generateMap({ hires: "boundary" }),
-  };
-}
-
-function langForId(id: string): "js" | "jsx" | "ts" | "tsx" | null {
-  const clean = id.split("?", 1)[0];
-  const dot = clean.lastIndexOf(".");
-  if (dot < 0) return null;
-  const ext = clean.slice(dot).toLowerCase();
-  if (!TRANSFORMABLE_EXTENSIONS.has(ext)) return null;
-  if (ext === ".ts" || ext === ".mts" || ext === ".cts") return "ts";
-  if (ext === ".tsx") return "tsx";
-  return "jsx";
+  return magicStringTransformResult(output);
 }
 
 function collectExtensionlessImports(
@@ -176,17 +155,13 @@ function collectExtensionlessImports(
 ): ExtensionlessImport[] {
   const imports: ExtensionlessImport[] = [];
 
-  function visit(value: unknown): void {
-    if (!isAstRecord(value)) return;
-    const parsed = parseExtensionlessImport(value, code, config, id);
+  walkAst(ast, (node) => {
+    const parsed = parseExtensionlessImport(node, code, config, id);
     if (parsed) {
       imports.push(parsed);
-      return;
+      return false;
     }
-    forEachAstChild(value, visit);
-  }
-
-  visit(ast);
+  });
   return imports;
 }
 

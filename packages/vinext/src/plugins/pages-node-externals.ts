@@ -1,15 +1,18 @@
 import fs from "node:fs";
-import path, { toSlash } from "pathslash";
+import path from "pathslash";
 import { parseAst, type Plugin } from "vite";
 import {
-  forEachAstChild,
   isAstRecord,
   mayContainDynamicImport,
-  nodeArray,
+  SCRIPT_MODULE_ID_RE,
+  scriptParserLanguage,
+  staticStringValue,
+  walkAst,
   type AstRecord,
 } from "./ast-utils.js";
-import { parserLanguageForModule } from "../utils/parser-language.js";
-import { stripViteModuleQuery } from "../utils/path.js";
+import { canonicalizeFilePath, isPathInsideOrEqual, stripViteModuleQuery } from "../utils/path.js";
+import { packageNameFromSpecifier } from "../utils/package-name.js";
+import { isServerEnvironment } from "./environment.js";
 
 type PagesNodeExternalsOptions = {
   getRoot: () => string;
@@ -31,27 +34,8 @@ const FRAMEWORK_PACKAGES = new Set([
   "vinext",
 ]);
 
-function packageNameFromSpecifier(id: string): string | null {
-  const [first, second] = id.split("/");
-  if (!first) return null;
-  return first.startsWith("@") ? (second ? `${first}/${second}` : null) : first;
-}
-
 function canonicalFile(id: string): string {
-  const cleanId = toSlash(stripViteModuleQuery(id));
-  try {
-    return toSlash(fs.realpathSync.native(cleanId));
-  } catch {
-    return cleanId;
-  }
-}
-
-function isInsideDirectory(directory: string, file: string): boolean {
-  const relative = path.relative(canonicalFile(directory), canonicalFile(file));
-  return (
-    relative === "" ||
-    (!relative.startsWith("../") && relative !== ".." && !path.isAbsolute(relative))
-  );
+  return canonicalizeFilePath(stripViteModuleQuery(id));
 }
 
 function findPackageJson(file: string): string | null {
@@ -88,7 +72,7 @@ function matchesAlias(id: string, aliases: Readonly<Record<string, string>>): bo
 function moduleDependencySpecifiers(code: string, id: string): string[] {
   let ast: ReturnType<typeof parseAst>;
   try {
-    ast = parseAst(code, { lang: parserLanguageForModule(id) });
+    ast = parseAst(code, { lang: scriptParserLanguage(id) ?? "jsx" });
   } catch {
     return [];
   }
@@ -97,22 +81,7 @@ function moduleDependencySpecifiers(code: string, id: string): string[] {
   const seen = new Set<string>();
   const sourceSpecifier = (source: unknown): string | null => {
     if (!isAstRecord(source)) return null;
-    if (source.type === "Literal") {
-      return typeof source.value === "string" ? source.value : null;
-    }
-    if (source.type !== "TemplateLiteral" || nodeArray(source.expressions).length !== 0) {
-      return null;
-    }
-
-    const quasis = nodeArray(source.quasis);
-    if (quasis.length !== 1 || !isAstRecord(quasis[0]) || quasis[0].type !== "TemplateElement") {
-      return null;
-    }
-    const value = quasis[0].value;
-    if (typeof value !== "object" || value === null) return null;
-    const cooked = Reflect.get(value, "cooked");
-    const raw = Reflect.get(value, "raw");
-    return typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : null;
+    return staticStringValue(source);
   };
   const addStaticSource = (source: unknown): void => {
     const specifier = sourceSpecifier(source);
@@ -142,12 +111,10 @@ function moduleDependencySpecifiers(code: string, id: string): string[] {
       // guess at variable or interpolated dynamic imports.
       addStaticSource(node.source);
     }
-
-    forEachAstChild(node, visitDynamicImports);
   };
 
   for (const statement of ast.body) {
-    if (isAstRecord(statement)) visitDynamicImports(statement);
+    walkAst(statement, visitDynamicImports);
   }
   return specifiers;
 }
@@ -182,10 +149,7 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
     enforce: "pre",
     applyToEnvironment(environment) {
       return (
-        options.isEnabled() &&
-        options.getPagesDir() !== null &&
-        environment.name !== "client" &&
-        environment.config.consumer !== "client"
+        options.isEnabled() && options.getPagesDir() !== null && isServerEnvironment(environment)
       );
     },
     transform: {
@@ -195,7 +159,7 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
       // other project-local imports before Rolldown traverses the module.
       filter: {
         id: {
-          include: /\.[cm]?[jt]sx?(?:\?.*)?$/,
+          include: SCRIPT_MODULE_ID_RE,
           exclude: /\/node_modules\//,
         },
       },
@@ -212,7 +176,10 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
         }
 
         const pagesOwnedModules = pagesOwnedModulesFor(environment.name);
-        if (!isInsideDirectory(pagesDir, cleanId) && !pagesOwnedModules.has(cleanId)) {
+        if (
+          !isPathInsideOrEqual(canonicalFile(pagesDir), cleanId) &&
+          !pagesOwnedModules.has(cleanId)
+        ) {
           return null;
         }
 
@@ -247,7 +214,8 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
         const cleanImporter = canonicalFile(importer);
         const importerIsPagesOwned =
           path.isAbsolute(cleanImporter) &&
-          (isInsideDirectory(pagesDir, cleanImporter) || pagesOwnedModules.has(cleanImporter));
+          (isPathInsideOrEqual(canonicalFile(pagesDir), cleanImporter) ||
+            pagesOwnedModules.has(cleanImporter));
         if (!importerIsPagesOwned) {
           return null;
         }

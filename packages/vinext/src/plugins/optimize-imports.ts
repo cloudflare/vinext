@@ -19,6 +19,7 @@ import path, { toSlash } from "pathslash";
 import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { getAstName } from "./ast-utils.js";
+import { magicStringTransformResult } from "./transform-result.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 
@@ -955,10 +956,7 @@ export function createOptimizeImportsPlugin(
 
         if (!hasChanges) return null;
 
-        return {
-          code: s.toString(),
-          map: s.generateMap({ hires: "boundary" }),
-        };
+        return magicStringTransformResult(s);
       },
     },
   } satisfies Plugin;

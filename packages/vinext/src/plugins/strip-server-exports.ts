@@ -1,5 +1,7 @@
 import { parseAst } from "vite";
 import MagicString from "magic-string";
+import { getAstName } from "./ast-utils.js";
+import { magicStringTransformResult } from "./transform-result.js";
 
 type ParsedAst = ReturnType<typeof parseAst>;
 type ASTNode = ParsedAst["body"][number]["parent"];
@@ -90,12 +92,6 @@ type Binding = {
 
 type Edit = { start: number; end: number; replacement: string };
 
-function nodeName(node: unknown): string | undefined {
-  if (!node || typeof node !== "object") return undefined;
-  const value = node as { name?: string; value?: string };
-  return value.name ?? value.value;
-}
-
 function isInsideRanges(position: number, ranges: Array<{ start: number; end: number }>): boolean {
   return ranges.some((range) => position >= range.start && position < range.end);
 }
@@ -185,7 +181,7 @@ function isReferenceIdentifier(node: PositionedNode, parent?: PositionedNode): b
   return true;
 }
 
-function walkAst(
+function walkAstWithAncestors(
   node: unknown,
   visit: (node: PositionedNode, parent?: PositionedNode, ancestors?: PositionedNode[]) => void,
   parent?: PositionedNode,
@@ -193,7 +189,7 @@ function walkAst(
 ): void {
   if (!node || typeof node !== "object") return;
   if (Array.isArray(node)) {
-    for (const child of node) walkAst(child, visit, parent, ancestors);
+    for (const child of node) walkAstWithAncestors(child, visit, parent, ancestors);
     return;
   }
 
@@ -204,9 +200,9 @@ function walkAst(
   for (const [key, value] of Object.entries(current)) {
     if (key === "parent" || key === "loc" || key === "start" || key === "end") continue;
     if (Array.isArray(value)) {
-      for (const child of value) walkAst(child, visit, current, childAncestors);
+      for (const child of value) walkAstWithAncestors(child, visit, current, childAncestors);
     } else if (value && typeof value === "object") {
-      walkAst(value, visit, current, childAncestors);
+      walkAstWithAncestors(value, visit, current, childAncestors);
     }
   }
 }
@@ -445,7 +441,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
       }
     } else if (statement.type === "ImportDeclaration") {
       for (const specifier of statement.specifiers as PositionedNode[]) {
-        const name = nodeName(specifier.local);
+        const name = getAstName(specifier.local);
         if (!name) continue;
         bindingPositions.add(specifier.local.start);
         bindings.set(name, {
@@ -474,7 +470,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     shadowRanges.set(name, ranges);
   };
 
-  walkAst(ast.body, (node, parent, ancestors = []) => {
+  walkAstWithAncestors(ast.body, (node, parent, ancestors = []) => {
     if (
       node.type === "FunctionDeclaration" ||
       node.type === "FunctionExpression" ||
@@ -511,7 +507,7 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
     }
   });
 
-  walkAst(ast.body, (node, parent, ancestors = []) => {
+  walkAstWithAncestors(ast.body, (node, parent, ancestors = []) => {
     if (!isReferenceIdentifier(node, parent)) return;
     if (bindingPositions.has(node.start)) return;
     if (isInsideRanges(node.start, shadowRanges.get(node.name) ?? [])) return;
@@ -563,16 +559,16 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
 
     const removed = new Set<PositionedNode>();
     for (const specifier of statement.specifiers as PositionedNode[]) {
-      const exportedName = nodeName(specifier.exported);
+      const exportedName = getAstName(specifier.exported);
       if (exportedName && SERVER_EXPORTS.has(exportedName)) {
         noteDataExport(exportedName);
         removed.add(specifier);
         if (!statement.source) {
-          const localName = nodeName(specifier.local);
+          const localName = getAstName(specifier.local);
           if (localName) candidateBindings.add(localName);
         }
       } else if (!statement.source) {
-        const localName = nodeName(specifier.local);
+        const localName = getAstName(specifier.local);
         if (localName) {
           const positions = references.get(localName) ?? [];
           positions.push(specifier.local.start);
@@ -763,5 +759,5 @@ export function stripServerExports(code: string): StripServerExportsResult | nul
   // The MagicString already tracks every overwrite, so emit its sourcemap
   // instead of dropping it — removing whole statements shifts line numbers for
   // the rest of the module, which would otherwise break client-build debugging.
-  return { code: string.toString(), map: string.generateMap({ hires: "boundary" }) };
+  return magicStringTransformResult(string);
 }
