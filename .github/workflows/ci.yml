@@ -13,6 +13,11 @@ concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Windows is in the OS matrix of the test jobs below. For now it runs on both
+# PRs and main so Windows fixes can be verified on the PR before merge. Once
+# green, make it main-only (Linux-only on PRs) to keep PR feedback fast by
+# replacing each test job's `os: [ubuntu-latest, windows-latest]` with:
+#   os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
 jobs:
   check:
     name: Check
@@ -35,11 +40,12 @@ jobs:
         run: node scripts/ci-integration-shard.mjs --check --shard-total=10
 
   test-unit:
-    name: Vitest (unit ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
-    runs-on: ubuntu-latest
+    name: Vitest (unit ${{ matrix.os }} ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         shardIndex: [1, 2, 3]
         shardTotal: [3]
     steps:
@@ -48,13 +54,16 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - run: vp test run --project unit --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+        env:
+          CI: true
 
   test-integration:
-    name: Vitest (integration ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
-    runs-on: ubuntu-latest
+    name: Vitest (integration ${{ matrix.os }} ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         # Shard count mirrors scripts/ci-integration-timings.json (shardTotal);
         # the Check job fails on drift between this matrix and the manifest.
         # Rebalance weights by regenerating the manifest from real CI blobs:
@@ -113,16 +122,21 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
-          name: blob-report-${{ matrix.shardIndex }}
+          # Per-OS name so Windows and Linux shard blobs don't collide.
+          name: blob-report-${{ matrix.os }}-${{ matrix.shardIndex }}
           path: .vitest-reports/*
           include-hidden-files: true
           retention-days: 1
 
   test-integration-merge:
-    name: Vitest (integration report)
+    name: Vitest (integration report, ${{ matrix.os }})
     if: ${{ !cancelled() }}
     needs: [test-integration]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -131,12 +145,13 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: .vitest-reports
-          pattern: blob-report-*
+          # Merge only this OS's shard blobs.
+          pattern: blob-report-${{ matrix.os }}-*
           merge-multiple: true
       # --coverage tells vitest to invoke coverageProvider.mergeReports() on the
       # coverage data embedded in each shard's blob, producing a unified report.
-      # Only enabled on push-to-main, matching the shard config above.
-      - run: vp test run --merge-reports ${{ github.event_name == 'push' && '--coverage' || '' }}
+      # Only on push-to-main, and only on Linux (coverage is OS-independent).
+      - run: vp test run --merge-reports ${{ github.event_name == 'push' && matrix.os == 'ubuntu-latest' && '--coverage' || '' }}
         env:
           CI: true
       - name: Publish coverage matrix to job summary
@@ -145,7 +160,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() && hashFiles('coverage/index.html') != '' }}
         with:
-          name: coverage-html
+          name: coverage-html-${{ matrix.os }}
           path: coverage
           retention-days: 14
 
@@ -447,132 +462,434 @@ jobs:
         run: test -f dist/server/wrangler.json
 
   e2e:
-    name: E2E (${{ matrix.label }})
-    runs-on: ubuntu-latest
+    name: E2E (${{ matrix.label }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        # Each project/shard is duplicated per OS (full Windows coverage). To
+        # drop Windows here, remove the windows-latest entries below.
         include:
-          - project: pages-router
-            label: pages-router
-            shardIndex: 1
-            shardTotal: 1
-          - project: pages-router-complex
-            label: pages-router-complex
-            shardIndex: 1
-            shardTotal: 1
-          - project: pages-router-basepath-dev
-            label: pages-router-basepath-dev
-            shardIndex: 1
-            shardTotal: 1
-          - project: pages-router-basepath
-            label: pages-router-basepath
-            shardIndex: 1
-            shardTotal: 1
-          - project: app-router
-            label: app-router 1/3
-            shardIndex: 1
-            shardTotal: 3
-          - project: app-router
-            label: app-router 2/3
-            shardIndex: 2
-            shardTotal: 3
-          - project: app-router-bfcache
-            label: app-router-bfcache
-            shardIndex: 1
-            shardTotal: 1
-          - project: app-router-prefetch-searchparams
-            label: app-router-prefetch-searchparams
-            shardIndex: 1
-            shardTotal: 1
-          - project: app-router
-            label: app-router 3/3
-            shardIndex: 3
-            shardTotal: 3
-          - project: app-router-isr-prod
-            label: app-router-isr-prod
-            shardIndex: 1
-            shardTotal: 1
-          - project: app-router-client-cache
-            label: app-router-client-cache
-            shardIndex: 1
-            shardTotal: 1
-          - project: app-router-chrome-browser-specific
-            label: app-router-chrome-browser-specific
-            shardIndex: 1
-            shardTotal: 1
-          - project: app-router-webkit-browser-specific
-            label: app-router-webkit-browser-specific
-            shardIndex: 1
-            shardTotal: 1
-          - project: cloudflare-pages-router
-            label: cloudflare-pages-router
-            shardIndex: 1
-            shardTotal: 1
-          - project: pages-router-prod
-            label: pages-router-prod
-            shardIndex: 1
-            shardTotal: 1
-          - project: pages-scroll-restoration
-            label: pages-scroll-restoration
-            shardIndex: 1
-            shardTotal: 1
-          - project: cloudflare-workers
-            label: cloudflare-workers
-            shardIndex: 1
-            shardTotal: 1
-          - project: cloudflare-sentry-app
-            label: cloudflare-sentry-app
-            shardIndex: 1
-            shardTotal: 1
-          - project: cloudflare-sentry-pages
-            label: cloudflare-sentry-pages
-            shardIndex: 1
-            shardTotal: 1
-          - project: cloudflare-dev
-            label: cloudflare-dev
-            shardIndex: 1
-            shardTotal: 1
-          - project: cloudflare-pages-router-dev
-            label: cloudflare-pages-router-dev
-            shardIndex: 1
-            shardTotal: 1
-          - project: static-export
-            label: static-export
-            shardIndex: 1
-            shardTotal: 1
-          - project: app-with-src
-            label: app-with-src
-            shardIndex: 1
-            shardTotal: 1
-          - project: standalone-output
-            label: standalone-output
-            shardIndex: 1
-            shardTotal: 1
-          - project: root-layout-redirect
-            label: root-layout-redirect
-            shardIndex: 1
-            shardTotal: 1
-          - project: ppr-impact-demo
-            label: ppr-impact-demo
-            shardIndex: 1
-            shardTotal: 1
-          - project: app-front-redirect-issue
-            label: app-front-redirect-issue
-            shardIndex: 1
-            shardTotal: 1
-          - project: web-worker-vinext
-            label: web-worker-vinext
-            shardIndex: 1
-            shardTotal: 1
-          - project: web-worker-cloudflare
-            label: web-worker-cloudflare
-            shardIndex: 1
-            shardTotal: 1
-          - project: nextjs-worker-cloudflare
-            label: nextjs-worker-cloudflare
-            shardIndex: 1
-            shardTotal: 1
+          - {
+              os: ubuntu-latest,
+              project: pages-router,
+              label: pages-router,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: pages-router-complex,
+              label: pages-router-complex,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: pages-router-basepath-dev,
+              label: pages-router-basepath-dev,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: pages-router-basepath,
+              label: pages-router-basepath,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: app-router,
+              label: app-router 1/3,
+              shardIndex: 1,
+              shardTotal: 3,
+            }
+          - {
+              os: ubuntu-latest,
+              project: app-router,
+              label: app-router 2/3,
+              shardIndex: 2,
+              shardTotal: 3,
+            }
+          - {
+              os: ubuntu-latest,
+              project: app-router-bfcache,
+              label: app-router-bfcache,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: app-router-prefetch-searchparams,
+              label: app-router-prefetch-searchparams,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: app-router,
+              label: app-router 3/3,
+              shardIndex: 3,
+              shardTotal: 3,
+            }
+          - {
+              os: ubuntu-latest,
+              project: app-router-isr-prod,
+              label: app-router-isr-prod,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: app-router-client-cache,
+              label: app-router-client-cache,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: app-router-chrome-browser-specific,
+              label: app-router-chrome-browser-specific,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: app-router-webkit-browser-specific,
+              label: app-router-webkit-browser-specific,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: cloudflare-pages-router,
+              label: cloudflare-pages-router,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: pages-router-prod,
+              label: pages-router-prod,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: pages-scroll-restoration,
+              label: pages-scroll-restoration,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: cloudflare-workers,
+              label: cloudflare-workers,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: cloudflare-sentry-app,
+              label: cloudflare-sentry-app,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: cloudflare-sentry-pages,
+              label: cloudflare-sentry-pages,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: cloudflare-dev,
+              label: cloudflare-dev,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: cloudflare-pages-router-dev,
+              label: cloudflare-pages-router-dev,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: static-export,
+              label: static-export,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: app-with-src,
+              label: app-with-src,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: standalone-output,
+              label: standalone-output,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: root-layout-redirect,
+              label: root-layout-redirect,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: ppr-impact-demo,
+              label: ppr-impact-demo,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: app-front-redirect-issue,
+              label: app-front-redirect-issue,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: web-worker-vinext,
+              label: web-worker-vinext,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: web-worker-cloudflare,
+              label: web-worker-cloudflare,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: ubuntu-latest,
+              project: nextjs-worker-cloudflare,
+              label: nextjs-worker-cloudflare,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: pages-router,
+              label: pages-router,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: pages-router-complex,
+              label: pages-router-complex,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: pages-router-basepath-dev,
+              label: pages-router-basepath-dev,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: pages-router-basepath,
+              label: pages-router-basepath,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: app-router,
+              label: app-router 1/3,
+              shardIndex: 1,
+              shardTotal: 3,
+            }
+          - {
+              os: windows-latest,
+              project: app-router,
+              label: app-router 2/3,
+              shardIndex: 2,
+              shardTotal: 3,
+            }
+          - {
+              os: windows-latest,
+              project: app-router-bfcache,
+              label: app-router-bfcache,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: app-router-prefetch-searchparams,
+              label: app-router-prefetch-searchparams,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: app-router,
+              label: app-router 3/3,
+              shardIndex: 3,
+              shardTotal: 3,
+            }
+          - {
+              os: windows-latest,
+              project: app-router-isr-prod,
+              label: app-router-isr-prod,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: app-router-client-cache,
+              label: app-router-client-cache,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: app-router-chrome-browser-specific,
+              label: app-router-chrome-browser-specific,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: app-router-webkit-browser-specific,
+              label: app-router-webkit-browser-specific,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: cloudflare-pages-router,
+              label: cloudflare-pages-router,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: pages-router-prod,
+              label: pages-router-prod,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: pages-scroll-restoration,
+              label: pages-scroll-restoration,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: cloudflare-workers,
+              label: cloudflare-workers,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: cloudflare-sentry-app,
+              label: cloudflare-sentry-app,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: cloudflare-sentry-pages,
+              label: cloudflare-sentry-pages,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: cloudflare-dev,
+              label: cloudflare-dev,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: cloudflare-pages-router-dev,
+              label: cloudflare-pages-router-dev,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: static-export,
+              label: static-export,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: app-with-src,
+              label: app-with-src,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: standalone-output,
+              label: standalone-output,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: root-layout-redirect,
+              label: root-layout-redirect,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: ppr-impact-demo,
+              label: ppr-impact-demo,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: app-front-redirect-issue,
+              label: app-front-redirect-issue,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: web-worker-vinext,
+              label: web-worker-vinext,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: web-worker-cloudflare,
+              label: web-worker-cloudflare,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
+          - {
+              os: windows-latest,
+              project: nextjs-worker-cloudflare,
+              label: nextjs-worker-cloudflare,
+              shardIndex: 1,
+              shardTotal: 1,
+            }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -597,7 +914,7 @@ jobs:
       # `playwright install-deps webkit` always runs `apt-get install`, but with
       # the package archives cached we skip the (slow) download step on hits.
       - name: Cache apt archives (WebKit deps)
-        if: ${{ matrix.project == 'app-router-webkit-browser-specific' }}
+        if: ${{ runner.os == 'Linux' && matrix.project == 'app-router-webkit-browser-specific' }}
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -611,20 +928,30 @@ jobs:
       # CLI startup itself adds a few seconds per job.
       - name: Install Playwright Chromium
         if: ${{ matrix.project != 'app-router-webkit-browser-specific' && steps.playwright-cache.outputs.cache-hit != 'true' }}
+        # DEBUG=pw:install prints the post-download phase (extract/validate) so a
+        # Windows hang shows exactly where it stalls; timeout bounds it so a hung
+        # install fails fast instead of burning the whole job.
+        timeout-minutes: 8
+        env:
+          DEBUG: pw:install
         run: vp exec playwright install chromium
 
       # Install WebKit browser binaries only on cache miss. System deps are
       # installed in a separate step below so we can cache them independently.
       - name: Install Playwright WebKit (browser only)
         if: ${{ matrix.project == 'app-router-webkit-browser-specific' && steps.playwright-cache.outputs.cache-hit != 'true' }}
+        timeout-minutes: 8
+        env:
+          DEBUG: pw:install
         run: vp exec playwright install webkit
 
-      # Install WebKit system dependencies. This always runs because apt
-      # packages are root-level and not part of ~/.cache/ms-playwright. The
-      # apt archive cache above keeps this fast on hits by avoiding re-downloads.
+      # Install WebKit system dependencies. Linux-only — apt/sudo don't exist on
+      # Windows runners, where Playwright bundles WebKit's deps. Always runs on
+      # Linux because apt packages are root-level and not part of
+      # ~/.cache/ms-playwright; the apt archive cache above keeps it fast on hits.
       # `playwright install-deps` invokes apt-get under sudo internally.
       - name: Install Playwright WebKit system dependencies
-        if: ${{ matrix.project == 'app-router-webkit-browser-specific' }}
+        if: ${{ runner.os == 'Linux' && matrix.project == 'app-router-webkit-browser-specific' }}
         run: |
           set -euo pipefail
           mkdir -p ~/.cache/apt-archives
@@ -650,7 +977,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: playwright-report-${{ matrix.project }}-${{ matrix.shardIndex }}-${{ matrix.shardTotal }}
+          name: playwright-report-${{ matrix.os }}-${{ matrix.project }}-${{ matrix.shardIndex }}-${{ matrix.shardTotal }}
           path: playwright-report/
           retention-days: 7
 
