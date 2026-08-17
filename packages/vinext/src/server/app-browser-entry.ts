@@ -1387,16 +1387,8 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
       return createProgressiveRscStream();
     }
 
-    const params = vinext.__VINEXT_RSC_PARAMS__ ?? {};
     if (vinext.__VINEXT_RSC_PARAMS__) {
       applyClientParams(vinext.__VINEXT_RSC_PARAMS__);
-    }
-    if (vinext.__VINEXT_RSC_NAV__) {
-      restoreHydrationNavigationContext(
-        vinext.__VINEXT_RSC_NAV__.pathname,
-        vinext.__VINEXT_RSC_NAV__.searchParams,
-        params,
-      );
     }
 
     return createProgressiveRscStream();
