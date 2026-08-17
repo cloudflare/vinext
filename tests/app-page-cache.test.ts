@@ -22,6 +22,7 @@ import {
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 import { NEXT_ROUTER_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
+import { createAppPageNavigationMetadataScript } from "../packages/vinext/src/server/app-page-cache-navigation.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -1130,9 +1131,13 @@ describe("app page cache helpers", () => {
     }> = [];
     const debugCalls: Array<[string, string]> = [];
     const rscData = new TextEncoder().encode("flight").buffer;
+    const navigationScript = createAppPageNavigationMetadataScript({
+      pathname: "/fresh",
+      searchParams: [],
+    });
 
     const response = finalizeAppPageHtmlCacheResponse(
-      new Response("<h1>fresh</h1>", {
+      new Response(`<h1>fresh</h1>${navigationScript}`, {
         status: 201,
         headers: {
           "Content-Type": "text/html; charset=utf-8",
@@ -1183,7 +1188,7 @@ describe("app page cache helpers", () => {
     expect(response.status).toBe(201);
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
-    await expect(response.text()).resolves.toBe("<h1>fresh</h1>");
+    await expect(response.text()).resolves.toBe(`<h1>fresh</h1>${navigationScript}`);
     expect(pendingCacheWrites).toHaveLength(1);
 
     await pendingCacheWrites[0];
@@ -1191,7 +1196,7 @@ describe("app page cache helpers", () => {
     expect(isrSetCalls).toEqual([
       {
         key: "html:/fresh",
-        html: "<h1>fresh</h1>",
+        html: "<h1>fresh</h1><!--vinext-navigation-metadata-->",
         hasRscData: false,
         linkHeader: "</fresh.css>; rel=preload; as=style",
         expireSeconds: 300,

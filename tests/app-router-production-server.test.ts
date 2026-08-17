@@ -1134,6 +1134,49 @@ describe("App Router Production server (startProdServer)", () => {
     expect(ts2).toBe(ts1);
   });
 
+  // Cached HTML is shared by the rewrite destination. The cache must inject
+  // each request's external pathname instead of retaining the first request's
+  // invite token or tenant id in the shared entry.
+  it("does not serve one rewritten request's canonical pathname to another", async () => {
+    const first = await fetch(`${baseUrl}/invite/alice-secret-token`);
+    expect(first.status).toBe(200);
+    const firstHtml = await first.text();
+    expect(firstHtml).toContain("/invite/alice-secret-token");
+
+    const second = await fetch(`${baseUrl}/invite/bob-public-token`);
+    expect(second.status).toBe(200);
+    expect(second.headers.get("x-vinext-cache")).toBe("HIT");
+    const secondHtml = await second.text();
+    expect(secondHtml).toContain("/invite/bob-public-token");
+    expect(secondHtml).not.toContain("alice-secret-token");
+
+    // Flight payloads are addressed by the destination route and carry no
+    // canonical pathname, so they stay shareable across rewrite sources.
+    const rsc = await fetch(`${baseUrl}/invite/carol-secret-token.rsc`);
+    expect(rsc.status).toBe(200);
+    expect(await rsc.text()).not.toContain("carol-secret-token");
+  });
+
+  it("injects each request's search params without persisting the previous query", async () => {
+    const first = await fetch(`${baseUrl}/nav-cache-isolation?leak=alice-query-secret`);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("x-vinext-cache")).toBe("HIT");
+    const firstHtml = await first.text();
+    expect(firstHtml).toContain("alice-query-secret");
+
+    const second = await fetch(`${baseUrl}/nav-cache-isolation?leak=bob-query-value`);
+    expect(second.status).toBe(200);
+    expect(second.headers.get("x-vinext-cache")).toBe("HIT");
+    const secondHtml = await second.text();
+    expect(secondHtml).toContain("bob-query-value");
+    expect(secondHtml).not.toContain("alice-query-secret");
+
+    const withoutQuery = await fetch(`${baseUrl}/nav-cache-isolation`);
+    expect(withoutQuery.status).toBe(200);
+    expect(withoutQuery.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(await withoutQuery.text()).not.toContain("bob-query-value");
+  });
+
   it("applies middleware request header overrides before App->Pages fallback rendering in production", async () => {
     const res = await fetch(`${baseUrl}/pages-header-override-delete`, {
       headers: {

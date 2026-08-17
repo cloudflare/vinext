@@ -24,6 +24,10 @@ import { hasCompleteNegativeRequestApiProof, type RenderObservation } from "./ca
 import { isAppPprDynamicFallbackShellHtml } from "./app-ppr-fallback-shell.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
+import {
+  prepareAppPageHtmlForCache,
+  rewriteAppPageHtmlNavigation,
+} from "./app-page-cache-navigation.js";
 export {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -96,6 +100,8 @@ type ReadAppPageCacheResponseOptions = {
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
+  navigationPathname?: string;
+  navigationSearchParams?: URLSearchParams;
   recordCacheOutcome?: AppPageCacheOutcomeRecorder;
   renderMode?: AppRscRenderMode;
   expireSeconds?: number;
@@ -210,6 +216,24 @@ function hasQueryInvariantAppPageProof(cachedValue: CachedAppPageValue): boolean
     cachedValue.renderObservation !== undefined &&
     hasCompleteNegativeRequestApiProof(cachedValue.renderObservation, ["searchParams"])
   );
+}
+
+function withRequestNavigation(
+  cachedValue: CachedAppPageValue,
+  options: Pick<
+    ReadAppPageCacheResponseOptions,
+    "cleanPathname" | "isRscRequest" | "navigationPathname" | "navigationSearchParams"
+  >,
+): CachedAppPageValue {
+  if (options.isRscRequest || typeof cachedValue.html !== "string") return cachedValue;
+
+  return {
+    ...cachedValue,
+    html: rewriteAppPageHtmlNavigation(cachedValue.html, {
+      pathname: options.navigationPathname ?? options.cleanPathname,
+      searchParams: [...(options.navigationSearchParams ?? new URLSearchParams()).entries()],
+    }),
+  };
 }
 
 function resolveRegeneratedAppPageCacheControl(options: {
@@ -416,7 +440,7 @@ export async function readAppPageCacheResponse(
     }
 
     if (cachedValue && !cached?.isStale) {
-      const hitResponse = buildAppPageCachedResponse(cachedValue, {
+      const hitResponse = buildAppPageCachedResponse(withRequestNavigation(cachedValue, options), {
         cacheState: "HIT",
         cacheControl: cached?.value.cacheControl,
         expireSeconds: options.expireSeconds,
@@ -495,36 +519,47 @@ export async function readAppPageCacheResponse(
           // during HTML-triggered regens. RSC-triggered regens only update the
           // requesting client's RSC slot variant; a stale HTML cache entry will
           // be regenerated independently by the next full-page HTML request.
-          writes.push(
-            options.isrSet(
+          const requestNeutralHtml = prepareAppPageHtmlForCache(revalidatedPage.html);
+          if (requestNeutralHtml === null) {
+            options.isrDebug?.(
+              "HTML cache regeneration skipped (navigation metadata invalid)",
               isrKey,
-              buildAppPageCacheValue(
-                revalidatedPage.html,
-                undefined,
-                200,
-                revalidatedPage.htmlRenderObservation,
-                revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
+            );
+          } else {
+            writes.push(
+              options.isrSet(
+                isrKey,
+                buildAppPageCacheValue(
+                  requestNeutralHtml,
+                  undefined,
+                  200,
+                  revalidatedPage.htmlRenderObservation,
+                  revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
+                ),
+                { cacheControl, tags: revalidatedPage.tags },
               ),
-              { cacheControl, tags: revalidatedPage.tags },
-            ),
-          );
+            );
+          }
         }
 
         await Promise.all(writes);
         options.isrDebug?.("regen complete", options.cleanPathname);
       });
 
-      const staleResponse = buildAppPageCachedResponse(cachedValue, {
-        cacheState: "STALE",
-        cacheControl: cached.value.cacheControl,
-        expireSeconds: options.expireSeconds,
-        isEdgeRuntime: options.isEdgeRuntime,
-        isRscRequest: options.isRscRequest,
-        middlewareHeaders: options.middlewareHeaders,
-        middlewareStatus: options.middlewareStatus,
-        mountedSlotsHeader: options.mountedSlotsHeader,
-        revalidateSeconds: options.revalidateSeconds,
-      });
+      const staleResponse = buildAppPageCachedResponse(
+        withRequestNavigation(cachedValue, options),
+        {
+          cacheState: "STALE",
+          cacheControl: cached.value.cacheControl,
+          expireSeconds: options.expireSeconds,
+          isEdgeRuntime: options.isEdgeRuntime,
+          isRscRequest: options.isRscRequest,
+          middlewareHeaders: options.middlewareHeaders,
+          middlewareStatus: options.middlewareStatus,
+          mountedSlotsHeader: options.mountedSlotsHeader,
+          revalidateSeconds: options.revalidateSeconds,
+        },
+      );
 
       if (staleResponse) {
         recordAppPageCacheOutcome(options.recordCacheOutcome, {

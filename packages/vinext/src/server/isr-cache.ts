@@ -454,8 +454,17 @@ export function appIsrCacheKey(
   return buildCacheKey(prefix, pathname, suffix);
 }
 
+/**
+ * Build the ISR cache key for an App page's HTML artifact.
+ *
+ * HTML entries use a versioned suffix because the current format strips
+ * request-specific navigation metadata before persistence. The version keeps
+ * unscoped development caches from replaying legacy, request-bound entries.
+ */
 export function appIsrHtmlKey(pathname: string): string {
-  return appIsrCacheKey(pathname, "html");
+  // Version the request-agnostic format so a deployment without a build id can
+  // never read legacy entries that still contain another request's navigation.
+  return appIsrCacheKey(pathname, "html:request-neutral-v1");
 }
 
 function normalizeInterceptionContextForCacheKey(interceptionContext: string): string | null {

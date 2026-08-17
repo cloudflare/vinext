@@ -191,7 +191,7 @@ describe("App Router ISR cache key primitives", () => {
   it("builds separate html, rsc, and route keys from the normalized pathname", () => {
     delete process.env.__VINEXT_BUILD_ID;
 
-    expect(appIsrHtmlKey("/about/")).toBe("app:/about:html");
+    expect(appIsrHtmlKey("/about/")).toBe("app:/about:html:request-neutral-v1");
     expect(appIsrRscKey("/about/")).toBe("app:/about:rsc");
     expect(appIsrRouteKey("/api/feed/")).toBe("app:/api/feed:route");
   });
@@ -199,7 +199,7 @@ describe("App Router ISR cache key primitives", () => {
   it("includes the build id when present", () => {
     process.env.__VINEXT_BUILD_ID = "build-42";
 
-    expect(appIsrHtmlKey("/dashboard")).toBe("app:build-42:/dashboard:html");
+    expect(appIsrHtmlKey("/dashboard")).toBe("app:build-42:/dashboard:html:request-neutral-v1");
   });
 
   it("supports explicit build ids when deriving suffixed app keys", () => {

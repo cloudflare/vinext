@@ -35,12 +35,13 @@ import {
 } from "./html.js";
 import { renderBeforeInteractiveInlineScripts } from "./before-interactive-head.js";
 import {
-  createNavigationRuntimeRscMetadataScript,
+  createNavigationRuntimeRscParamsMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
   waitAtLeastOneReactRenderTask,
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
+import { createAppPageNavigationMetadataScript } from "./app-page-cache-navigation.js";
 import type { AppSsrRenderResult } from "./app-page-stream.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
@@ -324,14 +325,11 @@ function buildHeadInjectionHtml(
     pathname: navContext.pathname,
     searchParams: [...navContext.searchParams.entries()],
   };
-  const rscMetadataScript = createInlineScriptTag(
-    createNavigationRuntimeRscMetadataScript(
-      navContext.params,
-      navPayload,
-      dynamicStaleTimeSeconds,
-    ),
-    scriptNonce,
-  );
+  const rscMetadataScript =
+    createInlineScriptTag(
+      createNavigationRuntimeRscParamsMetadataScript(navContext.params, dynamicStaleTimeSeconds),
+      scriptNonce,
+    ) + createAppPageNavigationMetadataScript(navPayload, scriptNonce);
   const formStateScript =
     formState === null
       ? ""

@@ -61,13 +61,34 @@ export function createNavigationRuntimeRscMetadataScript(
   nav: { pathname: string; searchParams: [string, string][] },
   dynamicStaleTimeSeconds?: number,
 ): string {
+  return `${createNavigationRuntimeRscParamsMetadataScript(
+    params,
+    dynamicStaleTimeSeconds,
+  )};${createNavigationRuntimeRscNavigationScript(nav)}`;
+}
+
+export function createNavigationRuntimeRscNavigationScript(nav: {
+  pathname: string;
+  searchParams: readonly [string, string][];
+}): string {
+  return (
+    "Object.assign(" +
+    navigationRuntimeRscBootstrapExpression() +
+    ",{nav:" +
+    safeJsonStringify(nav) +
+    "})"
+  );
+}
+
+export function createNavigationRuntimeRscParamsMetadataScript(
+  params: Record<string, string | string[]>,
+  dynamicStaleTimeSeconds?: number,
+): string {
   return (
     "Object.assign(" +
     navigationRuntimeRscBootstrapExpression() +
     ",{params:" +
     safeJsonStringify(params) +
-    ",nav:" +
-    safeJsonStringify(nav) +
     (dynamicStaleTimeSeconds === undefined
       ? ""
       : ",dynamicStaleTimeSeconds:" + safeJsonStringify(dynamicStaleTimeSeconds)) +

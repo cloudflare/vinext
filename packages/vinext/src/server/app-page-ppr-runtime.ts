@@ -89,7 +89,10 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
         return rewriteAppPprFallbackShellHtmlNavigation({
           html,
           params: options.params,
-          pathname: options.cleanPathname,
+          // Shells are shared across the paths that resolve to this route, so
+          // navigation is injected per request and must report the pathname the
+          // visitor requested rather than the rewrite destination.
+          pathname: options.displayPathname ?? options.cleanPathname,
           searchParams: options.searchParams,
         });
       },

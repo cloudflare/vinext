@@ -723,6 +723,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      navigationPathname: options.displayPathname ?? options.cleanPathname,
+      navigationSearchParams: pageSearchParams,
       renderMode: options.renderMode,
       expireSeconds: options.expireSeconds,
       revalidateSeconds: resolveAppPageCacheReadRevalidateSeconds({

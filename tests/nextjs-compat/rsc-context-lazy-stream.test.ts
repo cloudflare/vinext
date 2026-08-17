@@ -198,6 +198,8 @@ describe("RSC lazy stream: headers() context survives until stream is consumed",
 const NAV_ROUTE = "/nextjs-compat/nav-context-hydration";
 const RSC_BOOTSTRAP_PREFIX =
   'Object.assign(((self[Symbol.for("vinext.navigationRuntime")]??={bootstrap:{routeManifest:null},functions:{}}).bootstrap.rsc??={rsc:[]}),{params:';
+const RSC_NAV_PREFIX =
+  '<script data-vinext-navigation-metadata>Object.assign(((self[Symbol.for("vinext.navigationRuntime")]??={bootstrap:{routeManifest:null},functions:{}}).bootstrap.rsc??={rsc:[]}),{nav:';
 
 function extractRscBootstrap(html: string): {
   nav: { pathname: string; searchParams: [string, string][] };
@@ -206,13 +208,16 @@ function extractRscBootstrap(html: string): {
   const start = html.indexOf(RSC_BOOTSTRAP_PREFIX);
   expect(start, "navigation runtime RSC bootstrap script not found").toBeGreaterThan(-1);
   const paramsStart = start + RSC_BOOTSTRAP_PREFIX.length;
-  const navSeparator = html.indexOf(",nav:", paramsStart);
-  expect(navSeparator, "navigation runtime nav payload not found").toBeGreaterThan(-1);
-  const end = html.indexOf("})</script>", navSeparator);
-  expect(end, "navigation runtime RSC bootstrap script was not closed").toBeGreaterThan(-1);
+  const paramsEnd = html.indexOf("})</script>", paramsStart);
+  expect(paramsEnd, "navigation runtime params script was not closed").toBeGreaterThan(-1);
+  const navStart = html.indexOf(RSC_NAV_PREFIX, paramsEnd);
+  expect(navStart, "navigation runtime nav payload not found").toBeGreaterThan(-1);
+  const navPayloadStart = navStart + RSC_NAV_PREFIX.length;
+  const navEnd = html.indexOf("})</script>", navPayloadStart);
+  expect(navEnd, "navigation runtime nav script was not closed").toBeGreaterThan(-1);
   return {
-    params: JSON.parse(html.slice(paramsStart, navSeparator)),
-    nav: JSON.parse(html.slice(navSeparator + ",nav:".length, end)),
+    params: JSON.parse(html.slice(paramsStart, paramsEnd)),
+    nav: JSON.parse(html.slice(navPayloadStart, navEnd)),
   };
 }
 
@@ -225,7 +230,7 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
     const html = await res.text();
 
     expect(html).toContain(RSC_BOOTSTRAP_PREFIX);
-    expect(html).toContain(",nav:");
+    expect(html).toContain("data-vinext-navigation-metadata");
   });
 
   it("HTML contains a navigation runtime params bootstrap payload", async () => {
