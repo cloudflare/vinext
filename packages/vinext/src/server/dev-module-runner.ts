@@ -56,7 +56,21 @@
  * ```
  */
 
-import { ModuleRunner, ESModulesEvaluator, createNodeImportMeta } from "vite/module-runner";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+import {
+  ModuleRunner,
+  ESModulesEvaluator,
+  createNodeImportMeta,
+  ssrDynamicImportKey,
+  ssrExportAllKey,
+  ssrExportNameKey,
+  ssrImportKey,
+  ssrImportMetaKey,
+  ssrModuleExportsKey,
+} from "vite/module-runner";
+import type { EvaluatedModuleNode, ModuleEvaluator, ModuleRunnerContext } from "vite/module-runner";
 import type { DevEnvironment } from "vite";
 
 /**
@@ -72,6 +86,121 @@ type DevEnvironmentLike = {
     options?: { cached?: boolean; startOffset?: number },
   ) => Promise<Record<string, unknown>>;
 };
+
+const COMMONJS_MARKERS =
+  /\bmodule\.exports\b|\bexports(?:\s*\[|\.[A-Za-z_$])|\brequire\s*\(|\b__dirname\b|\b__filename\b/;
+const AsyncFunction = async function () {}.constructor as new (
+  ...args: string[]
+) => (...args: unknown[]) => Promise<unknown>;
+
+function shouldUseCommonJsCompat(modulePath: string, code: string): boolean {
+  return (
+    COMMONJS_MARKERS.test(code) &&
+    (modulePath.includes(`${path.sep}node_modules${path.sep}`) || modulePath.endsWith(".cjs"))
+  );
+}
+
+function replaceNamespaceExports(
+  target: Record<PropertyKey, unknown>,
+  source: Record<PropertyKey, unknown>,
+): void {
+  for (const key of Reflect.ownKeys(target)) {
+    const descriptor = Object.getOwnPropertyDescriptor(target, key);
+    if (descriptor?.configurable) {
+      delete target[key];
+    }
+  }
+  for (const key of Reflect.ownKeys(source)) {
+    const existing = Object.getOwnPropertyDescriptor(target, key);
+    if (existing && !existing.configurable) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (descriptor) {
+      Object.defineProperty(target, key, descriptor);
+    }
+  }
+}
+
+function toCommonJsNamespace(value: unknown): Record<PropertyKey, unknown> {
+  const namespace = Object.create(null) as Record<PropertyKey, unknown>;
+  Object.defineProperty(namespace, Symbol.toStringTag, {
+    value: "Module",
+    enumerable: false,
+    configurable: false,
+  });
+  Object.defineProperty(namespace, "default", {
+    enumerable: true,
+    configurable: true,
+    value,
+  });
+
+  if (value && (typeof value === "object" || typeof value === "function")) {
+    for (const key of Object.keys(value)) {
+      if (key === "default" || key === "__esModule") continue;
+      Object.defineProperty(namespace, key, {
+        enumerable: true,
+        configurable: true,
+        get: () => value[key as keyof typeof value],
+      });
+    }
+  }
+
+  return namespace;
+}
+
+class CommonJsCompatEvaluator implements ModuleEvaluator {
+  private readonly fallback = new ESModulesEvaluator();
+  readonly startOffset = this.fallback.startOffset;
+
+  async runInlinedModule(
+    context: ModuleRunnerContext,
+    code: string,
+    mod: Readonly<EvaluatedModuleNode>,
+  ): Promise<void> {
+    const modulePath = mod.file;
+    if (!modulePath || !path.isAbsolute(modulePath) || !shouldUseCommonJsCompat(modulePath, code)) {
+      await this.fallback.runInlinedModule(context, code);
+      return;
+    }
+
+    const exportsObject = context[ssrModuleExportsKey] as Record<PropertyKey, unknown>;
+    const module = { exports: exportsObject as unknown };
+    const require = createRequire(pathToFileURL(modulePath));
+
+    await new AsyncFunction(
+      ssrModuleExportsKey,
+      ssrImportMetaKey,
+      ssrImportKey,
+      ssrDynamicImportKey,
+      ssrExportAllKey,
+      ssrExportNameKey,
+      "module",
+      "exports",
+      "require",
+      "__filename",
+      "__dirname",
+      `"use strict";${code}`,
+    )(
+      context[ssrModuleExportsKey],
+      context[ssrImportMetaKey],
+      context[ssrImportKey],
+      context[ssrDynamicImportKey],
+      context[ssrExportAllKey],
+      context[ssrExportNameKey],
+      module,
+      module.exports,
+      require,
+      modulePath,
+      path.dirname(modulePath),
+    );
+
+    replaceNamespaceExports(exportsObject, toCommonJsNamespace(module.exports));
+    Object.seal(exportsObject);
+  }
+
+  runExternalModule(filepath: string): Promise<unknown> {
+    return this.fallback.runExternalModule(filepath);
+  }
+}
 
 /**
  * Build a ModuleRunner that calls `environment.fetchModule()` directly,
@@ -126,6 +255,6 @@ export function createDirectRunner(environment: DevEnvironmentLike | DevEnvironm
       sourcemapInterceptor: false,
       hmr: false,
     },
-    new ESModulesEvaluator(),
+    new CommonJsCompatEvaluator(),
   );
 }
