@@ -451,8 +451,18 @@ describe("seedMemoryCacheFromPrerender", () => {
       "_N_T_/isr/page",
     ];
     expect(contexts).toEqual([
-      { cacheControl: { revalidate: 60, expire: 300 }, revalidate: 60, tags: expectedTags },
-      { cacheControl: { revalidate: 60, expire: 300 }, revalidate: 60, tags: expectedTags },
+      {
+        cacheControl: { revalidate: 60, expire: 300 },
+        revalidate: 60,
+        tags: expectedTags,
+        timestamp: expect.any(Number),
+      },
+      {
+        cacheControl: { revalidate: 60, expire: 300 },
+        revalidate: 60,
+        tags: expectedTags,
+        timestamp: expect.any(Number),
+      },
     ]);
   });
 
