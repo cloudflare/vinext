@@ -46,7 +46,8 @@ describe("unified-request-context", () => {
       expect(ctx.serverContext).toBeNull();
       expect(ctx.serverInsertedHTMLCallbacks).toEqual([]);
       expect(ctx.requestScopedCacheLife).toBeNull();
-      expect(ctx._privateCache).toBeNull();
+      expect(ctx.pendingCacheInvocations).toBeNull();
+      expect(ctx.completedCacheInvocations).toBeNull();
       expect(ctx.currentRequestTags).toEqual([]);
       expect(ctx.executionContext).toBeNull();
       expect(ctx.ssrContext).toBeNull();
@@ -97,7 +98,8 @@ describe("unified-request-context", () => {
         expect(ctx.i18nContext).toBeNull();
         expect(ctx.pendingSetCookies).toEqual([]);
         expect(ctx.currentRequestTags).toEqual([]);
-        expect(ctx._privateCache).toBeNull();
+        expect(ctx.pendingCacheInvocations).toBeNull();
+        expect(ctx.completedCacheInvocations).toBeNull();
       });
     });
 
@@ -210,16 +212,33 @@ describe("unified-request-context", () => {
     });
   });
 
-  describe("privateCache lazy initialization", () => {
+  describe("cache invocation state lazy initialization", () => {
     it("is null by default", () => {
       const ctx = createRequestContext();
-      expect(ctx._privateCache).toBeNull();
+      expect(ctx.pendingCacheInvocations).toBeNull();
+      expect(ctx.completedCacheInvocations).toBeNull();
     });
 
-    it("stays null until explicitly set", () => {
+    it("initializes both maps on the first private cache invocation", async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
       const ctx = createRequestContext();
-      void runWithRequestContext(ctx, () => {
-        expect(getRequestContext()._privateCache).toBeNull();
+      await runWithRequestContext(ctx, async () => {
+        const cached = registerCachedFunction(
+          async () => "value",
+          "test:invocation-state",
+          "private",
+        );
+
+        expect(getRequestContext().pendingCacheInvocations).toBeNull();
+        expect(getRequestContext().completedCacheInvocations).toBeNull();
+
+        await expect(cached()).resolves.toBe("value");
+
+        expect(getRequestContext().pendingCacheInvocations).toBeInstanceOf(Map);
+        expect(getRequestContext().pendingCacheInvocations?.size).toBe(0);
+        expect(getRequestContext().completedCacheInvocations).toBeInstanceOf(Map);
+        expect(getRequestContext().completedCacheInvocations?.size).toBe(1);
       });
     });
   });
@@ -498,7 +517,7 @@ describe("unified-request-context", () => {
       );
     });
 
-    it("cache/private/fetch/router/head sub-scopes reset and restore correctly", async () => {
+    it("cache/invocation/fetch/router/head sub-scopes reset and restore correctly", async () => {
       const { _runWithCacheState } = await import("../packages/vinext/src/shims/cache.js");
       const { runWithPrivateCache } = await import("../packages/vinext/src/shims/cache-runtime.js");
       const { runWithFetchCache, getCollectedFetchTags } =
@@ -507,10 +526,14 @@ describe("unified-request-context", () => {
       const { setSSRContext } = await import("../packages/vinext/src/shims/router.js");
       const { runWithHeadState } = await import("../packages/vinext/src/shims/head-state.js");
 
+      const outerPendingCacheInvocations = new Map();
+      const outerCompletedCacheInvocations = new Map();
+
       await runWithRequestContext(
         createRequestContext({
           requestScopedCacheLife: { revalidate: 60 },
-          _privateCache: new Map([["outer", 1]]),
+          pendingCacheInvocations: outerPendingCacheInvocations,
+          completedCacheInvocations: outerCompletedCacheInvocations,
           currentRequestTags: ["outer-tag"],
           ssrContext: { pathname: "/outer", query: {}, asPath: "/outer" },
           ssrHeadChildren: ["<meta data-outer />"],
@@ -523,11 +546,21 @@ describe("unified-request-context", () => {
           expect(getRequestContext().requestScopedCacheLife).toEqual({ revalidate: 60 });
 
           void runWithPrivateCache(() => {
-            expect(getRequestContext()._privateCache).toBeInstanceOf(Map);
-            expect(getRequestContext()._privateCache?.size).toBe(0);
-            getRequestContext()._privateCache?.set("inner", 2);
+            expect(getRequestContext().pendingCacheInvocations).toBeInstanceOf(Map);
+            expect(getRequestContext().pendingCacheInvocations).not.toBe(
+              outerPendingCacheInvocations,
+            );
+            expect(getRequestContext().pendingCacheInvocations?.size).toBe(0);
+            expect(getRequestContext().completedCacheInvocations).toBeInstanceOf(Map);
+            expect(getRequestContext().completedCacheInvocations).not.toBe(
+              outerCompletedCacheInvocations,
+            );
+            expect(getRequestContext().completedCacheInvocations?.size).toBe(0);
           });
-          expect([...getRequestContext()._privateCache!.entries()]).toEqual([["outer", 1]]);
+          expect(getRequestContext().pendingCacheInvocations).toBe(outerPendingCacheInvocations);
+          expect(getRequestContext().completedCacheInvocations).toBe(
+            outerCompletedCacheInvocations,
+          );
 
           await runWithFetchCache(async () => {
             expect(getCollectedFetchTags()).toEqual([]);
@@ -563,7 +596,8 @@ describe("unified-request-context", () => {
       expect(ctx.serverContext).toBeNull();
       expect(ctx.serverInsertedHTMLCallbacks).toEqual([]);
       expect(ctx.requestScopedCacheLife).toBeNull();
-      expect(ctx._privateCache).toBeNull();
+      expect(ctx.pendingCacheInvocations).toBeNull();
+      expect(ctx.completedCacheInvocations).toBeNull();
       expect(ctx.currentRequestTags).toEqual([]);
       expect(ctx.executionContext).toBeNull();
       expect(ctx.ssrContext).toBeNull();

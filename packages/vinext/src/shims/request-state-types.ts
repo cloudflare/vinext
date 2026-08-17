@@ -3,7 +3,7 @@ export type { I18nState } from "./i18n-state.js";
 export type { NavigationContext } from "./navigation.js";
 export type { NavigationState } from "./navigation-state.js";
 export type { CacheLifeConfig, CacheState } from "./cache-request-state.js";
-export type { PrivateCacheState } from "./cache-runtime.js";
+export type { CacheInvocationState } from "./cache-runtime.js";
 export type { FetchCacheState } from "./fetch-cache.js";
 export type { ExecutionContextLike } from "./request-context.js";
 export type { SSRContext, RouterState } from "./router-state.js";

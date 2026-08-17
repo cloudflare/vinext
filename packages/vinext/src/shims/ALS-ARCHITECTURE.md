@@ -25,7 +25,8 @@ that existed before.
 - `i18nContext` - locale info (`i18n-state.ts`)
 - `serverContext`, `serverInsertedHTMLCallbacks` - rsc server context (`navigation-state.ts`)
 - `requestScopedCacheLife` - per-request cache life override (`cache.ts`)
-- `_privateCache` - per-request private cache map (`cache-runtime.ts`)
+- `pendingCacheInvocations`, `completedCacheInvocations` - request-scoped
+  cache-function invocation maps (`cache-runtime.ts`)
 - `currentRequestTags` - revalidation tags (`fetch-cache.ts`)
 - `executionContext` - cloudflare workers execution context (`request-context.ts`)
 - `ssrContext` - pages router ssr context for `useRouter()` (`router-state.ts`)

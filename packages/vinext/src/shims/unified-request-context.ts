@@ -2,7 +2,7 @@
  * Unified per-request context backed by a single AsyncLocalStorage.
  *
  * Consolidates the 5–6 nested ALS scopes that previously wrapped every
- * App Router request (headers, navigation, cache-state, private-cache,
+ * App Router request (headers, navigation, cache-state, cache-invocations,
  * fetch-cache, execution-context) into one flat store.
  *
  * Each shim module checks `isInsideUnifiedScope()` and reads its sub-fields
@@ -13,13 +13,13 @@
 import type { AsyncLocalStorage } from "node:async_hooks";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import type {
+  CacheInvocationState,
   CacheState,
   ExecutionContextLike,
   FetchCacheState,
   HeadState,
   I18nState,
   NavigationState,
-  PrivateCacheState,
   RouterState,
   RootParamsState,
   VinextHeadersShimState,
@@ -31,7 +31,7 @@ import type {
 
 /**
  * Flat union of all per-request state previously spread across
- * VinextHeadersShimState, NavigationState, CacheState, PrivateCacheState,
+ * VinextHeadersShimState, NavigationState, CacheState, CacheInvocationState,
  * FetchCacheState, and ExecutionContextLike.
  *
  * Each field group is documented with its source shim module.
@@ -53,7 +53,7 @@ export type UnifiedRequestContext = {
   I18nState &
   NavigationState &
   CacheState &
-  PrivateCacheState &
+  CacheInvocationState &
   FetchCacheState &
   RouterState &
   HeadState &
@@ -114,7 +114,8 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     requestScopedCacheLife: null,
     unstableCacheObservations: new Map(),
     unstableCacheRevalidation: "foreground",
-    _privateCache: null,
+    pendingCacheInvocations: null,
+    completedCacheInvocations: null,
     cacheableFetchUrls: new Set<string>(),
     currentRequestTags: [],
     currentFetchSoftTags: [],
@@ -379,7 +380,8 @@ export function runWithUnifiedStateMutation<T>(
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), Set
   // fields (renderRequestApiUsage, pendingRevalidatedTags, pendingRevalidations,
   // cacheableFetchUrls, dynamicFetchUrls),
-  // Map fields (unstableCacheObservations, _privateCache),
+  // Map fields (unstableCacheObservations, pendingCacheInvocations,
+  // completedCacheInvocations),
   // requestCache WeakMap, and object fields (headersContext,
   // i18nContext, serverContext, ssrContext, executionContext,
   // requestScopedCacheLife) still share references with the parent until

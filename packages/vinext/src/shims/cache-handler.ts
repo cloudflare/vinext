@@ -373,24 +373,52 @@ export class MemoryCacheHandler implements CacheHandler {
 }
 
 const HANDLER_KEY = Symbol.for("vinext.cacheHandler");
-const globalHandlers = globalThis as unknown as Record<PropertyKey, CacheHandler>;
+const BUILT_IN_HANDLERS_KEY = Symbol.for("vinext.cacheHandler.builtInHandlers");
+const globalHandlerState = globalThis as unknown as Record<PropertyKey, unknown>;
+const builtInHandlers = (globalHandlerState[BUILT_IN_HANDLERS_KEY] ??=
+  new Set<CacheHandler>()) as Set<CacheHandler>;
+
+function getConfiguredHandler(): CacheHandler | undefined {
+  return globalHandlerState[HANDLER_KEY] as CacheHandler | undefined;
+}
+
+function createBuiltInMemoryCacheHandler(options?: MemoryCacheHandlerOptions): MemoryCacheHandler {
+  const handler = new MemoryCacheHandler(options);
+  builtInHandlers.add(handler);
+  return handler;
+}
 
 function getActiveHandler(): CacheHandler {
-  return globalHandlers[HANDLER_KEY] ?? (globalHandlers[HANDLER_KEY] = new MemoryCacheHandler());
+  const configured = getConfiguredHandler();
+  if (configured) return configured;
+
+  const handler = createBuiltInMemoryCacheHandler();
+  globalHandlerState[HANDLER_KEY] = handler;
+  return handler;
 }
 
 export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions): void {
-  const current = globalHandlers[HANDLER_KEY];
+  const current = getConfiguredHandler();
   if (current && !(current instanceof MemoryCacheHandler)) return;
-  globalHandlers[HANDLER_KEY] = new MemoryCacheHandler(options);
+  globalHandlerState[HANDLER_KEY] = createBuiltInMemoryCacheHandler(options);
 }
 
 export function setDataCacheHandler(handler: CacheHandler): void {
-  globalHandlers[HANDLER_KEY] = handler;
+  globalHandlerState[HANDLER_KEY] = handler;
 }
 
 export function getDataCacheHandler(): CacheHandler {
   return getActiveHandler();
+}
+
+/**
+ * Whether this handler is one of the in-memory instances created internally
+ * by vinext. Externally supplied handlers are tracked by identity rather than
+ * class so a custom handler that extends MemoryCacheHandler is still treated
+ * as potentially remote.
+ */
+export function isBuiltInCacheHandler(handler: CacheHandler): boolean {
+  return builtInHandlers.has(handler);
 }
 
 export function setCacheHandler(handler: CacheHandler): void {
