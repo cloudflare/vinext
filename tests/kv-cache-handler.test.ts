@@ -518,6 +518,24 @@ describe("KVCacheHandler", () => {
       expect((result!.value as any).html).toBe("<div>hi</div>");
     });
 
+    it("persists and returns a zero producer timestamp", async () => {
+      const timestamp = 0;
+      await handler.set(
+        "producer-timestamp",
+        {
+          kind: "PAGES",
+          html: "<div>timestamped</div>",
+          pageData: {},
+          headers: undefined,
+          status: 200,
+        },
+        { timestamp },
+      );
+
+      expect(JSON.parse(store.get("cache:producer-timestamp")!).lastModified).toBe(timestamp);
+      expect((await handler.get("producer-timestamp"))?.lastModified).toBe(timestamp);
+    });
+
     it("preserves slash-based path tags for Workers invalidation", async () => {
       await handler.set(
         "rt-path-tags",

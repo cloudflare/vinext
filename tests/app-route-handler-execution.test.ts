@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   consumeDynamicUsage,
   cookies,
@@ -67,6 +67,9 @@ function createDynamicUsageState(): {
 }
 
 describe("app route handler execution helpers", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   it("runs route handlers with tracked requests and returns dynamic usage", async () => {
     const dynamicUsage = createDynamicUsageState();
     let receivedParams: Record<string, string | string[]> | null = null;
@@ -203,6 +206,8 @@ describe("app route handler execution helpers", () => {
   });
 
   it("finalizes static route handler responses and schedules cache writes", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
     const dynamicUsage = createDynamicUsageState();
     const waitUntilPromises: Promise<unknown>[] = [];
     const isrSetCalls: Array<{
@@ -210,6 +215,7 @@ describe("app route handler execution helpers", () => {
       expireSeconds: number | undefined;
       revalidateSeconds: number | false;
       tags: string[];
+      timestamp: number | undefined;
     }> = [];
     const phaseCalls: string[] = [];
     const reportCalls: Error[] = [];
@@ -240,6 +246,7 @@ describe("app route handler execution helpers", () => {
       },
       handler: { dynamic: "auto" },
       handlerFn() {
+        vi.setSystemTime(2_000);
         return new Response("ok", {
           status: 201,
           headers: {
@@ -260,6 +267,7 @@ describe("app route handler execution helpers", () => {
           expireSeconds: policy.cacheControl.expire,
           revalidateSeconds: policy.cacheControl.revalidate,
           tags: policy.tags ?? [],
+          timestamp: policy.timestamp,
         });
       },
       markDynamicUsage: dynamicUsage.markDynamicUsage,
@@ -296,6 +304,7 @@ describe("app route handler execution helpers", () => {
         expireSeconds: 300,
         revalidateSeconds: 60,
         tags: ["/api/static-data", "tag:demo"],
+        timestamp: 1_000,
       },
     ]);
     expect(phaseCalls).toEqual(["route-handler", "render"]);

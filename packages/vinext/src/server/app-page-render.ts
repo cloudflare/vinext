@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
+import { getCacheTimestamp } from "vinext/shims/cache-handler";
 import type { AppPageCacheSetter } from "./isr-cache.js";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
@@ -632,6 +633,7 @@ function wrapRscResponseForDevErrorReporting(
 export async function renderAppPageLifecycle(
   options: RenderAppPageLifecycleOptions,
 ): Promise<Response> {
+  const fillStartedAt = getCacheTimestamp();
   // Request dynamic state is consumptive, but both cache finalization and the
   // streamed client completion marker need the final answer. Keep the first
   // positive observation for this render so whichever branch drains first
@@ -978,6 +980,7 @@ export async function renderAppPageLifecycle(
         isForceStatic: options.isForceStatic,
         revalidateSeconds,
       }),
+      timestamp: fillStartedAt,
       waitUntil(promise) {
         options.waitUntil?.(promise);
       },
@@ -1291,6 +1294,7 @@ export async function renderAppPageLifecycle(
         isForceStatic: options.isForceStatic,
         revalidateSeconds,
       }),
+      timestamp: fillStartedAt,
       linkHeader: linkHeader ?? null,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);

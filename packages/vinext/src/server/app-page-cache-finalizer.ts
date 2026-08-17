@@ -74,6 +74,8 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
+  /** Render-start timestamp supplied by the page renderer. */
+  timestamp?: number;
   linkHeader: string | null;
   waitUntil?: (promise: Promise<void>) => void;
 };
@@ -99,6 +101,8 @@ type ScheduleAppPageRscCacheWriteOptions = {
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
+  /** Render-start timestamp supplied by the page renderer. */
+  timestamp?: number;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
@@ -328,7 +332,7 @@ export function finalizeAppPageHtmlCacheResponse(
             htmlRenderObservation,
             linkHeader ? { link: linkHeader } : undefined,
           ),
-          { cacheControl, tags: pageTags },
+          { cacheControl, tags: pageTags, timestamp: options.timestamp },
         ),
       ];
 
@@ -338,6 +342,7 @@ export function finalizeAppPageHtmlCacheResponse(
             options.isrSet(rscKey, buildAppPageCacheValue("", rscData, 200, rscRenderObservation), {
               cacheControl,
               tags: pageTags,
+              timestamp: options.timestamp,
             }),
           ),
         );
@@ -451,6 +456,7 @@ export function scheduleAppPageRscCacheWrite(
       await options.isrSet(rscKey, buildAppPageCacheValue("", rscData, 200, rscRenderObservation), {
         cacheControl,
         tags: pageTags,
+        timestamp: options.timestamp,
       });
       options.isrDebug?.("RSC cache written", rscKey);
     } catch (cacheError) {

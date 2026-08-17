@@ -29,7 +29,11 @@ import type {
   CachedImageValue,
   IncrementalCacheValue,
 } from "vinext/shims/cache";
-import { getCacheTimestamp } from "vinext/shims/cache";
+import {
+  getCacheTimestamp,
+  getCacheTimestampFromContext,
+  type CacheHandlerContext,
+} from "vinext/shims/cache-handler";
 import {
   getRequestExecutionContext,
   type ExecutionContextLike,
@@ -345,11 +349,7 @@ export class KVCacheHandler implements CacheHandler {
     return false;
   }
 
-  set(
-    key: string,
-    data: IncrementalCacheValue | null,
-    ctx?: Record<string, unknown>,
-  ): Promise<void> {
+  set(key: string, data: IncrementalCacheValue | null, ctx?: CacheHandlerContext): Promise<void> {
     // Collect, validate, and dedupe tags from data and context
     const tagSet = new Set<string>();
     if (data && "tags" in data && Array.isArray(data.tags)) {
@@ -378,7 +378,9 @@ export class KVCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return Promise.resolve();
 
-    const lastModified = getCacheTimestamp();
+    // Preserve the producer's pre-fill timestamp. Falling back here retains
+    // compatibility with direct and older callers that do not provide one.
+    const lastModified = getCacheTimestampFromContext(ctx);
     const writtenAt = Date.now();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0

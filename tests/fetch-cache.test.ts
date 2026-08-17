@@ -55,8 +55,14 @@ const {
   consumeDynamicFetchObservations,
   peekDynamicFetchObservations,
 } = await import("../packages/vinext/src/shims/fetch-cache.js");
-const { getCacheHandler, revalidatePath, revalidateTag, MemoryCacheHandler, setCacheHandler } =
-  await import("../packages/vinext/src/shims/cache.js");
+const {
+  getCacheHandler,
+  getCacheTimestamp,
+  revalidatePath,
+  revalidateTag,
+  MemoryCacheHandler,
+  setCacheHandler,
+} = await import("../packages/vinext/src/shims/cache.js");
 const { consumeDynamicUsage, setHeadersContext } =
   await import("../packages/vinext/src/shims/headers.js");
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
@@ -107,6 +113,72 @@ describe("fetch cache shim", () => {
     const data2 = await res2.json();
     expect(data2.count).toBe(1); // Same count = cached
     expect(fetchMock).toHaveBeenCalledTimes(1); // Only one real fetch
+  });
+
+  it("passes the fetch-start timestamp to the cache handler", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-17T00:00:00.000Z"));
+      let persistedTimestamp: unknown;
+      let observedDuringFetch = 0;
+      setCacheHandler({
+        async get() {
+          return null;
+        },
+        async set(_key, _value, ctx) {
+          persistedTimestamp = ctx?.timestamp;
+        },
+        async revalidateTag() {},
+      });
+      fetchMock.mockImplementationOnce(async (input: string | URL | Request) => {
+        vi.advanceTimersByTime(10);
+        observedDuringFetch = getCacheTimestamp();
+        return defaultFetchMockImplementation(input);
+      });
+
+      await fetch("https://api.example.com/producer-timestamp", {
+        next: { revalidate: 60, tags: ["producer-timestamp"] },
+      });
+
+      expect(typeof persistedTimestamp).toBe("number");
+      expect(persistedTimestamp as number).toBeLessThan(observedDuringFetch);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves an entry timestamp when lowering its revalidate policy", async () => {
+    const existingTimestamp = 0;
+    let persistedTimestamp: unknown;
+    setCacheHandler({
+      async get() {
+        return {
+          lastModified: existingTimestamp,
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: { "content-type": "application/json" },
+              body: Buffer.from(JSON.stringify({ cached: true })).toString("base64"),
+              url: "https://api.example.com/lower-policy-timestamp",
+            },
+            tags: ["existing"],
+            revalidate: 60,
+          },
+        };
+      },
+      async set(_key, _value, ctx) {
+        persistedTimestamp = ctx?.timestamp;
+      },
+      async revalidateTag() {},
+    });
+
+    const response = await fetch("https://api.example.com/lower-policy-timestamp", {
+      next: { revalidate: 30, tags: ["additional"] },
+    });
+
+    expect(await response.json()).toEqual({ cached: true });
+    expect(persistedTimestamp).toBe(existingTimestamp);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("cache: 'force-cache' caches indefinitely", async () => {

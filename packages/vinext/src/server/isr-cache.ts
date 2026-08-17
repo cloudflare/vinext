@@ -14,6 +14,7 @@
  */
 
 import {
+  getCacheTimestamp,
   type CacheControlMetadata,
   type CacheHandlerValue,
   type IncrementalCacheValue,
@@ -204,6 +205,8 @@ export function isrCacheControl(
 export type IsrWritePolicy = {
   cacheControl: CacheControlMetadata;
   tags?: string[];
+  /** Causal timestamp captured immediately before the producing fill starts. */
+  timestamp?: number;
 };
 
 /**
@@ -214,6 +217,9 @@ export async function isrSet(
   data: IncrementalCacheValue | null,
   policy: IsrWritePolicy,
 ): Promise<void> {
+  // Framework producers pass the pre-fill boundary explicitly. Keep the
+  // call-time fallback for custom/direct callers using the legacy policy.
+  const timestamp = policy.timestamp ?? getCacheTimestamp();
   await getCdnCacheAdapter().set(key, data, {
     cacheControl: policy.cacheControl,
     // `revalidate` is the legacy vinext CacheHandler context field. `expire`
@@ -221,6 +227,7 @@ export async function isrSet(
     // cacheControl.
     revalidate: policy.cacheControl.revalidate,
     tags: policy.tags ?? [],
+    timestamp,
   });
 }
 
@@ -258,6 +265,10 @@ export async function isrSetPrerenderedAppPage(
   // (cloudflare/vinext#1486) so prerender-seeded entries are reachable by
   // revalidatePath()/revalidateTag().
   const ctx: Record<string, unknown> = {};
+  // Prerender seeding does not execute a runtime fill. Timestamp the seed at
+  // the point it enters the adapter so built-in handlers still persist a
+  // producer-owned value rather than inventing one internally.
+  ctx.timestamp = getCacheTimestamp();
   if (revalidateSeconds !== undefined) {
     ctx.revalidate = revalidateSeconds;
     ctx.cacheControl = isrCacheControl(revalidateSeconds, metadata);

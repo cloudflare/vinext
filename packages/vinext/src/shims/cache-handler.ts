@@ -37,6 +37,12 @@ export function getCacheTimestamp(): number {
   return wallTime;
 }
 
+/** Resolve a producer timestamp while retaining compatibility with legacy callers. */
+export function getCacheTimestampFromContext(ctx: Record<string, unknown> | undefined): number {
+  const value = ctx?.timestamp;
+  return typeof value === "number" && Number.isFinite(value) ? value : getCacheTimestamp();
+}
+
 export type CacheControlMetadata = {
   revalidate: number | false;
   expire?: number;
@@ -111,29 +117,30 @@ export type CacheHandlerContext = {
   dev?: boolean;
   maxMemoryCacheSize?: number;
   revalidatedTags?: string[];
+  /**
+   * Causal timestamp captured by the producer before cache filling starts.
+   * Handlers must persist it as `lastModified` and return it unchanged.
+   */
+  timestamp?: number;
   [key: string]: unknown;
 };
 
 export type CacheHandler = {
-  get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
-  set(
-    key: string,
-    data: IncrementalCacheValue | null,
-    ctx?: Record<string, unknown>,
-  ): Promise<void>;
+  get(key: string, ctx?: CacheHandlerContext): Promise<CacheHandlerValue | null>;
+  set(key: string, data: IncrementalCacheValue | null, ctx?: CacheHandlerContext): Promise<void>;
   revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
   resetRequestCache?(): void;
 };
 
 export class NoOpCacheHandler implements CacheHandler {
-  async get(_key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+  async get(_key: string, _ctx?: CacheHandlerContext): Promise<CacheHandlerValue | null> {
     return null;
   }
 
   async set(
     _key: string,
     _data: IncrementalCacheValue | null,
-    _ctx?: Record<string, unknown>,
+    _ctx?: CacheHandlerContext,
   ): Promise<void> {}
 
   async revalidateTag(_tags: string | string[], _durations?: { expire?: number }): Promise<void> {}
@@ -260,7 +267,7 @@ export class MemoryCacheHandler implements CacheHandler {
     }
   }
 
-  async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+  async get(key: string, ctx?: CacheHandlerContext): Promise<CacheHandlerValue | null> {
     const entry = this.store.get(key);
     if (!entry) return null;
 
@@ -317,7 +324,7 @@ export class MemoryCacheHandler implements CacheHandler {
   async set(
     key: string,
     data: IncrementalCacheValue | null,
-    ctx?: Record<string, unknown>,
+    ctx?: CacheHandlerContext,
   ): Promise<void> {
     const tagSet = new Set<string>();
     if (data && "tags" in data && Array.isArray(data.tags)) {
@@ -340,7 +347,10 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return;
 
-    const lastModified = getCacheTimestamp();
+    // Framework producers capture this before running user work, matching
+    // Next.js CacheEntry.timestamp. The fallback keeps direct and legacy calls
+    // backward compatible without letting adapters replace a supplied value.
+    const lastModified = getCacheTimestampFromContext(ctx);
     const writtenAt = Date.now();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0

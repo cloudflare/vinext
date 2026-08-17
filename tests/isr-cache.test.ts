@@ -437,12 +437,59 @@ describe("ISR expire ceiling", () => {
     await isrSet("compat-test", buildPagesCacheValue("<html>cached</html>", {}), {
       cacheControl: { revalidate: 60, expire: 300 },
       tags: ["tag"],
+      timestamp: 123,
     });
 
     expect(setContext).toEqual({
       cacheControl: { revalidate: 60, expire: 300 },
       revalidate: 60,
       tags: ["tag"],
+      timestamp: 123,
+    });
+  });
+
+  it("keeps an invalidation during an ISR render newer than the eventual write", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(0);
+    setCacheHandler(new MemoryCacheHandler());
+
+    await runWithRequestContext(createRequestContext({ requestStartTime: 0 }), async () => {
+      vi.setSystemTime(10);
+      await Promise.resolve(revalidatePath("/isr-race"));
+
+      await isrSet("isr-race", buildPagesCacheValue("<html>stale render</html>", {}), {
+        cacheControl: { revalidate: 60 },
+        tags: ["_N_T_/isr-race"],
+        timestamp: 0,
+      });
+
+      await expect(isrGet("isr-race")).resolves.toBeNull();
+    });
+  });
+
+  it("keeps an ISR fill started after invalidation reusable", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(0);
+    setCacheHandler(new MemoryCacheHandler());
+
+    await runWithRequestContext(createRequestContext({ requestStartTime: 0 }), async () => {
+      vi.setSystemTime(10);
+      await Promise.resolve(revalidatePath("/fresh-after-invalidation"));
+
+      vi.setSystemTime(20);
+      await isrSet(
+        "fresh-after-invalidation",
+        buildPagesCacheValue("<html>fresh render</html>", {}),
+        {
+          cacheControl: { revalidate: 60 },
+          tags: ["_N_T_/fresh-after-invalidation"],
+          timestamp: Date.now(),
+        },
+      );
+
+      expect(await isrGet("fresh-after-invalidation")).toMatchObject({
+        value: { value: { kind: "PAGES", html: "<html>fresh render</html>" } },
+      });
     });
   });
 

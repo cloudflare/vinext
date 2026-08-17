@@ -720,18 +720,15 @@ async function writeFetchCacheResponse(
   response: Response,
   tags: string[],
   revalidateSeconds: number,
-  options?: {
+  options: {
     cloneForReturn?: boolean;
-    fillStartedAt?: number;
+    fillStartedAt: number;
     softTags?: readonly string[];
   },
 ): Promise<void> {
   const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds, options);
   if (!cacheValue) return;
-  if (
-    options?.fillStartedAt !== undefined &&
-    _wasTagRevalidatedAfter([...tags, ...(options.softTags ?? [])], options.fillStartedAt)
-  ) {
+  if (_wasTagRevalidatedAfter([...tags, ...(options.softTags ?? [])], options.fillStartedAt)) {
     return;
   }
 
@@ -739,6 +736,7 @@ async function writeFetchCacheResponse(
     fetchCache: true,
     tags,
     revalidate: revalidateSeconds,
+    timestamp: options.fillStartedAt,
   });
 }
 
@@ -748,6 +746,7 @@ async function lowerFetchCacheRevalidateIfNeeded(
   cachedValue: CachedFetchValue,
   tags: string[],
   revalidateSeconds: number,
+  timestamp: number,
 ): Promise<void> {
   if (
     !Number.isFinite(revalidateSeconds) ||
@@ -768,6 +767,7 @@ async function lowerFetchCacheRevalidateIfNeeded(
     fetchCache: true,
     tags: mergedTags,
     revalidate: revalidateSeconds,
+    timestamp,
   });
 }
 
@@ -1328,6 +1328,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
           cached.value,
           tags,
           revalidateSeconds,
+          cached.lastModified,
         );
         const cachedData = cached.value.data;
         return buildCachedFetchResponse(cachedData, input);
@@ -1418,6 +1419,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
           fetchCache: true,
           tags,
           revalidate: revalidateSeconds,
+          timestamp: fillStartedAt,
         })
         .catch((err) => {
           console.error("[vinext] fetch cache write error:", err);

@@ -5,7 +5,7 @@ import {
   type HeadersAccessPhase,
 } from "vinext/shims/headers";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
-import type { CachedRouteValue } from "vinext/shims/cache-handler";
+import { getCacheTimestamp, type CachedRouteValue } from "vinext/shims/cache-handler";
 import type { NextRequest } from "vinext/shims/server";
 import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import { runWithRootParamsUsage } from "vinext/shims/root-params";
@@ -301,6 +301,7 @@ export async function runAppRouteHandler(
 export async function executeAppRouteHandler(
   options: ExecuteAppRouteHandlerOptions,
 ): Promise<Response> {
+  const fillStartedAt = getCacheTimestamp();
   const previousHeadersPhase = options.setHeadersAccessPhase("route-handler");
   let cleanupDeferredToBody = false;
   const middlewareMergeOptions = {
@@ -441,6 +442,7 @@ export async function executeAppRouteHandler(
               expireSeconds: options.expireSeconds,
             }),
             tags: routeTags,
+            timestamp: fillStartedAt,
           });
           options.isrDebug?.("route cache written", routeKey);
         } catch (cacheErr) {

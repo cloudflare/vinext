@@ -575,8 +575,8 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   tags: string[],
   revalidateSeconds: number | false | undefined,
 ): Promise<Result> {
-  // Cache handlers timestamp at set() completion. Keep the earlier boundary
-  // so a fill that overlaps tag invalidation is not persisted as fresh.
+  // This becomes the persisted entry timestamp, so a fill that overlaps tag
+  // invalidation cannot appear newer merely because storage completed later.
   const fillStartedAt = getCacheTimestamp();
   const result = await _unstableCacheAls.run(true, () => fn(...args));
 
@@ -603,6 +603,7 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
     fetchCache: true,
     tags,
     revalidate: revalidateSeconds,
+    timestamp: fillStartedAt,
   });
 
   return result;

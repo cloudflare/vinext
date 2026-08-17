@@ -6063,6 +6063,40 @@ describe("next/cache shim", () => {
     }
   });
 
+  it("passes the unstable_cache fill-start timestamp to the cache handler", async () => {
+    const { getCacheTimestamp, MemoryCacheHandler, setCacheHandler, unstable_cache } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-17T00:00:00.000Z"));
+      let persistedTimestamp: unknown;
+      let observedDuringFill = 0;
+      setCacheHandler({
+        async get() {
+          return null;
+        },
+        async set(_key, _value, ctx) {
+          persistedTimestamp = ctx?.timestamp;
+        },
+        async revalidateTag() {},
+      });
+
+      const cached = unstable_cache(async () => {
+        vi.advanceTimersByTime(10);
+        observedDuringFill = getCacheTimestamp();
+        return "value";
+      }, ["producer-timestamp-unstable"]);
+
+      await cached();
+      expect(typeof persistedTimestamp).toBe("number");
+      expect(persistedTimestamp as number).toBeLessThan(observedDuringFill);
+    } finally {
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("does not persist an unstable_cache fill that straddles updateTag", async () => {
     const { _runWithCacheState, MemoryCacheHandler, setCacheHandler, unstable_cache, updateTag } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -6373,6 +6407,25 @@ describe("next/cache shim", () => {
     if (result!.value!.kind === "FETCH") {
       expect(result!.value!.data.body).toBe('{"x":1}');
     }
+  });
+
+  it("MemoryCacheHandler persists a zero producer timestamp", async () => {
+    const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+    const timestamp = 0;
+
+    await handler.set(
+      "producer-timestamp",
+      {
+        kind: "FETCH",
+        data: { headers: {}, body: '"cached"', url: "test" },
+        tags: [],
+        revalidate: 3600,
+      },
+      { timestamp },
+    );
+
+    expect((await handler.get("producer-timestamp"))?.lastModified).toBe(timestamp);
   });
 
   it("MemoryCacheHandler evicts least-recently-used entries when max size is exceeded", async () => {
@@ -7351,17 +7404,47 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  it("passes the use cache fill-start timestamp to the cache handler", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { getCacheTimestamp, MemoryCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-17T00:00:00.000Z"));
+      let persistedTimestamp: unknown;
+      let observedDuringFill = 0;
+      setCacheHandler({
+        async get() {
+          return null;
+        },
+        async set(_key, _value, ctx) {
+          persistedTimestamp = ctx?.timestamp;
+        },
+        async revalidateTag() {},
+      });
+
+      const cached = registerCachedFunction(async () => {
+        vi.advanceTimersByTime(10);
+        observedDuringFill = getCacheTimestamp();
+        return "value";
+      }, "test:producer-timestamp-use-cache");
+
+      await cached();
+      expect(typeof persistedTimestamp).toBe("number");
+      expect(persistedTimestamp as number).toBeLessThan(observedDuringFill);
+    } finally {
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("uses custom handler timestamps when tag invalidation is not enforced by the handler", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
-    const {
-      _runWithCacheState,
-      cacheTag,
-      getCacheTimestamp,
-      MemoryCacheHandler,
-      setCacheHandler,
-      updateTag,
-    } = await import("../packages/vinext/src/shims/cache.js");
+    const { _runWithCacheState, cacheTag, MemoryCacheHandler, setCacheHandler, updateTag } =
+      await import("../packages/vinext/src/shims/cache.js");
     const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
 
     vi.useFakeTimers();
@@ -7372,8 +7455,9 @@ describe('"use cache" runtime', () => {
         async get() {
           return stored;
         },
-        async set(_key, value) {
-          stored = { lastModified: getCacheTimestamp(), value };
+        async set(_key, value, ctx) {
+          expect(typeof ctx?.timestamp).toBe("number");
+          stored = { lastModified: ctx!.timestamp as number, value };
         },
         async revalidateTag() {},
       });

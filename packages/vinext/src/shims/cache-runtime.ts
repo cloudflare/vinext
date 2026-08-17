@@ -807,9 +807,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         }
       }
 
-      // Cache miss (or stale) — execute with context. Capture the boundary
-      // before user code starts because handlers timestamp entries only when
-      // set() completes; an invalidation during the fill must still win.
+      // Cache miss (or stale) — capture the entry timestamp before user code
+      // starts. Handlers persist this causal boundary unchanged, matching
+      // Next.js CacheEntry.timestamp.
       const fillStartedAt = getCacheTimestamp();
       const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
         fn,
@@ -851,6 +851,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           const cacheContext = {
             fetchCache: true,
             tags: ctx.tags,
+            timestamp: fillStartedAt,
             cacheControl: {
               revalidate: revalidateSeconds,
               expire: effectiveLife.expire,
