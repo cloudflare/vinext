@@ -92,4 +92,33 @@ test.describe("optimistic same-path search navigation", () => {
       }
     }
   });
+
+  test("commits a large streamed tree under constrained scheduling", async ({ page }) => {
+    test.setTimeout(120_000);
+
+    await page.setExtraHTTPHeaders({ "x-vinext-e2e-provider-result-count": "1000" });
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Network.enable");
+    await cdp.send("Network.emulateNetworkConditions", {
+      connectionType: "cellular3g",
+      downloadThroughput: 256 * 1024,
+      latency: 150,
+      offline: false,
+      uploadThroughput: 256 * 1024,
+    });
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+
+    await page.goto(ROUTE);
+    await markDocument(page);
+
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      for (const provider of providers) {
+        await page.getByTestId(`provider-${provider.name}`).click();
+        await expectProvider(page, provider.value);
+
+        await page.getByTestId(`provider-${provider.name}`).click();
+        await expectProvider(page, null);
+      }
+    }
+  });
 });
