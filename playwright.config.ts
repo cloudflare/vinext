@@ -57,7 +57,11 @@ const projectServers = {
   },
   "app-router-isr-prod": {
     testDir: "./tests/e2e",
-    testMatch: ["app-router/isr.spec.ts", "app-router-prod/use-cache.spec.ts"],
+    testMatch: [
+      "app-router/isr.spec.ts",
+      "app-router-prod/static-hydration.spec.ts",
+      "app-router-prod/use-cache.spec.ts",
+    ],
     use: { baseURL: "http://localhost:4198" },
     server: {
       command:

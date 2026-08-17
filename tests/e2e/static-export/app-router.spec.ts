@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 /**
  * Static export E2E tests for the App Router.
@@ -70,6 +71,34 @@ test.describe("Static Export — App Router", () => {
     await page.locator('a[href="/about"]').click();
     await page.waitForURL(`${BASE}/about`);
     await expect(page.locator("h1")).toHaveText("About");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+  test("useSearchParams reads the browser query after hydration", async ({ page }) => {
+    let rscRequests = 0;
+    page.on("request", (request) => {
+      if (request.headers().rsc === "1") rscRequests++;
+    });
+    const response = await page.goto(`${BASE}/search-params?value=expected`);
+    expect(response?.status()).toBe(200);
+    await waitForAppRouterHydration(page);
+    await expect(page.getByTestId("query-value")).toHaveText("expected");
+    expect(page.url()).toBe(`${BASE}/search-params?value=expected`);
+    expect(rscRequests).toBe(0);
+  });
+
+  test("useSearchParams reads the query after static-host navigation fallback", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/`);
+    await page.evaluate(() => Reflect.set(window, "__staticExportSoftNavigation", true));
+    await page.locator('a[href="/search-params?value=navigated"]').click();
+    await page.waitForURL(`${BASE}/search-params?value=navigated`);
+    await expect(page.getByTestId("query-value")).toHaveText("navigated");
+    expect(
+      await page.evaluate(() => Reflect.get(window, "__staticExportSoftNavigation")),
+    ).toBeUndefined();
   });
 
   test("root layout metadata is applied", async ({ page }) => {

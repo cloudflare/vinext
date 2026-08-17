@@ -3,6 +3,8 @@ import { createRequire } from "node:module";
 import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { parseAst, type Plugin } from "vite";
+import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
+import { SCRIPT_MODULE_ID_RE, walkAst } from "./ast-utils.js";
 
 type NextSwcModule = {
   loadBindings(): Promise<unknown>;
@@ -42,14 +44,13 @@ function useStyleRegistry() {
 }
 export { StyleRegistry, createStyleRegistry, style, useStyleRegistry };
 `;
-const NODE_MODULES_RE = /[\\/]node_modules[\\/]/;
 const STYLED_JSX_SOURCE_RE =
   /(?:<style\b|from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
 const STYLED_JSX_CSS_RE =
   /(?:from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
 
 function hasStyledJsxTag(source: string, id: string): boolean {
-  const cleanId = id.split("?")[0];
+  const cleanId = stripViteModuleQuery(id);
   const extension = path.extname(cleanId);
   const lang = extension === ".ts" || extension === ".mts" || extension === ".cts" ? "ts" : "tsx";
   let ast: ReturnType<typeof parseAst>;
@@ -59,14 +60,9 @@ function hasStyledJsxTag(source: string, id: string): boolean {
     return false;
   }
 
-  const pending: unknown[] = [ast];
-  const visited = new Set<object>();
-  while (pending.length > 0) {
-    const value = pending.pop();
-    if (!value || typeof value !== "object" || visited.has(value)) continue;
-    visited.add(value);
-
-    const node = value as Record<string, unknown>;
+  let found = false;
+  walkAst(ast, (node) => {
+    if (found) return false;
     if (node.type === "JSXOpeningElement") {
       const name = node.name as { type?: string; name?: string } | undefined;
       if (name?.type === "JSXIdentifier" && name.name === "style") {
@@ -78,17 +74,13 @@ function hasStyledJsxTag(source: string, id: string): boolean {
             return attributeName?.type === "JSXIdentifier" && attributeName.name === "jsx";
           })
         ) {
-          return true;
+          found = true;
+          return false;
         }
       }
     }
-
-    for (const child of Object.values(node)) {
-      if (Array.isArray(child)) pending.push(...child);
-      else if (child && typeof child === "object") pending.push(child);
-    }
-  }
-  return false;
+  });
+  return found;
 }
 
 function createProjectRequire(projectRoot: string) {
@@ -112,7 +104,7 @@ function resolveNextRequire(projectRoot: string): NodeJS.Require | null {
 }
 
 function parserOptions(id: string): Record<string, unknown> {
-  const extension = path.extname(id.split("?")[0]);
+  const extension = path.extname(stripViteModuleQuery(id));
   if (extension === ".ts" || extension === ".tsx") {
     return { syntax: "typescript", tsx: extension === ".tsx", decorators: true };
   }
@@ -235,13 +227,13 @@ export function createStyledJsxPlugin(
     transform: {
       filter: {
         id: {
-          include: /\.[cm]?[jt]sx?(?:\?.*)?$/,
-          exclude: NODE_MODULES_RE,
+          include: SCRIPT_MODULE_ID_RE,
+          exclude: NODE_MODULES_PATH_RE,
         },
         code: STYLED_JSX_SOURCE_RE,
       },
       async handler(source, id) {
-        if (NODE_MODULES_RE.test(id.split("?")[0])) return null;
+        if (NODE_MODULES_PATH_RE.test(stripViteModuleQuery(id))) return null;
         const hasStyledJsxCss = STYLED_JSX_CSS_RE.test(source);
         const hasStyledJsxElement = !hasStyledJsxCss && hasStyledJsxTag(source, id);
         if (!hasStyledJsxCss && !hasStyledJsxElement) return null;
@@ -252,7 +244,7 @@ export function createStyledJsxPlugin(
         }
         const compiler = await getCompiler();
         const result = await compiler.transform(source, {
-          filename: id.split("?")[0],
+          filename: stripViteModuleQuery(id),
           sourceMaps: true,
           module: { type: "es6" },
           // Vinext's server and client entries inspect these exports directly.

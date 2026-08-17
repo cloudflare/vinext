@@ -11,9 +11,14 @@ import {
   isIdentifierNamed,
   mayContainDynamicImport,
   nodeArray,
+  SCRIPT_MODULE_ID_RE,
+  scriptParserLanguage,
+  stringLiteralValue,
+  unwrapExpression,
   type AstRecord,
 } from "./ast-utils.js";
 import { createTransformCache } from "./transform-cache.js";
+import { magicStringTransformResult } from "./transform-result.js";
 import {
   collectDirectScopeBindings,
   collectLoopScopeBindings,
@@ -23,6 +28,7 @@ import {
   isFunctionNode,
   type AstScope,
 } from "./ast-scope.js";
+import { stripViteModuleQuery } from "../utils/path.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
 const REQUIRE_PRESCAN =
@@ -35,26 +41,6 @@ const MAX_CONSTANT_BINDING_DEPTH = 1_500;
 const VINEXT_SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_RSC_PATH =
   /[\\/]node_modules[\\/](?:\.pnpm[\\/][^/\\]+[\\/]node_modules[\\/])?@vitejs[\\/]plugin-rsc[\\/]/;
-const TRANSFORMABLE_EXTENSIONS = new Set([
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".cjs",
-  ".ts",
-  ".tsx",
-  ".mts",
-  ".cts",
-]);
-const TRANSPARENT_EXPRESSIONS = new Set([
-  "ChainExpression",
-  "ParenthesizedExpression",
-  "TSAsExpression",
-  "TSInstantiationExpression",
-  "TSNonNullExpression",
-  "TSSatisfiesExpression",
-  "TSTypeAssertion",
-]);
-
 type Scope = {
   parent: Scope | null;
   bindings: AstScope["bindings"];
@@ -79,22 +65,6 @@ type EnvironmentLike = {
 
 function astNode(value: unknown): AstRecord | null {
   return isAstRecord(value) ? value : null;
-}
-
-function unwrapExpression(value: unknown): AstRecord | null {
-  const node = astNode(value);
-  if (!node || !TRANSPARENT_EXPRESSIONS.has(node.type)) return node;
-  return unwrapExpression(node.expression);
-}
-
-function stringValue(node: AstRecord): string | null {
-  if (
-    (node.type === "Literal" || node.type === "StringLiteral") &&
-    typeof node.value === "string"
-  ) {
-    return node.value;
-  }
-  return null;
 }
 
 function stringFromCharCodeValue(value: unknown, scope: Scope): string | null {
@@ -139,14 +109,14 @@ function isUnboundNumericGlobal(node: AstRecord, scope: Scope): boolean {
   );
 }
 
-function staticStringValue(
+function evaluateStaticString(
   value: unknown,
   scope: Scope,
   resolution: ConstantResolution,
 ): string | null {
   const node = unwrapExpression(value);
   if (!node) return null;
-  const valueString = stringValue(node);
+  const valueString = stringLiteralValue(node);
   if (valueString !== null) return valueString;
   if (node.type === "TemplateLiteral" && nodeArray(node.expressions).length === 0) {
     const quasi = astNode(nodeArray(node.quasis)[0]);
@@ -160,24 +130,24 @@ function staticStringValue(
     return typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : null;
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
-    const left = staticStringValue(node.left, scope, resolution);
-    const right = staticStringValue(node.right, scope, resolution);
+    const left = evaluateStaticString(node.left, scope, resolution);
+    const right = evaluateStaticString(node.right, scope, resolution);
     return left === null || right === null ? null : left + right;
   }
   if (node.type === "ConditionalExpression") {
     const truthiness = staticTruthiness(node.test, scope, resolution);
     if (truthiness !== null) {
-      return staticStringValue(truthiness ? node.consequent : node.alternate, scope, resolution);
+      return evaluateStaticString(truthiness ? node.consequent : node.alternate, scope, resolution);
     }
-    const consequent = staticStringValue(node.consequent, scope, resolution);
-    const alternate = staticStringValue(node.alternate, scope, resolution);
+    const consequent = evaluateStaticString(node.consequent, scope, resolution);
+    const alternate = evaluateStaticString(node.alternate, scope, resolution);
     return consequent !== null && consequent === alternate ? consequent : null;
   }
   if (node.type === "SequenceExpression") {
-    return staticStringValue(nodeArray(node.expressions).at(-1), scope, resolution);
+    return evaluateStaticString(nodeArray(node.expressions).at(-1), scope, resolution);
   }
   if (node.type === "Identifier" && typeof node.name === "string") {
-    return resolveConstantBinding(scope, node.name, resolution, null, staticStringValue);
+    return resolveConstantBinding(scope, node.name, resolution, null, evaluateStaticString);
   }
   return null;
 }
@@ -339,7 +309,7 @@ function templateTruthiness(
 
   let hasUnknownExpression = false;
   for (const expression of nodeArray(node.expressions)) {
-    const string = staticStringValue(expression, scope, resolution);
+    const string = evaluateStaticString(expression, scope, resolution);
     if (string !== null) {
       if (string !== "") return true;
       continue;
@@ -375,7 +345,7 @@ function staticTruthiness(
       : null;
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
-    const string = staticStringValue(node, scope, resolution);
+    const string = evaluateStaticString(node, scope, resolution);
     return string === null ? null : Boolean(string);
   }
   if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return false;
@@ -479,7 +449,7 @@ function stringConcatHasStaticPart(
   if (
     callee?.type !== "MemberExpression" ||
     (callee.computed === true
-      ? property === null || staticStringValue(property, scope, resolution) !== "concat"
+      ? property === null || evaluateStaticString(property, scope, resolution) !== "concat"
       : !isIdentifierNamed(property, "concat"))
   ) {
     return null;
@@ -502,7 +472,7 @@ function isStaticStringExpression(
 ): boolean {
   const node = unwrapExpression(value);
   if (!node) return false;
-  if (stringValue(node) !== null || node.type === "TemplateLiteral") return true;
+  if (stringLiteralValue(node) !== null || node.type === "TemplateLiteral") return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
     return resolveConstantBinding(scope, node.name, resolution, false, isStaticStringExpression);
   }
@@ -531,7 +501,7 @@ function additionContainsString(
 ): boolean {
   const node = unwrapExpression(value);
   if (!node) return false;
-  if (stringValue(node) !== null || node.type === "TemplateLiteral") return true;
+  if (stringLiteralValue(node) !== null || node.type === "TemplateLiteral") return true;
   if (node.type === "Identifier" && typeof node.name === "string") {
     return resolveConstantBinding(scope, node.name, resolution, false, additionContainsString);
   }
@@ -561,7 +531,7 @@ function requestHasStaticPart(
   const node = unwrapExpression(value);
   if (!node) return false;
 
-  const constantString = stringValue(node);
+  const constantString = stringLiteralValue(node);
   if (constantString !== null) return constantString.replaceAll("\\", "/") !== "/";
   if (node.type === "Literal") return true;
   if (isUnboundNumericGlobal(node, scope)) return true;
@@ -588,8 +558,8 @@ function requestHasStaticPart(
     if (!additionContainsString(node, scope, resolution)) return false;
     const left = unwrapExpression(node.left);
     const right = unwrapExpression(node.right);
-    const leftString = left ? stringValue(left) : null;
-    const rightString = right ? stringValue(right) : null;
+    const leftString = left ? stringLiteralValue(left) : null;
+    const rightString = right ? stringLiteralValue(right) : null;
     return (
       (leftString !== null && hasSignificantPathPart(leftString)) ||
       (rightString !== null && hasSignificantPathPart(rightString)) ||
@@ -769,18 +739,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
   // parsed the whole graph. See DYNAMIC_IMPORT_PRESCAN for the rationale.
   if (!REQUIRE_PRESCAN.test(code) && !mayContainDynamicImport(code)) return null;
 
-  const extension = path.extname(id.split("?", 1)[0]);
-  const lang =
-    extension === ".ts" || extension === ".mts" || extension === ".cts"
-      ? "ts"
-      : extension === ".tsx"
-        ? "tsx"
-        : extension === ".js" ||
-            extension === ".jsx" ||
-            extension === ".mjs" ||
-            extension === ".cjs"
-          ? "jsx"
-          : "js";
+  const lang = scriptParserLanguage(id) ?? "js";
   let ast: ReturnType<typeof parseAst>;
   try {
     ast = parseAst(code, { lang });
@@ -922,10 +881,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
   }
 
   if (!changed) return null;
-  return {
-    code: output.toString(),
-    map: output.generateMap({ hires: "boundary", source: id }),
-  };
+  return magicStringTransformResult(output, { hires: "boundary", source: id });
 }
 
 export function createIgnoreDynamicRequestsPlugin(
@@ -939,13 +895,13 @@ export function createIgnoreDynamicRequestsPlugin(
     transform: {
       filter: {
         id: {
-          include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
+          include: SCRIPT_MODULE_ID_RE,
         },
         code: DYNAMIC_REQUEST_PRESCAN,
       },
       handler(code, id) {
-        const cleanId = id.split("?", 1)[0];
-        if (!TRANSFORMABLE_EXTENSIONS.has(path.extname(cleanId))) return null;
+        const cleanId = stripViteModuleQuery(id);
+        if (scriptParserLanguage(cleanId) === null) return null;
         if (
           !shouldTransformVeryDynamicRequests(
             this.environment as EnvironmentLike,

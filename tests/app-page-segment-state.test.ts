@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  canonicalizeAppPageParams,
   resolveAppPageLeafSegmentStateKey,
   resolveAppPagePatternStateKey,
   resolveAppPageRouteStateKey,
@@ -79,6 +80,16 @@ describe("app page segment state keys", () => {
         parts: [],
       }),
     ).toBe("parts||oc");
+
+    const first = { parts: ["a/b", "c"] };
+    const second = { parts: ["a", "b/c"] };
+    canonicalizeAppPageParams(first);
+    canonicalizeAppPageParams(second);
+    expect(first).toEqual({ parts: ["a%2Fb", "c"] });
+    expect(second).toEqual({ parts: ["a", "b%2Fc"] });
+    expect(resolveAppPageRouteStateKey(["docs", "[...parts]"], first)).not.toBe(
+      resolveAppPageRouteStateKey(["docs", "[...parts]"], second),
+    );
   });
 
   it("canonicalizes interception pattern params with their full target path", () => {

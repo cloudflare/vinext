@@ -1,8 +1,37 @@
+import fs from "node:fs";
+import path, { toSlash } from "pathslash";
+
 export const isWindows = process.platform === "win32";
+export const NODE_MODULES_PATH_RE = /(?:^|[\\/])node_modules(?:[\\/]|$)/;
 
 export function stripViteModuleQuery(id: string): string {
   const queryIndex = id.search(/[?#]/);
   return queryIndex === -1 ? id : id.slice(0, queryIndex);
+}
+
+/** Canonicalize an external-origin filesystem path for use as a Vite module id. */
+export function canonicalizeFilePath(filePath: string): string {
+  try {
+    return toSlash(fs.realpathSync.native(filePath));
+  } catch {
+    return toSlash(filePath);
+  }
+}
+
+/** Whether `filePath` is a strict descendant of `directory`. */
+export function isPathInside(directory: string, filePath: string): boolean {
+  const relativePath = path.relative(directory, filePath);
+  return (
+    relativePath !== "" &&
+    relativePath !== ".." &&
+    !relativePath.startsWith("../") &&
+    !path.isAbsolute(relativePath)
+  );
+}
+
+/** Whether `filePath` is `directory` itself or one of its descendants. */
+export function isPathInsideOrEqual(directory: string, filePath: string): boolean {
+  return path.relative(directory, filePath) === "" || isPathInside(directory, filePath);
 }
 
 /** Strip a trailing `.js` extension from a module specifier so
