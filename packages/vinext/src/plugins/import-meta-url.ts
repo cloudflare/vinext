@@ -17,8 +17,7 @@ import path, { toSlash } from "pathslash";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { tryRealpathSync } from "../build/ssr-manifest.js";
-import { stripViteModuleQuery } from "../utils/path.js";
+import { canonicalizeFilePath, isPathInsideOrEqual, stripViteModuleQuery } from "../utils/path.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
 import {
   collectBindingNames,
@@ -32,7 +31,7 @@ import {
   type AstRange,
   type AstRecord,
 } from "./ast-utils.js";
-import { magicStringTransformResult } from "./transform-result.js";
+import { magicStringTransformResult, type MagicStringTransformResult } from "./transform-result.js";
 
 type ImportMetaUrlEnvironment = "client" | "server";
 type ModuleIdentityTransformKind =
@@ -41,11 +40,6 @@ type ModuleIdentityTransformKind =
   | "server-build"
   | "server-cjs-dev"
   | "server-cjs-build";
-
-type RewriteResult = {
-  code: string;
-  map: ReturnType<MagicString["generateMap"]>;
-};
 
 type RootPaths = {
   root: string;
@@ -57,7 +51,7 @@ type ImportMetaUrlCacheEntry = {
   source: string;
   canonicalRoot: string;
   canonicalId: string;
-  results: Map<ModuleIdentityTransformKind, { value: RewriteResult | null }>;
+  results: Map<ModuleIdentityTransformKind, { value: MagicStringTransformResult | null }>;
 };
 
 type DependencyFormatCacheEntry = {
@@ -77,16 +71,6 @@ export type ImportMetaUrlCapability = {
 const MAX_DEPENDENCY_FORMAT_CACHE_ENTRIES = 512;
 const MAX_TRANSFORM_CACHE_ENTRIES = 2_048;
 
-const TRANSFORMABLE_SCRIPT_EXTENSIONS = new Set([
-  ".cjs",
-  ".cts",
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".mts",
-  ".ts",
-  ".tsx",
-]);
 export function createImportMetaUrlPlugin(options: {
   getRoot: () => string | undefined;
 }): ImportMetaUrlCapability {
@@ -109,7 +93,7 @@ export function createImportMetaUrlPlugin(options: {
   // output of the capability.
   const emittedCjsGlobals = createEmittedCjsGlobals();
   function commonJsDependencyCanonicalId(id: string): string | null {
-    const cleanId = cleanModuleId(id);
+    const cleanId = stripViteModuleQuery(id);
     const paths = getRootPaths();
     const cached = dependencyFormatCache.get(cleanId);
     if (cached && cached.canonicalRoot === paths?.canonicalRoot) {
@@ -166,7 +150,7 @@ export function createImportMetaUrlPlugin(options: {
         // direct hook callers and older Vite versions on the same cheap path.
         if (!mayContainSourceIdentityToken(code)) return null;
 
-        const cleanId = cleanModuleId(id);
+        const cleanId = stripViteModuleQuery(id);
         if (mayContainServerCjsGlobal(code) && this.environment?.config?.consumer !== "client") {
           const canonicalId = commonJsDependencyCanonicalId(cleanId);
           if (canonicalId) {
@@ -283,11 +267,11 @@ export function rewriteImportMetaUrl(
   id: string,
   root: string,
   environment: ImportMetaUrlEnvironment,
-): RewriteResult | null {
+): MagicStringTransformResult | null {
   if (!mayContainImportMetaUrl(code)) return null;
   return rewriteCanonicalSourceIdentity(
     code,
-    canonicalizePath(id),
+    canonicalizeFilePath(id),
     createRootPaths(root),
     environment,
   );
@@ -300,7 +284,7 @@ export function rewriteServerCjsGlobals(
   code: string,
   id: string,
   root: string,
-): RewriteResult | null {
+): MagicStringTransformResult | null {
   if (!mayContainServerCjsGlobal(code)) return null;
   const rootPaths = createRootPaths(root);
   // Use the same eligibility gate the plugin runs (node_modules, extension,
@@ -317,7 +301,7 @@ function rewriteCanonicalSourceIdentity(
   rootPaths: RootPaths,
   environment: ImportMetaUrlEnvironment,
   cjsGlobalInitializers?: CjsGlobalInitializers,
-): RewriteResult | null {
+): MagicStringTransformResult | null {
   return rewriteModuleIdentity(code, {
     id: canonicalId,
     importMetaUrlReplacement: mayContainImportMetaUrl(code)
@@ -361,7 +345,7 @@ function finalizeEmittedCjsGlobals(
   code: string,
   emittedCjsGlobalSentinels: ReadonlyMap<string, CjsGlobalName>,
   fileName: string,
-): RewriteResult | null {
+): MagicStringTransformResult | null {
   if (!code.includes("__VINEXT_EMITTED_CJS_")) return null;
   const runtimeBindings = new Set(code.match(/\b__vinext_cjs_(?:process|fs|identity)_*\b/g) ?? []);
   function selectRuntimeBinding(base: string): string {
@@ -422,7 +406,7 @@ function rewriteCjsGlobals(
   code: string,
   id: string,
   cjsGlobalInitializers: CjsGlobalInitializers,
-): RewriteResult | null {
+): MagicStringTransformResult | null {
   return rewriteModuleIdentity(code, { id, cjsGlobalInitializers });
 }
 
@@ -433,11 +417,11 @@ function rewriteModuleIdentity(
     importMetaUrlReplacement?: string;
     cjsGlobalInitializers?: CjsGlobalInitializers;
   },
-): RewriteResult | null {
+): MagicStringTransformResult | null {
   let ast: unknown;
   try {
     ast = parseAst(code, {
-      lang: parserLanguageForModule(options.id),
+      lang: scriptParserLanguage(options.id) ?? "jsx",
       sourceType: options.cjsGlobalInitializers ? "commonjs" : undefined,
     });
   } catch {
@@ -447,7 +431,7 @@ function rewriteModuleIdentity(
       // syntax such as top-level await. Raw dependencies can instead contain
       // CommonJS-only syntax such as a top-level return, so accept either
       // grammar without weakening the binding analysis.
-      ast = parseAst(code, { lang: parserLanguageForModule(options.id) });
+      ast = parseAst(code, { lang: scriptParserLanguage(options.id) ?? "jsx" });
     } catch {
       return null;
     }
@@ -478,10 +462,6 @@ function rewriteModuleIdentity(
   return magicStringTransformResult(output);
 }
 
-function cleanModuleId(id: string): string {
-  return stripViteModuleQuery(id);
-}
-
 function isNodeModulesId(id: string): boolean {
   return id.includes("/node_modules/") || id.includes("\\node_modules\\");
 }
@@ -498,7 +478,7 @@ function canonicalDependencyModuleId(
   id: string,
   rootPaths: RootPaths | undefined,
 ): { canonicalId: string; allowUnpackaged: boolean } | null {
-  const cleanId = cleanModuleId(id);
+  const cleanId = stripViteModuleQuery(id);
   if (!cleanId || cleanId.startsWith(VIRTUAL_PREFIX)) return null;
 
   let filePath: string;
@@ -509,10 +489,10 @@ function canonicalDependencyModuleId(
   }
 
   if (!path.isAbsolute(filePath)) return null;
-  if (!TRANSFORMABLE_SCRIPT_EXTENSIONS.has(path.extname(filePath))) return null;
-  const canonicalId = canonicalizePath(filePath);
+  if (scriptParserLanguage(filePath) === null) return null;
+  const canonicalId = canonicalizeFilePath(filePath);
   if (isNodeModulesId(filePath)) return { canonicalId, allowUnpackaged: true };
-  if (!rootPaths || isPathWithin(canonicalId, rootPaths.canonicalRoot)) return null;
+  if (!rootPaths || isPathInsideOrEqual(rootPaths.canonicalRoot, canonicalId)) return null;
   return { canonicalId, allowUnpackaged: false };
 }
 
@@ -549,23 +529,8 @@ function isCommonJsDependency(canonicalId: string, allowUnpackaged: boolean): bo
   }
 }
 
-function parserLanguageForModule(id: string): "js" | "jsx" | "ts" | "tsx" {
-  switch (path.extname(cleanModuleId(id)).toLowerCase()) {
-    case ".cts":
-    case ".mts":
-    case ".ts":
-      return "ts";
-    case ".tsx":
-      return "tsx";
-    case ".jsx":
-      return "jsx";
-    default:
-      return "js";
-  }
-}
-
 function createRootPaths(root: string, options: { outputDirs?: string[] } = {}): RootPaths {
-  const canonicalRoot = canonicalizePath(root);
+  const canonicalRoot = canonicalizeFilePath(root);
   return {
     root,
     canonicalRoot,
@@ -583,13 +548,13 @@ function transformableModuleCanonicalId(id: string, rootPaths: RootPaths): strin
   const slashedInputId = toSlash(id);
   // Early-exit optimization: skip the realpathSync below for node_modules
   // paths, which are the majority of modules in a typical project. The
-  // isPathWithin check below provides a second safety net in case a
+  // isPathInsideOrEqual check below provides a second safety net in case a
   // symlink causes the canonical path to land outside node_modules.
   if (slashedInputId.includes("/node_modules/")) return null;
   if (scriptParserLanguage(slashedInputId) === null) return null;
 
-  const canonicalId = canonicalizePath(id);
-  if (!isPathWithin(canonicalId, rootPaths.canonicalRoot)) return null;
+  const canonicalId = canonicalizeFilePath(id);
+  if (!isPathInsideOrEqual(rootPaths.canonicalRoot, canonicalId)) return null;
 
   const relativePath = path.relative(rootPaths.canonicalRoot, canonicalId);
   if (isExcludedRelativePath(relativePath, rootPaths.excludedRelativePrefixes)) return null;
@@ -623,8 +588,8 @@ function excludedRelativePrefixes(
     const absoluteOutputDir = path.isAbsolute(outputDir)
       ? outputDir
       : path.resolve(canonicalRoot, outputDir);
-    const canonicalOutputDir = canonicalizePath(absoluteOutputDir);
-    if (!isPathWithin(canonicalOutputDir, canonicalRoot)) continue;
+    const canonicalOutputDir = canonicalizeFilePath(absoluteOutputDir);
+    if (!isPathInsideOrEqual(canonicalRoot, canonicalOutputDir)) continue;
 
     const relativePath = path.relative(canonicalRoot, canonicalOutputDir);
     if (relativePath && relativePath !== ".") prefixes.add(relativePath);
@@ -639,10 +604,6 @@ function isExcludedRelativePath(relativePath: string, prefixes: string[]): boole
   );
 }
 
-function isPathWithin(candidate: string, root: string): boolean {
-  return candidate === root || candidate.startsWith(root.endsWith("/") ? root : `${root}/`);
-}
-
 function importMetaUrlValue(
   canonicalId: string,
   rootPaths: RootPaths,
@@ -654,11 +615,6 @@ function importMetaUrlValue(
   }
 
   return pathToFileURL(canonicalId).href;
-}
-
-function canonicalizePath(value: string): string {
-  const real = tryRealpathSync(value);
-  return real === null ? path.resolve(value) : toSlash(real);
 }
 
 function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: number }> {
