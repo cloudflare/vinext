@@ -26,6 +26,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { tryRealpathSync } from "../build/ssr-manifest.js";
+import { stripViteModuleQuery } from "../utils/path.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
 import {
   collectBindingNames,
@@ -34,9 +35,12 @@ import {
   isAstRecord,
   isIdentifierNamed,
   nodeArray,
+  SCRIPT_MODULE_ID_RE,
+  scriptParserLanguage,
   type AstRange,
   type AstRecord,
 } from "./ast-utils.js";
+import { magicStringTransformResult } from "./transform-result.js";
 
 type ImportMetaUrlEnvironment = "client" | "server";
 type ModuleIdentityTransformKind =
@@ -181,7 +185,7 @@ export function createImportMetaUrlPlugin(options: {
     transform: {
       filter: {
         id: {
-          include: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
+          include: SCRIPT_MODULE_ID_RE,
           exclude: VIRTUAL_MODULE_ID_RE,
         },
         code: SOURCE_IDENTITY_FILTER_RE,
@@ -501,10 +505,7 @@ function finalizeEmittedModuleIdentity(
   } else {
     output.prepend(runtimePreamble);
   }
-  return {
-    code: output.toString(),
-    map: output.generateMap({ hires: "boundary" }),
-  };
+  return magicStringTransformResult(output);
 }
 
 function rewriteModuleIdentity(
@@ -556,14 +557,11 @@ function rewriteModuleIdentity(
   }
 
   if (!changed) return null;
-  return {
-    code: output.toString(),
-    map: output.generateMap({ hires: "boundary" }),
-  };
+  return magicStringTransformResult(output);
 }
 
 function cleanModuleId(id: string): string {
-  return id.split("?", 1)[0];
+  return stripViteModuleQuery(id);
 }
 
 function isNodeModulesId(id: string): boolean {
@@ -670,7 +668,7 @@ function transformableModuleCanonicalId(id: string, rootPaths: RootPaths): strin
   // isPathWithin check below provides a second safety net in case a
   // symlink causes the canonical path to land outside node_modules.
   if (slashedInputId.includes("/node_modules/")) return null;
-  if (!TRANSFORMABLE_SCRIPT_EXTENSIONS.has(path.extname(slashedInputId))) return null;
+  if (scriptParserLanguage(slashedInputId) === null) return null;
 
   const canonicalId = canonicalizePath(id);
   if (!isPathWithin(canonicalId, rootPaths.canonicalRoot)) return null;
@@ -764,7 +762,7 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
     if (isNewUrlExpression(value)) {
       const args = nodeArray(value.arguments);
       for (let index = 0; index < args.length; index += 1) {
-        if (index === 1 && isImportMetaUrlOrChainedNode(args[index])) continue;
+        if (index === 1 && isImportMetaUrlBaseNode(args[index])) continue;
         visit(args[index]);
       }
       // The callee is always the bare `URL` identifier (see isNewUrlExpression),
@@ -1017,6 +1015,25 @@ function isImportMetaUrlOrChainedNode(value: unknown): value is AstRange {
   if (isImportMetaUrlNode(value)) return true;
   return (
     isAstRecord(value) && value.type === "ChainExpression" && isImportMetaUrlNode(value.expression)
+  );
+}
+
+function isImportMetaUrlBaseNode(value: unknown): boolean {
+  if (isImportMetaUrlOrChainedNode(value)) return true;
+
+  // Vite rewrites worker constructors to:
+  //   new URL(emittedWorkerUrl, "" + import.meta.url)
+  // Preserve that generated base just like the direct asset-expression form.
+  // Replacing it with our source-identity file URL would make the browser
+  // resolve the emitted worker against file:// instead of the deployment origin.
+  return (
+    isAstRecord(value) &&
+    value.type === "BinaryExpression" &&
+    value.operator === "+" &&
+    isAstRecord(value.left) &&
+    value.left.type === "Literal" &&
+    value.left.value === "" &&
+    isImportMetaUrlOrChainedNode(value.right)
   );
 }
 

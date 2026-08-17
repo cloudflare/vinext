@@ -27,6 +27,7 @@ import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   handleMetadataRouteRequest,
+  isMetadataRouteRequestPath,
   type MetadataRuntimeRoute,
 } from "../packages/vinext/src/server/metadata-route-response.js";
 import type { MiddlewareModule } from "../packages/vinext/src/server/middleware-runtime.js";
@@ -115,6 +116,11 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
       "handleServerActionRequest" in overrides
         ? overrides.handleServerActionRequest
         : async () => null,
+    isMetadataRoutePath:
+      overrides.isMetadataRoutePath ??
+      (overrides.metadataRoutes
+        ? (cleanPathname) => isMetadataRouteRequestPath(overrides.metadataRoutes!, cleanPathname)
+        : undefined),
     i18nConfig: overrides.i18nConfig ?? null,
     imageConfig: overrides.imageConfig,
     isDev: overrides.isDev ?? true,
@@ -1616,6 +1622,34 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledTimes(1);
   });
 
+  it("does not trailing-slash redirect extensionless metadata image routes", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      metadataRoutes: [
+        {
+          type: "icon",
+          isDynamic: true,
+          filePath: "/tmp/app/icon.tsx",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/icon",
+          contentType: "image/png",
+          module: {
+            default: async () =>
+              new Response("icon bytes", { headers: { "content-type": "image/png" } }),
+          },
+        },
+      ],
+      trailingSlash: true,
+    });
+
+    const response = await handler(new Request("https://example.test/docs/icon"), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    expect(await response.text()).toBe("icon bytes");
+  });
+
   it("marks progressive action page renders even when decoded form state is null", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const handler = createHandler({
@@ -3109,6 +3143,36 @@ describe("createAppRscHandler", () => {
     const dispatched = dispatchMatchedRouteHandler.mock.calls[0]?.[0];
     expect(new URL(dispatched?.request.url ?? "").search).toBe("?tab=latest");
     expect(dispatched?.searchParams.toString()).toBe("tab=latest");
+  });
+
+  it.each([
+    { name: "Node", runtime: undefined },
+    { name: "Edge", runtime: "edge" },
+  ])("preserves Workers cf metadata for $name route handlers", async ({ runtime }) => {
+    const route = createPageRoute({
+      page: null,
+      pattern: "/api/inspect",
+      routeHandler: { GET: () => new Response("route"), runtime },
+      routeSegments: ["api", "inspect"],
+    });
+    const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
+      async () => new Response("route", { status: 200 }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedRouteHandler,
+      matchRoute: (pathname: string) =>
+        pathname === "/api/inspect" ? { params: {}, route } : null,
+    });
+    const request = new Request("https://example.test/docs/api/inspect");
+    const cf = { country: "AU" };
+    Object.defineProperty(request, "cf", { value: cf, enumerable: true });
+
+    const response = await handler(request, null);
+
+    expect(response.status).toBe(200);
+    const dispatched = dispatchMatchedRouteHandler.mock.calls[0]?.[0];
+    expect(Reflect.get(dispatched!.request, "cf")).toBe(cf);
   });
 
   it("serves full-route RSC payloads at HTML URLs marked by RSC header alone", async () => {

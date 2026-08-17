@@ -15,6 +15,9 @@ export default function ClientCacheHome() {
       <Link href="/nextjs-compat/client-cache/1" id="client-cache-auto">
         Auto prefetch
       </Link>
+      <Link href="/nextjs-compat/client-cache/default-stale/1" id="client-cache-default-stale-auto">
+        Auto prefetch with the default stale time
+      </Link>
       <Link href="/nextjs-compat/client-cache/2" prefetch={false} id="client-cache-none">
         No prefetch
       </Link>

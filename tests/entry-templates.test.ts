@@ -460,6 +460,29 @@ describe("App Router generated manifest construction", () => {
     expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(true);
   });
 
+  it("marks root-param routes for concrete route-tree prefetching", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    const route = {
+      ...minimalAppRoutes[0],
+      pattern: "/:rootParam",
+      patternParts: [":rootParam"],
+      routeSegments: [":rootParam"],
+      isDynamic: true,
+      params: ["rootParam"],
+      rootParamNames: ["rootParam"],
+      loadingPath: "/tmp/test/app/[rootParam]/loading.tsx",
+    } satisfies AppRoute;
+
+    expect(toLinkPrefetchRoute(route)).toEqual(
+      expect.objectContaining({
+        canPrefetchLoadingShell: true,
+        hasRootParams: true,
+      }),
+    );
+  });
+
   it("advertises sibling-intercept loading only on the target route", () => {
     const sourceRoute = {
       ...minimalAppRoutes[0],
@@ -1282,7 +1305,26 @@ describe("App Router entry templates", () => {
 
   it("generateRscEntry defers route-handler and server-action runtimes", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    const routeCode = generateRscEntry(
+      "/tmp/test/app",
+      [
+        {
+          ...minimalAppRoutes[0],
+          pagePath: null,
+          routePath: "/tmp/test/app/api/route.ts",
+        },
+      ],
+      null,
+      [],
+      null,
+      "",
+      false,
+    );
 
+    expect(code).not.toContain("app-route-request-built-ins.js");
+    expect(routeCode.indexOf("app-route-request-built-ins.js")).toBeLessThan(
+      routeCode.indexOf("/tmp/test/app/api/route.ts"),
+    );
     expect(code).toContain('const __loadAppRouteHandlerDispatch = () => import("');
     expect(code).toContain('const __loadAppServerActionExecution = () => import("');
     expect(code).toContain("await __loadAppRouteHandlerDispatch()");
@@ -1882,12 +1924,19 @@ describe("Pages Router entry template", () => {
       expect(code).not.toContain("pageProps: rawPageProps,");
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
       expect(code).toContain("await hydrationCommitted;");
-      expect(code).toContain("if (nextData.isFallback) {");
-      expect(code).toContain("const routeUrl = nextData.__vinext?.routeUrl;");
+      expect(code).toContain("const shouldHydrateQuery =");
+      expect(code).toContain("const initialMatchesMiddleware =");
+      expect(code).toContain("nextData.__vinext?.hasMiddleware === true");
+      expect(code).toContain("nextData.__vinext?.hasRewrites === true");
+      expect(code).toContain(
+        "const routeUrl = nextData.isFallback ? nextData.__vinext?.routeUrl : undefined;",
+      );
       expect(code).toContain("await Router.replace(");
       expect(code).toContain("routeUrl || currentUrl,");
       expect(code).toContain("routeUrl ? currentUrl : undefined,");
-      expect(code).toContain("{ _h: 1, scroll: false },");
+      expect(code).toContain(
+        "{ _h: 1, scroll: false, shallow: !nextData.isFallback && !initialMatchesMiddleware },",
+      );
       expect(code).not.toContain("function VinextHydrationMarker");
       expect(code).not.toContain("React.createElement(VinextHydrationMarker");
       expect(code).toContain("hydrateRoot(container, element, hydrateRootOptions)");

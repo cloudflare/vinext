@@ -141,6 +141,18 @@ describe("Pages Router Production server self-hosted next/font/google", () => {
     expect(localFontHref).toBeDefined();
     const styleMatch = html.match(/<style data-vinext-fonts[^>]*>([\s\S]*?)<\/style>/);
     expect(styleMatch).not.toBeNull();
+    const localFontFace = styleMatch![1]
+      .match(/@font-face\s*\{[^}]*\}/g)
+      ?.find((fontFace) => fontFace.includes(localFontHref!));
+    expect(localFontFace).toBeDefined();
+    expect(localFontFace).not.toContain("font-weight:");
+    // The fixture mirrors #2793's 400/600/700 reproduction. Its omitted
+    // local-font weight also matches the equivalent Next.js fixture:
+    // test/e2e/next-font/app/pages/with-local-fonts.js
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/next-font/app/pages/with-local-fonts.js
+    for (const weight of ["400", "600", "700"]) {
+      expect(html).toContain(`data-local-font-weight="${weight}"`);
+    }
     for (const href of preloadHrefs) {
       expect(href).not.toContain("?");
       expect(styleMatch![1]).toContain(href);

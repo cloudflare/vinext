@@ -521,7 +521,7 @@ These are deployed to Cloudflare Workers and updated on every push to `main`:
 
 ## API coverage
 
-~94% of the Next.js 16 API surface has full or partial support. The remaining gaps are intentional stubs for deprecated features and Partial Prerendering (which Next.js 16 reworked into `"use cache"` — that directive is fully supported).
+~94% of the Next.js 16 API surface has full or partial support. The remaining gaps are intentional stubs for deprecated features, plus Partial Prerendering and Cache Components. Next.js 16 reworked PPR into `"use cache"`; vinext implements that directive for file-level and function-level caching, but full `cacheComponents` behavior is still incomplete — see [Known gaps we're working on](#known-gaps-were-working-on).
 
 > ✅ = full implementation | 🟡 = partial (runtime behavior correct, some build-time optimizations missing) | ⬜ = intentional stub/no-op
 
@@ -643,16 +643,21 @@ The cache is pluggable. The default `MemoryCacheHandler` works out of the box. S
 Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config. The `@vinext/cloudflare` package ships Cloudflare adapters for this:
 
 - **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the `"use cache"` data cache with a Workers KV namespace.
+- **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — serves page-level ISR from the Cloudflare Workers Cache (`ctx.cache`) instead of from the origin.
+
+The two fill different slots and can be used together:
 
 ```ts
 import { defineConfig } from "vite";
 import vinext from "vinext";
+import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 
 export default defineConfig({
   plugins: [
     vinext({
       cache: {
+        cdn: cdnAdapter(),
         data: kvDataAdapter(),
       },
     }),
@@ -669,6 +674,16 @@ The KV data adapter reads `env[binding]` at runtime, so add the matching KV name
 ```
 
 `binding` defaults to `VINEXT_KV_CACHE`, so `kvDataAdapter()` with no options works as long as that's your binding name. Other options: `appPrefix` (namespace cache keys to isolate multiple apps in one KV namespace), `ttlSeconds` (default KV `expirationTtl`, default 30 days), and `tagCacheTtlMs` (in-memory tag-invalidation cache TTL, default 5s).
+
+`cdnAdapter()` takes no options, but the Workers Cache only exposes `ctx.cache` when `cache.enabled` is set in `wrangler.jsonc`:
+
+```jsonc
+{
+  "cache": { "enabled": true },
+}
+```
+
+While the data adapter can store entries and serve HIT/STALE itself, the CDN adapter delegates serving to Cloudflare's edge: the origin renders fresh responses and tags them with `Cache-Tag`, and `revalidateTag()` / `revalidatePath()` purge the edge through `ctx.cache.purge({ tags })`. See [examples/workers-cache](examples/workers-cache) for both adapters wired up together.
 
 Each builder returns a plain, serializable `{ adapter, options }` descriptor — **it never touches the Workers runtime**, so nothing throws at build or dev time when bindings aren't available. The actual adapter (and its `env` binding lookup) is instantiated lazily on the first request.
 

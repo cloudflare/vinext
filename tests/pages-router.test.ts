@@ -1515,6 +1515,17 @@ export default function Page({ marker }: { marker: string }) {
     // The title tag should be in <head>, not in <body>
     const headSection = html.split("</head>")[0];
     expect(headSection).toContain("Hello vinext");
+
+    // Ported from Next.js: test/e2e/next-head/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/next-head/index.test.ts
+    const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+    expect(headContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
+    expect(headContents.indexOf('name="viewport"')).toBeGreaterThan(
+      headContents.indexOf('charset="utf-8"'),
+    );
+    expect(headContents.indexOf('name="description"')).toBeGreaterThan(
+      headContents.indexOf('name="viewport"'),
+    );
   });
 
   it("rerenders GSP pages without carrying prior render state", async () => {
@@ -2092,6 +2103,13 @@ export default class CustomDocument extends Document {
   it("returns 404 for paths not in getStaticPaths when fallback is false", async () => {
     const res = await fetch(`${baseUrl}/blog/nonexistent-post`);
     expect(res.status).toBe(404);
+
+    const html = await res.text();
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json"(?: nonce="[^"]+")?>([\s\S]*?)<\/script>/,
+    );
+    expect(nextDataMatch).toBeTruthy();
+    expect(JSON.parse(nextDataMatch![1]!)).not.toHaveProperty("notFoundSrcPage");
   });
 
   it("renders an empty optional catch-all path from getStaticPaths in dev", async () => {
@@ -6433,6 +6451,16 @@ export default function CounterPage() {
       const indexHtml = await indexRes.text();
       expect(indexHtml).toContain("Hello, vinext!");
       expect(indexHtml).toContain("__NEXT_DATA__");
+      // Ported from Next.js: test/e2e/next-head/index.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/next-head/index.test.ts
+      const indexHeadContents = indexHtml.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+      expect(indexHeadContents.trimStart()).toMatch(/^<meta charset="utf-8"/);
+      expect(indexHeadContents.indexOf('name="viewport"')).toBeGreaterThan(
+        indexHeadContents.indexOf('charset="utf-8"'),
+      );
+      expect(indexHeadContents.indexOf('name="description"')).toBeGreaterThan(
+        indexHeadContents.indexOf('name="viewport"'),
+      );
 
       // Test: about page renders
       const aboutRes = await fetch(`${prodUrl}/about`);
@@ -7861,6 +7889,18 @@ describe("Pages _document renderPage enhancers", () => {
     expect(html).not.toContain('id="page-content"');
   }
 
+  function expectFragmentsInOrder(html: string, fragments: string[], mode?: string): void {
+    let previousIndex = -1;
+    for (const fragment of fragments) {
+      const index = html.indexOf(fragment);
+      expect(
+        index,
+        `${mode ? `${mode}: ` : ""}missing or out-of-order fragment: ${fragment}`,
+      ).toBeGreaterThan(previousIndex);
+      previousIndex = index;
+    }
+  }
+
   beforeAll(async () => {
     fixtureRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-document-enhancers-"));
     outDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-document-enhancers-out-"));
@@ -7880,6 +7920,10 @@ describe("Pages _document renderPage enhancers", () => {
       JSON.stringify({ private: true, dependencies: { next: "*", react: "*", "react-dom": "*" } }),
     );
     await fsp.writeFile(
+      path.join(fixtureRoot, "next.config.mjs"),
+      `export default { experimental: { clientTraceMetadata: ["x-vinext-trace"] } };\n`,
+    );
+    await fsp.writeFile(
       path.join(fixtureRoot, "pages", "_app.tsx"),
       `export default function App({ Component, pageProps }: any) {
   return <main id="app-shell"><Component {...pageProps} /></main>;
@@ -7893,19 +7937,25 @@ describe("Pages _document renderPage enhancers", () => {
     );
     await fsp.writeFile(
       path.join(fixtureRoot, "pages", "index.tsx"),
-      `import { renderCounts } from "../render-counts";
+      `import Head from "next/head";
+import { renderCounts } from "../render-counts";
 export function getServerSideProps({ query }: any) {
   renderCounts.enhancer = 0;
   renderCounts.page = 0;
   renderCounts.error = 0;
-  return { props: { throwPage: query.throwPage === "true" } };
+  return {
+    props: {
+      markerScript: query.markerScript === "true",
+      throwPage: query.throwPage === "true",
+    },
+  };
 }
-export default function Page({ throwPage }: { throwPage: boolean }) {
+export default function Page({ markerScript, throwPage }: { markerScript: boolean; throwPage: boolean }) {
   if (throwPage) {
     renderCounts.page += 1;
     throw new Error("page render failed");
   }
-  return <p id="page-content">PAGE</p>;
+  return <><Head><meta name="page-head" content="1" />{markerScript ? <script id="head-marker-content" dangerouslySetInnerHTML={{ __html: 'window.__VINEXT_HEAD_MARKER__ = "<!--VINEXT_SSR_HEAD_END-->";' }} /> : null}</Head><p id="page-content">PAGE</p></>;
 }
 `,
     );
@@ -8036,7 +8086,7 @@ export default class CustomDocument extends Document {
   }
   render() {
     return (
-      <Html><Head /><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-request-context">{(this.props as any).documentRequestContext}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript /></body></Html>
+      <Html><Head><meta name="document-child" content="1" /></Head><body><p id="document-prop">{(this.props as any).documentProp}</p><p id="document-request-context">{(this.props as any).documentRequestContext}</p><p id="document-error-context">{(this.props as any).documentErrorContext}</p><Main /><NextScript /></body></Html>
     );
   }
 }
@@ -8074,11 +8124,104 @@ export default class CustomDocument extends Document {
       expect(html).toContain('id="document-prop">DOCUMENT');
       expect(html).toContain('id="page-content">PAGE');
       expect(html.match(/id="page-content"/g)).toHaveLength(1);
+      expectFragmentsInOrder(html, ['name="page-head"', 'name="document-child"'], mode);
       for (const id of expectedIds) {
         expect(html).toContain(`id="${id}">RENDERED`);
         expect(html.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
       }
     }
+  });
+
+  it("places client trace metadata after custom Document children in dev and prod", async () => {
+    // Next.js renders trace metadata after custom Document children and generated
+    // assets: packages/next/src/pages/_document.tsx.
+    // Coverage adapted from Next.js:
+    // test/e2e/opentelemetry/client-trace-metadata/client-trace-metadata.test.ts
+    const apiSymbol = Symbol.for("opentelemetry.js.api.1");
+    const spanSymbol = Symbol.for("OpenTelemetry Context Key SPAN");
+    const registry = globalThis as Record<symbol, unknown>;
+    const originalApi = registry[apiSymbol];
+    const activeContext = {
+      getValue(key: symbol) {
+        return key === spanSymbol ? true : undefined;
+      },
+      setValue() {
+        return this;
+      },
+    };
+    registry[apiSymbol] = {
+      context: {
+        active: () => activeContext,
+        with<T>(_context: unknown, fn: () => T): T {
+          return fn();
+        },
+      },
+      propagation: {
+        inject(
+          _context: unknown,
+          carrier: Array<{ key: string; value: string }>,
+          setter: {
+            set(carrier: Array<{ key: string; value: string }>, key: string, value: string): void;
+          },
+        ) {
+          setter.set(carrier, "x-vinext-trace", "trace-value");
+        },
+      },
+    };
+
+    try {
+      for (const [mode, url] of [
+        ["dev", devUrl],
+        ["prod", prodUrl],
+      ] as const) {
+        for (const [pathname, status, fragments] of [
+          ["/", 200, ['name="page-head"', 'name="document-child"', 'name="x-vinext-trace"']],
+          ["/?throwPage=true", 500, ['name="document-child"', 'name="x-vinext-trace"']],
+        ] as const) {
+          const response = await fetch(`${url}${pathname}`);
+          expect(response.status, `${mode} ${pathname}`).toBe(status);
+          const html = await response.text();
+          const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+          expect(headContents.match(/name="x-vinext-trace"/g), `${mode} ${pathname}`).toHaveLength(
+            1,
+          );
+          expectFragmentsInOrder(headContents, [...fragments], `${mode} ${pathname}`);
+        }
+      }
+
+      // The dev error renderer also has a manual default-Document branch.
+      // Temporarily remove the custom Document so this distinct path cannot
+      // silently omit the same trace metadata.
+      const documentPath = path.join(fixtureRoot, "pages", "_document.tsx");
+      const documentBackupPath = path.join(fixtureRoot, "_document.tsx.backup");
+      await fsp.rename(documentPath, documentBackupPath);
+      try {
+        const response = await fetch(`${devUrl}/?throwPage=true`);
+        expect(response.status).toBe(500);
+        const html = await response.text();
+        const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+        expect(headContents.match(/name="x-vinext-trace"/g)).toHaveLength(1);
+        expectFragmentsInOrder(headContents, ['name="viewport"', 'name="x-vinext-trace"']);
+      } finally {
+        await fsp.rename(documentBackupPath, documentPath);
+      }
+    } finally {
+      if (originalApi === undefined) {
+        delete registry[apiSymbol];
+      } else {
+        registry[apiSymbol] = originalApi;
+      }
+    }
+  });
+
+  it("preserves inline Head content containing the old fixed dev marker", async () => {
+    const response = await fetch(`${devUrl}/?markerScript=true`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+    expect(headContents).toContain('window.__VINEXT_HEAD_MARKER__ = "<!--VINEXT_SSR_HEAD_END-->";');
+    expect(headContents.match(/id="head-marker-content"/g)).toHaveLength(1);
+    expectFragmentsInOrder(headContents, ['id="head-marker-content"', 'name="document-child"']);
   });
 
   it.each(["dev", "prod"] as const)(
@@ -8091,6 +8234,7 @@ export default class CustomDocument extends Document {
       expect(html).toContain('id="manual-document-html">MANUAL');
       expect(html).toContain("data-manual-document-style");
       expect(html).toContain(".manual{color:blue}");
+      expectFragmentsInOrder(html, ['name="document-child"', "data-manual-document-style"], mode);
       expect(html).not.toContain('id="page-content"');
       expect(html).not.toContain('id="app-shell"');
     },
