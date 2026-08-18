@@ -1,0 +1,52 @@
+name: Bonk Model Smoke Test
+
+on:
+  pull_request:
+    types: [opened]
+
+jobs:
+  smoke:
+    if: github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Terra high
+            model: cloudflare-ai-gateway/openai/gpt-5.6-terra
+            variant: high
+          - name: Sol max
+            model: cloudflare-ai-gateway/openai/gpt-5.6-sol
+            variant: max
+    permissions:
+      id-token: write
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Exercise model route
+        uses: ask-bonk/ask-bonk/github@8c7a8314f4f4865e2e41e5718dfabc4ab7a2274b # main
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
+          CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+        with:
+          oidc_base_url: https://ask-bonk.cloudflare-exponent.workers.dev/auth
+          model: ${{ matrix.model }}
+          variant: ${{ matrix.variant }}
+          permissions: write
+          token_permissions: "NO_PUSH"
+          opencode_dev: false
+          opencode_version: 1.15.13
+          prompt: >-
+            This is a model-routing smoke test. Do not inspect or modify repository
+            files, run shell commands, or perform GitHub actions. Reply with exactly:
+            MODEL_SMOKE_OK ${{ matrix.model }} ${{ matrix.variant }}
