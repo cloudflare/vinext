@@ -2720,6 +2720,19 @@ function bootstrapHydration(
   // Exposed through one typed runtime seam so next/navigation, Link, Form, and
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
+    // An app-called history.pushState/replaceState creates (or rewrites the
+    // URL of) an entry the router did not commit. Give it its own traversal
+    // index: inheriting the current entry's index would alias two distinct
+    // entries onto one restorable-snapshot slot, and a later traversal would
+    // restore the other entry's router state (#1541). A URL-changing replace
+    // gets a fresh index too — its URL no longer matches the snapshot
+    // remembered under the old index. Allocation is a pure peek; the shim
+    // commits only after the native write succeeds, so a throwing
+    // pushState/replaceState leaves the traversal bookkeeping untouched.
+    allocateExternalHistoryTraversalIndex: () =>
+      historyController.allocateNavigationHistoryTraversalIndex("push"),
+    commitExternalHistoryTraversalIndex: (index) =>
+      historyController.commitHistoryTraversalIndex(index),
     clearNavigationCaches: clearClientNavigationCaches,
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
@@ -2790,6 +2803,12 @@ function bootstrapHydration(
     if (isSameAppRoutePopstateTarget(href)) {
       notifyAppRouterTransitionStart(href, "traverse");
       historyController.commitTraversalIndexFromHistoryState(event.state);
+      // The committed router tree already matches the target, but the shim's
+      // cached URL state may not: an app-called shallow pushState/replaceState
+      // moves usePathname/useSearchParams without touching the router tree, so
+      // traversing back to the tree-matching entry must still resync them from
+      // the restored location (#1541).
+      commitClientNavigationState();
       restorePopstateScrollPosition(event.state);
       return;
     }

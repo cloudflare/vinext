@@ -56,6 +56,22 @@ export type NavigationRuntimeNavigate = (
 ) => Promise<void>;
 
 export type NavigationRuntimeFunctions = {
+  /**
+   * Allocates (without committing) a traversal index for a history entry
+   * created or rewritten by an app-called `history.pushState`/
+   * `history.replaceState` (shallow routing). Registered by the App Router
+   * browser entry, wired to `AppBrowserHistoryController`. The patched history
+   * methods in shims/navigation.ts call this so an externally-written entry
+   * gets its own identity instead of inheriting the current entry's traversal
+   * index, which would alias two entries onto one restorable-snapshot slot
+   * (#1541). Allocation is a pure peek; the caller commits through
+   * `commitExternalHistoryTraversalIndex` only after the native history write
+   * succeeds, so a throwing pushState/replaceState (cross-origin URL,
+   * uncloneable state) leaves the traversal bookkeeping untouched.
+   */
+  allocateExternalHistoryTraversalIndex?: () => number | null;
+  /** Commits an index from `allocateExternalHistoryTraversalIndex` after the native write succeeded. */
+  commitExternalHistoryTraversalIndex?: (index: number) => void;
   clearNavigationCaches?: () => void;
   commitHashNavigation?: (
     href: string,
@@ -126,6 +142,8 @@ function readRuntimeWindow(): Window | null {
 function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntimeFunctions {
   if (!isUnknownRecord(value)) return false;
   return (
+    isOptionalRuntimeFunction(Reflect.get(value, "allocateExternalHistoryTraversalIndex")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "commitExternalHistoryTraversalIndex")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "clearNavigationCaches")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "commitHashNavigation")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "navigateExternal")) &&

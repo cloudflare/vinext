@@ -3218,17 +3218,59 @@ if (!isServer) {
       }
     });
 
+    // An externally-written entry needs its OWN traversal index (allocated by
+    // the App Router runtime when present) — inheriting the current entry's
+    // index aliases two entries onto one restorable-snapshot slot, so a later
+    // Back/Forward restores the other entry's router state (#1541). Suppressed
+    // (vinext-internal) writes manage their own metadata and never allocate.
+    // Allocation is a pure peek; the index is committed only after the native
+    // write succeeds, so a throwing pushState/replaceState (cross-origin URL,
+    // uncloneable state) leaves the traversal bookkeeping untouched.
+    const allocateExternalHistoryTraversalIndex = (): number | null | undefined => {
+      if (state.suppressUrlNotifyCount !== 0) return undefined;
+      return getNavigationRuntime()?.functions.allocateExternalHistoryTraversalIndex?.();
+    };
+
+    const commitExternalHistoryTraversalIndex = (index: number | null | undefined): void => {
+      if (typeof index !== "number") return;
+      getNavigationRuntime()?.functions.commitExternalHistoryTraversalIndex?.(index);
+    };
+
+    // A state-only or hash-only replaceState keeps the entry's URL identity, so
+    // the entry keeps its traversal index and its remembered snapshot stays
+    // representative. App Router state does not include hashes, so only a
+    // pathname/search change makes the old snapshot unrepresentative.
+    const externalReplaceChangesAppRouteUrl = (url?: string | URL | null): boolean => {
+      if (url === null || url === undefined || url === "") return false;
+      try {
+        const target = new URL(String(url), window.location.href);
+        return (
+          target.pathname !== window.location.pathname || target.search !== window.location.search
+        );
+      } catch {
+        // The native replaceState will throw on this URL; the commit is gated
+        // on that write succeeding either way.
+        return true;
+      }
+    };
+
     window.history.pushState = function patchedPushState(
       data: unknown,
       unused: string,
       url?: string | URL | null,
     ): void {
+      const allocatedTraversalIndex = allocateExternalHistoryTraversalIndex();
       state.originalPushState.call(
         window.history,
-        createExternalHistoryStatePreservingMetadata(data, window.history.state),
+        createExternalHistoryStatePreservingMetadata(
+          data,
+          window.history.state,
+          allocatedTraversalIndex,
+        ),
         unused,
         url,
       );
+      commitExternalHistoryTraversalIndex(allocatedTraversalIndex);
       if (state.suppressUrlNotifyCount === 0) {
         // A raw history.pushState (shallow routing) supersedes a pending link,
         // but changes browser state only — it issues no RSC request, so it must
@@ -3243,12 +3285,20 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
+      const allocatedTraversalIndex = externalReplaceChangesAppRouteUrl(url)
+        ? allocateExternalHistoryTraversalIndex()
+        : undefined;
       state.originalReplaceState.call(
         window.history,
-        createExternalHistoryStatePreservingMetadata(data, window.history.state),
+        createExternalHistoryStatePreservingMetadata(
+          data,
+          window.history.state,
+          allocatedTraversalIndex,
+        ),
         unused,
         url,
       );
+      commitExternalHistoryTraversalIndex(allocatedTraversalIndex);
       if (state.suppressUrlNotifyCount === 0) {
         resetStaleLinkStatus();
         commitClientNavigationState();
