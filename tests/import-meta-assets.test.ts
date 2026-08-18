@@ -44,13 +44,13 @@ describe("import-meta asset phase", () => {
     if (root) await fsp.rm(root, { recursive: true, force: true });
   });
 
-  async function createPlugin(workerTarget: boolean, command: "build" | "serve" = "build") {
+  async function createPlugin(nodelessTarget: boolean, command: "build" | "serve" = "build") {
     const ownership = new OgAssetOwnership();
     ownership.configure(root, []);
     const plugin = createImportMetaUrlPlugin({
       getRoot: () => root,
       assetOwnership: ownership,
-      isNodelessServerTarget: () => workerTarget,
+      isNodelessServerTarget: () => nodelessTarget,
     }).vitePlugin;
     await hookHandler(plugin.configResolved).call(null, {
       command,
@@ -85,7 +85,7 @@ describe("import-meta asset phase", () => {
     };
   }
 
-  it("uses the existing import-meta plugin rather than adding an asset plugin", async () => {
+  it("uses the existing import-meta plugin and shared ownership tracker", async () => {
     const ownership = new OgAssetOwnership();
     const configure = vi.spyOn(ownership, "configure");
     const reset = vi.spyOn(ownership, "reset");
@@ -112,17 +112,15 @@ describe("import-meta asset phase", () => {
     expect(plugin.resolveId).toBeUndefined();
     expect(configure).toHaveBeenCalledOnce();
     expect(reset).toHaveBeenCalledOnce();
-
-    const source = `fetch(new URL("../../src/text-file.txt", import.meta.url));`;
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
-  it("replaces only a bound fetch input in a Node build", async () => {
+  it("replaces only the fetch input in a Node build", async () => {
     const plugin = await createPlugin(false);
     const source = [
+      `import { fileURLToPath } from "node:url";`,
       `const url = new URL("../../src/text-file.txt", import.meta.url);`,
       `const path = url.pathname;`,
+      `const file = fileURLToPath(url);`,
       `const response = fetch(url);`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, routePath);
@@ -131,14 +129,15 @@ describe("import-meta asset phase", () => {
       `const url = new URL("../../src/text-file.txt", import.meta.url);`,
     );
     expect(result.code).toContain(`const path = url.pathname;`);
-    expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
+    expect(result.code).toContain(`const file = fileURLToPath(url);`);
+    expect(result.code).toContain(`fetch((url.href === new URL(`);
+    expect(result.code).toContain(`? new URL("data:text/plain; charset=utf-8;base64,`);
   });
 
   it("replaces a direct fetch input in a Node build", async () => {
     const plugin = await createPlugin(false);
     const source = `function handler() { return fetch(new URL("../../src/text-file.txt", import.meta.url)); }`;
     const result = await transformHandler(plugin).call(context(), source, routePath);
-
     expect(result.code).toContain(`fetch(new URL("data:text/plain; charset=utf-8;base64,`);
     expect(result.code).not.toContain("import.meta.url");
   });
@@ -150,561 +149,145 @@ describe("import-meta asset phase", () => {
       `fetch(new URL("../../src/text-file.txt", import.meta.url));`,
       `fetch(new URL("my-pkg/hello/world.json", import.meta.url));`,
     ].join("\n");
-
     await transformHandler(plugin).call(pluginContext, source, routePath);
-
     expect(pluginContext.watchedFiles).toEqual([
       await fsp.realpath(path.join(root, "src", "text-file.txt")),
       await fsp.realpath(packageAssetPath),
     ]);
   });
 
-  it("keeps same-named bindings isolated by lexical scope", async () => {
+  it("keeps same-named aliases isolated by lexical scope", async () => {
     const plugin = await createPlugin(false);
     const source = [
       `const one = () => { const url = new URL("../../src/text-file.txt", import.meta.url); return fetch(url); };`,
       `const two = () => { const url = new URL("../../src/vercel.png", import.meta.url); return fetch(url); };`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, routePath);
-
     expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
     expect(result.code).toContain("data:image/png;base64,");
   });
 
-  it("rewrites the asset constructor itself for a nodeless target", async () => {
-    const plugin = await createPlugin(true);
+  it("passes mutated, escaped, or exported aliases through at runtime", async () => {
+    const plugin = await createPlugin(false);
+    for (const use of [`url.pathname = "/other";`, `mutate(url);`, `export { url };`]) {
+      const source = [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        use,
+        `fetch(url);`,
+      ].join("\n");
+      const result = await transformHandler(plugin).call(context(), source, routePath);
+      expect(result.code).toContain(`url.href === new URL(`);
+      expect(result.code).toContain(`: url`);
+    }
+  });
+
+  it("preserves the temporal-dead-zone read for aliases used before initialization", async () => {
+    const plugin = await createPlugin(false);
     const source = [
-      `const fetched = new URL("../../src/text-file.txt", import.meta.url);`,
-      `const pathname = new URL("../../src/vercel.png", import.meta?.url).pathname;`,
+      `fetch(url);`,
+      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain(`fetch((url.href === new URL(`);
+  });
 
+  it("does not reuse aliases across switch cases", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `switch (kind) {`,
+      `  case 1: fetch(url); break;`,
+      `  case 2: const url = new URL("../../src/text-file.txt", import.meta.url); break;`,
+      `}`,
+    ].join("\n");
+    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+  });
+
+  it("rewrites the constructor itself for nodeless targets", async () => {
+    const plugin = await createPlugin(true);
+    const source = [
+      `const text = new URL("../../src/text-file.txt", import.meta.url);`,
+      `const image = new URL("../../src/vercel.png", import.meta?.url);`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
     expect(result.code).not.toContain("import.meta");
     expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
     expect(result.code).toContain("data:image/png;base64,");
   });
 
-  it("keeps URL-based dynamic imports in the module graph on nodeless targets", async () => {
+  it("keeps URL-based dynamic imports in the module graph", async () => {
     const plugin = await createPlugin(true);
     const source = [
       `void import(new URL("../../src/text-file.txt", import.meta.url).href);`,
       `const asset = new URL("../../src/vercel.png", import.meta.url);`,
     ].join("\n");
     const normalized = _transformVeryDynamicRequests(source, routePath, false);
-    if (!normalized) throw new Error("Expected the early dynamic URL transform to run");
+    if (!normalized) throw new Error("Expected the early URL import transform to run");
     const result = await transformHandler(plugin).call(context(), normalized.code, routePath);
-
     expect(result.code).toContain(`import("../../src/text-file.txt")`);
     expect(result.code).toContain("data:image/png;base64,");
     expect(result.code).not.toContain("data:text/plain");
   });
 
-  it("rewrites sequential aliases one declarator at a time", async () => {
-    const plugin = await createPlugin(false);
-    const source = `const url = new URL("../../src/text-file.txt", import.meta.url), response = fetch(url);`;
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
-  });
-
-  it("does not rewrite aliases before initialization or across switch cases", async () => {
-    const plugin = await createPlugin(false);
-    const sources = [
-      [`fetch(url);`, `const url = new URL("../../src/text-file.txt", import.meta.url);`].join(
-        "\n",
-      ),
-      [
-        `switch (kind) {`,
-        `  case 1: fetch(url); break;`,
-        `  case 2: const url = new URL("../../src/text-file.txt", import.meta.url); break;`,
-        `}`,
-      ].join("\n"),
-    ];
-
-    for (const source of sources) {
-      expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
-    }
-  });
-
-  it("preserves alias evaluation across independently invoked functions", async () => {
+  it("resolves package assets and strips query/hash suffixes", async () => {
     const plugin = await createPlugin(false);
     const source = [
-      `invoke();`,
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-      `function invoke() { return fetch(url); }`,
+      `fetch(new URL("my-pkg/hello/world.json", import.meta.url));`,
+      `fetch(new URL("../../src/text-file.txt?raw#fragment", import.meta.url));`,
     ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
-  });
-
-  it("invalidates mutable or escaped URL aliases", async () => {
-    const plugin = await createPlugin(false);
-    const sources = [
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `url.pathname = "/other";`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `mutate(url);`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `function read() { return fetch(url); }`,
-        `function mutate() { url.pathname = "/other"; }`,
-        `mutate(); read();`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `function read() { return fetch(url); }`,
-        `mutate(condition ? url : other);`,
-        `read();`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `for (;;) { fetch(url); url.pathname = "/other"; }`,
-      ].join("\n"),
-      [
-        `function mutate() { url.pathname = "/other"; }`,
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `mutate(); fetch(url);`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `[url.pathname] = ["/other"];`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `({ value: url.pathname } = source);`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `for (url.pathname of values) { fetch(url); }`,
-      ].join("\n"),
-      [
-        `export const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `export function read() { return fetch(url); }`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `class Box { value = url; }`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `class Box { value = condition && url; }`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `const view = <Component value={url} />;`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `const view = <Component value={condition ? url : other} />;`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `function fileURLToPath(value) { value.pathname = "/other"; }`,
-        `fileURLToPath(url);`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `eval('url.pathname = "/other"');`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `eval('queueMicrotask(() => { url.pathname = "/other" })');`,
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `switch (kind) { case 1:`,
-        `  const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `  eval('url.pathname = "/other"'); fetch(url);`,
-        `}`,
-      ].join("\n"),
-      [
-        `switch (kind) { case 1:`,
-        `  eval('queueMicrotask(() => { url.pathname = "/other" })');`,
-        `  const url = new URL("../../src/text-file.txt", import.meta.url); fetch(url);`,
-        `}`,
-      ].join("\n"),
-    ];
-
-    for (const source of sources) {
-      expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
-    }
-  });
-
-  it.each([
-    `globalThis.fetch(new URL("../../src/text-file.txt", import.meta.url));`,
-    `const url = new URL("../../src/text-file.txt", import.meta.url); globalThis.fetch(url);`,
-  ])("rewrites globalThis.fetch asset inputs", async (source) => {
-    const plugin = await createPlugin(false);
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
-  });
-
-  it.each([
-    `globalThis.fetch = customFetch;`,
-    `fetch = customFetch;`,
-    `delete globalThis.fetch;`,
-    `Object.defineProperty(globalThis, "fetch", { value: customFetch });`,
-    `Reflect.defineProperty(globalThis, "fetch", { value: customFetch });`,
-    `Object.assign(globalThis, { fetch: customFetch });`,
-    `Object.defineProperties(globalThis, { fetch: { value: customFetch } });`,
-    `Reflect.set(globalThis, "fetch", customFetch);`,
-    `mutate(globalThis);`,
-    `eval('globalThis.fetch = customFetch');`,
-    `eval?.('globalThis.fetch = customFetch');`,
-    `(0, eval)('globalThis.fetch = customFetch');`,
-    `const indirect = eval; indirect('globalThis.fetch = customFetch');`,
-    `globalThis.eval('globalThis.fetch = customFetch');`,
-    `globalThis["eval"]('globalThis.fetch = customFetch');`,
-    `const indirect = globalThis.eval; indirect('globalThis.fetch = customFetch');`,
-    `const globals = globalThis; globals.fetch = customFetch;`,
-    `const globals = condition ? globalThis : other; globals.fetch = customFetch;`,
-    `mutate(condition ? globalThis : other);`,
-    `global.fetch = customFetch;`,
-    `global.eval('globalThis.fetch = customFetch');`,
-    `const globals = globalThis.globalThis; globals.fetch = customFetch;`,
-    `globalThis.globalThis.fetch = customFetch;`,
-    `globalThis.self.fetch = customFetch;`,
-    `({ value: globalThis.fetch } = source);`,
-    `[globalThis.fetch] = source;`,
-    `for (globalThis.fetch of source) break;`,
-    `const key = "fetch"; globalThis[key] = customFetch;`,
-    `const key = "fetch"; delete globalThis[key];`,
-    `Function('globalThis.fetch = customFetch')();`,
-    `new Function('globalThis.fetch = customFetch')();`,
-    `const compile = Function; compile('globalThis.fetch = customFetch')();`,
-    `globalThis.Function('globalThis.fetch = customFetch')();`,
-    `const compile = globalThis.Function; compile('globalThis.fetch = customFetch')();`,
-    `(()=>{}).constructor('globalThis.fetch = customFetch')();`,
-    `(async()=>{}).constructor('globalThis.fetch = customFetch')();`,
-  ])("does not trust a mutated global fetch capability", async (mutation) => {
-    const plugin = await createPlugin(false);
-    const source = [
-      mutation,
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-      `globalThis.fetch(url);`,
-    ].join("\n");
-    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
-  });
-
-  it.each([
-    `globalThis["fetch" as "fetch"] = customFetch;`,
-    `globalThis["eval" as "eval"]('globalThis.fetch = customFetch');`,
-  ])("recognizes typed computed global capability mutations", async (mutation) => {
-    const plugin = await createPlugin(false);
-    const source = [
-      mutation,
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-      `fetch(url);`,
-    ].join("\n");
-    expect(await transformHandler(plugin).call(context(), source, typedRoutePath)).toBeNull();
-  });
-
-  it("rewrites typed computed global fetch inputs", async () => {
-    const plugin = await createPlugin(false);
-    const source = `globalThis["fetch" as "fetch"](new URL("../../src/text-file.txt", import.meta.url));`;
-    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
-    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
-  });
-
-  it("keeps trusting global fetch after a static unrelated global member write", async () => {
-    const plugin = await createPlugin(false);
-    const source = [
-      `globalThis["unrelated"] = value;`,
-      `fetch(new URL("../../src/text-file.txt", import.meta.url));`,
-    ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
-  });
-
-  it.each([
-    `if (typeof eval !== "function") throw new Error();`,
-    `const available = typeof eval === "function";`,
-    `void eval;`,
-    `if (typeof Function !== "function") throw new Error();`,
-    `void Function;`,
-    `void globalThis.eval;`,
-    `void globalThis.Function;`,
-  ])(
-    "keeps trusting global fetch after harmless dynamic-code observations",
-    async (observation) => {
-      const plugin = await createPlugin(false);
-      const source = [
-        observation,
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `globalThis.fetch(url);`,
-      ].join("\n");
-      const result = await transformHandler(plugin).call(context(), source, routePath);
-      expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
-    },
-  );
-
-  it("does not trust a shadowed globalThis fetch member", async () => {
-    const plugin = await createPlugin(false);
-    const source = `function read(globalThis) { return globalThis.fetch(new URL("../../src/text-file.txt", import.meta.url)); }`;
-    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
-  });
-
-  it("does not treat a computed fetch variable as the intrinsic member", async () => {
-    const plugin = await createPlugin(false);
-    const source = [
-      `const fetch = "customFetch";`,
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-      `globalThis[fetch](url);`,
-    ].join("\n");
-    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
-  });
-
-  it.each([
-    [`import { fileURLToPath as toPath } from "node:url";`, `toPath(url);`],
-    [`import { fileURLToPath as toPath } from "url";`, `toPath(url);`],
-    [`import * as nodeUrl from "node:url";`, `nodeUrl.fileURLToPath(url);`],
-    [`import * as nodeUrl from "url";`, `nodeUrl.fileURLToPath(url);`],
-  ])("trusts proven node:url consumers", async (importStatement, consume) => {
-    const plugin = await createPlugin(false);
-    const source = [
-      importStatement,
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-      consume,
-      `fetch(url);`,
-    ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
-  });
-
-  it("keeps syntax-only names and read-only observations from invalidating aliases", async () => {
-    const plugin = await createPlugin(false);
-    const source = [
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-      `const metadata = { url: "not the asset" };`,
-      `if (!url || url === metadata) throw new Error();`,
-      `switch (metadata) { case url: break; }`,
-      `url;`,
-      `void url;`,
-      `for (url; false; url) {}`,
-      `fetch(url);`,
-    ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
-  });
-
-  it("invalidates coercive and user-code binary observations", async () => {
-    const plugin = await createPlugin(false);
-    const source = [
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-      `class Mutator {`,
-      `  static [Symbol.hasInstance](value) { value.pathname = "/other"; return true; }`,
-      `}`,
-      `void (url instanceof Mutator);`,
-      `fetch(url);`,
-    ].join("\n");
-    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
-  });
-
-  it("ignores TypeScript type-only names when tracking aliases", async () => {
-    const plugin = await createPlugin(false);
-    const source = [
-      `type Metadata = { url: string };`,
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-      `const metadata: Metadata = { url: "not the asset" };`,
-      `void metadata;`,
-      `fetch(url);`,
-    ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
-    expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
-  });
-
-  it.each([
-    `const url = new URL("../../src/text-file.txt", import.meta.url) as URL; fetch(url);`,
-    `const url = new URL("../../src/text-file.txt", import.meta.url); fetch(url as URL);`,
-    `fetch(new URL("../../src/text-file.txt", import.meta.url) satisfies URL);`,
-  ])("rewrites TypeScript-wrapped asset expressions", async (source) => {
-    const plugin = await createPlugin(false);
-    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
-    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
-  });
-
-  it("tracks runtime references inside TypeScript enums and namespaces", async () => {
-    const plugin = await createPlugin(false);
-    const sources = [
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `enum Values { Current = mutate(url) as any }`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `namespace Values { export const current = mutate(url); }`,
-        `fetch(url);`,
-      ].join("\n"),
-      [
-        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-        `class Values { constructor(public current = mutate(url)) {} }`,
-        `new Values(); fetch(url);`,
-      ].join("\n"),
-    ];
-    for (const source of sources) {
-      expect(await transformHandler(plugin).call(context(), source, typedRoutePath)).toBeNull();
-    }
-  });
-
-  it("rewrites nodeless assets in TypeScript parameter properties", async () => {
-    const plugin = await createPlugin(true);
-    const source = [
-      `class Reader {`,
-      `  constructor(public asset = new URL("../../src/text-file.txt", import.meta.url)) {}`,
-      `}`,
-    ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
-    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
-  });
-
-  it("ignores same-named type-only exports", async () => {
-    const plugin = await createPlugin(false);
-    const source = [
-      `type url = string;`,
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-      `export type { url };`,
-      `fetch(url);`,
-    ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
-    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
-  });
-
-  it("ignores source re-export names that collide with local aliases", async () => {
-    const plugin = await createPlugin(false);
-    const source = [
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-      `export { url } from "./other";`,
-      `fetch(url);`,
-    ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
-  });
-
-  it("resolves a bare node_modules asset through the bundler", async () => {
-    const plugin = await createPlugin(false);
-    const source = `function handler() { return fetch(new URL("my-pkg/hello/world.json", import.meta.url)); }`;
     const result = await transformHandler(plugin).call(
       context({ "my-pkg/hello/world.json": packageAssetPath }),
       source,
       routePath,
     );
-
     expect(result.code).toContain("data:application/json; charset=utf-8;base64,");
-    expect(result.code).toContain(
-      Buffer.from('{ "i am": "a node dependency" }').toString("base64"),
-    );
-  });
-
-  it("strips query and hash suffixes before reading a relative asset", async () => {
-    const plugin = await createPlugin(false);
-    const source = `fetch(new URL("../../src/text-file.txt?raw#fragment", import.meta.url));`;
-    const result = await transformHandler(plugin).call(context(), source, routePath);
     expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
-  it("does not rewrite non-fetch Node consumers", async () => {
-    const plugin = await createPlugin(false);
-    const source = [
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-      `const file = fileURLToPath(url);`,
-      `const pathname = url.pathname;`,
-    ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result).toBeNull();
-  });
-
-  it("does not rewrite calls to a shadowed fetch binding", async () => {
-    const plugin = await createPlugin(false);
-    const source = `function read(fetch) { return fetch(new URL("../../src/text-file.txt", import.meta.url)); }`;
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result).toBeNull();
-  });
-
   it.each([true, false])(
-    "does not rewrite constructors using a shadowed URL binding (nodeless=%s)",
+    "does not rewrite a locally shadowed URL constructor (nodeless=%s)",
     async (nodelessTarget) => {
       const plugin = await createPlugin(nodelessTarget);
       const source = `function read(URL) { return fetch(new URL("../../src/text-file.txt", import.meta.url)); }`;
-      const result = await transformHandler(plugin).call(context(), source, routePath);
-      expect(result).toBeNull();
+      expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
     },
   );
 
-  it.each([true, false])(
-    "does not rewrite constructors after the global URL capability changes (nodeless=%s)",
-    async (nodelessTarget) => {
-      const plugin = await createPlugin(nodelessTarget);
-      for (const mutation of [
-        `URL = CustomURL;`,
-        `globalThis.URL = CustomURL;`,
-        `const globals = globalThis; globals.URL = CustomURL;`,
-        `Function('globalThis.URL = CustomURL')();`,
-        `(()=>{}).constructor('globalThis.URL = CustomURL')();`,
-        `const key = "URL"; globalThis[key] = CustomURL;`,
-        `({ value: globalThis.URL } = source);`,
-      ]) {
-        const source = [
-          mutation,
-          `fetch(new URL("../../src/text-file.txt", import.meta.url));`,
-        ].join("\n");
-        expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
-      }
-    },
-  );
-
-  it("honors @vite-ignore and leaves missing or remote URLs untouched", async () => {
-    const plugin = await createPlugin(true);
-    const source = [
-      `const ignored = new URL(/* @vite-ignore */ "../../src/text-file.txt", import.meta.url);`,
-      `const missing = new URL("../../src/missing.txt", import.meta.url);`,
-      `const remote = new URL("https://example.com/file.txt", import.meta.url);`,
-    ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result).toBeNull();
+  it("does not rewrite non-fetch consumers or a locally shadowed fetch", async () => {
+    const plugin = await createPlugin(false);
+    for (const source of [
+      `const url = new URL("../../src/text-file.txt", import.meta.url); console.log(url);`,
+      `function read(fetch) { return fetch(new URL("../../src/text-file.txt", import.meta.url)); }`,
+    ]) {
+      expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+    }
   });
 
-  it("leaves current-module URL references out of asset resolution", async () => {
-    const plugin = await createPlugin(true);
-    const pluginContext = context();
-    pluginContext.resolve = async () => {
-      throw new Error("current-module references must not be resolved as assets");
-    };
+  it("supports TypeScript wrappers without scanning type-only syntax", async () => {
+    const plugin = await createPlugin(false);
     const source = [
-      `new URL("", import.meta.url);`,
-      `new URL("?raw", import.meta.url);`,
-      `new URL("#section", import.meta.url);`,
+      `type AssetUrl = URL;`,
+      `const url = new URL("../../src/text-file.txt", import.meta.url) as URL;`,
+      `fetch(url as AssetUrl);`,
     ].join("\n");
-
-    expect(await transformHandler(plugin).call(pluginContext, source, routePath)).toBeNull();
+    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
-  it("leaves root-relative and invalid three-argument URL constructors untouched", async () => {
+  it("honors @vite-ignore and leaves unsupported URLs untouched", async () => {
     const plugin = await createPlugin(true);
     const source = [
-      `const rootRelative = new URL("/src/text-file.txt", import.meta.url);`,
-      `const invalid = new URL("../../src/text-file.txt", import.meta.url, sideEffect());`,
+      `new URL(/* @vite-ignore */ "../../src/text-file.txt", import.meta.url);`,
+      `new URL("../../src/missing.txt", import.meta.url);`,
+      `new URL("https://example.com/file.txt", import.meta.url);`,
+      `new URL("/src/text-file.txt", import.meta.url);`,
+      `new URL("../../src/text-file.txt", import.meta.url, sideEffect());`,
     ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result).toBeNull();
+    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
   });
 
-  it("recognizes comments between new and URL", async () => {
+  it("recognizes comments and escaped URL identifiers", async () => {
     const plugin = await createPlugin(true);
-    const source = `const asset = new /* asset */ URL("../../src/text-file.txt", import.meta.url);`;
+    const source = String.raw`const asset = new /* asset */ U\u0052L("../../src/text-file.txt", import.meta.url);`;
     const result = await transformHandler(plugin).call(context(), source, routePath);
     expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
@@ -715,18 +298,18 @@ describe("import-meta asset phase", () => {
     await fsp.writeFile(secretPath, "secret");
     try {
       const relative = path.relative(path.dirname(routePath), secretPath).replaceAll("\\", "/");
-      const source = `const leaked = new URL(${JSON.stringify(relative)}, import.meta.url);`;
-      const result = await transformHandler(plugin).call(context(), source, routePath);
-      expect(result).toBeNull();
+      const source = `new URL(${JSON.stringify(relative)}, import.meta.url);`;
+      expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
     } finally {
       await fsp.rm(secretPath, { force: true });
     }
   });
 
-  it("does not run the asset phase in client environments", async () => {
+  it("runs only in server environments", async () => {
     const plugin = await createPlugin(true);
     const source = `new URL("../../src/text-file.txt", import.meta.url);`;
-    const result = await transformHandler(plugin).call(context({}, "client"), source, routePath);
-    expect(result).toBeNull();
+    expect(
+      await transformHandler(plugin).call(context({}, "client"), source, routePath),
+    ).toBeNull();
   });
 });

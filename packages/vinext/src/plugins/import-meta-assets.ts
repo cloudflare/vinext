@@ -24,13 +24,6 @@ import {
   isFunctionNode,
   type AstScope,
 } from "./ast-scope.js";
-import {
-  assignedTargetCanMutateGlobalCapability,
-  isDynamicCodeCapabilityReference,
-  isGlobalObjectMember,
-  isGlobalObjectReference,
-  isGlobalUrlCapabilityStable,
-} from "./global-runtime-capabilities.js";
 import { OgAssetOwnership } from "./og-asset-ownership.js";
 import {
   isImportMetaUrlOrChainedNode,
@@ -42,70 +35,29 @@ type AssetUrl = {
   range: AstRange;
   sourceRange: AstRange;
   specifier: string;
-  preserveEvaluation?: boolean;
-  binding?: AssetBinding;
+  alias?: boolean;
 };
 
-type AssetBinding = { asset: AssetUrl; valid: boolean };
+type AssetScope = AstScope & {
+  assets: Map<string, AssetUrl>;
+};
 
 export type ImportMetaAssetRewrite = { start: number; end: number; replacement: string };
 
-type AssetScope = AstScope & {
-  assets: Map<string, AssetBinding>;
-  unsafeAssetBindings: Set<string>;
-  nodeUrlFunctions: Set<string>;
-  nodeUrlNamespaces: Set<string>;
-};
-
 function createAssetScope(parent: AssetScope | null): AssetScope {
-  return {
-    ...createAstScope(parent),
-    assets: new Map(),
-    unsafeAssetBindings: new Set(),
-    nodeUrlFunctions: new Set(),
-    nodeUrlNamespaces: new Set(),
-  };
-}
-
-function collectNodeUrlImports(ast: AstRecord, scope: AssetScope): void {
-  for (const statement of nodeArray(ast.body)) {
-    if (
-      !isAstRecord(statement) ||
-      statement.type !== "ImportDeclaration" ||
-      !isAstRecord(statement.source) ||
-      (statement.source.value !== "node:url" && statement.source.value !== "url")
-    ) {
-      continue;
-    }
-    for (const specifier of nodeArray(statement.specifiers)) {
-      if (!isAstRecord(specifier) || !isAstRecord(specifier.local)) continue;
-      const local = specifier.local.name;
-      if (typeof local !== "string") continue;
-      if (
-        specifier.type === "ImportSpecifier" &&
-        isAstRecord(specifier.imported) &&
-        specifier.imported.name === "fileURLToPath"
-      ) {
-        scope.nodeUrlFunctions.add(local);
-      } else if (specifier.type === "ImportNamespaceSpecifier") {
-        scope.nodeUrlNamespaces.add(local);
-      }
-    }
-  }
+  return { ...createAstScope(parent), assets: new Map() };
 }
 
 function assetUrlFromNode(value: unknown): AssetUrl | null {
   const expression = unwrapExpression(value);
-  if (!isNewUrlExpression(expression) || !hasRange(expression)) {
-    return null;
-  }
+  if (!isNewUrlExpression(expression) || !hasRange(expression)) return null;
 
   const args = nodeArray(expression.arguments);
-  if (args.length !== 2 || !isImportMetaUrlOrChainedNode(args[1])) return null;
   const specifier = unwrapExpression(args[0]);
   if (
-    !isAstRecord(specifier) ||
-    specifier.type !== "Literal" ||
+    args.length !== 2 ||
+    !isImportMetaUrlOrChainedNode(args[1]) ||
+    specifier?.type !== "Literal" ||
     typeof specifier.value !== "string"
   ) {
     return null;
@@ -114,8 +66,8 @@ function assetUrlFromNode(value: unknown): AssetUrl | null {
     specifier.value === "" ||
     specifier.value.startsWith("?") ||
     specifier.value.startsWith("#") ||
-    /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(specifier.value) ||
-    specifier.value.startsWith("/")
+    specifier.value.startsWith("/") ||
+    /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(specifier.value)
   ) {
     return null;
   }
@@ -135,21 +87,23 @@ function recordAssetBinding(
     declaration.kind !== "const" ||
     !isAstRecord(declarator.id) ||
     declarator.id.type !== "Identifier" ||
-    typeof declarator.id.name !== "string"
+    typeof declarator.id.name !== "string" ||
+    hasAstBinding(scope, "URL")
   ) {
     return;
   }
-  if (hasAstBinding(scope, "URL")) return;
-  if (isUnsafeAssetBinding(scope, declarator.id.name)) return;
   const asset = assetUrlFromNode(declarator.init);
-  if (asset) scope.assets.set(declarator.id.name, { asset, valid: true });
+  if (asset) scope.assets.set(declarator.id.name, asset);
 }
 
 function collectAssetScopeBindings(node: AstRecord, scope: AssetScope): void {
   collectDirectScopeBindings(node, scope);
+  collectDirectScopeBindings(node, scope, (declaration, declarator) =>
+    recordAssetBinding(declaration, declarator, scope),
+  );
 }
 
-function findAssetBinding(scope: AssetScope, name: string): AssetBinding | null {
+function findAssetBinding(scope: AssetScope, name: string): AssetUrl | null {
   for (
     let current: AssetScope | null = scope;
     current;
@@ -162,195 +116,8 @@ function findAssetBinding(scope: AssetScope, name: string): AssetBinding | null 
   return null;
 }
 
-function isUnsafeAssetBinding(scope: AssetScope, name: string): boolean {
-  for (
-    let current: AssetScope | null = scope;
-    current;
-    current = current.parent as AssetScope | null
-  ) {
-    if (current.unsafeAssetBindings.has(name)) return true;
-    if (current.bindings.has(name)) return false;
-  }
-  return false;
-}
-
-function invalidateAssetBinding(scope: AssetScope, name: string): void {
-  for (
-    let current: AssetScope | null = scope;
-    current;
-    current = current.parent as AssetScope | null
-  ) {
-    const binding = current.assets.get(name);
-    if (binding) {
-      binding.valid = false;
-      current.assets.delete(name);
-      current.unsafeAssetBindings.add(name);
-      return;
-    }
-    if (current.bindings.has(name)) {
-      current.unsafeAssetBindings.add(name);
-      return;
-    }
-  }
-}
-
-function invalidateAssetsVisibleToDirectEval(scope: AssetScope): void {
-  const shadowed = new Set<string>();
-  for (
-    let current: AssetScope | null = scope;
-    current;
-    current = current.parent as AssetScope | null
-  ) {
-    for (const [name, binding] of current.assets) {
-      if (shadowed.has(name)) continue;
-      binding.valid = false;
-      current.assets.delete(name);
-    }
-    for (const name of current.bindings) {
-      if (shadowed.has(name)) continue;
-      const binding = current.assets.get(name);
-      if (binding) binding.valid = false;
-      current.assets.delete(name);
-      current.unsafeAssetBindings.add(name);
-    }
-    for (const name of current.bindings) shadowed.add(name);
-  }
-}
-
-function rootIdentifierName(value: unknown): string | null {
-  let node = unwrapExpression(value);
-  while (node?.type === "MemberExpression") node = unwrapExpression(node.object);
-  return node?.type === "Identifier" && typeof node.name === "string" ? node.name : null;
-}
-
-function hasScopedCapability(
-  scope: AssetScope,
-  name: string,
-  capability: "nodeUrlFunctions" | "nodeUrlNamespaces",
-): boolean {
-  for (
-    let current: AssetScope | null = scope;
-    current;
-    current = current.parent as AssetScope | null
-  ) {
-    if (current[capability].has(name)) return true;
-    if (current.bindings.has(name)) return false;
-  }
-  return false;
-}
-
-function isNodeUrlFileUrlToPath(scope: AssetScope, value: unknown): boolean {
-  const callee = unwrapExpression(value);
-  if (callee?.type === "Identifier" && typeof callee.name === "string") {
-    return hasScopedCapability(scope, callee.name, "nodeUrlFunctions");
-  }
-  if (
-    callee?.type === "MemberExpression" &&
-    callee.computed !== true &&
-    isIdentifierNamed(callee.property, "fileURLToPath")
-  ) {
-    const namespace = unwrapExpression(callee.object);
-    return (
-      namespace?.type === "Identifier" &&
-      typeof namespace.name === "string" &&
-      hasScopedCapability(scope, namespace.name, "nodeUrlNamespaces")
-    );
-  }
-  return false;
-}
-
-function isGlobalFetchCallee(scope: AssetScope, value: unknown): boolean {
-  const callee = unwrapExpression(value);
-  if (isIdentifierNamed(callee, "fetch")) return !hasAstBinding(scope, "fetch");
-  return isGlobalObjectMember(scope, callee, "fetch");
-}
-
-function invalidateAssignedAssetTargets(scope: AssetScope, value: unknown): void {
-  const node = unwrapExpression(value);
-  if (!node) return;
-  if (node.type === "Identifier" && typeof node.name === "string") {
-    invalidateAssetBinding(scope, node.name);
-    return;
-  }
-  if (node.type === "MemberExpression") {
-    const assigned = rootIdentifierName(node);
-    if (assigned) invalidateAssetBinding(scope, assigned);
-    return;
-  }
-  if (node.type === "AssignmentPattern") {
-    invalidateAssignedAssetTargets(scope, node.left);
-    return;
-  }
-  if (node.type === "RestElement") {
-    invalidateAssignedAssetTargets(scope, node.argument);
-    return;
-  }
-  if (node.type === "ArrayPattern" || node.type === "ArrayExpression") {
-    for (const element of nodeArray(node.elements)) invalidateAssignedAssetTargets(scope, element);
-    return;
-  }
-  if (node.type === "ObjectPattern" || node.type === "ObjectExpression") {
-    for (const property of nodeArray(node.properties)) {
-      if (!isAstRecord(property)) continue;
-      invalidateAssignedAssetTargets(
-        scope,
-        property.type === "RestElement" ? property.argument : property.value,
-      );
-    }
-  }
-}
-
-function invalidateEscapedAssetValue(scope: AssetScope, value: unknown): void {
-  const node = unwrapExpression(value);
-  if (!node) return;
-  if (node.type === "Identifier" && typeof node.name === "string") {
-    invalidateAssetBinding(scope, node.name);
-    return;
-  }
-  if (node.type === "ConditionalExpression") {
-    invalidateEscapedAssetValue(scope, node.consequent);
-    invalidateEscapedAssetValue(scope, node.alternate);
-  } else if (node.type === "LogicalExpression" || node.type === "SequenceExpression") {
-    for (const expression of node.type === "SequenceExpression"
-      ? nodeArray(node.expressions)
-      : [node.left, node.right]) {
-      invalidateEscapedAssetValue(scope, expression);
-    }
-  } else if (node.type === "ArrayExpression") {
-    for (const element of nodeArray(node.elements)) invalidateEscapedAssetValue(scope, element);
-  } else if (node.type === "ObjectExpression") {
-    for (const property of nodeArray(node.properties)) {
-      if (isAstRecord(property)) invalidateEscapedAssetValue(scope, property.value);
-    }
-  } else if (node.type === "MemberExpression") {
-    const property = unwrapExpression(node.property);
-    const safeUrlValue =
-      node.computed !== true &&
-      property?.type === "Identifier" &&
-      [
-        "hash",
-        "host",
-        "hostname",
-        "href",
-        "origin",
-        "password",
-        "pathname",
-        "port",
-        "protocol",
-        "search",
-        "toJSON",
-        "toString",
-        "username",
-      ].includes(String(property.name));
-    if (safeUrlValue) return;
-    const referenced = rootIdentifierName(node);
-    if (referenced) invalidateAssetBinding(scope, referenced);
-  }
-}
-
 function createChildScope(node: AstRecord, parent: AssetScope): AssetScope | null {
   if (
-    node.type !== "Program" &&
     node.type !== "BlockStatement" &&
     node.type !== "StaticBlock" &&
     node.type !== "TSModuleBlock" &&
@@ -369,10 +136,11 @@ function createChildScope(node: AstRecord, parent: AssetScope): AssetScope | nul
     collectBindingNames(node.id, scope.bindings);
   } else if (node.type === "CatchClause") {
     collectBindingNames(node.param, scope.bindings);
-  }
-  collectAssetScopeBindings(node, scope);
-  if (node.type === "StaticBlock" || node.type === "TSModuleBlock") {
-    collectVarScopeBindings(node, scope);
+  } else {
+    if (node.type === "StaticBlock" || node.type === "TSModuleBlock") {
+      collectVarScopeBindings(node, scope);
+    }
+    collectAssetScopeBindings(node, scope);
   }
   if (
     node.type === "ForStatement" ||
@@ -380,376 +148,85 @@ function createChildScope(node: AstRecord, parent: AssetScope): AssetScope | nul
     node.type === "ForOfStatement"
   ) {
     collectLoopScopeBindings(node, scope);
+    collectLoopScopeBindings(node, scope, (declaration, declarator) =>
+      recordAssetBinding(declaration, declarator, scope),
+    );
   }
   return scope;
 }
 
 function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): AssetUrl[] {
-  if (!isGlobalUrlCapabilityStable(ast)) return [];
   const assets: AssetUrl[] = [];
-  let globalFetchIsStable = true;
   const rootScope = createAssetScope(null);
-  collectAssetScopeBindings(ast, rootScope);
   collectVarScopeBindings(ast, rootScope);
-  collectNodeUrlImports(ast, rootScope);
+  collectAssetScopeBindings(ast, rootScope);
 
-  function visit(node: AstRecord, parentScope: AssetScope, safeAssetReference = false): void {
+  function visit(node: AstRecord, parentScope: AssetScope): void {
     if (isFunctionNode(node)) {
       const parameterScope = createAssetScope(parentScope);
       collectBindingNames(node.id, parameterScope.bindings);
       for (const parameter of nodeArray(node.params)) {
         collectBindingNames(parameter, parameterScope.bindings);
-        if (isAstRecord(parameter)) visit(parameter, parameterScope);
       }
-
       if (isAstRecord(node.body)) {
+        const bodyScope = createAssetScope(parameterScope);
         if (node.body.type === "BlockStatement") {
-          const bodyScope = createAssetScope(parameterScope);
-          collectAssetScopeBindings(node.body, bodyScope);
           collectVarScopeBindings(node.body, bodyScope);
-          visit(node.body, bodyScope);
-        } else {
-          visit(node.body, parameterScope);
+          collectAssetScopeBindings(node.body, bodyScope);
         }
+        visit(node.body, bodyScope);
       }
       return;
     }
 
     if (node.type === "SwitchStatement") {
-      if (isAstRecord(node.discriminant)) visit(node.discriminant, parentScope, true);
+      if (isAstRecord(node.discriminant)) visit(node.discriminant, parentScope);
       const switchScope = createAssetScope(parentScope);
       collectSwitchScopeBindings(node, switchScope);
       for (const switchCase of nodeArray(node.cases)) {
-        // Cases share lexical bindings but not proven control-flow dominance.
-        // Keep aliases case-local so a declaration in one case cannot rewrite
-        // a fetch reached through another case.
-        if (isAstRecord(switchCase)) visit(switchCase, createAssetScope(switchScope));
+        if (!isAstRecord(switchCase)) continue;
+        const caseScope = createAssetScope(switchScope);
+        collectAssetScopeBindings(
+          { type: "BlockStatement", body: nodeArray(switchCase.consequent) },
+          caseScope,
+        );
+        visit(switchCase, caseScope);
       }
       return;
     }
 
     const scope = createChildScope(node, parentScope) ?? parentScope;
-    if (node.type === "Identifier" && typeof node.name === "string") {
-      if (
-        !safeAssetReference &&
-        (isDynamicCodeCapabilityReference(scope, node) || isGlobalObjectReference(scope, node))
-      ) {
-        globalFetchIsStable = false;
-      }
-      if (!safeAssetReference) invalidateAssetBinding(scope, node.name);
-      return;
-    }
-    if (node.type === "VariableDeclaration") {
-      for (const declarator of nodeArray(node.declarations)) {
-        if (!isAstRecord(declarator)) continue;
-        if (!assetUrlFromNode(declarator.init)) {
-          invalidateEscapedAssetValue(scope, declarator.init);
-        }
-        if (isAstRecord(declarator.init)) visit(declarator.init, scope);
-        recordAssetBinding(node, declarator, scope);
-      }
-      return;
-    }
-    if (node.type === "ImportDeclaration") return;
-    if (
-      node.type === "TSAsExpression" ||
-      node.type === "TSSatisfiesExpression" ||
-      node.type === "TSNonNullExpression" ||
-      node.type === "TSInstantiationExpression" ||
-      node.type === "TSTypeAssertion"
-    ) {
-      if (isAstRecord(node.expression)) visit(node.expression, scope, safeAssetReference);
-      return;
-    }
-    if (node.type === "TSEnumDeclaration") {
-      const body = isAstRecord(node.body) ? node.body : node;
-      for (const member of nodeArray(body.members)) {
-        if (isAstRecord(member) && isAstRecord(member.initializer)) {
-          visit(member.initializer, scope);
-        }
-      }
-      return;
-    }
-    if (node.type === "TSModuleDeclaration") {
-      if (isAstRecord(node.body)) visit(node.body, scope);
-      return;
-    }
-    if (node.type === "TSModuleBlock") {
-      for (const statement of nodeArray(node.body)) {
-        if (isAstRecord(statement)) visit(statement, scope);
-      }
-      return;
-    }
-    if (node.type === "TSExportAssignment") {
-      if (isAstRecord(node.expression)) visit(node.expression, scope);
-      return;
-    }
-    if (node.type === "TSParameterProperty") {
-      if (isAstRecord(node.parameter)) visit(node.parameter, scope, safeAssetReference);
-      return;
-    }
-    if (node.type.startsWith("TS")) return;
-    if (
-      (node.type === "ForInStatement" || node.type === "ForOfStatement") &&
-      (!isAstRecord(node.left) || node.left.type !== "VariableDeclaration")
-    ) {
-      if (!nodelessTarget && assignedTargetCanMutateGlobalCapability(scope, node.left, "fetch")) {
-        globalFetchIsStable = false;
-      }
-      invalidateAssignedAssetTargets(scope, node.left);
-    }
     if (
       node.type === "ImportExpression" &&
       relativeDynamicImportUrlSpecifier(node.source) !== null
     ) {
       return;
     }
-    const nodelessAsset = nodelessTarget && !hasAstBinding(scope, "URL") && assetUrlFromNode(node);
+
+    const nodelessAsset =
+      nodelessTarget && !hasAstBinding(scope, "URL") ? assetUrlFromNode(node) : null;
     if (nodelessAsset) {
       assets.push(nodelessAsset);
       return;
     }
 
-    if (!nodelessTarget) {
-      if (node.type === "AssignmentExpression") {
-        if (assignedTargetCanMutateGlobalCapability(scope, node.left, "fetch")) {
-          globalFetchIsStable = false;
-        }
-        invalidateAssignedAssetTargets(scope, node.left);
-        invalidateEscapedAssetValue(scope, node.right);
-      } else if (node.type === "UpdateExpression") {
-        if (assignedTargetCanMutateGlobalCapability(scope, node.argument, "fetch")) {
-          globalFetchIsStable = false;
-        }
-        invalidateAssignedAssetTargets(scope, node.argument);
-      } else if (node.type === "UnaryExpression" && node.operator === "delete") {
-        if (assignedTargetCanMutateGlobalCapability(scope, node.argument, "fetch")) {
-          globalFetchIsStable = false;
-        }
-        invalidateAssignedAssetTargets(scope, node.argument);
-      } else if (node.type === "NewExpression") {
-        for (const argument of nodeArray(node.arguments)) {
-          invalidateEscapedAssetValue(scope, argument);
-        }
-      } else if (
-        node.type === "ReturnStatement" ||
-        node.type === "ThrowStatement" ||
-        node.type === "YieldExpression"
-      ) {
-        invalidateEscapedAssetValue(scope, node.argument);
-      } else if (node.type === "ArrayExpression") {
-        for (const element of nodeArray(node.elements)) {
-          invalidateEscapedAssetValue(scope, element);
-        }
-      } else if (node.type === "Property") {
-        invalidateEscapedAssetValue(scope, node.value);
-      }
-    }
-
     if (
       !nodelessTarget &&
       node.type === "CallExpression" &&
-      isGlobalFetchCallee(scope, node.callee)
+      isIdentifierNamed(unwrapExpression(node.callee), "fetch") &&
+      !hasAstBinding(scope, "fetch")
     ) {
       const input = nodeArray(node.arguments)[0];
       const directAsset = hasAstBinding(scope, "URL") ? null : assetUrlFromNode(input);
       if (directAsset) {
         assets.push(directAsset);
-      } else if (
-        isAstRecord(input) &&
-        unwrapExpression(input)?.type === "Identifier" &&
-        hasRange(input)
-      ) {
-        const identifier = unwrapExpression(input)!;
-        const boundAsset = findAssetBinding(scope, String(identifier.name));
-        if (boundAsset) {
-          assets.push({
-            ...boundAsset.asset,
-            range: input,
-            preserveEvaluation: true,
-            binding: boundAsset,
-          });
+      } else {
+        const identifier = unwrapExpression(input);
+        if (identifier?.type === "Identifier" && hasRange(identifier)) {
+          const boundAsset = findAssetBinding(scope, String(identifier.name));
+          if (boundAsset) assets.push({ ...boundAsset, range: identifier, alias: true });
         }
       }
-    }
-
-    if (!nodelessTarget && node.type === "CallExpression") {
-      const callee = unwrapExpression(node.callee);
-      const isGlobalFetch = isGlobalFetchCallee(scope, callee);
-      const isReadOnlyUrlConsumer = isNodeUrlFileUrlToPath(scope, callee);
-      const isDirectEval =
-        node.optional !== true &&
-        isIdentifierNamed(callee, "eval") &&
-        !hasAstBinding(scope, "eval");
-      if (isDirectEval) invalidateAssetsVisibleToDirectEval(scope);
-      if (!isGlobalFetch && !isReadOnlyUrlConsumer) {
-        const receiver =
-          callee?.type === "MemberExpression" ? rootIdentifierName(callee.object) : null;
-        if (receiver) invalidateAssetBinding(scope, receiver);
-        for (const argument of nodeArray(node.arguments)) {
-          invalidateEscapedAssetValue(scope, argument);
-        }
-      }
-      if (isAstRecord(node.callee)) visit(node.callee, scope);
-      for (const [index, argument] of nodeArray(node.arguments).entries()) {
-        if (!isAstRecord(argument)) continue;
-        const safeArgument =
-          (isGlobalFetch && index === 0 && unwrapExpression(argument)?.type === "Identifier") ||
-          (isReadOnlyUrlConsumer && unwrapExpression(argument)?.type === "Identifier");
-        visit(argument, scope, safeArgument);
-      }
-      return;
-    }
-
-    if (node.type === "MemberExpression") {
-      if (
-        !nodelessTarget &&
-        !safeAssetReference &&
-        (isGlobalObjectReference(scope, node) || isDynamicCodeCapabilityReference(scope, node))
-      ) {
-        globalFetchIsStable = false;
-      }
-      const property = unwrapExpression(node.property);
-      const safeUrlValue =
-        node.computed !== true &&
-        property?.type === "Identifier" &&
-        [
-          "hash",
-          "host",
-          "hostname",
-          "href",
-          "origin",
-          "password",
-          "pathname",
-          "port",
-          "protocol",
-          "search",
-          "toJSON",
-          "toString",
-          "username",
-        ].includes(String(property.name));
-      const safeGlobalObjectReceiver = isGlobalObjectReference(scope, node.object);
-      if (isAstRecord(node.object)) {
-        visit(node.object, scope, safeUrlValue || safeGlobalObjectReceiver);
-      }
-      if (node.computed === true && isAstRecord(node.property)) visit(node.property, scope);
-      return;
-    }
-
-    if (node.type === "Property" || node.type === "PropertyDefinition") {
-      if (node.computed === true && isAstRecord(node.key)) visit(node.key, scope);
-      if (isAstRecord(node.value)) visit(node.value, scope);
-      return;
-    }
-
-    if (node.type === "MethodDefinition") {
-      if (node.computed === true && isAstRecord(node.key)) visit(node.key, scope);
-      if (isAstRecord(node.value)) visit(node.value, scope);
-      return;
-    }
-
-    if (node.type === "JSXAttribute") {
-      if (isAstRecord(node.value)) visit(node.value, scope);
-      return;
-    }
-
-    if (node.type === "LabeledStatement") {
-      if (isAstRecord(node.body)) visit(node.body, scope);
-      return;
-    }
-    if (node.type === "BreakStatement" || node.type === "ContinueStatement") return;
-
-    if (node.type === "SwitchCase") {
-      if (isAstRecord(node.test)) visit(node.test, scope, true);
-      for (const statement of nodeArray(node.consequent)) {
-        if (isAstRecord(statement)) visit(statement, scope);
-      }
-      return;
-    }
-
-    if (node.type === "ExportSpecifier") {
-      if (node.exportKind === "type") return;
-      if (isAstRecord(node.local)) visit(node.local, scope);
-      return;
-    }
-
-    const visitReadOnly = (value: unknown): void => {
-      if (isAstRecord(value)) visit(value, scope, true);
-    };
-    if (
-      node.type === "IfStatement" ||
-      node.type === "WhileStatement" ||
-      node.type === "DoWhileStatement"
-    ) {
-      visitReadOnly(node.test);
-      if (isAstRecord(node.body)) visit(node.body, scope);
-      if (node.type === "IfStatement" && isAstRecord(node.consequent)) {
-        visit(node.consequent, scope);
-      }
-      if (node.type === "IfStatement" && isAstRecord(node.alternate)) {
-        visit(node.alternate, scope);
-      }
-      return;
-    }
-    if (node.type === "ConditionalExpression") {
-      visitReadOnly(node.test);
-      if (isAstRecord(node.consequent)) visit(node.consequent, scope, safeAssetReference);
-      if (isAstRecord(node.alternate)) visit(node.alternate, scope, safeAssetReference);
-      return;
-    }
-    if (node.type === "ForStatement") {
-      visitReadOnly(node.init);
-      visitReadOnly(node.test);
-      visitReadOnly(node.update);
-      if (isAstRecord(node.body)) visit(node.body, scope);
-      return;
-    }
-    if (node.type === "LogicalExpression") {
-      visitReadOnly(node.left);
-      if (isAstRecord(node.right)) visit(node.right, scope, safeAssetReference);
-      return;
-    }
-    if (node.type === "BinaryExpression") {
-      const safe = node.operator === "===" || node.operator === "!==";
-      if (isAstRecord(node.left)) visit(node.left, scope, safe);
-      if (isAstRecord(node.right)) visit(node.right, scope, safe);
-      return;
-    }
-    if (node.type === "UnaryExpression" && node.operator !== "delete") {
-      const safe = node.operator === "!" || node.operator === "typeof" || node.operator === "void";
-      if (isAstRecord(node.argument)) visit(node.argument, scope, safe);
-      return;
-    }
-    if (node.type === "SequenceExpression") {
-      const expressions = nodeArray(node.expressions);
-      for (const [index, expression] of expressions.entries()) {
-        if (isAstRecord(expression)) {
-          visit(expression, scope, index === expressions.length - 1 ? safeAssetReference : true);
-        }
-      }
-      return;
-    }
-
-    if (node.type === "ExpressionStatement") {
-      visitReadOnly(node.expression);
-      return;
-    }
-
-    if (node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration") {
-      if (node.exportKind === "type") return;
-      if (isAstRecord(node.source)) return;
-      if (isAstRecord(node.declaration)) {
-        visit(node.declaration, scope);
-        if (node.declaration.type === "VariableDeclaration") {
-          for (const declarator of nodeArray(node.declaration.declarations)) {
-            if (isAstRecord(declarator)) invalidateAssignedAssetTargets(scope, declarator.id);
-          }
-        }
-      }
-      for (const specifier of nodeArray(node.specifiers)) {
-        if (isAstRecord(specifier)) visit(specifier, scope);
-      }
-      return;
     }
 
     forEachAstChild(node, (child) => visit(child, scope));
@@ -758,15 +235,10 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
   for (const statement of nodeArray(ast.body)) {
     if (isAstRecord(statement)) visit(statement, rootScope);
   }
-  if (!nodelessTarget && !globalFetchIsStable) return [];
-  return assets.filter((asset) => asset.binding?.valid !== false);
+  return assets;
 }
 
-/**
- * The asset phase of the shared import-meta capability. This is deliberately a
- * typed helper rather than another Vite plugin: the existing import-meta plugin
- * owns hook ordering, target policy, and the final combined transform.
- */
+/** Asset phase of the existing import-meta capability. */
 export class ImportMetaAssetTransformer {
   readonly #cache = new Map<string, string>();
   #isBuild = false;
@@ -842,15 +314,14 @@ export class ImportMetaAssetTransformer {
         if (this.#isBuild) this.#cache.set(file, dataUrl);
       }
 
-      // The bytes are embedded instead of entering Vite's module graph, so the
-      // owning module must be invalidated when only the asset changes.
       context.addWatchFile(file);
+      const dataUrlExpression = `new URL(${JSON.stringify(dataUrl)})`;
       rewrites.push({
         start: assetUrl.range.start,
         end: assetUrl.range.end,
-        replacement: assetUrl.preserveEvaluation
-          ? `(${code.slice(assetUrl.range.start, assetUrl.range.end)}, new URL(${JSON.stringify(dataUrl)}))`
-          : `new URL(${JSON.stringify(dataUrl)})`,
+        replacement: assetUrl.alias
+          ? `(${code.slice(assetUrl.range.start, assetUrl.range.end)}.href === ${code.slice(assetUrl.sourceRange.start, assetUrl.sourceRange.end)}.href ? ${dataUrlExpression} : ${code.slice(assetUrl.range.start, assetUrl.range.end)})`
+          : dataUrlExpression,
       });
     }
 

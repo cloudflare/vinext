@@ -50,7 +50,6 @@ import {
 } from "./ast-scope.js";
 import { magicStringTransformResult, type MagicStringTransformResult } from "./transform-result.js";
 import { ImportMetaAssetTransformer, type ImportMetaAssetRewrite } from "./import-meta-assets.js";
-import { isGlobalUrlCapabilityStable } from "./global-runtime-capabilities.js";
 import type { OgAssetOwnership } from "./og-asset-ownership.js";
 import {
   hasDynamicRequestIgnoreDirective,
@@ -477,7 +476,6 @@ function collectDynamicImportUrlSpecifiers(
   const specifiers: DynamicImportUrlSpecifier[] = [];
   if (VIRTUAL_MODULE_ID_RE.test(id)) return specifiers;
   if (!isAstRecord(ast)) return specifiers;
-  if (!isGlobalUrlCapabilityStable(ast)) return specifiers;
   const rootScope = createAstScope(null);
   collectDirectScopeBindings(ast, rootScope);
   collectVarScopeBindings(ast, rootScope);
@@ -701,7 +699,7 @@ function finalizeEmittedModuleIdentity(
 }
 
 function parseAssetBearingModule(code: string, id: string): AstRecord | null {
-  if (!code.includes("new") || !code.includes("URL")) return null;
+  if (!code.includes("new") || !mayContainImportMetaUrl(code)) return null;
   const lang = scriptParserLanguage(id);
   if (lang === null) return null;
   try {

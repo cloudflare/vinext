@@ -35,7 +35,6 @@ import {
 } from "./ast-scope.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
-import { isGlobalUrlCapabilityStable } from "./global-runtime-capabilities.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
 const REQUIRE_PRESCAN =
@@ -683,7 +682,7 @@ function transformVeryDynamicRequests(code: string, id: string, replaceUnknownRe
   let changed = false;
   const root = astNode(ast);
   if (!root) return null;
-  const normalizeUrlImports = !VIRTUAL_MODULE_ID_RE.test(id) && isGlobalUrlCapabilityStable(root);
+  const normalizeUrlImports = !VIRTUAL_MODULE_ID_RE.test(id);
   const rootScope: Scope = { parent: null, bindings: new Set(), constants: new Map() };
   collectDirectBindings(root, rootScope);
   collectVarScopeBindings(root, rootScope);
