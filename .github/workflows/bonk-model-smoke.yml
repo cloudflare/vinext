@@ -44,8 +44,8 @@ jobs:
           variant: ${{ matrix.variant }}
           permissions: write
           token_permissions: "NO_PUSH"
-          opencode_dev: false
-          opencode_version: 0.0.0-dev-202608181849
+          opencode_dev: true
+          opencode_version: latest
           prompt: >-
             This is a model-routing smoke test. Do not inspect or modify repository
             files, run shell commands, or perform GitHub actions. Reply with exactly:
