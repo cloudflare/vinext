@@ -1,6 +1,11 @@
-const locale = "ru";
-const messages = require(`../../locales/${locale}`).default;
+let extraArgumentEvaluated = false;
+const messages =
+  require(`../../locales/${require("../../locale-name")}`, (extraArgumentEvaluated = true)).default;
 
 export default function DynamicRequirePage() {
-  return <p data-testid="dynamic-require-message">{messages.message}</p>;
+  return (
+    <p data-testid="dynamic-require-message">
+      {messages.message}|extra:{String(extraArgumentEvaluated)}
+    </p>
+  );
 }

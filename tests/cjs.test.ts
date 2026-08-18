@@ -97,6 +97,7 @@ describe("CJS interop (Pages Router)", () => {
     const { res, html } = await fetchHtml(baseUrl, "/cjs/dynamic-require");
     expect(res.status).toBe(200);
     expect(html).toContain("Привет");
+    expect(html).toContain("extra:<!-- -->true");
   });
 });
 

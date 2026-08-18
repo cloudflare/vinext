@@ -31,6 +31,17 @@ import { packageNameFromSpecifier } from "../utils/package-name.js";
 
 const COMMONJS_PRESCAN = /\b(?:require|module|exports)\b/;
 const IDENTIFIER_NAME_RE = /^[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*$/u;
+const DEFAULT_COMMONJS_EXTENSIONS = [
+  ".mjs",
+  ".js",
+  ".cjs",
+  ".mts",
+  ".ts",
+  ".cts",
+  ".jsx",
+  ".tsx",
+  ".json",
+] as const;
 const DYNAMIC_REQUIRE_EXTENSIONS = [
   ".vue",
   ".svelte",
@@ -70,6 +81,13 @@ const DYNAMIC_REQUIRE_EXTENSIONS = [
   ".postcss",
 ] as const;
 
+function commonJsExtensionFilter(extensions: readonly string[]): RegExp {
+  const patterns = [...new Set(extensions)]
+    .filter(Boolean)
+    .map((extension) => extension.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return patterns.length > 0 ? new RegExp(`(?:${patterns.join("|")})(?:[?#].*)?$`, "i") : /a^/;
+}
+
 type StaticRequire = {
   node: AstRecord & { start: number; end: number };
   specifier: string;
@@ -77,7 +95,7 @@ type StaticRequire = {
 
 type DynamicRequire = {
   argument: AstRecord & { start: number; end: number };
-  node: AstRecord & { start: number; end: number };
+  callee: AstRecord & { start: number; end: number };
 };
 
 type CommonJsAnalysis = {
@@ -193,9 +211,12 @@ function analyzeCommonJsAst(
       const argument = unwrapExpression(args[0]);
       const specifier = staticStringValue(argument);
       if (isIdentifierNamed(callee, "require") && !hasAstBinding(scope, "require") && argument) {
-        if (specifier !== null) requires.push({ node, specifier });
-        else if (hasRange(argument)) dynamicRequires.push({ argument, node });
-        return;
+        if (specifier !== null) {
+          requires.push({ node, specifier });
+          return;
+        } else if (hasRange(argument) && hasRange(callee)) {
+          dynamicRequires.push({ argument, callee });
+        }
       }
     } else if (node.type === "AssignmentExpression") {
       const left = unwrapExpression(node.left);
@@ -552,11 +573,7 @@ function renderCommonJs(
     preamble.push(
       `function ${runtimeName}(request) { switch (request) { ${cases.join(" ")} default: { const error = new Error("Cannot find module '" + request + "'"); error.code = "MODULE_NOT_FOUND"; throw error; } } }`,
     );
-    output.overwrite(
-      dynamicRequire.node.start,
-      dynamicRequire.node.end,
-      `${runtimeName}(${code.slice(dynamicRequire.argument.start, dynamicRequire.argument.end)})`,
-    );
+    output.overwrite(dynamicRequire.callee.start, dynamicRequire.callee.end, runtimeName);
   }
   if (analysis.hasExports) {
     preamble.push("var module = { exports: {} };", "var exports = module.exports;");
@@ -597,31 +614,25 @@ export type CommonJsPluginOptions = {
 /** Vite lifecycle adapter for the shared CommonJS transform. */
 export function createCommonJsPlugin(options: CommonJsPluginOptions = {}): Plugin {
   let extensions: readonly string[] = [
-    ".mjs",
-    ".js",
-    ".cjs",
-    ".mts",
-    ".ts",
-    ".cts",
-    ".jsx",
-    ".tsx",
-    ".json",
+    ...DEFAULT_COMMONJS_EXTENSIONS,
     ...DYNAMIC_REQUIRE_EXTENSIONS,
   ];
   let aliases: readonly Alias[] = [];
   let root = toSlash(process.cwd());
+  const transformFilter = {
+    id: commonJsExtensionFilter(DEFAULT_COMMONJS_EXTENSIONS),
+    code: COMMONJS_PRESCAN,
+  };
   return {
     name: "vinext:commonjs",
     configResolved(config) {
       extensions = [...new Set([...config.resolve.extensions, ...DYNAMIC_REQUIRE_EXTENSIONS])];
       aliases = config.resolve.alias;
       root = toSlash(config.root);
+      transformFilter.id = commonJsExtensionFilter(config.resolve.extensions);
     },
     transform: {
-      filter: {
-        id: /\.(?:[cm]?[jt]s|[jt]sx)(?:[?#].*)?$/i,
-        code: COMMONJS_PRESCAN,
-      },
+      filter: transformFilter,
       async handler(code, id) {
         if (options.shouldTransform && !options.shouldTransform(this.environment, code, id)) {
           return null;

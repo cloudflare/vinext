@@ -3,7 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { toSlash } from "pathslash";
-import type { Alias } from "vite";
+import { createBuilder, createServer, type Alias } from "vite";
 import {
   createCommonJsPlugin,
   transformCommonJs,
@@ -64,6 +64,45 @@ describe("transformCommonJs", () => {
     }
     expect(String(result.code)).toContain('from "dependency"');
     expect(String(result.code)).toContain("__vinext_cjs_default__ as default");
+  });
+
+  // vite-plugin-commonjs uses the resolved Vite extension list to select transform inputs:
+  // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/src/index.ts#L65-L68
+  it("transforms CommonJS modules with custom resolve extensions", async () => {
+    const root = await mkdtemp(path.join(import.meta.dirname, ".tmp-commonjs-extension-"));
+    const server = await createServer({
+      root,
+      logLevel: "silent",
+      resolve: { extensions: [".foo"] },
+      plugins: [createCommonJsPlugin()],
+      server: { middlewareMode: true },
+    });
+    try {
+      await writeFile(path.join(root, "value.foo"), `module.exports = { value: "custom" };\n`);
+      const module = await server.ssrLoadModule("/value.foo");
+      expect(module.default).toEqual({ value: "custom" });
+    } finally {
+      await server.close();
+    }
+    try {
+      await Promise.all([
+        writeFile(path.join(root, "index.html"), `<script type="module" src="/main.js"></script>`),
+        writeFile(
+          path.join(root, "main.js"),
+          `import value from "./value.foo"; globalThis.customExtensionValue = value.value;\n`,
+        ),
+      ]);
+      const builder = await createBuilder({
+        root,
+        logLevel: "silent",
+        resolve: { extensions: [".foo"] },
+        plugins: [createCommonJsPlugin()],
+        build: { write: false },
+      });
+      await builder.buildApp();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   // Ported from vite-plugin-commonjs v0.10.4 historical require-form coverage:
@@ -228,17 +267,22 @@ const external = require("external");
       "fixtures/pages-basic/pages/cjs/dynamic-require.tsx",
     );
     const result = await runPluginTransform(
-      `const messages = require(\`../../locales/${"${locale}"}.js\`);`,
+      `const messages = require(\`../../locales/${'${require("../../locale-name.js")}'}.js\`, sideEffect());`,
       importer,
     );
     if (!result || typeof result === "string" || !("code" in result)) {
       throw new Error("Expected transformed code");
     }
     const transformed = String(result.code);
+    expect(transformed).toContain('from "../../locale-name.js"');
     expect(transformed).toContain('from "../../locales/en.js"');
     expect(transformed).toContain('from "../../locales/ru.js"');
     expect(transformed).toContain('case "../../locales/ru.js"');
-    expect(transformed).toContain("__vinext_dynamic_require__(`../../locales/${locale}.js`)");
+    // vite-plugin-commonjs rewrites only the dynamic callee, preserving evaluation of extra args:
+    // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/src/index.ts#L217-L220
+    expect(transformed).toContain(
+      "__vinext_dynamic_require__(`../../locales/${(__vinext_cjs_import__.default || __vinext_cjs_import__)}.js`, sideEffect())",
+    );
     // vite-plugin-commonjs returns the imported namespace so callers can use `.default`:
     // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/test/fixtures/src/dynamic.tsx
     const ruCase = transformed.match(/case "\.\.\/\.\.\/locales\/ru\.js": return ([^;]+);/)?.[1];
