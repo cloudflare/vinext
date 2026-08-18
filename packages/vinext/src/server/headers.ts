@@ -78,6 +78,9 @@ export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-An
 /** Prerender-only JSON side channel carrying request cacheLife metadata. */
 export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
 
+/** Marks a local prerender-server 500 that originated from a thrown render error. */
+export const VINEXT_PRERENDER_RENDER_ERROR_HEADER = "x-vinext-prerender-render-error";
+
 /** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
 export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
 

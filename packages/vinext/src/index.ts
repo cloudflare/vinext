@@ -4483,6 +4483,8 @@ export const loadServerActionClient = ${
       },
 
       configureServer(server: ViteDevServer) {
+        const devBuildId = nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
+
         server.middlewares.use((req, _res, next) => {
           req.__vinextOriginalEncodedUrl ??= req.url;
           next();
@@ -5402,8 +5404,6 @@ export const loadServerActionClient = ${
                 // matching the value embedded into the prod entry. Fall back
                 // to the env-var define (set by the plugin) and finally
                 // "development" if the plugin hasn't resolved a config yet.
-                const devBuildId =
-                  nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
                 const dataMatch = parseNextDataPathname(pathname, devBuildId);
                 if (dataMatch) {
                   isDataReq = true;
@@ -5943,6 +5943,7 @@ export const loadServerActionClient = ${
                       nextConfig?.reactStrictMode === true,
                       nextConfig?.expireTime,
                       nextConfig?.crossOrigin,
+                      devBuildId,
                     ),
                   };
                 }
