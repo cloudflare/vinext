@@ -4,6 +4,7 @@ const ROUTE = "/provider-region";
 
 test.describe("provider country propagation", () => {
   test("propagates the native Workers country to Next request headers", async ({ page }) => {
+    await page.setExtraHTTPHeaders({ "cf-ipcountry": "ZZ" });
     await page.goto(ROUTE);
 
     await expect(page.getByTestId("api-resolved-country")).toBeVisible();
