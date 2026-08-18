@@ -345,14 +345,6 @@ function ensureNavigationRuntimeRscBootstrapForRuntime(
   return rscBootstrap;
 }
 
-export function subscribeNavigationRuntimeRscChunk(
-  chunk: NavigationRuntimeRscChunk,
-): NavigationRuntime {
-  const runtime = ensureNavigationRuntime();
-  ensureNavigationRuntimeRscBootstrapForRuntime(runtime).rsc.push(chunk);
-  return runtime;
-}
-
 export function hasAppNavigationRuntime(): boolean {
   return typeof getNavigationRuntime()?.functions.navigate === "function";
 }
