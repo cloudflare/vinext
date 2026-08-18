@@ -29,8 +29,46 @@ import { magicStringTransformResult, type MagicStringTransformResult } from "./t
 import { stripViteModuleQuery } from "../utils/path.js";
 import { packageNameFromSpecifier } from "../utils/package-name.js";
 
-const COMMONJS_PRESCAN = /\b(?:require\s*\(|module\s*\.|exports\s*[.[])/;
+const COMMONJS_PRESCAN = /\b(?:require|module|exports)\b/;
 const IDENTIFIER_NAME_RE = /^[A-Za-z_$][\w$]*$/;
+const DYNAMIC_REQUIRE_EXTENSIONS = [
+  ".vue",
+  ".svelte",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".jfif",
+  ".pjpeg",
+  ".pjp",
+  ".gif",
+  ".svg",
+  ".ico",
+  ".webp",
+  ".avif",
+  ".mp4",
+  ".webm",
+  ".ogg",
+  ".mp3",
+  ".wav",
+  ".flac",
+  ".aac",
+  ".woff",
+  ".woff2",
+  ".eot",
+  ".ttf",
+  ".otf",
+  ".webmanifest",
+  ".pdf",
+  ".txt",
+  ".css",
+  ".less",
+  ".sass",
+  ".scss",
+  ".styl",
+  ".stylus",
+  ".pcss",
+  ".postcss",
+] as const;
 
 type StaticRequire = {
   node: AstRecord & { start: number; end: number };
@@ -339,7 +377,7 @@ async function findPackageDirectory(
   for (;;) {
     const candidate = path.join(directory, "node_modules", packageName);
     try {
-      if ((await stat(candidate)).isDirectory()) return await realpath(candidate);
+      if ((await stat(candidate)).isDirectory()) return toSlash(await realpath(candidate));
     } catch {}
     const parent = path.dirname(directory);
     if (parent === directory) return null;
@@ -383,7 +421,7 @@ async function resolveDynamicPattern(
         ? pattern === alias.find || pattern.startsWith(`${alias.find}/`)
         : new RegExp(alias.find.source, alias.find.flags).test(pattern);
     if (!matches) continue;
-    const replaced = pattern.replace(alias.find, alias.replacement);
+    const replaced = pattern.replace(alias.find, toSlash(alias.replacement));
     const resolvedPattern = path.isAbsolute(replaced) ? replaced : path.resolve(root, replaced);
     return {
       cwd: path.parse(resolvedPattern).root,
@@ -418,7 +456,7 @@ async function resolveDynamicRequire(
   const pattern = dynamicRequirePattern(request.argument);
   if (!pattern?.includes("*")) return null;
 
-  const cleanId = stripViteModuleQuery(id);
+  const cleanId = toSlash(stripViteModuleQuery(id));
   const importerDirectory = path.dirname(cleanId);
   const resolvedPattern = await resolveDynamicPattern(pattern, importerDirectory, aliases, root);
   if (!resolvedPattern) return null;
@@ -431,6 +469,11 @@ async function resolveDynamicRequire(
     for await (const match of glob(globPattern, { cwd: resolvedPattern.cwd })) {
       const absolute = path.resolve(resolvedPattern.cwd, match);
       if (absolute === cleanId) continue;
+      try {
+        if (!(await stat(absolute)).isFile()) continue;
+      } catch {
+        continue;
+      }
       const captures = patternCaptures(matchPattern, resolvedPattern.resolvedMatch(absolute));
       if (!captures) continue;
       context.addWatchFile(absolute);
@@ -441,7 +484,14 @@ async function resolveDynamicRequire(
       else candidates.set(absolute, { cases, specifier });
     }
   }
-  return candidates.size > 0 ? { ...request, candidates: [...candidates.values()] } : null;
+  return candidates.size > 0
+    ? {
+        ...request,
+        candidates: [...candidates.values()].sort((left, right) =>
+          left.specifier.localeCompare(right.specifier),
+        ),
+      }
+    : null;
 }
 
 function unusedBinding(bindings: Set<string>, base: string): string {
@@ -547,15 +597,16 @@ export function createCommonJsPlugin(options: CommonJsPluginOptions = {}): Plugi
     ".jsx",
     ".tsx",
     ".json",
+    ...DYNAMIC_REQUIRE_EXTENSIONS,
   ];
   let aliases: readonly Alias[] = [];
-  let root = process.cwd();
+  let root = toSlash(process.cwd());
   return {
     name: "vinext:commonjs",
     configResolved(config) {
-      extensions = config.resolve.extensions;
+      extensions = [...new Set([...config.resolve.extensions, ...DYNAMIC_REQUIRE_EXTENSIONS])];
       aliases = config.resolve.alias;
-      root = config.root;
+      root = toSlash(config.root);
     },
     transform: {
       filter: {
