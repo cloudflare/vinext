@@ -1,7 +1,7 @@
 import MagicString from "magic-string";
-import { glob } from "node:fs/promises";
+import { glob, realpath, stat } from "node:fs/promises";
 import path, { toSlash } from "pathslash";
-import { parseAst, type Environment, type Plugin } from "vite";
+import { parseAst, type Alias, type Environment, type Plugin } from "vite";
 import {
   collectBindingNames,
   forEachAstChild,
@@ -27,6 +27,7 @@ import {
 } from "./ast-scope.js";
 import { magicStringTransformResult, type MagicStringTransformResult } from "./transform-result.js";
 import { stripViteModuleQuery } from "../utils/path.js";
+import { packageNameFromSpecifier } from "../utils/package-name.js";
 
 const COMMONJS_PRESCAN = /\b(?:require\s*\(|module\s*\.|exports\s*[.[])/;
 const IDENTIFIER_NAME_RE = /^[A-Za-z_$][\w$]*$/;
@@ -206,6 +207,20 @@ type WatchContext = {
   addWatchFile(id: string): void;
 };
 
+type DynamicPatternResolution = {
+  cwd: string;
+  globPattern: string;
+  runtimePattern: string;
+  importSpecifier(absolute: string): string;
+  resolvedMatch(absolute: string): string;
+};
+
+type DynamicGlobPattern = {
+  globPattern: string;
+  resolvedPattern: string;
+  runtimePattern: string;
+};
+
 function templateElementValue(node: AstRecord): string | null {
   if (node.type !== "TemplateElement" || typeof node.value !== "object" || !node.value) {
     return null;
@@ -265,15 +280,131 @@ function extensionlessCases(specifier: string): string[] {
   return [...cases];
 }
 
-function dynamicGlobPatterns(pattern: string, extensions: readonly string[]): string[] {
-  if (path.extname(pattern)) return [pattern];
-  return [
-    pattern,
-    ...extensions.flatMap((extension) => [
-      pattern + extension,
-      path.join(pattern, `index${extension}`),
-    ]),
-  ];
+function looseGlobPatterns(pattern: string): string[] {
+  if (pattern.includes("**")) return [pattern];
+  const lastWildcard = pattern.lastIndexOf("*");
+  if (lastWildcard === -1) return [pattern];
+  const head = pattern.slice(0, lastWildcard + 1);
+  const tail = pattern.slice(lastWildcard + 1);
+  return [pattern, head.endsWith("/*") ? `${head}*/*${tail}` : `${head}/**/*${tail}`];
+}
+
+function dynamicGlobPatterns(
+  resolvedPattern: string,
+  runtimePattern: string,
+  extensions: readonly string[],
+): DynamicGlobPattern[] {
+  const patterns = path.extname(resolvedPattern)
+    ? [{ resolvedPattern, runtimePattern }]
+    : [
+        { resolvedPattern, runtimePattern },
+        ...extensions.flatMap((extension) => [
+          {
+            resolvedPattern: resolvedPattern + extension,
+            runtimePattern: runtimePattern + extension,
+          },
+          {
+            resolvedPattern: path.join(resolvedPattern, `index${extension}`),
+            runtimePattern: path.join(runtimePattern, `index${extension}`),
+          },
+        ]),
+      ];
+  const results = new Map<string, DynamicGlobPattern>();
+  for (const pattern of patterns) {
+    for (const globPattern of looseGlobPatterns(pattern.resolvedPattern)) {
+      const result = { globPattern, ...pattern };
+      results.set(`${globPattern}\0${pattern.runtimePattern}`, result);
+    }
+  }
+  return [...results.values()];
+}
+
+function patternCaptures(pattern: string, value: string): string[] | null {
+  const parts = pattern.split(/\*+/);
+  const source = parts.map((part) => part.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")).join("(.*?)");
+  const match = new RegExp(`^${source}$`).exec(value);
+  return match ? match.slice(1) : null;
+}
+
+function interpolatePattern(pattern: string, captures: readonly string[]): string {
+  let index = 0;
+  return pattern.replace(/\*+/g, () => captures[index++] ?? "");
+}
+
+async function findPackageDirectory(
+  importerDirectory: string,
+  packageName: string,
+): Promise<string | null> {
+  let directory = importerDirectory;
+  for (;;) {
+    const candidate = path.join(directory, "node_modules", packageName);
+    try {
+      if ((await stat(candidate)).isDirectory()) return await realpath(candidate);
+    } catch {}
+    const parent = path.dirname(directory);
+    if (parent === directory) return null;
+    directory = parent;
+  }
+}
+
+async function resolveDynamicPattern(
+  pattern: string,
+  importerDirectory: string,
+  aliases: readonly Alias[],
+  root: string,
+): Promise<DynamicPatternResolution | null> {
+  if (pattern.startsWith("./") || pattern.startsWith("../")) {
+    return {
+      cwd: importerDirectory,
+      globPattern: pattern,
+      runtimePattern: pattern,
+      importSpecifier(absolute) {
+        const relative = toSlash(path.relative(importerDirectory, absolute));
+        return relative.startsWith(".") ? relative : `./${relative}`;
+      },
+      resolvedMatch(absolute) {
+        const relative = toSlash(path.relative(importerDirectory, absolute));
+        return pattern.startsWith("./") && !relative.startsWith(".") ? `./${relative}` : relative;
+      },
+    };
+  }
+  if (path.isAbsolute(pattern)) {
+    return {
+      cwd: path.parse(pattern).root,
+      globPattern: pattern,
+      runtimePattern: pattern,
+      importSpecifier: toSlash,
+      resolvedMatch: toSlash,
+    };
+  }
+  for (const alias of aliases) {
+    const matches =
+      typeof alias.find === "string"
+        ? pattern === alias.find || pattern.startsWith(`${alias.find}/`)
+        : new RegExp(alias.find.source, alias.find.flags).test(pattern);
+    if (!matches) continue;
+    const replaced = pattern.replace(alias.find, alias.replacement);
+    const resolvedPattern = path.isAbsolute(replaced) ? replaced : path.resolve(root, replaced);
+    return {
+      cwd: path.parse(resolvedPattern).root,
+      globPattern: resolvedPattern,
+      runtimePattern: pattern,
+      importSpecifier: toSlash,
+      resolvedMatch: toSlash,
+    };
+  }
+  const packageName = packageNameFromSpecifier(pattern);
+  if (!packageName) return null;
+  const packageDirectory = await findPackageDirectory(importerDirectory, packageName);
+  if (!packageDirectory) return null;
+  const suffix = pattern.slice(packageName.length).replace(/^\/+/, "");
+  return {
+    cwd: path.parse(packageDirectory).root,
+    globPattern: path.join(packageDirectory, suffix),
+    runtimePattern: pattern,
+    importSpecifier: toSlash,
+    resolvedMatch: toSlash,
+  };
 }
 
 async function resolveDynamicRequire(
@@ -281,26 +412,30 @@ async function resolveDynamicRequire(
   request: DynamicRequire,
   id: string,
   extensions: readonly string[],
+  aliases: readonly Alias[],
+  root: string,
 ): Promise<ResolvedDynamicRequire | null> {
   const pattern = dynamicRequirePattern(request.argument);
-  if (
-    !pattern?.includes("*") ||
-    (!pattern.startsWith("./") && !pattern.startsWith("../") && !path.isAbsolute(pattern))
-  ) {
-    return null;
-  }
+  if (!pattern?.includes("*")) return null;
 
   const cleanId = stripViteModuleQuery(id);
   const importerDirectory = path.dirname(cleanId);
+  const resolvedPattern = await resolveDynamicPattern(pattern, importerDirectory, aliases, root);
+  if (!resolvedPattern) return null;
   const candidates = new Map<string, DynamicRequireCandidate>();
-  for (const globPattern of dynamicGlobPatterns(pattern, extensions)) {
-    for await (const match of glob(globPattern, { cwd: importerDirectory })) {
-      let specifier = toSlash(match);
-      const absolute = path.resolve(importerDirectory, specifier);
+  for (const { globPattern, resolvedPattern: matchPattern, runtimePattern } of dynamicGlobPatterns(
+    resolvedPattern.globPattern,
+    resolvedPattern.runtimePattern,
+    extensions,
+  )) {
+    for await (const match of glob(globPattern, { cwd: resolvedPattern.cwd })) {
+      const absolute = path.resolve(resolvedPattern.cwd, match);
       if (absolute === cleanId) continue;
+      const captures = patternCaptures(matchPattern, resolvedPattern.resolvedMatch(absolute));
+      if (!captures) continue;
       context.addWatchFile(absolute);
-      if (!path.isAbsolute(specifier) && !specifier.startsWith(".")) specifier = `./${specifier}`;
-      const cases = extensionlessCases(specifier);
+      const specifier = resolvedPattern.importSpecifier(absolute);
+      const cases = extensionlessCases(interpolatePattern(runtimePattern, captures));
       const existing = candidates.get(absolute);
       if (existing) existing.cases = [...new Set([...existing.cases, ...cases])];
       else candidates.set(absolute, { cases, specifier });
@@ -413,10 +548,14 @@ export function createCommonJsPlugin(options: CommonJsPluginOptions = {}): Plugi
     ".tsx",
     ".json",
   ];
+  let aliases: readonly Alias[] = [];
+  let root = process.cwd();
   return {
     name: "vinext:commonjs",
     configResolved(config) {
       extensions = config.resolve.extensions;
+      aliases = config.resolve.alias;
+      root = config.root;
     },
     transform: {
       filter: {
@@ -432,7 +571,7 @@ export function createCommonJsPlugin(options: CommonJsPluginOptions = {}): Plugi
         const dynamicRequires = (
           await Promise.all(
             analysis.dynamicRequires.map((request) =>
-              resolveDynamicRequire(this, request, id, extensions),
+              resolveDynamicRequire(this, request, id, extensions, aliases, root),
             ),
           )
         ).filter((value): value is ResolvedDynamicRequire => value !== null);

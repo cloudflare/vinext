@@ -1,12 +1,28 @@
 import { describe, expect, it } from "vite-plus/test";
 import path from "node:path";
+import os from "node:os";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import type { Alias } from "vite";
 import {
   createCommonJsPlugin,
   transformCommonJs,
 } from "../packages/vinext/src/plugins/commonjs.js";
 
-async function runPluginTransform(code: string, id: string) {
-  const hook = createCommonJsPlugin().transform;
+async function runPluginTransform(code: string, id: string, aliases: Alias[] = []) {
+  const plugin = createCommonJsPlugin();
+  const configResolved = plugin.configResolved;
+  if (typeof configResolved !== "function") throw new Error("Expected configResolved hook");
+  await configResolved.call(
+    {} as never,
+    {
+      root: import.meta.dirname,
+      resolve: {
+        alias: aliases,
+        extensions: [".mjs", ".js", ".cjs", ".mts", ".ts", ".cts", ".jsx", ".tsx", ".json"],
+      },
+    } as never,
+  );
+  const hook = plugin.transform;
   if (!hook || typeof hook === "function") throw new Error("Expected object transform hook");
   return await hook.handler.call(
     {
@@ -122,5 +138,95 @@ const external = require("external");
     expect(transformed).toContain('from "../../locales/ru.js"');
     expect(transformed).toContain('case "../../locales/ru.js"');
     expect(transformed).toContain("__vinext_dynamic_require__(`../../locales/${locale}.js`)");
+  });
+
+  it("expands aliased dynamic require patterns", async () => {
+    const importer = path.join(
+      import.meta.dirname,
+      "fixtures/pages-basic/pages/cjs/dynamic-require.tsx",
+    );
+    const replacement = path.join(import.meta.dirname, "fixtures/pages-basic/locales");
+    const result = await runPluginTransform(
+      `const messages = require(\`@messages/${"${locale}"}.js\`);`,
+      importer,
+      [{ find: "@messages", replacement }],
+    );
+    if (!result || typeof result === "string" || !("code" in result)) {
+      throw new Error("Expected transformed code");
+    }
+    const transformed = String(result.code);
+    expect(transformed).toContain(JSON.stringify(path.join(replacement, "ru.js")));
+    expect(transformed).toContain('case "@messages/ru.js"');
+  });
+
+  it("expands regex-aliased dynamic require patterns", async () => {
+    const importer = path.join(
+      import.meta.dirname,
+      "fixtures/pages-basic/pages/cjs/dynamic-require.tsx",
+    );
+    const replacement = path.join(import.meta.dirname, "fixtures/pages-basic/locales");
+    const result = await runPluginTransform(
+      `const messages = require(\`@messages/${"${locale}"}.js\`);`,
+      importer,
+      [{ find: /^@messages/, replacement }],
+    );
+    if (!result || typeof result === "string" || !("code" in result)) {
+      throw new Error("Expected transformed code");
+    }
+    const transformed = String(result.code);
+    expect(transformed).toContain(JSON.stringify(path.join(replacement, "ru.js")));
+    expect(transformed).toContain('case "@messages/ru.js"');
+  });
+
+  it("matches extensionless dynamic requires recursively", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-commonjs-loose-pattern-"));
+    try {
+      await mkdir(path.join(root, "views/nested"), { recursive: true });
+      await Promise.all([
+        writeFile(path.join(root, "views/flat.js"), 'module.exports = "flat";\n'),
+        writeFile(path.join(root, "views/nested/index.js"), 'module.exports = "nested";\n'),
+      ]);
+      const result = await runPluginTransform(
+        `const view = require(\`./views/${"${name}"}\`);`,
+        path.join(root, "page.js"),
+      );
+      if (!result || typeof result === "string" || !("code" in result)) {
+        throw new Error("Expected transformed code");
+      }
+      const transformed = String(result.code);
+      expect(transformed).toContain('case "./views/flat"');
+      expect(transformed).toContain('case "./views/flat.js"');
+      expect(transformed).toContain('case "./views/nested"');
+      expect(transformed).toContain('case "./views/nested/index"');
+      expect(transformed).toContain('case "./views/nested/index.js"');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("expands bare-package dynamic require patterns", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-commonjs-pattern-"));
+    try {
+      const packageDirectory = path.join(root, "node_modules/messages");
+      await mkdir(packageDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(packageDirectory, "package.json"), '{"name":"messages"}\n'),
+        writeFile(path.join(packageDirectory, "ru.js"), 'module.exports = "loaded";\n'),
+      ]);
+      const result = await runPluginTransform(
+        `const messages = require(\`messages/${"${locale}"}.js\`);`,
+        path.join(root, "page.js"),
+      );
+      if (!result || typeof result === "string" || !("code" in result)) {
+        throw new Error("Expected transformed code");
+      }
+      const transformed = String(result.code);
+      expect(transformed).toContain(
+        JSON.stringify(path.join(await realpath(packageDirectory), "ru.js")),
+      );
+      expect(transformed).toContain('case "messages/ru.js"');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
