@@ -252,30 +252,28 @@ function isNodeUrlFileUrlToPath(scope: AssetScope, value: unknown): boolean {
   return false;
 }
 
-function isGlobalFetchCallee(scope: AssetScope, value: unknown): boolean {
-  const callee = unwrapExpression(value);
-  if (isIdentifierNamed(callee, "fetch")) return !hasAstBinding(scope, "fetch");
+function isGlobalThisMember(scope: AssetScope, value: unknown, name: string): boolean {
+  const member = unwrapExpression(value);
   if (
-    callee?.type !== "MemberExpression" ||
+    member?.type !== "MemberExpression" ||
     !(
-      (callee.computed !== true && isIdentifierNamed(callee.property, "fetch")) ||
-      (callee.computed === true &&
-        isAstRecord(callee.property) &&
-        callee.property.type === "Literal" &&
-        callee.property.value === "fetch")
+      (member.computed !== true && isIdentifierNamed(member.property, name)) ||
+      (member.computed === true &&
+        isAstRecord(member.property) &&
+        member.property.type === "Literal" &&
+        member.property.value === name)
     )
   ) {
     return false;
   }
-  const receiver = unwrapExpression(callee.object);
+  const receiver = unwrapExpression(member.object);
   return isIdentifierNamed(receiver, "globalThis") && !hasAstBinding(scope, "globalThis");
 }
 
-function callCanMutateGlobalFetch(scope: AssetScope, node: AstRecord): boolean {
-  if (hasAstBinding(scope, "globalThis")) return false;
-  return nodeArray(node.arguments).some((argument) =>
-    isIdentifierNamed(unwrapExpression(argument), "globalThis"),
-  );
+function isGlobalFetchCallee(scope: AssetScope, value: unknown): boolean {
+  const callee = unwrapExpression(value);
+  if (isIdentifierNamed(callee, "fetch")) return !hasAstBinding(scope, "fetch");
+  return isGlobalThisMember(scope, callee, "fetch");
 }
 
 function invalidateAssignedAssetTargets(scope: AssetScope, value: unknown): void {
@@ -442,7 +440,13 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
 
     const scope = createChildScope(node, parentScope) ?? parentScope;
     if (node.type === "Identifier" && typeof node.name === "string") {
-      if (node.name === "eval" && !hasAstBinding(scope, "eval")) globalFetchIsStable = false;
+      if (
+        !safeAssetReference &&
+        ((node.name === "eval" && !hasAstBinding(scope, "eval")) ||
+          (node.name === "globalThis" && !hasAstBinding(scope, "globalThis")))
+      ) {
+        globalFetchIsStable = false;
+      }
       if (!safeAssetReference) invalidateAssetBinding(scope, node.name);
       return;
     }
@@ -580,7 +584,6 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
         isIdentifierNamed(callee, "eval") &&
         !hasAstBinding(scope, "eval");
       if (isDirectEval) invalidateAssetsVisibleToDirectEval(scope);
-      if (callCanMutateGlobalFetch(scope, node)) globalFetchIsStable = false;
       if (!isGlobalFetch && !isReadOnlyUrlConsumer) {
         const receiver =
           callee?.type === "MemberExpression" ? rootIdentifierName(callee.object) : null;
@@ -601,6 +604,9 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     }
 
     if (node.type === "MemberExpression") {
+      if (!nodelessTarget && isGlobalThisMember(scope, node, "eval")) {
+        globalFetchIsStable = false;
+      }
       const property = unwrapExpression(node.property);
       const safeUrlValue =
         node.computed !== true &&
@@ -620,7 +626,12 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
           "toString",
           "username",
         ].includes(String(property.name));
-      if (isAstRecord(node.object)) visit(node.object, scope, safeUrlValue);
+      const safeGlobalThisReceiver =
+        isIdentifierNamed(unwrapExpression(node.object), "globalThis") &&
+        !hasAstBinding(scope, "globalThis");
+      if (isAstRecord(node.object)) {
+        visit(node.object, scope, safeUrlValue || safeGlobalThisReceiver);
+      }
       if (node.computed === true && isAstRecord(node.property)) visit(node.property, scope);
       return;
     }

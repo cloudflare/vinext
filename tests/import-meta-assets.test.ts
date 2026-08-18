@@ -366,6 +366,12 @@ describe("import-meta asset phase", () => {
     `eval?.('globalThis.fetch = customFetch');`,
     `(0, eval)('globalThis.fetch = customFetch');`,
     `const indirect = eval; indirect('globalThis.fetch = customFetch');`,
+    `globalThis.eval('globalThis.fetch = customFetch');`,
+    `globalThis["eval"]('globalThis.fetch = customFetch');`,
+    `const indirect = globalThis.eval; indirect('globalThis.fetch = customFetch');`,
+    `const globals = globalThis; globals.fetch = customFetch;`,
+    `const globals = condition ? globalThis : other; globals.fetch = customFetch;`,
+    `mutate(condition ? globalThis : other);`,
   ])("does not trust a mutated global fetch capability", async (mutation) => {
     const plugin = await createPlugin(false);
     const source = [
@@ -374,6 +380,21 @@ describe("import-meta asset phase", () => {
       `globalThis.fetch(url);`,
     ].join("\n");
     expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+  });
+
+  it.each([
+    `if (typeof eval !== "function") throw new Error();`,
+    `const available = typeof eval === "function";`,
+    `void eval;`,
+  ])("keeps trusting global fetch after harmless eval observations", async (observation) => {
+    const plugin = await createPlugin(false);
+    const source = [
+      observation,
+      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+      `globalThis.fetch(url);`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
   it("does not trust a shadowed globalThis fetch member", async () => {
