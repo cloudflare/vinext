@@ -372,6 +372,11 @@ describe("import-meta asset phase", () => {
     `const globals = globalThis; globals.fetch = customFetch;`,
     `const globals = condition ? globalThis : other; globals.fetch = customFetch;`,
     `mutate(condition ? globalThis : other);`,
+    `global.fetch = customFetch;`,
+    `global.eval('globalThis.fetch = customFetch');`,
+    `const globals = globalThis.globalThis; globals.fetch = customFetch;`,
+    `globalThis.globalThis.fetch = customFetch;`,
+    `globalThis.self.fetch = customFetch;`,
   ])("does not trust a mutated global fetch capability", async (mutation) => {
     const plugin = await createPlugin(false);
     const source = [
@@ -380,6 +385,26 @@ describe("import-meta asset phase", () => {
       `globalThis.fetch(url);`,
     ].join("\n");
     expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+  });
+
+  it.each([
+    `globalThis["fetch" as "fetch"] = customFetch;`,
+    `globalThis["eval" as "eval"]('globalThis.fetch = customFetch');`,
+  ])("recognizes typed computed global capability mutations", async (mutation) => {
+    const plugin = await createPlugin(false);
+    const source = [
+      mutation,
+      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+      `fetch(url);`,
+    ].join("\n");
+    expect(await transformHandler(plugin).call(context(), source, typedRoutePath)).toBeNull();
+  });
+
+  it("rewrites typed computed global fetch inputs", async () => {
+    const plugin = await createPlugin(false);
+    const source = `globalThis["fetch" as "fetch"](new URL("../../src/text-file.txt", import.meta.url));`;
+    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
   it.each([
@@ -437,7 +462,9 @@ describe("import-meta asset phase", () => {
       `const metadata = { url: "not the asset" };`,
       `if (!url || url === metadata) throw new Error();`,
       `switch (metadata) { case url: break; }`,
+      `url;`,
       `void url;`,
+      `for (url; false; url) {}`,
       `fetch(url);`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, routePath);

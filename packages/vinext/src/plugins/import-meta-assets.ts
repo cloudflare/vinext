@@ -252,28 +252,47 @@ function isNodeUrlFileUrlToPath(scope: AssetScope, value: unknown): boolean {
   return false;
 }
 
-function isGlobalThisMember(scope: AssetScope, value: unknown, name: string): boolean {
+function staticMemberName(value: AstRecord): string | null {
+  const property = unwrapExpression(value.property);
+  if (value.computed !== true && property?.type === "Identifier") {
+    return typeof property.name === "string" ? property.name : null;
+  }
+  return value.computed === true && property?.type === "Literal"
+    ? typeof property.value === "string"
+      ? property.value
+      : null
+    : null;
+}
+
+function isGlobalObjectReference(scope: AssetScope, value: unknown): boolean {
+  const reference = unwrapExpression(value);
+  if (reference?.type === "Identifier") {
+    return (
+      (reference.name === "globalThis" ||
+        reference.name === "global" ||
+        reference.name === "self") &&
+      !hasAstBinding(scope, String(reference.name))
+    );
+  }
+  return (
+    reference?.type === "MemberExpression" &&
+    ["globalThis", "global", "self"].includes(staticMemberName(reference) ?? "") &&
+    isGlobalObjectReference(scope, reference.object)
+  );
+}
+
+function isGlobalObjectMember(scope: AssetScope, value: unknown, name: string): boolean {
   const member = unwrapExpression(value);
-  if (
-    member?.type !== "MemberExpression" ||
-    !(
-      (member.computed !== true && isIdentifierNamed(member.property, name)) ||
-      (member.computed === true &&
-        isAstRecord(member.property) &&
-        member.property.type === "Literal" &&
-        member.property.value === name)
-    )
-  ) {
+  if (member?.type !== "MemberExpression" || staticMemberName(member) !== name) {
     return false;
   }
-  const receiver = unwrapExpression(member.object);
-  return isIdentifierNamed(receiver, "globalThis") && !hasAstBinding(scope, "globalThis");
+  return isGlobalObjectReference(scope, member.object);
 }
 
 function isGlobalFetchCallee(scope: AssetScope, value: unknown): boolean {
   const callee = unwrapExpression(value);
   if (isIdentifierNamed(callee, "fetch")) return !hasAstBinding(scope, "fetch");
-  return isGlobalThisMember(scope, callee, "fetch");
+  return isGlobalObjectMember(scope, callee, "fetch");
 }
 
 function invalidateAssignedAssetTargets(scope: AssetScope, value: unknown): void {
@@ -443,7 +462,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
       if (
         !safeAssetReference &&
         ((node.name === "eval" && !hasAstBinding(scope, "eval")) ||
-          (node.name === "globalThis" && !hasAstBinding(scope, "globalThis")))
+          isGlobalObjectReference(scope, node))
       ) {
         globalFetchIsStable = false;
       }
@@ -604,7 +623,11 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     }
 
     if (node.type === "MemberExpression") {
-      if (!nodelessTarget && isGlobalThisMember(scope, node, "eval")) {
+      if (
+        !nodelessTarget &&
+        ((!safeAssetReference && isGlobalObjectReference(scope, node)) ||
+          isGlobalObjectMember(scope, node, "eval"))
+      ) {
         globalFetchIsStable = false;
       }
       const property = unwrapExpression(node.property);
@@ -626,11 +649,9 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
           "toString",
           "username",
         ].includes(String(property.name));
-      const safeGlobalThisReceiver =
-        isIdentifierNamed(unwrapExpression(node.object), "globalThis") &&
-        !hasAstBinding(scope, "globalThis");
+      const safeGlobalObjectReceiver = isGlobalObjectReference(scope, node.object);
       if (isAstRecord(node.object)) {
-        visit(node.object, scope, safeUrlValue || safeGlobalThisReceiver);
+        visit(node.object, scope, safeUrlValue || safeGlobalObjectReceiver);
       }
       if (node.computed === true && isAstRecord(node.property)) visit(node.property, scope);
       return;
@@ -698,9 +719,9 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
       return;
     }
     if (node.type === "ForStatement") {
-      if (isAstRecord(node.init)) visit(node.init, scope);
+      visitReadOnly(node.init);
       visitReadOnly(node.test);
-      if (isAstRecord(node.update)) visit(node.update, scope);
+      visitReadOnly(node.update);
       if (isAstRecord(node.body)) visit(node.body, scope);
       return;
     }
@@ -727,6 +748,11 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
           visit(expression, scope, index === expressions.length - 1 ? safeAssetReference : true);
         }
       }
+      return;
+    }
+
+    if (node.type === "ExpressionStatement") {
+      visitReadOnly(node.expression);
       return;
     }
 
