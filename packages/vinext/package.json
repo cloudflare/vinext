@@ -2,6 +2,7 @@
   "name": "vinext",
   "version": "1.0.0-beta.6",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
+  "homepage": "https://vinext.dev/",
   "license": "MIT",
   "repository": {
     "type": "git",

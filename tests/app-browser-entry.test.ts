@@ -42,6 +42,7 @@ import { createVisitedResponseCacheEntry } from "../packages/vinext/src/server/a
 import {
   createPopstateRestoreHandler,
   restoreSynchronousPopstateScrollPosition,
+  shouldCommitPopstateUrlWithoutNavigation,
 } from "../packages/vinext/src/server/app-browser-popstate.js";
 import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -95,8 +96,11 @@ import {
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
   createBfcacheSegmentIdentityMap,
+  createAppOwnedHistoryState,
+  createExternalHistoryStatePreservingMetadata,
   createHistoryStateWithNavigationMetadata,
   createHistoryStateWithPreviousNextUrl,
+  createHistoryStateWithTreeSnapshotId,
   createInitialBfcacheIdMap,
   createNextBfcacheIdMap,
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
@@ -105,6 +109,7 @@ import {
   isCompleteAppPayloadMetadata,
   isCacheRestorableAppPayloadMetadata,
   isHistoryStateBfcacheVersionCurrent,
+  isExternalHistoryState,
   readHistoryStateActiveRoutePaths,
   readHistoryStateBfcacheIds,
   readHistoryStateBfcacheVersion,
@@ -5785,6 +5790,55 @@ describe("app browser root-layout hard navigation", () => {
 });
 
 describe("app browser entry previousNextUrl helpers", () => {
+  it("marks external history entries while preserving app-owned metadata", () => {
+    const state = createExternalHistoryStatePreservingMetadata(
+      { caller: "state" },
+      createHistoryStateWithNavigationMetadata(
+        { __vinext_treeSnapshotId: 9 },
+        {
+          bfcacheIds: { "page:/feed": "_b_1_" },
+          bfcacheVersion: 2,
+          previousNextUrl: "/feed",
+          traversalIndex: 4,
+        },
+      ),
+    );
+
+    expect(state).toEqual({
+      __vinext_bfcacheIds: { "page:/feed": "_b_1_" },
+      __vinext_bfcacheVersion: 2,
+      __vinext_externalHistoryState: true,
+      __vinext_historyIndex: 4,
+      __vinext_previousNextUrl: "/feed",
+      __vinext_treeSnapshotClaimed: true,
+      __vinext_treeSnapshotId: 9,
+      caller: "state",
+    });
+    expect(isExternalHistoryState(state)).toBe(true);
+  });
+
+  it("removes the external marker when an app-owned history entry commits", () => {
+    expect(
+      createAppOwnedHistoryState({
+        __vinext_externalHistoryState: true,
+        __vinext_historyIndex: 4,
+        caller: "state",
+      }),
+    ).toEqual({
+      __vinext_historyIndex: 4,
+      caller: "state",
+    });
+  });
+
+  it("clears stale claim metadata when assigning a different tree snapshot id", () => {
+    expect(
+      createHistoryStateWithTreeSnapshotId(
+        { __vinext_treeSnapshotClaimed: true, __vinext_treeSnapshotId: 9 },
+        10,
+      ),
+    ).toEqual({ __vinext_treeSnapshotId: 10 });
+  });
+
   it("stores previousNextUrl alongside existing history state", () => {
     expect(
       createHistoryStateWithPreviousNextUrl(
@@ -7886,6 +7940,51 @@ describe("app browser entry bfcacheId helpers", () => {
 });
 
 describe("createPopstateRestoreHandler", () => {
+  it("commits copied external entries without navigation while they share the visible tree", () => {
+    expect(
+      shouldCommitPopstateUrlWithoutNavigation({
+        historyState: {
+          __vinext_externalHistoryState: true,
+          __vinext_historyIndex: 4,
+        },
+        isCurrentExternalHistoryTree: true,
+        isSameAppRouteTarget: false,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldCommitPopstateUrlWithoutNavigation({
+        historyState: {
+          __vinext_externalHistoryState: true,
+          __vinext_historyIndex: 4,
+        },
+        isCurrentExternalHistoryTree: false,
+        isSameAppRouteTarget: false,
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldCommitPopstateUrlWithoutNavigation({
+        historyState: {
+          __vinext_externalHistoryState: true,
+          __vinext_historyIndex: 4,
+        },
+        isCurrentExternalHistoryTree: false,
+        isSameAppRouteTarget: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps same-route hash traversals on the no-navigation path", () => {
+    expect(
+      shouldCommitPopstateUrlWithoutNavigation({
+        historyState: { __vinext_historyIndex: 4 },
+        isCurrentExternalHistoryTree: false,
+        isSameAppRouteTarget: true,
+      }),
+    ).toBe(true);
+  });
+
   it("guards synchronous popstate scroll retry to the active navigation", () => {
     const scrollState = { __vinext_scrollY: 10 };
     let activeNavigationId = 3;

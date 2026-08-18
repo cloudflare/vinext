@@ -819,6 +819,7 @@ describe("next/navigation shim", () => {
     // Covered by Next.js shallow-routing tests for object, null, and undefined state:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
     const previousWindow = (globalThis as any).window;
+    const externalHistoryStateKey = "__vinext_externalHistoryState";
     const historyActiveRoutePathsKey = "__vinext_activeRoutePaths";
     const historyPreviousNextUrlKey = "__vinext_previousNextUrl";
     const historyTraversalIndexKey = "__vinext_historyIndex";
@@ -861,10 +862,19 @@ describe("next/navigation shim", () => {
 
     try {
       vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      const claimCurrentHistoryTreeSnapshot = vi.fn();
+      const commitAppOwnedHistoryStateWrite = vi.fn();
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot,
+        commitAppOwnedHistoryStateWrite,
+      });
       await import("../packages/vinext/src/shims/navigation.js");
 
       win.history.pushState({ myData: { foo: "bar" } }, "", "/photo/1?filter=active");
       expect(win.history.state).toEqual({
+        [externalHistoryStateKey]: true,
         [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
         [historyPreviousNextUrlKey]: "/feed",
         [historyTraversalIndexKey]: 4,
@@ -873,6 +883,7 @@ describe("next/navigation shim", () => {
 
       win.history.pushState(null, "", "/photo/1?filter=pending");
       expect(win.history.state).toEqual({
+        [externalHistoryStateKey]: true,
         [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
         [historyPreviousNextUrlKey]: "/feed",
         [historyTraversalIndexKey]: 4,
@@ -880,6 +891,7 @@ describe("next/navigation shim", () => {
 
       win.history.replaceState(null, "", "/photo/1?filter=archived");
       expect(win.history.state).toEqual({
+        [externalHistoryStateKey]: true,
         [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
         [historyPreviousNextUrlKey]: "/feed",
         [historyTraversalIndexKey]: 4,
@@ -887,6 +899,7 @@ describe("next/navigation shim", () => {
 
       win.history.replaceState(undefined, "", "/photo/1?filter=all");
       expect(win.history.state).toEqual({
+        [externalHistoryStateKey]: true,
         [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
         [historyPreviousNextUrlKey]: "/feed",
         [historyTraversalIndexKey]: 4,
@@ -895,9 +908,39 @@ describe("next/navigation shim", () => {
       win.history.state = { [historyTraversalIndexKey]: 7 };
       win.history.pushState({ next: true }, "", "/photo/1?filter=done");
       expect(win.history.state).toEqual({
+        [externalHistoryStateKey]: true,
         [historyTraversalIndexKey]: 7,
         next: true,
       });
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(5);
+
+      // Next.js bypasses its external History API wrapper when caller data is
+      // a captured App Router entry (`data?.__NA`). Vinext's traversal index is
+      // the equivalent ownership signal. This keeps the entry eligible for an
+      // RSC traversal (including redirects) instead of restoring a copied tree.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx#L331-L370
+      const capturedAppState = {
+        [historyTraversalIndexKey]: 3,
+        captured: true,
+      };
+      win.history.pushState(capturedAppState, "", "/redirect-target");
+      expect(win.history.state).toEqual(capturedAppState);
+      win.history.replaceState(capturedAppState, "", "/replacement-target");
+      expect(win.history.state).toEqual(capturedAppState);
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(5);
+      expect(commitAppOwnedHistoryStateWrite).toHaveBeenNthCalledWith(
+        1,
+        "push",
+        expect.objectContaining({
+          [externalHistoryStateKey]: true,
+          [historyTraversalIndexKey]: 7,
+        }),
+      );
+      expect(commitAppOwnedHistoryStateWrite).toHaveBeenNthCalledWith(
+        2,
+        "replace",
+        capturedAppState,
+      );
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
