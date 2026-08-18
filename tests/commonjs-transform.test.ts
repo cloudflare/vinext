@@ -239,6 +239,11 @@ const external = require("external");
     expect(transformed).toContain('from "../../locales/ru.js"');
     expect(transformed).toContain('case "../../locales/ru.js"');
     expect(transformed).toContain("__vinext_dynamic_require__(`../../locales/${locale}.js`)");
+    // vite-plugin-commonjs returns the imported namespace so callers can use `.default`:
+    // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/test/fixtures/src/dynamic.tsx
+    const ruCase = transformed.match(/case "\.\.\/\.\.\/locales\/ru\.js": return ([^;]+);/)?.[1];
+    expect(ruCase).toMatch(/^__vinext_cjs_import__/);
+    expect(ruCase).not.toContain(".default");
   });
 
   it("expands concatenated dynamic require patterns", async () => {

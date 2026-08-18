@@ -12,6 +12,6 @@ test.describe("CJS interop", () => {
   test("page with a patterned dynamic require renders correctly", async ({ page }) => {
     await page.goto(`${BASE}/cjs/dynamic-require`);
 
-    await expect(page.getByTestId("dynamic-require-message")).toHaveText("loaded");
+    await expect(page.getByTestId("dynamic-require-message")).toHaveText("Привет");
   });
 });

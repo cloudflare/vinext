@@ -103,7 +103,7 @@ async function createHybridFixture(
     fs.writeFile(
       path.join(root, "pages/dynamic-require.tsx"),
       `const locale = "ru";
-const messages = require(\`../locales/${"${locale}"}\`);
+const messages = require(\`../locales/${"${locale}"}\`).default;
 
 export default function Page() {
   return <p id="dynamic-require-message">{messages}</p>;

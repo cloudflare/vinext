@@ -192,11 +192,7 @@ function analyzeCommonJsAst(
       const args = nodeArray(node.arguments);
       const argument = unwrapExpression(args[0]);
       const specifier = staticStringValue(argument);
-      if (
-        isIdentifierNamed(callee, "require") &&
-        !hasAstBinding(scope, "require") &&
-        argument
-      ) {
+      if (isIdentifierNamed(callee, "require") && !hasAstBinding(scope, "require") && argument) {
         if (specifier !== null) requires.push({ node, specifier });
         else if (hasRange(argument)) dynamicRequires.push({ argument, node });
         return;
@@ -551,10 +547,7 @@ function renderCommonJs(
     const runtimeName = unusedBinding(bindings, "__vinext_dynamic_require__");
     const cases = dynamicRequire.candidates.flatMap((candidate) => {
       const importName = importBinding(candidate.specifier);
-      return candidate.cases.map(
-        (value) =>
-          `case ${JSON.stringify(value)}: return (${importName}.default || ${importName});`,
-      );
+      return candidate.cases.map((value) => `case ${JSON.stringify(value)}: return ${importName};`);
     });
     preamble.push(
       `function ${runtimeName}(request) { switch (request) { ${cases.join(" ")} default: { const error = new Error("Cannot find module '" + request + "'"); error.code = "MODULE_NOT_FOUND"; throw error; } } }`,
