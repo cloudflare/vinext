@@ -42,6 +42,15 @@ import {
 import { createNextBfcacheIdMap } from "../packages/vinext/src/server/app-bfcache-identity.js";
 import type { AppPageSemanticSegment } from "../packages/vinext/src/server/app-page-segment-state.js";
 import { createAppPageRenderDependency } from "../packages/vinext/src/server/app-render-dependency.js";
+import {
+  canCommitOptimisticRouteTemplate,
+  createOptimisticRouteTemplate,
+} from "../packages/vinext/src/server/app-optimistic-routing.js";
+import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
+import type {
+  GraphVersion,
+  RouteManifest,
+} from "../packages/vinext/src/routing/app-route-graph.js";
 
 /**
  * Build the resolved semantic branch the route matcher hands to slot overrides.
@@ -1377,56 +1386,63 @@ describe("app page route wiring helpers", () => {
       return createElement("p", null, "Unprotected slot page");
     }
 
-    const elements = buildAppPageElements({
-      element: createElement(PageProbe),
-      makeThenableParams(params) {
-        return Promise.resolve(params);
-      },
-      matchedParams: {},
-      resolvedMetadata: null,
-      resolvedViewport: {},
-      route: {
-        error: null,
-        errors: [null],
-        layoutTreePositions: [0],
-        layouts: [{ default: RootLayout }],
-        loading: null,
-        notFound: null,
-        notFounds: [null],
-        routeSegments: ["dashboard"],
-        slots: {
-          sidebar: {
-            default: null,
-            error: null,
-            layout: null,
-            layoutIndex: 0,
-            loading: null,
-            loadings: [{ default: SlotLoading }],
-            loadingTreePositions: [1],
-            name: "sidebar",
-            ownerTreePosition: 0,
-            page: { default: SlotPage },
-            routeSegments: ["slow"],
-          },
-          panel: {
-            default: null,
-            error: null,
-            layout: null,
-            layoutIndex: 0,
-            loading: null,
-            name: "panel",
-            ownerTreePosition: 0,
-            page: { default: UnprotectedPage },
-            routeSegments: [],
-          },
+    const buildElements = (
+      renderMode?: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    ): AppElements =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
         },
-        templateTreePositions: [],
-        templates: [],
-      },
-      routePath: "/dashboard",
-      rootNotFoundModule: null,
-      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-    });
+        matchedParams: {},
+        resolvedMetadata: null,
+        resolvedViewport: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["dashboard"],
+          slots: {
+            sidebar: {
+              configLayouts: [{ default: NestedSlotLayout }],
+              configLayoutTreePositions: [1],
+              default: null,
+              error: null,
+              layout: null,
+              layoutIndex: 0,
+              loading: null,
+              loadings: [{ default: SlotLoading }],
+              loadingTreePositions: [0],
+              name: "sidebar",
+              ownerTreePosition: 0,
+              page: { default: SlotPage },
+              routeSegments: ["slow", "child"],
+            },
+            panel: {
+              default: null,
+              error: null,
+              layout: null,
+              layoutIndex: 0,
+              loading: null,
+              name: "panel",
+              ownerTreePosition: 0,
+              page: { default: UnprotectedPage },
+              routeSegments: [],
+            },
+          },
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/dashboard",
+        rootNotFoundModule: null,
+        ...(renderMode ? { renderMode } : {}),
+      });
+
+    const elements = buildElements(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
 
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
     expect(elements[AppElementsWire.encodeSlotId("panel", "/")]).toBeUndefined();
@@ -1434,6 +1450,94 @@ describe("app page route wiring helpers", () => {
     expect(html).toContain("Slot loading shell");
     expect(html).not.toContain("Unprotected slot page");
     expect(html).not.toContain("Page");
+
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const sidebarSlotId = AppElementsWire.encodeSlotId("sidebar", "/");
+    const routeId = "route:/dashboard";
+    const routeManifest: RouteManifest = {
+      graphVersion: "graph:test" as GraphVersion,
+      segmentGraph: {
+        boundaries: new Map(),
+        defaults: new Map(),
+        interceptions: new Map(),
+        interceptionsBySlotId: new Map(),
+        layouts: new Map([
+          [
+            rootLayoutId,
+            {
+              id: rootLayoutId,
+              paramNames: [],
+              patternParts: [],
+              rootBoundaryId: null,
+              treePath: "/",
+            },
+          ],
+        ]),
+        pages: new Map(),
+        rootBoundaries: new Map(),
+        routeHandlers: new Map(),
+        routes: new Map([
+          [
+            routeId,
+            {
+              id: routeId,
+              isDynamic: false,
+              layoutIds: [rootLayoutId],
+              pageId: "page:/dashboard",
+              paramNames: [],
+              pattern: "/dashboard",
+              patternParts: ["dashboard"],
+              rootBoundaryId: null,
+              rootParamNames: [],
+              routeHandlerId: null,
+              slotIds: [sidebarSlotId],
+              templateIds: [],
+            },
+          ],
+        ]),
+        slotBindings: new Map([
+          [
+            `${routeId}::${sidebarSlotId}`,
+            {
+              defaultId: null,
+              id: `${routeId}::${sidebarSlotId}`,
+              ownerLayoutId: rootLayoutId,
+              routeId,
+              routeSegments: ["slow", "child"],
+              slotId: sidebarSlotId,
+              state: "active",
+            },
+          ],
+        ]),
+        slots: new Map(),
+        templates: new Map(),
+      },
+    };
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/dashboard",
+      interceptionContext: null,
+      mountedSlotsHeader: "sidebar",
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+
+    const omittedSegmentId = createNestedBfcacheSlotSegmentId(sidebarSlotId, 2);
+    expect(template.omittedBfcacheSegmentIds).toContain(omittedSegmentId);
+    const currentElements = buildElements();
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: AppElementsWire.readMetadata(currentElements).layoutIds,
+        currentParams: {},
+        routeManifest,
+        targetRouteParams: {},
+        targetUrlParts: ["dashboard"],
+        template,
+      }),
+    ).toBe(false);
   });
 
   it("emits the route loading fallback for slots owned at the shell cutoff", async () => {

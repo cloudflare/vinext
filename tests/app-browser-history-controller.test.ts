@@ -12,6 +12,7 @@ import {
   createHistoryStateWithNavigationMetadata,
   createHistoryStateWithTreeSnapshotId,
   isExternalHistoryState,
+  readHistoryStateActiveRoutePaths,
   readHistoryStateTraversalIndex,
   readHistoryStateTreeSnapshotId,
 } from "../packages/vinext/src/server/app-history-state.js";
@@ -38,6 +39,7 @@ function readWrittenState(write: HistoryWrite | undefined): Record<string, unkno
 }
 
 type VisibleNavigationMetadata = {
+  activeRoutePaths: readonly string[] | null;
   bfcacheIds: Readonly<Record<string, string>> | null;
   previousNextUrl: string | null;
 };
@@ -222,7 +224,11 @@ describe("AppBrowserHistoryController hash-only navigation", () => {
 
   it("pushes a fresh history entry and advances the traversal index on a hash-only push", () => {
     const { controller, store } = createController({
-      initialState: { __vinext_scrollY: 10, __vinext_historyIndex: 0 },
+      initialState: {
+        __vinext_activeRoutePaths: ["/detail-page"],
+        __vinext_scrollY: 10,
+        __vinext_historyIndex: 0,
+      },
     });
 
     controller.commitHashOnlyNavigation("/page#section", "push", false);
@@ -231,6 +237,7 @@ describe("AppBrowserHistoryController hash-only navigation", () => {
     const writtenState = readWrittenState(store.pushed[0]);
     // A push starts from a null base, so prior scroll metadata never carries.
     expect("__vinext_scrollY" in writtenState).toBe(false);
+    expect(readHistoryStateActiveRoutePaths(writtenState)).toEqual(["/detail-page"]);
     expect(readHistoryStateTraversalIndex(writtenState)).toBe(1);
     expect(controller.currentHistoryTraversalIndex).toBe(1);
   });
@@ -247,7 +254,7 @@ describe("AppBrowserHistoryController hash-only navigation", () => {
           traversalIndex: 0,
         },
       ),
-      visibleMetadata: { bfcacheIds, previousNextUrl: null },
+      visibleMetadata: { activeRoutePaths: ["/shallow-test"], bfcacheIds, previousNextUrl: null },
     });
 
     controller.commitHashOnlyNavigation("/shallow-test/sub#content", "push", true);
@@ -281,10 +288,33 @@ describe("AppBrowserHistoryController history metadata sync", () => {
   it("omits the URL from hydrated metadata writes", () => {
     const { controller, store } = createController();
 
-    controller.writeHydratedHistoryMetadata({ bfcacheIds: {}, previousNextUrl: null });
+    controller.writeHydratedHistoryMetadata({
+      activeRoutePaths: ["/detail-page"],
+      bfcacheIds: {},
+      previousNextUrl: null,
+    });
 
     expect(store.replaced).toHaveLength(1);
     expect(store.replaced[0]?.href).toBeUndefined();
+    expect(readHistoryStateActiveRoutePaths(store.replaced[0]?.state)).toEqual(["/detail-page"]);
+  });
+
+  it("stores target active routes on pushed navigation entries", () => {
+    const { controller, store } = createController({
+      initialHref: "https://example.com/refreshing/login",
+    });
+
+    controller.commitNavigationHistory({
+      activeRoutePaths: ["/detail-page"],
+      bfcacheIds: {},
+      href: "https://example.com/detail-page",
+      historyUpdateMode: "push",
+      previousNextUrl: null,
+      stageClientParams: vi.fn(),
+    });
+
+    expect(store.pushed).toHaveLength(1);
+    expect(readHistoryStateActiveRoutePaths(store.pushed[0]?.state)).toEqual(["/detail-page"]);
   });
 
   it("omits the URL from current-entry metadata synchronization", () => {
@@ -330,6 +360,20 @@ describe("AppBrowserHistoryController history metadata sync", () => {
     controller.syncCurrentHistoryStatePreviousNextUrl("/from");
 
     expect(store.replaced).toHaveLength(0);
+  });
+
+  it("rewrites the current entry when its active route evidence is stale", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        activeRoutePaths: ["/refreshing"],
+        previousNextUrl: null,
+      }),
+    });
+
+    controller.syncCurrentHistoryStatePreviousNextUrl(null, undefined, ["/detail-page"]);
+
+    expect(store.replaced).toHaveLength(1);
+    expect(readHistoryStateActiveRoutePaths(store.replaced[0]?.state)).toEqual(["/detail-page"]);
   });
 });
 
@@ -471,6 +515,7 @@ describe("AppBrowserHistoryController snapshot restore", () => {
     });
     seedSnapshotAtIndex(controller, 0, replacementState);
     setVisibleMetadata({
+      activeRoutePaths: [],
       bfcacheIds: replacementState.bfcacheIds,
       previousNextUrl: null,
     });
@@ -585,6 +630,7 @@ describe("AppBrowserHistoryController snapshot restore", () => {
       overwrittenTreeSnapshotIds.push(readHistoryStateTreeSnapshotId(store.state));
       controller.claimCurrentHistoryTreeSnapshot("replace", store.state);
       controller.commitNavigationHistory({
+        activeRoutePaths: [],
         bfcacheIds: {},
         href: `/cycle-${render}`,
         historyUpdateMode: "replace",
@@ -663,6 +709,7 @@ describe("AppBrowserHistoryController snapshot restore", () => {
       store.setState(sourceHistoryState);
       controller.commitTraversalIndexFromHistoryState(sourceHistoryState);
       controller.commitNavigationHistory({
+        activeRoutePaths: [],
         bfcacheIds: {},
         href: `/source-${render + 1}`,
         historyUpdateMode: "replace",
@@ -730,6 +777,7 @@ describe("AppBrowserHistoryController snapshot restore", () => {
     controller.claimCurrentHistoryTreeSnapshot("push", store.state);
     controller.claimCurrentHistoryTreeSnapshot("push", store.state);
     controller.commitNavigationHistory({
+      activeRoutePaths: [],
       bfcacheIds: {},
       href: "/about",
       historyUpdateMode: "replace",

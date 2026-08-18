@@ -200,15 +200,6 @@ async function resolveDevServerStackTrace(
   };
 }
 
-export async function mapStackLine(
-  server: ViteDevServer,
-  line: string,
-  requestHost: string | undefined,
-  sourceMapCache: Map<string, Promise<SourceMapPayload | null>>,
-): Promise<string> {
-  return (await mapStackLineWithMetadata(server, line, requestHost, sourceMapCache)).line;
-}
-
 export async function mapStackLineWithMetadata(
   server: ViteDevServer,
   line: string,

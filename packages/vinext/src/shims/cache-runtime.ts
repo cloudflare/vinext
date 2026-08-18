@@ -176,7 +176,10 @@ export function getCacheContext(): CacheContext | null {
  * In test environments, the import fails and we fall back to JSON.
  */
 type RscModule = {
-  renderToReadableStream: (data: unknown, options?: object) => ReadableStream<Uint8Array>;
+  renderToReadableStream: (
+    data: unknown,
+    options?: { onError?: (error: unknown) => string | undefined },
+  ) => ReadableStream<Uint8Array>;
   createFromReadableStream: <T>(
     stream: ReadableStream<Uint8Array>,
     options?: object,
@@ -188,9 +191,12 @@ type RscModule = {
   decodeReply: (body: string | FormData, options?: unknown) => Promise<unknown[]>;
 };
 
-type SerializedCacheResult = {
-  body: string;
-  headers: Record<string, string>;
+type SerializedCacheResult<TResult = unknown> = {
+  result: TResult;
+  cacheEntry: {
+    body: string;
+    headers: Record<string, string>;
+  } | null;
 };
 
 function getUseCacheDeploymentIdDefine(): string | undefined {
@@ -296,28 +302,48 @@ function uint8ToStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
   });
 }
 
-async function serializeCacheResult(
-  result: unknown,
+async function serializeCacheResult<TResult>(
+  result: TResult,
   rsc: RscModule | null,
-): Promise<SerializedCacheResult | null> {
-  try {
-    if (rsc) {
-      // Draining the stream is part of cache entry generation: lazy Server
-      // Components may execute here and contribute tags, cache life, or root
-      // param dependencies to the active cache scope.
-      const stream = rsc.renderToReadableStream(result);
-      const bytes = await collectStream(stream);
-      return {
-        body: uint8ToBase64(bytes),
-        headers: { [VINEXT_RSC_MARKER_HEADER]: "1" },
-      };
-    }
+): Promise<SerializedCacheResult<TResult> | null> {
+  if (rsc) {
+    let serializationError: { value: unknown } | undefined;
+    const stream = rsc.renderToReadableStream(result, {
+      onError(error) {
+        serializationError ??= { value: error };
+        return undefined;
+      },
+    });
+    const [returnStream, savedStream] = stream.tee();
 
-    const body = JSON.stringify(result);
-    return body === undefined ? null : { body, headers: {} };
-  } catch {
-    return null;
+    try {
+      // Decode the value that the caller receives from the same Flight stream
+      // whose other branch is persisted. This matches Next.js and ensures an
+      // errored Flight row rejects the callable-cache invocation instead of
+      // returning the original, unserializable object.
+      const [deserializedResult, bytes] = await Promise.all([
+        rsc.createFromReadableStream<TResult>(returnStream, {}, { preserveServerReferences: true }),
+        // Draining the saved branch is part of cache entry generation: lazy
+        // Server Components may execute here and contribute tags, cache life,
+        // or root param dependencies to the active cache scope.
+        collectStream(savedStream),
+      ]);
+      return {
+        result: deserializedResult,
+        cacheEntry: serializationError
+          ? null
+          : {
+              body: uint8ToBase64(bytes),
+              headers: { [VINEXT_RSC_MARKER_HEADER]: "1" },
+            },
+      };
+    } catch (error) {
+      throw serializationError?.value ?? error;
+    }
   }
+
+  const body = JSON.stringify(result);
+  return body === undefined ? null : { result, cacheEntry: { body, headers: {} } };
 }
 
 /**
@@ -639,9 +665,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           return privateHit as TResult;
         }
 
-        const result = await executeWithContext(fn, callArgs, cacheVariant);
-        privateCache.set(cacheKey, result);
-        return result;
+        const execution = await executeWithContext(fn, callArgs, cacheVariant, rsc);
+        if (execution.cacheable) privateCache.set(cacheKey, execution.result);
+        return execution.result;
       }
 
       // Draft mode joins dev in skipping shared cache lookup/storage: the key
@@ -649,7 +675,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // preview request would otherwise seed unpublished content into an entry
       // later served to public requests. Mirrors Next.js's `isDraftMode` guard.
       if (isDev || isDraftModeEnabled()) {
-        return executeWithContext(fn, callArgs, cacheVariant);
+        return (await executeWithContext(fn, callArgs, cacheVariant, rsc)).result;
       }
 
       // Shared cache ("use cache" / "use cache: remote")
@@ -756,13 +782,14 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
       // Serialization ran while the cache ALS was active so lazy Server
       // Component work is reflected in `ctx` before selecting the final key.
-      if (collectedResult) {
+      if (collectedResult?.cacheEntry) {
         try {
+          const serialized = collectedResult.cacheEntry;
           const cacheValue = {
             kind: "FETCH",
             data: {
-              headers: collectedResult.headers,
-              body: collectedResult.body,
+              headers: serialized.headers,
+              body: serialized.body,
               url: cacheKey,
             },
             tags: ctx.tags,
@@ -813,7 +840,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         }
       }
 
-      return result;
+      return collectedResult ? collectedResult.result : result;
     }, cacheVariant);
 
   // Preserve the original function's arity on the wrapper. The wrapper is
@@ -933,14 +960,24 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   args: any[],
   variant: string,
-): Promise<Awaited<ReturnType<T>>> {
+  rsc?: RscModule | null,
+): Promise<{ result: Awaited<ReturnType<T>>; cacheable: boolean }> {
   const {
     result,
     ctx: _ctx,
     effectiveLife,
-  } = await runCachedFunctionWithContext(fn, args, variant);
+    collectedResult,
+  } = await runCachedFunctionWithContext<T, SerializedCacheResult<Awaited<ReturnType<T>>> | null>(
+    fn,
+    args,
+    variant,
+    rsc ? (value) => serializeCacheResult(value, rsc) : undefined,
+  );
   recordRequestScopedCacheLife(effectiveLife);
-  return result;
+  return {
+    result: collectedResult ? collectedResult.result : result,
+    cacheable: collectedResult?.cacheEntry !== null,
+  };
 }
 
 /**

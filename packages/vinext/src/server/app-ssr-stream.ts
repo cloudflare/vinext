@@ -60,6 +60,7 @@ export function createNavigationRuntimeRscMetadataScript(
   params: Record<string, string | string[]>,
   nav: { pathname: string; searchParams: [string, string][] },
   dynamicStaleTimeSeconds?: number,
+  searchParamsFromBrowser?: boolean,
 ): string {
   return (
     "Object.assign(" +
@@ -68,6 +69,9 @@ export function createNavigationRuntimeRscMetadataScript(
     safeJsonStringify(params) +
     ",nav:" +
     safeJsonStringify(nav) +
+    (searchParamsFromBrowser === undefined
+      ? ""
+      : ",searchParamsFromBrowser:" + safeJsonStringify(searchParamsFromBrowser)) +
     (dynamicStaleTimeSeconds === undefined
       ? ""
       : ",dynamicStaleTimeSeconds:" + safeJsonStringify(dynamicStaleTimeSeconds)) +

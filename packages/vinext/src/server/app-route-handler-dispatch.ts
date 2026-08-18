@@ -3,6 +3,7 @@ import {
   getCollectedFetchTags,
   ensureFetchPatch,
   setCurrentFetchCacheMode,
+  setCurrentFetchRevalidate,
   setCurrentFetchSoftTags,
   setCurrentForceDynamicFetchDefault,
   type FetchCacheMode,
@@ -117,6 +118,7 @@ async function runInRouteHandlerRevalidationContext(
     draftModeSecret: string;
     dynamicConfig?: string;
     fetchCacheMode: FetchCacheMode | null;
+    revalidateSeconds: number | null;
     routePattern: string;
     routeSegments: string[];
   },
@@ -143,6 +145,7 @@ async function runInRouteHandlerRevalidationContext(
     // The revalidation render runs in a fresh request context, so the fetch
     // defaults applied by `dispatchAppRouteHandler` must be re-applied here.
     setCurrentFetchCacheMode(options.fetchCacheMode);
+    setCurrentFetchRevalidate(options.revalidateSeconds);
     setCurrentForceDynamicFetchDefault(options.dynamicConfig === "force-dynamic");
     try {
       await renderFn();
@@ -232,6 +235,7 @@ export async function dispatchAppRouteHandler(
   // where handlers ignored their `fetchCache`/`force-dynamic` segment config.
   const fetchCacheMode = resolveAppRouteHandlerFetchCacheMode(handler);
   setCurrentFetchCacheMode(fetchCacheMode);
+  setCurrentFetchRevalidate(revalidateSeconds);
   setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
 
   if (
@@ -282,6 +286,7 @@ export async function dispatchAppRouteHandler(
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: handler.dynamic,
             fetchCacheMode,
+            revalidateSeconds,
             routePattern: route.pattern,
             routeSegments: route.routeSegments,
           },

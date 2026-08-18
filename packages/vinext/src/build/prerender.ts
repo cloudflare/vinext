@@ -43,6 +43,7 @@ import {
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -1498,11 +1499,13 @@ export async function prerenderApp({
             rscHandler(request),
           );
           if (!response.ok) {
+            const fatal = response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1";
             await response.body?.cancel();
             return {
               route: routePattern,
               status: "error",
               error: `Metadata route returned ${response.status}`,
+              ...(fatal ? { fatal: true as const } : {}),
             };
           }
           const cacheControl = response.headers.get("cache-control") ?? "";
@@ -1573,6 +1576,7 @@ export async function prerenderApp({
             const linkHeader = response.headers.get("link");
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
             const cacheTags = readPrerenderCacheTagsHeader(response.headers);
+            const fatal = response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1";
             if (!response.ok || cacheControl.includes("no-store")) {
               await response.body?.cancel();
               return {
@@ -1583,6 +1587,7 @@ export async function prerenderApp({
                 requestCacheLife: null,
                 tags: [],
                 status: response.status,
+                fatal,
               };
             }
 
@@ -1599,18 +1604,20 @@ export async function prerenderApp({
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
               tags: cacheTags,
+              fatal: false,
             };
           },
         );
         const htmlCacheControl = htmlRender.cacheControl;
         if (!htmlRender.ok) {
-          if (isSpeculative) {
+          if (isSpeculative && !htmlRender.fatal) {
             return { route: routePattern, status: "skipped", reason: "dynamic" };
           }
           return {
             route: routePattern,
             status: "error",
             error: `RSC handler returned ${htmlRender.status}`,
+            ...(htmlRender.fatal ? { fatal: true as const } : {}),
           };
         }
 

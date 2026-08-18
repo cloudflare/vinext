@@ -13,6 +13,7 @@ import { LinkButton } from "@cloudflare/kumo/components/button";
 import { Text } from "@cloudflare/kumo/components/text";
 import { ArrowSquareOutIcon } from "@phosphor-icons/react/dist/ssr";
 import { and, desc, eq, sql } from "drizzle-orm";
+import type { Metadata } from "next";
 import { getDb } from "@/app/lib/db/client";
 import {
   compatRuns,
@@ -30,6 +31,26 @@ import { getSuiteSupport, NON_SUPPORTED_SUITES } from "./suite-support";
 // when a nightly deploy-suite run lands, so 5 minutes of staleness is fine
 // and keeps the page snappy without re-querying D1 on every request.
 export const revalidate = 300;
+
+const title = "Next.js compatibility — vinext";
+const description =
+  "Track vinext compatibility with the Next.js API surface using results from the Next.js deploy test suite.";
+
+export const metadata: Metadata = {
+  title,
+  description,
+  alternates: {
+    canonical: "/compatibility",
+  },
+  openGraph: {
+    type: "website",
+    locale: "en_US",
+    siteName: "vinext",
+    title,
+    description,
+    url: "/compatibility",
+  },
+};
 
 /**
  * The `kind` discriminator on stored runs. The schema is designed to support

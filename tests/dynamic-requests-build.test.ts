@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { createBuilder, createServer } from "vite";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
   _transformVeryDynamicRequests,
@@ -12,6 +12,9 @@ import {
 } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
 
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
+
+// The dev-server and build cases exceed the 5s default under Windows parallelism.
+if (process.platform === "win32") vi.setConfig({ testTimeout: 30000 });
 
 async function withTempDir<T>(run: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "vinext-dynamic-requests-"));

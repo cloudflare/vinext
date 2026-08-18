@@ -2,12 +2,14 @@ import path from "pathslash";
 import { parseAst } from "vite";
 import MagicString from "magic-string";
 import {
+  booleanLiteralValue,
   collectBindingNames,
   forEachAstChild,
   hasRange,
   isAstRecord,
   isIdentifierNamed,
   nodeArray,
+  stringLiteralValue,
 } from "./ast-utils.js";
 import {
   collectDirectScopeBindings,
@@ -19,6 +21,8 @@ import {
   isFunctionNode,
   type AstScope,
 } from "./ast-scope.js";
+import { magicStringTransformResult } from "./transform-result.js";
+import { stripViteModuleQuery } from "../utils/path.js";
 
 type WindowType = "object" | "undefined";
 
@@ -87,12 +91,6 @@ export function getTypeofWindowReplacement(environment: EnvironmentLike): Window
   return environment.config.consumer === "client" ? "object" : "undefined";
 }
 
-function stringLiteralValue(node: unknown): string | null {
-  if (!isAstRecord(node)) return null;
-  if (node.type === "Literal" && typeof node.value === "string") return node.value;
-  return null;
-}
-
 function evaluateTypeofWindowComparison(
   node: unknown,
   replacement: WindowType,
@@ -140,13 +138,6 @@ function isProcessBrowserMember(node: unknown, scope: AstScope): boolean {
       : isIdentifierNamed(candidate.property, "browser")) &&
     !hasAstBinding(scope, "process")
   );
-}
-
-function booleanLiteralValue(node: unknown): boolean | null {
-  if (!isAstRecord(node) || node.type !== "Literal" || typeof node.value !== "boolean") {
-    return null;
-  }
-  return node.value;
 }
 
 function evaluateProcessBrowserCondition(
@@ -247,7 +238,7 @@ export function replaceConsumerEnvironmentConditions(
     ((/\bprocess\b/.test(code) && /\bbrowser\b/.test(code)) || sourceEscapePattern.test(code));
   if (!mayContainTypeofWindow && !mayContainProcessBrowser) return null;
 
-  const extension = path.extname(id.split("?", 1)[0]);
+  const extension = path.extname(stripViteModuleQuery(id));
   const lang =
     extension === ".ts" || extension === ".mts" || extension === ".cts"
       ? "ts"
@@ -422,8 +413,5 @@ export function replaceConsumerEnvironmentConditions(
   }
   if (!changed) return null;
 
-  return {
-    code: output.toString(),
-    map: output.generateMap({ hires: "boundary" }),
-  };
+  return magicStringTransformResult(output);
 }
