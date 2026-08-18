@@ -387,6 +387,8 @@ describe("import-meta asset phase", () => {
     `const compile = Function; compile('globalThis.fetch = customFetch')();`,
     `globalThis.Function('globalThis.fetch = customFetch')();`,
     `const compile = globalThis.Function; compile('globalThis.fetch = customFetch')();`,
+    `(()=>{}).constructor('globalThis.fetch = customFetch')();`,
+    `(async()=>{}).constructor('globalThis.fetch = customFetch')();`,
   ])("does not trust a mutated global fetch capability", async (mutation) => {
     const plugin = await createPlugin(false);
     const source = [
@@ -639,6 +641,28 @@ describe("import-meta asset phase", () => {
       const source = `function read(URL) { return fetch(new URL("../../src/text-file.txt", import.meta.url)); }`;
       const result = await transformHandler(plugin).call(context(), source, routePath);
       expect(result).toBeNull();
+    },
+  );
+
+  it.each([true, false])(
+    "does not rewrite constructors after the global URL capability changes (nodeless=%s)",
+    async (nodelessTarget) => {
+      const plugin = await createPlugin(nodelessTarget);
+      for (const mutation of [
+        `URL = CustomURL;`,
+        `globalThis.URL = CustomURL;`,
+        `const globals = globalThis; globals.URL = CustomURL;`,
+        `Function('globalThis.URL = CustomURL')();`,
+        `(()=>{}).constructor('globalThis.URL = CustomURL')();`,
+        `const key = "URL"; globalThis[key] = CustomURL;`,
+        `({ value: globalThis.URL } = source);`,
+      ]) {
+        const source = [
+          mutation,
+          `fetch(new URL("../../src/text-file.txt", import.meta.url));`,
+        ].join("\n");
+        expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+      }
     },
   );
 

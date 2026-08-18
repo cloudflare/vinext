@@ -24,6 +24,13 @@ import {
   isFunctionNode,
   type AstScope,
 } from "./ast-scope.js";
+import {
+  assignedTargetCanMutateGlobalCapability,
+  isDynamicCodeCapabilityReference,
+  isGlobalObjectMember,
+  isGlobalObjectReference,
+  isGlobalUrlCapabilityStable,
+} from "./global-runtime-capabilities.js";
 import { OgAssetOwnership } from "./og-asset-ownership.js";
 import {
   isImportMetaUrlOrChainedNode,
@@ -252,91 +259,10 @@ function isNodeUrlFileUrlToPath(scope: AssetScope, value: unknown): boolean {
   return false;
 }
 
-function staticMemberName(value: AstRecord): string | null {
-  const property = unwrapExpression(value.property);
-  if (value.computed !== true && property?.type === "Identifier") {
-    return typeof property.name === "string" ? property.name : null;
-  }
-  return value.computed === true && property?.type === "Literal"
-    ? typeof property.value === "string"
-      ? property.value
-      : null
-    : null;
-}
-
-function isGlobalObjectReference(scope: AssetScope, value: unknown): boolean {
-  const reference = unwrapExpression(value);
-  if (reference?.type === "Identifier") {
-    return (
-      (reference.name === "globalThis" ||
-        reference.name === "global" ||
-        reference.name === "self") &&
-      !hasAstBinding(scope, String(reference.name))
-    );
-  }
-  return (
-    reference?.type === "MemberExpression" &&
-    ["globalThis", "global", "self"].includes(staticMemberName(reference) ?? "") &&
-    isGlobalObjectReference(scope, reference.object)
-  );
-}
-
-function isGlobalObjectMember(scope: AssetScope, value: unknown, name: string): boolean {
-  const member = unwrapExpression(value);
-  if (member?.type !== "MemberExpression" || staticMemberName(member) !== name) {
-    return false;
-  }
-  return isGlobalObjectReference(scope, member.object);
-}
-
 function isGlobalFetchCallee(scope: AssetScope, value: unknown): boolean {
   const callee = unwrapExpression(value);
   if (isIdentifierNamed(callee, "fetch")) return !hasAstBinding(scope, "fetch");
   return isGlobalObjectMember(scope, callee, "fetch");
-}
-
-function assignedTargetCanMutateGlobalFetch(scope: AssetScope, value: unknown): boolean {
-  const node = unwrapExpression(value);
-  if (!node) return false;
-  if (node.type === "Identifier") {
-    return (
-      (node.name === "fetch" && !hasAstBinding(scope, "fetch")) ||
-      isGlobalObjectReference(scope, node)
-    );
-  }
-  if (node.type === "MemberExpression") {
-    if (!isGlobalObjectReference(scope, node.object)) return false;
-    const name = staticMemberName(node);
-    return (
-      name === "fetch" ||
-      name === "globalThis" ||
-      name === "global" ||
-      name === "self" ||
-      (node.computed === true && name === null)
-    );
-  }
-  if (node.type === "AssignmentPattern") {
-    return assignedTargetCanMutateGlobalFetch(scope, node.left);
-  }
-  if (node.type === "RestElement") {
-    return assignedTargetCanMutateGlobalFetch(scope, node.argument);
-  }
-  if (node.type === "ArrayPattern" || node.type === "ArrayExpression") {
-    return nodeArray(node.elements).some((element) =>
-      assignedTargetCanMutateGlobalFetch(scope, element),
-    );
-  }
-  if (node.type === "ObjectPattern" || node.type === "ObjectExpression") {
-    return nodeArray(node.properties).some(
-      (property) =>
-        isAstRecord(property) &&
-        assignedTargetCanMutateGlobalFetch(
-          scope,
-          property.type === "RestElement" ? property.argument : property.value,
-        ),
-    );
-  }
-  return false;
 }
 
 function invalidateAssignedAssetTargets(scope: AssetScope, value: unknown): void {
@@ -459,6 +385,7 @@ function createChildScope(node: AstRecord, parent: AssetScope): AssetScope | nul
 }
 
 function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): AssetUrl[] {
+  if (!isGlobalUrlCapabilityStable(ast)) return [];
   const assets: AssetUrl[] = [];
   let globalFetchIsStable = true;
   const rootScope = createAssetScope(null);
@@ -505,8 +432,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     if (node.type === "Identifier" && typeof node.name === "string") {
       if (
         !safeAssetReference &&
-        (((node.name === "eval" || node.name === "Function") && !hasAstBinding(scope, node.name)) ||
-          isGlobalObjectReference(scope, node))
+        (isDynamicCodeCapabilityReference(scope, node) || isGlobalObjectReference(scope, node))
       ) {
         globalFetchIsStable = false;
       }
@@ -567,7 +493,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
       (node.type === "ForInStatement" || node.type === "ForOfStatement") &&
       (!isAstRecord(node.left) || node.left.type !== "VariableDeclaration")
     ) {
-      if (!nodelessTarget && assignedTargetCanMutateGlobalFetch(scope, node.left)) {
+      if (!nodelessTarget && assignedTargetCanMutateGlobalCapability(scope, node.left, "fetch")) {
         globalFetchIsStable = false;
       }
       invalidateAssignedAssetTargets(scope, node.left);
@@ -586,14 +512,20 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
 
     if (!nodelessTarget) {
       if (node.type === "AssignmentExpression") {
-        if (assignedTargetCanMutateGlobalFetch(scope, node.left)) globalFetchIsStable = false;
+        if (assignedTargetCanMutateGlobalCapability(scope, node.left, "fetch")) {
+          globalFetchIsStable = false;
+        }
         invalidateAssignedAssetTargets(scope, node.left);
         invalidateEscapedAssetValue(scope, node.right);
       } else if (node.type === "UpdateExpression") {
-        if (assignedTargetCanMutateGlobalFetch(scope, node.argument)) globalFetchIsStable = false;
+        if (assignedTargetCanMutateGlobalCapability(scope, node.argument, "fetch")) {
+          globalFetchIsStable = false;
+        }
         invalidateAssignedAssetTargets(scope, node.argument);
       } else if (node.type === "UnaryExpression" && node.operator === "delete") {
-        if (assignedTargetCanMutateGlobalFetch(scope, node.argument)) globalFetchIsStable = false;
+        if (assignedTargetCanMutateGlobalCapability(scope, node.argument, "fetch")) {
+          globalFetchIsStable = false;
+        }
         invalidateAssignedAssetTargets(scope, node.argument);
       } else if (node.type === "NewExpression") {
         for (const argument of nodeArray(node.arguments)) {
@@ -673,9 +605,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
       if (
         !nodelessTarget &&
         !safeAssetReference &&
-        (isGlobalObjectReference(scope, node) ||
-          isGlobalObjectMember(scope, node, "eval") ||
-          isGlobalObjectMember(scope, node, "Function"))
+        (isGlobalObjectReference(scope, node) || isDynamicCodeCapabilityReference(scope, node))
       ) {
         globalFetchIsStable = false;
       }

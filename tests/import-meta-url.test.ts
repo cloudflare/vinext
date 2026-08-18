@@ -255,6 +255,38 @@ describe("vinext:import-meta-url plugin", () => {
     }
   });
 
+  it.each([
+    `URL = CustomURL;`,
+    `globalThis.URL = CustomURL;`,
+    `const globals = globalThis; globals.URL = CustomURL;`,
+    `Function('globalThis.URL = CustomURL')();`,
+    `(()=>{}).constructor('globalThis.URL = CustomURL')();`,
+    `const key = "URL"; globalThis[key] = CustomURL;`,
+    `({ value: globalThis.URL } = source);`,
+  ])("preserves URL imports after the global constructor can change: %s", (mutation) => {
+    const source = `${mutation}\nimport(new URL("./dependency.js", import.meta.url).href);`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+      expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)).toBeNull();
+    }
+  });
+
+  it("normalizes URL imports after harmless global capability observations", () => {
+    const source = [
+      `void globalThis.URL;`,
+      `if (typeof Function !== "function") throw new Error();`,
+      `import(new URL("./dependency.js", import.meta.url).href);`,
+    ].join("\n");
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")?.code).toContain(
+      `import("./dependency.js")`,
+    );
+    expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")?.code).toContain(
+      `import("./dependency.js")`,
+    );
+  });
+
   it("normalizes URL imports in default parameter initializers", () => {
     const source = `export function load(value = import(new URL("./dependency.js", import.meta.url).href)) { return value; }`;
     expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")?.code).toContain(
