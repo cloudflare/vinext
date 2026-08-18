@@ -246,17 +246,6 @@ declare global {
   var __VINEXT_RSC_PARAMS__: Record<string, string | string[]> | undefined;
 
   /**
-   * Navigation context embedded by `generateSsrEntry()` for hydration
-   * snapshot consistency. Contains the pathname and searchParams used
-   * during SSR so `useSyncExternalStore` `getServerSnapshot` matches the
-   * SSR-rendered HTML.
-   * `searchParams` is serialised as an array of `[key, value]` pairs to
-   * preserve duplicate keys (e.g. `?tag=a&tag=b`).
-   */
-  // oxlint-disable-next-line no-var
-  var __VINEXT_RSC_NAV__: { pathname: string; searchParams: [string, string][] } | undefined;
-
-  /**
    * Maps emitted CSS asset hrefs to file contents when next.config enables
    * `experimental.inlineCss`. Injected into edge bundles at build time and
    * populated by the Node.js production server at startup.

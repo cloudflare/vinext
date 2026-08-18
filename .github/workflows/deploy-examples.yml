@@ -168,7 +168,10 @@ jobs:
         env:
           PLAYWRIGHT_PROJECT: cloudflare-workers
           VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-app-router-cloudflare.vinext.workers.dev', github.event.pull_request.number) || 'https://app-router-cloudflare.vinext.workers.dev' }}
-        run: vp exec playwright test tests/e2e/cloudflare-workers/web-worker.spec.ts
+        run: >-
+          vp exec playwright test
+          tests/e2e/cloudflare-workers/web-worker.spec.ts
+          tests/e2e/cloudflare-workers/optimistic-search-navigation.spec.ts
 
   comment:
     name: Comment Preview URLs

@@ -24,7 +24,7 @@ import { Buffer } from "node:buffer";
 import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
-import { markDynamicUsage } from "./headers.js";
+import { getHeadersContext, markDynamicUsage } from "./headers.js";
 import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
@@ -555,6 +555,7 @@ export type FetchCacheState = {
   currentRequestTags: string[];
   currentFetchSoftTags: string[];
   currentFetchCacheMode: FetchCacheMode | null;
+  currentFetchRevalidate: number | null;
   currentForceDynamicFetchDefault: boolean;
   dynamicFetchUrls: Set<string>;
   refreshStaleFetchesInForeground: boolean;
@@ -592,6 +593,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   currentRequestTags: [],
   currentFetchSoftTags: [],
   currentFetchCacheMode: null,
+  currentFetchRevalidate: null,
   currentForceDynamicFetchDefault: false,
   dynamicFetchUrls: new Set<string>(),
   refreshStaleFetchesInForeground: false,
@@ -615,6 +617,7 @@ function _resetFallbackState(isFetchDedupeActive: boolean): void {
   _fallbackState.currentRequestTags = [];
   _fallbackState.currentFetchSoftTags = [];
   _fallbackState.currentFetchCacheMode = null;
+  _fallbackState.currentFetchRevalidate = null;
   _fallbackState.currentForceDynamicFetchDefault = false;
   _fallbackState.dynamicFetchUrls = new Set<string>();
   _fallbackState.refreshStaleFetchesInForeground = false;
@@ -632,6 +635,13 @@ function recordDynamicFetchObservation(input: string | URL | Request): void {
 
 function markUncachedFetchForPageOutput(input: string | URL | Request): void {
   recordDynamicFetchObservation(input);
+  // Next.js lowers the active prerender store to zero when an uncached fetch
+  // makes the render dynamic. `force-static` is the exception: dynamic usage
+  // is suppressed there, so later metadata-only fetches keep inheriting the
+  // configured route interval.
+  if (getHeadersContext()?.forceStatic !== true) {
+    _getState().currentFetchRevalidate = 0;
+  }
   markDynamicUsage();
 }
 
@@ -642,6 +652,13 @@ function recordCacheableFetchObservation(input: string | URL | Request): void {
 function recordFiniteFetchRevalidate(revalidateSeconds: number): void {
   if (Number.isFinite(revalidateSeconds) && revalidateSeconds > 0) {
     _setRequestScopedCacheLife({ revalidate: revalidateSeconds });
+  }
+}
+
+function lowerCurrentFetchRevalidate(revalidateSeconds: number): void {
+  const state = _getState();
+  if (state.currentFetchRevalidate === null || revalidateSeconds < state.currentFetchRevalidate) {
+    state.currentFetchRevalidate = revalidateSeconds;
   }
 }
 
@@ -795,6 +812,10 @@ export function getCurrentFetchSoftTags(): string[] {
 
 export function setCurrentFetchCacheMode(mode: FetchCacheMode | null): void {
   _getState().currentFetchCacheMode = mode;
+}
+
+export function setCurrentFetchRevalidate(revalidate: number | null): void {
+  _getState().currentFetchRevalidate = revalidate;
 }
 
 export function setCurrentForceDynamicFetchDefault(enabled: boolean): void {
@@ -1178,11 +1199,20 @@ function createPatchedFetch(): typeof globalThis.fetch {
     } else if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
       revalidateSeconds = nextOpts.revalidate;
     } else {
-      // Has `next` options but no explicit revalidate — Next.js defaults to
-      // caching when `next` is present (force-cache behavior).
-      // If only tags are specified, cache indefinitely.
+      // During prerender, a fetch without an explicit cache lifetime inherits
+      // the active route's revalidate value in Next.js. Tags make this fetch
+      // cacheable, but do not independently make it cache indefinitely.
       if (nextOpts?.tags && nextOpts.tags.length > 0) {
-        revalidateSeconds = ONE_YEAR_SECONDS;
+        const routeRevalidate = _getState().currentFetchRevalidate;
+        if (routeRevalidate === 0) {
+          const cleanInit = stripNextFromInit(init, cacheDirective);
+          markUncachedFetchForPageOutput(input);
+          return dedupeFetch(input, cleanInit);
+        }
+        revalidateSeconds =
+          routeRevalidate === null || routeRevalidate === Infinity
+            ? ONE_YEAR_SECONDS
+            : routeRevalidate;
       } else {
         // next: {} with no revalidate or tags — pass through
         const cleanInit = stripNextFromInit(init, cacheDirective);
@@ -1199,6 +1229,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // recording both cacheable and dynamic is conservative — a false "unsafe"
     // result costs performance, not correctness.
     recordCacheableFetchObservation(input);
+    if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
+      // Upstream mutates the active prerender store when an explicit fetch
+      // lifetime is shorter. Later metadata-only fetches inherit that live
+      // minimum rather than the route's original segment-config seed.
+      lowerCurrentFetchRevalidate(nextOpts.revalidate);
+    }
     recordFiniteFetchRevalidate(revalidateSeconds);
     const reqTags = _getState().currentRequestTags;
     const tags = encodeCacheTags(nextOpts?.tags ?? []);
@@ -1440,6 +1476,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       currentRequestTags: [],
       currentFetchSoftTags: [],
       currentFetchCacheMode: null,
+      currentFetchRevalidate: null,
       currentForceDynamicFetchDefault: false,
       dynamicFetchUrls: new Set<string>(),
       refreshStaleFetchesInForeground: false,

@@ -70,6 +70,7 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   fallbackShells: NonNullable<DispatchAppPageOptions<TRoute>["pprFallbackCacheShells"]>,
   currentRevalidateSeconds: number | null,
+  isForceStatic: boolean,
 ): Promise<Response | null> {
   const { readAppPageFallbackShellCacheResponse } = await import("./app-page-cache.js");
   const { rewriteAppPprFallbackShellHtmlNavigation } = await import("./app-ppr-fallback-shell.js");
@@ -88,6 +89,7 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
       rewriteHtml(html) {
         return rewriteAppPprFallbackShellHtmlNavigation({
           html,
+          isForceStatic,
           params: options.params,
           pathname: options.cleanPathname,
           searchParams: options.searchParams,
@@ -114,7 +116,12 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       isForceDynamic,
     );
     return decision.kind === "probe-fallback-shells"
-      ? probePprFallbackShellCache(options, decision.fallbackShells, currentRevalidateSeconds)
+      ? probePprFallbackShellCache(
+          options,
+          decision.fallbackShells,
+          currentRevalidateSeconds,
+          isForceStatic,
+        )
       : null;
   },
   async warm(options) {

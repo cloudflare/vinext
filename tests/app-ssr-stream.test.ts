@@ -25,6 +25,17 @@ it("serializes dynamic stale time into the hydration bootstrap", () => {
   ).toContain("dynamicStaleTimeSeconds:30");
 });
 
+it("serializes browser search-param ownership into the early hydration bootstrap", () => {
+  expect(
+    createNavigationRuntimeRscMetadataScript(
+      {},
+      { pathname: "/static", searchParams: [] },
+      undefined,
+      true,
+    ),
+  ).toContain("searchParamsFromBrowser:true");
+});
+
 describe("App SSR stream helpers", () => {
   describe("fixPreloadAs", () => {
     it('replaces as="stylesheet" with as="style" for preload links', () => {

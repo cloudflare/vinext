@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "pathslash";
+import { isPathInsideOrEqual } from "../utils/path.js";
 
 type CleanBuildOutputOptions = {
   root: string;
@@ -16,11 +17,6 @@ function resolveOutDir(root: string, outDir: string | undefined): string {
   const resolvedRoot = path.resolve(root);
   if (!outDir) return path.join(resolvedRoot, "dist");
   return path.isAbsolute(outDir) ? outDir : path.resolve(resolvedRoot, outDir);
-}
-
-function isPathInsideOrEqual(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function shouldCleanBuildOutput(options: CleanBuildOutputOptions): boolean {

@@ -500,6 +500,18 @@ function __resolveRouteDynamicConfig(route) {
   }).dynamicConfig ?? null;
 }
 
+function __resolveRouteRevalidateSeconds(route) {
+  return __resolveAppPageSegmentConfig({
+    layouts: route.layouts,
+    page: route.page,
+    parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
+      slot.layout,
+      ...(slot.configLayouts ?? []),
+      slot.page ?? slot.default,
+    ]),
+  }).revalidateSeconds;
+}
+
 function __resolveRouteRuntime(route) {
   return __resolveAppPageSegmentConfig({
     layouts: route.layouts,
@@ -638,8 +650,12 @@ function matchRequestRoute(url) {
  * Check if a pathname matches any intercepting route.
  * Returns the match info or null.
  */
-function findIntercept(pathname, sourcePathname = null) {
-  return __routeMatcher.findIntercept(pathname, sourcePathname);
+function findIntercept(pathname, sourcePathname = null, interceptionId = null) {
+  return __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId);
+}
+
+function hasInterceptionId(interceptionId) {
+  return __routeMatcher.hasInterceptionId(interceptionId);
 }
 
 async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess, displayPathname = routePath, scriptNonce) {
@@ -769,6 +785,7 @@ export default createAppRscHandler({
     actionFailed,
     handlerStart,
     interceptionContext,
+    interceptionId,
     interceptionPathname,
     isProgressiveActionRender,
     isRscRequest,
@@ -859,6 +876,7 @@ export default createAppRscHandler({
         return findIntercept(
           pathname === cleanPathname ? interceptionPathname : pathname,
           interceptionContext,
+          interceptionId,
         );
       },
       generateStaticParams: __generateStaticParams,
@@ -957,6 +975,9 @@ export default createAppRscHandler({
       renderedPathAndSearch,
       resolveRouteFetchCacheMode(targetRoute) {
         return __resolveRouteFetchCacheMode(targetRoute);
+      },
+      resolveRouteRevalidateSeconds(targetRoute) {
+        return __resolveRouteRevalidateSeconds(targetRoute);
       },
       resolveRouteDynamicConfig(targetRoute) {
         return __resolveRouteDynamicConfig(targetRoute);
@@ -1191,6 +1212,9 @@ export default createAppRscHandler({
       resolveRouteFetchCacheMode(targetRoute) {
         return __resolveRouteFetchCacheMode(targetRoute);
       },
+      resolveRouteRevalidateSeconds(targetRoute) {
+        return __resolveRouteRevalidateSeconds(targetRoute);
+      },
       resolveRouteDynamicConfig(targetRoute) {
         return __resolveRouteDynamicConfig(targetRoute);
       },
@@ -1206,6 +1230,7 @@ export default createAppRscHandler({
       setNavigationContext,
       toInterceptOpts(intercept) {
         return {
+          interceptionId: intercept.interceptionId,
           interceptGraphId: intercept.interceptionGraphId,
           interceptionContext,
           interceptLayouts: intercept.interceptLayouts,
@@ -1268,8 +1293,9 @@ export default createAppRscHandler({
   }
   matchRoute,
   matchRequestRoute,
-  matchInterceptRoute(pathname, sourcePathname) {
-    const intercept = findIntercept(pathname, sourcePathname);
+  hasInterceptionId,
+  matchInterceptRoute(pathname, sourcePathname, interceptionId) {
+    const intercept = findIntercept(pathname, sourcePathname, interceptionId);
     if (!intercept) return null;
     const route = routes[intercept.sourceRouteIndex];
     if (!route) return null;

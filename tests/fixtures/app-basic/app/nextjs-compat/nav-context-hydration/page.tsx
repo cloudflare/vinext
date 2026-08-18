@@ -6,12 +6,12 @@ import { NavInfo } from "./nav-info";
  * Renders the <NavInfo /> client component so the test can assert:
  *  1. The SSR HTML contains the correct pathname and searchParams values
  *     (rendered server-side via the RSC→SSR nav context pass-through).
- *  2. The HTML contains a __VINEXT_RSC_NAV__ script tag with a payload
+ *  2. The HTML contains a navigation runtime RSC bootstrap with a payload
  *     whose pathname/searchParams match what was SSR-rendered, ensuring
  *     useSyncExternalStore's getServerSnapshot will agree with the
  *     SSR-rendered HTML during client hydration.
  *
- * Without __VINEXT_RSC_NAV__, getServerSnapshot returns "/" and empty
+ * Without that navigation bootstrap, getServerSnapshot returns "/" and empty
  * URLSearchParams regardless of the actual request URL, causing React to
  * detect a mismatch between the server-rendered HTML and the client snapshot
  * (React hydration error #418).

@@ -4,7 +4,6 @@ import {
   createDevOnCaughtError,
   createOnUncaughtError,
   createProdOnCaughtError,
-  prodOnCaughtError,
   prodOnRecoverableError,
 } from "../packages/vinext/src/server/app-browser-error.js";
 import {
@@ -32,6 +31,7 @@ import {
   hydrateRootInTransition,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
+import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "../packages/vinext/src/server/app-browser-navigation-response.js";
 import {
   peekSettledPrefetchResponseForNavigation,
   preserveCommittedPrefetchExpiry,
@@ -105,11 +105,13 @@ import {
   isCompleteAppPayloadMetadata,
   isCacheRestorableAppPayloadMetadata,
   isHistoryStateBfcacheVersionCurrent,
+  readHistoryStateActiveRoutePaths,
   readHistoryStateBfcacheIds,
   readHistoryStateBfcacheVersion,
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
   resolveInterceptionContextFromPreviousNextUrl,
+  resolveActiveRoutePaths,
   resolveHistoryTraversalIntent,
   resolveServerActionRequestState,
   resolvePendingNavigationCommitDispositionDecision,
@@ -839,6 +841,35 @@ describe("app browser entry inline CSS cleanup", () => {
 });
 
 describe("app browser entry navigation scheduling", () => {
+  it("recovers completed same-path search responses without broadening other modes", () => {
+    const currentSnapshot = {
+      ...createClientNavigationRenderSnapshot("https://example.com/base/products?provider=8", {}),
+      pathname: "/products",
+    };
+    const classify = (overrides: {
+      navigationKind?: "navigate" | "traverse" | "refresh";
+      programmaticTransition?: boolean;
+      target?: string;
+    }) =>
+      shouldRecoverSamePathSearchCommitOnResponseCompletion({
+        basePath: "/base",
+        currentSnapshot,
+        navigationKind: overrides.navigationKind ?? "navigate",
+        programmaticTransition: overrides.programmaticTransition ?? true,
+        targetUrl: new URL(overrides.target ?? "https://example.com/base/products?provider=9"),
+      });
+
+    expect(classify({})).toBe(true);
+    expect(classify({ target: "https://example.com/base/products" })).toBe(true);
+    expect(classify({ programmaticTransition: false })).toBe(false);
+    expect(classify({ navigationKind: "traverse" })).toBe(false);
+    expect(classify({ navigationKind: "refresh" })).toBe(false);
+    expect(classify({ target: "https://example.com/base/details?provider=9" })).toBe(false);
+    expect(classify({ target: "https://example.com/base/products?provider=8#reviews" })).toBe(
+      false,
+    );
+  });
+
   it("peeks at a settled prefetch without transferring ownership before reuse planning", () => {
     const snapshot = {
       buffer: new ArrayBuffer(0),
@@ -3506,6 +3537,267 @@ describe("app browser navigation controller", () => {
     }
   });
 
+  it("writes history metadata from the approved merged visible state", async () => {
+    const sourceSlotId = "slot:children:/";
+    const rootLayout = React.createElement("div", null, "root layout");
+    const sourceBinding: AppElementsSlotBinding = {
+      activeRouteId: "route:/nested",
+      ownerLayoutId: "layout:/",
+      slotId: sourceSlotId,
+      state: "active",
+    };
+    const initialElements = createResolvedElements(
+      "route:/nested",
+      "/",
+      null,
+      {
+        "layout:/": rootLayout,
+        [sourceSlotId]: React.createElement("main", null, "source"),
+      },
+      ["layout:/"],
+      [sourceBinding],
+    );
+    const initialState = createState({
+      bfcacheIds: { "layout:/": "layout-bfcache", [sourceSlotId]: "source-bfcache" },
+      elements: initialElements,
+      routeId: "route:/nested",
+      slotBindings: [sourceBinding],
+    });
+    const routeManifest = createTestRouteManifest([
+      {
+        id: "route:/nested",
+        layoutIds: ["layout:/"],
+        pattern: "/nested",
+        rootBoundaryId: "root-boundary:/",
+        slotBindings: [sourceBinding],
+      },
+      {
+        id: "route:/nested/drawer",
+        layoutIds: ["layout:/"],
+        pattern: "/nested/drawer",
+        rootBoundaryId: "root-boundary:/",
+      },
+    ]);
+    const { controller, detach, stateRef } = createControllerHarness(initialState, {
+      getRouteManifest: () => routeManifest,
+    });
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+    const createNavigationCommitEffect = vi.fn(() => vi.fn());
+
+    try {
+      void renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: Promise.resolve(
+          createResolvedElements(
+            "route:/nested/drawer",
+            "/",
+            null,
+            {
+              "layout:/": rootLayout,
+              "page:/nested/drawer": React.createElement("aside", null, "drawer"),
+            },
+            ["layout:/"],
+          ),
+        ),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/nested/drawer",
+        navId: controller.beginNavigation(),
+      });
+
+      const committedState = await pendingRouterState.promise;
+      expect(createNavigationCommitEffect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          activeRoutePaths: resolveActiveRoutePaths(committedState.slotBindings),
+          bfcacheIds: committedState.bfcacheIds,
+        }),
+      );
+    } finally {
+      detach();
+    }
+  });
+
+  it("recovers an uncommitted navigation after its streamed response completes", async () => {
+    const { controller, detach, setBrowserRouterState, stateRef } = createControllerHarness();
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+    const commitEffect = vi.fn();
+    let resolveResponse!: () => void;
+    const navigationResponseCompletion = new Promise<void>((resolve) => {
+      resolveResponse = resolve;
+    });
+
+    try {
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationResponseCompletion,
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/dashboard?provider=8",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard?provider=8",
+        navId: controller.beginNavigation(),
+      });
+
+      await expect(pendingRouterState.promise).resolves.toMatchObject({ renderId: 1 });
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
+
+      resolveResponse();
+      await Promise.resolve();
+
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(2);
+      expect(setBrowserRouterState).toHaveBeenLastCalledWith(stateRef.current);
+      expect(stateRef.current.renderId).toBe(1);
+
+      controller.commitNavigationRender(1);
+      await expect(renderPromise).resolves.toBe("committed");
+      expect(commitEffect).toHaveBeenCalledTimes(1);
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(2);
+    } finally {
+      detach();
+    }
+  });
+
+  it("suppresses response-completion recovery after the render already committed", async () => {
+    const { controller, detach, setBrowserRouterState } = createControllerHarness();
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+    const commitEffect = vi.fn();
+    let resolveResponse!: () => void;
+    const navigationResponseCompletion = new Promise<void>((resolve) => {
+      resolveResponse = resolve;
+    });
+
+    try {
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationResponseCompletion,
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/dashboard?provider=8",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard?provider=8",
+        navId: controller.beginNavigation(),
+      });
+
+      await expect(pendingRouterState.promise).resolves.toBeDefined();
+      controller.commitNavigationRender(1);
+      await expect(renderPromise).resolves.toBe("committed");
+      resolveResponse();
+      await Promise.resolve();
+
+      expect(commitEffect).toHaveBeenCalledTimes(1);
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
+    } finally {
+      detach();
+    }
+  });
+
+  it("does not recover a completed response after a newer navigation starts", async () => {
+    const { controller, detach, setBrowserRouterState, stateRef } = createControllerHarness();
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+    let resolveResponse!: () => void;
+    const navigationResponseCompletion = new Promise<void>((resolve) => {
+      resolveResponse = resolve;
+    });
+    const navId = controller.beginNavigation();
+
+    try {
+      void renderCurrentStateNavigationPayload(controller, {
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationResponseCompletion,
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard?provider=8",
+        navId,
+      });
+
+      await expect(pendingRouterState.promise).resolves.toBeDefined();
+      controller.beginNavigation();
+      resolveResponse();
+      await Promise.resolve();
+
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
+    } finally {
+      detach();
+    }
+  });
+
+  it("does not recover a completed response after the browser root detaches", async () => {
+    const { controller, detach, setBrowserRouterState, stateRef } = createControllerHarness();
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+    let resolveResponse!: () => void;
+    const navigationResponseCompletion = new Promise<void>((resolve) => {
+      resolveResponse = resolve;
+    });
+
+    void renderCurrentStateNavigationPayload(controller, {
+      actionType: "navigate",
+      createNavigationCommitEffect: () => () => {},
+      historyUpdateMode: "push",
+      navigationResponseCompletion,
+      navigationSnapshot: stateRef.current.navigationSnapshot,
+      nextElements: Promise.resolve(
+        createResolvedElements("route:/dashboard", "/", null, {
+          "page:/dashboard": React.createElement("main", null, "dashboard"),
+        }),
+      ),
+      operationLane: "navigation",
+      params: {},
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      pendingRouterState,
+      previousNextUrl: null,
+      targetHref: "https://example.com/dashboard?provider=8",
+      navId: controller.beginNavigation(),
+    });
+
+    await expect(pendingRouterState.promise).resolves.toBeDefined();
+    detach();
+    resolveResponse();
+    await Promise.resolve();
+
+    expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
+  });
+
   it("hard-navigates cache-restored payloads missing cache-entry proof metadata", async () => {
     const performHardNavigation = vi.fn(() => true);
     const createNavigationCommitEffect = vi.fn(() => vi.fn());
@@ -5557,6 +5849,34 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(readHistoryStateTraversalIndex(state)).toBe(4);
   });
 
+  it("stores canonical active route evidence for the history entry", () => {
+    const state = createHistoryStateWithNavigationMetadata(null, {
+      activeRoutePaths: ["/detail-page", "/detail-page", "/dashboard/settings"],
+      previousNextUrl: null,
+    });
+
+    expect(readHistoryStateActiveRoutePaths(state)).toEqual([
+      "/detail-page",
+      "/dashboard/settings",
+    ]);
+  });
+
+  it("rejects malformed active route evidence from history state", () => {
+    for (const activeRoutePaths of [
+      ["detail-page"],
+      ["//other-origin.example/detail-page"],
+      ["/detail-page?stale=1"],
+      ["/detail-page#stale"],
+      ["/detail-page\\stale"],
+      ["/detail-page\0stale"],
+      ["/detail-page", 42],
+    ]) {
+      expect(
+        readHistoryStateActiveRoutePaths({ __vinext_activeRoutePaths: activeRoutePaths }),
+      ).toBeNull();
+    }
+  });
+
   it("resolves back, forward, and unknown traversal intent from history state", () => {
     expect(
       resolveHistoryTraversalIntent({
@@ -6535,6 +6855,55 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(Object.hasOwn(nextState.elements, "slot:modal:/feed")).toBe(true);
     expect(nextState.elements["slot:modal:/feed"]).toBe(mountedSlot);
     expect(nextState.slotBindings).toEqual([modalSlotBinding]);
+  });
+
+  it("preserves an active children branch omitted by a nested parallel route payload", async () => {
+    const childrenSlotId = AppElementsWire.encodeSlotId("children", "/");
+    const childrenSlot = React.createElement("main", null, "underlying page");
+    const childrenBinding = {
+      activeRouteId: "route:/nested",
+      ownerLayoutId: "layout:/",
+      slotId: childrenSlotId,
+      state: "active",
+    } satisfies AppElementsSlotBinding;
+    const state = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+        [childrenSlotId]: "_b_5_",
+      },
+      elements: createResolvedElements(
+        "route:/nested",
+        "/",
+        null,
+        {
+          "layout:/": React.createElement("div", null, "root layout"),
+          [childrenSlotId]: childrenSlot,
+        },
+        ["layout:/"],
+        [childrenBinding],
+      ),
+      layoutIds: ["layout:/"],
+      routeId: "route:/nested",
+      slotBindings: [childrenBinding],
+    });
+
+    const nextState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        "page:/nested/modal": React.createElement("aside", null, "modal"),
+      },
+      layoutIds: ["layout:/"],
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/nested/modal",
+        {},
+      ),
+      rootLayoutTreePath: "/",
+      routeId: "route:/nested/modal",
+      slotBindings: [],
+      targetHref: "https://example.com/nested/modal",
+    });
+
+    expect(nextState.elements[childrenSlotId]).toBe(childrenSlot);
+    expect(nextState.slotBindings).toEqual([childrenBinding]);
   });
 
   it("preserves bfcache ids for planner-approved default parallel slots", async () => {
@@ -8675,6 +9044,8 @@ describe("app navigation failure handling", () => {
 });
 
 describe("prodOnCaughtError (hydrateRoot prod handler)", () => {
+  const prodOnCaughtError = createProdOnCaughtError(() => {});
+
   it("ignores redirect sentinels handled by RedirectBoundary", () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {

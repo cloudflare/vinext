@@ -1,4 +1,5 @@
 import path from "node:path";
+import { toSlash } from "pathslash";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { createWorkerImageImportsPlugin } from "../packages/vinext/src/plugins/worker-image-imports.js";
 
@@ -35,7 +36,7 @@ describe("worker image imports", () => {
     });
     expect(result?.code).toContain('import("@images/test.png")');
     expect(result?.code).toContain("vinext-worker-image-meta:");
-    expect(result?.code).toContain(imagePath);
+    expect(result?.code).toContain(toSlash(imagePath));
   });
 
   it("versions only emitted static and dynamic worker chunk edges", () => {

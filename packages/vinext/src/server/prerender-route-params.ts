@@ -136,15 +136,6 @@ function decodedPrerenderRouteParamEquals(
   return prerenderValue === matchedValue || (decoded !== null && decoded === matchedValue);
 }
 
-export function prerenderRouteParamsPayloadMatchesRoute(
-  payload: PrerenderRouteParamsPayload | null,
-  routePattern: string,
-  params: PrerenderRouteParams,
-): payload is PrerenderRouteParamsPayload {
-  const match = matchPrerenderRouteParamsPayload(payload, routePattern, params);
-  return match?.kind === "exact";
-}
-
 export function matchPrerenderRouteParamsPayload(
   payload: PrerenderRouteParamsPayload | null,
   routePattern: string,

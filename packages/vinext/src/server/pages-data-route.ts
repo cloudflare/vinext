@@ -130,22 +130,6 @@ export function shouldAddTrailingSlashToPagesDataPath(
 }
 
 /**
- * Build the JSON envelope returned by `/_next/data/<buildId>/<page>.json`.
- * Mirrors Next.js' `RenderResult(JSON.stringify(props))` path in
- * `packages/next/src/server/render.tsx` (search for `isNextDataRequest`).
- *
- * The envelope is the outer `props` object the React tree would receive:
- *   { pageProps: {...}, /* optional locale data, redirect markers, etc. *\/ }
- */
-export function buildNextDataJsonResponse(
-  pageProps: Record<string, unknown>,
-  safeJsonStringify: (value: unknown) => string,
-  init?: ResponseInit,
-): Response {
-  return buildNextDataPropsJsonResponse({ pageProps }, safeJsonStringify, init);
-}
-
-/**
  * Build a `_next/data` JSON response from the full Pages props object returned
  * through `_app.getInitialProps`. Next.js serializes the same outer props
  * object that would be passed to `<App />`, so custom app-level props remain

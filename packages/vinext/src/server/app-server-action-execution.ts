@@ -11,6 +11,7 @@ import {
 import {
   type FetchCacheMode,
   setCurrentFetchCacheMode,
+  setCurrentFetchRevalidate,
   setCurrentFetchSoftTags,
   setCurrentForceDynamicFetchDefault,
 } from "vinext/shims/fetch-cache";
@@ -322,6 +323,7 @@ export type HandleServerActionRscRequestOptions<
   ) => BodyInit | null | Promise<BodyInit | null>;
   reportRequestError: AppServerActionErrorReporter;
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
+  resolveRouteRevalidateSeconds?: (route: TRoute) => number | null;
   resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
   resolveRouteRuntime?: (route: TRoute) => AppServerActionRouteRuntime;
   request: Request;
@@ -1668,6 +1670,9 @@ export async function handleServerActionRscRequest<
       });
       setCurrentFetchCacheMode(
         options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
+      );
+      setCurrentFetchRevalidate(
+        options.resolveRouteRevalidateSeconds?.(actionRerenderTarget.route) ?? null,
       );
       setCurrentForceDynamicFetchDefault(actionRerenderDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(
