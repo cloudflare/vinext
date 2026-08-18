@@ -19,7 +19,7 @@
 // deliberately uses emitted identity for bundled dependencies instead: source
 // paths do not exist in Workers and must not leak from the build host, while an
 // emitted URL remains meaningful after relocating Node and Nitro output.
-import { parseAst, type Plugin } from "vite";
+import { parseAst, type Plugin, type ResolvedConfig } from "vite";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { randomUUID } from "node:crypto";
@@ -76,6 +76,11 @@ export type ImportMetaUrlCapability = {
   isBundledCommonJsDependencyId: (id: string) => boolean;
 };
 
+export type EmittedModuleFileNameResolver = (
+  environmentName: string | undefined,
+  fileName: string,
+) => string;
+
 const MAX_DEPENDENCY_FORMAT_CACHE_ENTRIES = 512;
 const MAX_TRANSFORM_CACHE_ENTRIES = 2_048;
 
@@ -94,11 +99,13 @@ const SOURCE_IDENTITY_FILTER_RE = new RegExp(
 );
 export function createImportMetaUrlPlugin(options: {
   getRoot: () => string | undefined;
-  getServerOutputRoot?: () => string | undefined;
+  createEmittedModuleFileNameResolver?: (
+    config: ResolvedConfig,
+  ) => EmittedModuleFileNameResolver | undefined;
 }): ImportMetaUrlCapability {
   let rootPaths: RootPaths | undefined;
   let outputDirs: string[] = [];
-  let serverOutputPrefixes = new Map<string, string>();
+  let resolveEmittedModuleFileName: EmittedModuleFileNameResolver = (_, fileName) => fileName;
   // Keep path dependencies as separate equality fields so cache hits avoid
   // allocating and hashing a composite string containing both full paths.
   // Replacing the entry also bounds each raw id to one source/path combination.
@@ -163,10 +170,8 @@ export function createImportMetaUrlPlugin(options: {
         config.build.outDir,
         ...environments.map(([, environment]) => environment.build.outDir),
       ];
-      const serverOutputRoot = options.getServerOutputRoot?.();
-      serverOutputPrefixes = serverOutputRoot
-        ? serverEnvironmentOutputPrefixes(config.root, environments, serverOutputRoot)
-        : new Map();
+      resolveEmittedModuleFileName =
+        options.createEmittedModuleFileNameResolver?.(config) ?? ((_, fileName) => fileName);
       rootPaths = createRootPaths(root, { outputDirs });
     },
     watchChange() {
@@ -272,12 +277,10 @@ export function createImportMetaUrlPlugin(options: {
         if (this.environment?.config.consumer !== "server" || outputOptions.format !== "es") {
           return null;
         }
-        const outputPrefix = this.environment?.name
-          ? serverOutputPrefixes.get(this.environment.name)
-          : undefined;
-        const emittedFileName = outputPrefix
-          ? path.join(outputPrefix, chunk.fileName)
-          : chunk.fileName;
+        const emittedFileName = resolveEmittedModuleFileName(
+          this.environment?.name,
+          chunk.fileName,
+        );
         return finalizeEmittedModuleIdentity(
           code,
           emittedModuleIdentity.replacements,
@@ -331,32 +334,6 @@ export function createImportMetaUrlPlugin(options: {
     optimizeDepsPlugin,
     isBundledCommonJsDependencyId: (id) => commonJsDependencyCanonicalId(id) !== null,
   };
-}
-
-function serverEnvironmentOutputPrefixes(
-  root: string,
-  environments: Array<
-    [
-      string,
-      {
-        consumer?: string;
-        build: { outDir: string };
-      },
-    ]
-  >,
-  serverOutputRoot: string,
-): Map<string, string> {
-  const outputRoot = path.resolve(root, serverOutputRoot);
-  const serverOutputDirs = environments
-    .filter(([name]) => name === "rsc" || name === "ssr")
-    .map(([name, environment]) => [name, path.resolve(root, environment.build.outDir)] as const);
-  return new Map(
-    serverOutputDirs.map(([name, outDir]) => {
-      if (!isPathInsideOrEqual(outputRoot, outDir)) return [name, ""];
-      const relative = path.relative(outputRoot, outDir);
-      return [name, relative === "." ? "" : relative];
-    }),
-  );
 }
 
 // Test-only entry point. Delegates to the same transform the plugin runs so
