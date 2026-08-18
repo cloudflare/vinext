@@ -341,6 +341,39 @@ describe("import-meta asset phase", () => {
   });
 
   it.each([
+    `const url = new URL("../../src/text-file.txt", import.meta.url); eval?.("void 0"); fetch(url);`,
+    `const url = new URL("../../src/text-file.txt", import.meta.url); (0, eval)("void 0"); fetch(url);`,
+    `const url = new URL("../../src/text-file.txt", import.meta.url); const indirect = eval; indirect("void 0"); fetch(url);`,
+    `const url = new URL("../../src/text-file.txt", import.meta.url); function inspect() { const url = "local"; eval("void url"); } fetch(url);`,
+  ])("keeps aliases visible only to indirect or shadowed eval", async (source) => {
+    const plugin = await createPlugin(false);
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
+  });
+
+  it.each([
+    `globalThis.fetch = customFetch;`,
+    `fetch = customFetch;`,
+    `delete globalThis.fetch;`,
+    `Object.defineProperty(globalThis, "fetch", { value: customFetch });`,
+    `Reflect.defineProperty(globalThis, "fetch", { value: customFetch });`,
+  ])("does not trust a mutated global fetch capability", async (mutation) => {
+    const plugin = await createPlugin(false);
+    const source = [
+      mutation,
+      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+      `globalThis.fetch(url);`,
+    ].join("\n");
+    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+  });
+
+  it("does not trust a shadowed globalThis fetch member", async () => {
+    const plugin = await createPlugin(false);
+    const source = `function read(globalThis) { return globalThis.fetch(new URL("../../src/text-file.txt", import.meta.url)); }`;
+    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+  });
+
+  it.each([
     [`import { fileURLToPath as toPath } from "node:url";`, `toPath(url);`],
     [`import { fileURLToPath as toPath } from "url";`, `toPath(url);`],
     [`import * as nodeUrl from "node:url";`, `nodeUrl.fileURLToPath(url);`],
