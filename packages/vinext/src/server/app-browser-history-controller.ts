@@ -1,6 +1,7 @@
 import {
   RestorableClientStateController,
   createHistoryStateWithNavigationMetadata,
+  readHistoryStateActiveRoutePaths,
   readHistoryStateBfcacheIds,
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
@@ -17,6 +18,7 @@ import type { HistoryUpdateMode } from "./app-browser-navigation-controller.js";
  * falls back to reading the same facts off the live history entry.
  */
 type VisibleNavigationMetadata = {
+  activeRoutePaths: readonly string[] | null;
   bfcacheIds: BfcacheIdMap | null;
   previousNextUrl: string | null;
 };
@@ -54,6 +56,7 @@ type RestoreHistorySnapshotOptions = {
 };
 
 type CommitNavigationHistoryOptions = {
+  activeRoutePaths: readonly string[];
   bfcacheIds: BfcacheIdMap;
   href: string;
   historyUpdateMode: HistoryUpdateMode | undefined;
@@ -210,9 +213,13 @@ export class AppBrowserHistoryController {
     const bfcacheIds = visible
       ? visible.bfcacheIds
       : this.#restorableClientState.readCurrentBfcacheVersionHistoryIds(historyState);
+    const activeRoutePaths = visible
+      ? visible.activeRoutePaths
+      : readHistoryStateActiveRoutePaths(historyState);
     const nextHistoryState = createHistoryStateWithNavigationMetadata(
       this.#createHashOnlyNavigationBaseHistoryState(historyUpdateMode, scroll),
       {
+        activeRoutePaths,
         bfcacheIds,
         bfcacheVersion:
           bfcacheIds === null ? undefined : this.#restorableClientState.currentBfcacheVersion,
@@ -259,6 +266,7 @@ export class AppBrowserHistoryController {
     const historyState = createHistoryStateWithNavigationMetadata(
       preserveExistingState ? this.#readHistoryState() : null,
       {
+        activeRoutePaths: options.activeRoutePaths,
         bfcacheIds: options.bfcacheIds,
         bfcacheVersion: this.#restorableClientState.currentBfcacheVersion,
         previousNextUrl: options.previousNextUrl,
@@ -282,7 +290,11 @@ export class AppBrowserHistoryController {
     if (!wroteHistoryState) {
       // Traversal and refresh commits may keep the URL unchanged, but still
       // persist the latest bfcache id map for future history restoration.
-      this.syncCurrentHistoryStatePreviousNextUrl(options.previousNextUrl, options.bfcacheIds);
+      this.syncCurrentHistoryStatePreviousNextUrl(
+        options.previousNextUrl,
+        options.bfcacheIds,
+        options.activeRoutePaths,
+      );
       options.stageClientParams();
       if (options.targetHistoryIndex !== undefined) {
         this.commitHistoryTraversalIndex(options.targetHistoryIndex);
@@ -293,18 +305,21 @@ export class AppBrowserHistoryController {
   syncCurrentHistoryStatePreviousNextUrl(
     previousNextUrl: string | null,
     bfcacheIds?: BfcacheIdMap | null,
+    activeRoutePaths?: readonly string[] | null,
   ): void {
     if (
       this.#isHistoryStateNavigationMetadataInSync(
         this.#readHistoryState(),
         previousNextUrl,
         bfcacheIds,
+        activeRoutePaths,
       )
     ) {
       return;
     }
 
     const nextHistoryState = createHistoryStateWithNavigationMetadata(this.#readHistoryState(), {
+      activeRoutePaths,
       bfcacheIds,
       bfcacheVersion:
         bfcacheIds === undefined ? undefined : this.#restorableClientState.currentBfcacheVersion,
@@ -328,6 +343,7 @@ export class AppBrowserHistoryController {
         this.#readHistoryState(),
         previousNextUrl,
         bfcacheIds,
+        activeRoutePaths,
       )
     ) {
       return;
@@ -339,9 +355,12 @@ export class AppBrowserHistoryController {
     state: unknown,
     previousNextUrl: string | null,
     bfcacheIds?: BfcacheIdMap | null,
+    activeRoutePaths?: readonly string[] | null,
   ): boolean {
     return (
       readHistoryStatePreviousNextUrl(state) === previousNextUrl &&
+      (activeRoutePaths === undefined ||
+        areStringArraysEqual(readHistoryStateActiveRoutePaths(state), activeRoutePaths)) &&
       (bfcacheIds === undefined ||
         (areBfcacheIdMapsEqual(readHistoryStateBfcacheIds(state), bfcacheIds) &&
           this.#restorableClientState.isCurrentBfcacheVersion(state)))
@@ -361,11 +380,13 @@ export class AppBrowserHistoryController {
 
   /** History write performed on the first committed (hydrated) render. */
   writeHydratedHistoryMetadata(options: {
+    activeRoutePaths: readonly string[];
     bfcacheIds: BfcacheIdMap;
     previousNextUrl: string | null;
   }): void {
     this.#replaceHistoryState(
       createHistoryStateWithNavigationMetadata(this.#readHistoryState(), {
+        activeRoutePaths: options.activeRoutePaths,
         bfcacheIds: options.bfcacheIds,
         bfcacheVersion: this.#restorableClientState.currentBfcacheVersion,
         previousNextUrl: options.previousNextUrl,
@@ -401,6 +422,12 @@ export class AppBrowserHistoryController {
       },
     });
   }
+}
+
+function areStringArraysEqual(a: readonly string[] | null, b: readonly string[] | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || a.length !== b.length) return false;
+  return a.every((value, index) => b[index] === value);
 }
 
 function areBfcacheIdMapsEqual(a: BfcacheIdMap | null, b: BfcacheIdMap | null): boolean {

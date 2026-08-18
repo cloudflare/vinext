@@ -44,8 +44,6 @@ import {
 } from "../routing/file-matcher.js";
 import {
   extractLocaleFromUrl as extractLocaleFromUrlShared,
-  detectLocaleFromAcceptLanguage,
-  parseCookieLocaleFromHeader,
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
@@ -566,25 +564,6 @@ export function extractLocaleFromUrl(
   i18nConfig: NextI18nConfig,
 ): { locale: string; url: string; hadPrefix: boolean } {
   return extractLocaleFromUrlShared(url, i18nConfig);
-}
-
-/**
- * Detect the preferred locale from the Accept-Language header.
- * Returns the best matching locale or null.
- */
-export function detectLocaleFromHeaders(
-  req: IncomingMessage,
-  i18nConfig: NextI18nConfig,
-): string | null {
-  return detectLocaleFromAcceptLanguage(req.headers["accept-language"], i18nConfig);
-}
-
-/**
- * Parse the NEXT_LOCALE cookie from a request.
- * Returns the cookie value if it matches a configured locale, otherwise null.
- */
-export function parseCookieLocale(req: IncomingMessage, i18nConfig: NextI18nConfig): string | null {
-  return parseCookieLocaleFromHeader(req.headers.cookie, i18nConfig);
 }
 
 /**

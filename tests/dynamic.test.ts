@@ -172,7 +172,7 @@ describe("next/dynamic defaults", () => {
 // ─── flushPreloads ──────────────────────────────────────────────────────
 
 describe("flushPreloads", () => {
-  it("returns an empty array when no preloads queued", async () => {
+  it("returns an empty array when there is no separate preload work", async () => {
     const result = await flushPreloads();
     expect(result).toEqual([]);
   });

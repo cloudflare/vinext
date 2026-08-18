@@ -18,11 +18,7 @@ import {
   type CacheHandlerValue,
   type IncrementalCacheValue,
 } from "../packages/vinext/src/shims/cache.js";
-import {
-  appIsrCacheKey,
-  isrCacheKey,
-  getRevalidateDuration,
-} from "../packages/vinext/src/server/isr-cache.js";
+import { appIsrCacheKey, isrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
 import { getRenderedConcreteUrlPathsForRoute } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed-cache.js";
 
@@ -412,29 +408,6 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(count).toBe(0);
   });
 
-  // ── Revalidate duration tracking ──────────────────────────────────────────
-
-  it("populates revalidate duration map for ISR routes", async () => {
-    const buildId = "reval-duration-test";
-    setupPrerenderFixture(
-      serverDir,
-      {
-        buildId,
-        routes: [{ route: "/isr", status: "rendered", revalidate: 45, router: "app" }],
-      },
-      {
-        "isr.html": "<html>ISR</html>",
-        "isr.rsc": "RSC isr",
-      },
-    );
-
-    await seedMemoryCacheFromPrerender(serverDir);
-
-    const baseKey = isrCacheKey("app", "/isr", buildId);
-    expect(getRevalidateDuration(baseKey + ":html")).toBe(45);
-    expect(getRevalidateDuration(baseKey + ":rsc")).toBe(45);
-  });
-
   it("preserves legacy revalidate context while writing cache-control metadata", async () => {
     const contexts: Record<string, unknown>[] = [];
     const handler: CacheHandler = {
@@ -601,27 +574,6 @@ describe("seedMemoryCacheFromPrerender", () => {
     });
 
     expect(keys).toEqual(["runtime-build:/isr:html", "runtime-build:/isr:rsc"]);
-  });
-
-  it("does not set revalidate duration for static routes", async () => {
-    const buildId = "static-duration-test";
-    setupPrerenderFixture(
-      serverDir,
-      {
-        buildId,
-        routes: [{ route: "/static", status: "rendered", revalidate: false, router: "app" }],
-      },
-      {
-        "static.html": "<html>Static</html>",
-        "static.rsc": "RSC static",
-      },
-    );
-
-    await seedMemoryCacheFromPrerender(serverDir);
-
-    const baseKey = isrCacheKey("app", "/static", buildId);
-    expect(getRevalidateDuration(baseKey + ":html")).toBeUndefined();
-    expect(getRevalidateDuration(baseKey + ":rsc")).toBeUndefined();
   });
 
   // ── revalidatePath invalidation of seeded entries (#1486) ─────────────────

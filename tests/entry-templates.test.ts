@@ -1082,8 +1082,12 @@ describe("App Router entry templates", () => {
   it("promotes interception-only RSC targets before not-found dispatch", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain("matchInterceptRoute(pathname, sourcePathname)");
-    expect(code).toContain("const intercept = findIntercept(pathname, sourcePathname)");
+    expect(code).toContain("matchInterceptRoute(pathname, sourcePathname, interceptionId)");
+    expect(code).toContain("hasInterceptionId(interceptionId)");
+    expect(code).toContain("return __routeMatcher.hasInterceptionId(interceptionId)");
+    expect(code).toContain(
+      "const intercept = findIntercept(pathname, sourcePathname, interceptionId)",
+    );
     expect(code).toContain("const route = routes[intercept.sourceRouteIndex]");
     expect(code).toContain("intercept.sourceMatchedParams");
     expect(code).toContain("return { route, params }");

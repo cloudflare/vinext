@@ -56,8 +56,10 @@ export {
   isHistoryStateBfcacheVersionCurrent,
   readHistoryStateBfcacheIds,
   readHistoryStateBfcacheVersion,
+  readHistoryStateActiveRoutePaths,
   readHistoryStatePreviousNextUrl,
   readHistoryStateTraversalIndex,
+  resolveActiveRoutePaths,
   resolveHistoryTraversalIntent,
   type HistoryTraversalIntent,
 } from "./app-history-state.js";

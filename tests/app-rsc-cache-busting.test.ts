@@ -119,7 +119,7 @@ describe("App Router RSC cache-busting", () => {
 
     try {
       const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
-      const legacyHash = fnv1a64("0,0,0,0,0,slot:modal:/,0");
+      const legacyHash = fnv1a64("0,0,0,0,0,0,slot:modal:/,0");
 
       await expect(createRscRequestUrl("/photos/42", headers)).resolves.toBe(
         `/photos/42?_rsc=${legacyHash}`,
@@ -337,6 +337,27 @@ describe("App Router RSC cache-busting", () => {
     ).resolves.toBeNull();
   });
 
+  it("canonicalizes interception id requests whose hash omits the id", async () => {
+    const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
+    const headers = createRscRequestHeaders({
+      interceptionContext: "/feed",
+      interceptionId,
+    });
+    const previousHash = await sha256CacheBustingHash("0,0,0,0,/feed,0,0");
+    const currentHash = await computeRscCacheBustingSearchParam(headers);
+    const request = new Request(`https://example.com/photos/42.rsc?_rsc=${previousHash}`, {
+      headers,
+    });
+
+    const response = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${currentHash}`);
+  });
+
   it("accepts the prior bare navigation query after adding the state fingerprint", async () => {
     const headers = createRscRequestHeaders({
       routerState: { pathAndSearch: "/current", routeId: "route:/current" },
@@ -369,7 +390,7 @@ describe("App Router RSC cache-busting", () => {
     // Mirrors Next.js App Router's base Vary header:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-page/module.ts
     expect(VINEXT_RSC_VARY_HEADER).toBe(
-      "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode, X-Vinext-Rsc-State-Fingerprint",
+      "RSC, Next-Router-State-Tree, Next-Router-Prefetch, Next-Router-Segment-Prefetch, Next-Url, X-Vinext-Interception-Context, X-Vinext-Interception-Id, X-Vinext-Mounted-Slots, X-Vinext-Rsc-Render-Mode, X-Vinext-Rsc-State-Fingerprint",
     );
     expect(VINEXT_RSC_VARY_HEADER.split(", ")).not.toContain("Accept");
     expect(FLIGHT_HEADERS).toContain(VINEXT_RSC_STATE_FINGERPRINT_HEADER.toLowerCase());
