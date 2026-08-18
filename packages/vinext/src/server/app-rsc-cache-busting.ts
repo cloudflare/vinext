@@ -417,39 +417,51 @@ export async function resolveInvalidRscCacheBustingRequest(
   if (actualHash !== null && actualHash !== expectedHash) {
     acceptedHashes.add(computeLegacyRscCacheBustingSearchParam(options.request.headers));
     const compatibilityInputs: CreateCacheBustingInputOptions[] = [];
+    const hasInterceptionId = options.request.headers.has(VINEXT_INTERCEPTION_ID_HEADER);
     const hasStateFingerprint = options.request.headers.has(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
     const hasNormalRenderMode =
       normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
       null;
     // The interception ID is a positional hash input, so omitting it changes
-    // hashes even when the request does not carry the header. Accept every
-    // combination of the rollout-era inputs to keep in-flight RSC requests
-    // valid while old and new clients overlap.
-    compatibilityInputs.push({ includeInterceptionIdHeader: false });
+    // hashes even when the request does not carry the header. Requests from
+    // clients predating that positional input remain compatible when the
+    // header is absent. Once the header is present, however, only hashes that
+    // include its value are safe: Cloudflare's default cache key is URL-based
+    // and does not vary on arbitrary headers, while different graph-owned IDs
+    // can intentionally select different slot bytes for one source/target.
+    if (!hasInterceptionId) {
+      compatibilityInputs.push({ includeInterceptionIdHeader: false });
+    }
     if (hasStateFingerprint) {
       compatibilityInputs.push({ includeStateFingerprintHeader: false });
-      compatibilityInputs.push({
-        includeInterceptionIdHeader: false,
-        includeStateFingerprintHeader: false,
-      });
+      if (!hasInterceptionId) {
+        compatibilityInputs.push({
+          includeInterceptionIdHeader: false,
+          includeStateFingerprintHeader: false,
+        });
+      }
     }
     if (hasNormalRenderMode) {
       compatibilityInputs.push({ includeRenderModeHeader: false });
-      compatibilityInputs.push({
-        includeInterceptionIdHeader: false,
-        includeRenderModeHeader: false,
-      });
+      if (!hasInterceptionId) {
+        compatibilityInputs.push({
+          includeInterceptionIdHeader: false,
+          includeRenderModeHeader: false,
+        });
+      }
     }
     if (hasStateFingerprint && hasNormalRenderMode) {
       compatibilityInputs.push({
         includeRenderModeHeader: false,
         includeStateFingerprintHeader: false,
       });
-      compatibilityInputs.push({
-        includeInterceptionIdHeader: false,
-        includeRenderModeHeader: false,
-        includeStateFingerprintHeader: false,
-      });
+      if (!hasInterceptionId) {
+        compatibilityInputs.push({
+          includeInterceptionIdHeader: false,
+          includeRenderModeHeader: false,
+          includeStateFingerprintHeader: false,
+        });
+      }
     }
     for (const compatibilityOptions of compatibilityInputs) {
       const input = createCacheBustingInput(options.request.headers, compatibilityOptions);

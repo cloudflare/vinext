@@ -82,7 +82,7 @@ import {
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
+import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
@@ -342,6 +342,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
     interceptionContext?: string | null,
+    interceptionId?: string | null,
   ) => string;
   isrSet: AppPageCacheSetter;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
@@ -627,6 +628,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const route = options.route;
   const dynamicConfig = options.dynamicConfig;
   const currentRevalidateSeconds = options.revalidateSeconds;
+  const interceptionId = options.isRscRequest
+    ? options.request.headers.get(VINEXT_INTERCEPTION_ID_HEADER)
+    : null;
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
@@ -723,6 +727,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
+      interceptionId,
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
@@ -1137,6 +1142,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isrRscKey: options.isrRscKey,
     isrSet: options.isrSet,
     interceptionContext: options.interceptionContext,
+    interceptionId,
     expireSeconds: options.expireSeconds,
     // A loading convention at tree position N wraps descendants, but not a
     // layout co-located at N. Probing any deeper async layout before creating

@@ -1,7 +1,6 @@
 import { buildRouteTrie, trieMatchRaw } from "../routing/route-trie.js";
 import {
   extractRawRoutePatternParams,
-  matchRoutePattern,
   matchRoutePatternRaw,
   matchRoutePatternPrefix,
   type RoutePatternParams,
@@ -191,6 +190,7 @@ function normalizeMatchedParamsForRoute(result: {
 export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   routes: Route[],
 ): {
+  hasInterceptionId(interceptionId: string): boolean;
   matchRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   matchRequestRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   findIntercept(
@@ -201,9 +201,17 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
 } {
   const routeTrie = buildRouteTrie(routes);
   const interceptLookup = createInterceptLookup(routes);
+  const interceptionIds = new Set(
+    interceptLookup.flatMap((entry) =>
+      entry.interceptionId === null ? [] : [entry.interceptionId],
+    ),
+  );
   const routeIndexes = new Map<Route, number>(routes.map((route, index) => [route, index]));
 
   return {
+    hasInterceptionId(interceptionId) {
+      return interceptionIds.has(interceptionId);
+    },
     matchRoute(url) {
       const rawParts = appRscPathnameParts(url, true);
       const result = trieMatchRaw(routeTrie, appRscPathnameParts(url, false));
@@ -536,13 +544,6 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
   // Array.prototype.sort is stable, so entries with identical target patterns
   // retain declaration order across slots and sources.
   return interceptLookup.sort(compareInterceptTargetPatterns);
-}
-
-export function matchAppRscRoutePattern(
-  urlParts: string[],
-  patternParts: string[],
-): AppRscRouteParams | null {
-  return matchRoutePattern(urlParts, patternParts);
 }
 
 function mergeMatchedParams(

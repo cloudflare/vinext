@@ -337,6 +337,27 @@ describe("App Router RSC cache-busting", () => {
     ).resolves.toBeNull();
   });
 
+  it("canonicalizes interception id requests whose hash omits the id", async () => {
+    const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
+    const headers = createRscRequestHeaders({
+      interceptionContext: "/feed",
+      interceptionId,
+    });
+    const previousHash = await sha256CacheBustingHash("0,0,0,0,/feed,0,0");
+    const currentHash = await computeRscCacheBustingSearchParam(headers);
+    const request = new Request(`https://example.com/photos/42.rsc?_rsc=${previousHash}`, {
+      headers,
+    });
+
+    const response = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${currentHash}`);
+  });
+
   it("accepts the prior bare navigation query after adding the state fingerprint", async () => {
     const headers = createRscRequestHeaders({
       routerState: { pathAndSearch: "/current", routeId: "route:/current" },

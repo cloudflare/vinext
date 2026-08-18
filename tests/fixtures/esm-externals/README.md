@@ -1,8 +1,9 @@
 # ESM externals fixture
 
-The five core routes and six package directories are ported file-for-file from
-Next.js `test/e2e/esm-externals` at v16.2.6, with only this repository's
-formatting applied:
+The five core routes and six package directories are ported from Next.js
+`test/e2e/esm-externals` at v16.2.6, with this repository's formatting applied
+and explicit versions added to the paired local packages so pnpm can distinguish
+their shared package names:
 
 - `pages/static.js`, `pages/ssr.js`, and `pages/ssg.js`
 - `app/server/page.js` and `app/client/page.js`
