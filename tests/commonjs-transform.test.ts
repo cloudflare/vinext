@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import path from "node:path";
 import os from "node:os";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { toSlash } from "pathslash";
 import { createBuilder, createServer, type Alias } from "vite";
 import {
@@ -9,7 +9,12 @@ import {
   transformCommonJs,
 } from "../packages/vinext/src/plugins/commonjs.js";
 
-async function runPluginTransform(code: string, id: string, aliases: Alias[] = []) {
+async function runPluginTransform(
+  code: string,
+  id: string,
+  aliases: Alias[] = [],
+  preserveSymlinks = false,
+) {
   const plugin = createCommonJsPlugin();
   const configResolved = plugin.configResolved;
   if (typeof configResolved !== "function") throw new Error("Expected configResolved hook");
@@ -20,6 +25,7 @@ async function runPluginTransform(code: string, id: string, aliases: Alias[] = [
       resolve: {
         alias: aliases,
         extensions: [".mjs", ".js", ".cjs", ".mts", ".ts", ".cts", ".jsx", ".tsx", ".json"],
+        preserveSymlinks,
       },
     } as never,
   );
@@ -525,6 +531,72 @@ export function loadDynamic() {
         JSON.stringify(path.join(toSlash(await realpath(packageDirectory)), "ru.js")),
       );
       expect(transformed).toContain('case "messages/ru.js"');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // vite-plugin-dynamic-import keeps patterned bare-package imports on the nearest
+  // node_modules path so Vite's preserveSymlinks setting remains authoritative:
+  // https://github.com/vite-plugin/vite-plugin-dynamic-import/blob/v1.6.0/src/resolve.ts#L97-L128
+  it("honors preserveSymlinks for patterned bare-package requires", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-commonjs-symlink-pattern-"));
+    try {
+      const packageDirectory = path.join(root, "store/messages");
+      const linkedPackageDirectory = path.join(root, "node_modules/messages");
+      await Promise.all([
+        mkdir(packageDirectory, { recursive: true }),
+        mkdir(path.dirname(linkedPackageDirectory), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(path.join(packageDirectory, "package.json"), '{"name":"messages"}\n'),
+        writeFile(path.join(packageDirectory, "ru.js"), "module.exports = import.meta.url;\n"),
+        writeFile(
+          path.join(root, "page.js"),
+          `const locale = "ru"; export default require(\`messages/${"${locale}"}.js\`).default;\n`,
+        ),
+      ]);
+      await symlink(
+        packageDirectory,
+        linkedPackageDirectory,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+
+      const importer = path.join(root, "page.js");
+      const source = `const messages = require(\`messages/${"${locale}"}.js\`);`;
+      const preserved = await runPluginTransform(source, importer, [], true);
+      const resolved = await runPluginTransform(source, importer);
+      if (
+        !preserved ||
+        typeof preserved === "string" ||
+        !("code" in preserved) ||
+        !resolved ||
+        typeof resolved === "string" ||
+        !("code" in resolved)
+      ) {
+        throw new Error("Expected transformed code");
+      }
+      expect(String(preserved.code)).toContain(
+        JSON.stringify(toSlash(path.join(linkedPackageDirectory, "ru.js"))),
+      );
+      expect(String(resolved.code)).toContain(
+        JSON.stringify(toSlash(await realpath(path.join(packageDirectory, "ru.js")))),
+      );
+
+      const server = await createServer({
+        root,
+        logLevel: "silent",
+        resolve: { preserveSymlinks: true },
+        plugins: [createCommonJsPlugin()],
+        server: { middlewareMode: true },
+      });
+      try {
+        const module = await server.ssrLoadModule(toSlash(path.join(root, "page.js")));
+        expect(module.default).toContain("/node_modules/messages/ru.js");
+        expect(module.default).not.toContain("/store/messages/ru.js");
+      } finally {
+        await server.close();
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }

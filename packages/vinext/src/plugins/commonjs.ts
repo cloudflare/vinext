@@ -445,12 +445,15 @@ function interpolatePattern(pattern: string, captures: readonly string[]): strin
 async function findPackageDirectory(
   importerDirectory: string,
   packageName: string,
+  preserveSymlinks: boolean,
 ): Promise<string | null> {
   let directory = importerDirectory;
   for (;;) {
     const candidate = path.join(directory, "node_modules", packageName);
     try {
-      if ((await stat(candidate)).isDirectory()) return toSlash(await realpath(candidate));
+      if ((await stat(candidate)).isDirectory()) {
+        return preserveSymlinks ? candidate : toSlash(await realpath(candidate));
+      }
     } catch {}
     const parent = path.dirname(directory);
     if (parent === directory) return null;
@@ -463,6 +466,7 @@ async function resolveDynamicPattern(
   importerDirectory: string,
   aliases: readonly Alias[],
   root: string,
+  preserveSymlinks: boolean,
 ): Promise<DynamicPatternResolution | null> {
   if (pattern.startsWith("./") || pattern.startsWith("../")) {
     return {
@@ -506,7 +510,11 @@ async function resolveDynamicPattern(
   }
   const packageName = packageNameFromSpecifier(pattern);
   if (!packageName) return null;
-  const packageDirectory = await findPackageDirectory(importerDirectory, packageName);
+  const packageDirectory = await findPackageDirectory(
+    importerDirectory,
+    packageName,
+    preserveSymlinks,
+  );
   if (!packageDirectory) return null;
   const suffix = pattern.slice(packageName.length).replace(/^\/+/, "");
   return {
@@ -525,13 +533,20 @@ async function resolveDynamicRequire(
   extensions: readonly string[],
   aliases: readonly Alias[],
   root: string,
+  preserveSymlinks: boolean,
 ): Promise<ResolvedDynamicRequire | null> {
   const pattern = dynamicRequirePattern(request.argument);
   if (!pattern?.includes("*")) return null;
 
   const cleanId = toSlash(stripViteModuleQuery(id));
   const importerDirectory = path.dirname(cleanId);
-  const resolvedPattern = await resolveDynamicPattern(pattern, importerDirectory, aliases, root);
+  const resolvedPattern = await resolveDynamicPattern(
+    pattern,
+    importerDirectory,
+    aliases,
+    root,
+    preserveSymlinks,
+  );
   if (!resolvedPattern) return null;
   const candidates = new Map<string, DynamicRequireCandidate>();
   for (const { globPattern, resolvedPattern: matchPattern, runtimePattern } of dynamicGlobPatterns(
@@ -659,6 +674,7 @@ export function createCommonJsPlugin(options: CommonJsPluginOptions = {}): Plugi
     ...DYNAMIC_REQUIRE_EXTENSIONS,
   ];
   let aliases: readonly Alias[] = [];
+  let preserveSymlinks = false;
   let root = toSlash(process.cwd());
   const transformFilter = {
     id: commonJsExtensionFilter(DEFAULT_COMMONJS_EXTENSIONS),
@@ -669,6 +685,7 @@ export function createCommonJsPlugin(options: CommonJsPluginOptions = {}): Plugi
     configResolved(config) {
       extensions = [...new Set([...config.resolve.extensions, ...DYNAMIC_REQUIRE_EXTENSIONS])];
       aliases = config.resolve.alias;
+      preserveSymlinks = config.resolve.preserveSymlinks;
       root = toSlash(config.root);
       transformFilter.id = commonJsExtensionFilter(config.resolve.extensions);
     },
@@ -684,7 +701,7 @@ export function createCommonJsPlugin(options: CommonJsPluginOptions = {}): Plugi
         const dynamicRequires = (
           await Promise.all(
             analysis.dynamicRequires.map((request) =>
-              resolveDynamicRequire(this, request, id, extensions, aliases, root),
+              resolveDynamicRequire(this, request, id, extensions, aliases, root, preserveSymlinks),
             ),
           )
         ).filter((value): value is ResolvedDynamicRequire => value !== null);
