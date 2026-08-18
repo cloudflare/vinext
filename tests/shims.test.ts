@@ -15126,13 +15126,10 @@ describe("next/dynamic shim", () => {
     expect(htmlB).toContain("Component B");
   });
 
-  it("flushPreloads second call resolves immediately (queue drained)", async () => {
+  it("flushPreloads remains an immediate no-op across repeated calls", async () => {
     const { flushPreloads } = await import("../packages/vinext/src/shims/dynamic.js");
 
-    // First call should drain whatever's in the queue
     await flushPreloads();
-
-    // Second call should resolve immediately with empty array
     const result = await flushPreloads();
     expect(result).toEqual([]);
   });
