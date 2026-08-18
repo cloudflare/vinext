@@ -626,6 +626,7 @@ describe("Link App Router navigation scheduling", () => {
         id: expect.any(Number),
       }),
       "transition",
+      false,
     );
     expect(transitionStates).toEqual([true]);
   });

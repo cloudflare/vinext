@@ -1,29 +1,11 @@
-import fs from "node:fs";
 import { createRequire } from "node:module";
-import path, { toSlash } from "pathslash";
+import path from "pathslash";
 import { createIdResolver, type Plugin, type Rollup } from "vite";
-import { stripViteModuleQuery } from "../utils/path.js";
+import { BARE_PACKAGE_SPECIFIER_RE, packageNameFromSpecifier } from "../utils/package-name.js";
+import { canonicalizeFilePath, stripViteModuleQuery } from "../utils/path.js";
+import { isServerEnvironment } from "./environment.js";
 
 type ExternalModuleMode = "import" | "require";
-
-const BARE_PACKAGE_SPECIFIER_RE =
-  /^(?:@[A-Za-z0-9._~-]+\/[A-Za-z0-9._~-]+|[A-Za-z0-9_~-][A-Za-z0-9._~-]*)(?:\/[^?#]*)?$/;
-
-function realpath(resolvedPath: string): string {
-  try {
-    return toSlash(fs.realpathSync.native(resolvedPath));
-  } catch {
-    return toSlash(resolvedPath);
-  }
-}
-
-function packageNameFromSpecifier(specifier: string): string | null {
-  if (specifier.startsWith("@")) {
-    const parts = specifier.split("/");
-    return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
-  }
-  return specifier.split("/")[0] || null;
-}
 
 function moduleMode(kind: Rollup.ImportKind | undefined): ExternalModuleMode {
   return kind === "require-call" ? "require" : "import";
@@ -39,9 +21,9 @@ function compareTransitiveExternalResolutions(
   importerResolution: string,
   rootResolution: string | null,
 ): string | null {
-  const importerRealpath = realpath(importerResolution);
+  const importerRealpath = canonicalizeFilePath(importerResolution);
   if (!rootResolution) return importerRealpath;
-  return importerRealpath === realpath(rootResolution) ? null : importerRealpath;
+  return importerRealpath === canonicalizeFilePath(rootResolution) ? null : importerRealpath;
 }
 
 /**
@@ -102,7 +84,7 @@ export function createTransitiveExternalsPlugin(options: {
     apply: "build",
     enforce: "pre",
     applyToEnvironment(environment) {
-      return environment.name !== "client" && environment.config.consumer !== "client";
+      return isServerEnvironment(environment);
     },
 
     configResolved(config) {

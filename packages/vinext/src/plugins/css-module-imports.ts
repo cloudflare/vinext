@@ -1,10 +1,15 @@
 import type { Plugin } from "vite";
 import { parseAst } from "vite";
 import MagicString from "magic-string";
+import {
+  SCRIPT_MODULE_ID_RE,
+  scriptParserLanguage,
+  type ScriptParserLanguage,
+} from "./ast-utils.js";
+import { magicStringTransformResult } from "./transform-result.js";
 
 const CSS_MODULE_RE = /\.module\.(?:css|scss|sass)$/i;
 const CSS_MODULE_HINT_RE = /\.module\.(?:css|scss|sass)/i;
-const SCRIPT_RE = /\.(?:[cm]?[jt]sx?)(?:[?#].*)?$/i;
 const MDX_RE = /\.mdx$/i;
 
 type AstImportSpecifier = {
@@ -22,18 +27,9 @@ type AstImportDeclaration = {
   attributes?: unknown[];
 };
 
-type ScriptLanguage = "js" | "jsx" | "ts" | "tsx";
-
-function scriptLanguage(id: string): ScriptLanguage {
-  const cleanId = id.split("?", 1)[0].toLowerCase();
-  if (cleanId.endsWith(".tsx")) return "tsx";
-  if (cleanId.endsWith(".ts") || cleanId.endsWith(".mts") || cleanId.endsWith(".cts")) return "ts";
-  return "jsx";
-}
-
 export function rewriteCssModuleNamespaceImports(
   code: string,
-  lang: ScriptLanguage = "js",
+  lang: ScriptParserLanguage = "js",
 ): {
   code: string;
   map: ReturnType<MagicString["generateMap"]>;
@@ -65,16 +61,13 @@ export function rewriteCssModuleNamespaceImports(
   }
 
   if (!output) return null;
-  return {
-    code: output.toString(),
-    map: output.generateMap({ hires: true }),
-  };
+  return magicStringTransformResult(output, { hires: true });
 }
 
 export function createCssModuleImportCompatibilityPlugin(
   options: { compiledMdx?: boolean } = {},
 ): Plugin {
-  const idFilter = options.compiledMdx ? MDX_RE : SCRIPT_RE;
+  const idFilter = options.compiledMdx ? MDX_RE : SCRIPT_MODULE_ID_RE;
   return {
     name: options.compiledMdx
       ? "vinext:css-module-import-compatibility-mdx"
@@ -85,7 +78,7 @@ export function createCssModuleImportCompatibilityPlugin(
       handler(code, id) {
         return rewriteCssModuleNamespaceImports(
           code,
-          options.compiledMdx ? "jsx" : scriptLanguage(id),
+          options.compiledMdx ? "jsx" : (scriptParserLanguage(id) ?? "jsx"),
         );
       },
     },

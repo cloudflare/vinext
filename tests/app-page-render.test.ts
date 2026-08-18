@@ -917,8 +917,9 @@ describe("app page render lifecycle", () => {
       revalidateSeconds: 30,
     });
 
-    // Middleware still owns the Link header on this request's outgoing response.
-    expect(response.headers.get("link")).toBe(middlewareLinkHeader);
+    // Middleware replaces earlier config/user values, then the framework's
+    // render-owned preload is appended to the outgoing response.
+    expect(response.headers.get("link")).toBe(`${middlewareLinkHeader}, ${frameworkLinkHeader}`);
     await expect(response.text()).resolves.toBe("<html>page</html>");
     await Promise.all(common.waitUntilPromises);
 

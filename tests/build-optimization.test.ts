@@ -195,6 +195,43 @@ describe("clientManualChunks", () => {
   });
 });
 
+describe("createClientManualChunks (installed layout)", () => {
+  // The shimsDir MUST contain node_modules — that's the regression: an installed
+  // copy's shims were swallowed by the node_modules early return.
+  const installedShimsDir = "/app/node_modules/vinext/dist/shims/";
+
+  it("groups shims under node_modules into the vinext chunk", () => {
+    const chunks = createClientManualChunks(installedShimsDir);
+    expect(chunks("/app/node_modules/vinext/dist/shims/slot.js")).toBe("vinext");
+    expect(chunks("/app/node_modules/vinext/dist/shims/navigation-context-state.js")).toBe(
+      "vinext",
+    );
+    expect(chunks("/app/node_modules/vinext/dist/shims/slot.js?v=abc")).toBe("vinext");
+  });
+
+  it("still excludes route-owned shims when preserving route boundaries", () => {
+    const chunks = createClientManualChunks(installedShimsDir, true);
+    expect(chunks("/app/node_modules/vinext/dist/shims/link.js")).toBeUndefined();
+    expect(
+      chunks("/app/node_modules/vinext/dist/shims/internal/hybrid-client-route-owner.js"),
+    ).toBeUndefined();
+    expect(chunks("/app/node_modules/vinext/dist/shims/slot.js")).toBe("vinext");
+  });
+
+  it("leaves framework and vendor grouping untouched", () => {
+    const chunks = createClientManualChunks(installedShimsDir);
+    expect(chunks("/app/node_modules/react/index.js")).toBe("framework");
+    expect(chunks("/app/node_modules/scheduler/index.js")).toBe("framework");
+    expect(chunks("/app/node_modules/react-dom/client.js")).toBe("framework");
+    expect(chunks("/app/node_modules/react-dom/server.browser.js")).toBe("react-dom-server");
+    expect(chunks("/app/node_modules/.pnpm/react@19.2.8/node_modules/react/index.js")).toBe(
+      "framework",
+    );
+    expect(chunks("/app/node_modules/lodash/map.js")).toBeUndefined();
+    expect(chunks("/app/src/components/Button.tsx")).toBeUndefined();
+  });
+});
+
 // ─── optimizeDeps.exclude — prevents esbuild scanning virtual module imports ─
 
 describe("optimizeDeps.exclude for vinext", () => {
@@ -713,6 +750,71 @@ describe("optimizeDeps.exclude for vinext", () => {
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
+  }, 15000);
+
+  it("uses server package conditions in RSC and SSR environments", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const conditionsPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:server-conditions" && typeof p.configEnvironment === "function",
+    );
+    expect(conditionsPlugin).toBeDefined();
+
+    for (const environmentName of ["rsc", "ssr"]) {
+      const workerConfig = {
+        resolve: {
+          conditions: ["workerd", "worker", "module", "browser", "development|production"],
+        },
+        optimizeDeps: {
+          rolldownOptions: {
+            resolve: {
+              conditionNames: ["workerd", "worker", "module", "browser", "development"],
+            },
+          },
+        },
+      };
+      (conditionsPlugin as any).configEnvironment(environmentName, workerConfig);
+      expect(workerConfig.resolve.conditions).toEqual([
+        "workerd",
+        "worker",
+        "module",
+        "development|production",
+      ]);
+      expect(workerConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual([
+        "workerd",
+        "worker",
+        "module",
+        "development",
+      ]);
+    }
+
+    const clientConfig = {
+      resolve: { conditions: ["module", "browser"] },
+      optimizeDeps: {
+        rolldownOptions: { resolve: { conditionNames: ["module", "browser"] } },
+      },
+    };
+    (conditionsPlugin as any).configEnvironment("client", clientConfig);
+    expect(clientConfig.resolve.conditions).toEqual(["module", "browser"]);
+    expect(clientConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual([
+      "module",
+      "browser",
+    ]);
+
+    const auxiliaryWorkerConfig = {
+      resolve: { conditions: ["workerd", "worker", "module", "browser"] },
+      optimizeDeps: {
+        rolldownOptions: {
+          resolve: { conditionNames: ["workerd", "worker", "module", "browser"] },
+        },
+      },
+    };
+    (conditionsPlugin as any).configEnvironment("auxiliary-worker", auxiliaryWorkerConfig);
+    expect(auxiliaryWorkerConfig.resolve.conditions).toContain("browser");
+    expect(auxiliaryWorkerConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toContain(
+      "browser",
+    );
   }, 15000);
 
   it("suppresses missing optional Cloudflare Pages Router worker optimizer warnings", async () => {

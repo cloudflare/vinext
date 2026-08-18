@@ -22,6 +22,7 @@ import {
   applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 import { applyPrerenderCacheLifeHeader } from "./prerender-cache-life-header.js";
+import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 
 export type AppPageMiddlewareContext = {
   headers: Headers | null;
@@ -360,18 +361,19 @@ export function buildAppPageHtmlResponse(
   if (options.draftCookie) {
     headers.append("Set-Cookie", options.draftCookie);
   }
-  if (options.linkHeader) {
-    headers.set("Link", options.linkHeader);
-  }
-
   mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+  if (options.linkHeader) {
+    headers.append("Link", options.linkHeader);
+  }
   applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
   applyPrerenderCacheTagsHeader(headers, options.cacheTags);
 
   applyTimingHeader(headers, options.timing);
 
-  return new Response(body, {
+  const response = new Response(body, {
     status: options.middlewareContext.status ?? 200,
     headers,
   });
+  markFrameworkLinkHeaders(response.headers, options.linkHeader);
+  return response;
 }

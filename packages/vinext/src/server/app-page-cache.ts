@@ -23,6 +23,7 @@ import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { hasCompleteNegativeRequestApiProof, type RenderObservation } from "./cache-proof.js";
 import { isAppPprDynamicFallbackShellHtml } from "./app-ppr-fallback-shell.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
+import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 export {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -37,6 +38,7 @@ type AppPageRscCacheKeyBuilder = (
   mountedSlotsHeader?: string | null,
   renderMode?: AppRscRenderMode,
   interceptionContext?: string | null,
+  interceptionId?: string | null,
 ) => string;
 export type AppPageCacheOutcomeMetric = Readonly<{
   artifact: "html" | "rsc";
@@ -91,6 +93,7 @@ type ReadAppPageCacheResponseOptions = {
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
+  interceptionId?: string | null;
   hasRequestSearchParams?: boolean;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
@@ -183,14 +186,6 @@ function buildAppPageCachedHeaders(options: {
   setCacheStateHeaders(headers, options.cacheState);
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
-  if (options.linkHeader) {
-    if (Array.isArray(options.linkHeader)) {
-      for (const value of options.linkHeader) headers.append("Link", value);
-    } else {
-      headers.set("Link", options.linkHeader);
-    }
-  }
-
   if (options.mountedSlotsHeader) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
@@ -198,6 +193,13 @@ function buildAppPageCachedHeaders(options: {
   applyClientStaleTimeHeader(headers, options.staleTimeSeconds);
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
+  if (options.linkHeader) {
+    if (Array.isArray(options.linkHeader)) {
+      for (const value of options.linkHeader) headers.append("Link", value);
+    } else {
+      headers.append("Link", options.linkHeader);
+    }
+  }
   return headers;
 }
 
@@ -291,10 +293,12 @@ export function buildAppPageCachedResponse(
     staleTimeSeconds,
   });
 
-  return new Response(cachedValue.html, {
+  const response = new Response(cachedValue.html, {
     status,
     headers: htmlHeaders,
   });
+  markFrameworkLinkHeaders(response.headers, cachedValue.headers?.link);
+  return response;
 }
 
 type ServeAppPageCachedHtmlOptions = {
@@ -368,6 +372,7 @@ export async function readAppPageCacheResponse(
         null,
         options.renderMode,
         options.interceptionContext,
+        options.interceptionId,
       )
     : options.isrHtmlKey(options.cleanPathname);
   const artifact = options.isRscRequest ? "rsc" : "html";
@@ -477,6 +482,7 @@ export async function readAppPageCacheResponse(
                   null,
                   options.renderMode,
                   options.interceptionContext,
+                  options.interceptionId,
                 ),
             buildAppPageCacheValue(
               "",

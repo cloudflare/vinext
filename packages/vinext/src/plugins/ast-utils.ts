@@ -10,6 +10,20 @@ export type AstRange = AstRecord & {
   end: number;
 };
 
+export type ScriptParserLanguage = "js" | "jsx" | "ts" | "tsx";
+
+const SCRIPT_MODULE_EXTENSION_RE = /^\.(?:[cm]?[jt]s|[jt]sx)$/i;
+export const SCRIPT_MODULE_ID_RE = /\.(?:[cm]?[jt]s|[jt]sx)(?:[?#].*)?$/i;
+const TRANSPARENT_EXPRESSION_TYPES = new Set([
+  "ChainExpression",
+  "ParenthesizedExpression",
+  "TSAsExpression",
+  "TSInstantiationExpression",
+  "TSNonNullExpression",
+  "TSSatisfiesExpression",
+  "TSTypeAssertion",
+]);
+
 /**
  * Cheap pre-parse gate for plugins that only transform *dynamic* `import(...)`.
  *
@@ -38,6 +52,25 @@ export const DYNAMIC_IMPORT_PRESCAN = /\bimport\s*[(/]/;
  */
 export function mayContainDynamicImport(code: string): boolean {
   return DYNAMIC_IMPORT_PRESCAN.test(code);
+}
+
+/**
+ * Select the OXC parser mode for a JavaScript/TypeScript module id.
+ *
+ * JavaScript-family files intentionally use the JSX parser. Next.js accepts
+ * JSX in `.js` files, and every caller using this helper runs before JSX has
+ * necessarily been lowered.
+ */
+export function scriptParserLanguage(id: string): ScriptParserLanguage | null {
+  const cleanId = id.split(/[?#]/, 1)[0];
+  const extensionIndex = cleanId.lastIndexOf(".");
+  if (extensionIndex === -1) return null;
+
+  const extension = cleanId.slice(extensionIndex).toLowerCase();
+  if (!SCRIPT_MODULE_EXTENSION_RE.test(extension)) return null;
+  if (extension === ".ts" || extension === ".mts" || extension === ".cts") return "ts";
+  if (extension === ".tsx") return "tsx";
+  return "jsx";
 }
 
 const SKIP_CHILD_KEYS = new Set(["type", "parent", "loc", "start", "end"]);
@@ -75,6 +108,56 @@ export function getAstName(value: unknown): string | null {
   return null;
 }
 
+/** Remove syntax-only wrappers while preserving the underlying expression. */
+export function unwrapExpression(value: unknown): AstRecord | null {
+  const node = toAstRecord(value);
+  if (!node || !TRANSPARENT_EXPRESSION_TYPES.has(node.type)) return node;
+  return unwrapExpression(node.expression);
+}
+
+/** Return the value of a string literal node, without evaluating expressions. */
+export function stringLiteralValue(value: unknown): string | null {
+  const node = toAstRecord(value);
+  if (
+    (node?.type === "Literal" || node?.type === "StringLiteral") &&
+    typeof node.value === "string"
+  ) {
+    return node.value;
+  }
+  return null;
+}
+
+/** Return the value of a boolean literal node, without evaluating expressions. */
+export function booleanLiteralValue(value: unknown): boolean | null {
+  const node = toAstRecord(value);
+  return node?.type === "Literal" && typeof node.value === "boolean" ? node.value : null;
+}
+
+/**
+ * Return a statically known string literal, including an interpolation-free
+ * template literal. This deliberately does not fold concatenations or other
+ * expressions.
+ */
+export function staticStringValue(value: unknown): string | null {
+  const node = toAstRecord(value);
+  if (!node) return null;
+
+  const literal = stringLiteralValue(node);
+  if (literal !== null) return literal;
+  if (node.type !== "TemplateLiteral" || nodeArray(node.expressions).length !== 0) return null;
+
+  const quasis = nodeArray(node.quasis);
+  if (quasis.length !== 1) return null;
+  const quasi = toAstRecord(quasis[0]);
+  if (quasi?.type !== "TemplateElement" || typeof quasi.value !== "object" || !quasi.value) {
+    return null;
+  }
+
+  const cooked = Reflect.get(quasi.value, "cooked");
+  const raw = Reflect.get(quasi.value, "raw");
+  return typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : null;
+}
+
 export function forEachAstChild(node: AstRecord, callback: (child: AstRecord) => void): void {
   for (const [key, value] of Object.entries(node)) {
     if (SKIP_CHILD_KEYS.has(key)) continue;
@@ -90,6 +173,18 @@ export function forEachAstChild(node: AstRecord, callback: (child: AstRecord) =>
       }
     }
   }
+}
+
+/**
+ * Visit an AST in depth-first order. Returning `false` prunes the current
+ * node's subtree, which is useful once a transform has claimed a complete
+ * expression. Parent links and source-location metadata are skipped by
+ * {@link forEachAstChild}, so OXC's cyclic `parent` references are safe.
+ */
+export function walkAst(value: unknown, visitor: (node: AstRecord) => boolean | void): void {
+  const node = toAstRecord(value);
+  if (!node || visitor(node) === false) return;
+  forEachAstChild(node, (child) => walkAst(child, visitor));
 }
 
 export function collectBindingNames(pattern: unknown, target: Set<string>): void {

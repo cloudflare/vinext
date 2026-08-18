@@ -1,7 +1,9 @@
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
 import type { RouteManifest } from "../routing/app-route-graph.js";
 import { mergeElements } from "vinext/shims/slot";
+import { resolveAppPageRouteStateKey } from "./app-page-segment-state.js";
 import {
+  AppElementsWire,
   normalizeAppElementsSlotBindings,
   type AppElements,
   type AppElementsSlotBinding,
@@ -72,6 +74,21 @@ type ClassifiedPendingNavigationCommit = {
   trace: NavigationTrace;
 };
 
+function hasSameServerTemplateSeedIdentity(
+  id: string,
+  currentSnapshot: ClientNavigationRenderSnapshot,
+  nextSnapshot: ClientNavigationRenderSnapshot,
+): boolean {
+  const parsed = AppElementsWire.parseElementKey(id);
+  if (parsed?.kind !== "template") return false;
+
+  const templateSegments = parsed.treePath.split("/").filter(Boolean);
+  return (
+    resolveAppPageRouteStateKey(templateSegments, currentSnapshot.params) ===
+    resolveAppPageRouteStateKey(templateSegments, nextSnapshot.params)
+  );
+}
+
 export function applyApprovedVisibleCommit(
   state: AppRouterState,
   commit: ApprovedVisibleCommit,
@@ -121,17 +138,28 @@ function commitVisibleRouterState(
 function mergeSlotBindings(
   previousBindings: readonly AppElementsSlotBinding[],
   nextBindings: readonly AppElementsSlotBinding[],
+  nextElements: AppElements,
   layoutIds: readonly string[],
+  preserveAbsentSlots: boolean,
   preservePreviousSlotIds: readonly string[],
 ): readonly AppElementsSlotBinding[] {
-  if (preservePreviousSlotIds.length === 0) return nextBindings;
-
   const preservedSlotIds = new Set(preservePreviousSlotIds);
   const previousBindingsBySlotId = new Map<string, AppElementsSlotBinding>();
   for (const binding of previousBindings) {
-    if (!preservedSlotIds.has(binding.slotId)) continue;
+    if (
+      !preservedSlotIds.has(binding.slotId) &&
+      !(
+        preserveAbsentSlots &&
+        binding.state === "active" &&
+        !Object.hasOwn(nextElements, binding.slotId)
+      )
+    ) {
+      continue;
+    }
     previousBindingsBySlotId.set(binding.slotId, binding);
   }
+
+  if (previousBindingsBySlotId.size === 0) return nextBindings;
 
   const mergedBindings: AppElementsSlotBinding[] = [];
   const seenSlotIds = new Set<string>();
@@ -167,7 +195,9 @@ function reduceApprovedVisibleCommitState(
       const preservedSlotOwnerElementIdSet = new Set(bfcacheCompatiblePreserveElementIds);
       const preservePreviousSlotIds = action.reuseCurrentBfcacheIds
         ? commit.decision.preservePreviousSlotIds.filter((slotId) => {
-            const targetBinding = action.slotBindings.find((binding) => binding.slotId === slotId);
+            const targetBinding =
+              action.slotBindings.find((binding) => binding.slotId === slotId) ??
+              state.slotBindings.find((binding) => binding.slotId === slotId);
             return (
               targetBinding?.ownerLayoutId !== null &&
               targetBinding?.ownerLayoutId !== undefined &&
@@ -175,16 +205,33 @@ function reduceApprovedVisibleCommitState(
             );
           })
         : [];
+      // A refresh fan-out supplies fresh active content for every mounted
+      // branch. Those authoritative slot values must win over ordinary
+      // default/unmatched preservation from the primary response.
+      const suppliedActiveSlotIds =
+        action.operation.lane === "refresh"
+          ? new Set(
+              action.slotBindings
+                .filter(
+                  (binding) =>
+                    binding.state === "active" && Object.hasOwn(action.elements, binding.slotId),
+                )
+                .map((binding) => binding.slotId),
+            )
+          : new Set<string>();
+      const effectivePreservePreviousSlotIds = preservePreviousSlotIds.filter(
+        (slotId) => !suppliedActiveSlotIds.has(slotId),
+      );
       const previousBfcacheIdentities = createBfcacheSegmentIdentityMap({
         elements: state.elements,
       });
-      const preservePreviousBfcacheIdIds = preservePreviousSlotIds.filter(
+      const preservePreviousBfcacheIdIds = effectivePreservePreviousSlotIds.filter(
         (id) => previousBfcacheIdentities[id] !== undefined,
       );
       const hmrPreservedSlotOwnerLayoutIds =
         action.operation.lane === "hmr"
           ? bfcacheCompatiblePreserveElementIds.filter((id) =>
-              preservePreviousSlotIds.some((slotId) => {
+              effectivePreservePreviousSlotIds.some((slotId) => {
                 const targetBinding = action.slotBindings.find(
                   (binding) => binding.slotId === slotId,
                 );
@@ -206,11 +253,35 @@ function reduceApprovedVisibleCommitState(
         action.operation.lane === "hmr"
           ? hmrUniquePreserveElementIds
           : bfcacheCompatiblePreserveElementIds;
+      // Next stores a server template's rendered seed on the persistent layout
+      // router. The template's child-segment state key may change to remount
+      // client state without replacing that seed. Compare only params bound by
+      // the template's own route prefix; refresh/HMR or a changed owner param
+      // still installs fresh server output.
+      const preserveTemplateIds =
+        action.reuseCurrentBfcacheIds &&
+        (action.operation.lane === "navigation" ||
+          action.operation.lane === "traverse" ||
+          action.operation.lane === "server-action")
+          ? Object.keys(state.elements).filter(
+              (id) =>
+                Object.hasOwn(action.elements, id) &&
+                hasSameServerTemplateSeedIdentity(
+                  id,
+                  state.navigationSnapshot,
+                  action.navigationSnapshot,
+                ),
+            )
+          : [];
+      const mergedPreserveElementIds =
+        preserveTemplateIds.length === 0
+          ? preserveElementIds
+          : [...new Set([...preserveElementIds, ...preserveTemplateIds])];
       const mergedElements = mergeElements(state.elements, action.elements, {
         clearAbsentSlots: action.type === "traverse" || !action.reuseCurrentBfcacheIds,
         preserveAbsentSlots: action.reuseCurrentBfcacheIds && commit.decision.preserveAbsentSlots,
-        preserveElementIds,
-        preservePreviousSlotIds,
+        preserveElementIds: mergedPreserveElementIds,
+        preservePreviousSlotIds: effectivePreservePreviousSlotIds,
       });
       return commitVisibleRouterState(
         state,
@@ -219,7 +290,7 @@ function reduceApprovedVisibleCommitState(
             elements: mergedElements,
             next: action.bfcacheIds,
             previous: action.reuseCurrentBfcacheIds ? state.bfcacheIds : {},
-            preservedElementIds: preservePreviousSlotIds,
+            preservedElementIds: effectivePreservePreviousSlotIds,
             preservePreviousIds: preservePreviousBfcacheIdIds,
           }),
           elements: mergedElements,
@@ -235,8 +306,10 @@ function reduceApprovedVisibleCommitState(
           slotBindings: mergeSlotBindings(
             state.slotBindings,
             action.slotBindings,
+            action.elements,
             action.layoutIds,
-            preservePreviousSlotIds,
+            action.reuseCurrentBfcacheIds && commit.decision.preserveAbsentSlots,
+            effectivePreservePreviousSlotIds,
           ),
         },
         action.operation,
