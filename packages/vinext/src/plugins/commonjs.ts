@@ -1,5 +1,7 @@
 import MagicString from "magic-string";
-import { parseAst } from "vite";
+import { glob } from "node:fs/promises";
+import path, { toSlash } from "pathslash";
+import { parseAst, type Environment, type Plugin } from "vite";
 import {
   collectBindingNames,
   forEachAstChild,
@@ -24,6 +26,7 @@ import {
   type AstScope,
 } from "./ast-scope.js";
 import { magicStringTransformResult, type MagicStringTransformResult } from "./transform-result.js";
+import { stripViteModuleQuery } from "../utils/path.js";
 
 const COMMONJS_PRESCAN = /\b(?:require\s*\(|module\s*\.|exports\s*[.[])/;
 const IDENTIFIER_NAME_RE = /^[A-Za-z_$][\w$]*$/;
@@ -33,8 +36,14 @@ type StaticRequire = {
   specifier: string;
 };
 
+type DynamicRequire = {
+  argument: AstRecord & { start: number; end: number };
+  node: AstRecord & { start: number; end: number };
+};
+
 type CommonJsAnalysis = {
   requires: StaticRequire[];
+  dynamicRequires: DynamicRequire[];
   hasExports: boolean;
   namedExports: string[];
   rootBindings: Set<string>;
@@ -81,6 +90,7 @@ function analyzeCommonJs(code: string, id: string): CommonJsAnalysis | null {
   collectDirectScopeBindings(root, rootScope);
   collectVarScopeBindings(root, rootScope);
   const requires: StaticRequire[] = [];
+  const dynamicRequires: DynamicRequire[] = [];
   const namedExports = new Set<string>();
   let hasExports = false;
 
@@ -151,10 +161,10 @@ function analyzeCommonJs(code: string, id: string): CommonJsAnalysis | null {
         isIdentifierNamed(callee, "require") &&
         !hasAstBinding(scope, "require") &&
         args.length === 1 &&
-        argument &&
-        specifier !== null
+        argument
       ) {
-        requires.push({ node, specifier });
+        if (specifier !== null) requires.push({ node, specifier });
+        else if (hasRange(argument)) dynamicRequires.push({ argument, node });
         return;
       }
     } else if (node.type === "AssignmentExpression") {
@@ -176,10 +186,127 @@ function analyzeCommonJs(code: string, id: string): CommonJsAnalysis | null {
   }
   return {
     requires,
+    dynamicRequires,
     hasExports,
     namedExports: [...namedExports],
     rootBindings: rootScope.bindings,
   };
+}
+
+type DynamicRequireCandidate = {
+  cases: string[];
+  specifier: string;
+};
+
+type ResolvedDynamicRequire = DynamicRequire & {
+  candidates: DynamicRequireCandidate[];
+};
+
+type WatchContext = {
+  addWatchFile(id: string): void;
+};
+
+function templateElementValue(node: AstRecord): string | null {
+  if (node.type !== "TemplateElement" || typeof node.value !== "object" || !node.value) {
+    return null;
+  }
+  const cooked = Reflect.get(node.value, "cooked");
+  const raw = Reflect.get(node.value, "raw");
+  return typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : null;
+}
+
+function dynamicRequirePattern(value: unknown): string | null {
+  const node = unwrapExpression(value);
+  if (!node) return null;
+  const literal = staticStringValue(node);
+  if (literal !== null) return literal;
+  if (node.type === "TemplateLiteral") {
+    const quasis = nodeArray(node.quasis).filter(isAstRecord);
+    const expressions = nodeArray(node.expressions);
+    let pattern = "";
+    for (let index = 0; index < quasis.length; index++) {
+      const text = templateElementValue(quasis[index]);
+      if (text === null || text.includes("*")) return null;
+      pattern += text;
+      if (index < expressions.length) pattern += "*";
+    }
+    return pattern;
+  }
+  if (node.type === "BinaryExpression" && node.operator === "+") {
+    const left = dynamicRequirePattern(node.left);
+    const right = dynamicRequirePattern(node.right);
+    return left === null || right === null ? null : left + right;
+  }
+  if (node.type === "CallExpression") {
+    const callee = unwrapExpression(node.callee);
+    if (callee?.type !== "MemberExpression" || memberPropertyName(callee) !== "concat") return "*";
+    const object = dynamicRequirePattern(callee.object);
+    if (object === null) return null;
+    let pattern = object;
+    for (const argument of nodeArray(node.arguments)) {
+      const part = dynamicRequirePattern(argument);
+      if (part === null) return null;
+      pattern += part;
+    }
+    return pattern;
+  }
+  return "*";
+}
+
+function extensionlessCases(specifier: string): string[] {
+  const extension = path.extname(specifier);
+  const cases = new Set([specifier]);
+  if (extension) cases.add(specifier.slice(0, -extension.length));
+  const basename = extension ? path.basename(specifier, extension) : path.basename(specifier);
+  if (basename === "index") {
+    const directory = path.dirname(specifier);
+    cases.add(directory === "." ? "." : directory);
+  }
+  return [...cases];
+}
+
+function dynamicGlobPatterns(pattern: string, extensions: readonly string[]): string[] {
+  if (path.extname(pattern)) return [pattern];
+  return [
+    pattern,
+    ...extensions.flatMap((extension) => [
+      pattern + extension,
+      path.join(pattern, `index${extension}`),
+    ]),
+  ];
+}
+
+async function resolveDynamicRequire(
+  context: WatchContext,
+  request: DynamicRequire,
+  id: string,
+  extensions: readonly string[],
+): Promise<ResolvedDynamicRequire | null> {
+  const pattern = dynamicRequirePattern(request.argument);
+  if (
+    !pattern?.includes("*") ||
+    (!pattern.startsWith("./") && !pattern.startsWith("../") && !path.isAbsolute(pattern))
+  ) {
+    return null;
+  }
+
+  const cleanId = stripViteModuleQuery(id);
+  const importerDirectory = path.dirname(cleanId);
+  const candidates = new Map<string, DynamicRequireCandidate>();
+  for (const globPattern of dynamicGlobPatterns(pattern, extensions)) {
+    for await (const match of glob(globPattern, { cwd: importerDirectory })) {
+      let specifier = toSlash(match);
+      const absolute = path.resolve(importerDirectory, specifier);
+      if (absolute === cleanId) continue;
+      context.addWatchFile(absolute);
+      if (!path.isAbsolute(specifier) && !specifier.startsWith(".")) specifier = `./${specifier}`;
+      const cases = extensionlessCases(specifier);
+      const existing = candidates.get(absolute);
+      if (existing) existing.cases = [...new Set([...existing.cases, ...cases])];
+      else candidates.set(absolute, { cases, specifier });
+    }
+  }
+  return candidates.size > 0 ? { ...request, candidates: [...candidates.values()] } : null;
 }
 
 function unusedBinding(bindings: Set<string>, base: string): string {
@@ -190,21 +317,53 @@ function unusedBinding(bindings: Set<string>, base: string): string {
   return name;
 }
 
-/** Convert the project-local mixed CommonJS syntax that Vite's ESM module runner cannot execute. */
-export function transformCommonJs(code: string, id: string): MagicStringTransformResult | null {
-  const analysis = analyzeCommonJs(code, id);
-  if (!analysis || (analysis.requires.length === 0 && !analysis.hasExports)) return null;
+function renderCommonJs(
+  code: string,
+  id: string,
+  analysis: CommonJsAnalysis,
+  dynamicRequires: readonly ResolvedDynamicRequire[],
+): MagicStringTransformResult | null {
+  if (analysis.requires.length === 0 && dynamicRequires.length === 0 && !analysis.hasExports) {
+    return null;
+  }
 
   const output = new MagicString(code);
   const bindings = new Set(analysis.rootBindings);
   const imports: string[] = [];
-  for (const { node, specifier } of analysis.requires) {
+  const importBindings = new Map<string, string>();
+  function importBinding(specifier: string): string {
+    const existing = importBindings.get(specifier);
+    if (existing) return existing;
     const importName = unusedBinding(bindings, "__vinext_cjs_import__");
     imports.push(`import * as ${importName} from ${JSON.stringify(specifier)};`);
+    importBindings.set(specifier, importName);
+    return importName;
+  }
+
+  for (const { node, specifier } of analysis.requires) {
+    const importName = importBinding(specifier);
     output.overwrite(node.start, node.end, `(${importName}.default || ${importName})`);
   }
 
   const preamble: string[] = [];
+  for (const dynamicRequire of dynamicRequires) {
+    const runtimeName = unusedBinding(bindings, "__vinext_dynamic_require__");
+    const cases = dynamicRequire.candidates.flatMap((candidate) => {
+      const importName = importBinding(candidate.specifier);
+      return candidate.cases.map(
+        (value) =>
+          `case ${JSON.stringify(value)}: return (${importName}.default || ${importName});`,
+      );
+    });
+    preamble.push(
+      `function ${runtimeName}(request) { switch (request) { ${cases.join(" ")} default: { const error = new Error("Cannot find module '" + request + "'"); error.code = "MODULE_NOT_FOUND"; throw error; } } }`,
+    );
+    output.overwrite(
+      dynamicRequire.node.start,
+      dynamicRequire.node.end,
+      `${runtimeName}(${code.slice(dynamicRequire.argument.start, dynamicRequire.argument.end)})`,
+    );
+  }
   if (analysis.hasExports) {
     preamble.push("var module = { exports: {} };", "var exports = module.exports;");
   }
@@ -229,4 +388,56 @@ export function transformCommonJs(code: string, id: string): MagicStringTransfor
   }
 
   return magicStringTransformResult(output, { hires: true, source: id });
+}
+
+/** Convert the project-local mixed CommonJS syntax that Vite's ESM module runner cannot execute. */
+export function transformCommonJs(code: string, id: string): MagicStringTransformResult | null {
+  const analysis = analyzeCommonJs(code, id);
+  return analysis ? renderCommonJs(code, id, analysis, []) : null;
+}
+
+export type CommonJsPluginOptions = {
+  shouldTransform?: (environment: Environment, code: string, id: string) => boolean;
+};
+
+/** Vite lifecycle adapter for the shared CommonJS transform. */
+export function createCommonJsPlugin(options: CommonJsPluginOptions = {}): Plugin {
+  let extensions: readonly string[] = [
+    ".mjs",
+    ".js",
+    ".cjs",
+    ".mts",
+    ".ts",
+    ".cts",
+    ".jsx",
+    ".tsx",
+    ".json",
+  ];
+  return {
+    name: "vinext:commonjs",
+    configResolved(config) {
+      extensions = config.resolve.extensions;
+    },
+    transform: {
+      filter: {
+        id: /\.(?:[cm]?[jt]s|[jt]sx)(?:[?#].*)?$/i,
+        code: COMMONJS_PRESCAN,
+      },
+      async handler(code, id) {
+        if (options.shouldTransform && !options.shouldTransform(this.environment, code, id)) {
+          return null;
+        }
+        const analysis = analyzeCommonJs(code, id);
+        if (!analysis) return null;
+        const dynamicRequires = (
+          await Promise.all(
+            analysis.dynamicRequires.map((request) =>
+              resolveDynamicRequire(this, request, id, extensions),
+            ),
+          )
+        ).filter((value): value is ResolvedDynamicRequire => value !== null);
+        return renderCommonJs(code, id, analysis, dynamicRequires);
+      },
+    },
+  };
 }

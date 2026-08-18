@@ -960,7 +960,7 @@ export default function Page() {
     const clientModule = await server?.environments.client.transformRequest(
       "/lib/node_modules/linked-cjs-identity/client-safe.cjs",
     );
-    expect(clientModule?.code).toContain("[vite-plugin-commonjs] export-runtime-S");
+    expect(clientModule?.code).toContain("__vinext_cjs_default__ as default");
     const esmClientModule = await server?.environments.client.transformRequest(
       "/vendor/node_modules/esm-import-meta-identity/client.js",
     );

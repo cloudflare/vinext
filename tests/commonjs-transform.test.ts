@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vite-plus/test";
-import { transformCommonJs } from "../packages/vinext/src/plugins/commonjs.js";
+import path from "node:path";
+import {
+  createCommonJsPlugin,
+  transformCommonJs,
+} from "../packages/vinext/src/plugins/commonjs.js";
+
+async function runPluginTransform(code: string, id: string) {
+  const hook = createCommonJsPlugin().transform;
+  if (!hook || typeof hook === "function") throw new Error("Expected object transform hook");
+  return await hook.handler.call(
+    {
+      addWatchFile() {},
+      environment: { mode: "dev", config: { consumer: "server" } },
+    } as never,
+    code,
+    id,
+  );
+}
 
 describe("transformCommonJs", () => {
   it("hoists literal require calls with the existing default-first interop", () => {
@@ -86,5 +103,24 @@ const external = require("external");
       transformCommonJs(`require(\`./messages/${"${locale}"}.js\`);`, "/app/page.js"),
     ).toBeNull();
     expect(transformCommonJs(`export default 42;`, "/app/page.js")).toBeNull();
+  });
+
+  it("expands patterned dynamic requires with Node's glob implementation", async () => {
+    const importer = path.join(
+      import.meta.dirname,
+      "fixtures/pages-basic/pages/cjs/dynamic-require.tsx",
+    );
+    const result = await runPluginTransform(
+      `const messages = require(\`../../locales/${"${locale}"}.js\`);`,
+      importer,
+    );
+    if (!result || typeof result === "string" || !("code" in result)) {
+      throw new Error("Expected transformed code");
+    }
+    const transformed = String(result.code);
+    expect(transformed).toContain('from "../../locales/en.js"');
+    expect(transformed).toContain('from "../../locales/ru.js"');
+    expect(transformed).toContain('case "../../locales/ru.js"');
+    expect(transformed).toContain("__vinext_dynamic_require__(`../../locales/${locale}.js`)");
   });
 });
