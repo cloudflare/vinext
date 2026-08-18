@@ -45,7 +45,7 @@ import {
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v5";
+const CACHE_KEY_PREFIX = "v6";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 // "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
@@ -545,6 +545,78 @@ const _gFetch = globalThis as unknown as Record<PropertyKey, unknown>;
 const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??=
   globalThis.fetch) as typeof globalThis.fetch;
 
+const JSON_CONTENT_TYPE_RE = /^(?:application\/(?:[a-z0-9!#$&^_.+-]+\+)?json)(?:\s*;|$)/i;
+const GZIP_MAGIC = [0x1f, 0x8b] as const;
+
+function isCloudflareWorkersRuntime(): boolean {
+  return globalThis.navigator?.userAgent === "Cloudflare-Workers";
+}
+
+async function startsWithGzipMagic(response: Response): Promise<boolean> {
+  const reader = response.clone().body?.getReader();
+  if (!reader) return false;
+
+  const prefix: number[] = [];
+  try {
+    while (prefix.length < GZIP_MAGIC.length) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const byte of value) {
+        prefix.push(byte);
+        if (prefix.length === GZIP_MAGIC.length) break;
+      }
+    }
+  } catch {
+    return false;
+  } finally {
+    // A cloned response body is a tee branch. Do not await cancellation: the
+    // streams implementation may wait for the caller-owned branch to finish.
+    void reader.cancel().catch(() => {});
+  }
+
+  return prefix[0] === GZIP_MAGIC[0] && prefix[1] === GZIP_MAGIC[1];
+}
+
+/**
+ * Cloudflare Workers currently decodes only the outer Brotli layer when an
+ * origin responds with stacked `Content-Encoding: gzip, br` fields. The
+ * resulting Response still advertises an encoding but exposes gzip bytes,
+ * while Node's fetch (and therefore Next.js) decodes the complete chain.
+ *
+ * Normalize the affected JSON response before vinext returns or caches it.
+ * The runtime, media-type, encoding, and gzip-magic checks keep genuine gzip
+ * downloads byte-for-byte intact.
+ */
+async function normalizeRuntimeFetchResponse(response: Response): Promise<Response> {
+  if (!isCloudflareWorkersRuntime() || !response.body) return response;
+
+  const contentType = response.headers.get("content-type") ?? "";
+  const contentEncoding = response.headers.get("content-encoding");
+  if (!JSON_CONTENT_TYPE_RE.test(contentType) || !contentEncoding) return response;
+  if (!(await startsWithGzipMagic(response))) return response;
+
+  const headers = new Headers(response.headers);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+
+  const normalized = new Response(response.body.pipeThrough(new DecompressionStream("gzip")), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+  Object.defineProperty(normalized, "url", {
+    value: response.url,
+    configurable: true,
+    enumerable: true,
+    writable: false,
+  });
+  return normalized;
+}
+
+async function runtimeFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
+  return normalizeRuntimeFetchResponse(await originalFetch(input, init));
+}
+
 // ---------------------------------------------------------------------------
 // AsyncLocalStorage for request-scoped fetch cache state.
 // Uses Symbol.for() on globalThis so the storage is shared across Vite's
@@ -1027,12 +1099,12 @@ function dedupeFetch(
 ): Promise<Response> {
   const state = _getState();
   if (!state.isFetchDedupeActive) {
-    return originalFetch(input, init);
+    return runtimeFetch(input, init);
   }
 
   const candidate = createFetchDedupeCandidate(input, init);
   if (!candidate) {
-    return originalFetch(input, init);
+    return runtimeFetch(input, init);
   }
 
   const entriesByUrl = state.currentFetchDedupeEntries;
@@ -1055,7 +1127,7 @@ function dedupeFetch(
     });
   }
 
-  const promise = originalFetch(input, init);
+  const promise = runtimeFetch(input, init);
   const entry: FetchDedupeEntry = {
     key: candidate.key,
     promise,
@@ -1281,7 +1353,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         // Background refetch — deduped so only one in-flight refetch runs
         // per cache key, preventing thundering herd on popular endpoints.
         if (!pendingRefetches.has(cacheKey)) {
-          const refetchPromise = originalFetch(input, fetchInit)
+          const refetchPromise = runtimeFetch(input, fetchInit)
             .then(async (freshResp) => {
               await writeFetchCacheResponse(handler, cacheKey, freshResp, tags, revalidateSeconds, {
                 cloneForReturn: false,
@@ -1332,7 +1404,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     // Cache miss — fetch from network
     const response = await (mustBypassPendingRevalidation
-      ? originalFetch(input, fetchInit)
+      ? runtimeFetch(input, fetchInit)
       : dedupeFetch(input, fetchInit));
 
     const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
