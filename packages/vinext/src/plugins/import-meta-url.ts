@@ -488,6 +488,7 @@ function collectDynamicImportUrlSpecifiers(
       for (const parameter of nodeArray(value.params)) {
         collectBindingNames(parameter, parameterScope.bindings);
       }
+      for (const parameter of nodeArray(value.params)) visit(parameter, parameterScope);
       if (isAstRecord(value.body)) {
         const bodyScope = createAstScope(parameterScope);
         if (value.body.type === "BlockStatement") {

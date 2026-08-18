@@ -66,7 +66,7 @@ function collectNodeUrlImports(ast: AstRecord, scope: AssetScope): void {
       !isAstRecord(statement) ||
       statement.type !== "ImportDeclaration" ||
       !isAstRecord(statement.source) ||
-      statement.source.value !== "node:url"
+      (statement.source.value !== "node:url" && statement.source.value !== "url")
     ) {
       continue;
     }
@@ -88,13 +88,14 @@ function collectNodeUrlImports(ast: AstRecord, scope: AssetScope): void {
 }
 
 function assetUrlFromNode(value: unknown): AssetUrl | null {
-  if (!isNewUrlExpression(value) || !hasRange(value)) {
+  const expression = unwrapExpression(value);
+  if (!isNewUrlExpression(expression) || !hasRange(expression)) {
     return null;
   }
 
-  const args = nodeArray(value.arguments);
+  const args = nodeArray(expression.arguments);
   if (args.length !== 2 || !isImportMetaUrlOrChainedNode(args[1])) return null;
-  const specifier = args[0];
+  const specifier = unwrapExpression(args[0]);
   if (
     !isAstRecord(specifier) ||
     specifier.type !== "Literal" ||
@@ -111,7 +112,11 @@ function assetUrlFromNode(value: unknown): AssetUrl | null {
   ) {
     return null;
   }
-  return { range: value, sourceRange: value, specifier: specifier.value };
+  return {
+    range: isAstRecord(value) && hasRange(value) ? value : expression,
+    sourceRange: expression,
+    specifier: specifier.value,
+  };
 }
 
 function recordAssetBinding(
@@ -389,11 +394,41 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
       }
       return;
     }
-    if (node.type === "ImportDeclaration" || node.type.startsWith("TS")) {
-      const expression = isAstRecord(node.expression) ? node.expression : null;
-      if (expression) visit(expression, scope, safeAssetReference);
+    if (node.type === "ImportDeclaration") return;
+    if (
+      node.type === "TSAsExpression" ||
+      node.type === "TSSatisfiesExpression" ||
+      node.type === "TSNonNullExpression" ||
+      node.type === "TSInstantiationExpression" ||
+      node.type === "TSTypeAssertion"
+    ) {
+      if (isAstRecord(node.expression)) visit(node.expression, scope, safeAssetReference);
       return;
     }
+    if (node.type === "TSEnumDeclaration") {
+      const body = isAstRecord(node.body) ? node.body : node;
+      for (const member of nodeArray(body.members)) {
+        if (isAstRecord(member) && isAstRecord(member.initializer)) {
+          visit(member.initializer, scope);
+        }
+      }
+      return;
+    }
+    if (node.type === "TSModuleDeclaration") {
+      if (isAstRecord(node.body)) visit(node.body, scope);
+      return;
+    }
+    if (node.type === "TSModuleBlock") {
+      for (const statement of nodeArray(node.body)) {
+        if (isAstRecord(statement)) visit(statement, scope);
+      }
+      return;
+    }
+    if (node.type === "TSExportAssignment") {
+      if (isAstRecord(node.expression)) visit(node.expression, scope);
+      return;
+    }
+    if (node.type.startsWith("TS")) return;
     if (
       (node.type === "ForInStatement" || node.type === "ForOfStatement") &&
       (!isAstRecord(node.left) || node.left.type !== "VariableDeclaration")
@@ -451,11 +486,11 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
         assets.push(directAsset);
       } else if (
         isAstRecord(input) &&
-        input.type === "Identifier" &&
-        typeof input.name === "string" &&
+        unwrapExpression(input)?.type === "Identifier" &&
         hasRange(input)
       ) {
-        const boundAsset = findAssetBinding(scope, input.name);
+        const identifier = unwrapExpression(input)!;
+        const boundAsset = findAssetBinding(scope, String(identifier.name));
         if (boundAsset) {
           assets.push({
             ...boundAsset.asset,
@@ -483,8 +518,8 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
       for (const [index, argument] of nodeArray(node.arguments).entries()) {
         if (!isAstRecord(argument)) continue;
         const safeArgument =
-          (isGlobalFetch && index === 0 && argument.type === "Identifier") ||
-          (isReadOnlyUrlConsumer && argument.type === "Identifier");
+          (isGlobalFetch && index === 0 && unwrapExpression(argument)?.type === "Identifier") ||
+          (isReadOnlyUrlConsumer && unwrapExpression(argument)?.type === "Identifier");
         visit(argument, scope, safeArgument);
       }
       return;
@@ -539,6 +574,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     if (node.type === "BreakStatement" || node.type === "ContinueStatement") return;
 
     if (node.type === "ExportSpecifier") {
+      if (node.exportKind === "type") return;
       if (isAstRecord(node.local)) visit(node.local, scope);
       return;
     }
@@ -574,13 +610,20 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
       if (isAstRecord(node.body)) visit(node.body, scope);
       return;
     }
-    if (node.type === "LogicalExpression" || node.type === "BinaryExpression") {
+    if (node.type === "LogicalExpression") {
       visitReadOnly(node.left);
       visitReadOnly(node.right);
       return;
     }
+    if (node.type === "BinaryExpression") {
+      const safe = node.operator === "===" || node.operator === "!==";
+      if (isAstRecord(node.left)) visit(node.left, scope, safe);
+      if (isAstRecord(node.right)) visit(node.right, scope, safe);
+      return;
+    }
     if (node.type === "UnaryExpression" && node.operator !== "delete") {
-      visitReadOnly(node.argument);
+      const safe = node.operator === "!" || node.operator === "typeof" || node.operator === "void";
+      if (isAstRecord(node.argument)) visit(node.argument, scope, safe);
       return;
     }
     if (node.type === "SequenceExpression") {
@@ -589,6 +632,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     }
 
     if (node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration") {
+      if (node.exportKind === "type") return;
       if (isAstRecord(node.declaration)) {
         visit(node.declaration, scope);
         if (node.declaration.type === "VariableDeclaration") {

@@ -274,11 +274,8 @@ export default defineConfig({ plugins: [vinext(), nitro(preset ? { preset } : {}
 
   async function buildNitro(preset?: string) {
     await fsp.rm(path.join(tmpRoot, ".output"), { recursive: true, force: true });
-    const vp = path.resolve(
-      import.meta.dirname,
-      `../examples/app-router-nitro/node_modules/.bin/vp${process.platform === "win32" ? ".CMD" : ""}`,
-    );
-    await execFileAsync(vp, ["build"], {
+    const vp = path.resolve(import.meta.dirname, "../node_modules/vite-plus/bin/vp");
+    await execFileAsync(process.execPath, [vp, "build"], {
       cwd: tmpRoot,
       env: { ...process.env, TEST_NITRO_PRESET: preset },
     });

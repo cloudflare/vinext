@@ -255,6 +255,19 @@ describe("vinext:import-meta-url plugin", () => {
     }
   });
 
+  it("normalizes URL imports in default parameter initializers", () => {
+    const source = `export function load(value = import(new URL("./dependency.js", import.meta.url).href)) { return value; }`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")?.code).toContain(
+      `import("./dependency.js")`,
+    );
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+      expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)?.code).toContain(
+        `import("./dependency.js")`,
+      );
+    }
+  });
+
   it("preserves URL imports using a computed import.meta base", () => {
     const source = `const key = "url"; import(new URL("./dependency.js", import.meta[key]).href);`;
     expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js", false)).toBeNull();

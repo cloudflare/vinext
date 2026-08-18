@@ -313,7 +313,9 @@ describe("import-meta asset phase", () => {
 
   it.each([
     [`import { fileURLToPath as toPath } from "node:url";`, `toPath(url);`],
+    [`import { fileURLToPath as toPath } from "url";`, `toPath(url);`],
     [`import * as nodeUrl from "node:url";`, `nodeUrl.fileURLToPath(url);`],
+    [`import * as nodeUrl from "url";`, `nodeUrl.fileURLToPath(url);`],
   ])("trusts proven node:url consumers", async (importStatement, consume) => {
     const plugin = await createPlugin(false);
     const source = [
@@ -331,12 +333,25 @@ describe("import-meta asset phase", () => {
     const source = [
       `const url = new URL("../../src/text-file.txt", import.meta.url);`,
       `const metadata = { url: "not the asset" };`,
-      `if (!url || url === metadata || url instanceof URL) throw new Error();`,
+      `if (!url || url === metadata) throw new Error();`,
       `void url;`,
       `fetch(url);`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, routePath);
     expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
+  });
+
+  it("invalidates coercive and user-code binary observations", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+      `class Mutator {`,
+      `  static [Symbol.hasInstance](value) { value.pathname = "/other"; return true; }`,
+      `}`,
+      `void (url instanceof Mutator);`,
+      `fetch(url);`,
+    ].join("\n");
+    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
   });
 
   it("ignores TypeScript type-only names when tracking aliases", async () => {
@@ -350,6 +365,47 @@ describe("import-meta asset phase", () => {
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
     expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
+  });
+
+  it.each([
+    `const url = new URL("../../src/text-file.txt", import.meta.url) as URL; fetch(url);`,
+    `const url = new URL("../../src/text-file.txt", import.meta.url); fetch(url as URL);`,
+    `fetch(new URL("../../src/text-file.txt", import.meta.url) satisfies URL);`,
+  ])("rewrites TypeScript-wrapped asset expressions", async (source) => {
+    const plugin = await createPlugin(false);
+    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
+  });
+
+  it("tracks runtime references inside TypeScript enums and namespaces", async () => {
+    const plugin = await createPlugin(false);
+    const sources = [
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `enum Values { Current = mutate(url) as any }`,
+        `fetch(url);`,
+      ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `namespace Values { export const current = mutate(url); }`,
+        `fetch(url);`,
+      ].join("\n"),
+    ];
+    for (const source of sources) {
+      expect(await transformHandler(plugin).call(context(), source, typedRoutePath)).toBeNull();
+    }
+  });
+
+  it("ignores same-named type-only exports", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `type url = string;`,
+      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+      `export type { url };`,
+      `fetch(url);`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
   it("resolves a bare node_modules asset through the bundler", async () => {

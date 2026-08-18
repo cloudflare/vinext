@@ -750,7 +750,7 @@ describe("optimizeDeps.exclude for vinext", () => {
     );
     await fsp.writeFile(
       path.join(dependency, "index.js"),
-      `export const load = () => import(new URL("./loaded.js", import.meta.url).href);`,
+      `export const load = (value = import(new URL("./loaded.js", import.meta.url).href)) => value;`,
     );
     await fsp.writeFile(path.join(dependency, "loaded.js"), `export const value = "loaded";`);
     await fsp.mkdir(path.join(tmpDir, "app"));
