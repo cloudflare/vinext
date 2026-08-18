@@ -35,6 +35,13 @@ async function runPluginTransform(code: string, id: string, aliases: Alias[] = [
   );
 }
 
+async function evaluateCommonJs(code: string): Promise<Record<string, unknown>> {
+  const result = transformCommonJs(code, "/app/value.js");
+  if (!result) throw new Error("Expected transformed code");
+  const url = `data:text/javascript;base64,${Buffer.from(result.code).toString("base64")}`;
+  return import(url) as Promise<Record<string, unknown>>;
+}
+
 describe("transformCommonJs", () => {
   it("hoists literal require calls with the existing default-first interop", () => {
     const result = transformCommonJs(
@@ -45,6 +52,28 @@ describe("transformCommonJs", () => {
     expect(result?.code).toContain(
       `const { join } = (__vinext_cjs_import__.default || __vinext_cjs_import__);`,
     );
+  });
+
+  // Ported from vite-plugin-commonjs v0.10.4 historical require-form coverage:
+  // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/test/fixtures/v0.4.7/input.js
+  it("rewrites repeated requires in side-effect, member, and collection positions", () => {
+    const result = transformCommonJs(
+      `
+require("foo");
+require("foo").bar();
+const foo = require("foo");
+const fooDefault = require("foo").default;
+const { value } = require("foo");
+const routes = [{ component: require("@/views/home.vue") }];
+export { foo, fooDefault, value, routes };
+`,
+      "/app/value.js",
+    );
+    expect(result?.code.match(/from "foo"/g)).toHaveLength(1);
+    expect(result?.code.match(/from "@\/views\/home\.vue"/g)).toHaveLength(1);
+    expect(result?.code).toContain(".bar();");
+    expect(result?.code).toContain(".default;");
+    expect(result?.code).toContain("const { value }");
   });
 
   it("exposes module.exports as the default export", () => {
@@ -60,6 +89,37 @@ describe("transformCommonJs", () => {
     );
     expect(result?.code).toContain("__vinext_cjs_export_Component__ as Component");
     expect(result?.code).toContain("__vinext_cjs_export_value__ as value");
+  });
+
+  // Ported from vite-plugin-commonjs v0.10.4:
+  // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/test/fixtures/src/cjs.js
+  it("evaluates guarded module and exports reassignment", async () => {
+    const module = await evaluateCommonJs(`
+if (typeof exports !== "undefined") {
+  if (typeof module !== "undefined" && module.exports) {
+    exports = module.exports = { cjs: "cjs" };
+  }
+}
+`);
+    expect(module.default).toEqual({ cjs: "cjs" });
+  });
+
+  // Ported from vite-plugin-commonjs v0.10.4 historical export fixtures:
+  // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/test/fixtures/v0.4.0/input.js
+  it("evaluates repeated and nested named export assignments", async () => {
+    const module = await evaluateCommonJs(`
+exports.foo = "first";
+exports.foo = "foo";
+function assignNestedExport() {
+  exports.bar = exports.foo;
+}
+assignNestedExport();
+exports.obj = { foo: "foo" };
+`);
+    expect(module.default).toEqual({ foo: "foo", bar: "foo", obj: { foo: "foo" } });
+    expect(module.foo).toBe("foo");
+    expect(module.bar).toBe("foo");
+    expect(module.obj).toEqual({ foo: "foo" });
   });
 
   it("supports computed static export names but not invalid ESM names", () => {
@@ -207,6 +267,57 @@ const external = require("external");
     expect(transformed).toContain('case "@messages/ru.js"');
   });
 
+  // Ported from vite-plugin-commonjs v0.10.4 and its transitive dynamic-import fixture:
+  // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/test/fixtures/src/dynamic.tsx
+  // https://github.com/vite-plugin/vite-plugin-dynamic-import/blob/v1.6.0/test/fixtures/src/main.ts
+  it("expands alias-root patterns whose variables include directories or extensions", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-commonjs-alias-root-"));
+    try {
+      const sourceDirectory = path.join(root, "src");
+      await Promise.all([
+        mkdir(path.join(sourceDirectory, "module-exports"), { recursive: true }),
+        mkdir(path.join(sourceDirectory, "views/baz"), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(
+          path.join(sourceDirectory, "module-exports/hello.cjs"),
+          'module.exports = "hello";\n',
+        ),
+        writeFile(
+          path.join(sourceDirectory, "views/baz/index.tsx"),
+          'export const value = "baz";\n',
+        ),
+      ]);
+      const importer = path.join(sourceDirectory, "main.ts");
+      const aliases: Alias[] = [{ find: "@", replacement: sourceDirectory }];
+
+      const extensionResult = await runPluginTransform(
+        `const value = require(\`@/module-exports/${"${name}"}\`);`,
+        importer,
+        aliases,
+      );
+      if (!extensionResult || typeof extensionResult === "string" || !("code" in extensionResult)) {
+        throw new Error("Expected transformed code");
+      }
+      expect(String(extensionResult.code)).toContain('case "@/module-exports/hello.cjs"');
+
+      const directoryResult = await runPluginTransform(
+        `const value = require(\`@/${"${id}"}\`);`,
+        importer,
+        aliases,
+      );
+      if (!directoryResult || typeof directoryResult === "string" || !("code" in directoryResult)) {
+        throw new Error("Expected transformed code");
+      }
+      const transformed = String(directoryResult.code);
+      expect(transformed).toContain('case "@/views/baz"');
+      expect(transformed).toContain('case "@/views/baz/index"');
+      expect(transformed).toContain('case "@/views/baz/index.tsx"');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("matches extensionless dynamic requires recursively", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "vinext-commonjs-loose-pattern-"));
     try {
@@ -276,6 +387,32 @@ const external = require("external");
         JSON.stringify(path.join(toSlash(await realpath(packageDirectory)), "ru.js")),
       );
       expect(transformed).toContain('case "messages/ru.js"');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // Ported from vite-plugin-dynamic-import v1.6.0 bare-package resolution coverage:
+  // https://github.com/vite-plugin/vite-plugin-dynamic-import/blob/v1.6.0/test/resolve.test.ts
+  it("expands scoped bare-package dynamic require patterns", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-commonjs-scoped-pattern-"));
+    try {
+      const packageDirectory = path.join(root, "node_modules/@scope/messages");
+      await mkdir(packageDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(packageDirectory, "package.json"), '{"name":"@scope/messages"}\n'),
+        writeFile(path.join(packageDirectory, "ru.js"), 'module.exports = "loaded";\n'),
+      ]);
+      const result = await runPluginTransform(
+        `const messages = require(\`@scope/messages/${"${locale}"}\`);`,
+        path.join(root, "page.js"),
+      );
+      if (!result || typeof result === "string" || !("code" in result)) {
+        throw new Error("Expected transformed code");
+      }
+      const transformed = String(result.code);
+      expect(transformed).toContain('case "@scope/messages/ru"');
+      expect(transformed).toContain('case "@scope/messages/ru.js"');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
