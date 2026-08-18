@@ -505,7 +505,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     if (node.type === "Identifier" && typeof node.name === "string") {
       if (
         !safeAssetReference &&
-        ((node.name === "eval" && !hasAstBinding(scope, "eval")) ||
+        (((node.name === "eval" || node.name === "Function") && !hasAstBinding(scope, node.name)) ||
           isGlobalObjectReference(scope, node))
       ) {
         globalFetchIsStable = false;
@@ -672,8 +672,10 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     if (node.type === "MemberExpression") {
       if (
         !nodelessTarget &&
-        ((!safeAssetReference && isGlobalObjectReference(scope, node)) ||
-          isGlobalObjectMember(scope, node, "eval"))
+        !safeAssetReference &&
+        (isGlobalObjectReference(scope, node) ||
+          isGlobalObjectMember(scope, node, "eval") ||
+          isGlobalObjectMember(scope, node, "Function"))
       ) {
         globalFetchIsStable = false;
       }

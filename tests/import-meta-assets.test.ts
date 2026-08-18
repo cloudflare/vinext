@@ -382,6 +382,11 @@ describe("import-meta asset phase", () => {
     `for (globalThis.fetch of source) break;`,
     `const key = "fetch"; globalThis[key] = customFetch;`,
     `const key = "fetch"; delete globalThis[key];`,
+    `Function('globalThis.fetch = customFetch')();`,
+    `new Function('globalThis.fetch = customFetch')();`,
+    `const compile = Function; compile('globalThis.fetch = customFetch')();`,
+    `globalThis.Function('globalThis.fetch = customFetch')();`,
+    `const compile = globalThis.Function; compile('globalThis.fetch = customFetch')();`,
   ])("does not trust a mutated global fetch capability", async (mutation) => {
     const plugin = await createPlugin(false);
     const source = [
@@ -426,16 +431,23 @@ describe("import-meta asset phase", () => {
     `if (typeof eval !== "function") throw new Error();`,
     `const available = typeof eval === "function";`,
     `void eval;`,
-  ])("keeps trusting global fetch after harmless eval observations", async (observation) => {
-    const plugin = await createPlugin(false);
-    const source = [
-      observation,
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
-      `globalThis.fetch(url);`,
-    ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
-  });
+    `if (typeof Function !== "function") throw new Error();`,
+    `void Function;`,
+    `void globalThis.eval;`,
+    `void globalThis.Function;`,
+  ])(
+    "keeps trusting global fetch after harmless dynamic-code observations",
+    async (observation) => {
+      const plugin = await createPlugin(false);
+      const source = [
+        observation,
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `globalThis.fetch(url);`,
+      ].join("\n");
+      const result = await transformHandler(plugin).call(context(), source, routePath);
+      expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
+    },
+  );
 
   it("does not trust a shadowed globalThis fetch member", async () => {
     const plugin = await createPlugin(false);
