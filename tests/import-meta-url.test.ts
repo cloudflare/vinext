@@ -684,36 +684,40 @@ exports.dirname = __dirname;`,
     expectFinalizedCjsGlobal(emittedResult?.code, "__dirname", "worker/entry.js");
   });
 
-  it("finalizes nested server environments relative to the shared server output root", () => {
+  it("delegates deployed filenames to the configured environment resolver", () => {
+    const resolveEmittedModuleFileName = vi.fn(
+      (environmentName: string | undefined, fileName: string) =>
+        environmentName === "ssr" ? path.posix.join("ssr", fileName) : fileName,
+    );
+    const createEmittedModuleFileNameResolver = vi.fn(() => resolveEmittedModuleFileName);
     const capability = createImportMetaUrlPlugin({
       getRoot: () => realRoot,
-      getServerOutputRoot: () => path.join(realRoot, "dist/server"),
+      createEmittedModuleFileNameResolver,
     });
-    unwrapHook(capability.vitePlugin.configResolved).call(
-      {},
-      {
-        root: realRoot,
-        build: { outDir: path.join(realRoot, "dist/server") },
-        environments: {
-          auxiliary: {
-            consumer: "server",
-            build: { outDir: path.join(realRoot, "dist/server/auxiliary") },
-          },
-          client: {
-            consumer: "client",
-            build: { outDir: path.join(realRoot, "dist/client") },
-          },
-          rsc: {
-            consumer: "server",
-            build: { outDir: path.join(realRoot, "dist/server") },
-          },
-          ssr: {
-            consumer: "server",
-            build: { outDir: path.join(realRoot, "dist/server/ssr") },
-          },
+    const config = {
+      root: realRoot,
+      build: { outDir: path.join(realRoot, "dist/server") },
+      environments: {
+        auxiliary: {
+          consumer: "server",
+          build: { outDir: path.join(realRoot, "dist/server/auxiliary") },
+        },
+        client: {
+          consumer: "client",
+          build: { outDir: path.join(realRoot, "dist/client") },
+        },
+        rsc: {
+          consumer: "server",
+          build: { outDir: path.join(realRoot, "dist/server") },
+        },
+        ssr: {
+          consumer: "server",
+          build: { outDir: path.join(realRoot, "dist/server/ssr") },
         },
       },
-    );
+    };
+    unwrapHook(capability.vitePlugin.configResolved).call({}, config);
+    expect(createEmittedModuleFileNameResolver).toHaveBeenCalledWith(config);
     const buildResult = unwrapHook(capability.vitePlugin.transform).call(
       { environment: { name: "ssr", mode: "build", config: { consumer: "server" } } },
       "exports.path = __filename;",
@@ -727,6 +731,7 @@ exports.dirname = __dirname;`,
     );
 
     expectFinalizedCjsGlobal(emittedResult?.code, "__filename", "ssr/_next/static/split.js");
+    expect(resolveEmittedModuleFileName).toHaveBeenCalledWith("ssr", "_next/static/split.js");
 
     const auxiliaryResult = unwrapHook(capability.vitePlugin.renderChunk).call(
       { environment: { name: "auxiliary", config: { consumer: "server" } } },
@@ -735,9 +740,10 @@ exports.dirname = __dirname;`,
       { format: "es" },
     );
     expectFinalizedCjsGlobal(auxiliaryResult?.code, "__filename", "worker.js");
+    expect(resolveEmittedModuleFileName).toHaveBeenCalledWith("auxiliary", "worker.js");
   });
 
-  it("does not invent prefixes without an explicit server output root", () => {
+  it("keeps emitted filenames unchanged without a deployment resolver", () => {
     const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     unwrapHook(capability.vitePlugin.configResolved).call(
       {},
