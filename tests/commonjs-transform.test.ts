@@ -261,6 +261,28 @@ const external = require("external");
     expect(transformCommonJs(`export default 42;`, "/app/page.js")).toBeNull();
   });
 
+  it("rejects require calls without a statically known path segment", async () => {
+    for (const source of [
+      `require(name);`,
+      `require();`,
+      `require(0);`,
+      `require(\`./messages/*/${"${name}"}.js\`);`,
+    ]) {
+      await expect(runPluginTransform(source, "/app/page.js")).rejects.toThrow(
+        /cannot be statically analyzed/,
+      );
+      expect(() => transformCommonJs(source, "/app/page.js")).toThrow(
+        /cannot be statically analyzed/,
+      );
+    }
+  });
+
+  it("preserves explicitly ignored unsupported require expressions", async () => {
+    const source = `require(/* webpackIgnore: true */ name);`;
+    await expect(runPluginTransform(source, "/app/page.js")).resolves.toBeNull();
+    expect(transformCommonJs(source, "/app/page.js")).toBeNull();
+  });
+
   it("expands patterned dynamic requires with Node's glob implementation", async () => {
     const importer = path.join(
       import.meta.dirname,

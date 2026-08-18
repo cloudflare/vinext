@@ -26,6 +26,7 @@ import {
   type AstScope,
 } from "./ast-scope.js";
 import { magicStringTransformResult, type MagicStringTransformResult } from "./transform-result.js";
+import { hasDynamicRequestIgnoreDirective } from "./dynamic-request-utils.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 import { packageNameFromSpecifier } from "../utils/package-name.js";
 
@@ -96,11 +97,14 @@ type StaticRequire = {
 type DynamicRequire = {
   argument: AstRecord & { start: number; end: number };
   callee: AstRecord & { start: number; end: number };
+  ignored: boolean;
+  node: AstRecord & { start: number; end: number };
 };
 
 type CommonJsAnalysis = {
   requires: StaticRequire[];
   dynamicRequires: DynamicRequire[];
+  argumentlessRequires: Array<AstRecord & { start: number; end: number }>;
   hasExports: boolean;
   namedExports: string[];
   rootBindings: Set<string>;
@@ -144,6 +148,7 @@ function analyzeCommonJsAst(
   collectVarScopeBindings(root, rootScope);
   const requires: StaticRequire[] = [];
   const dynamicRequires: DynamicRequire[] = [];
+  const argumentlessRequires: Array<AstRecord & { start: number; end: number }> = [];
   const namedExports = new Set<string>();
   let hasExports = false;
 
@@ -210,12 +215,21 @@ function analyzeCommonJsAst(
       const args = nodeArray(node.arguments);
       const argument = unwrapExpression(args[0]);
       const specifier = staticStringValue(argument);
-      if (isIdentifierNamed(callee, "require") && !hasAstBinding(scope, "require") && argument) {
+      if (isIdentifierNamed(callee, "require") && !hasAstBinding(scope, "require")) {
+        if (!argument) {
+          argumentlessRequires.push(node);
+          return;
+        }
         if (specifier !== null) {
           requires.push({ node, specifier });
           return;
         } else if (hasRange(argument) && hasRange(callee)) {
-          dynamicRequires.push({ argument, callee });
+          dynamicRequires.push({
+            argument,
+            callee,
+            ignored: hasDynamicRequestIgnoreDirective(code, node, argument),
+            node,
+          });
         }
       }
     } else if (node.type === "AssignmentExpression") {
@@ -238,6 +252,7 @@ function analyzeCommonJsAst(
   return {
     requires,
     dynamicRequires,
+    argumentlessRequires,
     hasExports,
     namedExports: [...namedExports],
     rootBindings: rootScope.bindings,
@@ -337,6 +352,22 @@ function dynamicRequirePattern(value: unknown): string | null {
     return pattern;
   }
   return "*";
+}
+
+function assertSupportedDynamicRequires(code: string, analysis: CommonJsAnalysis): void {
+  const unsupportedDynamic = analysis.dynamicRequires.find((request) => {
+    if (request.ignored) return false;
+    const pattern = dynamicRequirePattern(request.argument);
+    return pattern === null || pattern.replaceAll("*", "") === "";
+  });
+  const range = analysis.argumentlessRequires[0] ?? unsupportedDynamic?.node;
+  if (!range) return;
+
+  const source = code.slice(range.start, range.end);
+  throw new Error(
+    `invalid import ${JSON.stringify(source)}. It cannot be statically analyzed. ` +
+      "Dynamic requires must include a statically known path segment.",
+  );
 }
 
 function extensionlessCases(specifier: string): string[] {
@@ -604,6 +635,7 @@ function renderCommonJs(
 /** Convert the project-local mixed CommonJS syntax that Vite's ESM module runner cannot execute. */
 export function transformCommonJs(code: string, id: string): MagicStringTransformResult | null {
   const analysis = analyzeCommonJs(code, id);
+  if (analysis) assertSupportedDynamicRequires(code, analysis);
   return analysis ? renderCommonJs(code, id, analysis, []) : null;
 }
 
@@ -639,6 +671,7 @@ export function createCommonJsPlugin(options: CommonJsPluginOptions = {}): Plugi
         }
         const analysis = await analyzeCommonJsAsync(code, id);
         if (!analysis) return null;
+        assertSupportedDynamicRequires(code, analysis);
         const dynamicRequires = (
           await Promise.all(
             analysis.dynamicRequires.map((request) =>
