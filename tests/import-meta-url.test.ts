@@ -11,7 +11,10 @@ import {
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
-import { createIgnoreDynamicRequestsPlugin } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
+import {
+  _transformVeryDynamicRequests,
+  createIgnoreDynamicRequestsPlugin,
+} from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
 import { toSlash } from "pathslash";
 
 function unwrapHook(hook: any): Function {
@@ -220,6 +223,81 @@ describe("vinext:import-meta-url plugin", () => {
     );
 
     expect(result).toBeNull();
+  });
+
+  it.each(["@vite-ignore", "webpackIgnore: true", "turbopackIgnore: true"])(
+    "preserves URL imports carrying %s",
+    (directive) => {
+      const source = `import(/* ${directive} */ new URL("./dependency.js", import.meta.url).href);`;
+      expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    },
+  );
+
+  it.each([
+    `new URL("./dependency.js", import.meta.url).href as string`,
+    `new URL("./dependency.js", import.meta.url).href!`,
+    `new URL("./dependency.js", import.meta.url).href satisfies string`,
+    `new URL("./dependency.js", import.meta.url as string).href`,
+  ])("normalizes TypeScript-wrapped URL imports: %s", (expression) => {
+    const source = `void import(${expression});`;
+    const result = _transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.ts", false);
+    expect(result?.code).toContain(`import("./dependency.js")`);
+  });
+
+  it("does not normalize relative URL imports in virtual modules", () => {
+    const source = `void import(new URL("./dependency.js", import.meta.url).href);`;
+    expect(_transformVeryDynamicRequests(source, "\0virtual:entry.js", false)).toBeNull();
+  });
+
+  it("normalizes client URL imports before Vite treats them as assets", async () => {
+    const clientRoot = path.join(realRoot, "client-url-import");
+    const entry = path.join(clientRoot, "entry.js");
+    const outDir = path.join(clientRoot, "dist");
+    await fsp.mkdir(clientRoot, { recursive: true });
+    await fsp.writeFile(
+      entry,
+      [
+        `export const loadJs = () => import(new URL("./dependency.js", import.meta.url).href);`,
+        `export const loadCss = () => import(new URL("./style.css", import.meta.url).href);`,
+      ].join("\n"),
+    );
+    await fsp.writeFile(
+      path.join(clientRoot, "dependency.js"),
+      `export const value = "client dependency loaded";`,
+    );
+    await fsp.writeFile(path.join(clientRoot, "style.css"), `.client-url-import { color: red; }`);
+
+    const capability = createImportMetaUrlPlugin({ getRoot: () => clientRoot });
+    await build({
+      root: clientRoot,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [createIgnoreDynamicRequestsPlugin(), capability.vitePlugin],
+      build: {
+        outDir,
+        cssCodeSplit: true,
+        lib: { entry, formats: ["es"], fileName: "entry" },
+        rolldownOptions: {
+          output: { entryFileNames: "entry.js", chunkFileNames: "[name].js" },
+        },
+      },
+    });
+
+    const builtEntry = await fsp.readFile(path.join(outDir, "entry.js"), "utf8");
+    expect(builtEntry).not.toContain("data:text/css");
+    expect(builtEntry).not.toContain("new URL");
+    expect(
+      (await import(`${pathToFileURL(path.join(outDir, "entry.js")).href}?t=${Date.now()}`)).loadJs,
+    ).toBeTypeOf("function");
+    const builtModule = await import(
+      `${pathToFileURL(path.join(outDir, "entry.js")).href}?run=${Date.now()}`
+    );
+    await expect(builtModule.loadJs()).resolves.toMatchObject({
+      value: "client dependency loaded",
+    });
+    expect(
+      (await fsp.readdir(outDir, { recursive: true })).some((file) => file.endsWith(".css")),
+    ).toBe(true);
   });
 
   it.each([

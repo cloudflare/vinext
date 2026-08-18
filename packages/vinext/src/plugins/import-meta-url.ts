@@ -218,12 +218,13 @@ export function createImportMetaUrlPlugin(options: {
         const isServer = this.environment?.config?.consumer !== "client";
         const finishTransform = (
           assetRewrites: readonly ImportMetaAssetRewrite[],
+          reusableAst?: AstRecord,
         ): MagicStringTransformResult | null => {
-          const normalizeDynamicImports = () =>
+          const rewriteAssetsOnly = () =>
             rewriteModuleIdentity(code, {
               id: cleanId,
-              normalizeDynamicImportUrls: true,
               textRewrites: assetRewrites,
+              ast: reusableAst,
             });
           if (isServer) {
             const dependency = dependencyModule(cleanId);
@@ -245,19 +246,19 @@ export function createImportMetaUrlPlugin(options: {
                     id: dependency.canonicalId,
                     importMetaUrlReplacement,
                     cjsGlobalInitializers,
-                    normalizeDynamicImportUrls: true,
                     textRewrites: assetRewrites,
+                    ast: reusableAst,
                   }) ?? null
                 );
               }
             }
           }
-          if (isNodeModulesId(cleanId)) return normalizeDynamicImports();
+          if (isNodeModulesId(cleanId)) return rewriteAssetsOnly();
 
           const paths = getRootPaths();
-          if (!paths) return normalizeDynamicImports();
+          if (!paths) return rewriteAssetsOnly();
           const canonicalId = transformableModuleCanonicalId(cleanId, paths);
-          if (!canonicalId) return normalizeDynamicImports();
+          if (!canonicalId) return rewriteAssetsOnly();
 
           const environment: ImportMetaUrlEnvironment =
             this.environment?.name === "client" ? "client" : "server";
@@ -299,17 +300,19 @@ export function createImportMetaUrlPlugin(options: {
             this.environment.mode === "build" && mayContainServerCjsGlobal(code)
               ? emittedModuleIdentity.cjsGlobalInitializers
               : sourcePathCjsGlobalInitializers(canonicalId),
-            true,
             assetRewrites,
+            reusableAst,
           );
           if (assetRewrites.length === 0) entry.results.set(transformKind, { value });
           return value;
         };
 
-        if (isServer && assetTransformer) {
+        const reusableAst =
+          isServer && assetTransformer ? parseAssetBearingModule(code, cleanId) : null;
+        if (reusableAst && assetTransformer) {
           return assetTransformer
-            .collectRewrites(this, code, id)
-            .then((assetRewrites) => finishTransform(assetRewrites));
+            .collectRewrites(this, code, id, reusableAst)
+            .then((assetRewrites) => finishTransform(assetRewrites, reusableAst));
         }
         return finishTransform([]);
       },
@@ -464,8 +467,8 @@ function rewriteCanonicalSourceIdentity(
   rootPaths: RootPaths,
   environment: ImportMetaUrlEnvironment,
   cjsGlobalInitializers?: CjsGlobalInitializers,
-  normalizeDynamicImportUrls = false,
   textRewrites: readonly ImportMetaAssetRewrite[] = [],
+  ast?: AstRecord,
 ): MagicStringTransformResult | null {
   return rewriteModuleIdentity(code, {
     id: canonicalId,
@@ -476,8 +479,8 @@ function rewriteCanonicalSourceIdentity(
       environment === "server" && mayContainServerCjsGlobal(code)
         ? (cjsGlobalInitializers ?? sourcePathCjsGlobalInitializers(canonicalId))
         : undefined,
-    normalizeDynamicImportUrls,
     textRewrites,
+    ast,
   });
 }
 
@@ -601,6 +604,45 @@ function finalizeEmittedModuleIdentity(
   return magicStringTransformResult(output);
 }
 
+function parseAssetBearingModule(code: string, id: string): AstRecord | null {
+  if (!code.includes("new") || !code.includes("URL")) return null;
+  const lang = scriptParserLanguage(id);
+  if (lang === null) return null;
+  try {
+    const ast = parseAst(code, { lang });
+    return isAstRecord(ast) ? ast : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseModuleIdentityAst(
+  code: string,
+  id: string,
+  cjsGlobalInitializers?: CjsGlobalInitializers,
+): AstRecord | null {
+  const lang = scriptParserLanguage(id) ?? "jsx";
+  try {
+    const ast = parseAst(code, {
+      lang,
+      sourceType: cjsGlobalInitializers ? "commonjs" : undefined,
+    });
+    return isAstRecord(ast) ? ast : null;
+  } catch {
+    if (!cjsGlobalInitializers) return null;
+    try {
+      // Project modules can intentionally use Node globals alongside ESM-only
+      // syntax such as top-level await. Raw dependencies can instead contain
+      // CommonJS-only syntax such as a top-level return, so accept either
+      // grammar without weakening the binding analysis.
+      const ast = parseAst(code, { lang });
+      return isAstRecord(ast) ? ast : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
 function rewriteModuleIdentity(
   code: string,
   options: {
@@ -609,26 +651,12 @@ function rewriteModuleIdentity(
     cjsGlobalInitializers?: CjsGlobalInitializers;
     normalizeDynamicImportUrls?: boolean;
     textRewrites?: readonly ImportMetaAssetRewrite[];
+    ast?: AstRecord;
   },
 ): MagicStringTransformResult | null {
-  let ast: unknown;
-  try {
-    ast = parseAst(code, {
-      lang: scriptParserLanguage(options.id) ?? "jsx",
-      sourceType: options.cjsGlobalInitializers ? "commonjs" : undefined,
-    });
-  } catch {
-    if (!options.cjsGlobalInitializers) return null;
-    try {
-      // Project modules can intentionally use Node globals alongside ESM-only
-      // syntax such as top-level await. Raw dependencies can instead contain
-      // CommonJS-only syntax such as a top-level return, so accept either
-      // grammar without weakening the binding analysis.
-      ast = parseAst(code, { lang: scriptParserLanguage(options.id) ?? "jsx" });
-    } catch {
-      return null;
-    }
-  }
+  const ast =
+    options.ast ?? parseModuleIdentityAst(code, options.id, options.cjsGlobalInitializers);
+  if (!ast) return null;
 
   const output = new MagicString(code);
   let changed = false;

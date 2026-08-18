@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "pathslash";
-import { parseAst, type ResolvedConfig } from "vite";
+import type { ResolvedConfig } from "vite";
 import type { TransformPluginContext } from "vite/rolldown";
 import { contentTypeForPath } from "../server/static-file-cache.js";
 import {
@@ -10,7 +10,7 @@ import {
   isAstRecord,
   isIdentifierNamed,
   nodeArray,
-  scriptParserLanguage,
+  unwrapExpression,
   type AstRange,
   type AstRecord,
 } from "./ast-utils.js";
@@ -35,6 +35,7 @@ type AssetUrl = {
   range: AstRange;
   sourceRange: AstRange;
   specifier: string;
+  preserveEvaluation?: boolean;
 };
 
 export type ImportMetaAssetRewrite = { start: number; end: number; replacement: string };
@@ -62,7 +63,13 @@ function assetUrlFromNode(value: unknown): AssetUrl | null {
   ) {
     return null;
   }
-  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(specifier.value) || specifier.value.startsWith("/")) {
+  if (
+    specifier.value === "" ||
+    specifier.value.startsWith("?") ||
+    specifier.value.startsWith("#") ||
+    /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(specifier.value) ||
+    specifier.value.startsWith("/")
+  ) {
     return null;
   }
   return { range: value, sourceRange: value, specifier: specifier.value };
@@ -87,9 +94,7 @@ function recordAssetBinding(
 }
 
 function collectAssetScopeBindings(node: AstRecord, scope: AssetScope): void {
-  collectDirectScopeBindings(node, scope, (declaration, declarator) =>
-    recordAssetBinding(declaration, declarator, scope),
-  );
+  collectDirectScopeBindings(node, scope);
 }
 
 function findAssetBinding(scope: AssetScope, name: string): AssetUrl | null {
@@ -103,6 +108,28 @@ function findAssetBinding(scope: AssetScope, name: string): AssetUrl | null {
     if (current.bindings.has(name)) return null;
   }
   return null;
+}
+
+function invalidateAssetBinding(scope: AssetScope, name: string): void {
+  for (
+    let current: AssetScope | null = scope;
+    current;
+    current = current.parent as AssetScope | null
+  ) {
+    if (current.assets.delete(name) || current.bindings.has(name)) return;
+  }
+}
+
+function rootIdentifierName(value: unknown): string | null {
+  let node = unwrapExpression(value);
+  while (node?.type === "MemberExpression") node = unwrapExpression(node.object);
+  return node?.type === "Identifier" && typeof node.name === "string" ? node.name : null;
+}
+
+function invalidateDirectAssetReference(scope: AssetScope, value: unknown): void {
+  const node = unwrapExpression(value);
+  if (node?.type !== "Identifier" || typeof node.name !== "string") return;
+  if (findAssetBinding(scope, node.name)) invalidateAssetBinding(scope, node.name);
 }
 
 function createChildScope(node: AstRecord, parent: AssetScope): AssetScope | null {
@@ -136,9 +163,7 @@ function createChildScope(node: AstRecord, parent: AssetScope): AssetScope | nul
     node.type === "ForInStatement" ||
     node.type === "ForOfStatement"
   ) {
-    collectLoopScopeBindings(node, scope, (declaration, declarator) =>
-      recordAssetBinding(declaration, declarator, scope),
-    );
+    collectLoopScopeBindings(node, scope);
   }
   return scope;
 }
@@ -174,16 +199,27 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     if (node.type === "SwitchStatement") {
       if (isAstRecord(node.discriminant)) visit(node.discriminant, parentScope);
       const switchScope = createAssetScope(parentScope);
-      collectSwitchScopeBindings(node, switchScope, (declaration, declarator) =>
-        recordAssetBinding(declaration, declarator, switchScope),
-      );
+      collectSwitchScopeBindings(node, switchScope);
       for (const switchCase of nodeArray(node.cases)) {
-        if (isAstRecord(switchCase)) visit(switchCase, switchScope);
+        // Cases share lexical bindings but not proven control-flow dominance.
+        // Keep aliases case-local so a declaration in one case cannot rewrite
+        // a fetch reached through another case.
+        if (isAstRecord(switchCase)) visit(switchCase, createAssetScope(switchScope));
       }
       return;
     }
 
     const scope = createChildScope(node, parentScope) ?? parentScope;
+    if (node.type === "VariableDeclaration") {
+      for (const declarator of nodeArray(node.declarations)) {
+        if (!isAstRecord(declarator)) continue;
+        invalidateDirectAssetReference(scope, declarator.init);
+        if (isAstRecord(declarator.init)) visit(declarator.init, scope);
+        if (isAstRecord(declarator.id)) visit(declarator.id, scope);
+        recordAssetBinding(node, declarator, scope);
+      }
+      return;
+    }
     if (
       node.type === "ImportExpression" &&
       relativeDynamicImportUrlSpecifier(node.source) !== null
@@ -194,6 +230,36 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     if (nodelessAsset) {
       assets.push(nodelessAsset);
       return;
+    }
+
+    if (!nodelessTarget) {
+      if (node.type === "AssignmentExpression") {
+        const assigned = rootIdentifierName(node.left);
+        if (assigned) invalidateAssetBinding(scope, assigned);
+        invalidateDirectAssetReference(scope, node.right);
+      } else if (node.type === "UpdateExpression") {
+        const assigned = rootIdentifierName(node.argument);
+        if (assigned) invalidateAssetBinding(scope, assigned);
+      } else if (node.type === "UnaryExpression" && node.operator === "delete") {
+        const assigned = rootIdentifierName(node.argument);
+        if (assigned) invalidateAssetBinding(scope, assigned);
+      } else if (node.type === "NewExpression") {
+        for (const argument of nodeArray(node.arguments)) {
+          invalidateDirectAssetReference(scope, argument);
+        }
+      } else if (
+        node.type === "ReturnStatement" ||
+        node.type === "ThrowStatement" ||
+        node.type === "YieldExpression"
+      ) {
+        invalidateDirectAssetReference(scope, node.argument);
+      } else if (node.type === "ArrayExpression") {
+        for (const element of nodeArray(node.elements)) {
+          invalidateDirectAssetReference(scope, element);
+        }
+      } else if (node.type === "Property") {
+        invalidateDirectAssetReference(scope, node.value);
+      }
     }
 
     if (
@@ -213,7 +279,20 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
         hasRange(input)
       ) {
         const boundAsset = findAssetBinding(scope, input.name);
-        if (boundAsset) assets.push({ ...boundAsset, range: input });
+        if (boundAsset) assets.push({ ...boundAsset, range: input, preserveEvaluation: true });
+      }
+    }
+
+    if (!nodelessTarget && node.type === "CallExpression") {
+      const callee = unwrapExpression(node.callee);
+      const isGlobalFetch = isIdentifierNamed(callee, "fetch") && !hasAstBinding(scope, "fetch");
+      if (!isGlobalFetch) {
+        const receiver =
+          callee?.type === "MemberExpression" ? rootIdentifierName(callee.object) : null;
+        if (receiver) invalidateAssetBinding(scope, receiver);
+        for (const argument of nodeArray(node.arguments)) {
+          invalidateDirectAssetReference(scope, argument);
+        }
       }
     }
 
@@ -254,19 +333,8 @@ export class ImportMetaAssetTransformer {
     context: TransformPluginContext,
     code: string,
     id: string,
+    ast: AstRecord,
   ): Promise<ImportMetaAssetRewrite[]> {
-    if (!code.includes("new") || !code.includes("URL")) return [];
-    const lang = scriptParserLanguage(id);
-    if (lang === null) return [];
-
-    let ast: unknown;
-    try {
-      ast = parseAst(code, { lang });
-    } catch {
-      return [];
-    }
-    if (!isAstRecord(ast)) return [];
-
     const assetUrls = collectAssetUrlRewrites(ast, this.options.isNodelessTarget());
     if (assetUrls.length === 0) return [];
     const moduleBoundary = await this.options.ownership.resolveModuleBoundary(id);
@@ -284,6 +352,7 @@ export class ImportMetaAssetTransformer {
       }
 
       const cleanSpecifier = assetUrl.specifier.split(/[?#]/, 1)[0];
+      if (cleanSpecifier === "") continue;
       let file: string | null = null;
       if (cleanSpecifier.startsWith("./") || cleanSpecifier.startsWith("../")) {
         file = await this.options.ownership.resolveContainedAsset(
@@ -322,7 +391,9 @@ export class ImportMetaAssetTransformer {
       rewrites.push({
         start: assetUrl.range.start,
         end: assetUrl.range.end,
-        replacement: `new URL(${JSON.stringify(dataUrl)})`,
+        replacement: assetUrl.preserveEvaluation
+          ? `(${code.slice(assetUrl.range.start, assetUrl.range.end)}, new URL(${JSON.stringify(dataUrl)}))`
+          : `new URL(${JSON.stringify(dataUrl)})`,
       });
     }
 

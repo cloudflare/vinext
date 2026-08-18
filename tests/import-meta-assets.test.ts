@@ -3,6 +3,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { Plugin } from "vite";
+import { _transformVeryDynamicRequests } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
 import { createImportMetaUrlPlugin } from "../packages/vinext/src/plugins/import-meta-url.js";
 import { createOgInlineFetchAssetsPlugin } from "../packages/vinext/src/plugins/og-assets.js";
 import { OgAssetOwnership } from "../packages/vinext/src/plugins/og-asset-ownership.js";
@@ -127,7 +128,7 @@ describe("import-meta asset phase", () => {
       `const url = new URL("../../src/text-file.txt", import.meta.url);`,
     );
     expect(result.code).toContain(`const path = url.pathname;`);
-    expect(result.code).toContain(`fetch(new URL("data:text/plain; charset=utf-8;base64,`);
+    expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
   });
 
   it("replaces a direct fetch input in a Node build", async () => {
@@ -186,11 +187,70 @@ describe("import-meta asset phase", () => {
       `void import(new URL("../../src/text-file.txt", import.meta.url).href);`,
       `const asset = new URL("../../src/vercel.png", import.meta.url);`,
     ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, routePath);
+    const normalized = _transformVeryDynamicRequests(source, routePath, false);
+    if (!normalized) throw new Error("Expected the early dynamic URL transform to run");
+    const result = await transformHandler(plugin).call(context(), normalized.code, routePath);
 
     expect(result.code).toContain(`import("../../src/text-file.txt")`);
     expect(result.code).toContain("data:image/png;base64,");
     expect(result.code).not.toContain("data:text/plain");
+  });
+
+  it("rewrites sequential aliases one declarator at a time", async () => {
+    const plugin = await createPlugin(false);
+    const source = `const url = new URL("../../src/text-file.txt", import.meta.url), response = fetch(url);`;
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
+  });
+
+  it("does not rewrite aliases before initialization or across switch cases", async () => {
+    const plugin = await createPlugin(false);
+    const sources = [
+      [`fetch(url);`, `const url = new URL("../../src/text-file.txt", import.meta.url);`].join(
+        "\n",
+      ),
+      [
+        `switch (kind) {`,
+        `  case 1: fetch(url); break;`,
+        `  case 2: const url = new URL("../../src/text-file.txt", import.meta.url); break;`,
+        `}`,
+      ].join("\n"),
+    ];
+
+    for (const source of sources) {
+      expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+    }
+  });
+
+  it("preserves alias evaluation across independently invoked functions", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `invoke();`,
+      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+      `function invoke() { return fetch(url); }`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
+  });
+
+  it("invalidates mutable or escaped URL aliases", async () => {
+    const plugin = await createPlugin(false);
+    const sources = [
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `url.pathname = "/other";`,
+        `fetch(url);`,
+      ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `mutate(url);`,
+        `fetch(url);`,
+      ].join("\n"),
+    ];
+
+    for (const source of sources) {
+      expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+    }
   });
 
   it("resolves a bare node_modules asset through the bundler", async () => {
@@ -252,6 +312,21 @@ describe("import-meta asset phase", () => {
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, routePath);
     expect(result).toBeNull();
+  });
+
+  it("leaves current-module URL references out of asset resolution", async () => {
+    const plugin = await createPlugin(true);
+    const pluginContext = context();
+    pluginContext.resolve = async () => {
+      throw new Error("current-module references must not be resolved as assets");
+    };
+    const source = [
+      `new URL("", import.meta.url);`,
+      `new URL("?raw", import.meta.url);`,
+      `new URL("#section", import.meta.url);`,
+    ].join("\n");
+
+    expect(await transformHandler(plugin).call(pluginContext, source, routePath)).toBeNull();
   });
 
   it("leaves root-relative and invalid three-argument URL constructors untouched", async () => {

@@ -30,6 +30,7 @@ import {
   type AstScope,
 } from "./ast-scope.js";
 import { stripViteModuleQuery } from "../utils/path.js";
+import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
 const REQUIRE_PRESCAN =
@@ -732,7 +733,7 @@ function dynamicImportReplacement(): string {
   return `Promise.resolve().then(() => { const error = new Error(${JSON.stringify(DYNAMIC_REQUEST_ERROR)}); error.code = "MODULE_NOT_FOUND"; throw error; })`;
 }
 
-function transformVeryDynamicRequests(code: string, id: string) {
+function transformVeryDynamicRequests(code: string, id: string, replaceUnknownRequests = true) {
   // Pre-parse gate. `require` stays a broad substring check (it also covers
   // aliasing and comment-separated `require/* … */(`), but the `import` side is
   // narrowed to dynamic-call syntax via the shared `mayContainDynamicImport`:
@@ -750,6 +751,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
 
   const output = new MagicString(code);
   let changed = false;
+  const normalizeUrlImports = !VIRTUAL_MODULE_ID_RE.test(id);
   const root = astNode(ast);
   if (!root) return null;
   const rootScope: Scope = { parent: null, bindings: new Set(), constants: new Map() };
@@ -855,7 +857,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
           changed = true;
           return;
         }
-        if (!requestHasStaticPart(argumentsList[0], scope)) {
+        if (replaceUnknownRequests && !requestHasStaticPart(argumentsList[0], scope)) {
           output.overwrite(node.start, node.end, dynamicRequireReplacement());
           changed = true;
           return;
@@ -863,16 +865,21 @@ function transformVeryDynamicRequests(code: string, id: string) {
       }
     }
 
-    if (
-      node.type === "ImportExpression" &&
-      hasRange(node) &&
-      !hasDynamicRequestIgnoreDirective(code, node, node.source as AstRecord) &&
-      relativeDynamicImportUrlSpecifier(node.source) === null &&
-      !requestHasStaticPart(node.source, scope)
-    ) {
-      output.overwrite(node.start, node.end, dynamicImportReplacement());
-      changed = true;
-      return;
+    if (node.type === "ImportExpression" && hasRange(node)) {
+      const source = astNode(node.source);
+      if (source && !hasDynamicRequestIgnoreDirective(code, node, source)) {
+        const urlSpecifier = relativeDynamicImportUrlSpecifier(source);
+        if (normalizeUrlImports && urlSpecifier !== null && hasRange(source)) {
+          output.overwrite(source.start, source.end, JSON.stringify(urlSpecifier));
+          changed = true;
+          return;
+        }
+        if (replaceUnknownRequests && !requestHasStaticPart(source, scope)) {
+          output.overwrite(node.start, node.end, dynamicImportReplacement());
+          changed = true;
+          return;
+        }
+      }
     }
 
     forEachAstChild(node, (child) => visit(child, scope));
@@ -889,7 +896,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
 export function createIgnoreDynamicRequestsPlugin(
   getTranspiledPackages: () => readonly string[] = () => [],
 ): Plugin {
-  const cached = createTransformCache<undefined, ReturnType<typeof transformVeryDynamicRequests>>();
+  const cached = createTransformCache<boolean, ReturnType<typeof transformVeryDynamicRequests>>();
 
   return {
     name: "vinext:ignore-dynamic-requests",
@@ -904,12 +911,14 @@ export function createIgnoreDynamicRequestsPlugin(
       handler(code, id) {
         const cleanId = stripViteModuleQuery(id);
         if (scriptParserLanguage(cleanId) === null) return null;
+        const replaceUnknownRequests = shouldTransformVeryDynamicRequests(
+          this.environment as EnvironmentLike,
+          cleanId,
+          getTranspiledPackages(),
+        );
         if (
-          !shouldTransformVeryDynamicRequests(
-            this.environment as EnvironmentLike,
-            cleanId,
-            getTranspiledPackages(),
-          )
+          !replaceUnknownRequests &&
+          (!code.includes("new") || !code.includes("import") || !code.includes("meta"))
         ) {
           return null;
         }
@@ -921,7 +930,9 @@ export function createIgnoreDynamicRequestsPlugin(
         ) {
           return null;
         }
-        return cached(id, code, undefined, () => transformVeryDynamicRequests(code, id));
+        return cached(id, code, replaceUnknownRequests, () =>
+          transformVeryDynamicRequests(code, id, replaceUnknownRequests),
+        );
       },
     },
   };
