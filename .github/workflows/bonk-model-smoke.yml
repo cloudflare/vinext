@@ -2,7 +2,7 @@ name: Bonk Model Smoke Test
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, synchronize]
 
 jobs:
   smoke:
@@ -45,7 +45,7 @@ jobs:
           permissions: write
           token_permissions: "NO_PUSH"
           opencode_dev: false
-          opencode_version: 1.15.13
+          opencode_version: 1.18.18
           prompt: >-
             This is a model-routing smoke test. Do not inspect or modify repository
             files, run shell commands, or perform GitHub actions. Reply with exactly:
