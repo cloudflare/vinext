@@ -52,6 +52,19 @@ describe("vinext:optimize-imports plugin", () => {
     expect(plugin.enforce).toBeUndefined();
   });
 
+  it("admits runtime-qualified server modules with loader queries", () => {
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => "/fake/root",
+    ) as Plugin;
+    const transform = plugin.transform as unknown as {
+      filter: { id: { include: RegExp } };
+    };
+    expect(
+      transform.filter.id.include.test("/app/page.tsx?loader=active&__vinext_app_runtime=edge"),
+    ).toBe(true);
+  });
+
   // ── Guard clauses ────────────────────────────────────────────
 
   it("returns null for virtual modules", async () => {
@@ -598,7 +611,7 @@ describe("vinext:optimize-imports transform", () => {
       `export * as Slot from "@radix-ui/react-slot";\nexport * as Dialog from "@radix-ui/react-dialog";`,
     );
     const code = `import { Slot, Dialog } from "lucide-react";\nconst x = Slot;`;
-    const result = await call(code, "/app/component.tsx");
+    const result = await call(code, "/app/component.tsx?loader=active&__vinext_app_runtime=edge");
     expect(result).not.toBeNull();
     expect(result!.code).toContain(`import * as Slot from "@radix-ui/react-slot"`);
     expect(result!.code).toContain(`import * as Dialog from "@radix-ui/react-dialog"`);

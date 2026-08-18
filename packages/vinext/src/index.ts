@@ -44,7 +44,14 @@ import {
 } from "./server/image-optimization.js";
 
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
-import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
+import {
+  shouldInvalidateAppRouteFile,
+  shouldRevalidateAppRouteRuntimeFile,
+} from "./server/dev-route-files.js";
+import {
+  createAppRouteRuntimeFingerprint,
+  resolveAppRouteBuildRuntimes,
+} from "./build/app-route-runtime.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
@@ -169,6 +176,13 @@ import {
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
+import {
+  createAppRouteRuntimePlugin,
+  createAppRouteRuntimeServerReferenceMap,
+  registerAppRouteRuntimeDevServerReference,
+  registerAppRouteRuntimeServerReferences,
+  withoutAppRouteRuntime,
+} from "./plugins/app-route-runtime.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
@@ -1506,6 +1520,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // module's load hook and consumed in renderChunk to patch the generated
   // `__VINEXT_CLASS` stub with a real dispatch table.
   let rscClassificationManifest: RouteClassificationManifest | null = null;
+  // Dev-only snapshot of the runtime-qualified imports generated into the RSC
+  // entry. Ordinary route edits stay on Vite's normal HMR path; only an
+  // effective runtime change needs this virtual entry regenerated.
+  let devAppRouteRuntimeFingerprint: string | null = null;
 
   // Resolve shim paths - works both from source (.ts) and built (.js).
   const shimsDir = path.resolve(__dirname, "shims");
@@ -1625,6 +1643,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let resolvedReactPath: string | null = null;
   let resolvedRscPath: string | null = null;
   let rscPluginModulePromise: Promise<typeof import("@vitejs/plugin-rsc")> | null = null;
+  const edgeServerReferenceImportIds = new Set<string>();
   // Prefer the user's project graph so vinext shares the app's Vite/plugin
   // instances. In source/workspace development, test fixtures may not declare
   // peer deps explicitly, so fall back to vinext's own install location.
@@ -1695,7 +1714,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const { getPluginApi } = await rscPluginModulePromise;
     const pluginApi = getPluginApi(config);
     if (!pluginApi || pluginApi.manager.isScanBuild) return true;
-    return Object.keys(pluginApi.manager.serverReferenceMetaMap).length > 0;
+    return pluginApi.manager.serverReferences.metaMap.size > 0;
+  }
+
+  async function resolveServerActionRuntimeMap(
+    config: Pick<ResolvedConfig, "command" | "plugins">,
+  ): Promise<Record<string, string>> {
+    if (config.command !== "build" || !rscPluginModulePromise) return {};
+
+    const { getPluginApi } = await rscPluginModulePromise;
+    const pluginApi = getPluginApi(config);
+    if (!pluginApi || pluginApi.manager.isScanBuild) return {};
+    registerAppRouteRuntimeServerReferences(
+      pluginApi.manager.serverReferences,
+      edgeServerReferenceImportIds,
+    );
+    return createAppRouteRuntimeServerReferenceMap(pluginApi.manager.serverReferences);
   }
 
   const configuredReactOptions =
@@ -1824,13 +1858,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     name: "vinext:mdx",
     enforce: "pre",
     transform: {
-      filter: { id: { include: /\.mdx$/i, exclude: /\?/ } },
+      filter: {
+        id: {
+          include: /\.mdx(?:\?[^#]*)?$/i,
+          exclude: /\?(?!__vinext_app_runtime=(?:edge|nodejs)$)/,
+        },
+      },
       async handler(code, id, options) {
+        const canonicalId = withoutAppRouteRuntime(id);
+        // The native filter admits plain MDX and the one internal query used
+        // to isolate edge route graphs. Preserve all user query semantics.
+        if (canonicalId.includes("?")) return;
         const delegate = mdxDelegate ?? (await ensureMdxDelegate("on-demand"));
         if (delegate?.transform) {
           const hook = delegate.transform;
           const transform = typeof hook === "function" ? hook : hook.handler;
-          return transform.call(this, code, id, options);
+          return transform.call(this, code, canonicalId, options);
         }
 
         if (!hasUserMdxPlugin) {
@@ -1921,6 +1964,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Compile MDX to JSX before @vitejs/plugin-react handles the generated
     // component and injects Fast Refresh registration in dev.
     mdxProxyPlugin,
+    // Runtime-qualified MDX must be compiled before NEXT_RUNTIME is stamped in
+    // its generated JavaScript, while this pre-enforced transform still runs
+    // before Vite's server-side define replacement.
+    createAppRouteRuntimePlugin({
+      async onEdgeServerReference(importId, config) {
+        edgeServerReferenceImportIds.add(importId);
+        if (config.command !== "serve" || !rscPluginModulePromise) return;
+
+        const { getPluginApi } = await rscPluginModulePromise;
+        const pluginApi = getPluginApi(config);
+        if (!pluginApi) return;
+        registerAppRouteRuntimeDevServerReference(pluginApi.manager.serverReferences, importId);
+      },
+    }),
     // React Fast Refresh + JSX transform for client components.
     reactPluginPromise,
     // Next.js ignores requests without any statically known path component
@@ -3958,6 +4015,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
             const metaRoutes = scanMetadataFiles(appDir);
             const hasServerActions = await resolveHasServerActions(this.environment.config);
+            const serverActionRuntimeMap = await resolveServerActionRuntimeMap(
+              this.environment.config,
+            );
             // Check for global-error.tsx at app root
             const globalErrorPath = findFileWithExts(appDir, "global-error", fileMatcher);
             // Check for global-not-found.tsx at app root (Next.js 16+ feature)
@@ -3976,7 +4036,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // indices in the manifest correspond 1:1 to the route.layouts arrays
             // used during codegen. renderChunk clears this after patching.
             rscClassificationManifest = collectRouteClassificationManifest(routes);
-            return generateRscEntry(
+            // Resolve once immediately before synchronous code generation so
+            // the dev fingerprint describes the exact runtime-qualified
+            // imports baked into this entry.
+            const routeRuntimes = resolveAppRouteBuildRuntimes(routes);
+            const generatedEntry = generateRscEntry(
               appDir,
               routes,
               middlewarePath,
@@ -4003,6 +4067,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 cacheComponents: nextConfig?.cacheComponents,
                 prefetchInlining: nextConfig?.prefetchInlining,
                 hasServerActions,
+                serverActionRuntimeMap,
                 i18n: nextConfig?.i18n,
                 imageConfig: {
                   deviceSizes: nextConfig?.images?.deviceSizes,
@@ -4025,9 +4090,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       ),
                 globalNotFoundPath,
                 draftModeSecret,
+                routeRuntimes,
               },
               instrumentationPath,
             );
+            if (isServeCommand) {
+              devAppRouteRuntimeFingerprint = createAppRouteRuntimeFingerprint(
+                routes,
+                routeRuntimes,
+              );
+            }
+            return generatedEntry;
           }
           if (id === RESOLVED_ROOT_PARAMS) {
             const routes = hasAppDir
@@ -4431,7 +4504,8 @@ export const loadServerActionClient = ${
       transform: {
         filter: {
           id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
+            include:
+              /\.(?:tsx?|jsx?|mjs)(?:\?(?:[^#]+&)?__vinext_app_runtime=(?:edge|nodejs)(?:&[^#]*)?)?$/,
             exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
           },
           code: /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/,
@@ -4651,6 +4725,34 @@ export const loadServerActionClient = ${
           invalidateRootParamsModule();
         }
 
+        let appRouteRuntimeValidation: Promise<void> = Promise.resolve();
+        function revalidateAppRouteRuntime(filePath: string) {
+          if (
+            !hasAppDir ||
+            devAppRouteRuntimeFingerprint === null ||
+            !shouldRevalidateAppRouteRuntimeFile(appDir, filePath, fileMatcher)
+          ) {
+            return;
+          }
+
+          appRouteRuntimeValidation = appRouteRuntimeValidation
+            .catch(() => {})
+            .then(async () => {
+              const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
+              const routeRuntimes = resolveAppRouteBuildRuntimes(routes);
+              const nextFingerprint = createAppRouteRuntimeFingerprint(routes, routeRuntimes);
+              if (nextFingerprint === devAppRouteRuntimeFingerprint) return;
+              invalidateRscEntryModule();
+            })
+            .catch((error) => {
+              server.config.logger.error(
+                `[vinext] Failed to revalidate App route runtimes: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            });
+        }
+
         let hybridRouteValidation: Promise<void> = Promise.resolve();
         let hybridRouteValidationError: Error | null = null;
         function sendHybridRouteValidationError(error: Error) {
@@ -4850,6 +4952,7 @@ export const loadServerActionClient = ${
           ) {
             invalidatePagesClientAssetsModule();
           }
+          revalidateAppRouteRuntime(filePath);
         });
         server.watcher.on("unlink", (filePath: string) => {
           updatePublicFileRoute(filePath, false);
@@ -6394,7 +6497,8 @@ export const loadServerActionClient = ${
         // the JS handler entirely for files that don't match.
         filter: {
           id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
+            include:
+              /\.(?:tsx?|jsx?|mjs)(?:\?(?:[^#]+&)?__vinext_app_runtime=(?:edge|nodejs)(?:&[^#]*)?)?$/,
             exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
           },
           code: new RegExp(`import\\s+\\w+\\s+from\\s+['"][^'"]+\\.(${IMAGE_EXTS})['"]`),
@@ -6423,7 +6527,9 @@ export const loadServerActionClient = ${
           // (`<Foo>bar`) and non-comma generic arrows (`<T>(x) => x`) would throw
           // — which the `catch` below would swallow, silently leaving image
           // imports in those files untransformed.
-          const lang = id.endsWith(".ts") ? "ts" : "tsx";
+          const canonicalId = withoutAppRouteRuntime(id);
+          const sourcePath = canonicalId.split("?", 1)[0];
+          const lang = sourcePath.endsWith(".ts") ? "ts" : "tsx";
           let ast: ReturnType<typeof parseAst>;
           try {
             ast = parseAst(code, { lang });
@@ -6464,10 +6570,10 @@ export const loadServerActionClient = ${
             // since the path is embedded in the ESM module specifier below,
             // which should use forward slashes. fs accepts them on Windows,
             // so existsSync still works.
-            const dir = path.dirname(id);
+            const dir = path.dirname(sourcePath);
             const resolvedImage = importPath.startsWith(".")
               ? path.resolve(dir, importPath)
-              : (await this.resolve(importPath, id, { skipSelf: true }))?.id;
+              : (await this.resolve(importPath, canonicalId, { skipSelf: true }))?.id;
             if (!resolvedImage) continue;
             const absImagePath = toSlash(resolvedImage.split("?", 1)[0]);
 

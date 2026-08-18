@@ -15,6 +15,7 @@ const APP_ROUTER_STRUCTURE_FILES = [
   "forbidden",
   "unauthorized",
 ];
+const APP_ROUTE_RUNTIME_FILES = ["page", "route", "layout", "default"];
 
 function relativeParts(dir: string, filePath: string): string[] {
   return path.relative(dir, filePath).split(path.sep).filter(Boolean);
@@ -100,4 +101,20 @@ export function shouldInvalidateAppRouteFile(
     isRootGlobalError(parts, matcher) ||
     isMetadataRouteFile(parts)
   );
+}
+
+export function shouldRevalidateAppRouteRuntimeFile(
+  appDir: string,
+  filePath: string,
+  matcher: ValidFileMatcher,
+): boolean {
+  if (!isPathInside(appDir, filePath)) return false;
+
+  const parts = relativeParts(appDir, filePath);
+  if (parts.length === 0 || isPrivateAppPath(parts)) return false;
+
+  const fileName = parts[parts.length - 1];
+  if (!fileName) return false;
+  const { baseName } = stripLastExtension(fileName);
+  return APP_ROUTE_RUNTIME_FILES.includes(baseName) && matcher.extensionRegex.test(fileName);
 }

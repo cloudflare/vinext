@@ -9,7 +9,10 @@
  */
 import { describe, it, expect } from "vite-plus/test";
 import path from "node:path";
-import { shouldInvalidateAppRouteFile } from "../packages/vinext/src/server/dev-route-files.js";
+import {
+  shouldInvalidateAppRouteFile,
+  shouldRevalidateAppRouteRuntimeFile,
+} from "../packages/vinext/src/server/dev-route-files.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 
 const appDir = path.resolve("/app");
@@ -50,5 +53,22 @@ describe("shouldInvalidateAppRouteFile", () => {
     expect(shouldInvalidateAppRouteFile(appDir, inApp("notes.alt.txt"), matcher)).toBe(false);
     expect(shouldInvalidateAppRouteFile(appDir, inApp("readme.txt"), matcher)).toBe(false);
     expect(shouldInvalidateAppRouteFile(appDir, inApp("styles.css"), matcher)).toBe(false);
+  });
+});
+
+describe("shouldRevalidateAppRouteRuntimeFile", () => {
+  it("includes only convention files that can contribute a runtime export", () => {
+    for (const convention of ["page", "route", "layout", "default"]) {
+      expect(
+        shouldRevalidateAppRouteRuntimeFile(appDir, inApp("nested", `${convention}.tsx`), matcher),
+      ).toBe(true);
+    }
+
+    for (const convention of ["template", "loading", "error", "not-found"]) {
+      expect(
+        shouldRevalidateAppRouteRuntimeFile(appDir, inApp("nested", `${convention}.tsx`), matcher),
+      ).toBe(false);
+    }
+    expect(shouldRevalidateAppRouteRuntimeFile(appDir, inApp("favicon.ico"), matcher)).toBe(false);
   });
 });

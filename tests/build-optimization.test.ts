@@ -28,7 +28,10 @@ import {
   computeDynamicImportPreloads,
   computeLazyChunks,
 } from "../packages/vinext/src/utils/lazy-chunks.js";
-import { transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata } from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
+import {
+  createDynamicPreloadMetadataPlugin,
+  transformNextDynamicPreloadMetadata as _transformNextDynamicPreloadMetadata,
+} from "../packages/vinext/src/plugins/dynamic-preload-metadata.js";
 import { collectAssetTags } from "../packages/vinext/src/server/pages-asset-tags.js";
 import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client-assets.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
@@ -2035,6 +2038,30 @@ describe("next/dynamic preload metadata transform", () => {
         : specifier === "./ignored"
           ? path.join(root, "app/ignored.tsx")
           : null;
+
+  it("transforms runtime-qualified modules using their canonical source id", async () => {
+    const plugin = createDynamicPreloadMetadataPlugin();
+    const transform = plugin.transform as {
+      filter: { id: { include: RegExp } };
+      handler: Function;
+    };
+    const qualifiedImporter = `${importer}?loader=active&__vinext_app_runtime=edge`;
+    expect(transform.filter.id.include.test(qualifiedImporter)).toBe(true);
+    (plugin.configResolved as Function)({ root });
+
+    const result = await transform.handler.call(
+      {
+        resolve: async (specifier: string) => {
+          const resolved = await resolveDynamicImport(specifier);
+          return resolved ? { id: resolved } : null;
+        },
+      },
+      `import dynamic from "next/dynamic"; const Widget = dynamic(() => import("./dynamic-widget"));`,
+      qualifiedImporter,
+    );
+    expect(result?.code).toContain(`modules: ["app/dynamic-widget.tsx"]`);
+    expect(result?.code).not.toContain("__vinext_app_runtime");
+  });
 
   it("adds loadableGenerated modules to dynamic loader calls", async () => {
     const result = await _transformNextDynamicPreloadMetadata(

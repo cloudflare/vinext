@@ -32,23 +32,22 @@ describe("compatibility suite support policy", () => {
     expect(counts).toEqual({
       deferred: 25,
       "needs-vite-equivalent": 3,
-      unsupported: 6,
+      unsupported: 5,
     });
-    expect(NON_SUPPORTED_SUITES).toHaveLength(34);
-    expect(CLASSIFIED_SUITES).toHaveLength(69);
-    expect(new Set(CLASSIFIED_SUITES).size).toBe(69);
+    expect(NON_SUPPORTED_SUITES).toHaveLength(33);
+    expect(CLASSIFIED_SUITES).toHaveLength(68);
+    expect(new Set(CLASSIFIED_SUITES).size).toBe(68);
   });
 
-  it("classifies the mixed legacy Edge Runtime suite at file scope", () => {
+  it("supports the after() deploy suite now that route runtimes are isolated", () => {
     const suite = "test/e2e/app-dir/next-after-app-deploy/index.test.ts";
 
     expect(getSuiteSupport(suite)).toEqual({
-      status: "unsupported",
-      feature: "Next.js dual Node.js and legacy Edge Runtime builds",
-      reason:
-        "Vinext uses one Workers/Node-compat server graph and does not implement Next.js's per-route legacy Edge Runtime bundle or route-specific process.env.NEXT_RUNTIME constant. This mixed file couples portable nodejs assertions with legacy edge-runtime variants; cover after() on Workers separately.",
+      status: "supported",
+      feature: null,
+      reason: null,
     });
-    expect(NON_SUPPORTED_SUITES).toContain(suite);
+    expect(NON_SUPPORTED_SUITES).not.toContain(suite);
   });
 
   it("points the upstream worker suite at its Vite and Cloudflare equivalent", () => {

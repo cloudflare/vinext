@@ -648,18 +648,20 @@ export function createDynamicPreloadMetadataPlugin(): Plugin {
     transform: {
       filter: {
         id: {
-          include: /\.(tsx?|jsx?|mjs)$/,
+          include:
+            /\.(?:tsx?|jsx?|mjs)(?:\?(?:[^#]+&)?__vinext_app_runtime=(?:edge|nodejs)(?:&[^#]*)?)?$/,
           exclude: /node_modules/,
         },
         code: "next/dynamic",
       },
       async handler(code, id) {
         if (id.includes("node_modules") || id.startsWith("\0")) return null;
-        if (!/\.(tsx?|jsx?|mjs)$/.test(id)) return null;
+        const sourceId = stripViteModuleQuery(id);
+        if (!/\.(tsx?|jsx?|mjs)$/.test(sourceId)) return null;
 
         const result = await transformNextDynamicPreloadMetadata(
           code,
-          id,
+          sourceId,
           root,
           async (specifier, importer) => {
             // Honor the `importer` from ResolveDynamicImport rather than closing

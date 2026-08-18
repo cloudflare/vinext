@@ -26940,6 +26940,22 @@ describe("vinext:react-canary transform logic", () => {
   const canaryImportRegex =
     /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/;
 
+  it("transforms runtime-qualified modules with loader queries", () => {
+    const plugin = (vinext() as Plugin[]).find(
+      (candidate) => candidate.name === "vinext:react-canary",
+    );
+    expect(plugin).toBeDefined();
+    const transform = plugin!.transform as {
+      filter: { id: { include: RegExp } };
+      handler: Function;
+    };
+    const id = "/app/page.tsx?loader=active&__vinext_app_runtime=edge";
+    expect(transform.filter.id.include.test(id)).toBe(true);
+    expect(transform.handler(`import { ViewTransition } from "react";`).code).toContain(
+      'from "virtual:vinext-react-canary"',
+    );
+  });
+
   it("detects ViewTransition import from react", () => {
     const code = `import { ViewTransition } from "react";`;
     expect(canaryImportRegex.test(code)).toBe(true);

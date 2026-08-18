@@ -721,7 +721,8 @@ export function createOptimizeImportsPlugin(
     transform: {
       filter: {
         id: {
-          include: /\.(tsx?|jsx?|mjs)$/,
+          include:
+            /\.(?:tsx?|jsx?|mjs)(?:\?(?:[^#]+&)?__vinext_app_runtime=(?:edge|nodejs)(?:&[^#]*)?)?$/,
           exclude: VIRTUAL_MODULE_ID_RE,
         },
         code: /\bimport\b[\s\S]*\bfrom\b/,
