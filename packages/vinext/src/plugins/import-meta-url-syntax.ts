@@ -67,7 +67,7 @@ export function hasDynamicRequestIgnoreDirective(
       continue;
     }
     if (code.startsWith("//", index)) {
-      while (index < argumentNode.start && code[index] !== "\n" && code[index] !== "\r") index++;
+      while (index < argumentNode.start && !isLineTerminator(code[index])) index++;
       continue;
     }
     break;
@@ -89,30 +89,164 @@ export function hasDynamicRequestIgnoreDirective(
     }
     if (code.startsWith("//", index)) {
       let end = index + 2;
-      while (end < argumentNode.start && code[end] !== "\n" && code[end] !== "\r") end++;
+      while (end < argumentNode.start && !isLineTerminator(code[end])) end++;
       comments.push(code.slice(index + 2, end));
       index = end;
+      continue;
+    }
+    // Parentheses are omitted from Oxc expression ranges, so transparent
+    // wrappers around the first argument can occur before its reported start.
+    if (code[index] === "(") {
+      index++;
       continue;
     }
     return false;
   }
 
-  let ignore: boolean | undefined;
+  let viteIgnore = false;
+  let webpackIgnore: boolean | undefined;
+  let turbopackIgnore: boolean | undefined;
   for (const comment of comments) {
     const text = comment.trim();
-    if (text === "@vite-ignore" && requestNode.type === "ImportExpression") {
-      ignore = true;
+    if (
+      text === "@vite-ignore" &&
+      (requestNode.type === "ImportExpression" || requestNode.type === "NewExpression")
+    ) {
+      viteIgnore = true;
       continue;
     }
-    const separator = text.indexOf(":");
-    if (separator === -1) continue;
-    const directive = text.slice(0, separator).trim();
-    if (directive !== "webpackIgnore" && directive !== "turbopackIgnore") continue;
-    const value = text.slice(separator + 1).trim();
-    if (value === "true") ignore = true;
-    else if (value === "false") ignore = false;
+    const magicIgnore = magicCommentIgnoreValues(text);
+    if (magicIgnore.webpack !== undefined) webpackIgnore = magicIgnore.webpack;
+    if (magicIgnore.turbopack !== undefined) turbopackIgnore = magicIgnore.turbopack;
   }
-  return ignore === true;
+  return viteIgnore || webpackIgnore === true || turbopackIgnore === true;
+}
+
+function isLineTerminator(character: string | undefined): boolean {
+  return (
+    character === "\n" || character === "\r" || character === "\u2028" || character === "\u2029"
+  );
+}
+
+function magicCommentIgnoreValues(comment: string): {
+  webpack: boolean | undefined;
+  turbopack: boolean | undefined;
+} {
+  let webpack: boolean | undefined;
+  let turbopack: boolean | undefined;
+  for (const option of splitTopLevelOptions(comment)) {
+    const separator = topLevelColon(option);
+    if (separator === -1) continue;
+    const name = withoutLineComments(option.slice(0, separator)).trim();
+    if (name !== "webpackIgnore" && name !== "turbopackIgnore") continue;
+    const value = withoutLineComments(option.slice(separator + 1)).trim();
+    if (value !== "true" && value !== "false") continue;
+    if (name === "webpackIgnore") webpack = value === "true";
+    else turbopack = value === "true";
+  }
+  return { webpack, turbopack };
+}
+
+function withoutLineComments(value: string): string {
+  return value.replace(/\/\/[^\n\r\u2028\u2029]*/g, "");
+}
+
+function splitTopLevelOptions(value: string): string[] {
+  const options: string[] = [];
+  let start = 0;
+  for (const index of topLevelDelimiterPositions(value, ",")) {
+    options.push(value.slice(start, index));
+    start = index + 1;
+  }
+  options.push(value.slice(start));
+  return options;
+}
+
+function topLevelColon(value: string): number {
+  return topLevelDelimiterPositions(value, ":")[0] ?? -1;
+}
+
+function topLevelDelimiterPositions(value: string, delimiter: "," | ":"): number[] {
+  const positions: number[] = [];
+  let depth = 0;
+  let expressionExpected = true;
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index];
+    if (/\s/.test(character)) continue;
+    if (character === '"' || character === "'" || character === "`") {
+      index = endOfQuotedValue(value, index, character);
+      expressionExpected = false;
+      continue;
+    }
+    if (character === "/" && value[index + 1] === "/") {
+      index += 2;
+      while (index < value.length && !isLineTerminator(value[index])) index++;
+      continue;
+    }
+    if (character === "/" && expressionExpected) {
+      index = endOfRegexLiteral(value, index);
+      expressionExpected = false;
+      continue;
+    }
+    if (character === "(" || character === "[" || character === "{") {
+      depth++;
+      expressionExpected = true;
+    } else if (character === ")" || character === "]" || character === "}") {
+      depth = Math.max(0, depth - 1);
+      expressionExpected = false;
+    } else if (character === delimiter && depth === 0) {
+      positions.push(index);
+      expressionExpected = true;
+    } else if (isIdentifierCharacter(character) || /[0-9.]/.test(character)) {
+      while (
+        index + 1 < value.length &&
+        (isIdentifierCharacter(value[index + 1]) || /[0-9.]/.test(value[index + 1]))
+      ) {
+        index++;
+      }
+      expressionExpected = false;
+    } else {
+      expressionExpected = character !== "+" || value[index + 1] !== "+";
+      if (character === "-" && value[index + 1] === "-") expressionExpected = false;
+    }
+  }
+  return positions;
+}
+
+function endOfQuotedValue(value: string, start: number, quote: string): number {
+  let escaped = false;
+  for (let index = start + 1; index < value.length; index++) {
+    const character = value[index];
+    if (escaped) escaped = false;
+    else if (character === "\\") escaped = true;
+    else if (character === quote) return index;
+  }
+  return value.length - 1;
+}
+
+function endOfRegexLiteral(value: string, start: number): number {
+  let escaped = false;
+  let characterClass = false;
+  for (let index = start + 1; index < value.length; index++) {
+    const character = value[index];
+    if (escaped) {
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === "[") {
+      characterClass = true;
+    } else if (character === "]") {
+      characterClass = false;
+    } else if (character === "/" && !characterClass) {
+      while (isIdentifierCharacter(value[index + 1])) index++;
+      return index;
+    }
+  }
+  return value.length - 1;
+}
+
+function isIdentifierCharacter(character: string | undefined): boolean {
+  return character !== undefined && /[\w$]/.test(character);
 }
 
 // A literal relative module URL has the same ESM identity as its relative
@@ -145,14 +279,16 @@ export function relativeDynamicImportUrlSpecifier(source: unknown): string | nul
   return specifier.value;
 }
 
-export function hasViteIgnoreInNewUrl(code: string, source: unknown): boolean {
+export function hasBundlerIgnoreInNewUrl(code: string, source: unknown): boolean {
   const expression = unwrapExpression(source);
-  if (expression?.type !== "MemberExpression" || !isAstRecord(expression.object)) {
-    return false;
+  let urlExpression: AstRecord | null = null;
+  if (expression?.type === "NewExpression" && isIdentifierNamed(expression.callee, "URL")) {
+    urlExpression = expression;
+  } else if (expression?.type === "MemberExpression" && isAstRecord(expression.object)) {
+    urlExpression = unwrapExpression(expression.object);
   }
-  const urlExpression = unwrapExpression(expression.object);
   if (!isNewUrlExpression(urlExpression) || !hasRange(urlExpression)) return false;
   const specifier = unwrapExpression(nodeArray(urlExpression.arguments)[0]);
   if (!specifier || !hasRange(specifier)) return false;
-  return /\/\*\s*@vite-ignore\s*\*\//.test(code.slice(urlExpression.start, specifier.start));
+  return hasDynamicRequestIgnoreDirective(code, urlExpression, specifier);
 }

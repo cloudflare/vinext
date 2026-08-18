@@ -25,7 +25,11 @@ import {
   type AstScope,
 } from "./ast-scope.js";
 import { OgAssetOwnership } from "./og-asset-ownership.js";
-import { isImportMetaUrlOrChainedNode, isNewUrlExpression } from "./import-meta-url-syntax.js";
+import {
+  hasBundlerIgnoreInNewUrl,
+  isImportMetaUrlOrChainedNode,
+  isNewUrlExpression,
+} from "./import-meta-url-syntax.js";
 
 type AssetUrl = {
   range: AstRange;
@@ -55,6 +59,10 @@ function createAssetScope(parent: AssetScope | null): AssetScope {
     nodeUrlFunctions: new Set(),
     nodeUrlNamespaces: new Set(),
   };
+}
+
+function addScopeBindingNames(scope: AssetScope, target: Set<string>): void {
+  for (const name of scope.bindings) target.add(name);
 }
 
 function collectNodeUrlImports(ast: AstRecord, scope: AssetScope): void {
@@ -291,9 +299,49 @@ function collectAssetUrlRewrites(
   collectVarScopeBindings(ast, rootScope);
   collectAssetScopeBindings(ast, rootScope);
   collectNodeUrlImports(ast, rootScope);
+  addScopeBindingNames(rootScope, usedNames);
+
+  function visitBindingPatternRuntime(value: unknown, scope: AssetScope): void {
+    const node = unwrapExpression(value);
+    if (!node) return;
+    if (node.type === "AssignmentPattern") {
+      visitBindingPatternRuntime(node.left, scope);
+      if (isAstRecord(node.right)) visit(node.right, scope);
+      return;
+    }
+    if (node.type === "RestElement" || node.type === "TSParameterProperty") {
+      visitBindingPatternRuntime(
+        node.type === "RestElement" ? node.argument : node.parameter,
+        scope,
+      );
+      return;
+    }
+    if (node.type === "ArrayPattern") {
+      for (const element of nodeArray(node.elements)) visitBindingPatternRuntime(element, scope);
+      return;
+    }
+    if (node.type === "ObjectPattern") {
+      for (const property of nodeArray(node.properties)) {
+        if (!isAstRecord(property)) continue;
+        if (property.type === "RestElement") {
+          visitBindingPatternRuntime(property.argument, scope);
+          continue;
+        }
+        if (property.computed === true && isAstRecord(property.key)) visit(property.key, scope);
+        visitBindingPatternRuntime(property.value, scope);
+      }
+    }
+  }
+
+  function visitDecorators(node: AstRecord, scope: AssetScope): void {
+    for (const decorator of nodeArray(node.decorators)) {
+      if (isAstRecord(decorator)) visit(decorator, scope);
+    }
+  }
 
   function visit(node: AstRecord, parentScope: AssetScope, safeAssetReference = false): void {
     if (isFunctionNode(node)) {
+      visitDecorators(node, parentScope);
       const parameterScope = createAssetScope(parentScope);
       collectBindingNames(node.id, parameterScope.bindings);
       collectBindingNames(node.id, usedNames);
@@ -301,8 +349,12 @@ function collectAssetUrlRewrites(
         collectBindingNames(parameter, parameterScope.bindings);
         collectBindingNames(parameter, usedNames);
       }
+      addScopeBindingNames(parameterScope, usedNames);
       for (const parameter of nodeArray(node.params)) {
-        if (isAstRecord(parameter)) visit(parameter, parameterScope);
+        if (isAstRecord(parameter)) {
+          visitDecorators(parameter, parentScope);
+          visit(parameter, parameterScope);
+        }
       }
       if (isAstRecord(node.body)) {
         const bodyScope = createAssetScope(parameterScope);
@@ -319,6 +371,7 @@ function collectAssetUrlRewrites(
       if (isAstRecord(node.discriminant)) visit(node.discriminant, parentScope);
       const switchScope = createAssetScope(parentScope);
       collectSwitchScopeBindings(node, switchScope);
+      addScopeBindingNames(switchScope, usedNames);
       for (const switchCase of nodeArray(node.cases)) {
         if (!isAstRecord(switchCase)) continue;
         const caseScope = createAssetScope(switchScope);
@@ -326,12 +379,15 @@ function collectAssetUrlRewrites(
           { type: "BlockStatement", body: nodeArray(switchCase.consequent) },
           caseScope,
         );
+        addScopeBindingNames(caseScope, usedNames);
         visit(switchCase, caseScope);
       }
       return;
     }
 
-    const scope = createChildScope(node, parentScope) ?? parentScope;
+    const childScope = createChildScope(node, parentScope);
+    if (childScope) addScopeBindingNames(childScope, usedNames);
+    const scope = childScope ?? parentScope;
     if (node.type === "ImportExpression") {
       if (!nodelessTarget && isAstRecord(node.source)) visit(node.source, scope, true);
       if (isAstRecord(node.options)) visit(node.options, scope);
@@ -344,17 +400,20 @@ function collectAssetUrlRewrites(
       }
       return;
     }
+    if (node.type === "ExportAllDeclaration") return;
 
     if (node.type === "Identifier" && typeof node.name === "string") {
       usedNames.add(node.name);
       if (!safeAssetReference) invalidateAssetBinding(scope, node.name);
       return;
     }
+    if (node.type === "MetaProperty") return;
 
     if (node.type === "VariableDeclaration") {
       for (const declarator of nodeArray(node.declarations)) {
         if (!isAstRecord(declarator)) continue;
         collectBindingNames(declarator.id, usedNames);
+        visitBindingPatternRuntime(declarator.id, scope);
         if (isAstRecord(declarator.init)) {
           visit(declarator.init, scope);
         }
@@ -379,7 +438,13 @@ function collectAssetUrlRewrites(
       return;
     }
     if (node.type === "ForInStatement" || node.type === "ForOfStatement") {
-      if (!isAstRecord(node.left) || node.left.type !== "VariableDeclaration") {
+      if (isAstRecord(node.left) && node.left.type === "VariableDeclaration") {
+        for (const declarator of nodeArray(node.left.declarations)) {
+          if (!isAstRecord(declarator)) continue;
+          collectBindingNames(declarator.id, usedNames);
+          visitBindingPatternRuntime(declarator.id, scope);
+        }
+      } else {
         invalidateAssetTarget(scope, node.left);
         if (isAstRecord(node.left)) visit(node.left, scope);
       }
@@ -399,6 +464,7 @@ function collectAssetUrlRewrites(
       return;
     }
     if (node.type === "TSEnumDeclaration") {
+      collectBindingNames(node.id, usedNames);
       const body = isAstRecord(node.body) ? node.body : node;
       for (const member of nodeArray(body.members)) {
         if (isAstRecord(member) && isAstRecord(member.initializer)) {
@@ -408,7 +474,12 @@ function collectAssetUrlRewrites(
       return;
     }
     if (node.type === "TSModuleDeclaration") {
+      collectBindingNames(node.id, usedNames);
       if (isAstRecord(node.body)) visit(node.body, scope);
+      return;
+    }
+    if (node.type === "TSImportEqualsDeclaration") {
+      collectBindingNames(node.id, usedNames);
       return;
     }
     if (node.type === "TSModuleBlock") {
@@ -495,13 +566,19 @@ function collectAssetUrlRewrites(
       return;
     }
 
-    if (node.type === "Property" || node.type === "PropertyDefinition") {
+    if (
+      node.type === "Property" ||
+      node.type === "PropertyDefinition" ||
+      node.type === "AccessorProperty"
+    ) {
+      visitDecorators(node, scope);
       if (node.computed === true && isAstRecord(node.key)) visit(node.key, scope);
       if (isAstRecord(node.value)) visit(node.value, scope);
       return;
     }
 
     if (node.type === "MethodDefinition") {
+      visitDecorators(node, scope);
       if (node.computed === true && isAstRecord(node.key)) visit(node.key, scope);
       if (isAstRecord(node.value)) visit(node.value, scope);
       return;
@@ -576,14 +653,7 @@ export class ImportMetaAssetTransformer {
     const rewrites: ImportMetaAssetRewrite[] = [];
     const initializedBindings = new Map<AssetBinding, string>();
     for (const assetUrl of assetUrls) {
-      const argument = nodeArray(assetUrl.sourceRange.arguments)[0];
-      if (
-        isAstRecord(argument) &&
-        hasRange(argument) &&
-        /\/\*\s*@vite-ignore\s*\*\//.test(code.slice(assetUrl.sourceRange.start, argument.start))
-      ) {
-        continue;
-      }
+      if (hasBundlerIgnoreInNewUrl(code, assetUrl.sourceRange)) continue;
 
       const cleanSpecifier = assetUrl.specifier.split(/[?#]/, 1)[0];
       if (cleanSpecifier === "") continue;

@@ -178,8 +178,10 @@ describe("import-meta asset phase", () => {
       `url.pathname = "/other";`,
       `mutate(url);`,
       `target[mutate(url)] = value;`,
+      `const { value = mutate(url) } = {};`,
       `for (url.pathname of values) {}`,
       `for ({ value: url.pathname } of values) {}`,
+      `for (const { value = mutate(url) } of values) {}`,
       `eval('url.pathname = "/other"');`,
       `export { url };`,
     ]) {
@@ -232,12 +234,77 @@ describe("import-meta asset phase", () => {
       `const url = new URL("../../src/text-file.txt", import.meta.url);`,
       `type Snapshot = typeof url;`,
       `const object = { url: other };`,
+      `class Holder { accessor url = 1; }`,
       `urlLabel: { break urlLabel; }`,
       `export { url } from "./other";`,
       `fetch(url);`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
     expect(result.code).toContain(`fetch(__vinext_asset_url)`);
+
+    const metaSource = [
+      `const meta = new URL("../../src/text-file.txt", import.meta.url);`,
+      `void import.meta;`,
+      `export * as meta from "./other";`,
+      `fetch(meta);`,
+    ].join("\n");
+    const metaResult = await transformHandler(plugin).call(context(), metaSource, typedRoutePath);
+    expect(metaResult.code).toContain(`fetch(__vinext_asset_url)`);
+  });
+
+  it("avoids runtime TypeScript declaration collisions", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `enum __vinext_asset_url { Value }`,
+      `namespace __vinext_asset_url_ { export const value = 1; }`,
+      `import __vinext_asset_url__ = require("./other");`,
+      `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
+      `fetch(asset);`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
+    expect(result.code).toContain(
+      `asset = new URL("../../src/text-file.txt", import.meta.url), __vinext_asset_url___ = new URL("data:text/plain;`,
+    );
+  });
+
+  it("invalidates aliases referenced by decorators", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
+      `class Example { @mutate(asset) method() {} }`,
+      `fetch(asset);`,
+    ].join("\n");
+    expect(await transformHandler(plugin).call(context(), source, typedRoutePath)).toBeNull();
+
+    const parameterMutation = [
+      `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
+      `class ParameterMutation { method(@mutate(asset) asset: unknown) {} }`,
+      `fetch(asset);`,
+    ].join("\n");
+    expect(
+      await transformHandler(plugin).call(context(), parameterMutation, typedRoutePath),
+    ).toBeNull();
+
+    const nodelessPlugin = await createPlugin(true);
+    const decoratedAsset = `@decorate(new URL("../../src/text-file.txt", import.meta.url)) class Decorated {}`;
+    const result = await transformHandler(nodelessPlugin).call(
+      context(),
+      decoratedAsset,
+      typedRoutePath,
+    );
+    expect(result.code.match(/data:text\/plain/g)).toHaveLength(1);
+
+    const decoratedParameter = [
+      `class DecoratedParameter {`,
+      `  constructor(@decorate(new URL("../../src/text-file.txt", import.meta.url)) public value: string) {}`,
+      `}`,
+    ].join("\n");
+    const parameterResult = await transformHandler(nodelessPlugin).call(
+      context(),
+      decoratedParameter,
+      typedRoutePath,
+    );
+    expect(parameterResult.code.match(/data:text\/plain/g)).toHaveLength(1);
   });
 
   it("rewrites the constructor itself for nodeless targets", async () => {
@@ -300,11 +367,16 @@ describe("import-meta asset phase", () => {
       `"use server";`,
       `const __vinext_asset_\\u0075rl = "user";`,
       `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
-      `function read(__vinext_asset_url_) { return fetch(asset); }`,
+      `function read(__vinext_asset_url_) {`,
+      `  for (const __vinext_asset_url__ of values) { fetch(asset); }`,
+      `}`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, routePath);
     expect(result.code).toContain(
-      `const asset = new URL("../../src/text-file.txt", import.meta.url), __vinext_asset_url__ = new URL("data:text/plain;`,
+      `const asset = new URL("../../src/text-file.txt", import.meta.url), __vinext_asset_url___ = new URL("data:text/plain;`,
+    );
+    expect(result.code).toContain(
+      `for (const __vinext_asset_url__ of values) { fetch(__vinext_asset_url___); }`,
     );
     expect(result.code).toContain(`"use server";`);
     expect(result.code).toContain(`const __vinext_asset_\\u0075rl = "user";`);
@@ -479,16 +551,30 @@ describe("import-meta asset phase", () => {
     expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
-  it("honors @vite-ignore and leaves unsupported URLs untouched", async () => {
+  it("honors bundler ignore directives and leaves unsupported URLs untouched", async () => {
     const plugin = await createPlugin(true);
     const source = [
       `new URL(/* @vite-ignore */ "../../src/text-file.txt", import.meta.url);`,
+      `new URL(/* webpackIgnore: true */ "../../src/text-file.txt", import.meta.url);`,
+      `new URL(/* turbopackIgnore: true, webpackChunkName: "ignored" */ "../../src/text-file.txt", import.meta.url);`,
+      `new URL(/* @vite-ignore */ /* webpackIgnore: false */ "../../src/text-file.txt", import.meta.url);`,
+      String.raw`new URL(/* webpackInclude: /foo\(/, webpackIgnore: true */ "../../src/text-file.txt", import.meta.url);`,
+      `new URL(/* @vite-ignore */ ("../../src/text-file.txt"), import.meta.url);`,
+      `new URL(/* webpackInclude: /[(]/, webpackIgnore: true */ ("../../src/text-file.txt"), import.meta.url);`,
+      `new URL(/* webpackInclude: /foo/, // note\n webpackIgnore: true */ "../../src/text-file.txt", import.meta.url);`,
       `new URL("../../src/missing.txt", import.meta.url);`,
       `new URL("https://example.com/file.txt", import.meta.url);`,
       `new URL("/src/text-file.txt", import.meta.url);`,
       `new URL("../../src/text-file.txt", import.meta.url, sideEffect());`,
     ].join("\n");
     expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+  });
+
+  it("does not synthesize ignore directives from RegExp-valued magic options", async () => {
+    const plugin = await createPlugin(true);
+    const source = `new URL(/* webpackIgnore: false, webpackInclude: /x, webpackIgnore: true, y/ */ "../../src/text-file.txt", import.meta.url);`;
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
   it("recognizes comments and escaped URL identifiers", async () => {

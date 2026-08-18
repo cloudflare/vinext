@@ -233,6 +233,74 @@ describe("vinext:import-meta-url plugin", () => {
     },
   );
 
+  it.each([
+    `webpackIgnore: true, webpackChunkName: "ignored"`,
+    `webpackChunkName: "ignored", webpackIgnore: true`,
+    `turbopackIgnore: true, webpackChunkName: "ignored"`,
+    String.raw`webpackInclude: /foo\(/, webpackIgnore: true`,
+    `webpackInclude: /[(]/, webpackIgnore: true`,
+  ])("preserves URL imports carrying combined magic options: %s", (directive) => {
+    const source = `import(/* ${directive} */ new URL("./dependency.js", import.meta.url).href);`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")).toBeNull();
+  });
+
+  it.each(["\n", "\r", "\u2028", "\u2029"])(
+    "recognizes ignore options after a line comment ending with %#",
+    (terminator) => {
+      const directive = `webpackInclude: /foo/, // note${terminator} webpackIgnore: true`;
+      const source = `import(/* ${directive} */ new URL("./dependency.js", import.meta.url).href);`;
+      expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+      expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    },
+  );
+
+  it.each([
+    `webpackIgnore: false, webpackChunkName: "included"`,
+    `webpackChunkName: ", webpackIgnore: true", webpackPrefetch: true`,
+    `webpackIgnore: false, webpackInclude: /x, webpackIgnore: true, y/`,
+  ])("normalizes URL imports without an active combined ignore: %s", (directive) => {
+    const source = `import(/* ${directive} */ new URL("./dependency.js", import.meta.url).href);`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")?.code).toContain(
+      `import(/* ${directive} */ "./dependency.js")`,
+    );
+  });
+
+  it.each([
+    `/* @vite-ignore */ /* webpackIgnore: false */`,
+    `/* webpackIgnore: true */ /* turbopackIgnore: false */`,
+    `/* turbopackIgnore: true */ /* webpackIgnore: false */`,
+  ])("does not cancel an ignore directive from another bundler: %s", (directives) => {
+    const source = `import(${directives} new URL("./dependency.js", import.meta.url).href);`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")).toBeNull();
+  });
+
+  it("normalizes nested URL imports in dynamic-import options", () => {
+    const source = [
+      `import(new URL("./outer.js", import.meta.url).href, {`,
+      `  with: { type: (void import(new URL("./inner.js", import.meta.url).href), "json") },`,
+      `});`,
+    ].join("\n");
+    for (const result of [
+      _transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js"),
+      rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js"),
+    ]) {
+      expect(result?.code).toContain(`import("./outer.js"`);
+      expect(result?.code).toContain(`import("./inner.js")`);
+    }
+  });
+
+  it.each([
+    `import // before\u2028(/* @vite-ignore */ new URL("./dependency.js", import.meta.url).href)`,
+    `import // before\u2029(/* @vite-ignore */ new URL("./dependency.js", import.meta.url).href)`,
+    `import(// before\u2028/* @vite-ignore */ new URL("./dependency.js", import.meta.url).href)`,
+    `import(// before\u2029/* @vite-ignore */ new URL("./dependency.js", import.meta.url).href)`,
+  ])("preserves ignore directives after JavaScript line terminators", (source) => {
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")).toBeNull();
+  });
+
   it("preserves Vite's inner new URL ignore placement", () => {
     const source = `import(new URL(/* @vite-ignore */ "./dependency.js", import.meta.url).href);`;
     expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
@@ -242,6 +310,15 @@ describe("vinext:import-meta-url plugin", () => {
       expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)).toBeNull();
     }
   });
+
+  it.each(["@vite-ignore", "webpackIgnore: true"])(
+    "preserves %s before a parenthesized import argument",
+    (directive) => {
+      const source = `import(/* ${directive} */ (new URL("./dependency.js", import.meta.url).href));`;
+      expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+      expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    },
+  );
 
   it.each([
     `function load(URL) { return import(new URL("./dependency.js", import.meta.url).href); }`,

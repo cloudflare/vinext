@@ -20,8 +20,8 @@ import {
 import { createTransformCache } from "./transform-cache.js";
 import { magicStringTransformResult } from "./transform-result.js";
 import {
+  hasBundlerIgnoreInNewUrl,
   hasDynamicRequestIgnoreDirective,
-  hasViteIgnoreInNewUrl,
   relativeDynamicImportUrlSpecifier,
 } from "./import-meta-url-syntax.js";
 import {
@@ -799,11 +799,12 @@ function transformVeryDynamicRequests(code: string, id: string, replaceUnknownRe
       if (source && !hasDynamicRequestIgnoreDirective(code, node, source)) {
         const urlSpecifier = relativeDynamicImportUrlSpecifier(source);
         if (urlSpecifier !== null) {
+          if (isAstRecord(node.options)) visit(node.options, scope);
           if (
             normalizeUrlImports &&
             !hasAstBinding(scope, "URL") &&
             hasRange(source) &&
-            !hasViteIgnoreInNewUrl(code, source)
+            !hasBundlerIgnoreInNewUrl(code, source)
           ) {
             output.overwrite(source.start, source.end, JSON.stringify(urlSpecifier));
             changed = true;

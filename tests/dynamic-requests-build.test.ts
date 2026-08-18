@@ -630,12 +630,13 @@ require(/* @vite-ignore */ request);
     expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
   });
 
-  it("honors the last explicit dynamic request ignore value at runtime", () => {
+  it("tracks explicit dynamic request ignore values per bundler", () => {
     const transformed = _transformVeryDynamicRequests(
       `const request = getRequest();
 const loaded = [];
 loaded.push(require(/* webpackIgnore: false */ /* turbopackIgnore: true */ request));
-try { require(/* turbopackIgnore: true */ /* webpackIgnore: false */ request); } catch (error) {
+loaded.push(require(/* turbopackIgnore: true */ /* webpackIgnore: false */ request));
+try { require(/* webpackIgnore: true */ /* webpackIgnore: false */ request); } catch (error) {
   loaded.push(error.message);
 }
 `,
@@ -648,7 +649,11 @@ try { require(/* turbopackIgnore: true */ /* webpackIgnore: false */ request); }
         getRequest: () => "ignored-module",
         require: (request: string) => request,
       }),
-    ).toEqual(["ignored-module", "Cannot find module as expression is too dynamic"]);
+    ).toEqual([
+      "ignored-module",
+      "ignored-module",
+      "Cannot find module as expression is too dynamic",
+    ]);
   });
 
   it("preserves require calls shadowed by switch, class, and static block bindings", () => {

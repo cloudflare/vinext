@@ -54,8 +54,8 @@ import { magicStringTransformResult, type MagicStringTransformResult } from "./t
 import { ImportMetaAssetTransformer, type ImportMetaAssetRewrite } from "./import-meta-assets.js";
 import type { OgAssetOwnership } from "./og-asset-ownership.js";
 import {
+  hasBundlerIgnoreInNewUrl,
   hasDynamicRequestIgnoreDirective,
-  hasViteIgnoreInNewUrl,
   isImportMetaUrlNode,
   isImportMetaUrlOrChainedNode,
   isNewUrlExpression,
@@ -544,8 +544,9 @@ function collectDynamicImportUrlSpecifiers(
         specifier !== null &&
         !hasAstBinding(scope, "URL") &&
         !hasDynamicRequestIgnoreDirective(code, value, source) &&
-        !hasViteIgnoreInNewUrl(code, source)
+        !hasBundlerIgnoreInNewUrl(code, source)
       ) {
+        if (isAstRecord(value.options)) visit(value.options, scope);
         specifiers.push({ ...source, specifier });
         return;
       }
