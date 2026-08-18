@@ -30,7 +30,7 @@ import { stripViteModuleQuery } from "../utils/path.js";
 import { packageNameFromSpecifier } from "../utils/package-name.js";
 
 const COMMONJS_PRESCAN = /\b(?:require|module|exports)\b/;
-const IDENTIFIER_NAME_RE = /^[A-Za-z_$][\w$]*$/;
+const IDENTIFIER_NAME_RE = /^[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*$/u;
 const DYNAMIC_REQUIRE_EXTENSIONS = [
   ".vue",
   ".svelte",
@@ -195,7 +195,6 @@ function analyzeCommonJsAst(
       if (
         isIdentifierNamed(callee, "require") &&
         !hasAstBinding(scope, "require") &&
-        args.length === 1 &&
         argument
       ) {
         if (specifier !== null) requires.push({ node, specifier });

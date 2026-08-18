@@ -134,6 +134,14 @@ exports.obj = { foo: "foo" };
     expect(module.obj).toEqual({ foo: "foo" });
   });
 
+  // Ported from vite-plugin-commonjs v0.10.4's unrestricted named-export generation:
+  // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/src/generate-export.ts
+  it("exposes Unicode identifier names as named exports", async () => {
+    const module = await evaluateCommonJs(`exports.π = 3; exports.你好 = 4;`);
+    expect(module.π).toBe(3);
+    expect(module.你好).toBe(4);
+  });
+
   it("supports computed static export names but not invalid ESM names", () => {
     const result = transformCommonJs(
       `exports["valid"] = 1; exports["not-valid"] = 2;`,
@@ -186,6 +194,17 @@ const external = require("external");
     );
     expect(result?.code).toContain('import * as __vinext_cjs_import___1 from "value";');
     expect(result?.code).toContain("(__vinext_cjs_import___1.default || __vinext_cjs_import___1)");
+  });
+
+  // Ported from vite-plugin-commonjs v0.10.4, which reads the first require argument
+  // without rejecting additional arguments:
+  // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/src/generate-import.ts
+  it("ignores additional require arguments", () => {
+    for (const source of [`require("value", "ignored");`, `require(\`value\`, "ignored");`]) {
+      const result = transformCommonJs(source, "/app/value.js");
+      expect(result?.code).toContain('from "value"');
+      expect(result?.code).not.toContain("ignored");
+    }
   });
 
   it("parses TypeScript and JSX source", () => {
