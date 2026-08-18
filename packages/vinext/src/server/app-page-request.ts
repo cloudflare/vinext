@@ -107,7 +107,12 @@ type AppPageInterceptMatch<TPage = unknown> = {
   targetRouteGraphId?: string | null;
 };
 
-type ResolveAppPageInterceptMatchOptions<TRoute, TPage, TInterceptOpts> = {
+type AppPageInterceptState<TRoute, TPage> =
+  | { kind: "none" }
+  | { kind: "current-route"; intercept: AppPageInterceptMatch<TPage> }
+  | { kind: "source-route"; intercept: AppPageInterceptMatch<TPage>; sourceRoute: TRoute };
+
+type ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts> = {
   cleanPathname: string;
   currentRoute: TRoute;
   findIntercept: (pathname: string) => AppPageInterceptMatch<TPage> | null;
@@ -116,18 +121,6 @@ type ResolveAppPageInterceptMatchOptions<TRoute, TPage, TInterceptOpts> = {
   isRscRequest: boolean;
   toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
 };
-
-type ResolveAppPageInterceptMatchResult<TRoute, TInterceptOpts> = {
-  interceptOpts: TInterceptOpts;
-  matchedParams: AppPageParams;
-  sourceParams: AppPageParams;
-  sourceRoute: TRoute;
-};
-
-type AppPageInterceptState<TRoute, TPage> =
-  | { kind: "none" }
-  | { kind: "current-route"; intercept: AppPageInterceptMatch<TPage> }
-  | { kind: "source-route"; intercept: AppPageInterceptMatch<TPage>; sourceRoute: TRoute };
 
 type ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOpts> = {
   cleanPathname: string;
@@ -624,43 +617,8 @@ export async function validateAppPageDynamicParams(
   return null;
 }
 
-/**
- * Pure: decides whether the incoming request should re-render an intercepted
- * source-route tree, and if so returns the source route, the source-route's
- * param slice, the full matched param set (the URL params the client sees),
- * and an opaque `interceptOpts` bag for the caller's render pipeline.
- *
- * Returns `null` in three decision-fallthrough cases:
- *   - non-RSC requests (server rendering the direct page for a full HTML load)
- *   - no intercepting route matches the path
- *   - the match's source route IS the current route (the same branch today
- *     returns `interceptOpts` for the direct render)
- *
- * Shared by both the GET path (resolveAppPageIntercept, which layers on
- * `setNavigationContext` + element build + Response wrap) and the server-action
- * POST path (entries/app-rsc-entry.ts), which runs its own response pipeline.
- */
-export async function resolveAppPageInterceptMatch<TRoute, TPage, TInterceptOpts>(
-  options: ResolveAppPageInterceptMatchOptions<TRoute, TPage, TInterceptOpts>,
-): Promise<ResolveAppPageInterceptMatchResult<TRoute, TInterceptOpts> | null> {
-  const interceptState = await resolveAppPageInterceptState(options);
-  if (interceptState.kind !== "source-route") {
-    return null;
-  }
-
-  return {
-    interceptOpts: options.toInterceptOpts(interceptState.intercept),
-    matchedParams: interceptState.intercept.matchedParams,
-    sourceParams: pickRouteParams(
-      interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams,
-      options.getRouteParamNames(interceptState.sourceRoute),
-    ),
-    sourceRoute: interceptState.sourceRoute,
-  };
-}
-
 async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
-  options: ResolveAppPageInterceptMatchOptions<TRoute, TPage, TInterceptOpts>,
+  options: ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts>,
 ): Promise<AppPageInterceptState<TRoute, TPage>> {
   if (!options.isRscRequest) {
     return { kind: "none" };
