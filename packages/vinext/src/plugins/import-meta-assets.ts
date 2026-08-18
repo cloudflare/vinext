@@ -36,16 +36,20 @@ type AssetUrl = {
   sourceRange: AstRange;
   specifier: string;
   preserveEvaluation?: boolean;
+  binding?: AssetBinding;
 };
+
+type AssetBinding = { asset: AssetUrl; valid: boolean };
 
 export type ImportMetaAssetRewrite = { start: number; end: number; replacement: string };
 
 type AssetScope = AstScope & {
-  assets: Map<string, AssetUrl>;
+  assets: Map<string, AssetBinding>;
+  unsafeAssetBindings: Set<string>;
 };
 
 function createAssetScope(parent: AssetScope | null): AssetScope {
-  return { ...createAstScope(parent), assets: new Map() };
+  return { ...createAstScope(parent), assets: new Map(), unsafeAssetBindings: new Set() };
 }
 
 function assetUrlFromNode(value: unknown): AssetUrl | null {
@@ -89,15 +93,16 @@ function recordAssetBinding(
     return;
   }
   if (hasAstBinding(scope, "URL")) return;
+  if (scope.unsafeAssetBindings.has(declarator.id.name)) return;
   const asset = assetUrlFromNode(declarator.init);
-  if (asset) scope.assets.set(declarator.id.name, asset);
+  if (asset) scope.assets.set(declarator.id.name, { asset, valid: true });
 }
 
 function collectAssetScopeBindings(node: AstRecord, scope: AssetScope): void {
   collectDirectScopeBindings(node, scope);
 }
 
-function findAssetBinding(scope: AssetScope, name: string): AssetUrl | null {
+function findAssetBinding(scope: AssetScope, name: string): AssetBinding | null {
   for (
     let current: AssetScope | null = scope;
     current;
@@ -116,7 +121,17 @@ function invalidateAssetBinding(scope: AssetScope, name: string): void {
     current;
     current = current.parent as AssetScope | null
   ) {
-    if (current.assets.delete(name) || current.bindings.has(name)) return;
+    const binding = current.assets.get(name);
+    if (binding) {
+      binding.valid = false;
+      current.assets.delete(name);
+      current.unsafeAssetBindings.add(name);
+      return;
+    }
+    if (current.bindings.has(name)) {
+      current.unsafeAssetBindings.add(name);
+      return;
+    }
   }
 }
 
@@ -126,10 +141,52 @@ function rootIdentifierName(value: unknown): string | null {
   return node?.type === "Identifier" && typeof node.name === "string" ? node.name : null;
 }
 
-function invalidateDirectAssetReference(scope: AssetScope, value: unknown): void {
+function invalidateEscapedAssetValue(scope: AssetScope, value: unknown): void {
   const node = unwrapExpression(value);
-  if (node?.type !== "Identifier" || typeof node.name !== "string") return;
-  if (findAssetBinding(scope, node.name)) invalidateAssetBinding(scope, node.name);
+  if (!node) return;
+  if (node.type === "Identifier" && typeof node.name === "string") {
+    invalidateAssetBinding(scope, node.name);
+    return;
+  }
+  if (node.type === "ConditionalExpression") {
+    invalidateEscapedAssetValue(scope, node.consequent);
+    invalidateEscapedAssetValue(scope, node.alternate);
+  } else if (node.type === "LogicalExpression" || node.type === "SequenceExpression") {
+    for (const expression of node.type === "SequenceExpression"
+      ? nodeArray(node.expressions)
+      : [node.left, node.right]) {
+      invalidateEscapedAssetValue(scope, expression);
+    }
+  } else if (node.type === "ArrayExpression") {
+    for (const element of nodeArray(node.elements)) invalidateEscapedAssetValue(scope, element);
+  } else if (node.type === "ObjectExpression") {
+    for (const property of nodeArray(node.properties)) {
+      if (isAstRecord(property)) invalidateEscapedAssetValue(scope, property.value);
+    }
+  } else if (node.type === "MemberExpression") {
+    const property = unwrapExpression(node.property);
+    const safeUrlValue =
+      node.computed !== true &&
+      property?.type === "Identifier" &&
+      [
+        "hash",
+        "host",
+        "hostname",
+        "href",
+        "origin",
+        "password",
+        "pathname",
+        "port",
+        "protocol",
+        "search",
+        "toJSON",
+        "toString",
+        "username",
+      ].includes(String(property.name));
+    if (safeUrlValue) return;
+    const referenced = rootIdentifierName(node);
+    if (referenced) invalidateAssetBinding(scope, referenced);
+  }
 }
 
 function createChildScope(node: AstRecord, parent: AssetScope): AssetScope | null {
@@ -213,7 +270,9 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     if (node.type === "VariableDeclaration") {
       for (const declarator of nodeArray(node.declarations)) {
         if (!isAstRecord(declarator)) continue;
-        invalidateDirectAssetReference(scope, declarator.init);
+        if (!assetUrlFromNode(declarator.init)) {
+          invalidateEscapedAssetValue(scope, declarator.init);
+        }
         if (isAstRecord(declarator.init)) visit(declarator.init, scope);
         if (isAstRecord(declarator.id)) visit(declarator.id, scope);
         recordAssetBinding(node, declarator, scope);
@@ -236,7 +295,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
       if (node.type === "AssignmentExpression") {
         const assigned = rootIdentifierName(node.left);
         if (assigned) invalidateAssetBinding(scope, assigned);
-        invalidateDirectAssetReference(scope, node.right);
+        invalidateEscapedAssetValue(scope, node.right);
       } else if (node.type === "UpdateExpression") {
         const assigned = rootIdentifierName(node.argument);
         if (assigned) invalidateAssetBinding(scope, assigned);
@@ -245,20 +304,20 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
         if (assigned) invalidateAssetBinding(scope, assigned);
       } else if (node.type === "NewExpression") {
         for (const argument of nodeArray(node.arguments)) {
-          invalidateDirectAssetReference(scope, argument);
+          invalidateEscapedAssetValue(scope, argument);
         }
       } else if (
         node.type === "ReturnStatement" ||
         node.type === "ThrowStatement" ||
         node.type === "YieldExpression"
       ) {
-        invalidateDirectAssetReference(scope, node.argument);
+        invalidateEscapedAssetValue(scope, node.argument);
       } else if (node.type === "ArrayExpression") {
         for (const element of nodeArray(node.elements)) {
-          invalidateDirectAssetReference(scope, element);
+          invalidateEscapedAssetValue(scope, element);
         }
       } else if (node.type === "Property") {
-        invalidateDirectAssetReference(scope, node.value);
+        invalidateEscapedAssetValue(scope, node.value);
       }
     }
 
@@ -279,19 +338,27 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
         hasRange(input)
       ) {
         const boundAsset = findAssetBinding(scope, input.name);
-        if (boundAsset) assets.push({ ...boundAsset, range: input, preserveEvaluation: true });
+        if (boundAsset) {
+          assets.push({
+            ...boundAsset.asset,
+            range: input,
+            preserveEvaluation: true,
+            binding: boundAsset,
+          });
+        }
       }
     }
 
     if (!nodelessTarget && node.type === "CallExpression") {
       const callee = unwrapExpression(node.callee);
       const isGlobalFetch = isIdentifierNamed(callee, "fetch") && !hasAstBinding(scope, "fetch");
-      if (!isGlobalFetch) {
+      const isReadOnlyUrlConsumer = isIdentifierNamed(callee, "fileURLToPath");
+      if (!isGlobalFetch && !isReadOnlyUrlConsumer) {
         const receiver =
           callee?.type === "MemberExpression" ? rootIdentifierName(callee.object) : null;
         if (receiver) invalidateAssetBinding(scope, receiver);
         for (const argument of nodeArray(node.arguments)) {
-          invalidateDirectAssetReference(scope, argument);
+          invalidateEscapedAssetValue(scope, argument);
         }
       }
     }
@@ -302,7 +369,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
   for (const statement of nodeArray(ast.body)) {
     if (isAstRecord(statement)) visit(statement, rootScope);
   }
-  return assets;
+  return assets.filter((asset) => asset.binding?.valid !== false);
 }
 
 /**

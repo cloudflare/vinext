@@ -694,6 +694,37 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   }, 15000);
 
+  it("registers environment-specific import-meta optimizer adapters", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (plugin: any) =>
+        plugin.name === "vinext:config" && typeof plugin.configEnvironment === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-import-meta-optdeps-"));
+    try {
+      await (mainPlugin as any).config(
+        { root: tmpDir, build: {}, plugins: [] },
+        { command: "serve" },
+      );
+      const clientConfig: any = { consumer: "client" };
+      const serverConfig: any = { consumer: "server" };
+      (mainPlugin as any).configEnvironment("client", clientConfig);
+      (mainPlugin as any).configEnvironment("ssr", serverConfig);
+
+      expect(clientConfig.optimizeDeps.rolldownOptions.plugins.at(-1).name).toBe(
+        "vinext:import-meta-url:client-optimize-deps",
+      );
+      expect(serverConfig.optimizeDeps.rolldownOptions.plugins.at(-1).name).toBe(
+        "vinext:import-meta-url:optimize-deps",
+      );
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("seeds Cloudflare Pages Router worker optimizer entries during dev", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();

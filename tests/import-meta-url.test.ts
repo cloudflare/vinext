@@ -233,6 +233,17 @@ describe("vinext:import-meta-url plugin", () => {
     },
   );
 
+  it.each(["@vite-ignore", "webpackIgnore: true", "turbopackIgnore: true"])(
+    "preserves URL imports carrying %s during dependency optimization",
+    (directive) => {
+      const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+      const source = `import(/* ${directive} */ new URL("./dependency.js", import.meta.url).href);`;
+      for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+        expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)).toBeNull();
+      }
+    },
+  );
+
   it.each([
     `new URL("./dependency.js", import.meta.url).href as string`,
     `new URL("./dependency.js", import.meta.url).href!`,
@@ -246,7 +257,23 @@ describe("vinext:import-meta-url plugin", () => {
 
   it("does not normalize relative URL imports in virtual modules", () => {
     const source = `void import(new URL("./dependency.js", import.meta.url).href);`;
-    expect(_transformVeryDynamicRequests(source, "\0virtual:entry.js", false)).toBeNull();
+    expect(_transformVeryDynamicRequests(source, "\0virtual:entry.js")).toBeNull();
+
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+      expect(unwrapHook(plugin.transform).call({}, source, "\0virtual:entry.js")).toBeNull();
+    }
+  });
+
+  it("normalizes URL imports in the client dependency optimizer", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const source = `void import(new URL("./dependency.js", import.meta.url).href);`;
+    const result = unwrapHook(capability.clientOptimizeDepsPlugin.transform).call(
+      {},
+      source,
+      esmDependencyPath,
+    );
+    expect(result?.code).toContain(`import("./dependency.js")`);
   });
 
   it("normalizes client URL imports before Vite treats them as assets", async () => {
@@ -931,8 +958,8 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
     expect(result).toBeNull();
   });
 
-  it("uses one Vite capability plus a filtered optimizer adapter", () => {
-    const { vitePlugin, optimizeDepsPlugin } = createImportMetaUrlPlugin({
+  it("uses one Vite capability plus filtered environment optimizer adapters", () => {
+    const { vitePlugin, optimizeDepsPlugin, clientOptimizeDepsPlugin } = createImportMetaUrlPlugin({
       getRoot: () => realRoot,
     });
     const viteFilter = (
@@ -946,6 +973,7 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
 
     expect(vitePlugin.name).toBe("vinext:import-meta-url");
     expect(optimizeDepsPlugin.name).toBe("vinext:import-meta-url:optimize-deps");
+    expect(clientOptimizeDepsPlugin.name).toBe("vinext:import-meta-url:client-optimize-deps");
     expect(viteFilter.id.include.test(pagePath)).toBe(true);
     expect(viteFilter.id.include.test(cjsDependencyPath)).toBe(true);
     expect(viteFilter.id.exclude.test("\0virtual:fixture.ts")).toBe(true);

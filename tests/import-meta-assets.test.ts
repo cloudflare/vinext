@@ -246,6 +246,27 @@ describe("import-meta asset phase", () => {
         `mutate(url);`,
         `fetch(url);`,
       ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `function read() { return fetch(url); }`,
+        `function mutate() { url.pathname = "/other"; }`,
+        `mutate(); read();`,
+      ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `function read() { return fetch(url); }`,
+        `mutate(condition ? url : other);`,
+        `read();`,
+      ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `for (;;) { fetch(url); url.pathname = "/other"; }`,
+      ].join("\n"),
+      [
+        `function mutate() { url.pathname = "/other"; }`,
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `mutate(); fetch(url);`,
+      ].join("\n"),
     ];
 
     for (const source of sources) {

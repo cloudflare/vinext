@@ -3557,23 +3557,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configEnvironment(name, config) {
-        if (name !== "client" && config.consumer !== "client") {
-          // optimizeDeps runs its own Rolldown pipeline, outside Vite's plugin
-          // container. Register only the thin adapter for the same module-
-          // identity capability; parsing, dependency classification, marker
-          // state, and emitted identity finalization stay shared with Vite.
-          config.optimizeDeps ??= {};
-          config.optimizeDeps.rolldownOptions ??= {};
-          const configuredPlugins = config.optimizeDeps.rolldownOptions.plugins;
-          config.optimizeDeps.rolldownOptions.plugins = [
-            ...(Array.isArray(configuredPlugins)
-              ? configuredPlugins
-              : configuredPlugins
-                ? [configuredPlugins]
-                : []),
-            importMetaUrlCapability.optimizeDepsPlugin,
-          ];
-        }
+        // optimizeDeps runs its own Rolldown pipeline, outside Vite's plugin
+        // container. Client dependencies need only the ordering-sensitive URL
+        // import normalization; server dependencies additionally need portable
+        // emitted-module identity and CommonJS globals.
+        config.optimizeDeps ??= {};
+        config.optimizeDeps.rolldownOptions ??= {};
+        const configuredPlugins = config.optimizeDeps.rolldownOptions.plugins;
+        config.optimizeDeps.rolldownOptions.plugins = [
+          ...(Array.isArray(configuredPlugins)
+            ? configuredPlugins
+            : configuredPlugins
+              ? [configuredPlugins]
+              : []),
+          name === "client" || config.consumer === "client"
+            ? importMetaUrlCapability.clientOptimizeDepsPlugin
+            : importMetaUrlCapability.optimizeDepsPlugin,
+        ];
 
         if (
           isServeCommand &&

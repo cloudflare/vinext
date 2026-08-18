@@ -42,6 +42,7 @@ import { magicStringTransformResult, type MagicStringTransformResult } from "./t
 import { ImportMetaAssetTransformer, type ImportMetaAssetRewrite } from "./import-meta-assets.js";
 import type { OgAssetOwnership } from "./og-asset-ownership.js";
 import {
+  hasDynamicRequestIgnoreDirective,
   isImportMetaUrlNode,
   isImportMetaUrlOrChainedNode,
   isNewUrlExpression,
@@ -79,6 +80,8 @@ export type ImportMetaUrlCapability = {
   vitePlugin: Plugin;
   /** Thin adapter for Vite's independent dependency-optimizer Rolldown pipeline. */
   optimizeDepsPlugin: Plugin;
+  /** Dynamic-import-only adapter for client dependency optimization. */
+  clientOptimizeDepsPlugin: Plugin;
   /** Cached dependency identity/format classifier shared by both plugin pipelines. */
   isBundledCommonJsDependencyId: (id: string) => boolean;
 };
@@ -378,9 +381,24 @@ export function createImportMetaUrlPlugin(options: {
     },
   };
 
+  const clientOptimizeDepsPlugin: Plugin = {
+    name: "vinext:import-meta-url:client-optimize-deps",
+    transform: {
+      filter: {
+        id: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
+        code: IMPORT_META_URL_CANDIDATE_RE,
+      },
+      handler(code, id) {
+        if (!mayContainImportMetaUrl(code)) return null;
+        return rewriteDynamicImportUrls(code, id);
+      },
+    },
+  };
+
   return {
     vitePlugin,
     optimizeDepsPlugin,
+    clientOptimizeDepsPlugin,
     isBundledCommonJsDependencyId: (id) => commonJsDependencyCanonicalId(id) !== null,
   };
 }
@@ -439,8 +457,13 @@ type DynamicImportUrlSpecifier = AstRange & { specifier: string };
 // Normalizing this lets Vite resolve and emit the dependency. The earlier
 // generic dynamic-request fallback uses the shared syntax matcher to admit the
 // same form without owning a second transform.
-function collectDynamicImportUrlSpecifiers(ast: unknown): DynamicImportUrlSpecifier[] {
+function collectDynamicImportUrlSpecifiers(
+  ast: unknown,
+  code: string,
+  id: string,
+): DynamicImportUrlSpecifier[] {
   const specifiers: DynamicImportUrlSpecifier[] = [];
+  if (VIRTUAL_MODULE_ID_RE.test(id)) return specifiers;
 
   function visit(value: unknown): void {
     if (!isAstRecord(value)) return;
@@ -448,7 +471,7 @@ function collectDynamicImportUrlSpecifiers(ast: unknown): DynamicImportUrlSpecif
     const source = isAstRecord(value.source) ? value.source : null;
     if (value.type === "ImportExpression" && hasRange(source)) {
       const specifier = relativeDynamicImportUrlSpecifier(source);
-      if (specifier !== null) {
+      if (specifier !== null && !hasDynamicRequestIgnoreDirective(code, value, source)) {
         specifiers.push({ ...source, specifier });
         return;
       }
@@ -667,7 +690,7 @@ function rewriteModuleIdentity(
   }
 
   if (options.normalizeDynamicImportUrls) {
-    for (const dynamicImport of collectDynamicImportUrlSpecifiers(ast)) {
+    for (const dynamicImport of collectDynamicImportUrlSpecifiers(ast, code, options.id)) {
       output.overwrite(
         dynamicImport.start,
         dynamicImport.end,
