@@ -105,9 +105,9 @@ type CommonJsAnalysis = {
   requires: StaticRequire[];
   dynamicRequires: DynamicRequire[];
   argumentlessRequires: Array<AstRecord & { start: number; end: number }>;
+  bindings: Set<string>;
   hasExports: boolean;
   namedExports: string[];
-  rootBindings: Set<string>;
 };
 
 function memberPropertyName(node: AstRecord): string | null {
@@ -146,6 +146,7 @@ function analyzeCommonJsAst(
   const rootScope = createAstScope(null);
   collectDirectScopeBindings(root, rootScope);
   collectVarScopeBindings(root, rootScope);
+  const bindings = new Set(rootScope.bindings);
   const requires: StaticRequire[] = [];
   const dynamicRequires: DynamicRequire[] = [];
   const argumentlessRequires: Array<AstRecord & { start: number; end: number }> = [];
@@ -157,8 +158,10 @@ function analyzeCommonJsAst(
     if (isFunctionNode(node)) {
       const parameterScope = createAstScope(parentScope);
       collectBindingNames(node.id, parameterScope.bindings);
+      for (const binding of parameterScope.bindings) bindings.add(binding);
       for (const parameter of nodeArray(node.params)) {
         collectBindingNames(parameter, parameterScope.bindings);
+        for (const binding of parameterScope.bindings) bindings.add(binding);
         if (isAstRecord(parameter)) visit(parameter, parameterScope);
       }
       const body = isAstRecord(node.body) ? node.body : null;
@@ -166,6 +169,7 @@ function analyzeCommonJsAst(
         const bodyScope = createAstScope(parameterScope);
         collectDirectScopeBindings(body, bodyScope);
         collectVarScopeBindings(body, bodyScope);
+        for (const binding of bodyScope.bindings) bindings.add(binding);
         if (body.type === "BlockStatement") {
           for (const statement of nodeArray(body.body)) {
             if (isAstRecord(statement)) visit(statement, bodyScope);
@@ -180,6 +184,7 @@ function analyzeCommonJsAst(
       if (isAstRecord(node.discriminant)) visit(node.discriminant, parentScope);
       const switchScope = createAstScope(parentScope);
       collectSwitchScopeBindings(node, switchScope);
+      for (const binding of switchScope.bindings) bindings.add(binding);
       for (const switchCase of nodeArray(node.cases)) {
         if (isAstRecord(switchCase)) visit(switchCase, switchScope);
       }
@@ -195,9 +200,11 @@ function analyzeCommonJsAst(
       if (node.type === "StaticBlock" || node.type === "TSModuleBlock") {
         collectVarScopeBindings(node, scope);
       }
+      for (const binding of scope.bindings) bindings.add(binding);
     } else if (node.type === "CatchClause") {
       scope = createAstScope(parentScope);
       collectBindingNames(node.param, scope.bindings);
+      for (const binding of scope.bindings) bindings.add(binding);
     } else if (
       node.type === "ForStatement" ||
       node.type === "ForInStatement" ||
@@ -205,9 +212,11 @@ function analyzeCommonJsAst(
     ) {
       scope = createAstScope(parentScope);
       collectLoopScopeBindings(node, scope);
+      for (const binding of scope.bindings) bindings.add(binding);
     } else if (node.type === "ClassExpression" && node.id) {
       scope = createAstScope(parentScope);
       collectBindingNames(node.id, scope.bindings);
+      for (const binding of scope.bindings) bindings.add(binding);
     }
 
     if (node.type === "CallExpression" && hasRange(node)) {
@@ -253,9 +262,9 @@ function analyzeCommonJsAst(
     requires,
     dynamicRequires,
     argumentlessRequires,
+    bindings,
     hasExports,
     namedExports: [...namedExports],
-    rootBindings: rootScope.bindings,
   };
 }
 
@@ -577,7 +586,7 @@ function renderCommonJs(
   }
 
   const output = new MagicString(code);
-  const bindings = new Set(analysis.rootBindings);
+  const bindings = new Set(analysis.bindings);
   const imports: string[] = [];
   const importBindings = new Map<string, string>();
   function importBinding(specifier: string): string {

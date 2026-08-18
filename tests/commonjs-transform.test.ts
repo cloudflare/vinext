@@ -235,6 +235,42 @@ const external = require("external");
     expect(result?.code).toContain("(__vinext_cjs_import___1.default || __vinext_cjs_import___1)");
   });
 
+  it("avoids generated bindings shadowed in descendant scopes", async () => {
+    const root = await mkdtemp(path.join(import.meta.dirname, ".tmp-commonjs-descendant-scope-"));
+    await mkdir(path.join(root, "locales"), { recursive: true });
+    await Promise.all([
+      writeFile(path.join(root, "static.js"), `export default "static";\n`),
+      writeFile(path.join(root, "locales/en.js"), `export default "dynamic";\n`),
+      writeFile(
+        path.join(root, "entry.js"),
+        `export function loadStatic() {
+  const __vinext_cjs_import__ = { default: "shadowed-static" };
+  return require("./static.js");
+}
+export function loadDynamic() {
+  const __vinext_dynamic_require__ = () => ({ default: "shadowed-dynamic" });
+  const locale = "en";
+  return require(\`./locales/${"${locale}"}.js\`).default;
+}
+`,
+      ),
+    ]);
+    const server = await createServer({
+      root,
+      logLevel: "silent",
+      plugins: [createCommonJsPlugin()],
+      server: { middlewareMode: true },
+    });
+    try {
+      const module = await server.ssrLoadModule("/entry.js");
+      expect(module.loadStatic()).toBe("static");
+      expect(module.loadDynamic()).toBe("dynamic");
+    } finally {
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   // Ported from vite-plugin-commonjs v0.10.4, which reads the first require argument
   // without rejecting additional arguments:
   // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/src/generate-import.ts
