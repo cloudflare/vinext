@@ -186,20 +186,6 @@ function parsePagesRequestCookies(cookieHeader: string | string[] | null | undef
   return parseCookieHeader(Array.isArray(cookieHeader) ? cookieHeader.join("; ") : cookieHeader);
 }
 
-function getPagesPreviewDataFromCookieHeader(
-  cookieHeader: string | string[] | null | undefined,
-  options: { isOnDemandRevalidate?: boolean } = {},
-): PagesPreviewData | false {
-  return getPagesPreviewState(cookieHeader, options).data;
-}
-
-export function getPagesPreviewData(
-  request: Request,
-  options: { isOnDemandRevalidate?: boolean } = {},
-): PagesPreviewData | false {
-  return getPagesPreviewDataFromCookieHeader(request.headers.get("cookie"), options);
-}
-
 export function attachPagesRequestCookies(req: PagesRequestCookiesCarrier): void {
   if (Object.hasOwn(req, "cookies")) return;
 
