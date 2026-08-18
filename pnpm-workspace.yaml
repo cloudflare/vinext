@@ -88,7 +88,6 @@ catalog:
   use-count-up: 3.0.1
   validator: ^13.15.26
   vite: npm:@voidzero-dev/vite-plus-core@0.2.6
-  vite-plugin-commonjs: ^0.10.4
   vite-plus: 0.2.6
   vitest: 4.1.10
   web-vitals: ^4.2.4
