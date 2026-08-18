@@ -46,6 +46,7 @@ export type ImportMetaAssetRewrite = { start: number; end: number; replacement: 
 type AssetScope = AstScope & {
   assets: Map<string, AssetBinding>;
   unsafeAssetBindings: Set<string>;
+  unsafeAllAssetBindings: boolean;
   nodeUrlFunctions: Set<string>;
   nodeUrlNamespaces: Set<string>;
 };
@@ -55,6 +56,7 @@ function createAssetScope(parent: AssetScope | null): AssetScope {
     ...createAstScope(parent),
     assets: new Map(),
     unsafeAssetBindings: new Set(),
+    unsafeAllAssetBindings: false,
     nodeUrlFunctions: new Set(),
     nodeUrlNamespaces: new Set(),
   };
@@ -133,7 +135,7 @@ function recordAssetBinding(
     return;
   }
   if (hasAstBinding(scope, "URL")) return;
-  if (scope.unsafeAssetBindings.has(declarator.id.name)) return;
+  if (scope.unsafeAllAssetBindings || scope.unsafeAssetBindings.has(declarator.id.name)) return;
   const asset = assetUrlFromNode(declarator.init);
   if (asset) scope.assets.set(declarator.id.name, { asset, valid: true });
 }
@@ -172,6 +174,18 @@ function invalidateAssetBinding(scope: AssetScope, name: string): void {
       current.unsafeAssetBindings.add(name);
       return;
     }
+  }
+}
+
+function invalidateAssetsVisibleToDirectEval(scope: AssetScope): void {
+  for (
+    let current: AssetScope | null = scope;
+    current;
+    current = current.parent as AssetScope | null
+  ) {
+    current.unsafeAllAssetBindings = true;
+    for (const binding of current.assets.values()) binding.valid = false;
+    current.assets.clear();
   }
 }
 
@@ -215,6 +229,20 @@ function isNodeUrlFileUrlToPath(scope: AssetScope, value: unknown): boolean {
     );
   }
   return false;
+}
+
+function isGlobalFetchCallee(scope: AssetScope, value: unknown): boolean {
+  const callee = unwrapExpression(value);
+  if (isIdentifierNamed(callee, "fetch")) return !hasAstBinding(scope, "fetch");
+  if (
+    callee?.type !== "MemberExpression" ||
+    callee.computed === true ||
+    !isIdentifierNamed(callee.property, "fetch")
+  ) {
+    return false;
+  }
+  const receiver = unwrapExpression(callee.object);
+  return isIdentifierNamed(receiver, "globalThis") && !hasAstBinding(scope, "globalThis");
 }
 
 function invalidateAssignedAssetTargets(scope: AssetScope, value: unknown): void {
@@ -481,8 +509,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     if (
       !nodelessTarget &&
       node.type === "CallExpression" &&
-      isIdentifierNamed(node.callee, "fetch") &&
-      !hasAstBinding(scope, "fetch")
+      isGlobalFetchCallee(scope, node.callee)
     ) {
       const input = nodeArray(node.arguments)[0];
       const directAsset = hasAstBinding(scope, "URL") ? null : assetUrlFromNode(input);
@@ -508,8 +535,10 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
 
     if (!nodelessTarget && node.type === "CallExpression") {
       const callee = unwrapExpression(node.callee);
-      const isGlobalFetch = isIdentifierNamed(callee, "fetch") && !hasAstBinding(scope, "fetch");
+      const isGlobalFetch = isGlobalFetchCallee(scope, callee);
       const isReadOnlyUrlConsumer = isNodeUrlFileUrlToPath(scope, callee);
+      const isDirectEval = isIdentifierNamed(callee, "eval") && !hasAstBinding(scope, "eval");
+      if (isDirectEval) invalidateAssetsVisibleToDirectEval(scope);
       if (!isGlobalFetch && !isReadOnlyUrlConsumer) {
         const receiver =
           callee?.type === "MemberExpression" ? rootIdentifierName(callee.object) : null;

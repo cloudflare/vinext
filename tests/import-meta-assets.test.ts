@@ -314,11 +314,30 @@ describe("import-meta asset phase", () => {
         `fileURLToPath(url);`,
         `fetch(url);`,
       ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `eval('url.pathname = "/other"');`,
+        `fetch(url);`,
+      ].join("\n"),
+      [
+        `eval('queueMicrotask(() => { url.pathname = "/other" })');`,
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `fetch(url);`,
+      ].join("\n"),
     ];
 
     for (const source of sources) {
       expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
     }
+  });
+
+  it.each([
+    `globalThis.fetch(new URL("../../src/text-file.txt", import.meta.url));`,
+    `const url = new URL("../../src/text-file.txt", import.meta.url); globalThis.fetch(url);`,
+  ])("rewrites globalThis.fetch asset inputs", async (source) => {
+    const plugin = await createPlugin(false);
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
   it.each([
