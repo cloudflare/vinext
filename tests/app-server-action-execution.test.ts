@@ -3185,6 +3185,7 @@ describe("app server action execution helpers", () => {
   it("resolves the re-render target route's dynamic config and fetch cache mode for force-dynamic fetch defaults", async () => {
     const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
     const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
     const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
 
     const targetRoute: TestRoute = {
@@ -3208,6 +3209,9 @@ describe("app server action execution helpers", () => {
         resolveRouteFetchCacheMode(route) {
           return route === targetRoute ? "force-no-store" : null;
         },
+        resolveRouteRevalidateSeconds(route) {
+          return route === targetRoute ? 45 : null;
+        },
         resolveRouteDynamicConfig(route) {
           return route === targetRoute ? "force-dynamic" : null;
         },
@@ -3216,9 +3220,11 @@ describe("app server action execution helpers", () => {
 
     expect(response?.status).toBe(200);
     expect(modeSpy).toHaveBeenCalledWith("force-no-store");
+    expect(revalidateSpy).toHaveBeenCalledWith(45);
     expect(forceDynamicSpy).toHaveBeenCalledWith(true);
 
     modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
   });
 });

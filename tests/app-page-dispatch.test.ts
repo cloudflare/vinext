@@ -318,6 +318,7 @@ type CreateDispatchOptionsOverrides = {
   request?: Request;
   revalidateSeconds?: number | null;
   resolveRouteFetchCacheMode?: DispatchOptions["resolveRouteFetchCacheMode"];
+  resolveRouteRevalidateSeconds?: DispatchOptions["resolveRouteRevalidateSeconds"];
   resolveRouteDynamicConfig?: DispatchOptions["resolveRouteDynamicConfig"];
   route?: TestRoute;
   scheduleBackgroundRegeneration?: DispatchOptions["scheduleBackgroundRegeneration"];
@@ -414,6 +415,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     request: overrides.request ?? new Request("https://example.test/posts/hello"),
     revalidateSeconds: overrides.revalidateSeconds ?? null,
     resolveRouteFetchCacheMode: overrides.resolveRouteFetchCacheMode,
+    resolveRouteRevalidateSeconds: overrides.resolveRouteRevalidateSeconds,
     resolveRouteDynamicConfig: overrides.resolveRouteDynamicConfig,
     route,
     runWithSuppressedHookWarning<T>(probe: () => Promise<T>) {
@@ -2393,6 +2395,9 @@ describe("app page dispatch", () => {
     const resolveRouteFetchCacheMode = vi.fn((route: TestRoute) =>
       route === sourceRoute ? "force-cache" : null,
     );
+    const resolveRouteRevalidateSeconds = vi.fn((route: TestRoute) =>
+      route === sourceRoute ? 30 : null,
+    );
     const { options } = createDispatchOptions({
       buildPageElement,
       cleanPathname: "/photos/123",
@@ -2437,6 +2442,7 @@ describe("app page dispatch", () => {
       mountedSlotsHeader: "slot:modal:/feed",
       revalidateSeconds: 60,
       resolveRouteFetchCacheMode,
+      resolveRouteRevalidateSeconds,
       route: currentRoute,
       scheduleBackgroundRegeneration,
       searchParams: new URLSearchParams("tab=popular"),
@@ -2450,6 +2456,7 @@ describe("app page dispatch", () => {
 
     const [routeArg, paramsArg, optsArg, searchParamsArg] = buildPageElement.mock.calls[0];
     expect(resolveRouteFetchCacheMode).toHaveBeenCalledWith(sourceRoute);
+    expect(resolveRouteRevalidateSeconds).toHaveBeenCalledWith(sourceRoute);
     expect(routeArg).toBe(sourceRoute);
     expect(paramsArg).toEqual({});
     expect(searchParamsArg.toString()).toBe("tab=popular");

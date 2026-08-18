@@ -500,6 +500,18 @@ function __resolveRouteDynamicConfig(route) {
   }).dynamicConfig ?? null;
 }
 
+function __resolveRouteRevalidateSeconds(route) {
+  return __resolveAppPageSegmentConfig({
+    layouts: route.layouts,
+    page: route.page,
+    parallelSegments: Object.values(route.slots ?? {}).flatMap((slot) => [
+      slot.layout,
+      ...(slot.configLayouts ?? []),
+      slot.page ?? slot.default,
+    ]),
+  }).revalidateSeconds;
+}
+
 function __resolveRouteRuntime(route) {
   return __resolveAppPageSegmentConfig({
     layouts: route.layouts,
@@ -964,6 +976,9 @@ export default createAppRscHandler({
       resolveRouteFetchCacheMode(targetRoute) {
         return __resolveRouteFetchCacheMode(targetRoute);
       },
+      resolveRouteRevalidateSeconds(targetRoute) {
+        return __resolveRouteRevalidateSeconds(targetRoute);
+      },
       resolveRouteDynamicConfig(targetRoute) {
         return __resolveRouteDynamicConfig(targetRoute);
       },
@@ -1196,6 +1211,9 @@ export default createAppRscHandler({
       reportRequestError: _reportRequestError,
       resolveRouteFetchCacheMode(targetRoute) {
         return __resolveRouteFetchCacheMode(targetRoute);
+      },
+      resolveRouteRevalidateSeconds(targetRoute) {
+        return __resolveRouteRevalidateSeconds(targetRoute);
       },
       resolveRouteDynamicConfig(targetRoute) {
         return __resolveRouteDynamicConfig(targetRoute);

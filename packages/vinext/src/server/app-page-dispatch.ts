@@ -30,6 +30,7 @@ import {
   peekDynamicFetchObservations,
   runWithFetchDedupe,
   setCurrentFetchCacheMode,
+  setCurrentFetchRevalidate,
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
@@ -396,6 +397,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   revalidateSeconds: number | null;
   renderedPathAndSearch?: string | null;
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
+  resolveRouteRevalidateSeconds?: (route: TRoute) => number | null;
   resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
   rootForbiddenModule?: AppPageModule | null;
   rootNotFoundModule?: AppPageModule | null;
@@ -541,6 +543,7 @@ async function runAppPageRevalidationContext<
     cleanPathname: string;
     displayPathname?: string;
     currentFetchCacheMode?: FetchCacheMode | null;
+    currentFetchRevalidate?: number | null;
     draftModeSecret: string;
     dynamicConfig?: string;
     params: AppPageParams;
@@ -561,6 +564,7 @@ async function runAppPageRevalidationContext<
   const requestContext = createRequestContext({
     headersContext,
     currentFetchCacheMode: options.currentFetchCacheMode ?? null,
+    currentFetchRevalidate: options.currentFetchRevalidate ?? null,
     currentForceDynamicFetchDefault: options.dynamicConfig === "force-dynamic",
     executionContext: getRequestExecutionContext(),
     unstableCacheRevalidation: "foreground",
@@ -659,6 +663,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
+  setCurrentFetchRevalidate(currentRevalidateSeconds);
   setCurrentForceDynamicFetchDefault(isForceDynamic);
 
   if (options.hasPageModule && !options.hasPageDefaultExport) {
@@ -781,6 +786,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             currentFetchCacheMode:
               options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
               (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
+            currentFetchRevalidate:
+              options.resolveRouteRevalidateSeconds?.(revalidationTarget.route) ??
+              (revalidationTarget.route === route ? currentRevalidateSeconds : null),
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: revalidationDynamicConfig,
             params: revalidationTarget.navigationParams,
@@ -938,6 +946,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         setHeadersContext(requestHeadersContext);
       }
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
+      setCurrentFetchRevalidate(options.resolveRouteRevalidateSeconds?.(interceptRoute) ?? null);
       setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
       return options.buildPageElement(
         interceptRoute,
