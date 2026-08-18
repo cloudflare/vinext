@@ -11,7 +11,6 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
-import { gzipSync } from "node:zlib";
 
 // We need to mock fetch at the module level BEFORE fetch-cache.ts captures
 // `originalFetch`. Use vi.stubGlobal to intercept at import time.
@@ -36,23 +35,6 @@ const defaultFetchMockImplementation = async (
   return response;
 };
 const fetchMock = vi.fn(defaultFetchMockImplementation);
-
-async function withRuntimeUserAgent<T>(userAgent: string, fn: () => Promise<T>): Promise<T> {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
-  Object.defineProperty(globalThis, "navigator", {
-    value: { userAgent },
-    configurable: true,
-  });
-  try {
-    return await fn();
-  } finally {
-    if (descriptor) {
-      Object.defineProperty(globalThis, "navigator", descriptor);
-    } else {
-      Reflect.deleteProperty(globalThis, "navigator");
-    }
-  }
-}
 
 // Stub globalThis.fetch BEFORE importing modules that capture it
 vi.stubGlobal("fetch", fetchMock);
@@ -172,75 +154,30 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("decodes residual gzip JSON from Cloudflare Workers before caching", async () => {
-    const url = "https://api.example.com/stacked-content-encoding";
-    const payload = { timestamp: 1_787_056_318 };
-    const compressedBody = gzipSync(JSON.stringify(payload));
-
-    fetchMock.mockImplementationOnce(async () => {
-      const response = new Response(compressedBody, {
+  it("returns the response when cache serialization hits a late body error", async () => {
+    const cacheError = new Error("truncated compressed body");
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(cacheError);
+      },
+    });
+    fetchMock.mockResolvedValueOnce(
+      new Response(body, {
         status: 200,
-        headers: {
-          "content-encoding": "br",
-          "content-length": String(compressedBody.byteLength),
-          "content-type": "application/json",
-        },
-      });
-      Object.defineProperty(response, "url", {
-        value: url,
-        configurable: true,
-        enumerable: true,
-        writable: false,
-      });
-      return response;
-    });
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await withRuntimeUserAgent("Cloudflare-Workers", async () => {
-      const cold = await fetch(url, { cache: "force-cache" });
-      expect(cold.url).toBe(url);
-      expect(cold.headers.get("content-encoding")).toBeNull();
-      expect(cold.headers.get("content-length")).toBeNull();
-      expect(await cold.json()).toEqual(payload);
+    const response = await fetch("https://api.example.com/truncated", { cache: "force-cache" });
 
-      const cached = await fetch(url, { cache: "force-cache" });
-      expect(cached.url).toBe(url);
-      expect(cached.headers.get("content-encoding")).toBeNull();
-      expect(await cached.json()).toEqual(payload);
-    });
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not decompress genuine gzip downloads on Cloudflare Workers", async () => {
-    const url = "https://api.example.com/archive.json.gz";
-    const compressedBody = gzipSync(JSON.stringify({ archived: true }));
-
-    fetchMock.mockImplementationOnce(async () => {
-      const response = new Response(compressedBody, {
-        status: 200,
-        headers: {
-          "content-encoding": "br",
-          "content-type": "application/gzip",
-        },
-      });
-      Object.defineProperty(response, "url", {
-        value: url,
-        configurable: true,
-        enumerable: true,
-        writable: false,
-      });
-      return response;
-    });
-
-    await withRuntimeUserAgent("Cloudflare-Workers", async () => {
-      const cold = await fetch(url, { cache: "force-cache" });
-      expect(new Uint8Array(await cold.arrayBuffer())).toEqual(new Uint8Array(compressedBody));
-
-      const cached = await fetch(url, { cache: "force-cache" });
-      expect(new Uint8Array(await cached.arrayBuffer())).toEqual(new Uint8Array(compressedBody));
-    });
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(response.status).toBe(200);
+    await expect(response.text()).rejects.toThrow("truncated compressed body");
+    expect(consoleError).toHaveBeenCalledWith(
+      "[vinext] fetch cache serialization error:",
+      cacheError,
+    );
+    consoleError.mockRestore();
   });
 
   it("preserves Response.url on cached fetch responses", async () => {

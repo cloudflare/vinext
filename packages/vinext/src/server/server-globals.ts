@@ -8,6 +8,7 @@
  * body would run after static user imports have already evaluated.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import { installCloudflareFetchAdapter } from "./cloudflare-fetch-adapter.js";
 
 type BrowserGlobalName = "window" | "document";
 
@@ -39,6 +40,7 @@ function clearBrowserGlobal(name: BrowserGlobalName): void {
 export function installServerGlobals(): void {
   clearBrowserGlobal("window");
   clearBrowserGlobal("document");
+  installCloudflareFetchAdapter();
 
   // Next.js's edge sandbox exposes AsyncLocalStorage as a global. Cloudflare
   // Workers exposes it via node:async_hooks under nodejs_compat, so mirror the
