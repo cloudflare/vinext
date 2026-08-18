@@ -62,7 +62,12 @@ export function createDynamicImportUrlPlugin(): Plugin {
           include: SCRIPT_MODULE_ID_RE,
           exclude: VIRTUAL_MODULE_ID_RE,
         },
-        code: /\bimport\s*\(\s*(?:new\s+URL\s*\(|\/)/,
+        // Keep ordinary dynamic imports off the AST path while admitting a
+        // comment at every token boundary in the literal URL form. A slash at
+        // one of those boundaries is intentionally only a coarse signal; the
+        // AST transform below remains the authority on whether it is a comment
+        // and whether the complete expression is eligible.
+        code: /\bimport\s*\/|\bimport\s*\(\s*\/|\bimport\s*\(\s*new\s*\/|\bimport\s*\(\s*new\s+URL\s*(?:\/|\()/,
       },
       handler(code, id) {
         return rewriteDynamicImportUrls(code, id);

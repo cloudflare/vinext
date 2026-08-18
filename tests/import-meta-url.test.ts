@@ -171,16 +171,59 @@ describe("vinext:import-meta-url plugin", () => {
   });
 
   it.each([
-    ["block comments", `/* webpackMode: ** "eager" ** */ `, "block"],
-    ["line comments ending in LF", `// webpackMode: eager\n`, "line-lf"],
-    ["line comments ending in CRLF", `// webpackMode: eager\r\n`, "line-crlf"],
-    ["line comments ending in CR", `// webpackMode: eager\r`, "line-cr"],
-    ["line comments ending in U+2028", `// webpackMode: eager\u2028`, "line-u2028"],
-    ["line comments ending in U+2029", `// webpackMode: eager\u2029`, "line-u2029"],
-    ["mixed repeated comments", `/* first */ // second\u2028/* third **/ `, "mixed-comments"],
+    [
+      "block comments",
+      `import(/* webpackMode: ** "eager" ** */ new URL("./dependency.js", import.meta.url).href)`,
+      "block",
+    ],
+    [
+      "line comments ending in LF",
+      `import(// webpackMode: eager\nnew URL("./dependency.js", import.meta.url).href)`,
+      "line-lf",
+    ],
+    [
+      "line comments ending in CRLF",
+      `import(// webpackMode: eager\r\nnew URL("./dependency.js", import.meta.url).href)`,
+      "line-crlf",
+    ],
+    [
+      "line comments ending in CR",
+      `import(// webpackMode: eager\rnew URL("./dependency.js", import.meta.url).href)`,
+      "line-cr",
+    ],
+    [
+      "line comments ending in U+2028",
+      `import(// webpackMode: eager\u2028new URL("./dependency.js", import.meta.url).href)`,
+      "line-u2028",
+    ],
+    [
+      "line comments ending in U+2029",
+      `import(// webpackMode: eager\u2029new URL("./dependency.js", import.meta.url).href)`,
+      "line-u2029",
+    ],
+    [
+      "mixed repeated comments",
+      `import(/* first */ // second\u2028/* third **/ new URL("./dependency.js", import.meta.url).href)`,
+      "mixed-comments",
+    ],
+    [
+      "a comment between import and its parenthesis",
+      `import /* before call */ (new URL("./dependency.js", import.meta.url).href)`,
+      "before-call",
+    ],
+    [
+      "a comment between new and URL",
+      `import(new /* before URL */ URL("./dependency.js", import.meta.url).href)`,
+      "before-url",
+    ],
+    [
+      "a comment between URL and its parenthesis",
+      `import(new URL /* before arguments */ ("./dependency.js", import.meta.url).href)`,
+      "before-arguments",
+    ],
   ])(
     "normalizes module URL imports with %s in dependencies before the dynamic-request fallback",
-    async (_description, comment, suffix) => {
+    async (_description, dynamicImport, suffix) => {
       const packageRoot = path.join(realRoot, "node_modules", `url-dependency-${suffix}`);
       const packageEntry = path.join(packageRoot, "index.js");
       await fsp.mkdir(packageRoot, { recursive: true });
@@ -188,10 +231,7 @@ describe("vinext:import-meta-url plugin", () => {
         path.join(packageRoot, "package.json"),
         JSON.stringify({ name: "url-dependency", type: "module" }),
       );
-      await fsp.writeFile(
-        packageEntry,
-        `export const dependency = import(${comment}new URL("./dependency.js", import.meta.url).href);`,
-      );
+      await fsp.writeFile(packageEntry, `export const dependency = ${dynamicImport};`);
       await fsp.writeFile(path.join(packageRoot, "dependency.js"), `export default "loaded";`);
 
       const result = await build({
