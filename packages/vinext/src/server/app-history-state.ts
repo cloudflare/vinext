@@ -6,6 +6,7 @@ const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
 const VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY = "__vinext_historyIndex";
 const VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY = "__vinext_bfcacheIds";
 const VINEXT_BFCACHE_VERSION_HISTORY_STATE_KEY = "__vinext_bfcacheVersion";
+const VINEXT_ACTIVE_ROUTE_PATHS_HISTORY_STATE_KEY = "__vinext_activeRoutePaths";
 
 type HistoryStateRecord = {
   [key: string]: unknown;
@@ -196,6 +197,7 @@ export function createHistoryStateWithPreviousNextUrl(
 export function createHistoryStateWithNavigationMetadata(
   state: unknown,
   metadata: {
+    activeRoutePaths?: readonly string[] | null;
     bfcacheIds?: BfcacheIdMap | null;
     bfcacheVersion?: number | null;
     previousNextUrl: string | null;
@@ -206,6 +208,16 @@ export function createHistoryStateWithNavigationMetadata(
   const bfcacheIdsWereCleared =
     metadata.bfcacheIds !== undefined &&
     (metadata.bfcacheIds === null || Object.keys(metadata.bfcacheIds).length === 0);
+
+  if (metadata.activeRoutePaths !== undefined) {
+    if (metadata.activeRoutePaths === null || metadata.activeRoutePaths.length === 0) {
+      delete nextState[VINEXT_ACTIVE_ROUTE_PATHS_HISTORY_STATE_KEY];
+    } else {
+      nextState[VINEXT_ACTIVE_ROUTE_PATHS_HISTORY_STATE_KEY] = [
+        ...new Set(metadata.activeRoutePaths),
+      ];
+    }
+  }
 
   if (metadata.previousNextUrl === null) {
     delete nextState[VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY];
@@ -251,17 +263,60 @@ export function createExternalHistoryStatePreservingMetadata(
   const traversalIndex = readHistoryStateTraversalIndex(currentHistoryState);
   const bfcacheIds = readHistoryStateBfcacheIds(currentHistoryState);
   const bfcacheVersion = readHistoryStateBfcacheVersion(currentHistoryState);
+  const activeRoutePaths = readHistoryStateActiveRoutePaths(currentHistoryState);
 
-  if (previousNextUrl === null && traversalIndex === null && bfcacheIds === null) {
+  if (
+    previousNextUrl === null &&
+    traversalIndex === null &&
+    bfcacheIds === null &&
+    activeRoutePaths === null
+  ) {
     return callerState;
   }
 
   return createHistoryStateWithNavigationMetadata(callerState, {
+    activeRoutePaths,
     bfcacheIds,
     bfcacheVersion: bfcacheIds === null ? undefined : bfcacheVersion,
     previousNextUrl,
     traversalIndex,
   });
+}
+
+export function readHistoryStateActiveRoutePaths(state: unknown): readonly string[] | null {
+  const value = readHistoryStateRecord(state)?.[VINEXT_ACTIVE_ROUTE_PATHS_HISTORY_STATE_KEY];
+  if (!Array.isArray(value)) return null;
+  const paths: string[] = [];
+  for (const entry of value) {
+    if (
+      typeof entry !== "string" ||
+      !entry.startsWith("/") ||
+      entry.startsWith("//") ||
+      entry.includes("?") ||
+      entry.includes("#") ||
+      entry.includes("\\") ||
+      entry.includes("\0")
+    ) {
+      return null;
+    }
+    paths.push(entry);
+  }
+  return paths.length > 0 ? [...new Set(paths)] : null;
+}
+
+export function resolveActiveRoutePaths(
+  slotBindings: readonly {
+    activeRouteId?: string | null;
+    state: string;
+  }[],
+): string[] {
+  const paths = new Set<string>();
+  for (const binding of slotBindings) {
+    if (binding.state !== "active" || binding.activeRouteId == null) continue;
+    const route = AppElementsWire.parseElementKey(binding.activeRouteId);
+    if (route?.kind === "route" && route.interceptionContext === null) paths.add(route.path);
+  }
+  return [...paths];
 }
 
 export function readHistoryStatePreviousNextUrl(state: unknown): string | null {
@@ -321,8 +376,9 @@ export function createHashOnlyHistoryStatePreservingNavigationMetadata(state: un
   const previousNextUrl = readHistoryStatePreviousNextUrl(state);
   const bfcacheIds = readHistoryStateBfcacheIds(state);
   const bfcacheVersion = readHistoryStateBfcacheVersion(state);
+  const activeRoutePaths = readHistoryStateActiveRoutePaths(state);
 
-  if (previousNextUrl === null && bfcacheIds === null) {
+  if (previousNextUrl === null && bfcacheIds === null && activeRoutePaths === null) {
     return null;
   }
 
@@ -330,6 +386,7 @@ export function createHashOnlyHistoryStatePreservingNavigationMetadata(state: un
   // commitHashOnlyNavigation path. This shim fallback only preserves metadata
   // that can be safely transported without the browser router runtime.
   return createHistoryStateWithNavigationMetadata(null, {
+    activeRoutePaths,
     bfcacheIds,
     bfcacheVersion: bfcacheIds === null ? undefined : bfcacheVersion,
     previousNextUrl,

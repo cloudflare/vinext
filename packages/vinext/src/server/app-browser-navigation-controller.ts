@@ -24,6 +24,7 @@ import {
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createPendingNavigationCommit,
   createPendingNavigationCommitFromElements,
+  resolveActiveRoutePaths,
   type AppNavigationPayloadOrigin,
   type AppRouterState,
   type OperationLane,
@@ -62,6 +63,7 @@ type HardNavigationMode = "assign" | "replace";
 type BrowserNavigationCommitEffect = () => void;
 
 type BrowserNavigationCommitEffectFactory = (options: {
+  activeRoutePaths: readonly string[];
   bfcacheIds: Readonly<Record<string, string>>;
   href: string;
   historyUpdateMode: HistoryUpdateMode | undefined;
@@ -839,11 +841,20 @@ export function createAppBrowserNavigationController(
       if (approvedCommit === null) {
         throw new Error("[vinext] Commit decision did not approve a visible commit");
       }
+      // History metadata describes the tree that will actually become visible,
+      // including planner-approved retained slots and BFCache identities. The
+      // raw response action can mark those slots default/unmatched even though
+      // the reducer preserves their active content.
+      const approvedVisibleState = applyApprovedVisibleCommit(
+        getBrowserRouterState(),
+        approvedCommit,
+      );
 
       queuePrePaintNavigationEffect(
         renderId,
         options.createNavigationCommitEffect({
-          bfcacheIds: approvedCommit.action.bfcacheIds,
+          activeRoutePaths: resolveActiveRoutePaths(approvedVisibleState.slotBindings),
+          bfcacheIds: approvedVisibleState.bfcacheIds,
           href: options.targetHref,
           historyUpdateMode: options.historyUpdateMode,
           navId: options.navId,

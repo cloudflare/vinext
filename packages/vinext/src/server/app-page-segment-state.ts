@@ -201,19 +201,6 @@ export function resolveAppPagePatternStateKey(
   );
 }
 
-export function resolveAppPageLeafSegmentStateKey(
-  routeSegments: readonly string[],
-  params: AppPageParams,
-): string {
-  for (let treePosition = routeSegments.length - 1; treePosition >= 0; treePosition--) {
-    const segmentStateKey = resolveAppPageSegmentStateKey(routeSegments, treePosition, params);
-    if (segmentStateKey) {
-      return segmentStateKey;
-    }
-  }
-  return "";
-}
-
 export function resolveAppPageTemplateStateKey(
   routeSegments: readonly string[],
   treePosition: number,

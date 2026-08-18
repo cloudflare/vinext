@@ -74,6 +74,7 @@ import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_STATIC_FILE_HEADER,
@@ -1823,6 +1824,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     } catch (e) {
       console.error("[vinext] Server error:", e);
       if (!res.headersSent) {
+        if (purpose === "prerender") {
+          res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+        }
         res.writeHead(500);
         res.end("Internal Server Error");
       }
@@ -2366,6 +2370,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     } catch (e) {
       console.error("[vinext] Server error:", e);
       if (!res.headersSent) {
+        if (purpose === "prerender") {
+          res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+        }
         res.writeHead(500);
         res.end("Internal Server Error");
       }

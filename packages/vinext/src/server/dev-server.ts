@@ -44,8 +44,6 @@ import {
 } from "../routing/file-matcher.js";
 import {
   extractLocaleFromUrl as extractLocaleFromUrlShared,
-  detectLocaleFromAcceptLanguage,
-  parseCookieLocaleFromHeader,
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
@@ -607,25 +605,6 @@ export function extractLocaleFromUrl(
 }
 
 /**
- * Detect the preferred locale from the Accept-Language header.
- * Returns the best matching locale or null.
- */
-export function detectLocaleFromHeaders(
-  req: IncomingMessage,
-  i18nConfig: NextI18nConfig,
-): string | null {
-  return detectLocaleFromAcceptLanguage(req.headers["accept-language"], i18nConfig);
-}
-
-/**
- * Parse the NEXT_LOCALE cookie from a request.
- * Returns the cookie value if it matches a configured locale, otherwise null.
- */
-export function parseCookieLocale(req: IncomingMessage, i18nConfig: NextI18nConfig): string | null {
-  return parseCookieLocaleFromHeader(req.headers.cookie, i18nConfig);
-}
-
-/**
  * Create an SSR request handler for the Pages Router.
  *
  * For each request:
@@ -665,6 +644,8 @@ export function createSSRHandler(
   /** Next.js `expireTime`, used when formatting terminal GSP responses. */
   expireTime = PAGES_CACHE_ONE_YEAR_SECONDS,
   crossOrigin?: string,
+  /** Resolved Pages Router build ID shared with the dev data-route parser. */
+  buildId = process.env.__VINEXT_BUILD_ID ?? "development",
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -756,6 +737,7 @@ export function createSSRHandler(
 
     const errorPageContext = {
       basePath,
+      buildId,
       clientTraceMetadata,
       locale: locale ?? currentDefaultLocale,
       locales: i18nConfig?.locales,
@@ -1607,7 +1589,7 @@ export function createSSRHandler(
             props: renderProps,
             page: patternToNextFormat(route.pattern),
             query: isFallbackRender ? {} : params,
-            buildId: process.env.__VINEXT_BUILD_ID,
+            buildId,
             isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
@@ -1820,6 +1802,7 @@ async function renderErrorPage(
   reactStrictMode = false,
   context: {
     basePath: string;
+    buildId?: string;
     clientTraceMetadata?: readonly string[];
     locale?: string;
     locales?: string[];
@@ -2020,7 +2003,7 @@ async function renderErrorPage(
           props: renderProps,
           page: errorPage,
           query: parseQuery(url),
-          buildId: process.env.__VINEXT_BUILD_ID,
+          buildId: context.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development",
           isFallback: false,
           notFoundSrcPage: context.notFoundSrcPage,
           __vinext: {

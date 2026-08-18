@@ -1,6 +1,7 @@
 import type {
   Alias,
   CSSModulesOptions,
+  DevEnvironment,
   HotUpdateOptions,
   Logger,
   Plugin,
@@ -246,7 +247,10 @@ import {
   validatePageExports,
 } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
-import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
+import {
+  createImportMetaUrlPlugin,
+  type EmittedModuleFileNameResolver,
+} from "./plugins/import-meta-url.js";
 import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import {
@@ -275,7 +279,12 @@ import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
-import { isPathInside, stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
+import {
+  isPathInside,
+  isPathInsideOrEqual,
+  stripJsExtension,
+  stripViteModuleQuery,
+} from "./utils/path.js";
 import {
   assertSupportedViteVersion,
   getDepOptimizeNodeEnvOptions,
@@ -530,10 +539,19 @@ function isScriptModuleId(id: string): boolean {
   return SCRIPT_IMPORT_RE.test(stripViteModuleQuery(id).toLowerCase());
 }
 
-function commonjsTransformFilter(id: string): boolean | undefined {
+function commonjsTransformFilter(
+  id: string,
+  transformProjectLocalCommonJs = false,
+  transformBundledDependencies = false,
+  isBundledCommonJsDependency: (id: string) => boolean = () => false,
+): boolean | undefined {
   const cleanId = toSlash(stripViteModuleQuery(id));
   if (isConditionalRequireScriptModuleId(cleanId)) return true;
-  return /\.c[jt]s$/i.test(cleanId) && !cleanId.includes("node_modules") ? false : undefined;
+  if (transformBundledDependencies && isBundledCommonJsDependency(cleanId)) return true;
+  if (/\.c[jt]s$/i.test(cleanId) && !cleanId.includes("node_modules")) {
+    return transformProjectLocalCommonJs;
+  }
+  return undefined;
 }
 
 function hasOnlyTypeSpecifiers(statement: AstStaticDependencyDeclaration): boolean {
@@ -1402,6 +1420,27 @@ type NitroSetupContext = {
   };
 };
 
+function createServerEnvironmentFileNameResolver(
+  config: ResolvedConfig,
+  outputRoot: string,
+): EmittedModuleFileNameResolver {
+  const resolvedOutputRoot = path.resolve(config.root, outputRoot);
+  const outputPrefixes = new Map(
+    ["rsc", "ssr"].map((name) => {
+      const outDir = config.environments[name]?.build.outDir;
+      if (!outDir) return [name, ""] as const;
+      const resolvedOutDir = path.resolve(config.root, outDir);
+      if (!isPathInsideOrEqual(resolvedOutputRoot, resolvedOutDir)) return [name, ""] as const;
+      const relative = path.relative(resolvedOutputRoot, resolvedOutDir);
+      return [name, relative === "." ? "" : relative] as const;
+    }),
+  );
+  return (environmentName, fileName) => {
+    const prefix = environmentName ? outputPrefixes.get(environmentName) : undefined;
+    return prefix ? path.join(prefix, fileName) : fileName;
+  };
+}
+
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
     assertSupportedViteVersion();
@@ -1433,6 +1472,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let pagesOptimizeEntries: string[] = [];
+  const importMetaUrlCapability = createImportMetaUrlPlugin({
+    getRoot: () => root,
+    createEmittedModuleFileNameResolver(config) {
+      if (!hasCloudflarePlugin || !hasAppDir) return undefined;
+      // The Cloudflare Worker module registry mounts every emitted server
+      // environment below the RSC output directory. Node and Nitro expose a
+      // readable native import.meta.filename and retain environment-relative
+      // chunk names as the compatibility fallback.
+      const outputRoot =
+        config.environments.rsc?.build.outDir ?? options.rscOutDir ?? "dist/server";
+      return createServerEnvironmentFileNameResolver(config, outputRoot);
+    },
+  });
   const pagesClientAssetsOutputDirs = new Set<string>();
   let pagesClientAssetsModule: string | null = null;
   // Dev-only public route inventory. Vite's watcher keeps this synchronized,
@@ -1807,6 +1859,60 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     ReturnType<typeof replaceConsumerEnvironmentConditions>
   >();
 
+  // vite-plugin-commonjs calls its user filter synchronously, before its first
+  // async boundary, but the filter itself receives only an id. Bridge the
+  // current Vite environment into that call without creating per-environment
+  // plugin instances: environment plugins cannot run the configResolved hook
+  // that vite-plugin-commonjs requires to initialize its resolver.
+  let transformProjectLocalCommonJs = false;
+  let transformBundledCommonJsDependencies = false;
+  const commonJsPlugin = commonjs({
+    filter(id: string) {
+      return commonjsTransformFilter(
+        id,
+        transformProjectLocalCommonJs,
+        transformBundledCommonJsDependencies,
+        importMetaUrlCapability.isBundledCommonJsDependencyId,
+      );
+    },
+  });
+  const commonJsTransform = commonJsPlugin.transform;
+  if (typeof commonJsTransform === "function") {
+    commonJsPlugin.transform = function environmentAwareCommonJsTransform(code, id, ...args) {
+      // The independent optimizeDeps Rolldown build already converted these
+      // files to ESM. Running vite-plugin-commonjs over its output would append
+      // a second export facade (including a duplicate default export).
+      if (
+        this.environment.mode === "dev" &&
+        (this.environment as DevEnvironment).depsOptimizer?.isOptimizedDepFile(id)
+      ) {
+        return null;
+      }
+      const isDev = this.environment.mode === "dev";
+      const isServer = this.environment.config.consumer === "server";
+      const bundledDependency =
+        isDev &&
+        isServer &&
+        (code.includes("__filename") || code.includes("__dirname")) &&
+        importMetaUrlCapability.isBundledCommonJsDependencyId(id);
+      const projectLocal =
+        !bundledDependency && !id.includes("/node_modules/") && !id.includes("\\node_modules\\");
+      const previousProjectLocal = transformProjectLocalCommonJs;
+      const previous = transformBundledCommonJsDependencies;
+      transformProjectLocalCommonJs = projectLocal && isDev;
+      transformBundledCommonJsDependencies = bundledDependency;
+      try {
+        // Do not await here: the filter is consulted synchronously while this
+        // environment-scoped flag is set. The remaining async transform work
+        // does not read it, so concurrent module transforms cannot cross-talk.
+        return commonJsTransform.call(this, code, id, ...args);
+      } finally {
+        transformProjectLocalCommonJs = previousProjectLocal;
+        transformBundledCommonJsDependencies = previous;
+      }
+    };
+  }
+
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
@@ -1826,21 +1932,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     //
-    // Skip project-local `.cjs`/`.cts` files. `vinext init` renames CJS config
+    // Skip project-local `.cjs`/`.cts` files during builds. `vinext init` renames CJS config
     // files to `.cjs` (e.g. `tailwind.config.js` → `tailwind.config.cjs`) when
     // it adds `"type": "module"`, and app code imports them extensionlessly
     // (`import cfg from "../tailwind.config"`). If `vite-plugin-commonjs`
     // rewrites their `module.exports` to ESM `export {}`, rolldown still infers
     // `moduleType: "cjs"` from the `.cjs`/`.cts` extension and re-parses the
     // rewritten output as CommonJS, failing with "Cannot use export statement
-    // outside a module". Returning `false` makes vite-plugin-commonjs skip these
-    // project-local files so rolldown's own CJS interop bundles them instead.
+    // outside a module". Returning `false` during builds makes vite-plugin-commonjs
+    // skip these project-local files so Rolldown's own CJS interop bundles them
+    // instead. Dev has no later CJS lowering pass, so transform them here.
     // Conditional `require` targets use a synthetic `.js` identity so their
     // CJS source can be converted before plugin-rsc injects ESM proxy imports.
-    // Ordinary node_modules `.cjs` files retain the plugin's default skip.
-    commonjs({
-      filter: commonjsTransformFilter,
-    }),
+    // For dependencies that Node identifies as CommonJS, return true so the
+    // files actually loaded through a bundled SSR graph are converted on
+    // demand instead of requiring Vite's environment-wide dependency crawl.
+    commonJsPlugin,
     {
       name: "vinext:global-not-found-css-isolation",
       apply: "build",
@@ -3412,7 +3519,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // optimizer avoids the "new dependencies optimized" full
                 // reload the first time a Pages Router page renders an
                 // <Image>.
-                exclude: ["ipaddr.js"],
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  ["ipaddr.js"],
+                  Object.keys(nextShimMap),
+                ),
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -3439,6 +3551,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configEnvironment(name, config) {
+        if (name !== "client" && config.consumer !== "client") {
+          // optimizeDeps runs its own Rolldown pipeline, outside Vite's plugin
+          // container. Register only the thin adapter for the same module-
+          // identity capability; parsing, dependency classification, marker
+          // state, and emitted identity finalization stay shared with Vite.
+          config.optimizeDeps ??= {};
+          config.optimizeDeps.rolldownOptions ??= {};
+          const configuredPlugins = config.optimizeDeps.rolldownOptions.plugins;
+          config.optimizeDeps.rolldownOptions.plugins = [
+            ...(Array.isArray(configuredPlugins)
+              ? configuredPlugins
+              : configuredPlugins
+                ? [configuredPlugins]
+                : []),
+            importMetaUrlCapability.optimizeDepsPlugin,
+          ];
+        }
+
         if (
           isServeCommand &&
           hasCloudflarePlugin &&
@@ -4379,6 +4509,8 @@ export const loadServerActionClient = ${
       },
 
       configureServer(server: ViteDevServer) {
+        const devBuildId = nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
+
         server.middlewares.use((req, _res, next) => {
           req.__vinextOriginalEncodedUrl ??= req.url;
           next();
@@ -5298,8 +5430,6 @@ export const loadServerActionClient = ${
                 // matching the value embedded into the prod entry. Fall back
                 // to the env-var define (set by the plugin) and finally
                 // "development" if the plugin hasn't resolved a config yet.
-                const devBuildId =
-                  nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
                 const dataMatch = parseNextDataPathname(pathname, devBuildId);
                 if (dataMatch) {
                   isDataReq = true;
@@ -5839,6 +5969,7 @@ export const loadServerActionClient = ${
                       nextConfig?.reactStrictMode === true,
                       nextConfig?.expireTime,
                       nextConfig?.crossOrigin,
+                      devBuildId,
                     ),
                   };
                 }
@@ -6430,9 +6561,7 @@ export const loadServerActionClient = ${
     // IDs through Vite's build manifest so it can emit boundary-scoped preload
     // hints with the request CSP nonce.
     createDynamicPreloadMetadataPlugin(),
-    createImportMetaUrlPlugin({
-      getRoot: () => root,
-    }),
+    importMetaUrlCapability.vitePlugin,
     createExtensionlessDynamicImportPlugin(),
     // Expand Webpack's build-time `require.context(...)` into a static module
     // map backed by `import.meta.glob` — see src/plugins/require-context.ts

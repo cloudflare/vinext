@@ -5,7 +5,6 @@ import {
   hasAppNavigationRuntime,
   registerNavigationRuntimeBootstrap,
   registerNavigationRuntimeFunctions,
-  subscribeNavigationRuntimeRscChunk,
   type NavigationRuntime,
   type NavigationRuntimeBootstrap,
   type NavigationRuntimeFunctions,
@@ -42,14 +41,6 @@ describe("navigation runtime contract", () => {
     expect(getNavigationRuntime()?.bootstrap.routeManifest).toBeNull();
   });
 
-  it("creates the RSC bootstrap buffer when subscribing the first chunk", () => {
-    Reflect.set(globalThis, "window", {});
-
-    subscribeNavigationRuntimeRscChunk("chunk");
-
-    expect(getNavigationRuntime()?.bootstrap.rsc?.rsc).toEqual(["chunk"]);
-  });
-
   it("reports app navigation availability from the registered navigate slot", () => {
     Reflect.set(globalThis, "window", {});
 
@@ -72,15 +63,6 @@ describe("navigation runtime contract", () => {
 
     expect(getNavigationRuntime()?.functions.navigate).toBe(navigate);
     expect(getNavigationRuntime()?.functions.pingVisibleLinks).toBe(pingVisibleLinks);
-  });
-
-  it("keeps server-side runtime creation detached from the window contract", () => {
-    Reflect.deleteProperty(globalThis, "window");
-
-    const runtime = subscribeNavigationRuntimeRscChunk("server-chunk");
-
-    expect(runtime.bootstrap.rsc?.rsc).toEqual(["server-chunk"]);
-    expect(getNavigationRuntime()).toBeNull();
   });
 
   it("rejects runtime objects with non-function capability slots", () => {

@@ -1073,59 +1073,6 @@ describe("extractLocaleFromUrl", () => {
   });
 });
 
-describe("detectLocaleFromHeaders", () => {
-  let detectLocaleFromHeaders: typeof import("../packages/vinext/src/server/dev-server.js").detectLocaleFromHeaders;
-
-  beforeAll(async () => {
-    const mod = await import("../packages/vinext/src/server/dev-server.js");
-    detectLocaleFromHeaders = mod.detectLocaleFromHeaders;
-  });
-
-  const i18nConfig = {
-    locales: ["en", "fr", "de"],
-    defaultLocale: "en",
-    localeDetection: true,
-  };
-
-  function fakeReq(acceptLanguage?: string) {
-    return { headers: acceptLanguage ? { "accept-language": acceptLanguage } : {} } as any;
-  }
-
-  it("returns null when no Accept-Language header", () => {
-    expect(detectLocaleFromHeaders(fakeReq(), i18nConfig)).toBeNull();
-  });
-
-  it("detects exact locale match", () => {
-    expect(detectLocaleFromHeaders(fakeReq("fr"), i18nConfig)).toBe("fr");
-  });
-
-  it("detects locale by quality preference", () => {
-    expect(detectLocaleFromHeaders(fakeReq("de;q=0.9,fr;q=0.8"), i18nConfig)).toBe("de");
-  });
-
-  it("does not truncate an unconfigured regional locale", () => {
-    expect(detectLocaleFromHeaders(fakeReq("en-US"), i18nConfig)).toBeNull();
-  });
-
-  it("falls through an unconfigured regional locale to the next preference", () => {
-    expect(detectLocaleFromHeaders(fakeReq("fr-FR,en;q=0.5"), i18nConfig)).toBe("en");
-  });
-
-  it("returns null for unrecognized language", () => {
-    expect(detectLocaleFromHeaders(fakeReq("ja"), i18nConfig)).toBeNull();
-  });
-
-  it("picks highest quality match", () => {
-    // fr has higher quality than en
-    expect(detectLocaleFromHeaders(fakeReq("en;q=0.5,fr;q=0.9"), i18nConfig)).toBe("fr");
-  });
-
-  it("handles complex Accept-Language with fallback", () => {
-    // Japanese first (no match), then French
-    expect(detectLocaleFromHeaders(fakeReq("ja;q=1.0,fr;q=0.8,en;q=0.5"), i18nConfig)).toBe("fr");
-  });
-});
-
 // ---------------------------------------------------------------------------
 // i18n routing integration (Pages Router)
 // ---------------------------------------------------------------------------
@@ -5591,51 +5538,6 @@ describe("applyNavigationLocale", () => {
       }
       vi.resetModules();
     }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// parseCookieLocale (NEXT_LOCALE cookie support)
-// ---------------------------------------------------------------------------
-
-describe("parseCookieLocale", () => {
-  let parseCookieLocale: (req: any, i18nConfig: any) => string | null;
-
-  beforeAll(async () => {
-    const mod = await import("../packages/vinext/src/server/dev-server.js");
-    parseCookieLocale = mod.parseCookieLocale;
-  });
-
-  const config = { locales: ["en", "fr", "de"], defaultLocale: "en", localeDetection: true };
-
-  it("returns null when no cookie header", () => {
-    expect(parseCookieLocale({ headers: {} }, config)).toBeNull();
-  });
-
-  it("returns null when cookie header has no NEXT_LOCALE", () => {
-    expect(parseCookieLocale({ headers: { cookie: "foo=bar; baz=qux" } }, config)).toBeNull();
-  });
-
-  it("returns locale from NEXT_LOCALE cookie", () => {
-    expect(parseCookieLocale({ headers: { cookie: "NEXT_LOCALE=fr" } }, config)).toBe("fr");
-  });
-
-  it("returns locale when NEXT_LOCALE is among multiple cookies", () => {
-    expect(
-      parseCookieLocale({ headers: { cookie: "theme=dark; NEXT_LOCALE=de; session=abc" } }, config),
-    ).toBe("de");
-  });
-
-  it("returns null for invalid locale in cookie", () => {
-    expect(parseCookieLocale({ headers: { cookie: "NEXT_LOCALE=es" } }, config)).toBeNull();
-  });
-
-  it("returns locale for URL-encoded cookie value", () => {
-    expect(parseCookieLocale({ headers: { cookie: "NEXT_LOCALE=fr" } }, config)).toBe("fr");
-  });
-
-  it("returns default locale when cookie matches default", () => {
-    expect(parseCookieLocale({ headers: { cookie: "NEXT_LOCALE=en" } }, config)).toBe("en");
   });
 });
 

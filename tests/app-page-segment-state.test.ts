@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   canonicalizeAppPageParams,
-  resolveAppPageLeafSegmentStateKey,
   resolveAppPagePatternStateKey,
   resolveAppPageRouteStateKey,
   resolveAppPageSegmentStateKey,
@@ -36,15 +35,6 @@ describe("app page segment state keys", () => {
         slug: "launch",
       }),
     ).toBe("slug|launch|d");
-  });
-
-  it("keeps the leaf segment helper scoped to the active local segment", () => {
-    expect(
-      resolveAppPageLeafSegmentStateKey(["(marketing)", "blog", "[slug]"], {
-        slug: "launch",
-      }),
-    ).toBe("slug|launch|d");
-    expect(resolveAppPageLeafSegmentStateKey(["(marketing)"], {})).toBe("");
   });
 
   it("uses the full visible segment-state path for route-wide reset keys", () => {

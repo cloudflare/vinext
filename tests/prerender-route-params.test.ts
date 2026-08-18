@@ -2,11 +2,18 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   encodePrerenderRouteParams,
   matchPrerenderRouteParamsPayload,
-  prerenderRouteParamsPayloadMatchesRoute,
   type PrerenderRouteParamsPayload,
 } from "../packages/vinext/src/server/prerender-route-params.js";
 
-describe("prerenderRouteParamsPayloadMatchesRoute", () => {
+function matchesExactRoute(
+  payload: PrerenderRouteParamsPayload | null,
+  routePattern: string,
+  params: Record<string, string | string[]>,
+): boolean {
+  return matchPrerenderRouteParamsPayload(payload, routePattern, params)?.kind === "exact";
+}
+
+describe("matchPrerenderRouteParamsPayload exact matches", () => {
   it("requires the decoded prerender params to match the final route params", () => {
     const payload: PrerenderRouteParamsPayload = {
       routePattern: "/product/:id",
@@ -14,22 +21,22 @@ describe("prerenderRouteParamsPayloadMatchesRoute", () => {
     };
 
     expect(
-      prerenderRouteParamsPayloadMatchesRoute(payload, "/product/:id", {
+      matchesExactRoute(payload, "/product/:id", {
         id: "sticks & stones",
       }),
     ).toBe(true);
     expect(
-      prerenderRouteParamsPayloadMatchesRoute(payload, "/product/:id", {
+      matchesExactRoute(payload, "/product/:id", {
         id: "sticks%20%26%20stones",
       }),
     ).toBe(true);
     expect(
-      prerenderRouteParamsPayloadMatchesRoute(payload, "/product/:id", {
+      matchesExactRoute(payload, "/product/:id", {
         id: "sticks-and-stones",
       }),
     ).toBe(false);
     expect(
-      prerenderRouteParamsPayloadMatchesRoute(payload, "/source/:slug", {
+      matchesExactRoute(payload, "/source/:slug", {
         id: "sticks & stones",
       }),
     ).toBe(false);
@@ -42,22 +49,22 @@ describe("prerenderRouteParamsPayloadMatchesRoute", () => {
     };
 
     expect(
-      prerenderRouteParamsPayloadMatchesRoute(payload, "/docs/:slug+", {
+      matchesExactRoute(payload, "/docs/:slug+", {
         slug: ["sticks & stones", "more words"],
       }),
     ).toBe(true);
     expect(
-      prerenderRouteParamsPayloadMatchesRoute(payload, "/docs/:slug+", {
+      matchesExactRoute(payload, "/docs/:slug+", {
         slug: ["sticks%20%26%20stones", "more%20words"],
       }),
     ).toBe(true);
     expect(
-      prerenderRouteParamsPayloadMatchesRoute(payload, "/docs/:slug+", {
+      matchesExactRoute(payload, "/docs/:slug+", {
         slug: ["more words", "sticks & stones"],
       }),
     ).toBe(false);
     expect(
-      prerenderRouteParamsPayloadMatchesRoute(payload, "/docs/:slug+", {
+      matchesExactRoute(payload, "/docs/:slug+", {
         slug: "sticks & stones",
       }),
     ).toBe(false);
@@ -71,7 +78,7 @@ describe("prerenderRouteParamsPayloadMatchesRoute", () => {
     };
 
     expect(
-      prerenderRouteParamsPayloadMatchesRoute(payload, "/product/:id", {
+      matchesExactRoute(payload, "/product/:id", {
         id: "abc",
       }),
     ).toBe(false);
@@ -85,7 +92,7 @@ describe("prerenderRouteParamsPayloadMatchesRoute", () => {
     };
 
     expect(
-      prerenderRouteParamsPayloadMatchesRoute(payload, "/product/:id", {
+      matchesExactRoute(payload, "/product/:id", {
         id: "abc",
       }),
     ).toBe(false);
@@ -99,7 +106,7 @@ describe("prerenderRouteParamsPayloadMatchesRoute", () => {
     };
 
     expect(
-      prerenderRouteParamsPayloadMatchesRoute(payload, "/product/:id", {
+      matchesExactRoute(payload, "/product/:id", {
         id: "abc",
       }),
     ).toBe(false);

@@ -2,6 +2,8 @@
 
 Run Next.js applications on Vite, with Cloudflare Workers as the primary deployment target.
 
+**Website:** [vinext.dev](https://vinext.dev)
+
 > **Read the announcement:** [How we rebuilt Next.js with AI in one week](https://blog.cloudflare.com/vinext/)
 
 > **Under active development.** vinext supports substantial Next.js applications today, but it is not yet a drop-in replacement for every application or production workload. Expect compatibility gaps, especially in newer App Router features, and evaluate it against your own application before adopting it.
