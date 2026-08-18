@@ -882,6 +882,98 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
     expectFinalizedCjsGlobal(emittedResult?.code, "__dirname", "worker/entry.js");
   });
 
+  it("finalizes nested server environments relative to the shared server output root", () => {
+    const capability = createImportMetaUrlPlugin({
+      getRoot: () => realRoot,
+      getServerOutputRoot: () => path.join(realRoot, "dist/server"),
+    });
+    unwrapHook(capability.vitePlugin.configResolved).call(
+      {},
+      {
+        root: realRoot,
+        build: { outDir: path.join(realRoot, "dist/server") },
+        environments: {
+          auxiliary: {
+            consumer: "server",
+            build: { outDir: path.join(realRoot, "dist/server/auxiliary") },
+          },
+          client: {
+            consumer: "client",
+            build: { outDir: path.join(realRoot, "dist/client") },
+          },
+          rsc: {
+            consumer: "server",
+            build: { outDir: path.join(realRoot, "dist/server") },
+          },
+          ssr: {
+            consumer: "server",
+            build: { outDir: path.join(realRoot, "dist/server/ssr") },
+          },
+        },
+      },
+    );
+    const buildResult = unwrapHook(capability.vitePlugin.transform).call(
+      { environment: { name: "ssr", mode: "build", config: { consumer: "server" } } },
+      "exports.path = __filename;",
+      cjsDependencyPath,
+    );
+    const emittedResult = unwrapHook(capability.vitePlugin.renderChunk).call(
+      { environment: { name: "ssr", config: { consumer: "server" } } },
+      buildResult?.code ?? "",
+      { fileName: "_next/static/split.js" },
+      { format: "es" },
+    );
+
+    expectFinalizedCjsGlobal(emittedResult?.code, "__filename", "ssr/_next/static/split.js");
+
+    const auxiliaryResult = unwrapHook(capability.vitePlugin.renderChunk).call(
+      { environment: { name: "auxiliary", config: { consumer: "server" } } },
+      buildResult?.code ?? "",
+      { fileName: "worker.js" },
+      { format: "es" },
+    );
+    expectFinalizedCjsGlobal(auxiliaryResult?.code, "__filename", "worker.js");
+  });
+
+  it("does not invent prefixes without an explicit server output root", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    unwrapHook(capability.vitePlugin.configResolved).call(
+      {},
+      {
+        root: realRoot,
+        build: { outDir: path.join(realRoot, "dist") },
+        environments: {
+          nitro: {
+            consumer: "server",
+            build: { outDir: path.join(realRoot, "dist") },
+          },
+          rsc: {
+            consumer: "server",
+            build: { outDir: path.join(realRoot, "node_modules/.nitro/vite/services/rsc") },
+          },
+          ssr: {
+            consumer: "server",
+            build: { outDir: path.join(realRoot, "node_modules/.nitro/vite/services/ssr") },
+          },
+        },
+      },
+    );
+    const buildResult = unwrapHook(capability.vitePlugin.transform).call(
+      { environment: { name: "ssr", mode: "build", config: { consumer: "server" } } },
+      "exports.path = __filename;",
+      cjsDependencyPath,
+    );
+    const emittedResult = unwrapHook(capability.vitePlugin.renderChunk).call(
+      { environment: { name: "ssr", config: { consumer: "server" } } },
+      buildResult?.code ?? "",
+      { fileName: "_next/static/split.js" },
+      { format: "es" },
+    );
+
+    expectFinalizedCjsGlobal(emittedResult?.code, "__filename", "_next/static/split.js");
+    expect(emittedResult?.code).not.toContain("node_modules/.nitro");
+  });
+
   it("keeps explicit project CommonJS parseable before lowering", async () => {
     const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const transform = unwrapHook(capability.vitePlugin.transform);

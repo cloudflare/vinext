@@ -94,9 +94,11 @@ const SOURCE_IDENTITY_FILTER_RE = new RegExp(
 );
 export function createImportMetaUrlPlugin(options: {
   getRoot: () => string | undefined;
+  getServerOutputRoot?: () => string | undefined;
 }): ImportMetaUrlCapability {
   let rootPaths: RootPaths | undefined;
   let outputDirs: string[] = [];
+  let serverOutputPrefixes = new Map<string, string>();
   // Keep path dependencies as separate equality fields so cache hits avoid
   // allocating and hashing a composite string containing both full paths.
   // Replacing the entry also bounds each raw id to one source/path combination.
@@ -156,7 +158,15 @@ export function createImportMetaUrlPlugin(options: {
     enforce: "post",
     configResolved(config) {
       const root = options.getRoot() ?? config.root;
-      outputDirs = [config.build.outDir];
+      const environments = Object.entries(config.environments ?? {});
+      outputDirs = [
+        config.build.outDir,
+        ...environments.map(([, environment]) => environment.build.outDir),
+      ];
+      const serverOutputRoot = options.getServerOutputRoot?.();
+      serverOutputPrefixes = serverOutputRoot
+        ? serverEnvironmentOutputPrefixes(config.root, environments, serverOutputRoot)
+        : new Map();
       rootPaths = createRootPaths(root, { outputDirs });
     },
     watchChange() {
@@ -262,10 +272,16 @@ export function createImportMetaUrlPlugin(options: {
         if (this.environment?.config.consumer !== "server" || outputOptions.format !== "es") {
           return null;
         }
+        const outputPrefix = this.environment?.name
+          ? serverOutputPrefixes.get(this.environment.name)
+          : undefined;
+        const emittedFileName = outputPrefix
+          ? path.join(outputPrefix, chunk.fileName)
+          : chunk.fileName;
         return finalizeEmittedModuleIdentity(
           code,
           emittedModuleIdentity.replacements,
-          chunk.fileName,
+          emittedFileName,
         );
       },
     },
@@ -315,6 +331,32 @@ export function createImportMetaUrlPlugin(options: {
     optimizeDepsPlugin,
     isBundledCommonJsDependencyId: (id) => commonJsDependencyCanonicalId(id) !== null,
   };
+}
+
+function serverEnvironmentOutputPrefixes(
+  root: string,
+  environments: Array<
+    [
+      string,
+      {
+        consumer?: string;
+        build: { outDir: string };
+      },
+    ]
+  >,
+  serverOutputRoot: string,
+): Map<string, string> {
+  const outputRoot = path.resolve(root, serverOutputRoot);
+  const serverOutputDirs = environments
+    .filter(([name]) => name === "rsc" || name === "ssr")
+    .map(([name, environment]) => [name, path.resolve(root, environment.build.outDir)] as const);
+  return new Map(
+    serverOutputDirs.map(([name, outDir]) => {
+      if (!isPathInsideOrEqual(outputRoot, outDir)) return [name, ""];
+      const relative = path.relative(outputRoot, outDir);
+      return [name, relative === "." ? "" : relative];
+    }),
+  );
 }
 
 // Test-only entry point. Delegates to the same transform the plugin runs so

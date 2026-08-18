@@ -1436,6 +1436,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // initializer guards any unexpected hook ordering.
   let clientAssetsInlineLimit: NonNullable<UserConfig["build"]>["assetsInlineLimit"] = 0;
   let hasCloudflarePlugin = false;
+  let cloudflareServerOutputRoot: string | undefined;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
   let resolvedServerExternalPackages: string[] = [];
@@ -1445,6 +1446,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesOptimizeEntries: string[] = [];
   const importMetaUrlCapability = createImportMetaUrlPlugin({
     getRoot: () => root,
+    // The Cloudflare Worker module registry mounts every emitted server
+    // environment below the RSC output directory. Node and Nitro expose a
+    // readable native import.meta.filename instead and need no build-time
+    // deployment prefix.
+    getServerOutputRoot: () => cloudflareServerOutputRoot,
   });
   const pagesClientAssetsOutputDirs = new Set<string>();
   let pagesClientAssetsModule: string | null = null;
@@ -3573,6 +3579,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       async configResolved(config) {
+        cloudflareServerOutputRoot =
+          hasCloudflarePlugin && hasAppDir
+            ? path.resolve(
+                root,
+                config.environments.rsc?.build.outDir ?? options.rscOutDir ?? "dist/server",
+              )
+            : undefined;
         if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {
           suppressOptionalOptimizeDepsWarnings(config.logger);
         }
