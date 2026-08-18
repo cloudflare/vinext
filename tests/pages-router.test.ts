@@ -1207,6 +1207,11 @@ describe("Pages Router integration", () => {
     // Should render the custom 404 page
     expect(html).toContain("404 - Page Not Found");
     expect(html).toContain("does not exist");
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json"(?: nonce="[^"]+")?>([\s\S]*?)<\/script>/,
+    );
+    expect(nextDataMatch).toBeTruthy();
+    expect(JSON.parse(nextDataMatch![1]).buildId).toBe("test-build-id");
   });
 
   // Ported from Next.js: test/e2e/not-found-revalidate/not-found-revalidate.test.ts
@@ -1503,6 +1508,59 @@ export default function Page({ marker }: { marker: string }) {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();
     expect(html).toContain("__NEXT_DATA__");
+  });
+
+  it("emits the resolved dev build ID so Pages Router data requests are addressable", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-dev-build-id-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    let started: Awaited<ReturnType<typeof startFixtureServer>> | undefined;
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        `export default function Home() { return <h1>Home</h1>; }\n`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "about.tsx"),
+        `export function getServerSideProps() {
+  return { props: { source: "about-data" } };
+}
+export default function About({ source }) { return <h1>{source}</h1>; }
+`,
+      );
+      started = await startFixtureServer(tmpRoot);
+      const response = await fetch(`${started.baseUrl}/`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      const nextDataMatch = html.match(
+        /<script id="__NEXT_DATA__" type="application\/json"(?: nonce="[^"]+")?>([\s\S]*?)<\/script>/,
+      );
+      expect(nextDataMatch).toBeTruthy();
+      const nextData = JSON.parse(nextDataMatch![1]) as { buildId?: string };
+
+      // Next.js' dev server returns "development" from getBuildId(), and its
+      // renderer always serializes that value into __NEXT_DATA__. Vinext may
+      // resolve an opaque ID instead, but the emitted value must be present and
+      // accepted by the dev data-route parser.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/dev/next-dev-server.ts
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+      expect(nextData.buildId).toEqual(expect.any(String));
+      expect(nextData.buildId).not.toHaveLength(0);
+
+      const dataResponse = await fetch(
+        `${started.baseUrl}/_next/data/${nextData.buildId}/about.json`,
+      );
+      expect(dataResponse.status).toBe(200);
+      await expect(dataResponse.json()).resolves.toMatchObject({
+        pageProps: { source: "about-data" },
+      });
+    } finally {
+      await started?.server.close();
+      await fsp.rm(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   // Dev/prod parity: the production client entry exposes
