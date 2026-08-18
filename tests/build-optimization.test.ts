@@ -8,6 +8,7 @@
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import { createBuilder, parseAst } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
@@ -34,7 +35,7 @@ import { setPagesClientAssets } from "../packages/vinext/src/server/pages-client
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
-import { aliasEntriesToRecord } from "./helpers.js";
+import { aliasEntriesToRecord, startFixtureServer } from "./helpers.js";
 
 // `stripServerExports` returns `{ code, map }`; these tests assert on the
 // transformed source, so unwrap to the code string (null is preserved).
@@ -724,6 +725,79 @@ describe("optimizeDeps.exclude for vinext", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("normalizes URL imports in the real client dependency optimizer", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-client-url-optdeps-"));
+    const workspaceNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const nodeModules = path.join(tmpDir, "node_modules");
+    await fsp.mkdir(nodeModules);
+    for (const entry of await fsp.readdir(workspaceNodeModules)) {
+      if (entry === ".vite" || entry === ".cache" || entry === "url-import-probe") continue;
+      await fsp.symlink(
+        path.join(workspaceNodeModules, entry),
+        path.join(nodeModules, entry),
+        "junction",
+      );
+    }
+    const dependency = path.join(nodeModules, "url-import-probe");
+    await fsp.mkdir(dependency);
+    await fsp.writeFile(
+      path.join(dependency, "package.json"),
+      JSON.stringify({
+        name: "url-import-probe",
+        version: "1.0.0",
+        type: "module",
+        exports: "./index.js",
+      }),
+    );
+    await fsp.writeFile(
+      path.join(dependency, "index.js"),
+      `export const load = () => import(new URL("./loaded.js", import.meta.url).href);`,
+    );
+    await fsp.writeFile(path.join(dependency, "loaded.js"), `export const value = "loaded";`);
+    await fsp.mkdir(path.join(tmpDir, "app"));
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function Layout({ children }) { return <html><body>{children}</body></html> }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "client.tsx"),
+      `"use client"; import { load } from "url-import-probe"; export function Client() { void load; return <p>client</p> }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `import { Client } from "./client"; export default function Page() { return <Client /> }`,
+    );
+
+    let server: Awaited<ReturnType<typeof startFixtureServer>>["server"] | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir, { appRouter: true });
+      server = started.server;
+      const response = await fetch(started.baseUrl);
+      expect(response.status).toBe(200);
+      await Promise.all([
+        server.environments.client.transformRequest("/app/client.tsx"),
+        server.environments.rsc.transformRequest("/app/page.tsx"),
+        server.environments.ssr.transformRequest("/app/client.tsx"),
+      ]);
+      const environment = server.environments.client;
+      await environment.waitForRequestsIdle();
+      const optimized = environment.depsOptimizer?.metadata.depInfoList.find(
+        (entry) => entry.id === "url-import-probe",
+      );
+      expect(optimized, "client optimized dependency").toBeDefined();
+      if (optimized?.processing) await optimized.processing;
+      const code = await fsp.readFile(optimized!.file, "utf8");
+      expect(code).not.toContain("new URL");
+      const module = (await import(`${pathToFileURL(optimized!.file).href}?t=${Date.now()}`)) as {
+        load(): Promise<{ value: string }>;
+      };
+      await expect(module.load()).resolves.toMatchObject({ value: "loaded" });
+    } finally {
+      await server?.close();
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it("seeds Cloudflare Pages Router worker optimizer entries during dev", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;

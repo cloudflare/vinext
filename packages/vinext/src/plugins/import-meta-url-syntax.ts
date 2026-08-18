@@ -144,3 +144,15 @@ export function relativeDynamicImportUrlSpecifier(source: unknown): string | nul
 
   return specifier.value;
 }
+
+export function hasViteIgnoreInNewUrl(code: string, source: unknown): boolean {
+  const expression = unwrapExpression(source);
+  if (expression?.type !== "MemberExpression" || !isAstRecord(expression.object)) {
+    return false;
+  }
+  const urlExpression = unwrapExpression(expression.object);
+  if (!isNewUrlExpression(urlExpression) || !hasRange(urlExpression)) return false;
+  const specifier = unwrapExpression(nodeArray(urlExpression.arguments)[0]);
+  if (!specifier || !hasRange(specifier)) return false;
+  return /\/\*\s*@vite-ignore\s*\*\//.test(code.slice(urlExpression.start, specifier.start));
+}

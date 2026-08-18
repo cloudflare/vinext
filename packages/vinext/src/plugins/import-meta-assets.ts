@@ -46,10 +46,45 @@ export type ImportMetaAssetRewrite = { start: number; end: number; replacement: 
 type AssetScope = AstScope & {
   assets: Map<string, AssetBinding>;
   unsafeAssetBindings: Set<string>;
+  nodeUrlFunctions: Set<string>;
+  nodeUrlNamespaces: Set<string>;
 };
 
 function createAssetScope(parent: AssetScope | null): AssetScope {
-  return { ...createAstScope(parent), assets: new Map(), unsafeAssetBindings: new Set() };
+  return {
+    ...createAstScope(parent),
+    assets: new Map(),
+    unsafeAssetBindings: new Set(),
+    nodeUrlFunctions: new Set(),
+    nodeUrlNamespaces: new Set(),
+  };
+}
+
+function collectNodeUrlImports(ast: AstRecord, scope: AssetScope): void {
+  for (const statement of nodeArray(ast.body)) {
+    if (
+      !isAstRecord(statement) ||
+      statement.type !== "ImportDeclaration" ||
+      !isAstRecord(statement.source) ||
+      statement.source.value !== "node:url"
+    ) {
+      continue;
+    }
+    for (const specifier of nodeArray(statement.specifiers)) {
+      if (!isAstRecord(specifier) || !isAstRecord(specifier.local)) continue;
+      const local = specifier.local.name;
+      if (typeof local !== "string") continue;
+      if (
+        specifier.type === "ImportSpecifier" &&
+        isAstRecord(specifier.imported) &&
+        specifier.imported.name === "fileURLToPath"
+      ) {
+        scope.nodeUrlFunctions.add(local);
+      } else if (specifier.type === "ImportNamespaceSpecifier") {
+        scope.nodeUrlNamespaces.add(local);
+      }
+    }
+  }
 }
 
 function assetUrlFromNode(value: unknown): AssetUrl | null {
@@ -141,6 +176,77 @@ function rootIdentifierName(value: unknown): string | null {
   return node?.type === "Identifier" && typeof node.name === "string" ? node.name : null;
 }
 
+function hasScopedCapability(
+  scope: AssetScope,
+  name: string,
+  capability: "nodeUrlFunctions" | "nodeUrlNamespaces",
+): boolean {
+  for (
+    let current: AssetScope | null = scope;
+    current;
+    current = current.parent as AssetScope | null
+  ) {
+    if (current[capability].has(name)) return true;
+    if (current.bindings.has(name)) return false;
+  }
+  return false;
+}
+
+function isNodeUrlFileUrlToPath(scope: AssetScope, value: unknown): boolean {
+  const callee = unwrapExpression(value);
+  if (callee?.type === "Identifier" && typeof callee.name === "string") {
+    return hasScopedCapability(scope, callee.name, "nodeUrlFunctions");
+  }
+  if (
+    callee?.type === "MemberExpression" &&
+    callee.computed !== true &&
+    isIdentifierNamed(callee.property, "fileURLToPath")
+  ) {
+    const namespace = unwrapExpression(callee.object);
+    return (
+      namespace?.type === "Identifier" &&
+      typeof namespace.name === "string" &&
+      hasScopedCapability(scope, namespace.name, "nodeUrlNamespaces")
+    );
+  }
+  return false;
+}
+
+function invalidateAssignedAssetTargets(scope: AssetScope, value: unknown): void {
+  const node = unwrapExpression(value);
+  if (!node) return;
+  if (node.type === "Identifier" && typeof node.name === "string") {
+    invalidateAssetBinding(scope, node.name);
+    return;
+  }
+  if (node.type === "MemberExpression") {
+    const assigned = rootIdentifierName(node);
+    if (assigned) invalidateAssetBinding(scope, assigned);
+    return;
+  }
+  if (node.type === "AssignmentPattern") {
+    invalidateAssignedAssetTargets(scope, node.left);
+    return;
+  }
+  if (node.type === "RestElement") {
+    invalidateAssignedAssetTargets(scope, node.argument);
+    return;
+  }
+  if (node.type === "ArrayPattern" || node.type === "ArrayExpression") {
+    for (const element of nodeArray(node.elements)) invalidateAssignedAssetTargets(scope, element);
+    return;
+  }
+  if (node.type === "ObjectPattern" || node.type === "ObjectExpression") {
+    for (const property of nodeArray(node.properties)) {
+      if (!isAstRecord(property)) continue;
+      invalidateAssignedAssetTargets(
+        scope,
+        property.type === "RestElement" ? property.argument : property.value,
+      );
+    }
+  }
+}
+
 function invalidateEscapedAssetValue(scope: AssetScope, value: unknown): void {
   const node = unwrapExpression(value);
   if (!node) return;
@@ -230,8 +336,9 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
   const rootScope = createAssetScope(null);
   collectAssetScopeBindings(ast, rootScope);
   collectVarScopeBindings(ast, rootScope);
+  collectNodeUrlImports(ast, rootScope);
 
-  function visit(node: AstRecord, parentScope: AssetScope): void {
+  function visit(node: AstRecord, parentScope: AssetScope, safeAssetReference = false): void {
     if (isFunctionNode(node)) {
       const parameterScope = createAssetScope(parentScope);
       collectBindingNames(node.id, parameterScope.bindings);
@@ -267,6 +374,10 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     }
 
     const scope = createChildScope(node, parentScope) ?? parentScope;
+    if (node.type === "Identifier" && typeof node.name === "string") {
+      if (!safeAssetReference) invalidateAssetBinding(scope, node.name);
+      return;
+    }
     if (node.type === "VariableDeclaration") {
       for (const declarator of nodeArray(node.declarations)) {
         if (!isAstRecord(declarator)) continue;
@@ -274,10 +385,15 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
           invalidateEscapedAssetValue(scope, declarator.init);
         }
         if (isAstRecord(declarator.init)) visit(declarator.init, scope);
-        if (isAstRecord(declarator.id)) visit(declarator.id, scope);
         recordAssetBinding(node, declarator, scope);
       }
       return;
+    }
+    if (
+      (node.type === "ForInStatement" || node.type === "ForOfStatement") &&
+      (!isAstRecord(node.left) || node.left.type !== "VariableDeclaration")
+    ) {
+      invalidateAssignedAssetTargets(scope, node.left);
     }
     if (
       node.type === "ImportExpression" &&
@@ -293,15 +409,12 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
 
     if (!nodelessTarget) {
       if (node.type === "AssignmentExpression") {
-        const assigned = rootIdentifierName(node.left);
-        if (assigned) invalidateAssetBinding(scope, assigned);
+        invalidateAssignedAssetTargets(scope, node.left);
         invalidateEscapedAssetValue(scope, node.right);
       } else if (node.type === "UpdateExpression") {
-        const assigned = rootIdentifierName(node.argument);
-        if (assigned) invalidateAssetBinding(scope, assigned);
+        invalidateAssignedAssetTargets(scope, node.argument);
       } else if (node.type === "UnaryExpression" && node.operator === "delete") {
-        const assigned = rootIdentifierName(node.argument);
-        if (assigned) invalidateAssetBinding(scope, assigned);
+        invalidateAssignedAssetTargets(scope, node.argument);
       } else if (node.type === "NewExpression") {
         for (const argument of nodeArray(node.arguments)) {
           invalidateEscapedAssetValue(scope, argument);
@@ -352,7 +465,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     if (!nodelessTarget && node.type === "CallExpression") {
       const callee = unwrapExpression(node.callee);
       const isGlobalFetch = isIdentifierNamed(callee, "fetch") && !hasAstBinding(scope, "fetch");
-      const isReadOnlyUrlConsumer = isIdentifierNamed(callee, "fileURLToPath");
+      const isReadOnlyUrlConsumer = isNodeUrlFileUrlToPath(scope, callee);
       if (!isGlobalFetch && !isReadOnlyUrlConsumer) {
         const receiver =
           callee?.type === "MemberExpression" ? rootIdentifierName(callee.object) : null;
@@ -361,6 +474,55 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
           invalidateEscapedAssetValue(scope, argument);
         }
       }
+      if (isAstRecord(node.callee)) visit(node.callee, scope);
+      for (const [index, argument] of nodeArray(node.arguments).entries()) {
+        if (!isAstRecord(argument)) continue;
+        const safeArgument =
+          (isGlobalFetch && index === 0 && argument.type === "Identifier") ||
+          (isReadOnlyUrlConsumer && argument.type === "Identifier");
+        visit(argument, scope, safeArgument);
+      }
+      return;
+    }
+
+    if (node.type === "MemberExpression") {
+      const property = unwrapExpression(node.property);
+      const safeUrlValue =
+        node.computed !== true &&
+        property?.type === "Identifier" &&
+        [
+          "hash",
+          "host",
+          "hostname",
+          "href",
+          "origin",
+          "password",
+          "pathname",
+          "port",
+          "protocol",
+          "search",
+          "toJSON",
+          "toString",
+          "username",
+        ].includes(String(property.name));
+      if (isAstRecord(node.object)) visit(node.object, scope, safeUrlValue);
+      if (node.computed === true && isAstRecord(node.property)) visit(node.property, scope);
+      return;
+    }
+
+    if (node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration") {
+      if (isAstRecord(node.declaration)) {
+        visit(node.declaration, scope);
+        if (node.declaration.type === "VariableDeclaration") {
+          for (const declarator of nodeArray(node.declaration.declarations)) {
+            if (isAstRecord(declarator)) invalidateAssignedAssetTargets(scope, declarator.id);
+          }
+        }
+      }
+      for (const specifier of nodeArray(node.specifiers)) {
+        if (isAstRecord(specifier)) visit(specifier, scope);
+      }
+      return;
     }
 
     forEachAstChild(node, (child) => visit(child, scope));

@@ -43,6 +43,7 @@ import { ImportMetaAssetTransformer, type ImportMetaAssetRewrite } from "./impor
 import type { OgAssetOwnership } from "./og-asset-ownership.js";
 import {
   hasDynamicRequestIgnoreDirective,
+  hasViteIgnoreInNewUrl,
   isImportMetaUrlNode,
   isImportMetaUrlOrChainedNode,
   isNewUrlExpression,
@@ -471,7 +472,11 @@ function collectDynamicImportUrlSpecifiers(
     const source = isAstRecord(value.source) ? value.source : null;
     if (value.type === "ImportExpression" && hasRange(source)) {
       const specifier = relativeDynamicImportUrlSpecifier(source);
-      if (specifier !== null && !hasDynamicRequestIgnoreDirective(code, value, source)) {
+      if (
+        specifier !== null &&
+        !hasDynamicRequestIgnoreDirective(code, value, source) &&
+        !hasViteIgnoreInNewUrl(code, source)
+      ) {
         specifiers.push({ ...source, specifier });
         return;
       }

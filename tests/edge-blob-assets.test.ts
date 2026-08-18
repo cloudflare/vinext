@@ -201,10 +201,31 @@ describe("App Router blob assets through Nitro presets", () => {
 
   beforeAll(async () => {
     tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-nitro-blob-assets-"));
-    await fsp.symlink(
-      path.resolve(import.meta.dirname, "../node_modules"),
-      path.join(tmpRoot, "node_modules"),
-      "junction",
+    const workspaceNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const nodeModules = path.join(tmpRoot, "node_modules");
+    await fsp.mkdir(nodeModules);
+    for (const entry of await fsp.readdir(workspaceNodeModules)) {
+      if (entry === ".vite" || entry === ".cache" || entry === "edge-blob-package") continue;
+      await fsp.symlink(
+        path.join(workspaceNodeModules, entry),
+        path.join(nodeModules, entry),
+        "junction",
+      );
+    }
+    const packageDir = path.join(nodeModules, "edge-blob-package");
+    await fsp.mkdir(packageDir);
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({
+        name: "edge-blob-package",
+        version: "1.0.0",
+        type: "module",
+        exports: { "./message.json": "./message.json" },
+      }),
+    );
+    await fsp.writeFile(
+      path.join(packageDir, "message.json"),
+      JSON.stringify({ source: "node_modules asset" }),
     );
     await fsp.mkdir(path.join(tmpRoot, "app", "asset"), { recursive: true });
     await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
@@ -221,12 +242,15 @@ describe("App Router blob assets through Nitro presets", () => {
       `import { fileURLToPath } from "node:url";
 
 const assetUrl = new URL("./message.txt", import.meta.url);
+const packageAssetUrl = new URL("edge-blob-package/message.json", import.meta.url);
 
 export async function GET(request) {
   const text = await (await fetch(assetUrl)).text();
+  const packageAsset = await (await fetch(packageAssetUrl)).json();
   const mode = new URL(request.url).searchParams.get("mode");
   return Response.json({
     text,
+    packageAsset,
     protocol: assetUrl.protocol,
     pathname: assetUrl.pathname,
     filePath: mode === "node" ? fileURLToPath(assetUrl) : null,
@@ -280,11 +304,13 @@ export default defineConfig({ plugins: [vinext(), nitro(preset ? { preset } : {}
       expect(response.status).toBe(200);
       const body = (await response.json()) as {
         text: string;
+        packageAsset: { source: string };
         protocol: string;
         pathname: string;
         filePath: string;
       };
       expect(body.text).toBe("Hello from a Nitro asset!");
+      expect(body.packageAsset).toEqual({ source: "node_modules asset" });
       expect(body.protocol).toBe("file:");
       expect(body.pathname).toContain("/server/");
       expect(body.filePath.replaceAll("\\", "/")).toContain("/server/");
@@ -313,6 +339,7 @@ export default defineConfig({ plugins: [vinext(), nitro(preset ? { preset } : {}
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       text: "Hello from a Nitro asset!",
+      packageAsset: { source: "node_modules asset" },
       protocol: "data:",
       filePath: null,
     });

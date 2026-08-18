@@ -267,11 +267,60 @@ describe("import-meta asset phase", () => {
         `const url = new URL("../../src/text-file.txt", import.meta.url);`,
         `mutate(); fetch(url);`,
       ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `[url.pathname] = ["/other"];`,
+        `fetch(url);`,
+      ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `({ value: url.pathname } = source);`,
+        `fetch(url);`,
+      ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `for (url.pathname of values) { fetch(url); }`,
+      ].join("\n"),
+      [
+        `export const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `export function read() { return fetch(url); }`,
+      ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `class Box { value = url; }`,
+        `fetch(url);`,
+      ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `const view = <Component value={url} />;`,
+        `fetch(url);`,
+      ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `function fileURLToPath(value) { value.pathname = "/other"; }`,
+        `fileURLToPath(url);`,
+        `fetch(url);`,
+      ].join("\n"),
     ];
 
     for (const source of sources) {
       expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
     }
+  });
+
+  it.each([
+    [`import { fileURLToPath as toPath } from "node:url";`, `toPath(url);`],
+    [`import * as nodeUrl from "node:url";`, `nodeUrl.fileURLToPath(url);`],
+  ])("trusts proven node:url consumers", async (importStatement, consume) => {
+    const plugin = await createPlugin(false);
+    const source = [
+      importStatement,
+      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+      consume,
+      `fetch(url);`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
   });
 
   it("resolves a bare node_modules asset through the bundler", async () => {

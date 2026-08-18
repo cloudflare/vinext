@@ -233,6 +233,16 @@ describe("vinext:import-meta-url plugin", () => {
     },
   );
 
+  it("preserves Vite's inner new URL ignore placement", () => {
+    const source = `import(new URL(/* @vite-ignore */ "./dependency.js", import.meta.url).href);`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+      expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)).toBeNull();
+    }
+  });
+
   it.each(["@vite-ignore", "webpackIgnore: true", "turbopackIgnore: true"])(
     "preserves URL imports carrying %s during dependency optimization",
     (directive) => {
