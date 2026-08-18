@@ -60,6 +60,17 @@ export function validateCloudflarePlatformSetup(
   const imagesBinding = updatedWranglerCode
     ? getWranglerImagesBinding(updatedWranglerCode)
     : "IMAGES";
+  const pagesRouterProjectEnvironmentName = context.isAppRouter
+    ? undefined
+    : getCloudflareProjectEnvironmentName(context.root);
+  const pagesRouterEnvironmentName = pagesRouterProjectEnvironmentName
+    ? getCloudflareWorkerEnvironmentName(
+        updatedWranglerCode,
+        updatedWranglerCode === undefined
+          ? projectInfo.projectName
+          : pagesRouterProjectEnvironmentName,
+      )
+    : undefined;
 
   if (context.existingViteConfigPath) {
     updateViteConfigForCloudflare(
@@ -71,6 +82,9 @@ export function validateCloudflarePlatformSetup(
         cache: cloudflare,
         imagesBinding,
         prerender: context.prerender,
+        pagesRouterEnvironmentName,
+        pagesRouterProjectEnvironmentName,
+        root: context.root,
       },
     );
   }
@@ -86,6 +100,15 @@ export function setupCloudflarePlatform(
     .find((candidate) => fs.existsSync(candidate));
   const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
   const imagesBinding = wranglerCode ? getWranglerImagesBinding(wranglerCode) : "IMAGES";
+  const pagesRouterProjectEnvironmentName = context.isAppRouter
+    ? undefined
+    : getCloudflareProjectEnvironmentName(context.root);
+  const pagesRouterEnvironmentName = pagesRouterProjectEnvironmentName
+    ? getCloudflareWorkerEnvironmentName(
+        wranglerCode,
+        wranglerCode === undefined ? projectInfo.projectName : pagesRouterProjectEnvironmentName,
+      )
+    : undefined;
 
   let generatedViteConfig = false;
   let skippedViteConfig = false;
@@ -100,6 +123,9 @@ export function setupCloudflarePlatform(
         cache: cloudflare,
         imagesBinding,
         prerender: context.prerender,
+        pagesRouterEnvironmentName,
+        pagesRouterProjectEnvironmentName,
+        root: context.root,
       },
     );
     if (updatedConfig !== currentConfig) {
@@ -111,7 +137,13 @@ export function setupCloudflarePlatform(
   } else {
     const configContent = context.isAppRouter
       ? generateAppRouterViteConfig(projectInfo, cloudflare, imagesBinding, context.prerender)
-      : generatePagesRouterViteConfig(projectInfo, cloudflare, imagesBinding, context.prerender);
+      : generatePagesRouterViteConfig(
+          projectInfo,
+          cloudflare,
+          imagesBinding,
+          context.prerender,
+          pagesRouterEnvironmentName,
+        );
     fs.writeFileSync(path.join(context.root, "vite.config.ts"), configContent, "utf-8");
     generatedViteConfig = true;
   }
@@ -252,6 +284,76 @@ function stripJsonComments(code: string): string {
     output += char;
   }
   return output.replace(/,\s*([}\]])/g, "$1");
+}
+
+function getCloudflareWorkerEnvironmentName(
+  wranglerCode: string | undefined,
+  fallbackWorkerName: string,
+): string {
+  const config = wranglerCode
+    ? (JSON.parse(stripJsonComments(wranglerCode)) as { name?: unknown })
+    : undefined;
+  const workerName =
+    typeof config?.name === "string" && config.name.length > 0 ? config.name : fallbackWorkerName;
+  // Mirrors @cloudflare/vite-plugin's workerNameToEnvironmentName().
+  return workerName.replaceAll("-", "_");
+}
+
+function getCloudflareProjectEnvironmentName(root: string): string {
+  let packageName: string | undefined;
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8")) as {
+      name?: unknown;
+    };
+    if (typeof packageJson.name === "string") packageName = packageJson.name;
+  } catch {
+    // Wrangler falls back to the project directory when package.json is absent or invalid.
+  }
+  const rawName = process.env.WRANGLER_CI_OVERRIDE_NAME ?? (packageName || path.basename(root));
+  const invalidCharacters = /[^a-z0-9- ]/g;
+  const invalidBoundary = /^(-+)|(-+)$/g;
+  const isValid =
+    rawName.length > 0 &&
+    rawName.length <= 63 &&
+    !/[^a-z0-9- ]/.test(rawName) &&
+    !/^-|-$/.test(rawName);
+  const workerName = isValid
+    ? rawName
+    : rawName
+        .replaceAll("_", "-")
+        .replace(invalidCharacters, "-")
+        .replace(invalidBoundary, "")
+        .slice(0, 63) || "my-worker";
+  // Mirrors Wrangler's unstable_getWorkerNameFromProject() and the Cloudflare
+  // Vite plugin's workerNameToEnvironmentName().
+  return workerName.replaceAll("-", "_");
+}
+
+function readCloudflareWorkerEnvironmentName(
+  configPath: string,
+  fallbackEnvironmentName: string,
+): string {
+  let code: string;
+  try {
+    code = fs.readFileSync(configPath, "utf-8");
+  } catch (cause) {
+    throw new Error(
+      `Could not read the cloudflare() configPath at ${JSON.stringify(configPath)}.`,
+      { cause },
+    );
+  }
+  let config: { name?: unknown };
+  try {
+    config = JSON.parse(stripJsonComments(code)) as { name?: unknown };
+  } catch (cause) {
+    throw new Error(
+      `Could not parse the cloudflare() configPath at ${JSON.stringify(configPath)}.`,
+      { cause },
+    );
+  }
+  return typeof config.name === "string" && config.name.length > 0
+    ? getCloudflareWorkerEnvironmentName(undefined, config.name)
+    : fallbackEnvironmentName;
 }
 
 function findTopLevelJsonProperty(
@@ -569,6 +671,10 @@ export function generatePagesRouterViteConfig(
   options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   imagesBinding = "IMAGES",
   prerender = false,
+  cloudflareEnvironmentName = getCloudflareWorkerEnvironmentName(
+    undefined,
+    info?.projectName ?? "server",
+  ),
 ): string {
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
@@ -603,6 +709,11 @@ export default defineConfig({
     ${vinextExpression(options, "vinext", "imagesOptimizer", imagesBinding, prerender).replace(/\n/g, "\n    ")},
     cloudflare(),
   ],${resolveBlock}
+  environments: {
+    ${JSON.stringify(cloudflareEnvironmentName)}: {
+      build: { outDir: "dist/server" },
+    },
+  },
 });
 `;
 }
@@ -1090,6 +1201,225 @@ function ensureCloudflareViteEnvironment(
   insertObjectProperty(output, argumentObject, `${callIndent}  ${viteEnvironment},`, code);
 }
 
+function hasAmbiguousPropertyAfter(object: AstObject, property: AstProperty): boolean {
+  const propertyIndex = object.properties.lastIndexOf(property);
+  return object.properties
+    .slice(propertyIndex + 1)
+    .some(
+      (candidate) =>
+        candidate.type === "SpreadElement" || (candidate.type === "Property" && candidate.computed),
+    );
+}
+
+function findUniqueProperty(object: AstObject, name: string): AstProperty | undefined {
+  const properties = object.properties.filter(
+    (property): property is AstProperty =>
+      property.type === "Property" && propertyName(property) === name,
+  );
+  if (properties.length > 1) {
+    throw new Error(
+      `The Vite config ${name} option must not be duplicated when vinext init configures the Pages Router output.`,
+    );
+  }
+  return properties[0];
+}
+
+function resolvePagesRouterCloudflareEnvironmentName(
+  config: AstObject,
+  binding: string,
+  fallbackEnvironmentName: string,
+  projectEnvironmentName: string,
+  root: string,
+): string {
+  const call = findPluginCall(config, binding);
+  const firstArgument = call?.arguments[0];
+  if (!firstArgument) return fallbackEnvironmentName;
+  if (firstArgument.type === "SpreadElement" || firstArgument.type !== "ObjectExpression") {
+    throw new Error(
+      "The cloudflare() plugin options must be a static object for vinext init to configure the Pages Router output directory.",
+    );
+  }
+  const argumentObject = firstArgument as AstObject;
+  const viteEnvironment = findUniqueProperty(argumentObject, "viteEnvironment");
+  if (viteEnvironment) {
+    if (
+      viteEnvironment.value.type !== "ObjectExpression" ||
+      hasAmbiguousPropertyAfter(argumentObject, viteEnvironment)
+    ) {
+      throw new Error(
+        "The cloudflare() viteEnvironment option must be a static object for vinext init to configure the Pages Router output directory.",
+      );
+    }
+    const environmentObject = viteEnvironment.value as AstObject;
+    const name = findUniqueProperty(environmentObject, "name");
+    if (name) {
+      if (
+        name.value.type !== "Literal" ||
+        typeof name.value.value !== "string" ||
+        name.value.value.length === 0 ||
+        hasAmbiguousPropertyAfter(environmentObject, name)
+      ) {
+        throw new Error(
+          "The cloudflare() viteEnvironment name must be a static non-empty string for vinext init to configure the Pages Router output directory.",
+        );
+      }
+      return name.value.value;
+    }
+    if (
+      environmentObject.properties.some(
+        (property) => property.type === "SpreadElement" || property.computed,
+      )
+    ) {
+      throw new Error(
+        "The cloudflare() viteEnvironment name must be statically known for vinext init to configure the Pages Router output directory.",
+      );
+    }
+  }
+  if (
+    argumentObject.properties.some(
+      (property) => property.type === "SpreadElement" || property.computed,
+    )
+  ) {
+    throw new Error(
+      "The cloudflare() plugin options cannot use spreads or computed properties unless viteEnvironment.name is explicitly configured after them.",
+    );
+  }
+  if (findUniqueProperty(argumentObject, "config")) {
+    throw new Error(
+      "The cloudflare() inline config can change the Worker identity, so vinext init requires an explicit viteEnvironment.name to configure the Pages Router output directory.",
+    );
+  }
+  const configPath = findUniqueProperty(argumentObject, "configPath");
+  if (!configPath) return fallbackEnvironmentName;
+  if (
+    configPath.value.type !== "Literal" ||
+    typeof configPath.value.value !== "string" ||
+    configPath.value.value.length === 0
+  ) {
+    throw new Error(
+      "The cloudflare() configPath must be a static non-empty string for vinext init to configure the Pages Router output directory.",
+    );
+  }
+  return readCloudflareWorkerEnvironmentName(
+    path.resolve(root, configPath.value.value),
+    projectEnvironmentName,
+  );
+}
+
+function hasAmbiguousProperty(object: AstObject): boolean {
+  return object.properties.some(
+    (property) =>
+      property.type === "SpreadElement" || (property.type === "Property" && property.computed),
+  );
+}
+
+function ensurePagesRouterCloudflareOutputDirectory(
+  output: MagicString,
+  config: AstObject,
+  cloudflareBinding: string,
+  isAppRouter: boolean,
+  fallbackEnvironmentName: string,
+  projectEnvironmentName: string,
+  root: string,
+  code: string,
+): void {
+  if (isAppRouter) return;
+  const environmentName = resolvePagesRouterCloudflareEnvironmentName(
+    config,
+    cloudflareBinding,
+    fallbackEnvironmentName,
+    projectEnvironmentName,
+    root,
+  );
+  const environmentProperty = JSON.stringify(environmentName);
+  const environments = findUniqueProperty(config, "environments");
+  if (!environments) {
+    if (hasAmbiguousProperty(config)) {
+      throw new Error(
+        "The Vite config uses top-level spreads or computed properties, so vinext init cannot safely add the Pages Router environment output directory.",
+      );
+    }
+    insertObjectProperty(
+      output,
+      config,
+      `  environments: {\n    ${environmentProperty}: {\n      build: { outDir: "dist/server" },\n    },\n  },`,
+      code,
+    );
+    return;
+  }
+  if (
+    environments.value.type !== "ObjectExpression" ||
+    hasAmbiguousPropertyAfter(config, environments)
+  ) {
+    throw new Error(
+      'The Vite config environments option must be a static object for vinext init to configure the Pages Router output at "dist/server".',
+    );
+  }
+  const environmentsObject = environments.value as AstObject;
+  const environment = findUniqueProperty(environmentsObject, environmentName);
+  if (!environment) {
+    if (hasAmbiguousProperty(environmentsObject)) {
+      throw new Error(
+        "The Vite config environments option uses spreads or computed properties, so vinext init cannot safely add the Pages Router environment output directory.",
+      );
+    }
+    insertObjectProperty(
+      output,
+      environmentsObject,
+      `    ${environmentProperty}: {\n      build: { outDir: "dist/server" },\n    },`,
+      code,
+    );
+    return;
+  }
+  if (
+    environment.value.type !== "ObjectExpression" ||
+    hasAmbiguousPropertyAfter(environmentsObject, environment)
+  ) {
+    throw new Error(
+      `The Vite config environments.${environmentName} option must be a static object for vinext init to configure the Pages Router output at "dist/server".`,
+    );
+  }
+  const environmentObject = environment.value as AstObject;
+  const build = findUniqueProperty(environmentObject, "build");
+  if (!build) {
+    if (hasAmbiguousProperty(environmentObject)) {
+      throw new Error(
+        `The Vite config environments.${environmentName} option uses spreads or computed properties, so vinext init cannot safely add its build output directory.`,
+      );
+    }
+    insertObjectProperty(
+      output,
+      environmentObject,
+      '      build: { outDir: "dist/server" },',
+      code,
+    );
+    return;
+  }
+  if (
+    build.value.type !== "ObjectExpression" ||
+    hasAmbiguousPropertyAfter(environmentObject, build)
+  ) {
+    throw new Error(
+      `The Vite config environments.${environmentName}.build option must be a static object for vinext init to configure the Pages Router output at "dist/server".`,
+    );
+  }
+  const buildObject = build.value as AstObject;
+  const outDir = findUniqueProperty(buildObject, "outDir");
+  if (!outDir) {
+    insertObjectProperty(output, buildObject, '        outDir: "dist/server",', code);
+    return;
+  }
+  if (
+    hasAmbiguousPropertyAfter(buildObject, outDir) ||
+    outDir.value.type !== "Literal" ||
+    outDir.value.value !== "dist/server"
+  ) {
+    throw new Error(
+      `The Vite config environments.${environmentName}.build.outDir must be "dist/server" so the scaffolded Cloudflare commands target the emitted Worker config.`,
+    );
+  }
+}
+
 function findPluginCall(
   config: AstObject,
   binding: string,
@@ -1443,6 +1773,9 @@ export function updateViteConfigForCloudflare(
     cache?: CloudflareInitOptions;
     imagesBinding?: string;
     prerender?: boolean;
+    pagesRouterEnvironmentName?: string;
+    pagesRouterProjectEnvironmentName?: string;
+    root?: string;
   },
 ): string {
   const program = parseViteConfig(filePath, code);
@@ -1576,6 +1909,16 @@ export function updateViteConfigForCloudflare(
     code,
   );
   ensureCloudflareViteEnvironment(output, config, cloudflareBinding, options.isAppRouter, code);
+  ensurePagesRouterCloudflareOutputDirectory(
+    output,
+    config,
+    cloudflareBinding,
+    options.isAppRouter,
+    options.pagesRouterEnvironmentName ?? "server",
+    options.pagesRouterProjectEnvironmentName ?? options.pagesRouterEnvironmentName ?? "server",
+    options.root ?? path.dirname(path.resolve(filePath)),
+    code,
+  );
   if (existingVinextCall) {
     if (
       existingVinextCall.arguments.length === 0 &&

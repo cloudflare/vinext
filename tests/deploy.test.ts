@@ -2083,6 +2083,8 @@ describe("generatePagesRouterViteConfig", () => {
     expect(content).toContain('from "@cloudflare/vite-plugin"');
     expect(content).toContain("vinext({");
     expect(content).toContain("cloudflare()");
+    expect(content).toContain('"server": {');
+    expect(content).toContain('build: { outDir: "dist/server" }');
     // Should NOT include RSC plugin
     expect(content).not.toContain("plugin-rsc");
   });
@@ -2822,6 +2824,8 @@ describe("generatePagesRouterViteConfig — with project info", () => {
     const config = generatePagesRouterViteConfig();
     expect(config).toContain("vinext({");
     expect(config).toContain("cloudflare()");
+    expect(config).toContain('"server": {');
+    expect(config).toContain('build: { outDir: "dist/server" }');
     expect(config).not.toContain("resolve:");
   });
 });

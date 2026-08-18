@@ -550,6 +550,7 @@ describe("init — basic functionality", () => {
 
     expect(result.generatedPlatformFiles).toEqual(["wrangler.jsonc"]);
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
+    expect(readFile(tmpDir, "vite.config.ts")).toContain('build: { outDir: "dist/server" }');
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
       main: "vinext/server/fetch-handler",
     });
