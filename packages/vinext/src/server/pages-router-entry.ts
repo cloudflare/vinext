@@ -27,6 +27,7 @@ import {
 } from "./image-optimization.js";
 import type { ImageConfig } from "./image-optimization.js";
 import {
+  applyCloudflareCountryHeader,
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
@@ -149,6 +150,7 @@ async function handleRequest(
     const filteredHeaders = ctx.isInternalPagesRevalidation
       ? new Headers(request.headers)
       : filterInternalHeaders(request.headers);
+    applyCloudflareCountryHeader(request, filteredHeaders);
     filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
     request = cloneRequestWithHeaders(request, filteredHeaders);
 

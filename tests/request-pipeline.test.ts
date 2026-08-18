@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vite-plus/test";
 import {
+  applyCloudflareCountryHeader,
   canonicalizeRequestPathname,
   canonicalizeRequestUrlPathname,
   cloneRequestWithHeaders,
@@ -949,6 +950,49 @@ describe("filterInternalHeaders", () => {
     const headers = new Headers();
     const result = filterInternalHeaders(headers);
     expect([...result.keys()]).toEqual([]);
+  });
+});
+
+describe("applyCloudflareCountryHeader", () => {
+  function requestWithCf(country: unknown): Request {
+    const request = new Request("https://example.com");
+    Object.defineProperty(request, "cf", {
+      configurable: true,
+      value: { country },
+    });
+    return request;
+  }
+
+  it("exposes request.cf.country to Next application headers", () => {
+    const headers = new Headers();
+
+    applyCloudflareCountryHeader(requestWithCf("AU"), headers);
+
+    expect(headers.get("cf-ipcountry")).toBe("AU");
+  });
+
+  it("uses trusted request.cf.country over a conflicting incoming header", () => {
+    const headers = new Headers({ "cf-ipcountry": "US" });
+
+    applyCloudflareCountryHeader(requestWithCf("AU"), headers);
+
+    expect(headers.get("cf-ipcountry")).toBe("AU");
+  });
+
+  it("keeps the incoming header when Cloudflare country metadata is unavailable", () => {
+    const headers = new Headers({ "cf-ipcountry": "GB" });
+
+    applyCloudflareCountryHeader(new Request("https://example.com"), headers);
+
+    expect(headers.get("cf-ipcountry")).toBe("GB");
+  });
+
+  it("ignores malformed Cloudflare country metadata", () => {
+    const headers = new Headers();
+
+    applyCloudflareCountryHeader(requestWithCf(null), headers);
+
+    expect(headers.has("cf-ipcountry")).toBe(false);
   });
 });
 

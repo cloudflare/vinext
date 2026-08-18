@@ -172,6 +172,7 @@ jobs:
           vp exec playwright test
           tests/e2e/cloudflare-workers/web-worker.spec.ts
           tests/e2e/cloudflare-workers/optimistic-search-navigation.spec.ts
+          tests/e2e/cloudflare-workers/provider-region.spec.ts
 
   comment:
     name: Comment Preview URLs

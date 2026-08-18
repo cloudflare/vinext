@@ -545,6 +545,24 @@ function getRequestCf(request: Request): unknown {
 }
 
 /**
+ * Expose the trusted Workers country metadata through the request-header
+ * surface used by Next applications. `request.cf.country` is available on
+ * Workers even when the optional CF-IPCountry transform is not enabled.
+ *
+ * The platform value wins over an existing header so userland always observes
+ * the country attached by Cloudflare, not a conflicting client-supplied value.
+ */
+export function applyCloudflareCountryHeader(request: Request, headers: Headers): void {
+  const cf = getRequestCf(request);
+  if (typeof cf !== "object" || cf === null) return;
+
+  const country = Reflect.get(cf, "country");
+  if (typeof country === "string" && country.length > 0) {
+    headers.set("cf-ipcountry", country);
+  }
+}
+
+/**
  * Re-attach the Workers-specific `cf` metadata from `source` onto a rebuilt
  * Request. `new Request()` never copies it, and middleware/authorization code
  * can key off `request.cf` (geo checks, bot scores), so every reconstruction

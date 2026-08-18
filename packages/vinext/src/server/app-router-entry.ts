@@ -45,6 +45,7 @@ import {
   resolveStaticAssetSignal,
 } from "./worker-utils.js";
 import {
+  applyCloudflareCountryHeader,
   cloneRequestWithHeaders,
   filterInternalHeaders,
   isOpenRedirectShaped,
@@ -160,6 +161,7 @@ async function handleRequest(
     const filteredHeaders = ctx.isInternalPagesRevalidation
       ? new Headers(request.headers)
       : filterInternalHeaders(request.headers);
+    applyCloudflareCountryHeader(request, filteredHeaders);
     filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
     const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
       trustedPrerenderRouteParams,
