@@ -52,6 +52,30 @@ type ImportMetaUrlCacheEntry = {
   results: Map<ImportMetaUrlEnvironment, { value: RewriteResult | null }>;
 };
 
+export function createDynamicImportUrlPlugin(): Plugin {
+  return {
+    name: "vinext:dynamic-import-url",
+    enforce: "pre",
+    transform: {
+      filter: {
+        id: {
+          include: SCRIPT_MODULE_ID_RE,
+          exclude: VIRTUAL_MODULE_ID_RE,
+        },
+        // Keep ordinary dynamic imports off the AST path while admitting a
+        // comment at every token boundary in the literal URL form. A slash at
+        // one of those boundaries is intentionally only a coarse signal; the
+        // AST transform below remains the authority on whether it is a comment
+        // and whether the complete expression is eligible.
+        code: /\bimport\s*\/|\bimport\s*\(\s*\/|\bimport\s*\(\s*new\s*\/|\bimport\s*\(\s*new\s+URL\s*(?:\/|\()/,
+      },
+      handler(code, id) {
+        return rewriteDynamicImportUrls(code, id);
+      },
+    },
+  };
+}
+
 export function createImportMetaUrlPlugin(options: { getRoot: () => string | undefined }): Plugin {
   let rootPaths: RootPaths | undefined;
   let outputDirs: string[] = [];
@@ -138,6 +162,33 @@ export function rewriteImportMetaUrl(
   );
 }
 
+// Test-only entry point. Delegates to the same pre-transform used by the
+// production plugin so tests cover the ordering-sensitive Vite integration.
+export function rewriteDynamicImportUrls(code: string, id: string): RewriteResult | null {
+  const lang = scriptParserLanguage(id);
+  if (lang === null) return null;
+
+  let ast: unknown;
+  try {
+    ast = parseAst(code, { lang });
+  } catch {
+    return null;
+  }
+
+  const dynamicImports = collectDynamicImportUrlSpecifiers(ast);
+  if (dynamicImports.length === 0) return null;
+
+  const output = new MagicString(code);
+  for (const dynamicImport of dynamicImports) {
+    output.overwrite(
+      dynamicImport.start,
+      dynamicImport.end,
+      JSON.stringify(dynamicImport.specifier),
+    );
+  }
+  return magicStringTransformResult(output);
+}
+
 // Test-only entry point. Mirrors the plugin's server eligibility checks and
 // then delegates to the same transform the plugin runs, so tests exercise the
 // production code path rather than a parallel implementation.
@@ -196,6 +247,66 @@ function rewriteCanonicalSourceIdentity(
 
   if (!changed) return null;
   return magicStringTransformResult(output);
+}
+
+type DynamicImportUrlSpecifier = AstRange & { specifier: string };
+
+// A literal relative module URL has the same ESM identity as its relative
+// specifier:
+//   import(new URL("./style.css", import.meta.url).href)
+//   import("./style.css")
+//
+// Normalizing this before bundling lets Vite resolve and emit the dependency.
+// Otherwise its dynamic-import fallback receives a runtime URL string and
+// throws "Cannot find module as expression is too dynamic" during prerender.
+function collectDynamicImportUrlSpecifiers(ast: unknown): DynamicImportUrlSpecifier[] {
+  const specifiers: DynamicImportUrlSpecifier[] = [];
+
+  function visit(value: unknown): void {
+    if (!isAstRecord(value)) return;
+
+    const source = isAstRecord(value.source) ? value.source : null;
+    if (value.type === "ImportExpression" && hasRange(source)) {
+      const specifier = getDynamicImportUrlSpecifier(source);
+      if (specifier !== null) {
+        specifiers.push({ ...source, specifier });
+        return;
+      }
+    }
+
+    forEachAstChild(value, visit);
+  }
+
+  visit(ast);
+  return specifiers;
+}
+
+function getDynamicImportUrlSpecifier(source: unknown): string | null {
+  if (
+    !isAstRecord(source) ||
+    source.type !== "MemberExpression" ||
+    source.computed === true ||
+    !isIdentifierNamed(source.property, "href") ||
+    !isAstRecord(source.object) ||
+    !isNewUrlExpression(source.object)
+  ) {
+    return null;
+  }
+
+  const args = nodeArray(source.object.arguments);
+  const specifier = args[0];
+  if (
+    args.length !== 2 ||
+    !isAstRecord(specifier) ||
+    specifier.type !== "Literal" ||
+    typeof specifier.value !== "string" ||
+    (!specifier.value.startsWith("./") && !specifier.value.startsWith("../")) ||
+    !isImportMetaUrlOrChainedNode(args[1])
+  ) {
+    return null;
+  }
+
+  return specifier.value;
 }
 
 function cleanModuleId(id: string): string {

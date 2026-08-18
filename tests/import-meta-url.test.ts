@@ -2,15 +2,48 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { build, type Plugin } from "vite";
 import {
+  createDynamicImportUrlPlugin,
   createImportMetaUrlPlugin,
+  rewriteDynamicImportUrls,
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
+import { createIgnoreDynamicRequestsPlugin } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
 import { toSlash } from "pathslash";
 
 function unwrapHook(hook: any): Function {
   return typeof hook === "function" ? hook : hook?.handler;
+}
+
+function countTransformHandlerCalls(plugin: Plugin): () => number {
+  const transform = plugin.transform;
+  if (!transform || typeof transform === "function") {
+    throw new Error("Expected an object transform hook");
+  }
+  const handler = transform.handler;
+  let calls = 0;
+  plugin.transform = {
+    ...transform,
+    handler(this: unknown, ...args: any[]) {
+      calls++;
+      return Reflect.apply(handler, this, args);
+    },
+  };
+  return () => calls;
+}
+
+function getTransformCodeFilter(plugin: Plugin): RegExp {
+  const transform = plugin.transform;
+  if (
+    !transform ||
+    typeof transform === "function" ||
+    !(transform.filter?.code instanceof RegExp)
+  ) {
+    throw new Error("Expected a RegExp transform code filter");
+  }
+  return transform.filter.code;
 }
 
 describe("vinext:import-meta-url plugin", () => {
@@ -97,6 +130,208 @@ describe("vinext:import-meta-url plugin", () => {
     );
 
     expect(result).toBeNull();
+  });
+
+  // Ported from Next.js:
+  // test/e2e/react-version/pages/api/pages-api-edge-url-dep.js
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/react-version/pages/api/pages-api-edge-url-dep.js
+  it("normalizes literal module URLs used as dynamic import specifiers", () => {
+    const result = rewriteDynamicImportUrls(
+      `const dependency = import(new URL("./style.css", import.meta.url).href);\n`,
+      "/ROOT/pages/api/url-dependency.js",
+    );
+
+    expect(result?.code).toContain(`import("./style.css")`);
+    expect(result?.code).not.toContain("new URL");
+  });
+
+  it.each([
+    ["ts", `import type { NextApiRequest } from "next";`],
+    ["tsx", `import type { ReactNode } from "react";\nconst element = <div />;`],
+  ])("normalizes module URL imports in raw %s source", (extension, prefix) => {
+    const result = rewriteDynamicImportUrls(
+      `${prefix}\nvoid import(new URL("./style.css", import.meta.url).href);\n`,
+      `/ROOT/pages/api/url-dependency.${extension}`,
+    );
+
+    expect(result?.code).toContain(`import("./style.css")`);
+  });
+
+  it("preserves non-literal and absolute dynamic import URLs", () => {
+    const result = rewriteDynamicImportUrls(
+      [
+        `const relative = "./style.css";`,
+        `const dynamic = import(new URL(relative, import.meta.url).href);`,
+        `const absolute = import(new URL("/style.css", import.meta.url).href);`,
+      ].join("\n"),
+      "/ROOT/pages/api/url-dependency.js",
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it.each([
+    [
+      "block comments",
+      `import(/* webpackMode: ** "eager" ** */ new URL("./dependency.js", import.meta.url).href)`,
+      "block",
+    ],
+    [
+      "line comments ending in LF",
+      `import(// webpackMode: eager\nnew URL("./dependency.js", import.meta.url).href)`,
+      "line-lf",
+    ],
+    [
+      "line comments ending in CRLF",
+      `import(// webpackMode: eager\r\nnew URL("./dependency.js", import.meta.url).href)`,
+      "line-crlf",
+    ],
+    [
+      "line comments ending in CR",
+      `import(// webpackMode: eager\rnew URL("./dependency.js", import.meta.url).href)`,
+      "line-cr",
+    ],
+    [
+      "line comments ending in U+2028",
+      `import(// webpackMode: eager\u2028new URL("./dependency.js", import.meta.url).href)`,
+      "line-u2028",
+    ],
+    [
+      "line comments ending in U+2029",
+      `import(// webpackMode: eager\u2029new URL("./dependency.js", import.meta.url).href)`,
+      "line-u2029",
+    ],
+    [
+      "mixed repeated comments",
+      `import(/* first */ // second\u2028/* third **/ new URL("./dependency.js", import.meta.url).href)`,
+      "mixed-comments",
+    ],
+    [
+      "a comment between import and its parenthesis",
+      `import /* before call */ (new URL("./dependency.js", import.meta.url).href)`,
+      "before-call",
+    ],
+    [
+      "a comment between new and URL",
+      `import(new /* before URL */ URL("./dependency.js", import.meta.url).href)`,
+      "before-url",
+    ],
+    [
+      "a comment between URL and its parenthesis",
+      `import(new URL /* before arguments */ ("./dependency.js", import.meta.url).href)`,
+      "before-arguments",
+    ],
+  ])(
+    "normalizes module URL imports with %s in dependencies before the dynamic-request fallback",
+    async (_description, dynamicImport, suffix) => {
+      const packageRoot = path.join(realRoot, "node_modules", `url-dependency-${suffix}`);
+      const packageEntry = path.join(packageRoot, "index.js");
+      await fsp.mkdir(packageRoot, { recursive: true });
+      await fsp.writeFile(
+        path.join(packageRoot, "package.json"),
+        JSON.stringify({ name: "url-dependency", type: "module" }),
+      );
+      await fsp.writeFile(packageEntry, `export const dependency = ${dynamicImport};`);
+      await fsp.writeFile(path.join(packageRoot, "dependency.js"), `export default "loaded";`);
+
+      const result = await build({
+        root: realRoot,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [createDynamicImportUrlPlugin(), createIgnoreDynamicRequestsPlugin()],
+        build: { write: false, ssr: packageEntry },
+      });
+      if (Array.isArray(result) || !("output" in result)) {
+        throw new Error("Expected a single build output");
+      }
+      const output = result.output
+        .filter((entry) => entry.type === "chunk")
+        .map((entry) => entry.code)
+        .join("\n");
+
+      expect(output).toContain("loaded");
+      expect(output).not.toContain("Cannot find module as expression is too dynamic");
+    },
+  );
+
+  it("does not invoke the URL import transform for ordinary dynamic imports", async () => {
+    const packageRoot = path.join(realRoot, "node_modules", "ordinary-dynamic-import");
+    const packageEntry = path.join(packageRoot, "index.js");
+    await fsp.mkdir(packageRoot, { recursive: true });
+    await fsp.writeFile(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "ordinary-dynamic-import", type: "module" }),
+    );
+    await fsp.writeFile(
+      packageEntry,
+      [
+        `export const dependency = import("./dependency.js");`,
+        `export const unrelated = new URL("./dependency.js", import.meta.url);`,
+      ].join("\n"),
+    );
+    await fsp.writeFile(path.join(packageRoot, "dependency.js"), `export default "loaded";`);
+
+    const dynamicImportUrlPlugin = createDynamicImportUrlPlugin();
+    const getTransformCalls = countTransformHandlerCalls(dynamicImportUrlPlugin);
+    const result = await build({
+      root: realRoot,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [dynamicImportUrlPlugin, createIgnoreDynamicRequestsPlugin()],
+      build: { write: false, ssr: packageEntry },
+    });
+    if (Array.isArray(result) || !("output" in result)) {
+      throw new Error("Expected a single build output");
+    }
+    const output = result.output
+      .filter((entry) => entry.type === "chunk")
+      .map((entry) => entry.code)
+      .join("\n");
+
+    expect(output).toContain("loaded");
+    expect(getTransformCalls()).toBe(0);
+  });
+
+  it("keeps adversarial comment candidates on the bounded prefix-filter path", () => {
+    const codeFilter = getTransformCodeFilter(createDynamicImportUrlPlugin());
+
+    expect(codeFilter.test(`import(/${"\r\n//".repeat(500_000)}`)).toBe(true);
+    expect(codeFilter.test(`import("${"x".repeat(2_000_000)}`)).toBe(false);
+  });
+
+  it("only parses commented ordinary dynamic imports for AST validation", async () => {
+    const packageRoot = path.join(realRoot, "node_modules", "commented-dynamic-import");
+    const packageEntry = path.join(packageRoot, "index.js");
+    await fsp.mkdir(packageRoot, { recursive: true });
+    await fsp.writeFile(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "commented-dynamic-import", type: "module" }),
+    );
+    await fsp.writeFile(
+      packageEntry,
+      `export const dependency = import(/* webpackChunkName: "dependency" */ "./dependency.js");`,
+    );
+    await fsp.writeFile(path.join(packageRoot, "dependency.js"), `export default "loaded";`);
+
+    const dynamicImportUrlPlugin = createDynamicImportUrlPlugin();
+    const getTransformCalls = countTransformHandlerCalls(dynamicImportUrlPlugin);
+    const result = await build({
+      root: realRoot,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [dynamicImportUrlPlugin, createIgnoreDynamicRequestsPlugin()],
+      build: { write: false, ssr: packageEntry },
+    });
+    if (Array.isArray(result) || !("output" in result)) {
+      throw new Error("Expected a single build output");
+    }
+    const output = result.output
+      .filter((entry) => entry.type === "chunk")
+      .map((entry) => entry.code)
+      .join("\n");
+
+    expect(output).toContain("loaded");
+    expect(getTransformCalls()).toBe(1);
   });
 
   it("rewrites optional chained import.meta.url reads", () => {
