@@ -1249,6 +1249,9 @@ importers:
       react-server-dom-webpack:
         specifier: 'catalog:'
         version: 19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+      runtime-condition-library:
+        specifier: file:./__test_packages__/runtime-condition-library
+        version: file:tests/fixtures/cf-app-basic/__test_packages__/runtime-condition-library
       vinext:
         specifier: workspace:*
         version: link:../../../packages/vinext
@@ -6188,6 +6191,9 @@ packages:
 
   fake-css-module-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-css-module-lib, type: directory}
+
+  runtime-condition-library@file:tests/fixtures/cf-app-basic/__test_packages__/runtime-condition-library:
+    resolution: {directory: tests/fixtures/cf-app-basic/__test_packages__/runtime-condition-library, type: directory}
 
   fast-glob@3.3.3:
     resolution: {integrity: sha512-7MptL8U0cqcFdzIzwOTHoilX9x5BrNqye7Z/LuC7kCMRio1EMSyqRK3BEAUD7sXRq4iT4AzTVuZdhgQ2TCvYLg==}
@@ -11870,6 +11876,8 @@ snapshots:
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib: {}
 
   fake-css-module-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib: {}
+
+  runtime-condition-library@file:tests/fixtures/cf-app-basic/__test_packages__/runtime-condition-library: {}
 
   fast-glob@3.3.3:
     dependencies:

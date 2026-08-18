@@ -45,11 +45,11 @@ const NEXT_BUNDLER_SPECIFIC = {
   reason: "Exercises a Next.js compiler surface rather than Vite or Rolldown behavior.",
 } as const satisfies ScopedSuiteSupport;
 
-const VITE_RUNTIME_CONDITIONS = {
+const NEXT_RUNTIME_CONDITION_LABELS = {
   status: "needs-vite-equivalent",
-  feature: "React and runtime export conditions",
+  feature: "Runtime export conditions across deployment environments",
   reason:
-    "The capability needs Vite, RSC, and Workers coverage; exact edge-light assertions are Next.js-specific.",
+    "The exact suite remains 2 of 12 passing because it asserts Next.js's per-route node/edge compiler split and private edge-light condition. Vinext instead selects node in the Node adapter, worker/workerd in Cloudflare Workers, and browser in the client; the equivalent Worker test passes across middleware, Pages and App APIs, Pages and App rendering, client hydration, and server actions in tests/e2e/cloudflare-workers/route-handler-draft-cache.spec.ts.",
 } as const satisfies ScopedSuiteSupport;
 
 export const SUITE_SUPPORT_POLICY = {
@@ -119,7 +119,7 @@ export const SUITE_SUPPORT_POLICY = {
       "The exact Next.js v16.2.6 suite retains a suite-wide beforePageLoad hook requiring a deployment token on every /_next/ request. tests/e2e/nextjs-worker/worker.spec.ts provides the Vite, Rolldown, and Cloudflare plugin equivalent while scoping deployment-token assertions to the isolated worker graph.",
   },
   "test/e2e/babel/index.test.ts": NEXT_BUNDLER_SPECIFIC,
-  "test/e2e/import-conditions/import-conditions.test.ts": VITE_RUNTIME_CONDITIONS,
+  "test/e2e/import-conditions/import-conditions.test.ts": NEXT_RUNTIME_CONDITION_LABELS,
 } as const satisfies Record<string, ScopedSuiteSupport>;
 
 /** Feature labels for the supported failures classified in run 29551314872. */

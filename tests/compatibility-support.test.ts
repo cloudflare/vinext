@@ -65,6 +65,20 @@ describe("compatibility suite support policy", () => {
       expect(getSuiteSupport(suite).reason).toBeTruthy();
     }
   });
+
+  it("routes Next.js compiler condition labels to Worker-equivalent coverage", () => {
+    const support = getSuiteSupport("test/e2e/import-conditions/import-conditions.test.ts");
+
+    expect(support).toMatchObject({
+      status: "needs-vite-equivalent",
+      feature: "Runtime export conditions across deployment environments",
+    });
+    expect(support.reason).toContain(
+      "tests/e2e/cloudflare-workers/route-handler-draft-cache.spec.ts",
+    );
+    expect(support.reason).toContain("2 of 12 passing");
+    expect(support.reason).toContain("the equivalent Worker test passes across middleware");
+  });
 });
 
 describe("compatibility rate buckets", () => {
