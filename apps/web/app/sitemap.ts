@@ -9,12 +9,12 @@ export default function sitemap(): MetadataRoute.Sitemap {
     },
     {
       url: "https://vinext.dev/compatibility",
-      changeFrequency: "weekly",
+      changeFrequency: "daily",
       priority: 0.8,
     },
     {
       url: "https://vinext.dev/benchmarks",
-      changeFrequency: "monthly",
+      changeFrequency: "daily",
       priority: 0.8,
     },
   ];
