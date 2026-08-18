@@ -151,9 +151,11 @@ type RenderAppPageLifecycleOptions = {
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
     interceptionContext?: string | null,
+    interceptionId?: string | null,
   ) => string;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
+  interceptionId?: string | null;
   layoutCount: number;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   middlewareContext: AppPageMiddlewareContext;
@@ -820,7 +822,8 @@ export async function renderAppPageLifecycle(
     // When skip transport is enabled, omit cacheState because the response is a
     // per-client payload, not a shared-cache MISS/HIT artifact. The absence also
     // keeps finalizeAppPageRscCacheResponse from overwriting no-store.
-    const rscResponsePolicy = shouldBypassRscCacheForSkipTransport
+    const shouldBypassRscCache = shouldBypassRscCacheForSkipTransport;
+    const rscResponsePolicy = shouldBypassRscCache
       ? { cacheControl: NO_STORE_CACHE_CONTROL }
       : resolveAppPageRscResponsePolicy({
           dynamicUsedDuringBuild,
@@ -832,7 +835,7 @@ export async function renderAppPageLifecycle(
           expireSeconds,
           revalidateSeconds,
         });
-    if (shouldBypassRscCacheForSkipTransport) {
+    if (shouldBypassRscCache) {
       options.isrDebug?.("RSC cache write skipped (skip transport payload)", options.cleanPathname);
     }
     const shouldEmitDynamicStaleTime =
@@ -955,6 +958,7 @@ export async function renderAppPageLifecycle(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
+      interceptionId: options.interceptionId,
       mountedSlotsHeader: options.mountedSlotsHeader,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       renderMode: options.renderMode,
@@ -1268,6 +1272,7 @@ export async function renderAppPageLifecycle(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
+      interceptionId: options.interceptionId,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
       expireSeconds,

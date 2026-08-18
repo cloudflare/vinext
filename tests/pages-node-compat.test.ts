@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { once } from "node:events";
-import {
-  createPagesReqRes,
-  getPagesPreviewData,
-} from "../packages/vinext/src/server/pages-node-compat.js";
+import { createPagesReqRes } from "../packages/vinext/src/server/pages-node-compat.js";
 import type { NextApiHandler, NextApiRequest, NextApiResponse, PreviewData } from "next";
 
 declare module "next" {
@@ -162,11 +159,15 @@ describe("Pages Node compat response", () => {
     if (!Array.isArray(cookies)) throw new Error("expected Set-Cookie array");
     const cookieHeader = cookies.map((value) => value.split(";", 1)[0]).join("; ");
 
-    const request = new Request("https://example.test/preview", {
-      headers: { cookie: cookieHeader },
+    const { req } = createPagesReqRes({
+      body: undefined,
+      query: {},
+      request: new Request("https://example.test/preview", {
+        headers: { cookie: cookieHeader },
+      }),
+      url: "/preview",
     });
-    expect(getPagesPreviewData(request)).toEqual({ hello: "world" });
-    expect(getPagesPreviewData(request, { isOnDemandRevalidate: true })).toBe(false);
+    expect(req.previewData).toEqual({ hello: "world" });
   });
 
   it("accepts a bypass-only draft mode cookie with empty preview data", () => {
@@ -219,10 +220,15 @@ describe("Pages Node compat response", () => {
       )
       .join("; ");
 
-    const request = new Request("https://example.test/preview", {
-      headers: { cookie: cookieHeader },
+    const { req } = createPagesReqRes({
+      body: undefined,
+      query: {},
+      request: new Request("https://example.test/preview", {
+        headers: { cookie: cookieHeader },
+      }),
+      url: "/preview",
     });
-    expect(getPagesPreviewData(request)).toBe(false);
+    expect(req.previewData).toBe(false);
   });
 
   it("exposes preview state on API requests and clears both cookies", async () => {

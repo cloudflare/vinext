@@ -1,8 +1,7 @@
 /**
  * ISR cache unit tests.
  *
- * Tests cache key generation, normalization, hash truncation,
- * revalidate duration tracking with LRU eviction, background
+ * Tests cache key generation, normalization, hash truncation, background
  * regeneration deduplication, and cache value builders.
  *
  * These complement the integration-level ISR tests in features.test.ts
@@ -20,8 +19,6 @@ import {
   buildPagesCacheValue,
   buildAppPageCacheValue,
   normalizeMountedSlotsHeader,
-  setRevalidateDuration,
-  getRevalidateDuration,
   triggerBackgroundRegeneration,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
@@ -269,6 +266,28 @@ describe("App Router ISR cache key primitives", () => {
     expect(fromFeed).toMatch(/^app:\/photos\/42:rsc:source:[a-z0-9]+:slots:[a-z0-9]+$/);
   });
 
+  it("keys supplemental RSC variants by their verified interception id", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    const modal = appIsrRscKey(
+      "/photos/42",
+      null,
+      undefined,
+      "/feed",
+      "interception:slot:modal:/feed:/feed->/photos/:id",
+    );
+    const drawer = appIsrRscKey(
+      "/photos/42",
+      null,
+      undefined,
+      "/feed",
+      "interception:slot:drawer:/feed:/feed->/photos/:id",
+    );
+
+    expect(modal).not.toBe(drawer);
+    expect(modal).toMatch(/^app:\/photos\/42:rsc:source:[a-z0-9]+:selector:[a-z0-9]+$/);
+  });
+
   it("normalizes source context before keying intercepted RSC variants", () => {
     delete process.env.__VINEXT_BUILD_ID;
 
@@ -354,30 +373,6 @@ describe("buildAppPageCacheValue", () => {
   it("includes status when provided", () => {
     const value = buildAppPageCacheValue("<html>app</html>", undefined, 200);
     expect(value.status).toBe(200);
-  });
-});
-
-// ─── Revalidate duration tracking ───────────────────────────────────────
-
-describe("setRevalidateDuration / getRevalidateDuration", () => {
-  it("stores and retrieves a duration", () => {
-    setRevalidateDuration("test-key-1", 60);
-    expect(getRevalidateDuration("test-key-1")).toBe(60);
-  });
-
-  it("returns undefined for unknown keys", () => {
-    expect(getRevalidateDuration("nonexistent-key-xyz")).toBeUndefined();
-  });
-
-  it("overwrites previous values", () => {
-    setRevalidateDuration("test-key-2", 60);
-    setRevalidateDuration("test-key-2", 120);
-    expect(getRevalidateDuration("test-key-2")).toBe(120);
-  });
-
-  it("handles zero duration", () => {
-    setRevalidateDuration("test-key-3", 0);
-    expect(getRevalidateDuration("test-key-3")).toBe(0);
   });
 });
 
