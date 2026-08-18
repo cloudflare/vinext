@@ -2,7 +2,7 @@ import type { RouteManifest, RouteManifestInterception } from "../routing/app-ro
 import { isUnknownRecord } from "../utils/record.js";
 import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
 
-export type NavigationRuntimeSnapshot = {
+type NavigationRuntimeSnapshot = {
   pathname: string;
   searchParams: [string, string][];
 };
