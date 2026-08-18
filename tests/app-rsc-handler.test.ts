@@ -818,7 +818,6 @@ describe("createAppRscHandler", () => {
           source: "/photos/:path*",
           headers: [
             { key: "Cache-Control", value: "public, max-age=3600" },
-            { key: "CDN-Cache-Control", value: "public, max-age=3600" },
             { key: "X-Security-Test", value: "preserved" },
           ],
         },
@@ -841,7 +840,6 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
-    expect(response.headers.get("cdn-cache-control")).toBeNull();
     expect(response.headers.get("x-security-test")).toBe("preserved");
     expect(matchInterceptRoute).not.toHaveBeenCalled();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
@@ -884,10 +882,7 @@ describe("createAppRscHandler", () => {
       configHeaders: [
         {
           source: "/photos/:path*",
-          headers: [
-            { key: "Cache-Control", value: "public, max-age=3600" },
-            { key: "CDN-Cache-Control", value: "public, max-age=3600" },
-          ],
+          headers: [{ key: "Cache-Control", value: "public, max-age=3600" }],
         },
       ],
       dispatchMatchedPage,
@@ -914,7 +909,6 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
-    expect(response.headers.get("cdn-cache-control")).toBeNull();
     expect(matchInterceptRoute).not.toHaveBeenCalled();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
@@ -953,12 +947,7 @@ describe("createAppRscHandler", () => {
   it("forces malformed interception contexts paired with an id to no-store", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page"));
     const handler = createHandler({
-      configHeaders: [
-        {
-          source: "/photos/:path*",
-          headers: [{ key: "CDN-Cache-Control", value: "public, max-age=3600" }],
-        },
-      ],
+      configHeaders: [],
       dispatchMatchedPage,
       hasInterceptionId: () => true,
       matchRoute: (pathname: string) =>
@@ -981,7 +970,6 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(400);
     expect(response.headers.get("cache-control")).toContain("no-store");
-    expect(response.headers.get("cdn-cache-control")).toBeNull();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 

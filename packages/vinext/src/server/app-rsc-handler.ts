@@ -565,12 +565,6 @@ function requestWithoutRscSuffix(request: Request): Request {
 function markInvalidInterceptionIdResponseUncacheable(response: Response): Response {
   const applyNoStore = (headers: Headers): void => {
     applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
-    // These standard/provider-specific shared-cache controls can be supplied by
-    // next.config headers even when the active origin adapter does not own them.
-    // Never let them override this security boundary downstream.
-    headers.delete("CDN-Cache-Control");
-    headers.delete("Cloudflare-CDN-Cache-Control");
-    headers.delete("Cache-Tag");
   };
   let markedResponse = response;
   try {
