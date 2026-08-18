@@ -29,9 +29,11 @@ import { canonicalizeFilePath, isPathInsideOrEqual, stripViteModuleQuery } from 
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
 import {
   collectBindingNames,
+  directivePrologueEnd,
   forEachAstChild,
   hasRange,
   isAstRecord,
+  mayContainDynamicImport,
   nodeArray,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
@@ -420,6 +422,7 @@ export function rewriteDynamicImportUrls(
   code: string,
   id: string,
 ): MagicStringTransformResult | null {
+  if (!mayContainDynamicImport(code)) return null;
   return rewriteModuleIdentity(code, { id, normalizeDynamicImportUrls: true });
 }
 
@@ -756,11 +759,12 @@ function rewriteModuleIdentity(
   let changed = false;
 
   for (const rewrite of options.textRewrites ?? []) {
-    output.overwrite(rewrite.start, rewrite.end, rewrite.replacement);
+    if (rewrite.start === rewrite.end) output.appendLeft(rewrite.start, rewrite.replacement);
+    else output.overwrite(rewrite.start, rewrite.end, rewrite.replacement);
     changed = true;
   }
 
-  if (options.normalizeDynamicImportUrls) {
+  if (options.normalizeDynamicImportUrls && mayContainDynamicImport(code)) {
     for (const dynamicImport of collectDynamicImportUrlSpecifiers(ast, code, options.id)) {
       output.overwrite(
         dynamicImport.start,
@@ -784,7 +788,7 @@ function rewriteModuleIdentity(
   if (options.cjsGlobalInitializers) {
     const injected = injectServerCjsGlobals(ast, options.cjsGlobalInitializers);
     if (injected) {
-      output.appendLeft(findDirectivePrologueEnd(ast), `\n${injected}`);
+      output.appendLeft(directivePrologueEnd(ast), `\n${injected}`);
       changed = true;
     }
   }
@@ -1223,35 +1227,4 @@ function isChainExpressionWrappingImportMetaUrl(value: unknown): value is AstRan
     hasRange(value) &&
     isImportMetaUrlNode(value.expression)
   );
-}
-
-function findDirectivePrologueEnd(ast: unknown): number {
-  if (!isAstRecord(ast) || ast.type !== "Program") return 0;
-
-  // A shebang (`#!...`) lives outside ast.body but must stay the first bytes of
-  // the file, so the injection floor starts after it. Inserting at offset 0
-  // would move the shebang off line 1 and produce invalid output.
-  let end = 0;
-  const hashbang = ast.hashbang;
-  const hashbangEnd =
-    typeof hashbang === "object" && hashbang !== null ? Reflect.get(hashbang, "end") : null;
-  if (typeof hashbangEnd === "number") {
-    end = hashbangEnd;
-  }
-
-  for (const statement of nodeArray(ast.body)) {
-    if (
-      !isAstRecord(statement) ||
-      statement.type !== "ExpressionStatement" ||
-      !isAstRecord(statement.expression) ||
-      statement.expression.type !== "Literal" ||
-      typeof statement.expression.value !== "string" ||
-      typeof statement.end !== "number"
-    ) {
-      break;
-    }
-    end = statement.end;
-  }
-
-  return end;
 }

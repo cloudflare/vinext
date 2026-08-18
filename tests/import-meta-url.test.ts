@@ -1073,6 +1073,19 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
     expect(rootReads).toBe(0);
   });
 
+  it("keeps identity-only modules off the client dynamic-import path", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const source = `export const identity = import.meta.url;`;
+
+    expect(
+      unwrapHook(capability.clientOptimizeDepsPlugin.transform).call({}, source, esmDependencyPath),
+    ).toBeNull();
+    expect(rewriteDynamicImportUrls(source, esmDependencyPath)).toBeNull();
+    expectBundledImportMetaUrl(
+      unwrapHook(capability.optimizeDepsPlugin.transform).call({}, source, esmDependencyPath)?.code,
+    );
+  });
+
   it("does not backtrack across repeated comment near-matches", () => {
     const blockDecoy = `import ${"/*x*/".repeat(30)}.metx.url`;
     const lineDecoy = `import ${"//x\r\n".repeat(30)}.metx.url`;

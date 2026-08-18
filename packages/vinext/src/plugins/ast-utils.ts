@@ -222,3 +222,28 @@ export function collectBindingNames(pattern: unknown, target: Set<string>): void
       return;
   }
 }
+
+/** Offset after a module's hashbang and directive prologue. */
+export function directivePrologueEnd(value: unknown): number {
+  const ast = toAstRecord(value);
+  if (ast?.type !== "Program") return 0;
+
+  const hashbang = ast.hashbang;
+  const hashbangEnd =
+    typeof hashbang === "object" && hashbang !== null ? Reflect.get(hashbang, "end") : null;
+  let end = typeof hashbangEnd === "number" ? hashbangEnd : 0;
+
+  for (const statement of nodeArray(ast.body)) {
+    const node = toAstRecord(statement);
+    if (
+      node?.type !== "ExpressionStatement" ||
+      toAstRecord(node.expression)?.type !== "Literal" ||
+      typeof toAstRecord(node.expression)?.value !== "string" ||
+      typeof node.end !== "number"
+    ) {
+      break;
+    }
+    end = node.end;
+  }
+  return end;
+}

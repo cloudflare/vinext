@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Plugin } from "vite";
+import { pathToFileURL } from "node:url";
+import { build, type Plugin } from "vite";
 import { _transformVeryDynamicRequests } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
 import { createImportMetaUrlPlugin } from "../packages/vinext/src/plugins/import-meta-url.js";
 import { createOgInlineFetchAssetsPlugin } from "../packages/vinext/src/plugins/og-assets.js";
@@ -16,6 +17,11 @@ function hookHandler(hook: unknown): (...args: any[]) => any {
 
 function transformHandler(plugin: Plugin): (...args: any[]) => any {
   return hookHandler(plugin.transform);
+}
+
+function fetchInputUrl(input: string | URL | Request | undefined): string {
+  if (input === undefined) throw new Error("Expected fetch to receive an input");
+  return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 }
 
 describe("import-meta asset phase", () => {
@@ -126,12 +132,11 @@ describe("import-meta asset phase", () => {
     const result = await transformHandler(plugin).call(context(), source, routePath);
 
     expect(result.code).toContain(
-      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+      `const url = new URL("../../src/text-file.txt", import.meta.url), __vinext_asset_url = new URL("data:text/plain; charset=utf-8;base64,`,
     );
     expect(result.code).toContain(`const path = url.pathname;`);
     expect(result.code).toContain(`const file = fileURLToPath(url);`);
-    expect(result.code).toContain(`fetch((url.href === new URL(`);
-    expect(result.code).toContain(`? new URL("data:text/plain; charset=utf-8;base64,`);
+    expect(result.code).toContain(`fetch(__vinext_asset_url)`);
   });
 
   it("replaces a direct fetch input in a Node build", async () => {
@@ -169,15 +174,21 @@ describe("import-meta asset phase", () => {
 
   it("passes mutated, escaped, or exported aliases through at runtime", async () => {
     const plugin = await createPlugin(false);
-    for (const use of [`url.pathname = "/other";`, `mutate(url);`, `export { url };`]) {
+    for (const use of [
+      `url.pathname = "/other";`,
+      `mutate(url);`,
+      `target[mutate(url)] = value;`,
+      `for (url.pathname of values) {}`,
+      `for ({ value: url.pathname } of values) {}`,
+      `eval('url.pathname = "/other"');`,
+      `export { url };`,
+    ]) {
       const source = [
         `const url = new URL("../../src/text-file.txt", import.meta.url);`,
         use,
         `fetch(url);`,
       ].join("\n");
-      const result = await transformHandler(plugin).call(context(), source, routePath);
-      expect(result.code).toContain(`url.href === new URL(`);
-      expect(result.code).toContain(`: url`);
+      expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
     }
   });
 
@@ -188,7 +199,7 @@ describe("import-meta asset phase", () => {
       `const url = new URL("../../src/text-file.txt", import.meta.url);`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain(`fetch((url.href === new URL(`);
+    expect(result.code).toContain(`fetch(__vinext_asset_url)`);
   });
 
   it("does not reuse aliases across switch cases", async () => {
@@ -200,6 +211,33 @@ describe("import-meta asset phase", () => {
       `}`,
     ].join("\n");
     expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+  });
+
+  it("tracks side effects in dynamic-import options without rewriting the specifier", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
+      `void import("./noop.js", (asset.href = "data:text/plain,mutated", {}));`,
+      `fetch(asset);`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result?.code ?? source).toContain(`fetch(asset)`);
+    expect(result?.code ?? source).not.toContain("data:text/plain; charset=utf-8;base64,");
+  });
+
+  it("ignores syntax-only identifiers while validating aliases", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `import { url as other } from "./other";`,
+      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+      `type Snapshot = typeof url;`,
+      `const object = { url: other };`,
+      `urlLabel: { break urlLabel; }`,
+      `export { url } from "./other";`,
+      `fetch(url);`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
+    expect(result.code).toContain(`fetch(__vinext_asset_url)`);
   });
 
   it("rewrites the constructor itself for nodeless targets", async () => {
@@ -214,6 +252,13 @@ describe("import-meta asset phase", () => {
     expect(result.code).toContain("data:image/png;base64,");
   });
 
+  it("rewrites nodeless assets in default parameter initializers", async () => {
+    const plugin = await createPlugin(true);
+    const source = `function read(asset = new URL("../../src/text-file.txt", import.meta.url)) { return asset; }`;
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
+  });
+
   it("keeps URL-based dynamic imports in the module graph", async () => {
     const plugin = await createPlugin(true);
     const source = [
@@ -226,6 +271,167 @@ describe("import-meta asset phase", () => {
     expect(result.code).toContain(`import("../../src/text-file.txt")`);
     expect(result.code).toContain("data:image/png;base64,");
     expect(result.code).not.toContain("data:text/plain");
+  });
+
+  it.each([
+    `import(new URL("../../src/text-file.txt", import.meta.url));`,
+    `import(/* @vite-ignore */ new URL("../../src/text-file.txt", import.meta.url));`,
+  ])("never treats a dynamic import specifier as a fetched asset", async (source) => {
+    const plugin = await createPlugin(true);
+    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+  });
+
+  it("constructs the replacement beside the alias before a fetch-time URL shadow", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
+      `function read(URL) { return fetch(asset); }`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain(
+      `const asset = new URL("../../src/text-file.txt", import.meta.url), __vinext_asset_url = new URL("data:text/plain;`,
+    );
+    expect(result.code).toContain(`function read(URL) { return fetch(__vinext_asset_url); }`);
+  });
+
+  it("keeps directives intact and avoids decoded identifier collisions", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `"use server";`,
+      `const __vinext_asset_\\u0075rl = "user";`,
+      `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
+      `function read(__vinext_asset_url_) { return fetch(asset); }`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain(
+      `const asset = new URL("../../src/text-file.txt", import.meta.url), __vinext_asset_url__ = new URL("data:text/plain;`,
+    );
+    expect(result.code).toContain(`"use server";`);
+    expect(result.code).toContain(`const __vinext_asset_\\u0075rl = "user";`);
+  });
+
+  it("does not depend on the global WeakMap constructor", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `const WeakMap = CustomWeakMap;`,
+      `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
+      `fetch(asset);`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain(`fetch(__vinext_asset_url)`);
+    expect(result.code).not.toContain(`new WeakMap`);
+  });
+
+  it("executes alias pass-through, constructor replacement, and TDZ semantics", async () => {
+    const runtimeRoot = path.join(root, "runtime-alias");
+    const entry = path.join(runtimeRoot, "entry.js");
+    const outDir = path.join(runtimeRoot, "dist");
+    await fsp.mkdir(runtimeRoot, { recursive: true });
+    await fsp.writeFile(path.join(runtimeRoot, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.writeFile(path.join(runtimeRoot, "asset.txt"), "runtime asset");
+    await fsp.writeFile(
+      entry,
+      [
+        `export function unchanged() {`,
+        `  const asset = new URL("./asset.txt", import.meta.url);`,
+        `  return fetch(asset);`,
+        `}`,
+        `export function direct() {`,
+        `  return fetch(new URL("./asset.txt", import.meta.url));`,
+        `}`,
+        `export function mutated() {`,
+        `  const asset = new URL("./asset.txt", import.meta.url);`,
+        `  asset.href = "data:text/plain,mutated";`,
+        `  return fetch(asset);`,
+        `}`,
+        `export function changedConstructor() {`,
+        `  const asset = new URL("./asset.txt", import.meta.url);`,
+        `  const OriginalURL = globalThis.URL;`,
+        `  globalThis.URL = class { constructor() { throw new Error("unexpected URL construction"); } };`,
+        `  try { return fetch(asset); } finally { globalThis.URL = OriginalURL; }`,
+        `}`,
+        `export async function reused() {`,
+        `  const asset = new URL("./asset.txt", import.meta.url);`,
+        `  await fetch(asset);`,
+        `  return fetch(asset);`,
+        `}`,
+        `export function mutatedByLaterArgument() {`,
+        `  const asset = new URL("./asset.txt", import.meta.url);`,
+        `  return fetch(asset, (asset.href = "data:text/plain,later", {}));`,
+        `}`,
+        `export function beforeInitialization() {`,
+        `  fetch(asset);`,
+        `  const asset = new URL("./asset.txt", import.meta.url);`,
+        `}`,
+      ].join("\n"),
+    );
+
+    const ownership = new OgAssetOwnership();
+    ownership.configure(runtimeRoot, []);
+    const capability = createImportMetaUrlPlugin({
+      getRoot: () => runtimeRoot,
+      assetOwnership: ownership,
+      isNodelessServerTarget: () => false,
+    });
+    await build({
+      root: runtimeRoot,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [capability.vitePlugin],
+      build: {
+        ssr: entry,
+        outDir,
+        rolldownOptions: { output: { entryFileNames: "entry.mjs" } },
+      },
+    });
+
+    const runtime = (await import(
+      `${pathToFileURL(path.join(outDir, "entry.mjs")).href}?test=${Date.now()}`
+    )) as Record<string, () => Promise<unknown> | undefined>;
+    const originalFetch = globalThis.fetch;
+    const inputs: Array<string | URL | Request> = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      inputs.push(input);
+      return new Response("ok");
+    }) as typeof fetch;
+    try {
+      await runtime.unchanged!();
+      const unchanged = inputs.pop();
+      expect(unchanged).toBeInstanceOf(URL);
+      expect(fetchInputUrl(unchanged)).toMatch(/^data:text\/plain/);
+
+      await runtime.direct!();
+      const direct = inputs.pop();
+      expect(direct).toBeInstanceOf(URL);
+      expect(fetchInputUrl(direct)).toMatch(/^data:text\/plain/);
+
+      await runtime.mutated!();
+      const mutated = inputs.pop();
+      expect(mutated).toBeInstanceOf(URL);
+      expect(fetchInputUrl(mutated)).toBe("data:text/plain,mutated");
+
+      await runtime.changedConstructor!();
+      const changedConstructor = inputs.pop();
+      expect(changedConstructor).toBeInstanceOf(URL);
+      expect(fetchInputUrl(changedConstructor)).toMatch(/^data:text\/plain/);
+
+      await runtime.reused!();
+      const reusedSecond = inputs.pop();
+      const reusedFirst = inputs.pop();
+      expect(reusedFirst).toBeInstanceOf(URL);
+      expect(reusedSecond).toBeInstanceOf(URL);
+      expect(reusedFirst).toBe(reusedSecond);
+      expect(fetchInputUrl(reusedFirst)).toMatch(/^data:text\/plain/);
+
+      await runtime.mutatedByLaterArgument!();
+      const laterMutation = inputs.pop();
+      expect(laterMutation).toBeInstanceOf(URL);
+      expect(fetchInputUrl(laterMutation)).toBe("data:text/plain,later");
+
+      expect(() => runtime.beforeInitialization!()).toThrow(ReferenceError);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("resolves package assets and strips query/hash suffixes", async () => {
