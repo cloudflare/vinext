@@ -361,7 +361,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     }
 
     if (node.type === "SwitchStatement") {
-      if (isAstRecord(node.discriminant)) visit(node.discriminant, parentScope);
+      if (isAstRecord(node.discriminant)) visit(node.discriminant, parentScope, true);
       const switchScope = createAssetScope(parentScope);
       collectSwitchScopeBindings(node, switchScope);
       for (const switchCase of nodeArray(node.cases)) {
@@ -387,6 +387,11 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
         if (isAstRecord(declarator.init)) visit(declarator.init, scope);
         recordAssetBinding(node, declarator, scope);
       }
+      return;
+    }
+    if (node.type === "ImportDeclaration" || node.type.startsWith("TS")) {
+      const expression = isAstRecord(node.expression) ? node.expression : null;
+      if (expression) visit(expression, scope, safeAssetReference);
       return;
     }
     if (
@@ -507,6 +512,79 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
         ].includes(String(property.name));
       if (isAstRecord(node.object)) visit(node.object, scope, safeUrlValue);
       if (node.computed === true && isAstRecord(node.property)) visit(node.property, scope);
+      return;
+    }
+
+    if (node.type === "Property" || node.type === "PropertyDefinition") {
+      if (node.computed === true && isAstRecord(node.key)) visit(node.key, scope);
+      if (isAstRecord(node.value)) visit(node.value, scope);
+      return;
+    }
+
+    if (node.type === "MethodDefinition") {
+      if (node.computed === true && isAstRecord(node.key)) visit(node.key, scope);
+      if (isAstRecord(node.value)) visit(node.value, scope);
+      return;
+    }
+
+    if (node.type === "JSXAttribute") {
+      if (isAstRecord(node.value)) visit(node.value, scope);
+      return;
+    }
+
+    if (node.type === "LabeledStatement") {
+      if (isAstRecord(node.body)) visit(node.body, scope);
+      return;
+    }
+    if (node.type === "BreakStatement" || node.type === "ContinueStatement") return;
+
+    if (node.type === "ExportSpecifier") {
+      if (isAstRecord(node.local)) visit(node.local, scope);
+      return;
+    }
+
+    const visitReadOnly = (value: unknown): void => {
+      if (isAstRecord(value)) visit(value, scope, true);
+    };
+    if (
+      node.type === "IfStatement" ||
+      node.type === "WhileStatement" ||
+      node.type === "DoWhileStatement"
+    ) {
+      visitReadOnly(node.test);
+      if (isAstRecord(node.body)) visit(node.body, scope);
+      if (node.type === "IfStatement" && isAstRecord(node.consequent)) {
+        visit(node.consequent, scope);
+      }
+      if (node.type === "IfStatement" && isAstRecord(node.alternate)) {
+        visit(node.alternate, scope);
+      }
+      return;
+    }
+    if (node.type === "ConditionalExpression") {
+      visitReadOnly(node.test);
+      if (isAstRecord(node.consequent)) visit(node.consequent, scope);
+      if (isAstRecord(node.alternate)) visit(node.alternate, scope);
+      return;
+    }
+    if (node.type === "ForStatement") {
+      if (isAstRecord(node.init)) visit(node.init, scope);
+      visitReadOnly(node.test);
+      if (isAstRecord(node.update)) visit(node.update, scope);
+      if (isAstRecord(node.body)) visit(node.body, scope);
+      return;
+    }
+    if (node.type === "LogicalExpression" || node.type === "BinaryExpression") {
+      visitReadOnly(node.left);
+      visitReadOnly(node.right);
+      return;
+    }
+    if (node.type === "UnaryExpression" && node.operator !== "delete") {
+      visitReadOnly(node.argument);
+      return;
+    }
+    if (node.type === "SequenceExpression") {
+      for (const expression of nodeArray(node.expressions)) visitReadOnly(expression);
       return;
     }
 

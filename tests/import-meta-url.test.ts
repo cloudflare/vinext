@@ -243,6 +243,27 @@ describe("vinext:import-meta-url plugin", () => {
     }
   });
 
+  it.each([
+    `function load(URL) { return import(new URL("./dependency.js", import.meta.url).href); }`,
+    `import { URL } from "custom-url"; import(new URL("./dependency.js", import.meta.url).href);`,
+    `{ const URL = CustomURL; import(new URL("./dependency.js", import.meta.url).href); }`,
+  ])("preserves URL imports using a shadowed constructor", (source) => {
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+      expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)).toBeNull();
+    }
+  });
+
+  it("preserves URL imports using a computed import.meta base", () => {
+    const source = `const key = "url"; import(new URL("./dependency.js", import.meta[key]).href);`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js", false)).toBeNull();
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+      expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)).toBeNull();
+    }
+  });
+
   it.each(["@vite-ignore", "webpackIgnore: true", "turbopackIgnore: true"])(
     "preserves URL imports carrying %s during dependency optimization",
     (directive) => {

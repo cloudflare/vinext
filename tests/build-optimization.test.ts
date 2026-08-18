@@ -733,11 +733,9 @@ describe("optimizeDeps.exclude for vinext", () => {
     await fsp.mkdir(nodeModules);
     for (const entry of await fsp.readdir(workspaceNodeModules)) {
       if (entry === ".vite" || entry === ".cache" || entry === "url-import-probe") continue;
-      await fsp.symlink(
-        path.join(workspaceNodeModules, entry),
-        path.join(nodeModules, entry),
-        "junction",
-      );
+      const source = path.join(workspaceNodeModules, entry);
+      if (!(await fsp.stat(source)).isDirectory()) continue;
+      await fsp.symlink(source, path.join(nodeModules, entry), "junction");
     }
     const dependency = path.join(nodeModules, "url-import-probe");
     await fsp.mkdir(dependency);

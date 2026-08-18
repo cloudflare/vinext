@@ -206,11 +206,9 @@ describe("App Router blob assets through Nitro presets", () => {
     await fsp.mkdir(nodeModules);
     for (const entry of await fsp.readdir(workspaceNodeModules)) {
       if (entry === ".vite" || entry === ".cache" || entry === "edge-blob-package") continue;
-      await fsp.symlink(
-        path.join(workspaceNodeModules, entry),
-        path.join(nodeModules, entry),
-        "junction",
-      );
+      const source = path.join(workspaceNodeModules, entry);
+      if (!(await fsp.stat(source)).isDirectory()) continue;
+      await fsp.symlink(source, path.join(nodeModules, entry), "junction");
     }
     const packageDir = path.join(nodeModules, "edge-blob-package");
     await fsp.mkdir(packageDir);

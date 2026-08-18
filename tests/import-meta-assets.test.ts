@@ -21,17 +21,20 @@ function transformHandler(plugin: Plugin): (...args: any[]) => any {
 describe("import-meta asset phase", () => {
   let root: string;
   let routePath: string;
+  let typedRoutePath: string;
   let packageAssetPath: string;
 
   beforeAll(async () => {
     root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-import-meta-assets-"));
     routePath = path.join(root, "pages", "api", "edge.js");
+    typedRoutePath = path.join(root, "pages", "api", "edge.ts");
     packageAssetPath = path.join(root, "node_modules", "my-pkg", "hello", "world.json");
     await fsp.mkdir(path.dirname(routePath), { recursive: true });
     await fsp.mkdir(path.join(root, "src"), { recursive: true });
     await fsp.mkdir(path.dirname(packageAssetPath), { recursive: true });
     await fsp.writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
     await fsp.writeFile(routePath, "export default function handler() {}\n");
+    await fsp.writeFile(typedRoutePath, "export default function handler() {}\n");
     await fsp.writeFile(path.join(root, "src", "text-file.txt"), "Hello, from text-file.txt!");
     await fsp.writeFile(path.join(root, "src", "vercel.png"), Buffer.from([0x89, 0x50, 0x4e]));
     await fsp.writeFile(packageAssetPath, '{ "i am": "a node dependency" }');
@@ -320,6 +323,32 @@ describe("import-meta asset phase", () => {
       `fetch(url);`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
+  });
+
+  it("keeps syntax-only names and read-only observations from invalidating aliases", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+      `const metadata = { url: "not the asset" };`,
+      `if (!url || url === metadata || url instanceof URL) throw new Error();`,
+      `void url;`,
+      `fetch(url);`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
+  });
+
+  it("ignores TypeScript type-only names when tracking aliases", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `type Metadata = { url: string };`,
+      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+      `const metadata: Metadata = { url: "not the asset" };`,
+      `void metadata;`,
+      `fetch(url);`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
     expect(result.code).toContain(`fetch((url, new URL("data:text/plain; charset=utf-8;base64,`);
   });
 

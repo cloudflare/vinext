@@ -38,6 +38,16 @@ import {
   type AstRange,
   type AstRecord,
 } from "./ast-utils.js";
+import {
+  collectDirectScopeBindings,
+  collectLoopScopeBindings,
+  collectSwitchScopeBindings,
+  collectVarScopeBindings,
+  createAstScope,
+  hasAstBinding,
+  isFunctionNode,
+  type AstScope,
+} from "./ast-scope.js";
 import { magicStringTransformResult, type MagicStringTransformResult } from "./transform-result.js";
 import { ImportMetaAssetTransformer, type ImportMetaAssetRewrite } from "./import-meta-assets.js";
 import type { OgAssetOwnership } from "./og-asset-ownership.js";
@@ -465,15 +475,70 @@ function collectDynamicImportUrlSpecifiers(
 ): DynamicImportUrlSpecifier[] {
   const specifiers: DynamicImportUrlSpecifier[] = [];
   if (VIRTUAL_MODULE_ID_RE.test(id)) return specifiers;
+  if (!isAstRecord(ast)) return specifiers;
+  const rootScope = createAstScope(null);
+  collectDirectScopeBindings(ast, rootScope);
+  collectVarScopeBindings(ast, rootScope);
 
-  function visit(value: unknown): void {
+  function visit(value: unknown, parentScope: AstScope): void {
     if (!isAstRecord(value)) return;
+    if (isFunctionNode(value)) {
+      const parameterScope = createAstScope(parentScope);
+      collectBindingNames(value.id, parameterScope.bindings);
+      for (const parameter of nodeArray(value.params)) {
+        collectBindingNames(parameter, parameterScope.bindings);
+      }
+      if (isAstRecord(value.body)) {
+        const bodyScope = createAstScope(parameterScope);
+        if (value.body.type === "BlockStatement") {
+          collectDirectScopeBindings(value.body, bodyScope);
+          collectVarScopeBindings(value.body, bodyScope);
+        }
+        visit(value.body, bodyScope);
+      }
+      return;
+    }
+
+    let scope = parentScope;
+    if (value.type === "SwitchStatement") {
+      if (isAstRecord(value.discriminant)) visit(value.discriminant, parentScope);
+      const switchScope = createAstScope(parentScope);
+      collectSwitchScopeBindings(value, switchScope);
+      for (const switchCase of nodeArray(value.cases)) visit(switchCase, switchScope);
+      return;
+    }
+    if (
+      value !== ast &&
+      (value.type === "BlockStatement" ||
+        value.type === "StaticBlock" ||
+        value.type === "TSModuleBlock")
+    ) {
+      scope = createAstScope(parentScope);
+      collectDirectScopeBindings(value, scope);
+      if (value.type === "StaticBlock" || value.type === "TSModuleBlock") {
+        collectVarScopeBindings(value, scope);
+      }
+    } else if (value.type === "CatchClause") {
+      scope = createAstScope(parentScope);
+      collectBindingNames(value.param, scope.bindings);
+    } else if (
+      value.type === "ForStatement" ||
+      value.type === "ForInStatement" ||
+      value.type === "ForOfStatement"
+    ) {
+      scope = createAstScope(parentScope);
+      collectLoopScopeBindings(value, scope);
+    } else if (value.type === "ClassExpression" && isAstRecord(value.id)) {
+      scope = createAstScope(parentScope);
+      collectBindingNames(value.id, scope.bindings);
+    }
 
     const source = isAstRecord(value.source) ? value.source : null;
     if (value.type === "ImportExpression" && hasRange(source)) {
       const specifier = relativeDynamicImportUrlSpecifier(source);
       if (
         specifier !== null &&
+        !hasAstBinding(scope, "URL") &&
         !hasDynamicRequestIgnoreDirective(code, value, source) &&
         !hasViteIgnoreInNewUrl(code, source)
       ) {
@@ -482,10 +547,10 @@ function collectDynamicImportUrlSpecifiers(
       }
     }
 
-    forEachAstChild(value, visit);
+    forEachAstChild(value, (child) => visit(child, scope));
   }
 
-  visit(ast);
+  for (const statement of nodeArray(ast.body)) visit(statement, rootScope);
   return specifiers;
 }
 

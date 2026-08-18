@@ -799,7 +799,12 @@ function transformVeryDynamicRequests(code: string, id: string, replaceUnknownRe
       if (source && !hasDynamicRequestIgnoreDirective(code, node, source)) {
         const urlSpecifier = relativeDynamicImportUrlSpecifier(source);
         if (urlSpecifier !== null) {
-          if (normalizeUrlImports && hasRange(source) && !hasViteIgnoreInNewUrl(code, source)) {
+          if (
+            normalizeUrlImports &&
+            !hasAstBinding(scope, "URL") &&
+            hasRange(source) &&
+            !hasViteIgnoreInNewUrl(code, source)
+          ) {
             output.overwrite(source.start, source.end, JSON.stringify(urlSpecifier));
             changed = true;
           }
