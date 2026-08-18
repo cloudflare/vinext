@@ -2,6 +2,7 @@
   "name": "@vinext/cloudflare",
   "version": "1.0.0-beta.6",
   "description": "Cloudflare adapters for vinext (KV data cache and Images-backed image optimization).",
+  "homepage": "https://vinext.dev/",
   "license": "MIT",
   "repository": {
     "type": "git",

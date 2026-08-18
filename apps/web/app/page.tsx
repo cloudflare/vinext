@@ -94,7 +94,7 @@ const STATS = [
       "185 KB → 125 KB gzipped on the same benchmark. Tree-shaking and a lighter client runtime do the work.",
   },
   {
-    value: "92%",
+    value: "94%",
     label: "of the Next.js 16 API surface",
     detail:
       "App Router, Pages Router, RSC, server actions, ISR, middleware, route handlers. Coverage and gaps tracked openly.",
@@ -268,8 +268,8 @@ export default function Home() {
           Run your Next.js app on Vite. Deploy anywhere.
         </h1>
         <p className="mt-6 max-w-2xl text-lg leading-relaxed text-kumo-subtle">
-          Vinext is a Vite plugin that re-implements the Next.js API from scratch. Keep your{" "}
-          <code className="font-mono text-kumo-default">app/</code>,{" "}
+          Vinext is an open-source Vite plugin from Cloudflare that re-implements the Next.js API
+          from scratch. Keep your <code className="font-mono text-kumo-default">app/</code>,{" "}
           <code className="font-mono text-kumo-default">pages/</code>, and{" "}
           <code className="font-mono text-kumo-default">next.config.js</code> as they are. Get a
           faster dev loop, smaller bundles, and a clean path to deploy on any host.

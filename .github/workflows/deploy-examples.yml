@@ -197,7 +197,7 @@ jobs:
               { name: 'benchmarks', project: 'benchmarks' },
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
               { name: 'workers-cache', project: 'workers-cache' },
-              { name: 'web', project: 'vinext-web' },
+              { name: 'web', project: 'vinext-web', production: 'https://vinext.dev' },
             ];
 
             const { data: comments } = await github.rest.issues.listComments({
@@ -212,7 +212,8 @@ jobs:
             const rows = examples
               .map(e => {
                 const orig = e.original ? `[original](${e.original})` : '';
-                return `| ${e.name} | [preview](https://${alias}-${e.project}.vinext.workers.dev) | [production](https://${e.project}.vinext.workers.dev) | ${orig} |`;
+                const production = e.production || `https://${e.project}.vinext.workers.dev`;
+                return `| ${e.name} | [preview](https://${alias}-${e.project}.vinext.workers.dev) | [production](${production}) | ${orig} |`;
               })
               .join('\n');
 
