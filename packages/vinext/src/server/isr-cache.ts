@@ -266,10 +266,6 @@ export async function isrSetPrerenderedAppPage(
     ctx.tags = tags;
   }
   await getCdnCacheAdapter().set(key, data, ctx);
-
-  if (revalidateSeconds !== undefined) {
-    setRevalidateDuration(key, revalidateSeconds);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -495,39 +491,4 @@ export function appIsrRscKey(
 
 export function appIsrRouteKey(pathname: string): string {
   return appIsrCacheKey(pathname, "route");
-}
-
-// ---------------------------------------------------------------------------
-// Revalidate duration tracking — remembers how long each ISR key's TTL is
-// so we can emit correct Cache-Control headers on cache hits.
-// ---------------------------------------------------------------------------
-
-const MAX_REVALIDATE_ENTRIES = 10_000;
-const _REVALIDATE_KEY = Symbol.for("vinext.isrCache.revalidateDurations");
-const revalidateDurations = (_g[_REVALIDATE_KEY] ??= new Map<string, number>()) as Map<
-  string,
-  number
->;
-
-/**
- * Store the revalidate duration for a cache key.
- * Uses insertion-order LRU eviction to prevent unbounded growth.
- */
-export function setRevalidateDuration(key: string, seconds: number): void {
-  // Simple LRU: delete and re-insert to move to end (most recent)
-  revalidateDurations.delete(key);
-  revalidateDurations.set(key, seconds);
-  // Evict oldest entries if over limit
-  while (revalidateDurations.size > MAX_REVALIDATE_ENTRIES) {
-    const first = revalidateDurations.keys().next().value;
-    if (first !== undefined) revalidateDurations.delete(first);
-    else break;
-  }
-}
-
-/**
- * Get the revalidate duration for a cache key.
- */
-export function getRevalidateDuration(key: string): number | undefined {
-  return revalidateDurations.get(key);
 }
