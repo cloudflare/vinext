@@ -60,11 +60,7 @@ import {
   stripRscSuffix,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
 } from "./app-rsc-cache-busting.js";
-import {
-  applyAppRscConfigHeaders,
-  finalizeAppRscResponse,
-  markAppRscResponseConfigHeadersApplied,
-} from "./app-rsc-response-finalizer.js";
+import { applyAppRscConfigHeaders, finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
@@ -565,11 +561,31 @@ function requestWithoutRscSuffix(request: Request): Request {
   return cloneRequestWithUrl(request, url.toString());
 }
 
-function markRejectedInterceptionIdResponse(response: Response): Response {
-  applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
-  // A matching headers() rule must not make an attacker-selected cache variant
-  // public again after this security decision.
-  return markAppRscResponseConfigHeadersApplied(response);
+function markInterceptionIdResponseUncacheable(response: Response): Response {
+  const applyNoStore = (headers: Headers): void => {
+    applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
+    // These standard/provider-specific shared-cache controls can be supplied by
+    // next.config headers even when the active origin adapter does not own them.
+    // Never let them override this security boundary downstream.
+    headers.delete("CDN-Cache-Control");
+    headers.delete("Cloudflare-CDN-Cache-Control");
+    headers.delete("Cache-Tag");
+  };
+  let markedResponse = response;
+  try {
+    applyNoStore(markedResponse.headers);
+  } catch {
+    // Response.redirect() and some middleware responses expose immutable
+    // headers. Rebuild them before applying the fail-closed cache policy.
+    const headers = new Headers(response.headers);
+    applyNoStore(headers);
+    markedResponse = new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+  return markedResponse;
 }
 
 async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
@@ -599,11 +615,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       ...options.configRewrites.fallback,
       ...options.configHeaders,
     ].some((rule) => rule.basePath === false);
-  const hasInterceptionIdHeader = request.headers.has(VINEXT_INTERCEPTION_ID_HEADER);
   const normalized = normalizeRscRequest(request, options.basePath, canHandleOutsideBasePath);
-  if (normalized instanceof Response) {
-    return hasInterceptionIdHeader ? markRejectedInterceptionIdResponse(normalized) : normalized;
-  }
+  if (normalized instanceof Response) return normalized;
 
   const {
     url,
@@ -1019,7 +1032,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // rendering or shared caches; otherwise arbitrary short values can create
     // unbounded `_rsc` and Vary variants.
     options.clearRequestContext();
-    return markRejectedInterceptionIdResponse(badRequestResponse());
+    return badRequestResponse();
   }
   if (
     interceptionSourceMatch !== null &&
@@ -1780,13 +1793,16 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             throw error;
           }
 
-          return finalizeAppRscResponse(response, request, {
+          response = await finalizeAppRscResponse(response, request, {
             basePath: options.basePath,
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
             middlewareHeaders: middlewareContext.headers,
             requestContext: preMiddlewareRequestContext,
           });
+          return request.headers.has(VINEXT_INTERCEPTION_ID_HEADER)
+            ? markInterceptionIdResponseUncacheable(response)
+            : response;
         },
         { route: () => new URL(request.url).pathname },
       ),

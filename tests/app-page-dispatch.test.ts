@@ -59,6 +59,7 @@ import {
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
+import { VINEXT_INTERCEPTION_ID_HEADER } from "../packages/vinext/src/server/headers.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -2461,6 +2462,42 @@ describe("app page dispatch", () => {
     });
     expect(options.isrGet).not.toHaveBeenCalled();
     expect(options.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("bypasses persistent and CDN caches for interception-id RSC requests", async () => {
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry(
+        buildCachedAppPageValue(
+          "",
+          new TextEncoder().encode("stale-flight").buffer,
+          undefined,
+          buildQueryInvariantRenderObservation(),
+        ),
+      ),
+    );
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const request = new Request("https://example.test/photos/123", {
+      headers: {
+        [VINEXT_INTERCEPTION_ID_HEADER]: "interception:slot:modal:/feed:/feed->/photos/:id",
+      },
+    });
+    const { options } = createDispatchOptions({
+      cleanPathname: "/photos/123",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet,
+      isrSet,
+      request,
+      revalidateSeconds: 60,
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.arrayBuffer();
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it("resolves the intercept source route's dynamic config for force-dynamic fetch defaults", async () => {

@@ -100,6 +100,7 @@ type AppPageRequestCacheLife = {
 
 type RenderAppPageLifecycleOptions = {
   basePath?: string;
+  bypassRscCache?: boolean;
   /**
    * Allow-list of OpenTelemetry propagation keys to emit as `<meta>` tags in
    * the SSR head. From `experimental.clientTraceMetadata` in `next.config`.
@@ -820,7 +821,9 @@ export async function renderAppPageLifecycle(
     // When skip transport is enabled, omit cacheState because the response is a
     // per-client payload, not a shared-cache MISS/HIT artifact. The absence also
     // keeps finalizeAppPageRscCacheResponse from overwriting no-store.
-    const rscResponsePolicy = shouldBypassRscCacheForSkipTransport
+    const shouldBypassRscCache =
+      shouldBypassRscCacheForSkipTransport || options.bypassRscCache === true;
+    const rscResponsePolicy = shouldBypassRscCache
       ? { cacheControl: NO_STORE_CACHE_CONTROL }
       : resolveAppPageRscResponsePolicy({
           dynamicUsedDuringBuild,
@@ -832,8 +835,13 @@ export async function renderAppPageLifecycle(
           expireSeconds,
           revalidateSeconds,
         });
-    if (shouldBypassRscCacheForSkipTransport) {
-      options.isrDebug?.("RSC cache write skipped (skip transport payload)", options.cleanPathname);
+    if (shouldBypassRscCache) {
+      options.isrDebug?.(
+        options.bypassRscCache === true
+          ? "RSC cache write skipped (interception selector)"
+          : "RSC cache write skipped (skip transport payload)",
+        options.cleanPathname,
+      );
     }
     const shouldEmitDynamicStaleTime =
       dynamicStaleTimeSeconds !== undefined &&
@@ -929,6 +937,7 @@ export async function renderAppPageLifecycle(
     return finalizeAppPageRscCacheResponse(devRscResponse, {
       capturedRscDataPromise:
         options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
+      bypassRscCache: options.bypassRscCache,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: finalizeRenderDynamicUsage,
       consumeRenderObservationState: options.consumeRenderObservationState,

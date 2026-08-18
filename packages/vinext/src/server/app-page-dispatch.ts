@@ -82,7 +82,7 @@ import {
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
+import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
@@ -627,6 +627,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const route = options.route;
   const dynamicConfig = options.dynamicConfig;
   const currentRevalidateSeconds = options.revalidateSeconds;
+  const bypassRscCache =
+    options.isRscRequest && options.request.headers.has(VINEXT_INTERCEPTION_ID_HEADER);
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
@@ -700,6 +702,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   }
 
   if (
+    !bypassRscCache &&
     shouldReadAppPageCache({
       isDraftMode,
       isForceDynamic,
@@ -1091,6 +1094,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   return renderAppPageLifecycle({
     basePath: options.basePath,
+    bypassRscCache,
     clientTraceMetadata: options.clientTraceMetadata,
     reactMaxHeadersLength: options.reactMaxHeadersLength,
     cleanPathname: options.cleanPathname,
