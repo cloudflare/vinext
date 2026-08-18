@@ -1,7 +1,7 @@
 import MagicString from "magic-string";
 import { glob, realpath, stat } from "node:fs/promises";
 import path, { toSlash } from "pathslash";
-import { parseAst, type Alias, type Environment, type Plugin } from "vite";
+import { parseAst, parseAstAsync, type Alias, type Environment, type Plugin } from "vite";
 import {
   collectBindingNames,
   forEachAstChild,
@@ -114,14 +114,10 @@ function commonJsExportName(node: AstRecord, scope: AstScope): string | null | u
   return undefined;
 }
 
-function analyzeCommonJs(code: string, id: string): CommonJsAnalysis | null {
-  if (!COMMONJS_PRESCAN.test(code)) return null;
-  let ast: ReturnType<typeof parseAst>;
-  try {
-    ast = parseAst(code, { lang: scriptParserLanguage(id) ?? "jsx" });
-  } catch {
-    return null;
-  }
+function analyzeCommonJsAst(
+  code: string,
+  ast: ReturnType<typeof parseAst>,
+): CommonJsAnalysis | null {
   const root = isAstRecord(ast) ? ast : null;
   if (!root) return null;
 
@@ -230,6 +226,27 @@ function analyzeCommonJs(code: string, id: string): CommonJsAnalysis | null {
     namedExports: [...namedExports],
     rootBindings: rootScope.bindings,
   };
+}
+
+function analyzeCommonJs(code: string, id: string): CommonJsAnalysis | null {
+  if (!COMMONJS_PRESCAN.test(code)) return null;
+  try {
+    return analyzeCommonJsAst(code, parseAst(code, { lang: scriptParserLanguage(id) ?? "jsx" }));
+  } catch {
+    return null;
+  }
+}
+
+async function analyzeCommonJsAsync(code: string, id: string): Promise<CommonJsAnalysis | null> {
+  if (!COMMONJS_PRESCAN.test(code)) return null;
+  try {
+    return analyzeCommonJsAst(
+      code,
+      await parseAstAsync(code, { lang: scriptParserLanguage(id) ?? "jsx" }),
+    );
+  } catch {
+    return null;
+  }
 }
 
 type DynamicRequireCandidate = {
@@ -617,7 +634,7 @@ export function createCommonJsPlugin(options: CommonJsPluginOptions = {}): Plugi
         if (options.shouldTransform && !options.shouldTransform(this.environment, code, id)) {
           return null;
         }
-        const analysis = analyzeCommonJs(code, id);
+        const analysis = await analyzeCommonJsAsync(code, id);
         if (!analysis) return null;
         const dynamicRequires = (
           await Promise.all(

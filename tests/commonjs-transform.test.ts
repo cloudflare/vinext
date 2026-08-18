@@ -54,6 +54,18 @@ describe("transformCommonJs", () => {
     );
   });
 
+  it("transforms dependency CommonJS modules selected by the plugin", async () => {
+    const result = await runPluginTransform(
+      `const value = require("dependency"); module.exports = value;`,
+      "/app/node_modules/example/index.js",
+    );
+    if (!result || typeof result === "string" || !("code" in result)) {
+      throw new Error("Expected transformed dependency code");
+    }
+    expect(String(result.code)).toContain('from "dependency"');
+    expect(String(result.code)).toContain("__vinext_cjs_default__ as default");
+  });
+
   // Ported from vite-plugin-commonjs v0.10.4 historical require-form coverage:
   // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/test/fixtures/v0.4.7/input.js
   it("rewrites repeated requires in side-effect, member, and collection positions", () => {
