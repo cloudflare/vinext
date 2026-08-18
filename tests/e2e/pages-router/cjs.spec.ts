@@ -8,4 +8,10 @@ test.describe("CJS interop", () => {
 
     await expect(page.getByTestId("cjs-basic")).toContainText("Random: 4");
   });
+
+  test("page with a patterned dynamic require renders correctly", async ({ page }) => {
+    await page.goto(`${BASE}/cjs/dynamic-require`);
+
+    await expect(page.getByTestId("dynamic-require-message")).toHaveText("loaded");
+  });
 });

@@ -10,6 +10,14 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4175";
 
 test.describe("Pages Router Production Build", () => {
+  test("renders a patterned dynamic require", async ({ page }) => {
+    // Ported from Next.js: test/integration/dynamic-require/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/integration/dynamic-require/test/index.test.ts
+    const response = await page.goto(`${BASE}/cjs/dynamic-require`);
+    expect(response?.status()).toBe(200);
+    await expect(page.getByTestId("dynamic-require-message")).toHaveText("loaded");
+  });
+
   test("index page renders with correct content", async ({ page }) => {
     const response = await page.goto(`${BASE}/`);
     expect(response?.status()).toBe(200);
