@@ -7,9 +7,11 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   createImportMetaUrlPlugin,
+  rewriteDynamicImportUrls,
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
+import { createIgnoreDynamicRequestsPlugin } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
 import { toSlash } from "pathslash";
 
 function unwrapHook(hook: any): Function {
@@ -181,6 +183,129 @@ describe("vinext:import-meta-url plugin", () => {
 
     expect(result?.code).toContain(`"file:///ROOT/pages/index.tsx"`);
   });
+
+  // Ported from Next.js:
+  // test/e2e/react-version/pages/api/pages-api-edge-url-dep.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/react-version/pages/api/pages-api-edge-url-dep.js
+  it("normalizes literal module URLs used as dynamic import specifiers", () => {
+    const result = rewriteDynamicImportUrls(
+      `const dependency = import(new URL("./style.css", import.meta.url).href);\n`,
+      "/ROOT/pages/api/url-dependency.js",
+    );
+
+    expect(result?.code).toContain(`import("./style.css")`);
+    expect(result?.code).not.toContain("new URL");
+  });
+
+  it.each([
+    ["ts", `import type { NextApiRequest } from "next";`],
+    ["tsx", `import type { ReactNode } from "react";\nconst element = <div />;`],
+  ])("normalizes module URL imports in raw %s source", (extension, prefix) => {
+    const result = rewriteDynamicImportUrls(
+      `${prefix}\nvoid import(new URL("./style.css", import.meta.url).href);\n`,
+      `/ROOT/pages/api/url-dependency.${extension}`,
+    );
+
+    expect(result?.code).toContain(`import("./style.css")`);
+  });
+
+  it("preserves non-literal and absolute dynamic import URLs", () => {
+    const result = rewriteDynamicImportUrls(
+      [
+        `const relative = "./style.css";`,
+        `const dynamic = import(new URL(relative, import.meta.url).href);`,
+        `const absolute = import(new URL("/style.css", import.meta.url).href);`,
+      ].join("\n"),
+      "/ROOT/pages/api/url-dependency.js",
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it.each([
+    [
+      "block comments",
+      `import(/* webpackMode: ** "eager" ** */ new URL("./dependency.js", import.meta.url).href)`,
+      "block",
+    ],
+    [
+      "line comments ending in LF",
+      `import(// webpackMode: eager\nnew URL("./dependency.js", import.meta.url).href)`,
+      "line-lf",
+    ],
+    [
+      "line comments ending in CRLF",
+      `import(// webpackMode: eager\r\nnew URL("./dependency.js", import.meta.url).href)`,
+      "line-crlf",
+    ],
+    [
+      "line comments ending in CR",
+      `import(// webpackMode: eager\rnew URL("./dependency.js", import.meta.url).href)`,
+      "line-cr",
+    ],
+    [
+      "line comments ending in U+2028",
+      `import(// webpackMode: eager\u2028new URL("./dependency.js", import.meta.url).href)`,
+      "line-u2028",
+    ],
+    [
+      "line comments ending in U+2029",
+      `import(// webpackMode: eager\u2029new URL("./dependency.js", import.meta.url).href)`,
+      "line-u2029",
+    ],
+    [
+      "mixed repeated comments",
+      `import(/* first */ // second\u2028/* third **/ new URL("./dependency.js", import.meta.url).href)`,
+      "mixed-comments",
+    ],
+    [
+      "a comment between import and its parenthesis",
+      `import /* before call */ (new URL("./dependency.js", import.meta.url).href)`,
+      "before-call",
+    ],
+    [
+      "a comment between new and URL",
+      `import(new /* before URL */ URL("./dependency.js", import.meta.url).href)`,
+      "before-url",
+    ],
+    [
+      "a comment between URL and its parenthesis",
+      `import(new URL /* before arguments */ ("./dependency.js", import.meta.url).href)`,
+      "before-arguments",
+    ],
+  ])(
+    "normalizes URL imports with %s after the dynamic-request fallback admits them",
+    async (_description, dynamicImport, suffix) => {
+      const packageRoot = path.join(realRoot, "node_modules", `url-dependency-${suffix}`);
+      const packageEntry = path.join(packageRoot, "index.js");
+      await fsp.mkdir(packageRoot, { recursive: true });
+      await fsp.writeFile(
+        path.join(packageRoot, "package.json"),
+        JSON.stringify({ name: "url-dependency", type: "module" }),
+      );
+      await fsp.writeFile(packageEntry, `export const dependency = ${dynamicImport};`);
+      await fsp.writeFile(path.join(packageRoot, "dependency.js"), `export default "loaded";`);
+
+      const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+      const result = await build({
+        root: realRoot,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [createIgnoreDynamicRequestsPlugin(), capability.vitePlugin],
+        build: { write: false, ssr: packageEntry },
+      });
+      if (Array.isArray(result) || !("output" in result)) {
+        throw new Error("Expected a single build output");
+      }
+      const output = result.output
+        .filter((entry) => entry.type === "chunk")
+        .map((entry) => entry.code)
+        .join("\n");
+
+      expect(output).toContain("loaded");
+      expect(output).not.toContain("Cannot find module as expression is too dynamic");
+    },
+  );
 
   it("preserves the real server source file URL", () => {
     const result = rewriteImportMetaUrl(

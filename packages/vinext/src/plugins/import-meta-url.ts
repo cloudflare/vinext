@@ -32,7 +32,6 @@ import {
   forEachAstChild,
   hasRange,
   isAstRecord,
-  isIdentifierNamed,
   nodeArray,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
@@ -40,6 +39,14 @@ import {
   type AstRecord,
 } from "./ast-utils.js";
 import { magicStringTransformResult, type MagicStringTransformResult } from "./transform-result.js";
+import { ImportMetaAssetTransformer, type ImportMetaAssetRewrite } from "./import-meta-assets.js";
+import type { OgAssetOwnership } from "./og-asset-ownership.js";
+import {
+  isImportMetaUrlNode,
+  isImportMetaUrlOrChainedNode,
+  isNewUrlExpression,
+  relativeDynamicImportUrlSpecifier,
+} from "./import-meta-url-syntax.js";
 
 type ImportMetaUrlEnvironment = "client" | "server";
 type ModuleIdentityTransformKind =
@@ -99,6 +106,8 @@ const SOURCE_IDENTITY_FILTER_RE = new RegExp(
 );
 export function createImportMetaUrlPlugin(options: {
   getRoot: () => string | undefined;
+  assetOwnership?: OgAssetOwnership;
+  isNodelessServerTarget?: () => boolean;
   createEmittedModuleFileNameResolver?: (
     config: ResolvedConfig,
   ) => EmittedModuleFileNameResolver | undefined;
@@ -123,6 +132,13 @@ export function createImportMetaUrlPlugin(options: {
   // The fixed-size provenance state stays valid for cached transforms and every
   // output of the capability.
   const emittedModuleIdentity = createEmittedModuleIdentity();
+  const assetTransformer =
+    options.assetOwnership && options.isNodelessServerTarget
+      ? new ImportMetaAssetTransformer({
+          ownership: options.assetOwnership,
+          isNodelessTarget: options.isNodelessServerTarget,
+        })
+      : undefined;
   function dependencyModule(id: string): DependencyModuleCacheEntry["value"] {
     const cleanId = stripViteModuleQuery(id);
     const paths = getRootPaths();
@@ -173,6 +189,10 @@ export function createImportMetaUrlPlugin(options: {
       resolveEmittedModuleFileName =
         options.createEmittedModuleFileNameResolver?.(config) ?? ((_, fileName) => fileName);
       rootPaths = createRootPaths(root, { outputDirs });
+      assetTransformer?.configResolved(config);
+    },
+    buildStart() {
+      assetTransformer?.buildStart();
     },
     watchChange() {
       // Package scope and symlink targets can change while a dev server stays
@@ -196,79 +216,102 @@ export function createImportMetaUrlPlugin(options: {
 
         const cleanId = stripViteModuleQuery(id);
         const isServer = this.environment?.config?.consumer !== "client";
-        if (isServer) {
-          const dependency = dependencyModule(cleanId);
-          if (dependency) {
-            const importMetaUrlReplacement = mayContainImportMetaUrl(code)
-              ? this.environment.mode === "dev"
-                ? JSON.stringify(pathToFileURL(dependency.canonicalId).href)
-                : emittedModuleIdentity.importMetaUrlInitializer
-              : undefined;
-            const cjsGlobalInitializers =
-              dependency.isCommonJs && mayContainServerCjsGlobal(code)
+        const finishTransform = (
+          assetRewrites: readonly ImportMetaAssetRewrite[],
+        ): MagicStringTransformResult | null => {
+          const normalizeDynamicImports = () =>
+            rewriteModuleIdentity(code, {
+              id: cleanId,
+              normalizeDynamicImportUrls: true,
+              textRewrites: assetRewrites,
+            });
+          if (isServer) {
+            const dependency = dependencyModule(cleanId);
+            if (dependency) {
+              const importMetaUrlReplacement = mayContainImportMetaUrl(code)
                 ? this.environment.mode === "dev"
-                  ? sourcePathCjsGlobalInitializers(dependency.canonicalId)
-                  : emittedModuleIdentity.cjsGlobalInitializers
+                  ? JSON.stringify(pathToFileURL(dependency.canonicalId).href)
+                  : emittedModuleIdentity.importMetaUrlInitializer
                 : undefined;
-            if (importMetaUrlReplacement !== undefined || cjsGlobalInitializers) {
-              return rewriteModuleIdentity(code, {
-                id: dependency.canonicalId,
-                importMetaUrlReplacement,
-                cjsGlobalInitializers,
-              });
+              const cjsGlobalInitializers =
+                dependency.isCommonJs && mayContainServerCjsGlobal(code)
+                  ? this.environment.mode === "dev"
+                    ? sourcePathCjsGlobalInitializers(dependency.canonicalId)
+                    : emittedModuleIdentity.cjsGlobalInitializers
+                  : undefined;
+              if (importMetaUrlReplacement !== undefined || cjsGlobalInitializers) {
+                return (
+                  rewriteModuleIdentity(code, {
+                    id: dependency.canonicalId,
+                    importMetaUrlReplacement,
+                    cjsGlobalInitializers,
+                    normalizeDynamicImportUrls: true,
+                    textRewrites: assetRewrites,
+                  }) ?? null
+                );
+              }
             }
           }
-        }
-        if (isNodeModulesId(cleanId)) return null;
+          if (isNodeModulesId(cleanId)) return normalizeDynamicImports();
 
-        const paths = getRootPaths();
-        if (!paths) return null;
-        const canonicalId = transformableModuleCanonicalId(cleanId, paths);
-        if (!canonicalId) return null;
+          const paths = getRootPaths();
+          if (!paths) return normalizeDynamicImports();
+          const canonicalId = transformableModuleCanonicalId(cleanId, paths);
+          if (!canonicalId) return normalizeDynamicImports();
 
-        const environment: ImportMetaUrlEnvironment =
-          this.environment?.name === "client" ? "client" : "server";
-        const explicitCommonJs = [".cjs", ".cts"].includes(path.extname(canonicalId));
-        const transformKind: ModuleIdentityTransformKind =
-          environment === "client"
-            ? "client"
-            : explicitCommonJs
-              ? this.environment.mode === "dev"
-                ? "server-cjs-dev"
-                : "server-cjs-build"
-              : this.environment.mode === "dev"
-                ? "server-dev"
-                : "server-build";
-        let entry = transformCache.get(id);
-        if (
-          !entry ||
-          entry.source !== code ||
-          entry.canonicalRoot !== paths.canonicalRoot ||
-          entry.canonicalId !== canonicalId
-        ) {
-          entry = {
-            source: code,
-            canonicalRoot: paths.canonicalRoot,
+          const environment: ImportMetaUrlEnvironment =
+            this.environment?.name === "client" ? "client" : "server";
+          const explicitCommonJs = [".cjs", ".cts"].includes(path.extname(canonicalId));
+          const transformKind: ModuleIdentityTransformKind =
+            environment === "client"
+              ? "client"
+              : explicitCommonJs
+                ? this.environment.mode === "dev"
+                  ? "server-cjs-dev"
+                  : "server-cjs-build"
+                : this.environment.mode === "dev"
+                  ? "server-dev"
+                  : "server-build";
+          let entry = transformCache.get(id);
+          if (
+            !entry ||
+            entry.source !== code ||
+            entry.canonicalRoot !== paths.canonicalRoot ||
+            entry.canonicalId !== canonicalId
+          ) {
+            entry = {
+              source: code,
+              canonicalRoot: paths.canonicalRoot,
+              canonicalId,
+              results: new Map(),
+            };
+            setBoundedCacheEntry(transformCache, id, entry, MAX_TRANSFORM_CACHE_ENTRIES);
+          }
+
+          const cached = assetRewrites.length === 0 ? entry.results.get(transformKind) : undefined;
+          if (cached) return cached.value;
+
+          const value = rewriteCanonicalSourceIdentity(
+            code,
             canonicalId,
-            results: new Map(),
-          };
-          setBoundedCacheEntry(transformCache, id, entry, MAX_TRANSFORM_CACHE_ENTRIES);
+            paths,
+            environment,
+            this.environment.mode === "build" && mayContainServerCjsGlobal(code)
+              ? emittedModuleIdentity.cjsGlobalInitializers
+              : sourcePathCjsGlobalInitializers(canonicalId),
+            true,
+            assetRewrites,
+          );
+          if (assetRewrites.length === 0) entry.results.set(transformKind, { value });
+          return value;
+        };
+
+        if (isServer && assetTransformer) {
+          return assetTransformer
+            .collectRewrites(this, code, id)
+            .then((assetRewrites) => finishTransform(assetRewrites));
         }
-
-        const cached = entry.results.get(transformKind);
-        if (cached) return cached.value;
-
-        const value = rewriteCanonicalSourceIdentity(
-          code,
-          canonicalId,
-          paths,
-          environment,
-          this.environment.mode === "build" && mayContainServerCjsGlobal(code)
-            ? emittedModuleIdentity.cjsGlobalInitializers
-            : sourcePathCjsGlobalInitializers(canonicalId),
-        );
-        entry.results.set(transformKind, { value });
-        return value;
+        return finishTransform([]);
       },
     },
     renderChunk: {
@@ -303,17 +346,20 @@ export function createImportMetaUrlPlugin(options: {
       handler(code, id) {
         if (!mayContainSourceIdentityToken(code)) return null;
         const dependency = dependencyModule(id);
-        if (!dependency) return null;
-        return rewriteModuleIdentity(code, {
-          id: dependency.canonicalId,
-          importMetaUrlReplacement: mayContainImportMetaUrl(code)
-            ? emittedModuleIdentity.importMetaUrlInitializer
-            : undefined,
-          cjsGlobalInitializers:
-            dependency.isCommonJs && mayContainServerCjsGlobal(code)
-              ? emittedModuleIdentity.cjsGlobalInitializers
+        if (!dependency) return rewriteDynamicImportUrls(code, id);
+        return (
+          rewriteModuleIdentity(code, {
+            id: dependency.canonicalId,
+            importMetaUrlReplacement: mayContainImportMetaUrl(code)
+              ? emittedModuleIdentity.importMetaUrlInitializer
               : undefined,
-        });
+            cjsGlobalInitializers:
+              dependency.isCommonJs && mayContainServerCjsGlobal(code)
+                ? emittedModuleIdentity.cjsGlobalInitializers
+                : undefined,
+            normalizeDynamicImportUrls: true,
+          }) ?? null
+        );
       },
     },
     renderChunk: {
@@ -334,6 +380,15 @@ export function createImportMetaUrlPlugin(options: {
     optimizeDepsPlugin,
     isBundledCommonJsDependencyId: (id) => commonJsDependencyCanonicalId(id) !== null,
   };
+}
+
+// Exported for focused tests; the production plugin calls this after the
+// dynamic-request fallback has explicitly admitted this static form.
+export function rewriteDynamicImportUrls(
+  code: string,
+  id: string,
+): MagicStringTransformResult | null {
+  return rewriteModuleIdentity(code, { id, normalizeDynamicImportUrls: true });
 }
 
 // Test-only entry point. Delegates to the same transform the plugin runs so
@@ -371,12 +426,46 @@ export function rewriteServerCjsGlobals(
   return rewriteCanonicalSourceIdentity(code, canonicalId, rootPaths, "server");
 }
 
+type DynamicImportUrlSpecifier = AstRange & { specifier: string };
+
+// A literal relative module URL has the same ESM identity as its relative
+// specifier:
+//   import(new URL("./style.css", import.meta.url).href)
+//   import("./style.css")
+//
+// Normalizing this lets Vite resolve and emit the dependency. The earlier
+// generic dynamic-request fallback uses the shared syntax matcher to admit the
+// same form without owning a second transform.
+function collectDynamicImportUrlSpecifiers(ast: unknown): DynamicImportUrlSpecifier[] {
+  const specifiers: DynamicImportUrlSpecifier[] = [];
+
+  function visit(value: unknown): void {
+    if (!isAstRecord(value)) return;
+
+    const source = isAstRecord(value.source) ? value.source : null;
+    if (value.type === "ImportExpression" && hasRange(source)) {
+      const specifier = relativeDynamicImportUrlSpecifier(source);
+      if (specifier !== null) {
+        specifiers.push({ ...source, specifier });
+        return;
+      }
+    }
+
+    forEachAstChild(value, visit);
+  }
+
+  visit(ast);
+  return specifiers;
+}
+
 function rewriteCanonicalSourceIdentity(
   code: string,
   canonicalId: string,
   rootPaths: RootPaths,
   environment: ImportMetaUrlEnvironment,
   cjsGlobalInitializers?: CjsGlobalInitializers,
+  normalizeDynamicImportUrls = false,
+  textRewrites: readonly ImportMetaAssetRewrite[] = [],
 ): MagicStringTransformResult | null {
   return rewriteModuleIdentity(code, {
     id: canonicalId,
@@ -387,6 +476,8 @@ function rewriteCanonicalSourceIdentity(
       environment === "server" && mayContainServerCjsGlobal(code)
         ? (cjsGlobalInitializers ?? sourcePathCjsGlobalInitializers(canonicalId))
         : undefined,
+    normalizeDynamicImportUrls,
+    textRewrites,
   });
 }
 
@@ -516,6 +607,8 @@ function rewriteModuleIdentity(
     id: string;
     importMetaUrlReplacement?: string;
     cjsGlobalInitializers?: CjsGlobalInitializers;
+    normalizeDynamicImportUrls?: boolean;
+    textRewrites?: readonly ImportMetaAssetRewrite[];
   },
 ): MagicStringTransformResult | null {
   let ast: unknown;
@@ -539,6 +632,22 @@ function rewriteModuleIdentity(
 
   const output = new MagicString(code);
   let changed = false;
+
+  for (const rewrite of options.textRewrites ?? []) {
+    output.overwrite(rewrite.start, rewrite.end, rewrite.replacement);
+    changed = true;
+  }
+
+  if (options.normalizeDynamicImportUrls) {
+    for (const dynamicImport of collectDynamicImportUrlSpecifiers(ast)) {
+      output.overwrite(
+        dynamicImport.start,
+        dynamicImport.end,
+        JSON.stringify(dynamicImport.specifier),
+      );
+      changed = true;
+    }
+  }
 
   if (options.importMetaUrlReplacement !== undefined) {
     const importMetaRanges = collectImportMetaUrlRanges(ast);
@@ -963,35 +1072,6 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
   return { reads, moduleBindings };
 }
 
-function isImportMetaNode(value: unknown): boolean {
-  return (
-    isAstRecord(value) &&
-    value.type === "MetaProperty" &&
-    isIdentifierNamed(value.meta, "import") &&
-    isIdentifierNamed(value.property, "meta")
-  );
-}
-
-function isImportMetaUrlNode(value: unknown): value is AstRange {
-  return (
-    isAstRecord(value) &&
-    value.type === "MemberExpression" &&
-    hasRange(value) &&
-    isImportMetaNode(value.object) &&
-    isIdentifierNamed(value.property, "url")
-  );
-}
-
-// Accepts both import.meta.url (MemberExpression) and import.meta?.url
-// (ChainExpression wrapping a MemberExpression) so that the new URL() skip
-// correctly handles optional-chained base arguments.
-function isImportMetaUrlOrChainedNode(value: unknown): value is AstRange {
-  if (isImportMetaUrlNode(value)) return true;
-  return (
-    isAstRecord(value) && value.type === "ChainExpression" && isImportMetaUrlNode(value.expression)
-  );
-}
-
 function isImportMetaUrlBaseNode(value: unknown): boolean {
   if (isImportMetaUrlOrChainedNode(value)) return true;
 
@@ -1021,12 +1101,6 @@ function isChainExpressionWrappingImportMetaUrl(value: unknown): value is AstRan
     hasRange(value) &&
     isImportMetaUrlNode(value.expression)
   );
-}
-
-// Only matches bare `new URL(...)`, not `new globalThis.URL(...)` or
-// `new window.URL(...)`. Matches Vite's own asset-detection scope.
-function isNewUrlExpression(value: AstRecord): boolean {
-  return value.type === "NewExpression" && isIdentifierNamed(value.callee, "URL");
 }
 
 function findDirectivePrologueEnd(ast: unknown): number {

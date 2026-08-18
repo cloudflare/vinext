@@ -19,6 +19,7 @@ import {
 } from "./ast-utils.js";
 import { createTransformCache } from "./transform-cache.js";
 import { magicStringTransformResult } from "./transform-result.js";
+import { relativeDynamicImportUrlSpecifier } from "./import-meta-url-syntax.js";
 import {
   collectDirectScopeBindings,
   collectLoopScopeBindings,
@@ -866,6 +867,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
       node.type === "ImportExpression" &&
       hasRange(node) &&
       !hasDynamicRequestIgnoreDirective(code, node, node.source as AstRecord) &&
+      relativeDynamicImportUrlSpecifier(node.source) === null &&
       !requestHasStaticPart(node.source, scope)
     ) {
       output.overwrite(node.start, node.end, dynamicImportReplacement());
