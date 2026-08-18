@@ -24,6 +24,7 @@ type ProductionApp = {
     globalErrorOnly: string;
     globalNotFoundOnly: string;
     loop: string;
+    objectWrapped: string;
     packageClient: string;
     protected: string;
     protectedClient: string;
@@ -117,6 +118,7 @@ async function buildAndServeFixture(): Promise<ProductionApp> {
       globalErrorOnly: findActionId(builtSource, "globalErrorOnlyAction"),
       globalNotFoundOnly: findActionId(builtSource, "globalNotFoundOnlyAction"),
       loop: findActionId(builtSource, "$$hoist_0_loopAction"),
+      objectWrapped: findActionId(builtSource, "objectWrappedAction"),
       packageClient: findActionId(builtSource, "packageClientAction"),
       protected: findActionId(builtSource, "protectedAction"),
       protectedClient: findActionId(builtSource, "protectedClientAction"),
@@ -279,6 +281,22 @@ test.describe("production server action ownership", () => {
         `Expected ${expectedAssertions} action assertions, completed ${completedAssertions}`,
       );
     }
+  });
+
+  test("executes a directly submitted action received through an object", async ({ page }) => {
+    await page.goto(`${app.baseUrl}/ownership/object-wrapped`);
+    await waitForAppRouterHydration(page);
+
+    const responsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.request().headers()["next-action"] === app.actionIds.objectWrapped,
+    );
+    await page.getByTestId("object-wrapped-direct").click();
+    const response = await responsePromise;
+
+    expect(response.status()).toBe(200);
+    expect(await response.text()).toContain("OBJECT_WRAPPED_OK");
   });
 
   test("associates every reference exported by a reachable action module", async ({ page }) => {
