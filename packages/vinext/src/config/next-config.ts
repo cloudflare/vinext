@@ -10,7 +10,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import type { PluginOption } from "vite";
-import commonjs from "vite-plugin-commonjs";
+import { createCommonJsPlugin } from "../plugins/commonjs.js";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
@@ -1018,7 +1018,7 @@ export async function loadNextConfig(
   // name; it does not shadow an installed package with a baseUrl-local file.
   const useNativeTsconfigPaths = !!tsconfigBaseUrl;
 
-  // Symlink-resolved config path, used by the `commonjs()` filter below to
+  // Symlink-resolved config path, used by the CommonJS filter below to
   // exclude the config file itself. macOS uses /private/var symlinks, so
   // string-compare without realpath would falsely include the config.
   const normalizedConfigPath = safeRealpath(path.resolve(configPath));
@@ -1046,11 +1046,8 @@ export async function loadNextConfig(
         // externalized, so a baseUrl-local file does not shadow a package of the
         // same name.
         ...(useNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
-        // Include `.cjs` and `.cts` so `vite-plugin-commonjs` recognises
-        // those extensions (the plugin keys off `config.resolve.extensions`,
-        // which on Vite defaults to `[.mjs, .js, .mts, .ts, .jsx, .tsx,
-        // .json]` — no CJS extensions). This also lets the runner's resolver
-        // find `./foo` style imports that resolve to a `.cjs`/`.cts` sibling.
+        // Include `.cjs` and `.cts` so the runner's resolver and the CommonJS
+        // transform recognise extensionless sibling imports in those formats.
         extensions: [".mjs", ".js", ".cjs", ".mts", ".ts", ".cts", ".jsx", ".tsx", ".json"],
       },
       // Only inject CJS globals for TypeScript config flavours. Next.js
@@ -1059,7 +1056,7 @@ export async function loadNextConfig(
       // configs are loaded through Node and already have `require`/`module`,
       // and `.mjs` configs are explicitly ESM-only.
       //
-      // Pair that with `vite-plugin-commonjs` (the same plugin used for
+      // Pair that with the same internal CommonJS transform used for
       // application code in index.ts) so sibling imports like `.cjs`/`.cts`,
       // or `.js`/`.ts` files that assign to `module.exports`, are converted
       // to ESM before Vite's runner evaluates them. The default `filter`
@@ -1093,16 +1090,12 @@ export async function loadNextConfig(
           },
         },
         ...(isTypeScriptConfig ? [cjsGlobalsInjectorPlugin(configPath)] : []),
-        commonjs({
-          filter: (id: string) => {
+        createCommonJsPlugin({
+          shouldTransform: (_environment, _code, id) => {
             const idPath = id.startsWith("file://") ? fileURLToPath(id) : id.split("?")[0];
             const resolvedId = safeRealpath(path.resolve(idPath));
             if (resolvedId === normalizedConfigPath) return false;
-            // Returning `true` forces the transform to run even for ids
-            // inside `node_modules` (default behaviour skips them);
-            // `undefined` falls through to the plugin's default for
-            // user code.
-            return id.includes("node_modules") ? true : undefined;
+            return true;
           },
         }),
       ],
