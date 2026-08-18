@@ -21,6 +21,7 @@ import {
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MW_CTX_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
@@ -804,6 +805,104 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({ interceptionContext: "/%2561dmin" }),
     );
+  });
+
+  it("rejects unverified interception ids before page dispatch or shared caching", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const matchInterceptRoute = vi.fn(() => null);
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/photos/:path*",
+          headers: [
+            { key: "Cache-Control", value: "public, max-age=3600" },
+            { key: "CDN-Cache-Control", value: "public, max-age=3600" },
+          ],
+        },
+      ],
+      dispatchMatchedPage,
+      matchInterceptRoute,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+    });
+
+    const headers = createRscRequestHeaders({
+      interceptionContext: "/feed",
+      interceptionId: "interception:attacker-selected",
+    });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(matchInterceptRoute).toHaveBeenCalledWith(
+      "/photos/1",
+      "/feed",
+      "interception:attacker-selected",
+    );
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("rejects interception ids without a source context", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const matchInterceptRoute = vi.fn(() => null);
+    const handler = createHandler({ dispatchMatchedPage, matchInterceptRoute });
+    const headers = createRscRequestHeaders({
+      interceptionId: "interception:slot:modal:/feed:/feed->/photos/:id",
+    });
+    const rscUrl = await createRscRequestUrl("/docs/about", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(matchInterceptRoute).not.toHaveBeenCalled();
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("allows an exact graph-owned interception id", async () => {
+    const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
+    const dispatchMatchedPage = vi.fn(async () => new Response("intercepted"));
+    const matchInterceptRoute = vi.fn(
+      (_pathname: string, _sourcePathname: string, requestedId?: string | null) =>
+        requestedId === interceptionId ? { route: sourceRoute, params: {} } : null,
+    );
+    const handler = createHandler({
+      dispatchMatchedPage,
+      matchInterceptRoute,
+      matchRoute: () => null,
+    });
+    const headers = createRscRequestHeaders({
+      interceptionContext: "/feed",
+      interceptionId,
+    });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("intercepted");
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ interceptionContext: "/feed", interceptionId }),
+    );
+  });
+
+  it("marks malformed interception ids non-cacheable", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({ dispatchMatchedPage });
+    const headers = createRscRequestHeaders();
+    headers.set(VINEXT_INTERCEPTION_ID_HEADER, "attacker-selected");
+    const response = await handler(
+      new Request("https://example.test/docs/about?_rsc=invalid", { headers }),
+      null,
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
   it("passes the raw interception source to Server Action dispatch", async () => {

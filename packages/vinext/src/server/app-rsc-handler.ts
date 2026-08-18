@@ -27,6 +27,7 @@ import {
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
   VINEXT_REVALIDATE_HOST_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
@@ -59,7 +60,11 @@ import {
   stripRscSuffix,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
 } from "./app-rsc-cache-busting.js";
-import { applyAppRscConfigHeaders, finalizeAppRscResponse } from "./app-rsc-response-finalizer.js";
+import {
+  applyAppRscConfigHeaders,
+  finalizeAppRscResponse,
+  markAppRscResponseConfigHeadersApplied,
+} from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
@@ -82,6 +87,7 @@ import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
+import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
 import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
@@ -559,6 +565,13 @@ function requestWithoutRscSuffix(request: Request): Request {
   return cloneRequestWithUrl(request, url.toString());
 }
 
+function markRejectedInterceptionIdResponse(response: Response): Response {
+  applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
+  // A matching headers() rule must not make an attacker-selected cache variant
+  // public again after this security decision.
+  return markAppRscResponseConfigHeadersApplied(response);
+}
+
 async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
   request: Request,
@@ -586,8 +599,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       ...options.configRewrites.fallback,
       ...options.configHeaders,
     ].some((rule) => rule.basePath === false);
+  const hasInterceptionIdHeader = request.headers.has(VINEXT_INTERCEPTION_ID_HEADER);
   const normalized = normalizeRscRequest(request, options.basePath, canHandleOutsideBasePath);
-  if (normalized instanceof Response) return normalized;
+  if (normalized instanceof Response) {
+    return hasInterceptionIdHeader ? markRejectedInterceptionIdResponse(normalized) : normalized;
+  }
 
   const {
     url,
@@ -997,6 +1013,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           interceptionIdHeader,
         ) ?? null)
       : null;
+  if (interceptionIdHeader !== null && interceptionSourceMatch === null) {
+    // The supplemental-refresh selector is an untrusted request header. Only
+    // graph-owned identities that match this exact target and source may reach
+    // rendering or shared caches; otherwise arbitrary short values can create
+    // unbounded `_rsc` and Vary variants.
+    options.clearRequestContext();
+    return markRejectedInterceptionIdResponse(badRequestResponse());
+  }
   if (
     interceptionSourceMatch !== null &&
     interceptionSourcePathname !== null &&

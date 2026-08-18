@@ -219,6 +219,36 @@ describe("App RSC route matching", () => {
     });
   });
 
+  it("accepts only the graph-owned interception id for an exact source and target", () => {
+    const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
+    const matcher = createAppRscRouteMatcher([
+      route("/feed", ["feed"], {
+        modal: {
+          id: "slot:modal:/feed",
+          intercepts: [
+            {
+              sourceMatchPattern: "/feed",
+              targetPattern: "/photos/:id",
+              interceptLayouts: ["modal-layout"],
+              page: "photo-page",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/photos/42", "/feed", interceptionId)).toMatchObject({
+      interceptionId,
+      slotId: "slot:modal:/feed",
+    });
+    expect(
+      matcher.findIntercept("/photos/42", "/feed", "interception:attacker-selected"),
+    ).toBeNull();
+    expect(matcher.findIntercept("/other/42", "/feed", interceptionId)).toBeNull();
+    expect(matcher.findIntercept("/photos/42", "/other", interceptionId)).toBeNull();
+  });
+
   it("prefers static interception targets over dynamic targets", () => {
     // Ported from Next.js:
     // test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts
@@ -1017,7 +1047,7 @@ describe("App RSC route matching", () => {
 function route(
   pattern: string,
   patternParts: string[],
-  slots?: Record<string, { intercepts?: TestIntercept[] }>,
+  slots?: Record<string, { id?: string; intercepts?: TestIntercept[] }>,
 ): TestRoute {
   return {
     pattern,
@@ -1044,7 +1074,7 @@ type TestRoute = {
   pattern: string;
   patternParts: string[];
   routeHandler?: unknown;
-  slots?: Record<string, { intercepts?: TestIntercept[] }>;
+  slots?: Record<string, { id?: string; intercepts?: TestIntercept[] }>;
   siblingIntercepts?: TestSiblingIntercept[];
 };
 
