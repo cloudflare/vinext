@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 import { transformCommonJs } from "../packages/vinext/src/plugins/commonjs.js";
 
+async function evaluateCommonJs(code: string): Promise<Record<string, unknown>> {
+  const result = transformCommonJs(code, "/app/value.js");
+  if (!result) throw new Error("Expected transformed code");
+  const url = `data:text/javascript;base64,${Buffer.from(result.code).toString("base64")}`;
+  return import(url) as Promise<Record<string, unknown>>;
+}
+
 describe("transformCommonJs", () => {
   it("hoists literal require calls with the existing default-first interop", () => {
     const result = transformCommonJs(
@@ -26,6 +33,14 @@ describe("transformCommonJs", () => {
     );
     expect(result?.code).toContain("__vinext_cjs_export_Component__ as Component");
     expect(result?.code).toContain("__vinext_cjs_export_value__ as value");
+  });
+
+  // Ported from vite-plugin-commonjs v0.10.4's unrestricted named-export generation:
+  // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/src/generate-export.ts
+  it("exposes Unicode identifier names as named exports", async () => {
+    const module = await evaluateCommonJs(`exports.π = 3; exports.你好 = 4;`);
+    expect(module.π).toBe(3);
+    expect(module.你好).toBe(4);
   });
 
   it("supports computed static export names but not invalid ESM names", () => {
@@ -71,6 +86,17 @@ const external = require("external");
     );
     expect(result?.code).toContain('import * as __vinext_cjs_import___1 from "value";');
     expect(result?.code).toContain("(__vinext_cjs_import___1.default || __vinext_cjs_import___1)");
+  });
+
+  // Ported from vite-plugin-commonjs v0.10.4, which reads the first require argument
+  // without rejecting additional arguments:
+  // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/src/generate-import.ts
+  it("ignores additional require arguments", () => {
+    for (const source of [`require("value", "ignored");`, `require(\`value\`, "ignored");`]) {
+      const result = transformCommonJs(source, "/app/value.js");
+      expect(result?.code).toContain('from "value"');
+      expect(result?.code).not.toContain("ignored");
+    }
   });
 
   it("parses TypeScript and JSX source", () => {

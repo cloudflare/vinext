@@ -26,7 +26,7 @@ import {
 import { magicStringTransformResult, type MagicStringTransformResult } from "./transform-result.js";
 
 const COMMONJS_PRESCAN = /\b(?:require\s*\(|module\s*\.|exports\s*[.[])/;
-const IDENTIFIER_NAME_RE = /^[A-Za-z_$][\w$]*$/;
+const IDENTIFIER_NAME_RE = /^[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*$/u;
 
 type StaticRequire = {
   node: AstRecord & { start: number; end: number };
@@ -150,7 +150,6 @@ function analyzeCommonJs(code: string, id: string): CommonJsAnalysis | null {
       if (
         isIdentifierNamed(callee, "require") &&
         !hasAstBinding(scope, "require") &&
-        args.length === 1 &&
         argument &&
         specifier !== null
       ) {
