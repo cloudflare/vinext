@@ -10,6 +10,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vite-plus/test";
 import { KVCacheHandler } from "../packages/cloudflare/src/cache/kv-data-adapter.runtime.js";
+import { createKvKeySpace } from "../packages/cloudflare/src/cache/kv-key.js";
 import {
   revalidatePath,
   revalidateTag,
@@ -223,6 +224,15 @@ describe("KVCacheHandler", () => {
       expect(await freshHandler.get("tagged-with-long-tag")).not.toBeNull();
       expect(kv.get).toHaveBeenCalledWith(tagKey);
     });
+
+    it("keeps literal keys with the internal hash marker disjoint from hashed keys", () => {
+      const keySpace = createKvKeySpace(undefined);
+      const oversizedTagKey = keySpace.tagKey("é".repeat(256));
+      const literalTag = oversizedTagKey.slice("__tag:".length);
+
+      expect(literalTag).toMatch(/^__hash:[0-9a-f]{16}$/);
+      expect(keySpace.tagKey(literalTag)).not.toBe(oversizedTagKey);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -292,6 +302,25 @@ describe("KVCacheHandler", () => {
       const result = await handler.get("bad-tags");
       expect(result).toBeNull();
       expect(kv.delete).toHaveBeenCalledWith("cache:bad-tags");
+    });
+
+    it("does not expose malformed persisted tags to response header builders", async () => {
+      store.set(
+        "cache:mixed-tags",
+        validEntry(
+          {
+            kind: "PAGES",
+            html: "<html></html>",
+            pageData: {},
+            status: 200,
+          },
+          {
+            tags: [123, "", "valid", "valid", "post:valid", "bad\ntag", "bad\\tag"],
+          },
+        ),
+      );
+
+      expect((await handler.get("mixed-tags"))?.tags).toEqual(["valid", "post:valid"]);
     });
 
     it("rejects entry with invalid revalidateAt type", async () => {
@@ -527,6 +556,11 @@ describe("KVCacheHandler", () => {
         "_N_T_/revalidate-tag-test",
         "test-data",
       ]);
+      expect((await handler.get("rt-path-tags"))?.tags).toEqual([
+        "/revalidate-tag-test",
+        "_N_T_/revalidate-tag-test",
+        "test-data",
+      ]);
     });
 
     it("serves stale within expire and returns a hard miss beyond expire", async () => {
@@ -573,6 +607,33 @@ describe("KVCacheHandler", () => {
       expect(hit?.cacheControl).toEqual({ revalidate: 60, expire: 300, stale: 30 });
     });
 
+    it("round-trips an indefinite admission policy without JSON null coercion", async () => {
+      await handler.set(
+        "indefinite-admission",
+        {
+          kind: "APP_PAGE",
+          html: "<div>static</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: Infinity, expire: Infinity, stale: Infinity } },
+      );
+
+      const raw = JSON.parse(store.get("cache:indefinite-admission")!);
+      expect(raw.cacheControl).toEqual({
+        revalidate: "infinity",
+        expire: "infinity",
+        stale: "infinity",
+      });
+      expect((await handler.get("indefinite-admission"))?.cacheControl).toEqual({
+        revalidate: Infinity,
+        expire: Infinity,
+        stale: Infinity,
+      });
+    });
+
     it("serves stale when a shorter read-time revalidate has elapsed", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(1_000);
@@ -600,6 +661,30 @@ describe("KVCacheHandler", () => {
   });
 
   describe("tag invalidation", () => {
+    it("round-trips and invalidates colon-delimited tags", async () => {
+      await handler.set(
+        "colon-tagged",
+        {
+          kind: "PAGES",
+          html: "<html></html>",
+          pageData: {},
+          headers: undefined,
+          status: 200,
+        },
+        {
+          revalidate: 60,
+          tags: ["post:hello"],
+        },
+      );
+
+      expect((await handler.get("colon-tagged"))?.tags).toEqual(["post:hello"]);
+
+      await handler.revalidateTag("post:hello");
+
+      expect(store.get("__tag:post:hello")).toMatch(/^\d+$/);
+      await expect(handler.get("colon-tagged")).resolves.toBeNull();
+    });
+
     it("revalidateTag persists slash-based path invalidation markers", async () => {
       await handler.revalidateTag(["/revalidate-tag-test", "_N_T_/revalidate-tag-test"]);
 
@@ -680,15 +765,16 @@ describe("KVCacheHandler", () => {
 
       const result = await handler.get("fetch-entry", {
         kind: "FETCH",
-        softTags: ["_N_T_/posts/hello", "_N_T_/posts/hello", "bad:tag", ""],
+        softTags: ["_N_T_/posts/hello", "_N_T_/posts/hello", "post:hello", "bad\\tag", ""],
       });
 
       expect(result).not.toBeNull();
       expect(kv.get).toHaveBeenCalledWith("cache:fetch-entry");
       expect(kv.get).toHaveBeenCalledWith("__tag:_N_T_/posts/hello");
-      expect(kv.get).not.toHaveBeenCalledWith("__tag:bad:tag");
+      expect(kv.get).toHaveBeenCalledWith("__tag:post:hello");
+      expect(kv.get).not.toHaveBeenCalledWith("__tag:bad\\tag");
       expect(kv.get).not.toHaveBeenCalledWith("__tag:");
-      expect(kv.get).toHaveBeenCalledTimes(2);
+      expect(kv.get).toHaveBeenCalledTimes(3);
     });
   });
 

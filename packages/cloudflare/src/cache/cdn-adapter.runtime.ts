@@ -1,16 +1,15 @@
 /**
- * Cloudflare CDN cache adapter — edge-managed page-level ISR backed by the
- * Cloudflare Workers Cache (`ctx.cache`).
+ * Cloudflare CDN cache adapter — page-level ISR admitted through the configured
+ * data cache before promotion to Cloudflare Workers Cache (`ctx.cache`).
  *
- * Unlike the origin-managed default adapter (which stores rendered artifacts in
- * the data cache and serves HIT/STALE itself), this adapter delegates serving
- * to Cloudflare's edge:
+ * A fresh App Router stream cannot safely emit public edge-cache headers because
+ * request APIs may be used after its shell has started streaming. Waiting for
+ * completion would destroy streaming, so this adapter uses two-stage admission:
  *
- * - The origin never serves from a store — `get` returns `null`, so any
- *   request that reaches the Worker renders fresh. The edge absorbs HIT/STALE
- *   traffic and revalidates in the background (the `UPDATING` cache status).
- * - `set` is a no-op: the platform caches the *response* based on its
- *   cache headers, so there is nothing to persist at the origin.
+ * - A fresh response streams immediately with `no-store`. Its cache branch is
+ *   persisted only after the completed render proves it is static.
+ * - A later request reads that admitted artifact and returns it with public edge
+ *   headers. Most subsequent HIT/STALE traffic never reaches the Worker.
  * - `buildResponseHeaders` emits the SWR policy as `CDN-Cache-Control`
  *   (`public, max-age=…, stale-while-revalidate=…`) so the edge caches and
  *   revalidates, while the browser-facing `Cache-Control` is
@@ -40,6 +39,7 @@ import type {
   CdnResponseHeaders,
 } from "vinext/shims/cdn-cache";
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
+import { getDataCacheHandler, MemoryCacheHandler } from "vinext/shims/cache-handler";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 
 const NON_CACHEABLE_DIRECTIVE_RE = /\b(?:private|no-store|no-cache)\b/i;
@@ -140,9 +140,14 @@ function formatCacheTag(tags: readonly string[]): string | null {
   const parts: string[] = [];
   let total = 0;
   for (const tag of tags) {
-    if (!tag || tag.includes(",") || tag.length > MAX_SINGLE_TAG_BYTES) continue;
+    // Header separators and control characters are never valid tag content.
+    // Count UTF-8 bytes, not UTF-16 code units, against Cloudflare's limits.
+    // oxlint-disable-next-line no-control-regex -- intentional header-injection guard
+    if (!tag || /[\x00-\x1f\x7f,]/.test(tag)) continue;
+    const tagBytes = new TextEncoder().encode(tag).byteLength;
+    if (tagBytes > MAX_SINGLE_TAG_BYTES) continue;
     // +1 accounts for the joining comma.
-    const next = total + tag.length + (parts.length > 0 ? 1 : 0);
+    const next = total + tagBytes + (parts.length > 0 ? 1 : 0);
     if (next > MAX_CACHE_TAG_BYTES) break;
     parts.push(tag);
     total = next;
@@ -151,28 +156,43 @@ function formatCacheTag(tags: readonly string[]): string | null {
 }
 
 export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
-  // The Cloudflare edge revalidates by re-requesting the origin (UPDATING),
-  // so the origin must not also run in-process background regeneration.
-  readonly ownsBackgroundRevalidation = false;
+  // Stale admission artifacts regenerate at the origin; otherwise every edge
+  // revalidation would replay the same stale artifact indefinitely.
+  readonly ownsBackgroundRevalidation = true;
 
   /**
-   * The origin keeps no page store — return null so the request renders fresh.
-   * The edge serves cached HIT/STALE responses without reaching the origin.
+   * Read a completed artifact from the configured durable admission store.
    */
-  async get(): Promise<CacheHandlerValue | null> {
-    return null;
+  async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    const handler = getDataCacheHandler();
+    // The process-local fallback disappears whenever a Worker isolate is
+    // replaced. It is not proof that an artifact was durably admitted.
+    if (handler instanceof MemoryCacheHandler) return null;
+    return handler.get(key, ctx);
   }
 
-  /** No-op: the platform caches the response via its headers, not an origin store. */
+  /** Persist a completed, proven-static artifact for later edge promotion. */
   async set(
-    _key: string,
-    _data: IncrementalCacheValue | null,
-    _ctx?: Record<string, unknown>,
+    key: string,
+    data: IncrementalCacheValue | null,
+    ctx?: Record<string, unknown>,
   ): Promise<void> {
-    // intentionally empty
+    const handler = getDataCacheHandler();
+    if (handler instanceof MemoryCacheHandler) return;
+    await handler.set(key, data, ctx);
   }
 
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
+    // Header-time policy is irreversible. A fresh stream remains private while
+    // its cache branch is evaluated and, if proven static, durably admitted.
+    if (input.pendingDynamicCheck) {
+      return clearCloudflareCdnResponseHeaders(NO_STORE);
+    }
+
+    if (input.cacheState === "STALE") {
+      return clearCloudflareCdnResponseHeaders(NO_STORE);
+    }
+
     // No cacheable policy → nobody stores it.
     if (!input.cacheControl) {
       return clearCloudflareCdnResponseHeaders(NO_STORE);
@@ -181,7 +201,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     // A non-cacheable policy (no-store / no-cache / private) must never be
     // promoted to an edge cache. Clear any cacheable headers this adapter owns
     // in case middleware stamped them before the final policy was known.
-    if (/\b(?:no-store|no-cache|private)\b/.test(input.cacheControl)) {
+    if (NON_CACHEABLE_DIRECTIVE_RE.test(input.cacheControl)) {
       return clearCloudflareCdnResponseHeaders(input.cacheControl);
     }
 

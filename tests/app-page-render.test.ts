@@ -41,6 +41,7 @@ import type { InitialNavigationCacheMetadata } from "../packages/vinext/src/serv
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
+  type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
 import {
@@ -370,6 +371,42 @@ describe("SSR shell error recovery", () => {
       expect(response.headers.get("cache-tag")).toBeNull();
       await expect(response.text()).resolves.toContain("__next_error__");
       expect(common.isrSet).not.toHaveBeenCalled();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+});
+
+describe("edge cache admission ownership", () => {
+  it("fails closed without a durable admission store", async () => {
+    const edgeOnlyAdapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders(input) {
+        if (input.pendingDynamicCheck || !input.cacheControl) {
+          return { "Cache-Control": "no-store", "CDN-Cache-Control": null };
+        }
+        return { "Cache-Control": "no-store", "CDN-Cache-Control": input.cacheControl };
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edgeOnlyAdapter);
+    const common = createCommonOptions();
+
+    try {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        isProduction: true,
+        revalidateSeconds: 30,
+      });
+
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+      await expect(response.text()).resolves.toBe("<html>page</html>");
+      await Promise.all(common.waitUntilPromises);
     } finally {
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     }

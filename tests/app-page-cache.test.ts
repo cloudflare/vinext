@@ -62,6 +62,7 @@ function buildISRCacheEntry(
     value: {
       cacheControl,
       lastModified: Date.now(),
+      tags: [],
       value,
     },
   };
@@ -1080,6 +1081,7 @@ describe("app page cache helpers", () => {
           isStale: false,
           value: {
             lastModified: Date.now(),
+            tags: [],
             value: {
               kind: "REDIRECT",
               props: {},

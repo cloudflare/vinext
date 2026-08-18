@@ -210,6 +210,7 @@ function buildISRCacheEntry(value: CachedAppPageValue, isStale = false): ISRCach
     isStale,
     value: {
       lastModified: Date.now(),
+      tags: [],
       value,
     },
   };
@@ -811,7 +812,7 @@ describe("app page dispatch", () => {
     const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data) => {
       cache.set(key, {
         isStale: false,
-        value: { lastModified: Date.now(), value: data },
+        value: { lastModified: Date.now(), tags: [], value: data },
       });
     });
     const waitUntilPromises: Promise<unknown>[] = [];
@@ -933,7 +934,7 @@ describe("app page dispatch", () => {
       const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data) => {
         cache.set(key, {
           isStale: false,
-          value: { lastModified: Date.now(), value: data },
+          value: { lastModified: Date.now(), tags: [], value: data },
         });
       });
       const waitUntilPromises: Promise<unknown>[] = [];
@@ -1041,7 +1042,7 @@ describe("app page dispatch", () => {
       const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data) => {
         cache.set(key, {
           isStale: false,
-          value: { lastModified: Date.now(), value: data },
+          value: { lastModified: Date.now(), tags: [], value: data },
         });
       });
       const waitUntilPromises: Promise<unknown>[] = [];
@@ -1162,7 +1163,7 @@ describe("app page dispatch", () => {
     const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data) => {
       cache.set(key, {
         isStale: false,
-        value: { lastModified: Date.now(), value: data },
+        value: { lastModified: Date.now(), tags: [], value: data },
       });
     });
     const waitUntilPromises: Promise<unknown>[] = [];
@@ -1298,7 +1299,7 @@ describe("app page dispatch", () => {
         isrSet: async (key, value) => {
           cache.set(key, {
             isStale: false,
-            value: { lastModified: Date.now(), value },
+            value: { lastModified: Date.now(), tags: [], value },
           });
         },
         params: {},
@@ -1632,6 +1633,7 @@ describe("app page dispatch", () => {
         isStale: false,
         value: {
           lastModified: Date.now(),
+          tags: [],
           value: data,
         },
       });
@@ -1778,7 +1780,7 @@ describe("app page dispatch", () => {
         isrSet: async (key, value) => {
           cache.set(key, {
             isStale: false,
-            value: { lastModified: Date.now(), value },
+            value: { lastModified: Date.now(), tags: [], value },
           });
         },
         loadSsrHandler: async () => ({

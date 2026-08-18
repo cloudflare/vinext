@@ -11,14 +11,9 @@
  *   carries, whether the origin runs background regeneration, and how
  *   invalidation propagates to a CDN edge.
  *
- * Two strategies sit behind one interface:
- *
- * | Concern            | DefaultCdnCacheAdapter (origin-managed) | Edge adapter (CDN-managed)                  |
- * | ------------------ | --------------------------------------- | ------------------------------------------- |
- * | Serve from store?  | Yes — reads the data cache              | No — origin renders fresh, edge caches      |
- * | Background regen   | In-process via `waitUntil`              | Edge re-requests origin                     |
- * | Response headers   | Framework cache policy                  | Provider-specific cache policy                         |
- * | Invalidation       | (data cache handles tag invalidation)   | purge / revalidate via request context      |
+ * Adapters use the existing `get` and `set` contract for admission. A fresh
+ * stream stays private; only a later stored hit can receive shared-cache
+ * headers from an edge adapter.
  *
  * The default adapter is a thin shim over the data cache + the framework's
  * existing header logic, so default behavior is byte-for-byte identical to the
@@ -42,14 +37,18 @@ export type CdnCacheableHeaderInput = {
    */
   cacheControl: string;
   /**
+   * State of the stored page artifact being considered for promotion. A stale
+   * artifact can be served privately while origin regeneration replaces it.
+   */
+  cacheState?: "HIT" | "STALE";
+  /**
    * True when this is a freshly-rendered **streaming** response whose
    * dynamic-ness is not yet proven (late Server Component request-API usage can
    * only be detected after the stream drains).
    *
-   * The default adapter forces `no-store` for the browser in this case — the
-   * page is instead served from the origin store on subsequent requests. Edge
-   * adapters may instead emit edge-only cache headers so the CDN performs SWR
-   * while the browser receives a separate policy.
+   * Every adapter must keep this response out of shared caches. Adapters backed
+   * by origin storage may persist the completed artifact after the stream
+   * drains, then make a later cache hit shareable.
    */
   pendingDynamicCheck?: boolean;
   /**
@@ -111,8 +110,8 @@ export type CdnCacheAdapter = {
 
   /**
    * Whether the **origin** runs in-process background regeneration when a stale
-   * entry is served. Edge adapters set this to `false` because the CDN
-   * revalidates by re-requesting the origin.
+   * entry is served. Adapters that depend only on edge revalidation set this to
+   * `false`; adapters with an admission store set it to `true`.
    */
   readonly ownsBackgroundRevalidation: boolean;
 

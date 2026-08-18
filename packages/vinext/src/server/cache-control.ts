@@ -48,7 +48,9 @@ export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean
 export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
   headers.delete("Cache-Control");
   const useNextDeployPolicy =
-    shouldUseNextDeployCacheControl() && isSharedCacheControl(input.cacheControl);
+    shouldUseNextDeployCacheControl() &&
+    !input.pendingDynamicCheck &&
+    isSharedCacheControl(input.cacheControl);
   // An empty policy tells the adapter to remove any provider-specific cache
   // metadata it owns before core applies the deployment-specific browser policy.
   const map = getCdnCacheAdapter().buildResponseHeaders(

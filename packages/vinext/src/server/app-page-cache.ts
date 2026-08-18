@@ -5,7 +5,11 @@ import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  hasExplicitNonCacheableResponsePolicy,
+  NO_STORE_CACHE_CONTROL,
+} from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
 import { applyClientStaleTimeHeader, applyEdgeRuntimeHeader } from "./app-page-response.js";
@@ -79,6 +83,7 @@ type BuildAppPageCachedResponseOptions = {
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
   revalidateSeconds: number;
+  tags?: readonly string[];
 };
 
 type ReadAppPageCacheResponseOptions = {
@@ -173,14 +178,44 @@ function buildAppPageCachedHeaders(options: {
   middlewareHeaders?: Headers | null;
   mountedSlotsHeader?: string | null;
   staleTimeSeconds?: number;
+  tags?: readonly string[];
 }): Headers {
   const headers = new Headers({
     "Content-Type": options.contentType,
     Vary: VINEXT_RSC_VARY_HEADER,
   });
-  // Page artifacts served from the origin store get their cache headers from the
-  // CDN adapter (default: a single Cache-Control identical to the prior behavior).
-  applyCdnResponseHeaders(headers, { cacheControl: options.cacheControl });
+  // Middleware policy is part of the response contract and must participate in
+  // the promotion decision. A private/no-store middleware response vetoes edge
+  // caching; a cacheable override replaces the render's stored lifetime.
+  mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
+  const middlewareCacheControl = headers.get("Cache-Control");
+  const hasNonCacheableMiddlewarePolicy = hasExplicitNonCacheableResponsePolicy(headers);
+  const cacheControl = hasNonCacheableMiddlewarePolicy
+    ? (middlewareCacheControl ?? NO_STORE_CACHE_CONTROL)
+    : middlewareCacheControl && !/\b(?:private|no-store|no-cache)\b/i.test(middlewareCacheControl)
+      ? middlewareCacheControl
+      : options.cacheControl;
+  const cdnHeaderInput = {
+    cacheControl,
+    cacheState: options.cacheState,
+    tags: options.tags,
+  };
+  applyCdnResponseHeaders(headers, cdnHeaderInput);
+  const isCacheableHit =
+    options.cacheState === "HIT" &&
+    cacheControl.length > 0 &&
+    !/\b(?:private|no-store|no-cache)\b/i.test(cacheControl);
+  if (!hasNonCacheableMiddlewarePolicy && isCacheableHit && options.middlewareHeaders) {
+    // Middleware owns singular response headers. Keep explicit cacheable
+    // provider policy and tag overrides after the adapter fills missing values.
+    for (const [name, value] of options.middlewareHeaders) {
+      const lowerName = name.toLowerCase();
+      if (lowerName === "cache-control" || lowerName === "set-cookie" || lowerName === "vary") {
+        continue;
+      }
+      headers.set(name, value);
+    }
+  }
   setCacheStateHeaders(headers, options.cacheState);
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
@@ -190,7 +225,6 @@ function buildAppPageCachedHeaders(options: {
 
   applyClientStaleTimeHeader(headers, options.staleTimeSeconds);
 
-  mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
   if (options.linkHeader) {
     if (Array.isArray(options.linkHeader)) {
       for (const value of options.linkHeader) headers.append("Link", value);
@@ -267,6 +301,7 @@ export function buildAppPageCachedResponse(
       middlewareHeaders: options.middlewareHeaders,
       mountedSlotsHeader: options.mountedSlotsHeader,
       staleTimeSeconds,
+      tags: options.tags,
     });
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
@@ -289,6 +324,7 @@ export function buildAppPageCachedResponse(
     linkHeader: cachedValue.headers?.link,
     middlewareHeaders: options.middlewareHeaders,
     staleTimeSeconds,
+    tags: options.tags,
   });
 
   const response = new Response(cachedValue.html, {
@@ -347,6 +383,7 @@ async function serveAppPageCachedHtml(
     middlewareHeaders: options.middlewareHeaders,
     middlewareStatus: options.middlewareStatus,
     revalidateSeconds: options.revalidateSeconds,
+    tags: options.cached?.value.tags,
   });
 
   if (!response) return null;
@@ -426,6 +463,7 @@ export async function readAppPageCacheResponse(
         middlewareStatus: options.middlewareStatus,
         mountedSlotsHeader: options.mountedSlotsHeader,
         revalidateSeconds: options.revalidateSeconds,
+        tags: cached?.value.tags,
       });
 
       if (hitResponse) {
@@ -524,6 +562,7 @@ export async function readAppPageCacheResponse(
         middlewareStatus: options.middlewareStatus,
         mountedSlotsHeader: options.mountedSlotsHeader,
         revalidateSeconds: options.revalidateSeconds,
+        tags: cached.value.tags,
       });
 
       if (staleResponse) {

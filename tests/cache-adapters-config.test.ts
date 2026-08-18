@@ -281,7 +281,7 @@ describe("cdnAdapter builder + factory", () => {
   it("factory returns a CloudflareCdnCacheAdapter", () => {
     const adapter = createCloudflareCdnCacheAdapter();
     expect(adapter).toBeInstanceOf(CloudflareCdnCacheAdapter);
-    // Edge adapter does not own in-process background regeneration.
-    expect(adapter.ownsBackgroundRevalidation).toBe(false);
+    // Stale admission artifacts regenerate in-process before edge promotion.
+    expect(adapter.ownsBackgroundRevalidation).toBe(true);
   });
 });
