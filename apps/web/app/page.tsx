@@ -21,6 +21,59 @@ import typescript from "shiki/langs/typescript.mjs";
 import githubDarkDefault from "shiki/themes/github-dark-default.mjs";
 import { createHighlighterCore } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+import type { Metadata } from "next";
+
+const title = "vinext — The Next.js API surface, reimplemented on Vite";
+const description =
+  "Take any Next.js app and deploy it anywhere with one command. App Router, Pages Router, RSC, ISR — all on Vite.";
+
+export const metadata: Metadata = {
+  alternates: {
+    canonical: "/",
+  },
+  openGraph: {
+    type: "website",
+    locale: "en_US",
+    siteName: "vinext",
+    title,
+    description,
+    url: "/",
+  },
+  twitter: {
+    title,
+    description,
+  },
+};
+
+const structuredData = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      name: "vinext",
+      description,
+      url: "https://vinext.dev",
+      publisher: {
+        "@type": "Organization",
+        name: "Cloudflare",
+        url: "https://www.cloudflare.com",
+      },
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      name: "vinext",
+      description,
+      url: "https://vinext.dev",
+      codeRepository: "https://github.com/cloudflare/vinext",
+      programmingLanguage: "TypeScript",
+      author: {
+        "@type": "Organization",
+        name: "Cloudflare",
+        url: "https://www.cloudflare.com",
+      },
+    },
+  ],
+};
 
 // ISR: 5-minute revalidate. The home page is fully static so the cached
 // output is effectively reused indefinitely between deploys; the revalidate
@@ -203,6 +256,10 @@ async function CodeExample({ code }: { code: string }) {
 export default function Home() {
   return (
     <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
+      />
       <section className="mx-auto flex w-full max-w-6xl flex-col items-center px-6 pb-20 pt-24 text-center">
         <Badge variant="outline" className="mb-6">
           The Next.js API surface, re-implemented on Vite
