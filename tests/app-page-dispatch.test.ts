@@ -2464,7 +2464,17 @@ describe("app page dispatch", () => {
     expect(options.isrSet).not.toHaveBeenCalled();
   });
 
-  it("bypasses persistent and CDN caches for interception-id RSC requests", async () => {
+  it("uses a verified interception id in the persistent RSC cache key", async () => {
+    const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
+    const isrRscKey = vi.fn(
+      (
+        pathname: string,
+        _mountedSlotsHeader?: string | null,
+        _renderMode?: DispatchOptions["renderMode"],
+        _interceptionContext?: string | null,
+        selector?: string | null,
+      ) => `rsc:${pathname}:${selector ?? "none"}`,
+    );
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(
         buildCachedAppPageValue(
@@ -2478,7 +2488,7 @@ describe("app page dispatch", () => {
     const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
     const request = new Request("https://example.test/photos/123", {
       headers: {
-        [VINEXT_INTERCEPTION_ID_HEADER]: "interception:slot:modal:/feed:/feed->/photos/:id",
+        [VINEXT_INTERCEPTION_ID_HEADER]: interceptionId,
       },
     });
     const { options } = createDispatchOptions({
@@ -2486,17 +2496,19 @@ describe("app page dispatch", () => {
       isProduction: true,
       isRscRequest: true,
       isrGet,
+      isrRscKey,
       isrSet,
       request,
       revalidateSeconds: 60,
     });
 
     const response = await dispatchAppPage(options);
-    await response.arrayBuffer();
+    await expect(response.text()).resolves.toBe("stale-flight");
 
-    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
-    expect(isrGet).not.toHaveBeenCalled();
+    expect(response.headers.get("cache-control")).not.toContain("no-store");
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(isrRscKey).toHaveBeenCalledWith("/photos/123", null, undefined, null, interceptionId);
+    expect(isrGet).toHaveBeenCalledWith(`rsc:/photos/123:${interceptionId}`);
     expect(isrSet).not.toHaveBeenCalled();
   });
 

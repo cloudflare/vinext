@@ -242,6 +242,8 @@ describe("App RSC route matching", () => {
       interceptionId,
       slotId: "slot:modal:/feed",
     });
+    expect(matcher.hasInterceptionId(interceptionId)).toBe(true);
+    expect(matcher.hasInterceptionId("interception:attacker-selected")).toBe(false);
     expect(
       matcher.findIntercept("/photos/42", "/feed", "interception:attacker-selected"),
     ).toBeNull();

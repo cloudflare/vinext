@@ -342,6 +342,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
     interceptionContext?: string | null,
+    interceptionId?: string | null,
   ) => string;
   isrSet: AppPageCacheSetter;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
@@ -627,8 +628,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const route = options.route;
   const dynamicConfig = options.dynamicConfig;
   const currentRevalidateSeconds = options.revalidateSeconds;
-  const bypassRscCache =
-    options.isRscRequest && options.request.headers.has(VINEXT_INTERCEPTION_ID_HEADER);
+  const interceptionId = options.isRscRequest
+    ? options.request.headers.get(VINEXT_INTERCEPTION_ID_HEADER)
+    : null;
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
@@ -702,7 +704,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   }
 
   if (
-    !bypassRscCache &&
     shouldReadAppPageCache({
       isDraftMode,
       isForceDynamic,
@@ -726,6 +727,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
+      interceptionId,
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
@@ -1094,7 +1096,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   return renderAppPageLifecycle({
     basePath: options.basePath,
-    bypassRscCache,
     clientTraceMetadata: options.clientTraceMetadata,
     reactMaxHeadersLength: options.reactMaxHeadersLength,
     cleanPathname: options.cleanPathname,
@@ -1141,6 +1142,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isrRscKey: options.isrRscKey,
     isrSet: options.isrSet,
     interceptionContext: options.interceptionContext,
+    interceptionId,
     expireSeconds: options.expireSeconds,
     // A loading convention at tree position N wraps descendants, but not a
     // layout co-located at N. Probing any deeper async layout before creating

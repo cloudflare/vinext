@@ -1083,6 +1083,8 @@ describe("App Router entry templates", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
     expect(code).toContain("matchInterceptRoute(pathname, sourcePathname, interceptionId)");
+    expect(code).toContain("hasInterceptionId(interceptionId)");
+    expect(code).toContain("return __routeMatcher.hasInterceptionId(interceptionId)");
     expect(code).toContain(
       "const intercept = findIntercept(pathname, sourcePathname, interceptionId)",
     );

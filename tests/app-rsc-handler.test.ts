@@ -125,6 +125,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
     i18nConfig: overrides.i18nConfig ?? null,
     imageConfig: overrides.imageConfig,
     isDev: overrides.isDev ?? true,
+    hasInterceptionId: overrides.hasInterceptionId ?? (() => false),
     matchInterceptRoute: overrides.matchInterceptRoute,
     matchRoute:
       overrides.matchRoute ??
@@ -823,6 +824,7 @@ describe("createAppRscHandler", () => {
         },
       ],
       dispatchMatchedPage,
+      hasInterceptionId: () => false,
       matchInterceptRoute,
       matchRoute: (pathname: string) =>
         pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
@@ -841,15 +843,41 @@ describe("createAppRscHandler", () => {
     );
     expect(response.headers.get("cdn-cache-control")).toBeNull();
     expect(response.headers.get("x-security-test")).toBe("preserved");
-    expect(matchInterceptRoute).toHaveBeenCalledWith(
-      "/photos/1",
-      "/feed",
-      "interception:attacker-selected",
-    );
+    expect(matchInterceptRoute).not.toHaveBeenCalled();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
-  it("forces middleware responses with unverified interception ids to no-store", async () => {
+  it("canonicalizes selector hashes before permanent config redirects", async () => {
+    const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
+    const handler = createHandler({
+      configHeaders: [],
+      configRedirects: [
+        {
+          source: "/photos/:id",
+          destination: "/viewer/:id",
+          permanent: true,
+        },
+      ],
+      hasInterceptionId: (requestedId) => requestedId === interceptionId,
+    });
+    const headers = createRscRequestHeaders({
+      interceptionContext: "/feed",
+      interceptionId,
+    });
+    const currentHash = await computeRscCacheBustingSearchParam(headers);
+    // Hash produced before X-Vinext-Interception-Id became a positional input.
+    const previousHash = "xut9sI3k0WVES6tW";
+
+    const response = await handler(
+      new Request(`https://example.test/docs/photos/1?_rsc=${previousHash}`, { headers }),
+      null,
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe(`/docs/photos/1?_rsc=${currentHash}`);
+  });
+
+  it("rejects unknown interception ids before middleware can respond", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page"));
     const matchInterceptRoute = vi.fn(() => null);
     const handler = createHandler({
@@ -863,6 +891,7 @@ describe("createAppRscHandler", () => {
         },
       ],
       dispatchMatchedPage,
+      hasInterceptionId: () => false,
       matchInterceptRoute,
       async runMiddleware() {
         return {
@@ -881,13 +910,43 @@ describe("createAppRscHandler", () => {
     const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
-    expect(response.status).toBe(200);
-    expect(await response.text()).toBe("middleware");
+    expect(response.status).toBe(400);
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
     expect(response.headers.get("cdn-cache-control")).toBeNull();
     expect(matchInterceptRoute).not.toHaveBeenCalled();
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("preserves a cacheable middleware 400 for a graph-owned id", async () => {
+    const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      hasInterceptionId: (requestedId) => requestedId === interceptionId,
+      async runMiddleware() {
+        return {
+          kind: "response",
+          response: new Response("middleware", {
+            status: 400,
+            headers: { "Cache-Control": "public, max-age=3600" },
+          }),
+        };
+      },
+    });
+
+    const headers = createRscRequestHeaders({
+      interceptionContext: "/feed",
+      interceptionId,
+    });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("middleware");
+    expect(response.headers.get("cache-control")).toBe("public, max-age=3600");
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
@@ -901,6 +960,7 @@ describe("createAppRscHandler", () => {
         },
       ],
       dispatchMatchedPage,
+      hasInterceptionId: () => true,
       matchRoute: (pathname: string) =>
         pathname === "/photos/1"
           ? {
@@ -928,7 +988,11 @@ describe("createAppRscHandler", () => {
   it("rejects interception ids without a source context", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page"));
     const matchInterceptRoute = vi.fn(() => null);
-    const handler = createHandler({ dispatchMatchedPage, matchInterceptRoute });
+    const handler = createHandler({
+      dispatchMatchedPage,
+      hasInterceptionId: () => true,
+      matchInterceptRoute,
+    });
     const headers = createRscRequestHeaders({
       interceptionId: "interception:slot:modal:/feed:/feed->/photos/:id",
     });
@@ -957,6 +1021,7 @@ describe("createAppRscHandler", () => {
         },
       ],
       dispatchMatchedPage,
+      hasInterceptionId: (requestedId) => requestedId === interceptionId,
       matchInterceptRoute,
       matchRoute: () => null,
     });
@@ -969,9 +1034,7 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("intercepted");
-    expect(response.headers.get("cache-control")).toBe(
-      "private, no-cache, no-store, max-age=0, must-revalidate",
-    );
+    expect(response.headers.get("cache-control")).toBe("public, max-age=3600");
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({ interceptionContext: "/feed", interceptionId }),
     );

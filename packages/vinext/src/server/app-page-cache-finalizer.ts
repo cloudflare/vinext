@@ -19,6 +19,7 @@ type AppPageRscCacheKeyBuilder = (
   mountedSlotsHeader?: string | null,
   renderMode?: AppRscRenderMode,
   interceptionContext?: string | null,
+  interceptionId?: string | null,
 ) => string;
 type AppPageRequestCacheLife = {
   revalidate?: number;
@@ -45,6 +46,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
+  interceptionId?: string | null;
   omitPendingDynamicCacheState?: boolean;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
@@ -54,7 +56,6 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
 };
 
 type ScheduleAppPageRscCacheWriteOptions = {
-  bypassRscCache?: boolean;
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
@@ -67,6 +68,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
+  interceptionId?: string | null;
   mountedSlotsHeader?: string | null;
   omitPendingDynamicCacheState?: boolean;
   renderMode?: AppRscRenderMode;
@@ -90,8 +92,8 @@ function applyUncacheableRscVariantNoStoreHeaders(
   headers: Headers,
   options: { omitCacheState?: boolean } = {},
 ): void {
-  // Mounted-slot and interception-selector RSC payloads deliberately bypass
-  // the slot/selector-blind persistent cache. Make that same bypass explicit to
+  // Mounted-slot RSC payloads deliberately bypass the slot-blind persistent
+  // cache. Make that same bypass explicit to
   // every CDN adapter: an edge-managed adapter may intentionally cache
   // pending-dynamic responses, so that generic signal is not strong enough.
   // The active adapter clears any stale provider-specific headers that it owns.
@@ -168,6 +170,7 @@ export function finalizeAppPageHtmlCacheResponse(
     null,
     undefined,
     options.interceptionContext,
+    options.interceptionId,
   );
   const clientHeaders = new Headers(response.headers);
   if (options.preserveClientResponseHeaders !== true) {
@@ -265,8 +268,7 @@ export function finalizeAppPageRscCacheResponse(
   // slots because edge-managed adapters may cache pending-dynamic responses.
   scheduleAppPageRscCacheWrite(options);
 
-  const isUncacheableVariant =
-    Boolean(options.mountedSlotsHeader) || options.bypassRscCache === true;
+  const isUncacheableVariant = Boolean(options.mountedSlotsHeader);
   if (options.preserveClientResponseHeaders === true && !isUncacheableVariant) {
     return response;
   }
@@ -293,12 +295,7 @@ export function scheduleAppPageRscCacheWrite(
   options: ScheduleAppPageRscCacheWriteOptions,
 ): boolean {
   const capturedRscDataPromise = options.capturedRscDataPromise;
-  if (
-    !capturedRscDataPromise ||
-    options.dynamicUsedDuringBuild ||
-    options.mountedSlotsHeader ||
-    options.bypassRscCache === true
-  ) {
+  if (!capturedRscDataPromise || options.dynamicUsedDuringBuild || options.mountedSlotsHeader) {
     return false;
   }
 
@@ -307,6 +304,7 @@ export function scheduleAppPageRscCacheWrite(
     null,
     options.renderMode,
     options.interceptionContext,
+    options.interceptionId,
   );
   const cachePromise = (async () => {
     try {

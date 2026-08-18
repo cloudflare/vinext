@@ -191,6 +191,7 @@ function normalizeMatchedParamsForRoute(result: {
 export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   routes: Route[],
 ): {
+  hasInterceptionId(interceptionId: string): boolean;
   matchRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   matchRequestRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   findIntercept(
@@ -201,9 +202,17 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
 } {
   const routeTrie = buildRouteTrie(routes);
   const interceptLookup = createInterceptLookup(routes);
+  const interceptionIds = new Set(
+    interceptLookup.flatMap((entry) =>
+      entry.interceptionId === null ? [] : [entry.interceptionId],
+    ),
+  );
   const routeIndexes = new Map<Route, number>(routes.map((route, index) => [route, index]));
 
   return {
+    hasInterceptionId(interceptionId) {
+      return interceptionIds.has(interceptionId);
+    },
     matchRoute(url) {
       const rawParts = appRscPathnameParts(url, true);
       const result = trieMatchRaw(routeTrie, appRscPathnameParts(url, false));

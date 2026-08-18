@@ -642,6 +642,10 @@ function findIntercept(pathname, sourcePathname = null, interceptionId = null) {
   return __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId);
 }
 
+function hasInterceptionId(interceptionId) {
+  return __routeMatcher.hasInterceptionId(interceptionId);
+}
+
 async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess, displayPathname = routePath, scriptNonce) {
   // Hydrate lazy page/route-handler modules before any synchronous read.
   await __ensureRouteLoaded(route);
@@ -1271,6 +1275,7 @@ export default createAppRscHandler({
   }
   matchRoute,
   matchRequestRoute,
+  hasInterceptionId,
   matchInterceptRoute(pathname, sourcePathname, interceptionId) {
     const intercept = findIntercept(pathname, sourcePathname, interceptionId);
     if (!intercept) return null;
