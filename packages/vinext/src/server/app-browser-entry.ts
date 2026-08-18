@@ -35,6 +35,7 @@ import {
   getBfcacheIdMapContext,
   getMountedSlotsHeader,
   getPrefetchCache,
+  hasObservedExternalHistoryWrite,
   hasPrefetchCacheEntryForNavigation,
   invalidatePrefetchCache,
   preloadHybridClientRouteOwner,
@@ -142,6 +143,10 @@ import {
   createPopstateRestoreHandler,
   restoreSynchronousPopstateScrollPosition,
 } from "./app-browser-popstate.js";
+import {
+  hasMissedInitialTraversal,
+  readBrowserNavigationEntryKeySource,
+} from "./app-browser-missed-traversal.js";
 import {
   DevRecoveryBoundary,
   GlobalErrorBoundary,
@@ -1540,7 +1545,27 @@ function bootstrapHydration(
   devErrorOverlay: DevErrorOverlayModule | null,
   initialRscBootstrap: NavigationRuntimeRscBootstrap | undefined,
 ): void {
+  // Back/Forward pressed before the popstate listener exists (the awaits in
+  // main(), or the entry script still loading) is an instant same-document
+  // traversal that nobody handled: the browser now sits on a different history
+  // entry than the one this document was activated on. The initial payload
+  // describes the activation entry, so it must not seed the URL-keyed
+  // navigation caches and the initial history writes must not overwrite the
+  // traversed-to entry's metadata. The traversal is replayed once the listener
+  // is installed below.
+  const missedInitialTraversal = hasMissedInitialTraversal({
+    externalHistoryWriteObserved: hasObservedExternalHistoryWrite(),
+    historyState: window.history.state,
+    navigation: readBrowserNavigationEntryKeySource(),
+  });
+  if (missedInitialTraversal) {
+    historyController.markMissedInitialTraversal();
+  }
+
   const hydrationCachePublication = createHydrationCachePublication();
+  if (missedInitialTraversal) {
+    hydrationCachePublication.invalidate();
+  }
   const cacheGeneration = clientNavigationCacheGeneration;
   const [reactBranch, cacheBranch] = rscStream.tee();
   const root = decodeAppElementsPromise(createFromReadableStream<AppWireElements>(reactBranch));
@@ -1554,6 +1579,8 @@ function bootstrapHydration(
   void Promise.all([root, initialCacheBuffer])
     .then(async ([elements, buffer]) => {
       if (cacheGeneration !== clientNavigationCacheGeneration) return;
+      // The payload belongs to the activation entry, not the live URL.
+      if (missedInitialTraversal) return;
       const metadata = AppElementsWire.readMetadata(elements);
       initialPrefetchRouterState = {
         pathAndSearch: initialPathAndSearch,
@@ -2518,7 +2545,7 @@ function bootstrapHydration(
     shouldSkipScrollRestore: (navId) => synchronousPopstateScrollRestoreNavigationId === navId,
   });
 
-  window.addEventListener("popstate", (event) => {
+  const handleAppRouterTraversal = (state: unknown): void => {
     // The browser has already applied the history entry by the time popstate
     // fires. App Router state does not include hashes, so matching the
     // committed pathname/search proves this traversal does not need a new RSC
@@ -2528,13 +2555,13 @@ function bootstrapHydration(
     const href = window.location.href;
     if (isSameAppRoutePopstateTarget(href)) {
       notifyAppRouterTransitionStart(href, "traverse");
-      historyController.commitTraversalIndexFromHistoryState(event.state);
-      restorePopstateScrollPosition(event.state);
+      historyController.commitTraversalIndexFromHistoryState(state);
+      restorePopstateScrollPosition(state);
       return;
     }
     const snapshotNavigationId = browserNavigationController.beginNavigation();
     if (
-      restoreHistoryStateSnapshot(event.state, snapshotNavigationId, () => {
+      restoreHistoryStateSnapshot(state, snapshotNavigationId, () => {
         abortSupersededNavigation();
         notifyAppRouterTransitionStart(href, "traverse");
       })
@@ -2549,14 +2576,32 @@ function bootstrapHydration(
           },
           restorePopstateScrollPosition,
         },
-        event.state,
+        state,
       );
       browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
       return;
     }
     browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
-    handlePopstate(event);
+    handlePopstate(state);
+  };
+
+  window.addEventListener("popstate", (event) => {
+    handleAppRouterTraversal(event.state);
   });
+
+  // Re-check instead of trusting the detection made before hydration started: a
+  // third-party history write in between moves the live entry off the
+  // traversed-to one, and replaying onto it would render the wrong route.
+  if (
+    missedInitialTraversal &&
+    hasMissedInitialTraversal({
+      externalHistoryWriteObserved: hasObservedExternalHistoryWrite(),
+      historyState: window.history.state,
+      navigation: readBrowserNavigationEntryKeySource(),
+    })
+  ) {
+    handleAppRouterTraversal(window.history.state);
+  }
 
   if (import.meta.env.DEV && import.meta.hot) {
     const applyRscHmrUpdate = async (updateId: number): Promise<void> => {

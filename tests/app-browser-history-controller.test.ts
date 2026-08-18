@@ -259,6 +259,29 @@ describe("AppBrowserHistoryController history metadata sync", () => {
     expect(store.replaced[0]?.href).toBeUndefined();
   });
 
+  it("leaves the traversed-to entry's metadata intact after a missed traversal", () => {
+    // The live entry belongs to a Back that landed before the popstate listener
+    // existed; its own index (0) must survive the activation entry's (1).
+    const traversedEntryState = createHistoryStateWithNavigationMetadata(null, {
+      previousNextUrl: "/previous",
+      traversalIndex: 0,
+    });
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 1,
+      }),
+    });
+    store.setState(traversedEntryState);
+
+    controller.markMissedInitialTraversal();
+    controller.writeBootstrapHistoryMetadata();
+    controller.writeHydratedHistoryMetadata({ bfcacheIds: {}, previousNextUrl: null });
+
+    expect(store.replaced).toHaveLength(0);
+    expect(store.state).toBe(traversedEntryState);
+  });
+
   it("omits the URL from current-entry metadata synchronization", () => {
     const { controller, store } = createController();
 

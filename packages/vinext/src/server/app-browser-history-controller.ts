@@ -110,6 +110,7 @@ export class AppBrowserHistoryController {
   // still continue from the highest known app history.
   #currentHistoryTraversalIndex: number | null;
   #nextHistoryTraversalIndex: number;
+  #missedInitialTraversal = false;
 
   constructor(deps: AppBrowserHistoryControllerDeps) {
     this.#readHistoryState = deps.readHistoryState;
@@ -348,8 +349,20 @@ export class AppBrowserHistoryController {
     );
   }
 
+  /**
+   * A Back/Forward landed before the popstate listener existed, so the live
+   * entry is the traversed-to one, not the entry this document was activated
+   * on. Its own metadata is authoritative; the initial writes below would
+   * overwrite it with the activation entry's. The replayed traversal owns every
+   * later write.
+   */
+  markMissedInitialTraversal(): void {
+    this.#missedInitialTraversal = true;
+  }
+
   /** Initial history write performed before hydration starts. */
   writeBootstrapHistoryMetadata(): void {
+    if (this.#missedInitialTraversal) return;
     this.#replaceHistoryState(
       createHistoryStateWithNavigationMetadata(this.#readHistoryState(), {
         previousNextUrl: null,
@@ -364,6 +377,7 @@ export class AppBrowserHistoryController {
     bfcacheIds: BfcacheIdMap;
     previousNextUrl: string | null;
   }): void {
+    if (this.#missedInitialTraversal) return;
     this.#replaceHistoryState(
       createHistoryStateWithNavigationMetadata(this.#readHistoryState(), {
         bfcacheIds: options.bfcacheIds,

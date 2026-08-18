@@ -1775,6 +1775,7 @@ type ClientNavigationState = {
   originalPushState: typeof window.history.pushState;
   originalReplaceState: typeof window.history.replaceState;
   patchInstalled: boolean;
+  externalHistoryWriteObserved: boolean;
   hasPendingNavigationUpdate: boolean;
   suppressUrlNotifyCount: number;
   navigationSnapshotActiveCount: number;
@@ -1823,6 +1824,7 @@ export function getClientNavigationState(): ClientNavigationState | null {
     originalPushState: window.history.pushState.bind(window.history),
     originalReplaceState: window.history.replaceState.bind(window.history),
     patchInstalled: false,
+    externalHistoryWriteObserved: false,
     hasPendingNavigationUpdate: false,
     suppressUrlNotifyCount: 0,
     navigationSnapshotActiveCount: 0,
@@ -2368,6 +2370,17 @@ export function replaceHistoryStateWithoutNotify(
     const state = getClientNavigationState();
     state?.originalReplaceState.call(window.history, data, unused, url);
   });
+}
+
+/**
+ * True once raw `history.pushState`/`replaceState` ran in this document — third
+ * party code, or App Router shallow routing. The patched writers copy vinext's
+ * navigation metadata onto the caller's state, so the resulting entry carries a
+ * traversal index it does not own; readers that infer entry ownership from that
+ * metadata must consult this first.
+ */
+export function hasObservedExternalHistoryWrite(): boolean {
+  return getClientNavigationState()?.externalHistoryWriteObserved ?? false;
 }
 
 /**
@@ -3223,6 +3236,7 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
+      state.externalHistoryWriteObserved = true;
       state.originalPushState.call(
         window.history,
         createExternalHistoryStatePreservingMetadata(data, window.history.state),
@@ -3243,6 +3257,7 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
+      state.externalHistoryWriteObserved = true;
       state.originalReplaceState.call(
         window.history,
         createExternalHistoryStatePreservingMetadata(data, window.history.state),

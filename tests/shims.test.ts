@@ -806,6 +806,84 @@ describe("next/navigation shim", () => {
     }
   });
 
+  it("disqualifies missed-traversal detection once an external history call preserves metadata", async () => {
+    // The patched pushState copies the current entry's traversal index onto the
+    // caller's state, so that index cannot prove the new entry is App Router
+    // owned. A Back/Forward missed before hydration must not be inferred from it.
+    const previousWindow = (globalThis as any).window;
+    const historyTraversalIndexKey = "__vinext_historyIndex";
+    const win = {
+      location: {
+        pathname: "/photo/1",
+        search: "",
+        hash: "",
+        href: "http://localhost/photo/1",
+        origin: "http://localhost",
+      },
+      history: {
+        state: { [historyTraversalIndexKey]: 4 } as unknown,
+        pushState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (!url) return;
+          const parsed = new URL(url, win.location.href);
+          win.location.pathname = parsed.pathname;
+          win.location.search = parsed.search;
+          win.location.href = parsed.href;
+        },
+        replaceState(data: unknown) {
+          this.state = data;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      const { hasMissedInitialTraversal } =
+        await import("../packages/vinext/src/server/app-browser-missed-traversal.js");
+      // A Chromium-shaped Navigation API: the raw push created a new entry, so
+      // its key differs from the one the document was activated on.
+      const navigationApi = {
+        activation: { entry: { key: "activation" } },
+        currentEntry: { key: "third-party" },
+      };
+
+      expect(navigation.hasObservedExternalHistoryWrite()).toBe(false);
+
+      win.history.pushState({ thirdParty: true }, "", "/photo/1?tp=1");
+
+      expect(win.history.state).toEqual({
+        [historyTraversalIndexKey]: 4,
+        thirdParty: true,
+      });
+      expect(navigation.hasObservedExternalHistoryWrite()).toBe(true);
+      expect(
+        hasMissedInitialTraversal({
+          externalHistoryWriteObserved: navigation.hasObservedExternalHistoryWrite(),
+          historyState: win.history.state,
+          navigation: navigationApi,
+        }),
+      ).toBe(false);
+      // Without the external write the same entry shape would be replayed.
+      expect(
+        hasMissedInitialTraversal({
+          externalHistoryWriteObserved: false,
+          historyState: win.history.state,
+          navigation: navigationApi,
+        }),
+      ).toBe(true);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
   it("preserves App Router history metadata when external history calls provide caller state", async () => {
     // Matches Next.js' external History API wrapper behavior:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx#L114-L127

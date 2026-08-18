@@ -61,10 +61,14 @@ function createPopstateTraversalIntent(historyState: unknown): HistoryTraversalI
   };
 }
 
+/**
+ * Handles a popstate history state — from the real event, or replayed with
+ * `window.history.state` for a traversal that fired before the listener existed.
+ */
 export function createPopstateRestoreHandler(
   deps: BrowserPopstateRestoreDeps,
-): (event: PopStateEvent) => void {
-  return (event) => {
+): (historyState: unknown) => void {
+  return (historyState) => {
     deps.notifyAppRouterTransitionStart(window.location.href);
     const navigate = deps.getNavigate();
     const pendingNavigation =
@@ -75,19 +79,19 @@ export function createPopstateRestoreHandler(
         undefined,
         undefined,
         false,
-        createPopstateTraversalIntent(event.state),
+        createPopstateTraversalIntent(historyState),
       ) ?? Promise.resolve();
     const popstateNavId = deps.getActiveNavigationId();
 
     deps.setPendingNavigation(pendingNavigation);
-    const shouldRestoreSavedScroll = hasSavedScrollPosition(event.state);
+    const shouldRestoreSavedScroll = hasSavedScrollPosition(historyState);
     const shouldRestoreScrollForNavigation = () =>
       deps.isCurrentNavigation(popstateNavId) && !deps.shouldSkipScrollRestore(popstateNavId);
 
     if (shouldRestoreSavedScroll) {
       scheduleAfterFrame(() => {
         if (shouldRestoreScrollForNavigation()) {
-          deps.restorePopstateScrollPosition(event.state, {
+          deps.restorePopstateScrollPosition(historyState, {
             shouldContinue: shouldRestoreScrollForNavigation,
           });
         }
@@ -96,7 +100,7 @@ export function createPopstateRestoreHandler(
 
     void pendingNavigation.finally(() => {
       if (shouldRestoreScrollForNavigation() && !shouldRestoreSavedScroll) {
-        deps.restorePopstateScrollPosition(event.state);
+        deps.restorePopstateScrollPosition(historyState);
       }
 
       if (deps.getPendingNavigation() === pendingNavigation) {
