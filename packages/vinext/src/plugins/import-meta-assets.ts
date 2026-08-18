@@ -428,6 +428,10 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
       if (isAstRecord(node.expression)) visit(node.expression, scope);
       return;
     }
+    if (node.type === "TSParameterProperty") {
+      if (isAstRecord(node.parameter)) visit(node.parameter, scope, safeAssetReference);
+      return;
+    }
     if (node.type.startsWith("TS")) return;
     if (
       (node.type === "ForInStatement" || node.type === "ForOfStatement") &&
@@ -573,6 +577,14 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     }
     if (node.type === "BreakStatement" || node.type === "ContinueStatement") return;
 
+    if (node.type === "SwitchCase") {
+      if (isAstRecord(node.test)) visit(node.test, scope, true);
+      for (const statement of nodeArray(node.consequent)) {
+        if (isAstRecord(statement)) visit(statement, scope);
+      }
+      return;
+    }
+
     if (node.type === "ExportSpecifier") {
       if (node.exportKind === "type") return;
       if (isAstRecord(node.local)) visit(node.local, scope);
@@ -599,8 +611,8 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     }
     if (node.type === "ConditionalExpression") {
       visitReadOnly(node.test);
-      if (isAstRecord(node.consequent)) visit(node.consequent, scope);
-      if (isAstRecord(node.alternate)) visit(node.alternate, scope);
+      if (isAstRecord(node.consequent)) visit(node.consequent, scope, safeAssetReference);
+      if (isAstRecord(node.alternate)) visit(node.alternate, scope, safeAssetReference);
       return;
     }
     if (node.type === "ForStatement") {
@@ -612,7 +624,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
     }
     if (node.type === "LogicalExpression") {
       visitReadOnly(node.left);
-      visitReadOnly(node.right);
+      if (isAstRecord(node.right)) visit(node.right, scope, safeAssetReference);
       return;
     }
     if (node.type === "BinaryExpression") {
@@ -627,12 +639,18 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
       return;
     }
     if (node.type === "SequenceExpression") {
-      for (const expression of nodeArray(node.expressions)) visitReadOnly(expression);
+      const expressions = nodeArray(node.expressions);
+      for (const [index, expression] of expressions.entries()) {
+        if (isAstRecord(expression)) {
+          visit(expression, scope, index === expressions.length - 1 ? safeAssetReference : true);
+        }
+      }
       return;
     }
 
     if (node.type === "ExportNamedDeclaration" || node.type === "ExportDefaultDeclaration") {
       if (node.exportKind === "type") return;
+      if (isAstRecord(node.source)) return;
       if (isAstRecord(node.declaration)) {
         visit(node.declaration, scope);
         if (node.declaration.type === "VariableDeclaration") {

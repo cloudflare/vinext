@@ -295,7 +295,17 @@ describe("import-meta asset phase", () => {
       ].join("\n"),
       [
         `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `class Box { value = condition && url; }`,
+        `fetch(url);`,
+      ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
         `const view = <Component value={url} />;`,
+        `fetch(url);`,
+      ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `const view = <Component value={condition ? url : other} />;`,
         `fetch(url);`,
       ].join("\n"),
       [
@@ -334,6 +344,7 @@ describe("import-meta asset phase", () => {
       `const url = new URL("../../src/text-file.txt", import.meta.url);`,
       `const metadata = { url: "not the asset" };`,
       `if (!url || url === metadata) throw new Error();`,
+      `switch (metadata) { case url: break; }`,
       `void url;`,
       `fetch(url);`,
     ].join("\n");
@@ -390,10 +401,26 @@ describe("import-meta asset phase", () => {
         `namespace Values { export const current = mutate(url); }`,
         `fetch(url);`,
       ].join("\n"),
+      [
+        `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+        `class Values { constructor(public current = mutate(url)) {} }`,
+        `new Values(); fetch(url);`,
+      ].join("\n"),
     ];
     for (const source of sources) {
       expect(await transformHandler(plugin).call(context(), source, typedRoutePath)).toBeNull();
     }
+  });
+
+  it("rewrites nodeless assets in TypeScript parameter properties", async () => {
+    const plugin = await createPlugin(true);
+    const source = [
+      `class Reader {`,
+      `  constructor(public asset = new URL("../../src/text-file.txt", import.meta.url)) {}`,
+      `}`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
   it("ignores same-named type-only exports", async () => {
@@ -405,6 +432,17 @@ describe("import-meta asset phase", () => {
       `fetch(url);`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
+  });
+
+  it("ignores source re-export names that collide with local aliases", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `const url = new URL("../../src/text-file.txt", import.meta.url);`,
+      `export { url } from "./other";`,
+      `fetch(url);`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
     expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
