@@ -133,7 +133,7 @@ function recordAssetBinding(
     return;
   }
   if (hasAstBinding(scope, "URL")) return;
-  if (scope.unsafeAssetBindings.has(declarator.id.name)) return;
+  if (isUnsafeAssetBinding(scope, declarator.id.name)) return;
   const asset = assetUrlFromNode(declarator.init);
   if (asset) scope.assets.set(declarator.id.name, { asset, valid: true });
 }
@@ -153,6 +153,18 @@ function findAssetBinding(scope: AssetScope, name: string): AssetBinding | null 
     if (current.bindings.has(name)) return null;
   }
   return null;
+}
+
+function isUnsafeAssetBinding(scope: AssetScope, name: string): boolean {
+  for (
+    let current: AssetScope | null = scope;
+    current;
+    current = current.parent as AssetScope | null
+  ) {
+    if (current.unsafeAssetBindings.has(name)) return true;
+    if (current.bindings.has(name)) return false;
+  }
+  return false;
 }
 
 function invalidateAssetBinding(scope: AssetScope, name: string): void {
@@ -182,6 +194,11 @@ function invalidateAssetsVisibleToDirectEval(scope: AssetScope): void {
     current;
     current = current.parent as AssetScope | null
   ) {
+    for (const [name, binding] of current.assets) {
+      if (shadowed.has(name)) continue;
+      binding.valid = false;
+      current.assets.delete(name);
+    }
     for (const name of current.bindings) {
       if (shadowed.has(name)) continue;
       const binding = current.assets.get(name);
@@ -241,7 +258,7 @@ function isGlobalFetchCallee(scope: AssetScope, value: unknown): boolean {
   if (
     callee?.type !== "MemberExpression" ||
     !(
-      isIdentifierNamed(callee.property, "fetch") ||
+      (callee.computed !== true && isIdentifierNamed(callee.property, "fetch")) ||
       (callee.computed === true &&
         isAstRecord(callee.property) &&
         callee.property.type === "Literal" &&
@@ -254,23 +271,10 @@ function isGlobalFetchCallee(scope: AssetScope, value: unknown): boolean {
   return isIdentifierNamed(receiver, "globalThis") && !hasAstBinding(scope, "globalThis");
 }
 
-function callDefinesGlobalFetch(scope: AssetScope, node: AstRecord): boolean {
-  const callee = unwrapExpression(node.callee);
-  if (callee?.type !== "MemberExpression" || callee.computed === true) return false;
-  if (!isIdentifierNamed(callee.property, "defineProperty")) return false;
-  const receiver = unwrapExpression(callee.object);
-  if (
-    (!isIdentifierNamed(receiver, "Object") || hasAstBinding(scope, "Object")) &&
-    (!isIdentifierNamed(receiver, "Reflect") || hasAstBinding(scope, "Reflect"))
-  ) {
-    return false;
-  }
-  const [target, property] = nodeArray(node.arguments).map(unwrapExpression);
-  return (
-    isIdentifierNamed(target, "globalThis") &&
-    !hasAstBinding(scope, "globalThis") &&
-    property?.type === "Literal" &&
-    property.value === "fetch"
+function callCanMutateGlobalFetch(scope: AssetScope, node: AstRecord): boolean {
+  if (hasAstBinding(scope, "globalThis")) return false;
+  return nodeArray(node.arguments).some((argument) =>
+    isIdentifierNamed(unwrapExpression(argument), "globalThis"),
   );
 }
 
@@ -438,6 +442,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
 
     const scope = createChildScope(node, parentScope) ?? parentScope;
     if (node.type === "Identifier" && typeof node.name === "string") {
+      if (node.name === "eval" && !hasAstBinding(scope, "eval")) globalFetchIsStable = false;
       if (!safeAssetReference) invalidateAssetBinding(scope, node.name);
       return;
     }
@@ -575,7 +580,7 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
         isIdentifierNamed(callee, "eval") &&
         !hasAstBinding(scope, "eval");
       if (isDirectEval) invalidateAssetsVisibleToDirectEval(scope);
-      if (callDefinesGlobalFetch(scope, node)) globalFetchIsStable = false;
+      if (callCanMutateGlobalFetch(scope, node)) globalFetchIsStable = false;
       if (!isGlobalFetch && !isReadOnlyUrlConsumer) {
         const receiver =
           callee?.type === "MemberExpression" ? rootIdentifierName(callee.object) : null;
