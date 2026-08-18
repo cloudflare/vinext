@@ -4,7 +4,6 @@ import {
   createDevOnCaughtError,
   createOnUncaughtError,
   createProdOnCaughtError,
-  prodOnCaughtError,
   prodOnRecoverableError,
 } from "../packages/vinext/src/server/app-browser-error.js";
 import {
@@ -8880,6 +8879,8 @@ describe("app navigation failure handling", () => {
 });
 
 describe("prodOnCaughtError (hydrateRoot prod handler)", () => {
+  const prodOnCaughtError = createProdOnCaughtError(() => {});
+
   it("ignores redirect sentinels handled by RedirectBoundary", () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {

@@ -56,13 +56,6 @@ function pushParamValue(segments: string[], value: string | string[] | undefined
   return true;
 }
 
-export function createAppPprFallbackShell(
-  route: AppPprFallbackShellRoute,
-  matchedParams: Record<string, string | string[]>,
-): AppPprFallbackShell | null {
-  return createAppPprFallbackShells(route, matchedParams).at(-1) ?? null;
-}
-
 export function createAppPprFallbackShells(
   route: AppPprFallbackShellRoute,
   matchedParams: Record<string, string | string[]>,

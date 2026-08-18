@@ -1,7 +1,6 @@
 import { buildRouteTrie, trieMatchRaw } from "../routing/route-trie.js";
 import {
   extractRawRoutePatternParams,
-  matchRoutePattern,
   matchRoutePatternRaw,
   matchRoutePatternPrefix,
   type RoutePatternParams,
@@ -520,13 +519,6 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
   // Array.prototype.sort is stable, so entries with identical target patterns
   // retain declaration order across slots and sources.
   return interceptLookup.sort(compareInterceptTargetPatterns);
-}
-
-export function matchAppRscRoutePattern(
-  urlParts: string[],
-  patternParts: string[],
-): AppRscRouteParams | null {
-  return matchRoutePattern(urlParts, patternParts);
 }
 
 function mergeMatchedParams(

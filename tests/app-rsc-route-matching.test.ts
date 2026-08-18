@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   createAppRscRouteMatcher,
-  matchAppRscRoutePattern,
   SIBLING_PAGE_INTERCEPT_SLOT_KEY,
 } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 
@@ -41,13 +40,6 @@ describe("App RSC route matching", () => {
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/shop/:path*");
     expect(result!.params).toEqual({});
-  });
-
-  it("omits optional catch-all params from standalone route pattern matches", () => {
-    expect(matchAppRscRoutePattern(["shop"], ["shop", ":path*"])).toEqual({});
-    expect(matchAppRscRoutePattern(["shop", "a", "b"], ["shop", ":path*"])).toEqual({
-      path: ["a", "b"],
-    });
   });
 
   // Ported from Next.js: route-matcher.ts decodeURIComponent behaviour.
@@ -174,24 +166,6 @@ describe("App RSC route matching", () => {
     expect(matcher.findIntercept("/photos/%e2%9c%93", "/feed/a%2561")).toMatchObject({
       matchedParams: { slug: "a%61", id: "%E2%9C%93" },
     });
-  });
-
-  it("matches standalone route patterns for dynamic metadata routes", () => {
-    expect(
-      matchAppRscRoutePattern(["blog", "hello", "sitemap.xml"], ["blog", ":slug", "sitemap.xml"]),
-    ).toMatchObject({
-      slug: "hello",
-    });
-  });
-
-  it("treats static segments ending in plus or star as literals", () => {
-    expect(matchAppRscRoutePattern(["c++", "intro"], ["c++", ":slug"])).toMatchObject({
-      slug: "intro",
-    });
-
-    const starResult = matchAppRscRoutePattern(["file*"], ["file*"]);
-    expect(starResult).not.toBeNull();
-    expect(Object.keys(starResult ?? {})).toEqual([]);
   });
 
   it("finds intercepting routes and merges source and target params", () => {
