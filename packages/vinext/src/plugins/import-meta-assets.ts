@@ -295,6 +295,50 @@ function isGlobalFetchCallee(scope: AssetScope, value: unknown): boolean {
   return isGlobalObjectMember(scope, callee, "fetch");
 }
 
+function assignedTargetCanMutateGlobalFetch(scope: AssetScope, value: unknown): boolean {
+  const node = unwrapExpression(value);
+  if (!node) return false;
+  if (node.type === "Identifier") {
+    return (
+      (node.name === "fetch" && !hasAstBinding(scope, "fetch")) ||
+      isGlobalObjectReference(scope, node)
+    );
+  }
+  if (node.type === "MemberExpression") {
+    if (!isGlobalObjectReference(scope, node.object)) return false;
+    const name = staticMemberName(node);
+    return (
+      name === "fetch" ||
+      name === "globalThis" ||
+      name === "global" ||
+      name === "self" ||
+      (node.computed === true && name === null)
+    );
+  }
+  if (node.type === "AssignmentPattern") {
+    return assignedTargetCanMutateGlobalFetch(scope, node.left);
+  }
+  if (node.type === "RestElement") {
+    return assignedTargetCanMutateGlobalFetch(scope, node.argument);
+  }
+  if (node.type === "ArrayPattern" || node.type === "ArrayExpression") {
+    return nodeArray(node.elements).some((element) =>
+      assignedTargetCanMutateGlobalFetch(scope, element),
+    );
+  }
+  if (node.type === "ObjectPattern" || node.type === "ObjectExpression") {
+    return nodeArray(node.properties).some(
+      (property) =>
+        isAstRecord(property) &&
+        assignedTargetCanMutateGlobalFetch(
+          scope,
+          property.type === "RestElement" ? property.argument : property.value,
+        ),
+    );
+  }
+  return false;
+}
+
 function invalidateAssignedAssetTargets(scope: AssetScope, value: unknown): void {
   const node = unwrapExpression(value);
   if (!node) return;
@@ -523,6 +567,9 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
       (node.type === "ForInStatement" || node.type === "ForOfStatement") &&
       (!isAstRecord(node.left) || node.left.type !== "VariableDeclaration")
     ) {
+      if (!nodelessTarget && assignedTargetCanMutateGlobalFetch(scope, node.left)) {
+        globalFetchIsStable = false;
+      }
       invalidateAssignedAssetTargets(scope, node.left);
     }
     if (
@@ -539,14 +586,14 @@ function collectAssetUrlRewrites(ast: AstRecord, nodelessTarget: boolean): Asset
 
     if (!nodelessTarget) {
       if (node.type === "AssignmentExpression") {
-        if (isGlobalFetchCallee(scope, node.left)) globalFetchIsStable = false;
+        if (assignedTargetCanMutateGlobalFetch(scope, node.left)) globalFetchIsStable = false;
         invalidateAssignedAssetTargets(scope, node.left);
         invalidateEscapedAssetValue(scope, node.right);
       } else if (node.type === "UpdateExpression") {
-        if (isGlobalFetchCallee(scope, node.argument)) globalFetchIsStable = false;
+        if (assignedTargetCanMutateGlobalFetch(scope, node.argument)) globalFetchIsStable = false;
         invalidateAssignedAssetTargets(scope, node.argument);
       } else if (node.type === "UnaryExpression" && node.operator === "delete") {
-        if (isGlobalFetchCallee(scope, node.argument)) globalFetchIsStable = false;
+        if (assignedTargetCanMutateGlobalFetch(scope, node.argument)) globalFetchIsStable = false;
         invalidateAssignedAssetTargets(scope, node.argument);
       } else if (node.type === "NewExpression") {
         for (const argument of nodeArray(node.arguments)) {

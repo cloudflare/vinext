@@ -377,6 +377,11 @@ describe("import-meta asset phase", () => {
     `const globals = globalThis.globalThis; globals.fetch = customFetch;`,
     `globalThis.globalThis.fetch = customFetch;`,
     `globalThis.self.fetch = customFetch;`,
+    `({ value: globalThis.fetch } = source);`,
+    `[globalThis.fetch] = source;`,
+    `for (globalThis.fetch of source) break;`,
+    `const key = "fetch"; globalThis[key] = customFetch;`,
+    `const key = "fetch"; delete globalThis[key];`,
   ])("does not trust a mutated global fetch capability", async (mutation) => {
     const plugin = await createPlugin(false);
     const source = [
@@ -404,6 +409,16 @@ describe("import-meta asset phase", () => {
     const plugin = await createPlugin(false);
     const source = `globalThis["fetch" as "fetch"](new URL("../../src/text-file.txt", import.meta.url));`;
     const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
+    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
+  });
+
+  it("keeps trusting global fetch after a static unrelated global member write", async () => {
+    const plugin = await createPlugin(false);
+    const source = [
+      `globalThis["unrelated"] = value;`,
+      `fetch(new URL("../../src/text-file.txt", import.meta.url));`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
     expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
