@@ -59,6 +59,8 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     const response = await request.get(`${BASE_URL}/api/blob-asset`);
     expect(response.status()).toBe(200);
     expect(await response.text()).toBe("Hello from a Worker blob asset!\n");
+    expect(response.headers()["x-vinext-asset-protocol"]).toBe("file:");
+    expect(response.headers()["x-vinext-asset-pathname"]).toMatch(/^\//);
   });
 
   test("keeps draft and anonymous route-handler ISR responses isolated", async ({ request }) => {

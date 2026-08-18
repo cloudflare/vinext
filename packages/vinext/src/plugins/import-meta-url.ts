@@ -106,6 +106,7 @@ export type EmittedModuleFileNameResolver = (
 
 const MAX_DEPENDENCY_FORMAT_CACHE_ENTRIES = 512;
 const MAX_TRANSFORM_CACHE_ENTRIES = 2_048;
+const MAX_ASSET_AST_CACHE_SOURCE_UNITS = 2 * 1024 * 1024;
 
 // This block-comment expression cannot span an earlier closing delimiter. Keep
 // it deterministic: this regex runs in native hook filters and the JS fast
@@ -123,7 +124,6 @@ const SOURCE_IDENTITY_FILTER_RE = new RegExp(
 export function createImportMetaUrlPlugin(options: {
   getRoot: () => string | undefined;
   assetOwnership?: OgAssetOwnership;
-  isNodelessServerTarget?: () => boolean;
   createEmittedModuleFileNameResolver?: (
     config: ResolvedConfig,
   ) => EmittedModuleFileNameResolver | undefined;
@@ -135,6 +135,8 @@ export function createImportMetaUrlPlugin(options: {
   // allocating and hashing a composite string containing both full paths.
   // Replacing the entry also bounds each raw id to one source/path combination.
   const transformCache = new Map<string, ImportMetaUrlCacheEntry>();
+  const assetAstCache = new Map<string, { source: string; value: AstRecord }>();
+  let assetAstCacheSourceUnits = 0;
   // Canonical dependency paths and package metadata are immutable for the lifetime of a Vite config. A config
   // restart creates a new capability and cache, so package.json edits are not
   // retained across restarts. Cap the rare token-bearing dependency set to
@@ -148,13 +150,11 @@ export function createImportMetaUrlPlugin(options: {
   // The fixed-size provenance state stays valid for cached transforms and every
   // output of the capability.
   const emittedModuleIdentity = createEmittedModuleIdentity();
-  const assetTransformer =
-    options.assetOwnership && options.isNodelessServerTarget
-      ? new ImportMetaAssetTransformer({
-          ownership: options.assetOwnership,
-          isNodelessTarget: options.isNodelessServerTarget,
-        })
-      : undefined;
+  const assetTransformer = options.assetOwnership
+    ? new ImportMetaAssetTransformer({
+        ownership: options.assetOwnership,
+      })
+    : undefined;
   function dependencyModule(id: string): DependencyModuleCacheEntry["value"] {
     const cleanId = stripViteModuleQuery(id);
     const paths = getRootPaths();
@@ -194,12 +194,11 @@ export function createImportMetaUrlPlugin(options: {
 
   const vitePlugin: Plugin = {
     name: "vinext:import-meta-url",
-    enforce: "post",
     configResolved(config) {
       const root = options.getRoot() ?? config.root;
       const environments = Object.entries(config.environments ?? {});
       outputDirs = [
-        config.build.outDir,
+        config.build?.outDir ?? "dist",
         ...environments.map(([, environment]) => environment.build.outDir),
       ];
       resolveEmittedModuleFileName =
@@ -210,13 +209,38 @@ export function createImportMetaUrlPlugin(options: {
     buildStart() {
       assetTransformer?.buildStart();
     },
-    watchChange() {
+    resolveId: {
+      order: "pre",
+      async handler(source, importer, resolveOptions) {
+        if (!options.assetOwnership?.shouldTrackImport(source)) return null;
+        const resolved = await this.resolve(source, importer, {
+          ...resolveOptions,
+          skipSelf: true,
+        });
+        if (resolved === null || resolved.external) return null;
+        await options.assetOwnership.recordResolvedImport(source, resolved.id);
+        return null;
+      },
+    },
+    watchChange(id) {
       // Package scope and symlink targets can change while a dev server stays
       // alive. The next rare CJS-global-bearing dependency reclassifies from
       // disk; ordinary transforms still use the cache between watch events.
       dependencyModuleCache.clear();
+      assetTransformer?.forgetImporter(id);
+    },
+    hotUpdate({ file, modules }) {
+      const importers = assetTransformer?.importersForAsset(file);
+      if (!importers) return;
+      const affected = new Set(modules);
+      for (const importer of importers) {
+        const module = this.environment.moduleGraph.getModuleById(importer);
+        if (module) affected.add(module);
+      }
+      return [...affected];
     },
     transform: {
+      order: "post",
       filter: {
         id: {
           include: SCRIPT_MODULE_ID_RE,
@@ -323,11 +347,46 @@ export function createImportMetaUrlPlugin(options: {
           return value;
         };
 
-        const reusableAst =
-          isServer && assetTransformer ? parseAssetBearingModule(code, cleanId) : null;
+        let reusableAst: AstRecord | null = null;
+        if (isServer && assetTransformer) {
+          const cachedAst = assetAstCache.get(id);
+          if (cachedAst?.source === code) {
+            reusableAst = cachedAst.value;
+          } else {
+            reusableAst = parseAssetBearingModule(code, cleanId);
+            const previous = assetAstCache.get(id);
+            if (previous) {
+              assetAstCache.delete(id);
+              assetAstCacheSourceUnits -= previous.source.length;
+            }
+            if (reusableAst && code.length <= MAX_ASSET_AST_CACHE_SOURCE_UNITS) {
+              while (
+                assetAstCache.size > 0 &&
+                (assetAstCache.size >= MAX_TRANSFORM_CACHE_ENTRIES ||
+                  assetAstCacheSourceUnits + code.length > MAX_ASSET_AST_CACHE_SOURCE_UNITS)
+              ) {
+                const oldestKey = assetAstCache.keys().next().value;
+                if (oldestKey === undefined) break;
+                const oldest = assetAstCache.get(oldestKey);
+                assetAstCache.delete(oldestKey);
+                if (oldest) assetAstCacheSourceUnits -= oldest.source.length;
+              }
+              assetAstCache.set(id, { source: code, value: reusableAst });
+              assetAstCacheSourceUnits += code.length;
+            }
+          }
+        }
         if (reusableAst && assetTransformer) {
           return assetTransformer
-            .collectRewrites(this, code, id, reusableAst)
+            .collectRewrites(
+              this,
+              code,
+              id,
+              reusableAst,
+              this.environment.mode === "build"
+                ? emittedModuleIdentity.importMetaUrlInitializer
+                : JSON.stringify(pathToFileURL(cleanId).href),
+            )
             .then((assetRewrites) => finishTransform(assetRewrites, reusableAst));
         }
         return finishTransform([]);
@@ -780,6 +839,14 @@ function rewriteModuleIdentity(
     const importMetaRanges = collectImportMetaUrlRanges(ast);
     if (importMetaRanges.length > 0) {
       for (const range of importMetaRanges) {
+        if (
+          options.textRewrites?.some(
+            (rewrite) =>
+              rewrite.start < rewrite.end && rewrite.start < range.end && range.start < rewrite.end,
+          )
+        ) {
+          continue;
+        }
         output.overwrite(range.start, range.end, options.importMetaUrlReplacement);
         changed = true;
       }
@@ -972,7 +1039,9 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
     if (isNewUrlExpression(value)) {
       const args = nodeArray(value.arguments);
       for (let index = 0; index < args.length; index += 1) {
-        if (index === 1 && isImportMetaUrlBaseNode(args[index])) continue;
+        if (index === 1 && isImportMetaUrlBaseNode(args[index])) {
+          continue;
+        }
         visit(args[index]);
       }
       // The callee is always the bare `URL` identifier (see isNewUrlExpression),

@@ -314,13 +314,13 @@ export default defineConfig({ plugins: [vinext(), nitro(preset ? { preset } : {}
     }
   }, 120_000);
 
-  it("rewrites the constructor for a nodeless Cloudflare preset", async () => {
+  it("rewrites only fetch consumers for a Cloudflare preset", async () => {
     await buildNitro("cloudflare-module");
 
     const serverEntry = path.join(tmpRoot, ".output", "server", "index.mjs");
     const built = await readBuiltModules(path.dirname(serverEntry));
     expect(built).toContain("data:text/plain; charset=utf-8;base64,");
-    expect(built).not.toContain('new URL("./message.txt", import.meta.url)');
+    expect(built).toContain('new URL("./message.txt",');
 
     const workerModule = await import(`${pathToFileURL(serverEntry).href}?test=${Date.now()}`);
     const worker = workerModule.default as {
@@ -335,7 +335,7 @@ export default defineConfig({ plugins: [vinext(), nitro(preset ? { preset } : {}
     await expect(response.json()).resolves.toMatchObject({
       text: "Hello from a Nitro asset!",
       packageAsset: { source: "node_modules asset" },
-      protocol: "data:",
+      protocol: "file:",
       filePath: null,
     });
   }, 120_000);

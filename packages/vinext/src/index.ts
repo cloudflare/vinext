@@ -172,7 +172,7 @@ import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.j
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
-import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
+import { createOgInlineReadFileAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { OgAssetOwnership } from "./plugins/og-asset-ownership.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
 import { generateRouteTypes } from "./typegen.js";
@@ -1413,7 +1413,6 @@ export type VinextOptions = {
 type NitroSetupContext = {
   options: {
     dev?: boolean;
-    node?: boolean;
     routeRules?: Record<string, NitroRouteRuleConfig>;
     traceDeps?: string[];
   };
@@ -1469,7 +1468,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
-  let hasNodelessNitroTarget = false;
   let resolvedServerExternalPackages: string[] = [];
   let pagesTsconfigAliases: Record<string, string> = {};
   let pagesBundledPackages = new Set<string>();
@@ -1479,13 +1477,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const importMetaUrlCapability = createImportMetaUrlPlugin({
     getRoot: () => root,
     assetOwnership: fetchedAssetOwnership,
-    isNodelessServerTarget: () => hasCloudflarePlugin || hasNodelessNitroTarget,
     createEmittedModuleFileNameResolver(config) {
-      if (!hasCloudflarePlugin || !hasAppDir) return undefined;
-      // The Cloudflare Worker module registry mounts every emitted server
-      // environment below the RSC output directory. Node and Nitro expose a
-      // readable native import.meta.filename and retain environment-relative
-      // chunk names as the compatibility fallback.
+      if (!hasAppDir) return undefined;
+      // Derive emitted module identities from the configured output layout.
+      // Environments outside this common root retain their own chunk names.
       const outputRoot =
         config.environments.rsc?.build.outDir ?? options.rscOutDir ?? "dist/server";
       return createServerEnvironmentFileNameResolver(config, outputRoot);
@@ -6572,9 +6567,11 @@ export const loadServerActionClient = ${
     // Expand Webpack's build-time `require.context(...)` into a static module
     // map backed by `import.meta.glob` — see src/plugins/require-context.ts
     createRequireContextPlugin(),
-    // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
-    // see src/plugins/og-assets.ts
-    createOgInlineFetchAssetsPlugin(fetchedAssetOwnership),
+    // The import-meta capability owns fetch(new URL(...)) rewrites. Keep this
+    // legacy OG helper only for its fileURLToPath/readFileSync fallback.
+    createOgInlineReadFileAssetsPlugin(fetchedAssetOwnership, {
+      manageOwnership: false,
+    }),
     // Dedupe/copy @vercel/og binary WASM assets in the RSC output — see src/plugins/og-assets.ts
     createOgAssetsPlugin(),
     // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.
@@ -6681,10 +6678,6 @@ export const loadServerActionClient = ${
       name: "vinext:nitro-route-rules",
       nitro: {
         setup: async (nitro: NitroSetupContext) => {
-          // Nitro preserves file-URL semantics only for its Node presets.
-          // Nodeless presets need import-meta assets embedded in the bundle.
-          hasNodelessNitroTarget = nitro.options.node === false;
-
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 

@@ -208,6 +208,26 @@ describe("App Router dynamic requests", () => {
     expect(runTransform("server", "/app/node_modules/transpiled/index.js")).toBeTruthy();
   });
 
+  it("does not fold unrelated require calls admitted only for URL import normalization", () => {
+    const transform = createIgnoreDynamicRequestsPlugin().transform;
+    if (!transform || typeof transform === "function") {
+      throw new Error("dynamic request transform hook not found");
+    }
+    const source = [
+      `const loaded = require(String.fromCharCode(46, 47, 118, 97, 108, 117, 101));`,
+      `void import(new URL("./component.js", import.meta.url).href);`,
+    ].join("\n");
+    const result = transform.handler.call(
+      { environment: { config: { consumer: "client" } } } as never,
+      source,
+      "/app/page.tsx",
+    );
+    const code = typeof result === "object" && result && "code" in result ? result.code : result;
+
+    expect(code).toContain(`require(String.fromCharCode(46, 47, 118, 97, 108, 117, 101))`);
+    expect(code).toContain(`import("./component.js")`);
+  });
+
   it("only rewrites fully dynamic unbound requests", () => {
     expect(
       _transformVeryDynamicRequests("export const value = getValue();", "/app/page.tsx"),

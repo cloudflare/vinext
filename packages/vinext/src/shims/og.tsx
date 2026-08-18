@@ -9,8 +9,8 @@ const CACHE_HEADERS = {
 /**
  * next/og shim.
  *
- * The vinext:og-inline-fetch-assets Vite plugin patches @vercel/og's runtime
- * asset fetches so this wrapper can delegate image generation while preserving
+ * The import-meta asset capability makes @vercel/og's runtime asset fetches
+ * portable so this wrapper can delegate image generation while preserving
  * Next.js's public ImageResponse headers and option merging semantics.
  */
 export class ImageResponse extends Response {

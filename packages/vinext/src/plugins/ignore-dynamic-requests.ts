@@ -777,6 +777,7 @@ function transformVeryDynamicRequests(code: string, id: string, replaceUnknownRe
         const resolvedRequest = stringFromCharCodeValue(argumentsList[0], scope);
         const argument = astNode(argumentsList[0]);
         if (
+          replaceUnknownRequests &&
           resolvedRequest !== null &&
           resolvedRequest.replaceAll("\\", "/") !== "/" &&
           argument &&

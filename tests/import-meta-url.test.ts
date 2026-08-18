@@ -1613,7 +1613,7 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
 
   it("injects after TypeScript type-only constructs are erased", () => {
     // In production, Vite transforms strip TypeScript before this plugin
-    // (enforce: "post") sees the code.  Both `import type` and `type` aliases
+    // (transform order: "post") sees the code. Both `import type` and `type` aliases
     // are erased, so the plugin sees plain JS like this:
     const result = rewriteServerCjsGlobals(`console.log(__filename);`, pagePath, linkedRoot);
 

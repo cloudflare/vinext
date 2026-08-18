@@ -1,15 +1,18 @@
 import fs from "node:fs";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ResolvedConfig } from "vite";
 import type { TransformPluginContext } from "vite/rolldown";
 import { contentTypeForPath } from "../server/static-file-cache.js";
 import {
   collectBindingNames,
+  directivePrologueEnd,
   forEachAstChild,
   hasRange,
   isAstRecord,
   isIdentifierNamed,
   nodeArray,
+  staticStringValue,
   unwrapExpression,
   type AstRange,
   type AstRecord,
@@ -30,10 +33,12 @@ import {
   isImportMetaUrlOrChainedNode,
   isNewUrlExpression,
 } from "./import-meta-url-syntax.js";
+import { stripViteModuleQuery } from "../utils/path.js";
 
 type AssetUrl = {
   range: AstRange;
   sourceRange: AstRange;
+  baseRange: AstRange;
   specifier: string;
   binding?: AssetBinding;
 };
@@ -50,7 +55,11 @@ type AssetScope = AstScope & {
   nodeUrlNamespaces: Set<string>;
 };
 
-export type ImportMetaAssetRewrite = { start: number; end: number; replacement: string };
+export type ImportMetaAssetRewrite = {
+  start: number;
+  end: number;
+  replacement: string;
+};
 
 function createAssetScope(parent: AssetScope | null): AssetScope {
   return {
@@ -97,28 +106,29 @@ function assetUrlFromNode(value: unknown): AssetUrl | null {
   if (!isNewUrlExpression(expression) || !hasRange(expression)) return null;
 
   const args = nodeArray(expression.arguments);
-  const specifier = unwrapExpression(args[0]);
+  const specifier = staticStringValue(unwrapExpression(args[0]));
   if (
     args.length !== 2 ||
     !isImportMetaUrlOrChainedNode(args[1]) ||
-    specifier?.type !== "Literal" ||
-    typeof specifier.value !== "string"
+    !hasRange(args[1]) ||
+    specifier === null
   ) {
     return null;
   }
   if (
-    specifier.value === "" ||
-    specifier.value.startsWith("?") ||
-    specifier.value.startsWith("#") ||
-    specifier.value.startsWith("/") ||
-    /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(specifier.value)
+    specifier === "" ||
+    specifier.startsWith("?") ||
+    specifier.startsWith("#") ||
+    specifier.startsWith("/") ||
+    /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(specifier)
   ) {
     return null;
   }
   return {
     range: isAstRecord(value) && hasRange(value) ? value : expression,
     sourceRange: expression,
-    specifier: specifier.value,
+    baseRange: args[1],
+    specifier,
   };
 }
 
@@ -289,10 +299,7 @@ function createChildScope(node: AstRecord, parent: AssetScope): AssetScope | nul
   return scope;
 }
 
-function collectAssetUrlRewrites(
-  ast: AstRecord,
-  nodelessTarget: boolean,
-): { assets: AssetUrl[]; usedNames: Set<string> } {
+function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedNames: Set<string> } {
   const assets: AssetUrl[] = [];
   const usedNames = new Set<string>();
   const rootScope = createAssetScope(null);
@@ -389,7 +396,7 @@ function collectAssetUrlRewrites(
     if (childScope) addScopeBindingNames(childScope, usedNames);
     const scope = childScope ?? parentScope;
     if (node.type === "ImportExpression") {
-      if (!nodelessTarget && isAstRecord(node.source)) visit(node.source, scope, true);
+      if (isAstRecord(node.source)) visit(node.source, scope, true);
       if (isAstRecord(node.options)) visit(node.options, scope);
       return;
     }
@@ -498,14 +505,7 @@ function collectAssetUrlRewrites(
     }
     if (node.type.startsWith("TS")) return;
 
-    const nodelessAsset =
-      nodelessTarget && !hasAstBinding(scope, "URL") ? assetUrlFromNode(node) : null;
-    if (nodelessAsset) {
-      assets.push(nodelessAsset);
-      return;
-    }
-
-    if (!nodelessTarget && node.type === "CallExpression") {
+    if (node.type === "CallExpression") {
       const callee = unwrapExpression(node.callee);
       const isGlobalFetch = isIdentifierNamed(callee, "fetch") && !hasAstBinding(scope, "fetch");
       const isReadOnlyUrlConsumer = isNodeUrlFileUrlToPath(scope, callee);
@@ -620,22 +620,45 @@ function collectAssetUrlRewrites(
 
 /** Asset phase of the existing import-meta capability. */
 export class ImportMetaAssetTransformer {
-  readonly #cache = new Map<string, string>();
+  readonly #cache = new Map<string, { dataUrl: string; size: number }>();
+  readonly #assetImporters = new Map<string, Map<string, string>>();
+  readonly #importerStates = new Map<string, { importer: string; assets: Set<string> }>();
+  #cachedBytes = 0;
   #isBuild = false;
 
   constructor(
     private readonly options: {
-      isNodelessTarget: () => boolean;
       ownership: OgAssetOwnership;
     },
   ) {}
 
   configResolved(config: ResolvedConfig): void {
     this.#isBuild = config.command === "build";
+    this.options.ownership.configure(config.root, config.resolve.alias);
   }
 
   buildStart(): void {
-    if (this.#isBuild) this.#cache.clear();
+    if (this.#isBuild) {
+      this.#cache.clear();
+      this.#cachedBytes = 0;
+      this.#assetImporters.clear();
+      this.#importerStates.clear();
+    }
+    this.options.ownership.reset();
+  }
+
+  importersForAsset(id: string): ReadonlySet<string> | undefined {
+    const importers = this.#assetImporters.get(toSlash(id));
+    return importers ? new Set(importers.values()) : undefined;
+  }
+
+  forgetImporter(id: string): void {
+    const cleanId = toSlash(stripViteModuleQuery(id));
+    for (const [key, state] of this.#importerStates) {
+      if (toSlash(stripViteModuleQuery(state.importer)) === cleanId) {
+        this.#replaceImporterState(key, state.importer, new Set());
+      }
+    }
   }
 
   async collectRewrites(
@@ -643,15 +666,27 @@ export class ImportMetaAssetTransformer {
     code: string,
     id: string,
     ast: AstRecord,
+    newUrlBaseReplacement: string,
   ): Promise<ImportMetaAssetRewrite[]> {
-    const nodelessTarget = this.options.isNodelessTarget();
-    const { assets: assetUrls, usedNames } = collectAssetUrlRewrites(ast, nodelessTarget);
-    if (assetUrls.length === 0) return [];
+    const importerKey = `${context.environment?.name ?? "server"}\0${id}`;
+    const { assets: assetUrls, usedNames } = collectAssetUrlRewrites(ast);
+    if (assetUrls.length === 0) {
+      this.#replaceImporterState(importerKey, id, new Set());
+      return [];
+    }
     const moduleBoundary = await this.options.ownership.resolveModuleBoundary(id);
-    if (moduleBoundary === null) return [];
+    if (moduleBoundary === null) {
+      this.#replaceImporterState(importerKey, id, new Set());
+      return [];
+    }
 
     const rewrites: ImportMetaAssetRewrite[] = [];
     const initializedBindings = new Map<AssetBinding, string>();
+    const transformPayloads = new Map<string, { dataUrl: string; size: number }>();
+    const dataBindings = new Map<string, string>();
+    const dataDeclarations: string[] = [];
+    const embeddedAssets = new Set<string>();
+    let moduleOutputBytes = 0;
     for (const assetUrl of assetUrls) {
       if (hasBundlerIgnoreInNewUrl(code, assetUrl.sourceRange)) continue;
 
@@ -659,9 +694,19 @@ export class ImportMetaAssetTransformer {
       if (cleanSpecifier === "") continue;
       let file: string | null = null;
       if (cleanSpecifier.startsWith("./") || cleanSpecifier.startsWith("../")) {
+        let decodedPath: string;
+        try {
+          const baseUrl = pathToFileURL(path.join(moduleBoundary.moduleDir, "__vinext_asset__"));
+          const assetFileUrl = new URL(assetUrl.specifier, baseUrl);
+          assetFileUrl.search = "";
+          assetFileUrl.hash = "";
+          decodedPath = toSlash(fileURLToPath(assetFileUrl));
+        } catch {
+          continue;
+        }
         file = await this.options.ownership.resolveContainedAsset(
           moduleBoundary.assetRoot,
-          path.resolve(moduleBoundary.moduleDir, cleanSpecifier),
+          decodedPath,
         );
       } else {
         const resolved = await context.resolve(assetUrl.specifier, id, { skipSelf: true });
@@ -677,32 +722,80 @@ export class ImportMetaAssetTransformer {
       }
       if (file === null) continue;
 
-      let dataUrl = this.#isBuild ? this.#cache.get(file) : undefined;
-      if (dataUrl === undefined) {
+      let cached =
+        transformPayloads.get(file) ?? (this.#isBuild ? this.#cache.get(file) : undefined);
+      if (cached === undefined) {
+        let stat: Awaited<ReturnType<typeof fs.promises.stat>>;
+        try {
+          stat = await fs.promises.stat(file);
+        } catch {
+          continue;
+        }
+        if (stat.size > MAX_INLINE_FETCH_ASSET_BYTES) {
+          throw new Error(
+            `Cannot inline fetched asset ${JSON.stringify(file)}: ${stat.size} bytes exceeds the ${MAX_INLINE_FETCH_ASSET_BYTES} byte limit. Serve large files from public/ or an external URL instead.`,
+          );
+        }
         let bytes: Buffer;
         try {
           bytes = await fs.promises.readFile(file);
         } catch {
           continue;
         }
-        dataUrl = `data:${contentTypeForPath(file)};base64,${bytes.toString("base64")}`;
-        if (this.#isBuild) this.#cache.set(file, dataUrl);
+        if (bytes.byteLength > MAX_INLINE_FETCH_ASSET_BYTES) {
+          throw new Error(
+            `Cannot inline fetched asset ${JSON.stringify(file)}: ${bytes.byteLength} bytes exceeds the ${MAX_INLINE_FETCH_ASSET_BYTES} byte limit. Serve large files from public/ or an external URL instead.`,
+          );
+        }
+        cached = {
+          dataUrl: `data:${contentTypeForPath(file)};base64,${bytes.toString("base64")}`,
+          size: bytes.byteLength,
+        };
+        if (
+          this.#isBuild &&
+          this.#cachedBytes + cached.size <= MAX_CACHED_INLINE_FETCH_ASSET_BYTES
+        ) {
+          this.#cache.set(file, cached);
+          this.#cachedBytes += cached.size;
+        }
       }
+      transformPayloads.set(file, cached);
 
-      context.addWatchFile(file);
-      const dataUrlExpression = `new URL(${JSON.stringify(dataUrl)})`;
+      if (!embeddedAssets.has(file)) context.addWatchFile(file);
+      embeddedAssets.add(file);
+      // Query/hash stay on the original URL alias. They must not be appended
+      // to the private data URL passed to fetch: a query after a base64 payload
+      // makes the data URL invalid.
+      let dataBinding = dataBindings.get(file);
+      if (dataBinding === undefined) {
+        dataBinding = selectPrivateBinding(usedNames, "__vinext_asset_data");
+        dataBindings.set(file, dataBinding);
+        const dataLiteral = JSON.stringify(cached.dataUrl);
+        moduleOutputBytes += dataLiteral.length;
+        if (moduleOutputBytes > MAX_INLINE_FETCH_ASSET_MODULE_OUTPUT_BYTES) {
+          throw new Error(
+            `Cannot inline fetched assets in ${JSON.stringify(id)}: their generated data URLs total ${moduleOutputBytes} bytes, exceeding the ${MAX_INLINE_FETCH_ASSET_MODULE_OUTPUT_BYTES} byte module limit. Serve some assets from public/ or external URLs instead.`,
+          );
+        }
+        dataDeclarations.push(`const ${dataBinding} = ${dataLiteral};`);
+      }
+      const dataUrlExpression = `new URL(${dataBinding})`;
       let replacement = dataUrlExpression;
       if (assetUrl.binding) {
         let privateBinding = initializedBindings.get(assetUrl.binding);
         if (privateBinding === undefined) {
-          privateBinding = selectPrivateBinding(usedNames);
+          privateBinding = selectPrivateBinding(usedNames, "__vinext_asset_url");
           initializedBindings.set(assetUrl.binding, privateBinding);
           const declarator = assetUrl.binding.declarator;
-          const source = code.slice(declarator.start, declarator.end);
           rewrites.push({
-            start: declarator.start,
+            start: assetUrl.binding.asset.baseRange.start,
+            end: assetUrl.binding.asset.baseRange.end,
+            replacement: newUrlBaseReplacement,
+          });
+          rewrites.push({
+            start: declarator.end,
             end: declarator.end,
-            replacement: `${source}, ${privateBinding} = ${dataUrlExpression}`,
+            replacement: `, ${privateBinding} = ${dataUrlExpression}`,
           });
         }
         replacement = privateBinding;
@@ -714,12 +807,51 @@ export class ImportMetaAssetTransformer {
       });
     }
 
+    if (dataDeclarations.length > 0) {
+      rewrites.push({
+        start: directivePrologueEnd(ast),
+        end: directivePrologueEnd(ast),
+        replacement: `\n${dataDeclarations.join("\n")}\n`,
+      });
+    }
+    this.#replaceImporterState(importerKey, id, embeddedAssets);
     return rewrites;
+  }
+
+  #replaceImporterState(key: string, importer: string, assets: Set<string>): void {
+    const previous = this.#importerStates.get(key);
+    if (previous) {
+      for (const asset of previous.assets) {
+        const importers = this.#assetImporters.get(asset);
+        importers?.delete(key);
+        if (importers?.size === 0) this.#assetImporters.delete(asset);
+      }
+    }
+
+    if (assets.size === 0) {
+      this.#importerStates.delete(key);
+      return;
+    }
+
+    this.#importerStates.set(key, { importer, assets });
+    for (const asset of assets) {
+      const importers = this.#assetImporters.get(asset) ?? new Map<string, string>();
+      importers.set(key, importer);
+      this.#assetImporters.set(asset, importers);
+    }
   }
 }
 
-function selectPrivateBinding(usedNames: Set<string>): string {
-  let binding = "__vinext_asset_url";
+// Inlining is the only target-independent way to preserve fetch(URL) across
+// server runtimes. Cap each implicit asset to catch accidental large-file
+// embedding, and cap each transformed module before later tree-shaking and
+// chunking. Final deployment bundle limits remain the deploy adapter's concern.
+export const MAX_INLINE_FETCH_ASSET_BYTES = 2 * 1024 * 1024;
+export const MAX_INLINE_FETCH_ASSET_MODULE_OUTPUT_BYTES = 8 * 1024 * 1024;
+const MAX_CACHED_INLINE_FETCH_ASSET_BYTES = 4 * 1024 * 1024;
+
+function selectPrivateBinding(usedNames: Set<string>, base: string): string {
+  let binding = base;
   while (usedNames.has(binding)) binding += "_";
   usedNames.add(binding);
   return binding;

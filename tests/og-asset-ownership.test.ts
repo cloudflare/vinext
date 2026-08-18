@@ -59,6 +59,50 @@ describe("OgAssetOwnership", () => {
     expect(boundary?.assetRoot).toBe(canonical(realPackageRoot));
   });
 
+  it("records an arbitrary file alias declared through package exports", async () => {
+    const projectRoot = path.join(tmpDir, "exports-alias-app");
+    const packageRoot = path.join(tmpDir, "exports-alias-package");
+    const modulePath = path.join(packageRoot, "dist", "index.js");
+    await fs.mkdir(projectRoot, { recursive: true });
+    await fs.mkdir(path.dirname(modulePath), { recursive: true });
+    await fs.writeFile(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "@scope/design-system", exports: "./dist/index.js" }),
+    );
+    await fs.writeFile(modulePath, "export {};");
+
+    const ownership = new OgAssetOwnership();
+    ownership.configure(projectRoot, [{ find: "ui", replacement: modulePath }]);
+    await ownership.recordResolvedImport("ui", modulePath);
+
+    await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toEqual({
+      assetRoot: canonical(await fs.realpath(packageRoot)),
+      moduleDir: canonical(await fs.realpath(path.dirname(modulePath))),
+    });
+  });
+
+  it("records a file alias declared through a package exports pattern", async () => {
+    const projectRoot = path.join(tmpDir, "exports-pattern-app");
+    const packageRoot = path.join(tmpDir, "exports-pattern-package");
+    const modulePath = path.join(packageRoot, "dist", "feature.js");
+    await fs.mkdir(projectRoot, { recursive: true });
+    await fs.mkdir(path.dirname(modulePath), { recursive: true });
+    await fs.writeFile(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "@scope/patterns", exports: { "./*": "./dist/*.js" } }),
+    );
+    await fs.writeFile(modulePath, "export {};");
+
+    const ownership = new OgAssetOwnership();
+    ownership.configure(projectRoot, [{ find: "pattern-feature", replacement: modulePath }]);
+    await ownership.recordResolvedImport("pattern-feature", modulePath);
+
+    await expect(ownership.resolveModuleBoundary(modulePath)).resolves.toEqual({
+      assetRoot: canonical(await fs.realpath(packageRoot)),
+      moduleDir: canonical(await fs.realpath(path.dirname(modulePath))),
+    });
+  });
+
   it("recognizes an external package from its resolved directory alias path", async () => {
     const projectRoot = path.join(tmpDir, "resolved-alias-app");
     const packageRoot = path.join(tmpDir, "resolved-alias-package");

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,8 +7,12 @@ import { pathToFileURL } from "node:url";
 import { build, type Plugin } from "vite";
 import { _transformVeryDynamicRequests } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
 import { createImportMetaUrlPlugin } from "../packages/vinext/src/plugins/import-meta-url.js";
-import { createOgInlineFetchAssetsPlugin } from "../packages/vinext/src/plugins/og-assets.js";
 import { OgAssetOwnership } from "../packages/vinext/src/plugins/og-asset-ownership.js";
+import {
+  MAX_INLINE_FETCH_ASSET_BYTES,
+  MAX_INLINE_FETCH_ASSET_MODULE_OUTPUT_BYTES,
+} from "../packages/vinext/src/plugins/import-meta-assets.js";
+import vinext from "../packages/vinext/src/index.js";
 
 function hookHandler(hook: unknown): (...args: any[]) => any {
   return typeof hook === "function"
@@ -42,6 +47,8 @@ describe("import-meta asset phase", () => {
     await fsp.writeFile(routePath, "export default function handler() {}\n");
     await fsp.writeFile(typedRoutePath, "export default function handler() {}\n");
     await fsp.writeFile(path.join(root, "src", "text-file.txt"), "Hello, from text-file.txt!");
+    await fsp.writeFile(path.join(root, "src", "font name.txt"), "encoded space");
+    await fsp.writeFile(path.join(root, "src", "font#hash.txt"), "encoded hash");
     await fsp.writeFile(path.join(root, "src", "vercel.png"), Buffer.from([0x89, 0x50, 0x4e]));
     await fsp.writeFile(packageAssetPath, '{ "i am": "a node dependency" }');
   });
@@ -50,13 +57,11 @@ describe("import-meta asset phase", () => {
     if (root) await fsp.rm(root, { recursive: true, force: true });
   });
 
-  async function createPlugin(nodelessTarget: boolean, command: "build" | "serve" = "build") {
+  async function createPlugin(command: "build" | "serve" = "build") {
     const ownership = new OgAssetOwnership();
-    ownership.configure(root, []);
     const plugin = createImportMetaUrlPlugin({
       getRoot: () => root,
       assetOwnership: ownership,
-      isNodelessServerTarget: () => nodelessTarget,
     }).vitePlugin;
     await hookHandler(plugin.configResolved).call(null, {
       command,
@@ -91,37 +96,124 @@ describe("import-meta asset phase", () => {
     };
   }
 
-  it("uses the existing import-meta plugin and shared ownership tracker", async () => {
+  it("makes the import-meta plugin the explicit ownership tracker", async () => {
     const ownership = new OgAssetOwnership();
     const configure = vi.spyOn(ownership, "configure");
     const reset = vi.spyOn(ownership, "reset");
-    const ogPlugin = createOgInlineFetchAssetsPlugin(ownership);
+    const record = vi.spyOn(ownership, "recordResolvedImport");
     const plugin = createImportMetaUrlPlugin({
       getRoot: () => root,
       assetOwnership: ownership,
-      isNodelessServerTarget: () => true,
     }).vitePlugin;
     const config = {
       command: "build",
       root,
-      resolve: { alias: [] },
+      resolve: { alias: [{ find: "my-pkg", replacement: packageAssetPath }] },
       environments: {},
       build: { outDir: "dist" },
     };
 
-    await hookHandler(ogPlugin.configResolved).call(null, config);
     await hookHandler(plugin.configResolved).call(null, config);
-    await hookHandler(ogPlugin.buildStart).call(null);
     await hookHandler(plugin.buildStart).call(null);
 
     expect(plugin.name).toBe("vinext:import-meta-url");
-    expect(plugin.resolveId).toBeUndefined();
+    expect(plugin.resolveId).toBeDefined();
     expect(configure).toHaveBeenCalledOnce();
     expect(reset).toHaveBeenCalledOnce();
+
+    await hookHandler(plugin.resolveId).call(
+      { resolve: async () => ({ id: packageAssetPath }) },
+      "my-pkg",
+      routePath,
+      {},
+    );
+    expect(record).toHaveBeenCalledWith("my-pkg", packageAssetPath);
   });
 
-  it("replaces only the fetch input in a Node build", async () => {
-    const plugin = await createPlugin(false);
+  it("keeps dependency tracking ahead of resolution and asset transforms after compilation", () => {
+    const plugin = createImportMetaUrlPlugin({
+      getRoot: () => root,
+      assetOwnership: new OgAssetOwnership(),
+    }).vitePlugin;
+
+    expect(typeof plugin.resolveId).toBe("object");
+    expect((plugin.resolveId as { order?: string }).order).toBe("pre");
+    expect(typeof plugin.transform).toBe("object");
+    expect((plugin.transform as { order?: string }).order).toBe("post");
+  });
+
+  it("disables the overlapping legacy fetch inliner in production wiring", async () => {
+    const plugin = vinext().find(
+      (candidate): candidate is Plugin =>
+        typeof candidate === "object" &&
+        candidate !== null &&
+        "name" in candidate &&
+        candidate.name === "vinext:og-inline-read-file-assets",
+    );
+    if (!plugin) throw new Error("Expected the production OG inline plugin");
+    await hookHandler(plugin.configResolved).call(null, {
+      command: "build",
+      root,
+      resolve: { alias: [] },
+    });
+    await hookHandler(plugin.buildStart).call(null);
+
+    const source = `fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`;
+    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+  });
+
+  it("tracks an aliased workspace package through a real server build", async () => {
+    const workspaceRoot = path.join(root, "workspace-build");
+    const projectRoot = path.join(workspaceRoot, "app");
+    const packageRoot = path.join(workspaceRoot, "packages", "ui");
+    const entry = path.join(projectRoot, "entry.js");
+    const packageEntry = path.join(packageRoot, "dist", "feature.js");
+    const output = path.join(projectRoot, "dist", "entry.mjs");
+    const asset = Buffer.from("workspace-package-asset");
+    await fsp.mkdir(projectRoot, { recursive: true });
+    await fsp.mkdir(path.dirname(packageEntry), { recursive: true });
+    await fsp.writeFile(path.join(projectRoot, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.writeFile(entry, `export { response } from "ui";`);
+    await fsp.writeFile(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "@scope/ui",
+        type: "module",
+        exports: { "./*": "./dist/*.js" },
+      }),
+    );
+    await fsp.writeFile(
+      packageEntry,
+      `export const response = fetch(new URL("../asset.bin", import.meta.url));`,
+    );
+    await fsp.writeFile(path.join(packageRoot, "asset.bin"), asset);
+
+    await build({
+      root: projectRoot,
+      configFile: false,
+      logLevel: "silent",
+      resolve: { alias: { ui: packageEntry } },
+      ssr: { noExternal: true },
+      plugins: [
+        createImportMetaUrlPlugin({
+          getRoot: () => projectRoot,
+          assetOwnership: new OgAssetOwnership(),
+        }).vitePlugin,
+      ],
+      build: {
+        ssr: entry,
+        outDir: "dist",
+        rolldownOptions: { output: { entryFileNames: "entry.mjs" } },
+      },
+    });
+
+    const code = await fsp.readFile(output, "utf8");
+    expect(code).toContain(asset.toString("base64"));
+    expect(code).not.toContain(`new URL("./asset.bin", import.meta.url)`);
+  });
+
+  it("preserves observable URL consumers while replacing only the fetch input", async () => {
+    const plugin = await createPlugin();
     const source = [
       `import { fileURLToPath } from "node:url";`,
       `const url = new URL("../../src/text-file.txt", import.meta.url);`,
@@ -130,25 +222,62 @@ describe("import-meta asset phase", () => {
       `const response = fetch(url);`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, routePath);
-
-    expect(result.code).toContain(
-      `const url = new URL("../../src/text-file.txt", import.meta.url), __vinext_asset_url = new URL("data:text/plain; charset=utf-8;base64,`,
-    );
+    expect(result.code).toContain(`const url = new URL("../../src/text-file.txt",`);
+    expect(result.code).toContain(`, __vinext_asset_url = new URL(__vinext_asset_data)`);
     expect(result.code).toContain(`const path = url.pathname;`);
     expect(result.code).toContain(`const file = fileURLToPath(url);`);
     expect(result.code).toContain(`fetch(__vinext_asset_url)`);
   });
 
+  it("finalizes observable asset aliases with portable emitted-module identity", async () => {
+    const ownership = new OgAssetOwnership();
+    const capability = createImportMetaUrlPlugin({
+      getRoot: () => root,
+      assetOwnership: ownership,
+    });
+    const plugin = capability.vitePlugin;
+    await hookHandler(plugin.configResolved).call(null, {
+      command: "build",
+      root,
+      resolve: { alias: [] },
+      environments: {},
+      build: { outDir: "dist" },
+    });
+    await hookHandler(plugin.buildStart).call(null);
+    const transformed = await transformHandler(plugin).call(
+      context(),
+      [
+        `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
+        `export const protocol = asset.protocol;`,
+        `export const response = fetch(asset);`,
+      ].join("\n"),
+      routePath,
+    );
+    const emitted = hookHandler(plugin.renderChunk).call(
+      context(),
+      transformed.code,
+      { fileName: "server/entry.js" },
+      { format: "es" },
+    );
+
+    expect(emitted.code).toContain('from "node:url"');
+    expect(emitted.code).toContain(
+      `new URL("../../src/text-file.txt", ({ get value() { return __vinext_module_identity.url; } }).value)`,
+    );
+    expect(emitted.code).toContain(`fetch(__vinext_asset_url)`);
+    expect(emitted.code).not.toContain("__VINEXT_EMITTED_MODULE_URL_");
+  });
+
   it("replaces a direct fetch input in a Node build", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     const source = `function handler() { return fetch(new URL("../../src/text-file.txt", import.meta.url)); }`;
     const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain(`fetch(new URL("data:text/plain; charset=utf-8;base64,`);
+    expect(result.code).toContain(`fetch(new URL(__vinext_asset_data))`);
     expect(result.code).not.toContain("import.meta.url");
   });
 
   it("watches every embedded asset", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     const pluginContext = context({ "my-pkg/hello/world.json": packageAssetPath });
     const source = [
       `fetch(new URL("../../src/text-file.txt", import.meta.url));`,
@@ -161,8 +290,52 @@ describe("import-meta asset phase", () => {
     ]);
   });
 
+  it("replaces stale dev asset-importer edges when a module changes", async () => {
+    const plugin = await createPlugin("serve");
+    const textAsset = await fsp.realpath(path.join(root, "src", "text-file.txt"));
+    const imageAsset = await fsp.realpath(path.join(root, "src", "vercel.png"));
+    const moduleNode = { id: routePath };
+    const hotContext = {
+      environment: {
+        moduleGraph: {
+          getModuleById: (id: string) => (id === routePath ? moduleNode : undefined),
+        },
+      },
+    };
+
+    await transformHandler(plugin).call(
+      context(),
+      `fetch(new URL("../../src/text-file.txt", import.meta.url));`,
+      routePath,
+    );
+    expect(
+      hookHandler(plugin.hotUpdate).call(hotContext, { file: textAsset, modules: [] }),
+    ).toEqual([moduleNode]);
+
+    await transformHandler(plugin).call(
+      context(),
+      `fetch(new URL("../../src/vercel.png", import.meta.url));`,
+      routePath,
+    );
+    expect(
+      hookHandler(plugin.hotUpdate).call(hotContext, { file: textAsset, modules: [] }),
+    ).toBeUndefined();
+    expect(
+      hookHandler(plugin.hotUpdate).call(hotContext, { file: imageAsset, modules: [] }),
+    ).toEqual([moduleNode]);
+
+    await transformHandler(plugin).call(
+      context(),
+      `console.log(new URL("../../src/vercel.png", import.meta.url).protocol);`,
+      routePath,
+    );
+    expect(
+      hookHandler(plugin.hotUpdate).call(hotContext, { file: imageAsset, modules: [] }),
+    ).toBeUndefined();
+  });
+
   it("keeps same-named aliases isolated by lexical scope", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     const source = [
       `const one = () => { const url = new URL("../../src/text-file.txt", import.meta.url); return fetch(url); };`,
       `const two = () => { const url = new URL("../../src/vercel.png", import.meta.url); return fetch(url); };`,
@@ -173,7 +346,7 @@ describe("import-meta asset phase", () => {
   });
 
   it("passes mutated, escaped, or exported aliases through at runtime", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     for (const use of [
       `url.pathname = "/other";`,
       `mutate(url);`,
@@ -195,7 +368,7 @@ describe("import-meta asset phase", () => {
   });
 
   it("preserves the temporal-dead-zone read for aliases used before initialization", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     const source = [
       `fetch(url);`,
       `const url = new URL("../../src/text-file.txt", import.meta.url);`,
@@ -205,7 +378,7 @@ describe("import-meta asset phase", () => {
   });
 
   it("does not reuse aliases across switch cases", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     const source = [
       `switch (kind) {`,
       `  case 1: fetch(url); break;`,
@@ -216,7 +389,7 @@ describe("import-meta asset phase", () => {
   });
 
   it("tracks side effects in dynamic-import options without rewriting the specifier", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     const source = [
       `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
       `void import("./noop.js", (asset.href = "data:text/plain,mutated", {}));`,
@@ -228,7 +401,7 @@ describe("import-meta asset phase", () => {
   });
 
   it("ignores syntax-only identifiers while validating aliases", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     const source = [
       `import { url as other } from "./other";`,
       `const url = new URL("../../src/text-file.txt", import.meta.url);`,
@@ -253,7 +426,7 @@ describe("import-meta asset phase", () => {
   });
 
   it("avoids runtime TypeScript declaration collisions", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     const source = [
       `enum __vinext_asset_url { Value }`,
       `namespace __vinext_asset_url_ { export const value = 1; }`,
@@ -262,13 +435,11 @@ describe("import-meta asset phase", () => {
       `fetch(asset);`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, typedRoutePath);
-    expect(result.code).toContain(
-      `asset = new URL("../../src/text-file.txt", import.meta.url), __vinext_asset_url___ = new URL("data:text/plain;`,
-    );
+    expect(result.code).toContain(`__vinext_asset_url___ = new URL(__vinext_asset_data`);
   });
 
   it("invalidates aliases referenced by decorators", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     const source = [
       `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
       `class Example { @mutate(asset) method() {} }`,
@@ -285,52 +456,47 @@ describe("import-meta asset phase", () => {
       await transformHandler(plugin).call(context(), parameterMutation, typedRoutePath),
     ).toBeNull();
 
-    const nodelessPlugin = await createPlugin(true);
     const decoratedAsset = `@decorate(new URL("../../src/text-file.txt", import.meta.url)) class Decorated {}`;
-    const result = await transformHandler(nodelessPlugin).call(
+    const result = await transformHandler(await createPlugin()).call(
       context(),
       decoratedAsset,
       typedRoutePath,
     );
-    expect(result.code.match(/data:text\/plain/g)).toHaveLength(1);
+    expect(result).toBeNull();
 
     const decoratedParameter = [
       `class DecoratedParameter {`,
       `  constructor(@decorate(new URL("../../src/text-file.txt", import.meta.url)) public value: string) {}`,
       `}`,
     ].join("\n");
-    const parameterResult = await transformHandler(nodelessPlugin).call(
+    const parameterResult = await transformHandler(await createPlugin()).call(
       context(),
       decoratedParameter,
       typedRoutePath,
     );
-    expect(parameterResult.code.match(/data:text\/plain/g)).toHaveLength(1);
+    expect(parameterResult).toBeNull();
   });
 
-  it("rewrites the constructor itself for nodeless targets", async () => {
-    const plugin = await createPlugin(true);
+  it("preserves non-fetch URL consumers on every target", async () => {
+    const plugin = await createPlugin();
     const source = [
       `const text = new URL("../../src/text-file.txt", import.meta.url);`,
       `const image = new URL("../../src/vercel.png", import.meta?.url);`,
     ].join("\n");
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).not.toContain("import.meta");
-    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
-    expect(result.code).toContain("data:image/png;base64,");
+    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
   });
 
-  it("rewrites nodeless assets in default parameter initializers", async () => {
-    const plugin = await createPlugin(true);
+  it("preserves non-fetch assets in default parameter initializers", async () => {
+    const plugin = await createPlugin();
     const source = `function read(asset = new URL("../../src/text-file.txt", import.meta.url)) { return asset; }`;
-    const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
+    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
   });
 
   it("keeps URL-based dynamic imports in the module graph", async () => {
-    const plugin = await createPlugin(true);
+    const plugin = await createPlugin();
     const source = [
       `void import(new URL("../../src/text-file.txt", import.meta.url).href);`,
-      `const asset = new URL("../../src/vercel.png", import.meta.url);`,
+      `const asset = fetch(new URL("../../src/vercel.png", import.meta.url));`,
     ].join("\n");
     const normalized = _transformVeryDynamicRequests(source, routePath, false);
     if (!normalized) throw new Error("Expected the early URL import transform to run");
@@ -344,25 +510,23 @@ describe("import-meta asset phase", () => {
     `import(new URL("../../src/text-file.txt", import.meta.url));`,
     `import(/* @vite-ignore */ new URL("../../src/text-file.txt", import.meta.url));`,
   ])("never treats a dynamic import specifier as a fetched asset", async (source) => {
-    const plugin = await createPlugin(true);
+    const plugin = await createPlugin();
     expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
   });
 
-  it("constructs the replacement beside the alias before a fetch-time URL shadow", async () => {
-    const plugin = await createPlugin(false);
+  it("constructs the replacement before a fetch-time URL shadow", async () => {
+    const plugin = await createPlugin();
     const source = [
       `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
       `function read(URL) { return fetch(asset); }`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain(
-      `const asset = new URL("../../src/text-file.txt", import.meta.url), __vinext_asset_url = new URL("data:text/plain;`,
-    );
+    expect(result.code).toContain(`__vinext_asset_url = new URL(__vinext_asset_data`);
     expect(result.code).toContain(`function read(URL) { return fetch(__vinext_asset_url); }`);
   });
 
   it("keeps directives intact and avoids decoded identifier collisions", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     const source = [
       `"use server";`,
       `const __vinext_asset_\\u0075rl = "user";`,
@@ -372,9 +536,7 @@ describe("import-meta asset phase", () => {
       `}`,
     ].join("\n");
     const result = await transformHandler(plugin).call(context(), source, routePath);
-    expect(result.code).toContain(
-      `const asset = new URL("../../src/text-file.txt", import.meta.url), __vinext_asset_url___ = new URL("data:text/plain;`,
-    );
+    expect(result.code).toContain(`__vinext_asset_url___ = new URL(__vinext_asset_data`);
     expect(result.code).toContain(
       `for (const __vinext_asset_url__ of values) { fetch(__vinext_asset_url___); }`,
     );
@@ -383,7 +545,7 @@ describe("import-meta asset phase", () => {
   });
 
   it("does not depend on the global WeakMap constructor", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     const source = [
       `const WeakMap = CustomWeakMap;`,
       `const asset = new URL("../../src/text-file.txt", import.meta.url);`,
@@ -443,7 +605,6 @@ describe("import-meta asset phase", () => {
     const capability = createImportMetaUrlPlugin({
       getRoot: () => runtimeRoot,
       assetOwnership: ownership,
-      isNodelessServerTarget: () => false,
     });
     await build({
       root: runtimeRoot,
@@ -506,11 +667,15 @@ describe("import-meta asset phase", () => {
     }
   });
 
-  it("resolves package assets and strips query/hash suffixes", async () => {
-    const plugin = await createPlugin(false);
+  it("keeps observable query/hash semantics while embedding a fetchable data URL", async () => {
+    const plugin = await createPlugin();
     const source = [
       `fetch(new URL("my-pkg/hello/world.json", import.meta.url));`,
       `fetch(new URL("../../src/text-file.txt?raw#fragment", import.meta.url));`,
+      `const queried = new URL("../../src/text-file.txt?raw#fragment", import.meta.url);`,
+      `const query = queried.search;`,
+      `const hash = queried.hash;`,
+      `fetch(queried);`,
     ].join("\n");
     const result = await transformHandler(plugin).call(
       context({ "my-pkg/hello/world.json": packageAssetPath }),
@@ -519,19 +684,45 @@ describe("import-meta asset phase", () => {
     );
     expect(result.code).toContain("data:application/json; charset=utf-8;base64,");
     expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
+    expect(result.code).toContain(
+      `const queried = new URL("../../src/text-file.txt?raw#fragment",`,
+    );
+    expect(result.code).toContain(`const query = queried.search;`);
+    expect(result.code).toContain(`const hash = queried.hash;`);
+
+    const embeddedUrls = [...result.code.matchAll(/("(?:\\.|[^"\\])*")/g)]
+      .map((match) => JSON.parse(match[1]) as string)
+      .filter((url) => url.startsWith("data:"))
+      .map((url) => new URL(url));
+    expect(embeddedUrls).toHaveLength(2);
+    expect(embeddedUrls.every((url) => url.search === "" && url.hash === "")).toBe(true);
+    const textUrl = embeddedUrls.find((url) => url.pathname.startsWith("text/plain;"));
+    expect(textUrl).toBeDefined();
+    const encoded = textUrl!.pathname.slice(textUrl!.pathname.indexOf(",") + 1);
+    expect(Buffer.from(encoded, "base64").toString()).toBe("Hello, from text-file.txt!");
   });
 
-  it.each([true, false])(
-    "does not rewrite a locally shadowed URL constructor (nodeless=%s)",
-    async (nodelessTarget) => {
-      const plugin = await createPlugin(nodelessTarget);
-      const source = `function read(URL) { return fetch(new URL("../../src/text-file.txt", import.meta.url)); }`;
-      expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
-    },
-  );
+  it("uses URL path decoding and static template literals for relative assets", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      "fetch(new URL(`../../src/font%20name.txt`, import.meta.url));",
+      `fetch(new URL("../../src/font%23hash.txt", import.meta.url));`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code).toContain(Buffer.from("encoded space").toString("base64"));
+    expect(result.code).toContain(Buffer.from("encoded hash").toString("base64"));
+    expect(result.code).not.toContain("import.meta.url");
+  });
+
+  it("does not rewrite a locally shadowed URL constructor", async () => {
+    const plugin = await createPlugin();
+    const source = `function read(URL) { return fetch(new URL("../../src/text-file.txt", import.meta.url)); }`;
+    expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
+  });
 
   it("does not rewrite non-fetch consumers or a locally shadowed fetch", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     for (const source of [
       `const url = new URL("../../src/text-file.txt", import.meta.url); console.log(url);`,
       `function read(fetch) { return fetch(new URL("../../src/text-file.txt", import.meta.url)); }`,
@@ -541,7 +732,7 @@ describe("import-meta asset phase", () => {
   });
 
   it("supports TypeScript wrappers without scanning type-only syntax", async () => {
-    const plugin = await createPlugin(false);
+    const plugin = await createPlugin();
     const source = [
       `type AssetUrl = URL;`,
       `const url = new URL("../../src/text-file.txt", import.meta.url) as URL;`,
@@ -552,54 +743,117 @@ describe("import-meta asset phase", () => {
   });
 
   it("honors bundler ignore directives and leaves unsupported URLs untouched", async () => {
-    const plugin = await createPlugin(true);
+    const plugin = await createPlugin();
     const source = [
-      `new URL(/* @vite-ignore */ "../../src/text-file.txt", import.meta.url);`,
-      `new URL(/* webpackIgnore: true */ "../../src/text-file.txt", import.meta.url);`,
-      `new URL(/* turbopackIgnore: true, webpackChunkName: "ignored" */ "../../src/text-file.txt", import.meta.url);`,
-      `new URL(/* @vite-ignore */ /* webpackIgnore: false */ "../../src/text-file.txt", import.meta.url);`,
-      String.raw`new URL(/* webpackInclude: /foo\(/, webpackIgnore: true */ "../../src/text-file.txt", import.meta.url);`,
-      `new URL(/* @vite-ignore */ ("../../src/text-file.txt"), import.meta.url);`,
-      `new URL(/* webpackInclude: /[(]/, webpackIgnore: true */ ("../../src/text-file.txt"), import.meta.url);`,
-      `new URL(/* webpackInclude: /foo/, // note\n webpackIgnore: true */ "../../src/text-file.txt", import.meta.url);`,
-      `new URL("../../src/missing.txt", import.meta.url);`,
-      `new URL("https://example.com/file.txt", import.meta.url);`,
-      `new URL("/src/text-file.txt", import.meta.url);`,
-      `new URL("../../src/text-file.txt", import.meta.url, sideEffect());`,
+      `fetch(new URL(/* @vite-ignore */ "../../src/text-file.txt", import.meta.url));`,
+      `fetch(new URL(/* webpackIgnore: true */ "../../src/text-file.txt", import.meta.url));`,
+      `fetch(new URL(/* turbopackIgnore: true, webpackChunkName: "ignored" */ "../../src/text-file.txt", import.meta.url));`,
+      `fetch(new URL(/* @vite-ignore */ /* webpackIgnore: false */ "../../src/text-file.txt", import.meta.url));`,
+      String.raw`fetch(new URL(/* webpackInclude: /foo\(/, webpackIgnore: true */ "../../src/text-file.txt", import.meta.url));`,
+      `fetch(new URL(/* @vite-ignore */ ("../../src/text-file.txt"), import.meta.url));`,
+      `fetch(new URL(/* webpackInclude: /[(]/, webpackIgnore: true */ ("../../src/text-file.txt"), import.meta.url));`,
+      `fetch(new URL(/* webpackInclude: /foo/, // note\n webpackIgnore: true */ "../../src/text-file.txt", import.meta.url));`,
+      `fetch(new URL("../../src/missing.txt", import.meta.url));`,
+      `fetch(new URL("https://example.com/file.txt", import.meta.url));`,
+      `fetch(new URL("/src/text-file.txt", import.meta.url));`,
+      `fetch(new URL("../../src/text-file.txt", import.meta.url, sideEffect()));`,
     ].join("\n");
     expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
   });
 
   it("does not synthesize ignore directives from RegExp-valued magic options", async () => {
-    const plugin = await createPlugin(true);
-    const source = `new URL(/* webpackIgnore: false, webpackInclude: /x, webpackIgnore: true, y/ */ "../../src/text-file.txt", import.meta.url);`;
+    const plugin = await createPlugin();
+    const source = `fetch(new URL(/* webpackIgnore: false, webpackInclude: /x, webpackIgnore: true, y/ */ "../../src/text-file.txt", import.meta.url));`;
     const result = await transformHandler(plugin).call(context(), source, routePath);
     expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
   it("recognizes comments and escaped URL identifiers", async () => {
-    const plugin = await createPlugin(true);
-    const source = String.raw`const asset = new /* asset */ U\u0052L("../../src/text-file.txt", import.meta.url);`;
+    const plugin = await createPlugin();
+    const source = String.raw`const asset = fetch(new /* asset */ U\u0052L("../../src/text-file.txt", import.meta.url));`;
     const result = await transformHandler(plugin).call(context(), source, routePath);
     expect(result.code).toContain("data:text/plain; charset=utf-8;base64,");
   });
 
   it("does not read relative assets outside the owning project", async () => {
-    const plugin = await createPlugin(true);
+    const plugin = await createPlugin();
     const secretPath = path.join(path.dirname(root), "vinext-import-meta-secret.txt");
     await fsp.writeFile(secretPath, "secret");
     try {
       const relative = path.relative(path.dirname(routePath), secretPath).replaceAll("\\", "/");
-      const source = `new URL(${JSON.stringify(relative)}, import.meta.url);`;
+      const source = `fetch(new URL(${JSON.stringify(relative)}, import.meta.url));`;
       expect(await transformHandler(plugin).call(context(), source, routePath)).toBeNull();
     } finally {
       await fsp.rm(secretPath, { force: true });
     }
   });
 
+  it("fails clearly instead of silently bloating a bundle with a large fetched asset", async () => {
+    const largeAsset = path.join(root, "src", "large.bin");
+    await fsp.writeFile(largeAsset, Buffer.alloc(MAX_INLINE_FETCH_ASSET_BYTES + 1));
+    try {
+      const plugin = await createPlugin();
+      const source = `fetch(new URL("../../src/large.bin", import.meta.url));`;
+      await expect(transformHandler(plugin).call(context(), source, routePath)).rejects.toThrow(
+        `exceeds the ${MAX_INLINE_FETCH_ASSET_BYTES} byte limit`,
+      );
+    } finally {
+      await fsp.rm(largeAsset, { force: true });
+    }
+  });
+
+  it("emits one data payload for repeated references to the same asset", async () => {
+    const repeatedAsset = path.join(root, "src", "repeated.bin");
+    await fsp.writeFile(repeatedAsset, "repeated payload");
+    const realRepeatedAsset = await fsp.realpath(repeatedAsset);
+    const readFile = vi.spyOn(fs.promises, "readFile");
+    try {
+      const plugin = await createPlugin();
+      const source = Array.from(
+        { length: 4 },
+        () => `fetch(new URL("../../src/repeated.bin", import.meta.url));`,
+      ).join("\n");
+      const result = await transformHandler(plugin).call(context(), source, routePath);
+      expect(result.code.match(/data:application\/octet-stream;base64,/g)).toHaveLength(1);
+      expect(result.code.match(/new URL\(__vinext_asset_data\)/g)).toHaveLength(4);
+      expect(
+        readFile.mock.calls.filter(
+          ([file]) => typeof file === "string" && file === realRepeatedAsset,
+        ),
+      ).toHaveLength(1);
+    } finally {
+      readFile.mockRestore();
+      await fsp.rm(repeatedAsset, { force: true });
+    }
+  });
+
+  it("bounds generated data URLs within one transformed module", async () => {
+    const assets = Array.from({ length: 4 }, (_, index) =>
+      path.join(root, "src", `module-limit-${index}.bin`),
+    );
+    await Promise.all(
+      assets.map((asset) =>
+        fsp.writeFile(asset, Buffer.alloc(Math.floor(MAX_INLINE_FETCH_ASSET_BYTES * 0.8))),
+      ),
+    );
+    try {
+      const plugin = await createPlugin();
+      const source = assets
+        .map(
+          (_, index) => `fetch(new URL("../../src/module-limit-${index}.bin", import.meta.url));`,
+        )
+        .join("\n");
+      await expect(transformHandler(plugin).call(context(), source, routePath)).rejects.toThrow(
+        `exceeding the ${MAX_INLINE_FETCH_ASSET_MODULE_OUTPUT_BYTES} byte module limit`,
+      );
+    } finally {
+      await Promise.all(assets.map((asset) => fsp.rm(asset, { force: true })));
+    }
+  });
+
   it("runs only in server environments", async () => {
-    const plugin = await createPlugin(true);
-    const source = `new URL("../../src/text-file.txt", import.meta.url);`;
+    const plugin = await createPlugin();
+    const source = `fetch(new URL("../../src/text-file.txt", import.meta.url));`;
     expect(
       await transformHandler(plugin).call(context({}, "client"), source, routePath),
     ).toBeNull();
