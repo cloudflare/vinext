@@ -8,15 +8,8 @@ export function normalizeClientInstrumentationHooks(
   return Object.values(hooks).some((value) => typeof value === "function") ? hooks : null;
 }
 
-export function setClientInstrumentationHooks(
-  hooks: ClientInstrumentationHooks | null,
-): ClientInstrumentationHooks | null {
+export function setClientInstrumentationHooks(hooks: ClientInstrumentationHooks | null): void {
   clientInstrumentationHooks = hooks;
-  return clientInstrumentationHooks;
-}
-
-export function getClientInstrumentationHooks(): ClientInstrumentationHooks | null {
-  return clientInstrumentationHooks;
 }
 
 export function notifyAppRouterTransitionStart(

@@ -64,12 +64,10 @@ export default {
         "src/server/app-page-ppr-runtime.ts",
         "src/server/app-prerender-static-params.ts",
         "src/server/app-route-module-loader.ts",
-        // Client-side instrumentation bundle: loaded as a side-effect module
-        // by the generated hydration entries (import "vinext/instrumentation-client"),
-        // so its public surface (clientInstrumentationHooks, getClientInstrumentationHooks)
-        // is consumed by the user's app at runtime, not by imports knip can follow.
+        // Client-side instrumentation bootstrap: loaded as a side-effect module
+        // by generated hydration entries (import "vinext/instrumentation-client"),
+        // so knip cannot follow the import statically.
         "src/client/instrumentation-client.ts",
-        "src/client/instrumentation-client-state.ts",
         // Shims for `next/*` internal modules — their exports are consumed by
         // type-only imports in third-party packages' .d.ts files (e.g.
         // @clerk/nextjs, @sentry/nextjs, nextjs-toploader). Those imports
