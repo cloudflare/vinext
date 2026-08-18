@@ -37,7 +37,7 @@ jobs:
       - uses: ./.github/actions/setup
 
       - name: Run Bonk
-        uses: ask-bonk/ask-bonk/github@8c7a8314f4f4865e2e41e5718dfabc4ab7a2274b # main
+        uses: ask-bonk/ask-bonk/github@d00cbcf581a5463f7adc2d81e470234b1727f8dd # main
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
@@ -48,6 +48,6 @@ jobs:
           mentions: "/bigbonk"
           variant: "max"
           permissions: write
-          opencode_dev: false
-          opencode_version: 1.15.13
+          opencode_dev: true
+          opencode_version: latest
           agent: viguy
