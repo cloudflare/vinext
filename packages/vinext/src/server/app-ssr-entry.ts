@@ -318,6 +318,7 @@ function buildHeadInjectionHtml(
   insertedHTML: string,
   fontHTML: string,
   dynamicStaleTimeSeconds?: number,
+  searchParamsFromBrowser?: boolean,
   scriptNonce?: string,
 ): string {
   const navPayload = {
@@ -329,6 +330,7 @@ function buildHeadInjectionHtml(
       navContext.params,
       navPayload,
       dynamicStaleTimeSeconds,
+      searchParamsFromBrowser,
     ),
     scriptNonce,
   );
@@ -708,6 +710,7 @@ export async function handleSsr(
             insertedHTML + errorMetaHTML + getTraceMetaHTML() + initialDevServerErrorHTML,
             fontHTML,
             options?.dynamicStaleTimeSeconds,
+            options?.isStaticGeneration === true ? options.isForceStatic !== true : undefined,
             options?.scriptNonce,
           );
         };

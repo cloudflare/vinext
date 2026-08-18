@@ -627,6 +627,8 @@ export function createSSRHandler(
   /** Next.js `expireTime`, used when formatting terminal GSP responses. */
   expireTime = PAGES_CACHE_ONE_YEAR_SECONDS,
   crossOrigin?: string,
+  /** Resolved Pages Router build ID shared with the dev data-route parser. */
+  buildId = process.env.__VINEXT_BUILD_ID ?? "development",
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -718,6 +720,7 @@ export function createSSRHandler(
 
     const errorPageContext = {
       basePath,
+      buildId,
       clientTraceMetadata,
       locale: locale ?? currentDefaultLocale,
       locales: i18nConfig?.locales,
@@ -1569,7 +1572,7 @@ export function createSSRHandler(
             props: renderProps,
             page: patternToNextFormat(route.pattern),
             query: isFallbackRender ? {} : params,
-            buildId: process.env.__VINEXT_BUILD_ID,
+            buildId,
             isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
@@ -1784,6 +1787,7 @@ async function renderErrorPage(
   reactStrictMode = false,
   context: {
     basePath: string;
+    buildId?: string;
     clientTraceMetadata?: readonly string[];
     locale?: string;
     locales?: string[];
@@ -1984,7 +1988,7 @@ async function renderErrorPage(
           props: renderProps,
           page: errorPage,
           query: parseQuery(url),
-          buildId: process.env.__VINEXT_BUILD_ID,
+          buildId: context.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development",
           isFallback: false,
           notFoundSrcPage: context.notFoundSrcPage,
           __vinext: {

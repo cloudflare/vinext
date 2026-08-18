@@ -1249,6 +1249,19 @@ function restoreHydrationNavigationContext(
   });
 }
 
+function restoreEmbeddedHydrationNavigationContext(
+  pathname: string,
+  searchParams: SearchParamInput,
+  params: Record<string, string | string[]>,
+  searchParamsFromBrowser: boolean,
+): void {
+  restoreHydrationNavigationContext(
+    pathname,
+    searchParamsFromBrowser ? window.location.search : searchParams,
+    params,
+  );
+}
+
 function restorePopstateScrollPosition(
   state: unknown,
   options?: {
@@ -1374,16 +1387,8 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
       return createProgressiveRscStream();
     }
 
-    const params = vinext.__VINEXT_RSC_PARAMS__ ?? {};
     if (vinext.__VINEXT_RSC_PARAMS__) {
       applyClientParams(vinext.__VINEXT_RSC_PARAMS__);
-    }
-    if (vinext.__VINEXT_RSC_NAV__) {
-      restoreHydrationNavigationContext(
-        vinext.__VINEXT_RSC_NAV__.pathname,
-        vinext.__VINEXT_RSC_NAV__.searchParams,
-        params,
-      );
     }
 
     return createProgressiveRscStream();
@@ -1444,7 +1449,12 @@ function applyRuntimeRscBootstrap(rsc: NavigationRuntimeRscBootstrap): void {
     applyClientParams(rsc.params);
   }
   if (rsc.nav) {
-    restoreHydrationNavigationContext(rsc.nav.pathname, rsc.nav.searchParams, params);
+    restoreEmbeddedHydrationNavigationContext(
+      rsc.nav.pathname,
+      rsc.nav.searchParams,
+      params,
+      rsc.searchParamsFromBrowser === true,
+    );
   }
 }
 

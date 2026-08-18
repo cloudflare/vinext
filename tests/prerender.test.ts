@@ -1076,6 +1076,8 @@ describe("prerenderApp — default mode (app-basic)", () => {
       expect(r.outputFiles).toContain("static-test.html");
       expect(r.outputFiles).toContain("static-test.rsc");
     }
+    const html = fs.readFileSync(path.join(outDir, "static-test.html"), "utf-8");
+    expect(html).toContain("searchParamsFromBrowser:false");
   });
 
   it("emits the nearest Suspense fallback when useSearchParams bails out during prerender", () => {
@@ -1165,6 +1167,7 @@ describe("prerenderApp — default mode (app-basic)", () => {
     });
 
     const html = fs.readFileSync(path.join(outDir, "use-cache-test.html"), "utf-8");
+    expect(html).toContain("searchParamsFromBrowser:true");
     expect(html).toContain('"initialCacheKind":"static"');
     expect(html).toContain('"staleTimeSeconds":30');
   });
