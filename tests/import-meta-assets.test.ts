@@ -29,6 +29,12 @@ function fetchInputUrl(input: string | URL | Request | undefined): string {
   return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 }
 
+async function importCode(code: string): Promise<Record<string, any>> {
+  return import(
+    /* @vite-ignore */ `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`
+  );
+}
+
 describe("import-meta asset phase", () => {
   let root: string;
   let routePath: string;
@@ -274,6 +280,95 @@ describe("import-meta asset phase", () => {
     const result = await transformHandler(plugin).call(context(), source, routePath);
     expect(result.code).toContain(`fetch(new URL(__vinext_asset_data))`);
     expect(result.code).not.toContain("import.meta.url");
+  });
+
+  it("eliminates module-scope I/O for an exact fetch arrayBuffer chain", async () => {
+    const plugin = await createPlugin();
+    const source = `export default fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`;
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code).toContain("const __vinext_decode_asset_data = async (data) => {");
+    expect(result.code).toContain("new globalThis.Uint8Array(binary.length)");
+    expect(result.code).not.toContain("fetch(");
+    expect(result.code).not.toContain("import.meta.url");
+    expect(result.code).toContain(Buffer.from("Hello, from text-file.txt!").toString("base64"));
+  });
+
+  it("preserves fetch semantics for exact arrayBuffer chains inside functions", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `export function read() { return fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer()); }`,
+      `export function nested() { return { asset: fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer()) }; }`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code.match(/fetch\(new URL\(__vinext_asset_data\)\)/g)).toHaveLength(2);
+    expect(result.code).not.toContain("__vinext_decode_asset_data");
+    expect(result.code).not.toContain("import.meta.url");
+  });
+
+  it("distinguishes deferred defaults and fields from static initialization", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `export function read(asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer())) { return asset; }`,
+      `export class Reader {`,
+      `  asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+      `  static shared = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+      `}`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code.match(/fetch\(new URL\(__vinext_asset_data\)\)/g)).toHaveLength(2);
+    expect(result.code).toContain("static shared = __vinext_decode_asset_data(");
+    expect(result.code).not.toContain("import.meta.url");
+  });
+
+  it("decodes with collision-safe globals when common intrinsics are shadowed", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `const Promise = null;`,
+      `const Uint8Array = null;`,
+      `const atob = null;`,
+      `export const asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    const module = await importCode(result.code);
+
+    expect(Buffer.from(await module.asset).toString()).toBe("Hello, from text-file.txt!");
+  });
+
+  it("keeps decoding asynchronous and reports decoder failures as rejections", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `const asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+      `const order = [];`,
+      `asset.catch(() => order.push("asset"));`,
+      `queueMicrotask(() => order.push("sentinel"));`,
+      `export { asset, order };`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+    const encoded = Buffer.from("Hello, from text-file.txt!").toString("base64");
+    const malformed = result.code.replace(encoded, "%%%invalid-base64%%%");
+    const module = await importCode(malformed);
+
+    await expect(module.asset).rejects.toThrow();
+    await Promise.resolve();
+    expect(module.order).toEqual(["sentinel", "asset"]);
+  });
+
+  it("keeps other fetch response chains intact", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `const text = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.text());`,
+      `const other = { arrayBuffer() {} };`,
+      `const bytes = fetch(new URL("../../src/text-file.txt", import.meta.url)).then(() => other.arrayBuffer());`,
+      `const iterator = fetch(new URL("../../src/text-file.txt", import.meta.url)).then(function* (response) { return response.arrayBuffer(); });`,
+      `const asyncBytes = fetch(new URL("../../src/text-file.txt", import.meta.url)).then(async (response) => response.arrayBuffer());`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code.match(/fetch\(new URL\(__vinext_asset_data\)\)/g)).toHaveLength(4);
+    expect(result.code).not.toContain("__vinext_decode_asset_data");
   });
 
   it("watches every embedded asset", async () => {

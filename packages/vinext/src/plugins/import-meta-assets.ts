@@ -40,6 +40,7 @@ type AssetUrl = {
   sourceRange: AstRange;
   baseRange: AstRange;
   specifier: string;
+  replacementKind?: "url" | "array-buffer-promise";
   binding?: AssetBinding;
 };
 
@@ -129,6 +130,90 @@ function assetUrlFromNode(value: unknown): AssetUrl | null {
     sourceRange: expression,
     baseRange: args[1],
     specifier,
+  };
+}
+
+function isNamedMember(value: unknown, name: string): value is AstRecord {
+  const member = unwrapExpression(value);
+  return (
+    member?.type === "MemberExpression" &&
+    member.optional !== true &&
+    member.computed !== true &&
+    isIdentifierNamed(member.property, name)
+  );
+}
+
+function isParameterArrayBufferCall(value: unknown, parameterName: string): boolean {
+  const call = unwrapExpression(value);
+  if (
+    call?.type !== "CallExpression" ||
+    call.optional === true ||
+    nodeArray(call.arguments).length !== 0 ||
+    !isNamedMember(call.callee, "arrayBuffer")
+  ) {
+    return false;
+  }
+  const receiver = unwrapExpression(call.callee.object);
+  return isIdentifierNamed(receiver, parameterName);
+}
+
+function callbackReturnsArrayBuffer(value: unknown): boolean {
+  const callback = unwrapExpression(value);
+  if (
+    (callback?.type !== "ArrowFunctionExpression" && callback?.type !== "FunctionExpression") ||
+    callback.generator === true ||
+    callback.async === true ||
+    nodeArray(callback.params).length !== 1
+  ) {
+    return false;
+  }
+  const parameter = unwrapExpression(nodeArray(callback.params)[0]);
+  if (parameter?.type !== "Identifier" || typeof parameter.name !== "string") return false;
+
+  const body = unwrapExpression(callback.body);
+  if (body?.type !== "BlockStatement") {
+    return isParameterArrayBufferCall(body, parameter.name);
+  }
+  const statements = nodeArray(body.body);
+  return (
+    statements.length === 1 &&
+    isAstRecord(statements[0]) &&
+    statements[0].type === "ReturnStatement" &&
+    isParameterArrayBufferCall(statements[0].argument, parameter.name)
+  );
+}
+
+function arrayBufferFetchAssetFromCall(
+  value: AstRecord,
+  scope: AssetScope,
+): { asset: AssetUrl; fetchCall: AstRecord } | null {
+  if (
+    value.type !== "CallExpression" ||
+    value.optional === true ||
+    nodeArray(value.arguments).length !== 1 ||
+    !isNamedMember(value.callee, "then") ||
+    !callbackReturnsArrayBuffer(nodeArray(value.arguments)[0]) ||
+    !hasRange(value)
+  ) {
+    return null;
+  }
+  const fetchCall = unwrapExpression(value.callee.object);
+  if (
+    fetchCall?.type !== "CallExpression" ||
+    fetchCall.optional === true ||
+    nodeArray(fetchCall.arguments).length !== 1 ||
+    !isIdentifierNamed(unwrapExpression(fetchCall.callee), "fetch") ||
+    hasAstBinding(scope, "fetch") ||
+    hasAstBinding(scope, "URL") ||
+    hasAstBinding(scope, "globalThis")
+  ) {
+    return null;
+  }
+  const asset = assetUrlFromNode(nodeArray(fetchCall.arguments)[0]);
+  if (asset === null) return null;
+  return {
+    asset: { ...asset, range: value, replacementKind: "array-buffer-promise" },
+    fetchCall,
   };
 }
 
@@ -302,6 +387,8 @@ function createChildScope(node: AstRecord, parent: AssetScope): AssetScope | nul
 function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedNames: Set<string> } {
   const assets: AssetUrl[] = [];
   const usedNames = new Set<string>();
+  const handledFetchCalls = new Set<AstRecord>();
+  let deferredExecutionDepth = 0;
   const rootScope = createAssetScope(null);
   collectVarScopeBindings(ast, rootScope);
   collectAssetScopeBindings(ast, rootScope);
@@ -346,6 +433,15 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
     }
   }
 
+  function visitDeferred(node: AstRecord, scope: AssetScope): void {
+    deferredExecutionDepth++;
+    try {
+      visit(node, scope);
+    } finally {
+      deferredExecutionDepth--;
+    }
+  }
+
   function visit(node: AstRecord, parentScope: AssetScope, safeAssetReference = false): void {
     if (isFunctionNode(node)) {
       visitDecorators(node, parentScope);
@@ -360,7 +456,7 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
       for (const parameter of nodeArray(node.params)) {
         if (isAstRecord(parameter)) {
           visitDecorators(parameter, parentScope);
-          visit(parameter, parameterScope);
+          visitDeferred(parameter, parameterScope);
         }
       }
       if (isAstRecord(node.body)) {
@@ -369,7 +465,7 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
           collectVarScopeBindings(node.body, bodyScope);
           collectAssetScopeBindings(node.body, bodyScope);
         }
-        visit(node.body, bodyScope);
+        visitDeferred(node.body, bodyScope);
       }
       return;
     }
@@ -506,6 +602,12 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
     if (node.type.startsWith("TS")) return;
 
     if (node.type === "CallExpression") {
+      const arrayBufferAsset =
+        deferredExecutionDepth === 0 ? arrayBufferFetchAssetFromCall(node, scope) : null;
+      if (arrayBufferAsset !== null) {
+        assets.push(arrayBufferAsset.asset);
+        handledFetchCalls.add(arrayBufferAsset.fetchCall);
+      }
       const callee = unwrapExpression(node.callee);
       const isGlobalFetch = isIdentifierNamed(callee, "fetch") && !hasAstBinding(scope, "fetch");
       const isReadOnlyUrlConsumer = isNodeUrlFileUrlToPath(scope, callee);
@@ -515,7 +617,7 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
         !hasAstBinding(scope, "eval");
       if (isDirectEval) invalidateVisibleAssetBindings(scope);
       const input = nodeArray(node.arguments)[0];
-      if (isGlobalFetch) {
+      if (isGlobalFetch && !handledFetchCalls.has(node)) {
         const directAsset = hasAstBinding(scope, "URL") ? null : assetUrlFromNode(input);
         if (directAsset) assets.push(directAsset);
         const identifier = unwrapExpression(input);
@@ -573,7 +675,13 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
     ) {
       visitDecorators(node, scope);
       if (node.computed === true && isAstRecord(node.key)) visit(node.key, scope);
-      if (isAstRecord(node.value)) visit(node.value, scope);
+      if (isAstRecord(node.value)) {
+        if (node.type !== "Property" && node.static !== true) {
+          visitDeferred(node.value, scope);
+        } else {
+          visit(node.value, scope);
+        }
+      }
       return;
     }
 
@@ -685,6 +793,7 @@ export class ImportMetaAssetTransformer {
     const transformPayloads = new Map<string, { dataUrl: string; size: number }>();
     const dataBindings = new Map<string, string>();
     const dataDeclarations: string[] = [];
+    let arrayBufferDecoderBinding: string | undefined;
     const embeddedAssets = new Set<string>();
     let moduleOutputBytes = 0;
     for (const assetUrl of assetUrls) {
@@ -781,6 +890,25 @@ export class ImportMetaAssetTransformer {
       }
       const dataUrlExpression = `new URL(${dataBinding})`;
       let replacement = dataUrlExpression;
+      if (assetUrl.replacementKind === "array-buffer-promise") {
+        if (arrayBufferDecoderBinding === undefined) {
+          arrayBufferDecoderBinding = selectPrivateBinding(usedNames, "__vinext_decode_asset_data");
+          dataDeclarations.push(
+            [
+              `const ${arrayBufferDecoderBinding} = async (data) => {`,
+              `await 0;`,
+              `const binary = globalThis.atob(data.slice(data.indexOf(",") + 1));`,
+              `const bytes = new globalThis.Uint8Array(binary.length);`,
+              `for (let index = 0; index < binary.length; index++) {`,
+              `bytes[index] = binary.charCodeAt(index);`,
+              `}`,
+              `return bytes.buffer;`,
+              `};`,
+            ].join("\n"),
+          );
+        }
+        replacement = `${arrayBufferDecoderBinding}(${dataBinding})`;
+      }
       if (assetUrl.binding) {
         let privateBinding = initializedBindings.get(assetUrl.binding);
         if (privateBinding === undefined) {

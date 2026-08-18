@@ -134,9 +134,11 @@ describe("import-meta fetched assets and OG synchronous file fallback", () => {
 
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
-    // The font's base64 contents replace only the URL input; fetch semantics remain intact.
+    // The exact module-initialization chain is decoded without fetch so runtimes
+    // such as Workerd do not perform asynchronous I/O during module evaluation.
     expect(result.code).toContain(fontBase64);
-    expect(result.code).toContain("fetch(");
+    expect(result.code).toContain("__vinext_decode_asset_data");
+    expect(result.code).not.toContain("fetch(");
     expect(result.code).not.toContain("import.meta.url");
   });
 
@@ -156,7 +158,8 @@ describe("import-meta fetched assets and OG synchronous file fallback", () => {
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
     expect(result.code).toContain(fontBase64);
-    expect(result.code).toContain("fetch(");
+    expect(result.code).toContain("__vinext_decode_asset_data");
+    expect(result.code).not.toContain("fetch(");
     expect(result.code).not.toContain("import.meta.url");
   });
 
@@ -182,7 +185,8 @@ describe("import-meta fetched assets and OG synchronous file fallback", () => {
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
     expect(result.code).toContain(fontBase64);
-    expect(result.code).toContain("fetch(");
+    expect(result.code).toContain("__vinext_decode_asset_data");
+    expect(result.code).not.toContain("fetch(");
     expect(result.code).not.toContain("import.meta.url");
   });
 
@@ -205,7 +209,8 @@ describe("import-meta fetched assets and OG synchronous file fallback", () => {
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
     expect(result.code).toContain(fontBase64);
-    expect(result.code).toContain("fetch(");
+    expect(result.code).toContain("__vinext_decode_asset_data");
+    expect(result.code).not.toContain("fetch(");
     expect(result.code).not.toContain("import.meta.url");
   });
 
@@ -219,7 +224,8 @@ describe("import-meta fetched assets and OG synchronous file fallback", () => {
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
     expect(result.code).toContain(fontBase64);
-    expect(result.code).toContain("fetch(");
+    expect(result.code).toContain("__vinext_decode_asset_data");
+    expect(result.code).not.toContain("fetch(");
     expect(result.code).not.toContain("import.meta.url");
   });
 
