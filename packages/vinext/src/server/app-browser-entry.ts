@@ -2109,13 +2109,6 @@ function bootstrapHydration(
                 timeoutMs: RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
               })
             : "ineligible";
-        if (prewarmEligibility === "unknown") {
-          performHardNavigationForScrollIntent(
-            currentHref,
-            currentHistoryMode === "replace" ? "replace" : undefined,
-          );
-          return;
-        }
         const usesCanonicalPrewarmedRequest =
           prewarmEligibility === "eligible" &&
           canonicalizePrewarmableRscRequestHeaders(requestHeaders);

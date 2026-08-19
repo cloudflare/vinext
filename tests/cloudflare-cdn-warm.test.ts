@@ -490,6 +490,65 @@ describe("Cloudflare CDN warmup", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("serializes propagating warm requests by default", async () => {
+    let releaseFirst!: () => void;
+    const firstResponse = new Promise<Response>((resolve) => {
+      releaseFirst = () => resolve(new Response("first", { status: 200 }));
+    });
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => firstResponse)
+      .mockResolvedValueOnce(new Response("second", { status: 200 }));
+
+    const warming = warmCdnCache({
+      fetchImpl: fetchMock as typeof fetch,
+      headers: {
+        "Cloudflare-Workers-Version-Overrides": 'my-worker="22222222-2222-4222-8222-222222222222"',
+      },
+      paths: ["/first", "/second"],
+      targetUrl: "https://app.example.com",
+    });
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    releaseFirst();
+    await expect(warming).resolves.toMatchObject({ total: 2, warmed: 2, failed: 0 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries transient RSC validation failures for a propagating target", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("html", { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response("old html response", {
+          headers: { "content-type": "text/html" },
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response("flight", {
+          headers: {
+            "cache-control": "public, max-age=0, must-revalidate",
+            "cf-cache-status": "MISS",
+            "content-type": "text/x-component",
+            vary: VINEXT_RSC_VARY_HEADER,
+          },
+        }),
+      );
+
+    const result = await warmCdnCache({
+      fetchImpl: fetchMock as typeof fetch,
+      paths: ["/cached/intro"],
+      propagatingTarget: true,
+      retryDelayMs: 0,
+      rscPaths: ["/cached/intro"],
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it("issues exactly one HTML and one canonical RSC request for an eligible path", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);

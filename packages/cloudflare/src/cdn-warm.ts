@@ -30,6 +30,8 @@ export type CdnWarmOptions = {
   timeoutMs?: number;
   retries?: number;
   retryDelayMs?: number;
+  /** Retry a newly staged version or preview alias until its routing has propagated. */
+  propagatingTarget?: boolean;
   strict?: boolean;
   fetchImpl?: typeof fetch;
 };
@@ -326,19 +328,40 @@ async function warmOnePath(
   options: Required<Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries">> & {
     fetchImpl: typeof fetch;
     headers?: HeadersInit;
+    retryAllValidationErrors: boolean;
+    retryDeadlineMs?: number;
     retryDelayMs: number;
     retryNotFound: boolean;
   },
 ): Promise<{ path: string; ok: true } | { path: string; ok: false; error: string }> {
   const url = buildWarmupUrl(options.targetUrl, target.pathname);
   let lastError = "unknown error";
+  const retryDeadline =
+    options.retryDeadlineMs === undefined ? undefined : Date.now() + options.retryDeadlineMs;
+
+  const canRetry = (attempt: number): boolean =>
+    attempt < options.retries && (retryDeadline === undefined || Date.now() < retryDeadline);
+
+  const waitBeforeRetry = async (): Promise<void> => {
+    if (options.retryDelayMs <= 0) return;
+    const delay =
+      retryDeadline === undefined
+        ? options.retryDelayMs
+        : Math.min(options.retryDelayMs, Math.max(0, retryDeadline - Date.now()));
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+  };
 
   for (let attempt = 0; attempt <= options.retries; attempt++) {
+    if (retryDeadline !== undefined && Date.now() >= retryDeadline) break;
     try {
+      const timeoutMs =
+        retryDeadline === undefined
+          ? options.timeoutMs
+          : Math.min(options.timeoutMs, Math.max(1, retryDeadline - Date.now()));
       const response = await fetchWithTimeout(
         options.fetchImpl,
         url,
-        options.timeoutMs,
+        timeoutMs,
         target.headers ?? options.headers,
         target.kind === "rsc" ? "manual" : "follow",
       );
@@ -347,10 +370,13 @@ async function warmOnePath(
         const validationError = validateRscWarmResponse(response);
         if (validationError === null) return { path: target.label, ok: true };
         lastError = validationError;
-        if (!isRetryableStatus(response.status, options.retryNotFound)) break;
-        if (attempt < options.retries && options.retryDelayMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, options.retryDelayMs));
-        }
+        if (
+          !options.retryAllValidationErrors &&
+          !isRetryableStatus(response.status, options.retryNotFound)
+        )
+          break;
+        if (!canRetry(attempt)) break;
+        await waitBeforeRetry();
         continue;
       }
 
@@ -367,9 +393,8 @@ async function warmOnePath(
         lastError = error instanceof Error ? error.message : String(error);
       }
     }
-    if (attempt < options.retries && options.retryDelayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, options.retryDelayMs));
-    }
+    if (!canRetry(attempt)) break;
+    await waitBeforeRetry();
   }
 
   return { path: target.label, ok: false, error: lastError };
@@ -417,11 +442,15 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       pathname: await createRscRequestUrl(pathname, rscHeaders),
     });
   }
-  const concurrency = Math.max(1, options.concurrency ?? 10);
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
   const hasVersionOverride = new Headers(options.headers).has(WORKER_VERSION_OVERRIDE_HEADER);
-  const retries = Math.max(0, options.retries ?? (hasVersionOverride ? 30 : 1));
-  const retryDelayMs = Math.max(0, options.retryDelayMs ?? (hasVersionOverride ? 1_000 : 0));
+  const propagatingTarget = options.propagatingTarget ?? hasVersionOverride;
+  // Immediately after a 0% staging deployment, concurrent edge requests can
+  // observe version-override propagation at different times. Serialize this
+  // short phase so one target converges before the remaining cache keys fill.
+  const concurrency = Math.max(1, options.concurrency ?? (propagatingTarget ? 1 : 10));
+  const retries = Math.max(0, options.retries ?? (propagatingTarget ? 30 : 1));
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? (propagatingTarget ? 1_000 : 0));
   const fetchImpl = options.fetchImpl ?? fetch;
 
   if (requests.length === 0) {
@@ -437,8 +466,10 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       retries,
       fetchImpl,
       headers: options.headers,
+      retryAllValidationErrors: propagatingTarget,
+      retryDeadlineMs: propagatingTarget && options.retries === undefined ? 30_000 : undefined,
       retryDelayMs,
-      retryNotFound: hasVersionOverride,
+      retryNotFound: propagatingTarget,
     }),
   );
 

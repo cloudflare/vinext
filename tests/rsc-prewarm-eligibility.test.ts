@@ -82,6 +82,6 @@ describe("RSC prewarm browser eligibility", () => {
       resolveRscPrewarmEligibility("/cached/intro", {
         timeoutMs: RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
       }),
-    ).resolves.toBe("unknown");
+    ).resolves.toBe("ineligible");
   });
 });

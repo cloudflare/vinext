@@ -559,11 +559,16 @@ export async function deployWithCdnWarmup(
     Pick<CdnWarmOptions, "deploymentId" | "rscPaths">,
 ): Promise<string> {
   const upload = runWranglerVersionUpload(root, options);
-  const warmUploadedVersion = (targetUrl: string, headers?: HeadersInit) =>
+  const warmUploadedVersion = (
+    targetUrl: string,
+    headers?: HeadersInit,
+    propagatingTarget = false,
+  ) =>
     warmCdnCache({
       targetUrl,
       paths,
       headers,
+      propagatingTarget,
       deploymentId: options.deploymentId,
       rscPaths: options.rscPaths,
       concurrency: options.warmCdnConcurrency,
@@ -584,7 +589,7 @@ export async function deployWithCdnWarmup(
       );
       return upload.previewUrl ?? "(URL not detected in wrangler output)";
     }
-    await warmUploadedVersion(upload.previewAliasUrl);
+    await warmUploadedVersion(upload.previewAliasUrl, undefined, true);
     return upload.previewAliasUrl;
   }
 
@@ -618,7 +623,7 @@ export async function deployWithCdnWarmup(
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
     if (targetUrl && headers) {
       try {
-        await warmUploadedVersion(targetUrl, headers);
+        await warmUploadedVersion(targetUrl, headers, true);
       } catch (error) {
         throw withStagedVersionCleanupNote(error);
       }

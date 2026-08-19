@@ -7,7 +7,7 @@ type RscPrewarmManifestState =
   | { kind: "ready"; paths: ReadonlySet<string> }
   | { kind: "unavailable" };
 
-export type RscPrewarmEligibility = "eligible" | "ineligible" | "unknown";
+export type RscPrewarmEligibility = "eligible" | "ineligible";
 
 const manifestUrl = process.env.__VINEXT_RSC_PREWARM_MANIFEST_URL ?? "";
 let manifestPromise: Promise<RscPrewarmManifestState> | null = null;
@@ -74,7 +74,9 @@ export async function resolveRscPrewarmEligibility(
   const manifest = preloadRscPrewarmManifest();
   const state =
     options?.timeoutMs === undefined ? await manifest : await loadManifestWithin(options.timeoutMs);
-  if (state === null || state.kind === "unavailable") return "unknown";
+  // The manifest only opts proven routes into the shared canonical request.
+  // If it is unavailable or slow, preserve ordinary contextual RSC behavior.
+  if (state === null || state.kind === "unavailable") return "ineligible";
   return state.paths.has(url.pathname) ? "eligible" : "ineligible";
 }
 

@@ -2896,7 +2896,7 @@ const _appRouter: AppRouterInstance = {
       const prewarmEligibility = canUseCanonicalPrewarm
         ? await resolveRscPrewarmEligibility(fullHref, { timeoutMs: 5_000 })
         : "ineligible";
-      if (setup.cancelled || prewarmEligibility === "unknown") return;
+      if (setup.cancelled) return;
       const isCanonicalPrewarmCandidate = prewarmEligibility === "eligible";
       const policy =
         isCanonicalPrewarmCandidate || kind === "full"

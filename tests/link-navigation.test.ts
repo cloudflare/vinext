@@ -2029,7 +2029,7 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("does not issue an alternate Link RSC request when eligibility is unknown", async () => {
+  it("preserves contextual Link prefetch when eligibility is unavailable", async () => {
     vi.useFakeTimers();
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
@@ -2044,7 +2044,10 @@ describe("Link prefetch scheduling", () => {
       vi.useRealTimers();
       await flushPrefetchTasks();
 
-      expect(result.fetch).not.toHaveBeenCalled();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      const input = result.fetch.mock.calls[0]?.[0];
+      expect(typeof input).toBe("string");
+      if (typeof input === "string") expect(input).toContain("/blog/hello?_rsc=");
     } finally {
       vi.useRealTimers();
       result.restoreNodeEnv();

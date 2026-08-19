@@ -276,7 +276,7 @@ describe("prefetch cache eviction", () => {
     expect(navigate.mock.calls[0]?.[0]).toBe("http://localhost/dashboard");
   });
 
-  it("router.prefetch does not issue an alternate RSC request when eligibility is unknown", async () => {
+  it("router.prefetch preserves contextual RSC behavior when eligibility is unavailable", async () => {
     vi.useFakeTimers();
     vi.stubEnv(
       "__VINEXT_RSC_PREWARM_MANIFEST_URL",
@@ -297,8 +297,9 @@ describe("prefetch cache eviction", () => {
       vi.useRealTimers();
       await settlePrefetchSetup();
 
-      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledTimes(2);
       expect(toRscUrlString(fetch.mock.calls[0]![0])).toContain("vinext-rsc-prewarm.json");
+      expect(toRscUrlString(fetch.mock.calls[1]![0])).toContain("/dashboard?_rsc=");
     } finally {
       vi.useRealTimers();
     }

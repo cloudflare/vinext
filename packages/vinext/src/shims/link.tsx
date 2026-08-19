@@ -500,7 +500,6 @@ function prefetchUrl(
         const prewarmEligibility = canUseCanonicalPrewarm
           ? await resolveRscPrewarmEligibility(fullHref, { timeoutMs: 5_000 })
           : "ineligible";
-        if (prewarmEligibility === "unknown") return;
         const isCanonicalPrewarmCandidate = prewarmEligibility === "eligible";
         if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
         const autoPrefetch = isCanonicalPrewarmCandidate
