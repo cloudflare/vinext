@@ -78,25 +78,16 @@ type PrerenderResult = {
 
 type WranglerConfig = {
   accountId?: string;
-  crossVersionCache?: boolean;
-  hasCacheConfig?: boolean;
-  hasRouteConfig?: boolean;
   kvNamespaceId?: string;
   customDomain?: string;
   name?: string;
   legacyEnv?: boolean;
-  hasEnabledCrossVersionCache?: boolean;
-  warmTargetDomain?: string;
   env?: Record<string, WranglerEnvironmentConfig>;
 };
 
 export type WranglerEnvironmentConfig = {
-  crossVersionCache?: boolean;
-  hasCacheConfig?: boolean;
-  hasRouteConfig?: boolean;
   customDomain?: string;
   name?: string;
-  warmTargetDomain?: string;
 };
 
 // ─── Wrangler Config Parsing ─────────────────────────────────────────────────
@@ -264,13 +255,6 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
   if (typeof config.legacy_env === "boolean") {
     result.legacyEnv = config.legacy_env;
   }
-  if (config.cache && typeof config.cache === "object" && !Array.isArray(config.cache)) {
-    result.hasCacheConfig = true;
-    if (typeof (config.cache as Record<string, unknown>).cross_version_cache === "boolean") {
-      result.crossVersionCache = (config.cache as Record<string, unknown>)
-        .cross_version_cache as boolean;
-    }
-  }
 
   // account_id
   if (typeof config.account_id === "string") {
@@ -290,17 +274,9 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     }
   }
 
-  if (["route", "routes", "custom_domains"].some((key) => key in config)) {
-    result.hasRouteConfig = true;
-  }
-  // Custom domain — check route, routes[], and custom_domains[].
-  const domain =
-    extractDomainFromRoute(config.route) ??
-    extractDomainFromRoutes(config.routes) ??
-    extractDomainFromCustomDomains(config);
+  // Custom domain — check routes[] and custom_domains[]
+  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
-  const warmTargetDomain = extractDomainFromCustomDomains(config);
-  if (warmTargetDomain) result.warmTargetDomain = warmTargetDomain;
 
   const env = extractEnvConfigs(config.env);
   if (env) result.env = env;
@@ -315,12 +291,7 @@ function extractEnvConfigs(envs: unknown): Record<string, WranglerEnvironmentCon
   for (const [envName, rawConfig] of Object.entries(envs)) {
     if (!rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) continue;
     const envConfig = extractEnvironmentConfig(rawConfig as Record<string, unknown>);
-    if (
-      envConfig.name ||
-      envConfig.customDomain ||
-      envConfig.hasCacheConfig ||
-      envConfig.hasRouteConfig
-    ) {
+    if (envConfig.name || envConfig.customDomain) {
       result[envName] = envConfig;
     }
   }
@@ -332,31 +303,9 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
   if (typeof config.name === "string" && config.name.length > 0) {
     result.name = config.name;
   }
-  if (config.cache && typeof config.cache === "object" && !Array.isArray(config.cache)) {
-    result.hasCacheConfig = true;
-    if (typeof (config.cache as Record<string, unknown>).cross_version_cache === "boolean") {
-      result.crossVersionCache = (config.cache as Record<string, unknown>)
-        .cross_version_cache as boolean;
-    }
-  }
-  if (["route", "routes", "custom_domains"].some((key) => key in config)) {
-    result.hasRouteConfig = true;
-  }
-  const domain =
-    extractDomainFromRoute(config.route) ??
-    extractDomainFromRoutes(config.routes) ??
-    extractDomainFromCustomDomains(config);
+  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
-  const warmTargetDomain = extractDomainFromCustomDomains(config);
-  if (warmTargetDomain) result.warmTargetDomain = warmTargetDomain;
   return result;
-}
-
-function extractDomainFromRoute(route: unknown): string | null {
-  if (typeof route === "string") return cleanNonWorkersDevDomain(route);
-  if (!route || typeof route !== "object" || Array.isArray(route)) return null;
-  const pattern = (route as Record<string, unknown>).pattern;
-  return typeof pattern === "string" ? cleanNonWorkersDevDomain(pattern) : null;
 }
 
 function extractDomainFromRoutes(routes: unknown): string | null {
@@ -364,23 +313,23 @@ function extractDomainFromRoutes(routes: unknown): string | null {
 
   for (const route of routes) {
     if (typeof route === "string") {
-      const domain = cleanNonWorkersDevDomain(route);
-      if (domain) return domain;
+      const domain = cleanDomain(route);
+      if (domain && !domain.includes("workers.dev")) return domain;
     } else if (route && typeof route === "object") {
       const r = route as Record<string, unknown>;
-      const pattern = typeof r.pattern === "string" ? r.pattern : null;
+      const pattern =
+        typeof r.zone_name === "string"
+          ? r.zone_name
+          : typeof r.pattern === "string"
+            ? r.pattern
+            : null;
       if (pattern) {
-        const domain = cleanNonWorkersDevDomain(pattern);
-        if (domain) return domain;
+        const domain = cleanDomain(pattern);
+        if (domain && !domain.includes("workers.dev")) return domain;
       }
     }
   }
   return null;
-}
-
-function cleanNonWorkersDevDomain(raw: string): string | null {
-  const domain = cleanDomain(raw);
-  return domain && !domain.includes("workers.dev") ? domain : null;
 }
 
 function extractDomainFromCustomDomains(config: Record<string, unknown>): string | null {
@@ -395,17 +344,14 @@ function extractDomainFromCustomDomains(config: Record<string, unknown>): string
   return null;
 }
 
-/** Extract a concrete HTTPS hostname from a route pattern. */
+/** Strip protocol and trailing wildcards from a route pattern to get a bare domain. */
 function cleanDomain(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (/^http:\/\//i.test(trimmed)) return null;
-  const cleaned = trimmed
-    .replace(/^https:\/\//i, "")
+  const cleaned = raw
+    .replace(/^https?:\/\//, "")
     .replace(/\/\*$/, "")
     .replace(/\/+$/, "")
     .split("/")[0]; // Take only the host part
-  if (!cleaned || cleaned.includes("*")) return null;
-  return cleaned;
+  return cleaned || null;
 }
 
 /**
@@ -414,26 +360,15 @@ function cleanDomain(raw: string): string | null {
  */
 function extractFromTOML(content: string): WranglerConfig {
   const result: WranglerConfig = {};
-  const rootBody = getTomlRootBody(content);
 
-  const nameMatch = rootBody.match(/^name\s*=\s*"([^"]+)"/m);
+  const nameMatch = content.match(/^name\s*=\s*"([^"]+)"/m);
   if (nameMatch) result.name = nameMatch[1];
 
-  const legacyEnvMatch = rootBody.match(/^legacy_env\s*=\s*(true|false)\s*$/m);
+  const legacyEnvMatch = content.match(/^legacy_env\s*=\s*(true|false)\s*$/m);
   if (legacyEnvMatch) result.legacyEnv = legacyEnvMatch[1] === "true";
 
-  const rootCache = extractNamedTomlCacheConfig(rootBody, "cache");
-  const cacheSection = getTomlSections(content).find((section) => section.header === "cache");
-  const sectionCache = cacheSection ? extractDirectTomlCacheConfig(cacheSection.body) : null;
-  const cacheConfig = sectionCache ?? rootCache;
-  if (cacheConfig) {
-    result.hasCacheConfig = true;
-    if (cacheConfig.crossVersionCache !== undefined) {
-      result.crossVersionCache = cacheConfig.crossVersionCache;
-    }
-  }
   // account_id = "..."
-  const accountMatch = rootBody.match(/^account_id\s*=\s*"([^"]+)"/m);
+  const accountMatch = content.match(/^account_id\s*=\s*"([^"]+)"/m);
   if (accountMatch) result.accountId = accountMatch[1];
 
   // KV namespace with binding = "VINEXT_KV_CACHE"
@@ -454,33 +389,32 @@ function extractFromTOML(content: string): WranglerConfig {
 
   // routes — both string and table forms
   // route = "example.com/*"
-  const routeMatch = rootBody.match(/^route\s*=\s*"([^"]+)"/m);
+  const routeMatch = content.match(/^route\s*=\s*"([^"]+)"/m);
   if (routeMatch) {
-    result.hasRouteConfig = true;
-    result.customDomain = cleanNonWorkersDevDomain(routeMatch[1]) ?? undefined;
-  }
-  if (/^\s*(?:routes|custom_domains)\s*=/m.test(rootBody)) {
-    result.hasRouteConfig = true;
-    const configuredDomain =
-      extractTomlRoutesArrayDomain(rootBody) ?? extractTomlCustomDomainsArrayDomain(rootBody);
-    if (!result.customDomain && configuredDomain) result.customDomain = configuredDomain;
-    result.warmTargetDomain = extractTomlCustomDomainsArrayDomain(rootBody) ?? undefined;
+    const domain = cleanDomain(routeMatch[1]);
+    if (domain && !domain.includes("workers.dev")) {
+      result.customDomain = domain;
+    }
   }
 
   // [[routes]] blocks
-  for (const section of getTomlSections(content)) {
-    if (section.header !== "routes") continue;
-    result.hasRouteConfig = true;
-    if (!result.customDomain) {
-      result.customDomain = extractTomlRouteBlockDomain(section.body) ?? undefined;
+  if (!result.customDomain) {
+    const routeBlocks = content.split(/\[\[routes\]\]/);
+    for (let i = 1; i < routeBlocks.length; i++) {
+      const block = routeBlocks[i].split(/\[\[/)[0];
+      const patternMatch = block.match(/pattern\s*=\s*"([^"]+)"/);
+      if (patternMatch) {
+        const domain = cleanDomain(patternMatch[1]);
+        if (domain && !domain.includes("workers.dev")) {
+          result.customDomain = domain;
+          break;
+        }
+      }
     }
   }
 
   const env = extractEnvConfigsFromTOML(content);
   if (env) result.env = env;
-  if (tomlEnablesCrossVersionCache(content)) {
-    result.hasEnabledCrossVersionCache = true;
-  }
 
   return result;
 }
@@ -497,25 +431,9 @@ function extractEnvConfigsFromTOML(
       const nameMatch = section.body.match(/^name\s*=\s*"([^"]+)"/m);
       if (nameMatch) envConfig.name = nameMatch[1];
       const domain =
-        extractTomlScalarRouteDomain(section.body) ??
-        extractTomlRoutesArrayDomain(section.body) ??
-        extractTomlCustomDomainsArrayDomain(section.body);
+        extractTomlScalarRouteDomain(section.body) ?? extractTomlRoutesArrayDomain(section.body);
       if (domain) envConfig.customDomain = domain;
-      envConfig.warmTargetDomain = extractTomlCustomDomainsArrayDomain(section.body) ?? undefined;
-      if (/^\s*(?:route|routes|custom_domains)\s*=/m.test(section.body)) {
-        envConfig.hasRouteConfig = true;
-      }
-      const cacheConfig = extractNamedTomlCacheConfig(section.body, "cache");
-      if (cacheConfig) {
-        envConfig.hasCacheConfig = true;
-        envConfig.crossVersionCache = cacheConfig.crossVersionCache;
-      }
-      if (
-        envConfig.name ||
-        envConfig.customDomain ||
-        envConfig.hasCacheConfig ||
-        envConfig.hasRouteConfig
-      ) {
+      if (envConfig.name || envConfig.customDomain) {
         result[envName] = envConfig;
       }
       continue;
@@ -524,115 +442,15 @@ function extractEnvConfigsFromTOML(
     const routesEnvName = section.header.match(/^env\.([^.]+)\.routes$/)?.[1];
     if (routesEnvName) {
       const envConfig = result[routesEnvName] ?? {};
-      envConfig.hasRouteConfig = true;
       const domain = extractTomlRouteBlockDomain(section.body);
       if (domain) envConfig.customDomain = domain;
-      result[routesEnvName] = envConfig;
-      continue;
-    }
-
-    const cacheEnvName = section.header.match(/^env\.([^.]+)\.cache$/)?.[1];
-    if (cacheEnvName) {
-      const envConfig = result[cacheEnvName] ?? {};
-      const cacheConfig = extractDirectTomlCacheConfig(section.body);
-      envConfig.hasCacheConfig = true;
-      if (cacheConfig?.crossVersionCache !== undefined) {
-        envConfig.crossVersionCache = cacheConfig.crossVersionCache;
+      if (envConfig.name || envConfig.customDomain) {
+        result[routesEnvName] = envConfig;
       }
-      result[cacheEnvName] = envConfig;
     }
-  }
-
-  for (const match of getTomlRootBody(content).matchAll(
-    /^\s*env\.([^.\s=]+)\.cache\.cross_version_cache\s*=\s*(true|false)\b/gm,
-  )) {
-    const envName = match[1];
-    const envConfig = result[envName] ?? {};
-    envConfig.hasCacheConfig = true;
-    envConfig.crossVersionCache = match[2] === "true";
-    result[envName] = envConfig;
-  }
-
-  for (const match of getTomlRootBody(content).matchAll(
-    /^\s*env\.([^.\s=]+)\.cache\s*=\s*\{([^}]*)\}/gm,
-  )) {
-    const envName = match[1];
-    const envConfig = result[envName] ?? {};
-    const crossVersionCache = (match[2] ?? "").match(/\bcross_version_cache\s*=\s*(true|false)\b/);
-    envConfig.hasCacheConfig = true;
-    if (crossVersionCache) {
-      envConfig.crossVersionCache = crossVersionCache[1] === "true";
-    }
-    result[envName] = envConfig;
   }
 
   return Object.keys(result).length > 0 ? result : undefined;
-}
-
-function getTomlRootBody(content: string): string {
-  const firstSection = content.search(/^\s*\[\[?[^\n]+\]\]?\s*(?:#.*)?$/m);
-  return firstSection === -1 ? content : content.slice(0, firstSection);
-}
-
-function tomlEnablesCrossVersionCache(content: string): boolean {
-  const enabledAssignment =
-    /(?:^|[,{.\s])(?:cross_version_cache|"cross_version_cache"|'cross_version_cache')\s*=\s*true\b/;
-  return content
-    .split("\n")
-    .some((line) => enabledAssignment.test(decodeTomlUnicodeEscapes(stripTomlComment(line))));
-}
-
-function decodeTomlUnicodeEscapes(content: string): string {
-  return content.replace(/\\(u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})/g, (escape) => {
-    const codePoint = Number.parseInt(escape.slice(2), 16);
-    return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : escape;
-  });
-}
-
-function stripTomlComment(line: string): string {
-  let quote: '"' | "'" | null = null;
-  let escaped = false;
-  for (let index = 0; index < line.length; index++) {
-    const char = line[index];
-    if (quote === '"' && escaped) {
-      escaped = false;
-      continue;
-    }
-    if (quote === '"' && char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (char === quote) quote = null;
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      quote = char;
-    } else if (char === "#") {
-      return line.slice(0, index);
-    }
-  }
-  return line;
-}
-
-function extractDirectTomlCacheConfig(body: string): { crossVersionCache?: boolean } | null {
-  const match = body.match(/^\s*cross_version_cache\s*=\s*(true|false)\b/m);
-  return match ? { crossVersionCache: match[1] === "true" } : {};
-}
-
-function extractNamedTomlCacheConfig(
-  body: string,
-  name: string,
-): { crossVersionCache?: boolean } | null {
-  const dotted = body.match(
-    new RegExp(`^\\s*${name}\\.cross_version_cache\\s*=\\s*(true|false)\\b`, "m"),
-  );
-  if (dotted) return { crossVersionCache: dotted[1] === "true" };
-
-  const inline = body.match(new RegExp(`^\\s*${name}\\s*=\\s*\\{([^}]*)\\}`, "m"));
-  if (!inline) return null;
-  const value = inline[1].match(/\bcross_version_cache\s*=\s*(true|false)\b/);
-  return value ? { crossVersionCache: value[1] === "true" } : {};
 }
 
 function getTomlSections(content: string): Array<{ header: string; body: string }> {
@@ -661,13 +479,12 @@ function getTomlSections(content: string): Array<{ header: string; body: string 
 }
 
 function parseTomlSectionHeader(line: string): string | null {
-  const match = line.match(/^\s*(\[\[?)(.*?)(\]\]?)(?:\s*#.*)?\s*$/);
-  if (!match) return null;
-  const isArrayHeader = match[1] === "[[";
-  if ((isArrayHeader && match[3] !== "]]") || (!isArrayHeader && match[3] !== "]")) {
-    return null;
-  }
-  const header = match[2].trim();
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
+  const isArrayHeader = trimmed.startsWith("[[") && trimmed.endsWith("]]");
+  const start = isArrayHeader ? 2 : 1;
+  const end = isArrayHeader ? trimmed.length - 2 : trimmed.length - 1;
+  const header = trimmed.slice(start, end).trim();
   return header.length > 0 ? header : null;
 }
 
@@ -681,22 +498,14 @@ function extractTomlScalarRouteDomain(section: string): string | null {
 function extractTomlRoutesArrayDomain(section: string): string | null {
   const routesMatch = section.match(/^routes\s*=\s*\[([\s\S]*?)\]/m);
   if (!routesMatch) return null;
-  const routes = routesMatch[1] ?? "";
-  const patternMatch = routes.match(/\bpattern\s*=\s*"([^"]+)"/) ?? routes.match(/"([^"]+)"/);
+  const patternMatch = (routesMatch[1] ?? "").match(/(?:pattern\s*=\s*)?"([^"]+)"/);
   if (!patternMatch) return null;
   const domain = cleanDomain(patternMatch[1]);
   return domain && !domain.includes("workers.dev") ? domain : null;
 }
 
-function extractTomlCustomDomainsArrayDomain(section: string): string | null {
-  const domainsMatch = section.match(/^custom_domains\s*=\s*\[([\s\S]*?)\]/m);
-  if (!domainsMatch) return null;
-  const domainMatch = (domainsMatch[1] ?? "").match(/"([^"]+)"/);
-  return domainMatch ? cleanNonWorkersDevDomain(domainMatch[1]) : null;
-}
-
 function extractTomlRouteBlockDomain(section: string): string | null {
-  const patternMatch = section.match(/^pattern\s*=\s*"([^"]+)"/m);
+  const patternMatch = section.match(/^(?:pattern|zone_name)\s*=\s*"([^"]+)"/m);
   if (!patternMatch) return null;
   const domain = cleanDomain(patternMatch[1]);
   return domain && !domain.includes("workers.dev") ? domain : null;

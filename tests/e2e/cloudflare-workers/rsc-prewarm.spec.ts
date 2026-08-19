@@ -19,7 +19,7 @@ type ObservedRsc = {
 
 test.describe.configure({ retries: 0 });
 
-async function waitForStablePreviewAlias(page: Page, expectedBuildId: string): Promise<void> {
+async function waitForStableDeployment(page: Page, expectedBuildId: string): Promise<void> {
   let consecutiveCurrentBuilds = 0;
   await expect
     .poll(
@@ -30,7 +30,7 @@ async function waitForStablePreviewAlias(page: Page, expectedBuildId: string): P
         return consecutiveCurrentBuilds;
       },
       {
-        message: "preview alias did not converge on the newly built Worker",
+        message: "deployment did not converge on the newly built Worker",
         timeout: 30_000,
       },
     )
@@ -94,7 +94,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
         const readiness = await request.get(`${baseURL}/prewarm/readiness`);
         return (await readiness.text()).includes(expectedBuildId);
       },
-      { message: "preview alias did not reach the newly built Worker", timeout: 30_000 },
+      { message: "deployment did not reach the newly built Worker", timeout: 30_000 },
     )
     .toBe(true);
 
@@ -118,7 +118,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
     try {
       const readinessPage = await context.newPage();
       try {
-        await waitForStablePreviewAlias(readinessPage, expectedBuildId);
+        await waitForStableDeployment(readinessPage, expectedBuildId);
       } finally {
         await readinessPage.close();
       }
@@ -211,7 +211,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
   try {
     const readinessPage = await context.newPage();
     try {
-      await waitForStablePreviewAlias(readinessPage, expectedBuildId);
+      await waitForStableDeployment(readinessPage, expectedBuildId);
     } finally {
       await readinessPage.close();
     }

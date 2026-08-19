@@ -111,7 +111,7 @@ jobs:
         run: vp exec vinext-cloudflare deploy --skip-build --config ${{ matrix.example.wrangler_config }} --experimental-warm-cdn-cache
 
       - name: Deploy Preview Version
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name != 'workers-cache'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -119,7 +119,18 @@ jobs:
           workingDirectory: ${{ matrix.example.working_directory }}
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
 
-      - name: Deploy and warm workers-cache preview
+      - name: Seed workers-cache production prewarm test Worker
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          vp exec wrangler deploy
+          --config ${{ matrix.example.wrangler_config }}
+          --name rsc-prewarm-pr-${{ github.event.pull_request.number }}
+
+      - name: Deploy and warm workers-cache production test Worker
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
         working-directory: ${{ matrix.example.working_directory }}
         env:
@@ -129,7 +140,7 @@ jobs:
           vp exec vinext-cloudflare deploy
           --skip-build
           --config ${{ matrix.example.wrangler_config }}
-          --preview-alias pr-${{ github.event.pull_request.number }}
+          --name rsc-prewarm-pr-${{ github.event.pull_request.number }}
           --experimental-warm-cdn-cache
           --warm-cdn-strict
 
@@ -141,8 +152,19 @@ jobs:
         if: matrix.example.name == 'workers-cache'
         env:
           PLAYWRIGHT_PROJECT: cloudflare-workers
-          VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-workers-cache.vinext.workers.dev', github.event.pull_request.number) || 'https://workers-cache.vinext.workers.dev' }}
+          VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://rsc-prewarm-pr-{0}.vinext.workers.dev', github.event.pull_request.number) || 'https://workers-cache.vinext.workers.dev' }}
         run: vp exec playwright test tests/e2e/cloudflare-workers/rsc-prewarm.spec.ts
+
+      - name: Delete workers-cache production prewarm test Worker
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          vp exec wrangler delete rsc-prewarm-pr-${{ github.event.pull_request.number }}
+          --config ${{ matrix.example.wrangler_config }}
+          --force
 
   smoke-test:
     name: Smoke Test Deployments
