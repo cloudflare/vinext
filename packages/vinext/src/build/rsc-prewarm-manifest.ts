@@ -56,7 +56,16 @@ export function writeRscPrewarmManifest(
 ): void {
   const outputPath = path.join(clientDir, getRscPrewarmManifestFileName(config, rscBuildIdentity));
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  fs.writeFileSync(outputPath, JSON.stringify({ version: 1, paths }) + "\n", "utf-8");
+  fs.writeFileSync(
+    outputPath,
+    JSON.stringify({
+      version: 1,
+      buildId: config.buildId,
+      rscBuildId: rscBuildIdentity,
+      paths,
+    }) + "\n",
+    "utf-8",
+  );
 }
 
 /** Emit the exact production URL paths whose completed prerender is ISR-cacheable. */

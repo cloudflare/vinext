@@ -58,7 +58,12 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       events.push(`fetch:${formatFetchUrl(url)}`);
       if (new URL(formatFetchUrl(url)).pathname.endsWith("/vinext-rsc-prewarm.json")) {
-        return Response.json({ version: 1, paths: ["/about"] });
+        return Response.json({
+          version: 1,
+          buildId: "build-a",
+          rscBuildId: "build-a",
+          paths: ["/about"],
+        });
       }
       const isRsc = new Headers(init?.headers).get("rsc") === "1";
       return new Response(isRsc ? "flight" : "html", {
@@ -279,7 +284,12 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     let rscAttempt = 0;
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       if (new URL(formatFetchUrl(url)).pathname.endsWith("/vinext-rsc-prewarm.json")) {
-        return Response.json({ version: 1, paths: ["/about"] });
+        return Response.json({
+          version: 1,
+          buildId: "build-a",
+          rscBuildId: "build-a",
+          paths: ["/about"],
+        });
       }
       const isRsc = new Headers(init?.headers).get("rsc") === "1";
       if (isRsc) rscAttempt++;
@@ -636,6 +646,36 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("explains staged version cleanup when promotion fails", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
+    );
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        return "Staged version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        throw new Error("promotion failed");
+      }
+      if (args.includes("triggers")) return "Triggers deployed\n";
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deployWithCdnWarmup(tmpDir, ["/"], { warmCdnConcurrency: 1 })).rejects.toThrow(
+      "may remain staged at 0%",
+    );
+  });
+
   it("explains promoted version state when fallback trigger deployment fails", async () => {
     writeFile(
       "wrangler.jsonc",
@@ -706,5 +746,33 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         warmCdnStrict: true,
       }),
     ).rejects.toThrow("already promoted to 100% and its Worker triggers/routes were updated");
+  });
+
+  it("explains promoted version state when strict fallback has no target URL", async () => {
+    writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker", workers_dev: false }));
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [
+            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+            { version_id: "33333333-3333-4333-8333-333333333333", percentage: 50 },
+          ],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        return "Deployed version\n";
+      }
+      if (args.includes("triggers")) return "Triggers deployed\n";
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deployWithCdnWarmup(tmpDir, ["/"], { warmCdnStrict: true })).rejects.toThrow(
+      "already promoted to 100% and its Worker triggers/routes were updated",
+    );
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

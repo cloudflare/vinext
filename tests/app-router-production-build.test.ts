@@ -201,7 +201,7 @@ describe("App Router Production build", () => {
             "utf-8",
           ),
         ),
-      ).toEqual({ version: 1, paths: [] });
+      ).toEqual({ version: 1, buildId, rscBuildId, paths: [] });
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

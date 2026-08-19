@@ -75,7 +75,6 @@ describe("prerender path manifest", () => {
 
     expect(manifest).toEqual({
       buildId: "build-a",
-      buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
       rscBuildId: "rsc-build-a",
       trailingSlash: false,
       paths: ["/", "/cached/intro", "/cached/featured"],
@@ -102,6 +101,7 @@ describe("prerender path manifest", () => {
   it("does not stamp stale completed prerender eligibility into a new build", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
     writeFile("dist/server/index.js", "export default {};\n");
     writeFile("app/page.tsx", "export const revalidate = 60; export default function Page() {}\n");
     writeFile(
@@ -128,6 +128,9 @@ describe("prerender path manifest", () => {
     });
 
     expect(manifest?.rscPaths).toEqual([]);
+    expect(manifest?.buildIdentityPath).toBe(
+      "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
+    );
   });
 
   it("skips dynamic warmup paths when static params discovery aborts", async () => {

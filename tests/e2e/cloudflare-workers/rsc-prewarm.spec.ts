@@ -63,6 +63,11 @@ function expectCanonicalRsc(observed: ObservedRsc): void {
   expect(observed.response.headers()["cf-cache-status"]).toBe("HIT");
 }
 
+function expectContextualRsc(observed: ObservedRsc): void {
+  expect(new URL(observed.url).searchParams.get("_rsc")).toMatch(/^[A-Za-z0-9_-]+$/);
+  expect(observed.requestHeaders["x-vinext-rsc-state-fingerprint"]).toBeDefined();
+}
+
 async function expectSoftNavigationCommit(
   page: Page,
   expectedBuildId: string,
@@ -211,7 +216,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
     const observed = await observeTargetRsc(page, () =>
       page.getByTestId("soft-navigation").click(),
     );
-    expectCanonicalRsc(observed);
+    expectContextualRsc(observed);
     await expectSoftNavigationCommit(
       page,
       expectedBuildId,
@@ -231,8 +236,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
     await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
     await expect(page.getByRole("heading", { name: "Post: intro" })).toBeVisible();
     await expect(page.getByTestId("build-id")).toHaveText(expectedBuildId);
-    expect(new URL(observed.url).searchParams.get("_rsc")).toMatch(/^[A-Za-z0-9_-]+$/);
-    expect(observed.requestHeaders["x-vinext-rsc-state-fingerprint"]).toBeDefined();
+    expectContextualRsc(observed);
     expect(targetRscRequests).toHaveLength(1);
     expect(targetDocumentRequests).toEqual([]);
   });

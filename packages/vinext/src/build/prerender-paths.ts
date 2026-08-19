@@ -485,7 +485,7 @@ export async function emitPrerenderPathManifest(
     ...(config.deploymentId ? { deploymentId: config.deploymentId } : {}),
     ...(pagesDir ? { pagesPaths: discoveredPagesPaths } : {}),
     ...(rscBuildId ? { rscBuildId } : {}),
-    ...(rscBuildId
+    ...(options.responseVary && rscBuildId
       ? { buildIdentityPath: getRscPrewarmManifestAssetPath(config, rscBuildId) }
       : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),

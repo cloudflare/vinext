@@ -617,7 +617,12 @@ describe("Cloudflare CDN warmup", () => {
       const url = toRequestUrl(input);
       if (url.pathname.endsWith("/vinext-rsc-prewarm.json")) {
         events.push("identity");
-        return Response.json({ version: 1, paths: ["/cached/intro"] });
+        return Response.json({
+          version: 1,
+          buildId: "build-a",
+          rscBuildId: "build-a",
+          paths: ["/cached/intro"],
+        });
       }
       if (new Headers(init?.headers).get("rsc") === "1") {
         events.push("start:rsc");
@@ -665,7 +670,18 @@ describe("Cloudflare CDN warmup", () => {
       if (url.pathname.endsWith("/vinext-rsc-prewarm.json")) {
         identityAttempt++;
         events.push(`identity:${identityAttempt}`);
-        return new Response(identityAttempt === 1 ? "missing" : "{}", {
+        const body =
+          identityAttempt === 1
+            ? "missing"
+            : identityAttempt === 2
+              ? "{}"
+              : JSON.stringify({
+                  version: 1,
+                  buildId: "build-a",
+                  rscBuildId: "rsc-build-a",
+                  paths: [],
+                });
+        return new Response(body, {
           status: identityAttempt === 1 ? 404 : 200,
           headers: identityAttempt === 1 ? undefined : { "content-type": "application/json" },
         });
@@ -687,8 +703,8 @@ describe("Cloudflare CDN warmup", () => {
     });
 
     expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
-    expect(events.slice(0, 2)).toEqual(["identity:1", "identity:2"]);
-    expect(events.slice(2)).toEqual(["html:/pages-a", "html:/pages-a", "html:/pages-b"]);
+    expect(events.slice(0, 3)).toEqual(["identity:1", "identity:2", "identity:3"]);
+    expect(events.slice(3)).toEqual(["html:/pages-a", "html:/pages-a", "html:/pages-b"]);
   });
 
   it("retries transient RSC validation failures for a propagating target", async () => {
@@ -766,7 +782,12 @@ describe("Cloudflare CDN warmup", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = toRequestUrl(input);
       if (url.pathname.endsWith("/vinext-rsc-prewarm.json")) {
-        return Response.json({ version: 1, paths: ["/cached/intro"] });
+        return Response.json({
+          version: 1,
+          buildId: "build-a",
+          rscBuildId: "new-build",
+          paths: ["/cached/intro"],
+        });
       }
       if (new Headers(init?.headers).get("rsc") === "1") {
         await rscGate;

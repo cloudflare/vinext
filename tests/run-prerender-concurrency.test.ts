@@ -99,4 +99,55 @@ describe("runPrerender concurrency", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("keeps middleware apps on contextual RSC navigation requests", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-middleware-"));
+    fs.mkdirSync(path.join(root, "app"));
+    fs.writeFileSync(path.join(root, "middleware.ts"), "export function middleware() {}\n");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+
+      await runPrerender({
+        root,
+        emitRscPrewarmManifest: true,
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+      });
+
+      expect(prerenderAppMock).toHaveBeenCalledWith(
+        expect.objectContaining({ captureRscVary: false }),
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("contextual navigation requests"));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps host-dependent config rules on contextual RSC navigation requests", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-config-vary-"));
+    fs.mkdirSync(path.join(root, "app"));
+    fs.writeFileSync(
+      path.join(root, "next.config.mjs"),
+      `export default { async rewrites() { return [{ source: '/account', destination: '/private', has: [{ type: 'host', value: 'private.example.com' }] }] } };\n`,
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+
+      await runPrerender({
+        root,
+        emitRscPrewarmManifest: true,
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+      });
+
+      expect(prerenderAppMock).toHaveBeenCalledWith(
+        expect.objectContaining({ captureRscVary: false }),
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("request-dependent"));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

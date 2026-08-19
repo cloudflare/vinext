@@ -14,6 +14,7 @@ export type RscPrewarmEligibility = "eligible" | "ineligible";
 const manifestUrl = process.env.__VINEXT_RSC_PREWARM_MANIFEST_URL ?? "";
 const trailingSlash = process.env.__VINEXT_TRAILING_SLASH === "true";
 let manifestPromise: Promise<RscPrewarmManifestState> | null = null;
+let manifestState: RscPrewarmManifestState | null = null;
 
 /** Bound the single eager eligibility request before retaining contextual RSC behavior. */
 export const RSC_PREWARM_MANIFEST_FETCH_TIMEOUT_MS = 5_000;
@@ -73,10 +74,13 @@ async function loadManifest(): Promise<RscPrewarmManifestState> {
 }
 
 export function preloadRscPrewarmManifest(): Promise<RscPrewarmManifestState> {
-  return (manifestPromise ??= loadManifest());
+  return (manifestPromise ??= loadManifest().then((state) => (manifestState = state)));
 }
 
-export async function resolveRscPrewarmEligibility(href: string): Promise<RscPrewarmEligibility> {
+function resolveEligibilityFromState(
+  href: string,
+  state: RscPrewarmManifestState,
+): RscPrewarmEligibility {
   if (!manifestUrl || typeof window === "undefined") return "ineligible";
 
   let url: URL;
@@ -86,11 +90,20 @@ export async function resolveRscPrewarmEligibility(href: string): Promise<RscPre
     return "ineligible";
   }
   if (url.origin !== window.location.origin || url.search !== "") return "ineligible";
-  const state = await preloadRscPrewarmManifest();
   // The manifest only opts proven routes into the shared canonical request.
   // If it is unavailable, preserve ordinary contextual RSC behavior.
   if (state.kind === "unavailable") return "ineligible";
   return state.paths.has(url.pathname) ? "eligible" : "ineligible";
+}
+
+export async function resolveRscPrewarmEligibility(href: string): Promise<RscPrewarmEligibility> {
+  return resolveEligibilityFromState(href, await preloadRscPrewarmManifest());
+}
+
+/** Preserve synchronous click navigation while the eager manifest request is still pending. */
+export function resolveLoadedRscPrewarmEligibility(href: string): RscPrewarmEligibility {
+  void preloadRscPrewarmManifest();
+  return manifestState ? resolveEligibilityFromState(href, manifestState) : "ineligible";
 }
 
 export async function isRscPrewarmEligibleHref(href: string): Promise<boolean> {

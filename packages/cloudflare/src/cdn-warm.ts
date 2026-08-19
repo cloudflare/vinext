@@ -259,7 +259,7 @@ async function fetchWithTimeout(
   timeoutMs: number,
   headers: HeadersInit | undefined,
   redirect: RequestRedirect,
-): Promise<Response> {
+): Promise<{ body: ArrayBuffer; response: Response }> {
   const controller = new AbortController();
   let response: Response | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -283,8 +283,8 @@ async function fetchWithTimeout(
         // A cache fill is not complete until the entire response body has
         // arrived. Keep that inside the request deadline so a Worker that
         // sends headers and then stalls cannot hang deployment indefinitely.
-        await response.arrayBuffer();
-        return response;
+        const body = await response.arrayBuffer();
+        return { body, response };
       })(),
       timedOut,
     ]);
@@ -294,6 +294,47 @@ async function fetchWithTimeout(
       void response.body.cancel().catch(() => {});
     }
   }
+}
+
+function validateBuildIdentityResponse(
+  response: Response,
+  body: ArrayBuffer,
+  expectedRscBuildId?: string,
+): string | null {
+  if (response.redirected || response.status < 200 || response.status >= 300) {
+    return response.redirected ? "redirected response" : `HTTP ${response.status}`;
+  }
+  const contentType =
+    response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() ?? "";
+  if (contentType !== "application/json") {
+    return "expected application/json build identity response";
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    return "build identity response is not valid JSON";
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "build identity response has an invalid payload";
+  }
+  const identity = value as Record<string, unknown>;
+  if (
+    identity.version !== 1 ||
+    typeof identity.buildId !== "string" ||
+    identity.buildId.length === 0 ||
+    typeof identity.rscBuildId !== "string" ||
+    identity.rscBuildId.length === 0 ||
+    !Array.isArray(identity.paths) ||
+    !identity.paths.every((pathname) => typeof pathname === "string" && pathname.startsWith("/"))
+  ) {
+    return "build identity response has an invalid payload";
+  }
+  if (expectedRscBuildId !== undefined && identity.rscBuildId !== expectedRscBuildId) {
+    return `build identity response does not match RSC build ${expectedRscBuildId}`;
+  }
+  return null;
 }
 
 type WarmTarget = {
@@ -413,7 +454,7 @@ async function warmOnePath(
         retryDeadline === undefined
           ? options.timeoutMs
           : Math.min(options.timeoutMs, Math.max(1, retryDeadline - Date.now()));
-      const response = await fetchWithTimeout(
+      const { body, response } = await fetchWithTimeout(
         options.fetchImpl,
         url,
         timeoutMs,
@@ -436,21 +477,15 @@ async function warmOnePath(
       }
 
       if (target.kind === "identity") {
-        const contentType =
-          response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() ?? "";
-        if (
-          !response.redirected &&
-          response.status >= 200 &&
-          response.status < 300 &&
-          contentType === "application/json"
-        ) {
+        const validationError = validateBuildIdentityResponse(
+          response,
+          body,
+          options.expectedRscBuildId,
+        );
+        if (validationError === null) {
           return { path: target.label, ok: true };
         }
-        lastError = response.redirected
-          ? "redirected response"
-          : response.status < 200 || response.status >= 300
-            ? `HTTP ${response.status}`
-            : `expected application/json build identity response`;
+        lastError = validationError;
         if (
           !options.retryAllValidationErrors &&
           !isRetryableStatus(response.status, options.retryNotFound)

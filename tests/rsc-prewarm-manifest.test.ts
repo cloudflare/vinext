@@ -71,7 +71,12 @@ describe("RSC prewarm build manifest", () => {
           "utf-8",
         ),
       ),
-    ).toEqual({ version: 1, paths: ["/docs/", "/docs/cached/intro/"] });
+    ).toEqual({
+      version: 1,
+      buildId: "build-a",
+      rscBuildId: "rsc-build-a",
+      paths: ["/docs/", "/docs/cached/intro/"],
+    });
     expect(getRscPrewarmManifestUrl(config, "rsc-build-a")).toBe(
       "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json?dpl=deployment-a",
     );
@@ -127,7 +132,7 @@ describe("RSC prewarm build manifest", () => {
           "utf-8",
         ),
       ),
-    ).toEqual({ version: 1, paths: [] });
+    ).toEqual({ version: 1, buildId: "build-a", rscBuildId: "rsc-build-a", paths: [] });
   });
 
   it("emits URL-encoded paths that match browser URL.pathname", () => {
@@ -165,7 +170,12 @@ describe("RSC prewarm build manifest", () => {
           "utf-8",
         ),
       ),
-    ).toEqual({ version: 1, paths: ["/caf%C3%A9%20au%20lait"] });
+    ).toEqual({
+      version: 1,
+      buildId: "build-a",
+      rscBuildId: "rsc-build-a",
+      paths: ["/caf%C3%A9%20au%20lait"],
+    });
   });
 
   it("fails closed when completed prerender data belongs to another build", () => {
@@ -201,6 +211,6 @@ describe("RSC prewarm build manifest", () => {
           "utf-8",
         ),
       ),
-    ).toEqual({ version: 1, paths: [] });
+    ).toEqual({ version: 1, buildId: "build-a", rscBuildId: "rsc-build-a", paths: [] });
   });
 });

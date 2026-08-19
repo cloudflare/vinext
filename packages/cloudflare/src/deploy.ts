@@ -643,12 +643,17 @@ export async function deployWithCdnWarmup(
     );
   }
 
-  const deployed = runWranglerVersionDeploy(
-    root,
-    [{ versionId: upload.versionId, percentage: 100 }],
-    options,
-    warmedBeforePromotion ? "promote-warmed" : "promote-uploaded",
-  );
+  let deployed: ReturnType<typeof runWranglerVersionDeploy>;
+  try {
+    deployed = runWranglerVersionDeploy(
+      root,
+      [{ versionId: upload.versionId, percentage: 100 }],
+      options,
+      warmedBeforePromotion ? "promote-warmed" : "promote-uploaded",
+    );
+  } catch (error) {
+    throw staged ? withStagedVersionCleanupNote(error) : error;
+  }
   if (!warmedBeforePromotion) {
     try {
       applyTriggers();
@@ -667,9 +672,11 @@ export async function deployWithCdnWarmup(
         throw withPromotedVersionWarmupNote(error);
       }
     } else if (options.warmCdnStrict) {
-      throw new Error(
-        "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +
-          "Configure a route/custom domain, ensure Wrangler prints a workers.dev URL, or rerun without --warm-cdn-strict.",
+      throw withPromotedVersionWarmupNote(
+        new Error(
+          "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +
+            "Configure a route/custom domain, ensure Wrangler prints a workers.dev URL, or rerun without --warm-cdn-strict.",
+        ),
       );
     } else {
       console.warn(

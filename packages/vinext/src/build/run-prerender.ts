@@ -31,6 +31,7 @@ import {
 import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
 import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
+import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
@@ -85,6 +86,34 @@ function readBuiltBuildId(serverDir: string): string | null {
     }
     throw error;
   }
+}
+
+function hasAppRequestMiddleware(appDir: string, pageExtensions: readonly string[]): boolean {
+  const conventionDir = path.dirname(appDir);
+  const matcher = createValidFileMatcher(pageExtensions);
+  return matcher.dottedExtensions.some(
+    (extension) =>
+      fs.existsSync(path.join(conventionDir, `middleware${extension}`)) ||
+      fs.existsSync(path.join(conventionDir, `proxy${extension}`)),
+  );
+}
+
+function hasRequestDependentConfig(config: import("../config/next-config.js").ResolvedNextConfig) {
+  const hasHeaderOrCookieCondition = (rule: {
+    has?: readonly { type: string }[];
+    missing?: readonly { type: string }[];
+  }): boolean =>
+    [...(rule.has ?? []), ...(rule.missing ?? [])].some(
+      (condition) =>
+        condition.type === "header" || condition.type === "cookie" || condition.type === "host",
+    );
+  return [
+    ...config.redirects,
+    ...config.rewrites.beforeFiles,
+    ...config.rewrites.afterFiles,
+    ...config.rewrites.fallback,
+    ...config.headers,
+  ].some(hasHeaderOrCookieCondition);
 }
 
 // ─── Shared runner ────────────────────────────────────────────────────────────
@@ -207,6 +236,15 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   let totalUrls = 0;
   let completedUrls = 0;
   const progress = new PrerenderProgress();
+  const canCaptureReusableRsc =
+    options.emitRscPrewarmManifest === true &&
+    (!appDir || !hasAppRequestMiddleware(appDir, config.pageExtensions)) &&
+    !hasRequestDependentConfig(config);
+  if (options.emitRscPrewarmManifest && !canCaptureReusableRsc) {
+    console.warn(
+      "[vinext] RSC CDN prewarming is disabled for apps with request-dependent middleware, proxy, or config rules; contextual navigation requests are preserved.",
+    );
+  }
 
   // Non-export builds write to dist/server/prerendered-routes/ so they are
   // co-located with server artifacts. On Cloudflare Workers the assets binding
@@ -268,7 +306,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         skipManifest: true,
         config,
         concurrency: options.concurrency,
-        captureRscVary: options.emitRscPrewarmManifest,
+        captureRscVary: canCaptureReusableRsc,
         rscBundlePath,
         // For hybrid builds pass the shared prod server via internal field.
         // prerenderApp will use it instead of starting its own.

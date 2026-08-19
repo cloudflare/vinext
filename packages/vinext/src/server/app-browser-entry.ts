@@ -189,7 +189,7 @@ import {
   getVinextRscCompatibilityId,
   normalizeRscPrewarmHref,
   preloadRscPrewarmManifest,
-  resolveRscPrewarmEligibility,
+  resolveLoadedRscPrewarmEligibility,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
@@ -2106,7 +2106,7 @@ function bootstrapHydration(
           requestInterceptionContext === null &&
           mountedSlotsHeader === null &&
           (rewrittenNavigationHref === null || rewrittenNavigationHref === currentHref)
-            ? await resolveRscPrewarmEligibility(canonicalPrewarmHref)
+            ? resolveLoadedRscPrewarmEligibility(canonicalPrewarmHref)
             : "ineligible";
         const usesCanonicalPrewarmedRequest =
           prewarmEligibility === "eligible" &&

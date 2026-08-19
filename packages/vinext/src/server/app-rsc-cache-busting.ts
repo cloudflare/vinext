@@ -27,6 +27,7 @@ export {
   isRscPrewarmEligibleHref,
   normalizeRscPrewarmHref,
   preloadRscPrewarmManifest,
+  resolveLoadedRscPrewarmEligibility,
   resolveRscPrewarmEligibility,
 } from "../client/rsc-prewarm-eligibility.js";
 

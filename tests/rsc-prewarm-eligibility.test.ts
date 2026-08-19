@@ -98,6 +98,32 @@ describe("RSC prewarm browser eligibility", () => {
     await expect(eligibility).resolves.toBe("eligible");
   });
 
+  it("keeps an immediate click synchronous while the eager manifest is pending", async () => {
+    let resolveManifest!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveManifest = resolve;
+          }),
+      ),
+    );
+    const {
+      preloadRscPrewarmManifest,
+      resolveLoadedRscPrewarmEligibility,
+      resolveRscPrewarmEligibility,
+    } = await import("../packages/vinext/src/client/rsc-prewarm-eligibility.js");
+
+    const loading = preloadRscPrewarmManifest();
+    expect(resolveLoadedRscPrewarmEligibility("/cached/intro")).toBe("ineligible");
+    resolveManifest(Response.json({ version: 1, paths: ["/cached/intro"] }));
+    await loading;
+    expect(resolveLoadedRscPrewarmEligibility("/cached/intro")).toBe("eligible");
+    await expect(resolveRscPrewarmEligibility("/cached/intro")).resolves.toBe("eligible");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("waits for the single bounded manifest load before failing closed", async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
