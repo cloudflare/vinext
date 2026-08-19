@@ -130,6 +130,15 @@ export type CdnCacheAdapter = {
   hasExplicitNonCacheableResponsePolicy?(headers: Headers): boolean;
 
   /**
+   * Recover an adapter-owned cache policy from a response that crossed an
+   * inner render boundary. This lets the outer request pipeline re-apply the
+   * policy with the original request identity without mistaking the separate
+   * browser Cache-Control value for the edge TTL. Return a non-cacheable
+   * cacheControl value when adapter-owned response headers deny storage.
+   */
+  readResponseCachePolicy?(headers: Headers): CdnCacheableHeaderInput | null;
+
+  /**
    * Whether the **origin** runs in-process background regeneration when a stale
    * entry is served. Edge adapters set this to `false` because the CDN
    * revalidates by re-requesting the origin.
@@ -249,7 +258,9 @@ export function setCdnCacheAdapter(adapter: CdnCacheAdapter): void {
     (adapter.buildSourceDependentResponseHeaders !== undefined &&
       typeof adapter.buildSourceDependentResponseHeaders !== "function") ||
     (adapter.hasExplicitNonCacheableResponsePolicy !== undefined &&
-      typeof adapter.hasExplicitNonCacheableResponsePolicy !== "function")
+      typeof adapter.hasExplicitNonCacheableResponsePolicy !== "function") ||
+    (adapter.readResponseCachePolicy !== undefined &&
+      typeof adapter.readResponseCachePolicy !== "function")
   ) {
     throw new TypeError("[vinext] CDN cache adapter factory returned an invalid adapter.");
   }

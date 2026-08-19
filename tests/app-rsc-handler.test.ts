@@ -358,7 +358,8 @@ describe("createAppRscHandler", () => {
     }
   });
 
-  it("denies shared caching when matched middleware continues to a cacheable route", async () => {
+  it("denies shared caching for an imperative edge adapter without the prewarm runtime", async () => {
+    resetRscPrewarmServerImplementationForTesting();
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     try {
       const handler = createHandler({
@@ -5223,16 +5224,23 @@ describe("createAppRscHandler", () => {
       renderPagesFallback,
     });
 
-    const response = await handler(
-      new Request("https://example.test/docs/_next/data/stale/form-search.json?query=basic"),
-      null,
-    );
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const response = await handler(
+        new Request("https://example.test/docs/_next/data/stale/form-search.json?query=basic"),
+        null,
+      );
 
-    expect(response.status).toBe(404);
-    expect(response.headers.get("content-type")).toContain("application/json");
-    expect(await response.text()).toBe("{}");
-    expect(middleware).not.toHaveBeenCalled();
-    expect(renderPagesFallback).not.toHaveBeenCalled();
+      expect(response.status).toBe(404);
+      expect(response.headers.get("content-type")).toContain("application/json");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      expect(await response.text()).toBe("{}");
+      expect(middleware).not.toHaveBeenCalled();
+      expect(renderPagesFallback).not.toHaveBeenCalled();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("returns middleware-enabled Pages data misses with the requested matched path", async () => {

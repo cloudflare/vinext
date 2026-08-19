@@ -430,6 +430,38 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     return hasExplicitCloudflareNonCacheableResponsePolicy(headers);
   }
 
+  readResponseCachePolicy(headers: Headers): CdnCacheableHeaderInput | null {
+    if (hasExplicitCloudflareNonCacheableResponsePolicy(headers)) {
+      // Recovery must be self-contained: callers that opt into this hook must
+      // not also need the optional denial hook to preserve a provider-owned
+      // no-store policy at the final response boundary.
+      return { cacheControl: NO_STORE };
+    }
+
+    const cacheControl = headers.get("CDN-Cache-Control");
+    if (!cacheControl) return null;
+    if (headers.get("Cache-Control") !== BROWSER_REVALIDATE) {
+      // A public provider header is not provenance. Only recover the exact
+      // browser/provider pair emitted by buildResponseHeaders(); otherwise a
+      // middleware or user response could promote an existing denial.
+      return { cacheControl: "no-store" };
+    }
+
+    const encodedTags = headers.get("Cache-Tag");
+    if (!encodedTags) return { cacheControl };
+    const tags: string[] = [];
+    for (const encodedTag of encodedTags.split(",")) {
+      try {
+        tags.push(decodeURIComponent(encodedTag));
+      } catch {
+        // Never retain cacheability after losing the purge identity carried by
+        // a malformed public header.
+        return { cacheControl: "no-store" };
+      }
+    }
+    return { cacheControl, tags };
+  }
+
   /** Purge edge-cached responses by tag via the request context's `cache.purge`. */
   async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
     const cache = getWorkersCache();

@@ -107,7 +107,10 @@ export function applyCdnResponseHeaders(
     existingCacheControl && NON_CACHEABLE_DIRECTIVE_RE.test(existingCacheControl)
       ? existingCacheControl
       : null;
-  const hasAdapterDenial = hasExplicitNonCacheableResponsePolicy(headers);
+  const adapter = getCdnCacheAdapter();
+  const hasAdapterDenial = options?.replaceGenericPolicy
+    ? (adapter.hasExplicitNonCacheableResponsePolicy?.(headers) ?? false)
+    : hasExplicitNonCacheableResponsePolicy(headers);
   const requestedDenial = NON_CACHEABLE_DIRECTIVE_RE.test(input.cacheControl);
   const effectiveInput =
     requestedDenial && options?.replaceGenericPolicy
@@ -122,7 +125,7 @@ export function applyCdnResponseHeaders(
     shouldUseNextDeployCacheControl() && isSharedCacheControl(effectiveInput.cacheControl);
   // An empty policy tells the adapter to remove any provider-specific cache
   // metadata it owns before core applies the deployment-specific browser policy.
-  const map = getCdnCacheAdapter().buildResponseHeaders(
+  const map = adapter.buildResponseHeaders(
     useNextDeployPolicy ? { ...effectiveInput, cacheControl: "" } : effectiveInput,
   );
   for (const [name, value] of Object.entries(map)) {
@@ -155,13 +158,27 @@ export function applyCdnResponseHeaders(
  * Clone the response because redirect headers and some runtime responses are
  * immutable, and never admit a Set-Cookie response to shared storage.
  */
-export function applyCdnPolicyToBoundaryResponse(response: Response, request: Request): Response {
+function applyCdnPolicyToBoundaryResponseInternal(
+  response: Response,
+  request: Request,
+  recoverAdapterPolicy: boolean,
+): Response {
   const result = runWithHeadersContext(headersContextFromRequest(request), () => {
     const originalHeaders = [...response.headers];
     const headers = new Headers(response.headers);
-    applyCdnResponseHeaders(headers, {
-      cacheControl: headers.has("Set-Cookie") ? "no-store" : (headers.get("Cache-Control") ?? ""),
-    });
+    const recoveredPolicy = recoverAdapterPolicy
+      ? (getCdnCacheAdapter().readResponseCachePolicy?.(headers) ?? null)
+      : null;
+    applyCdnResponseHeaders(
+      headers,
+      {
+        ...recoveredPolicy,
+        cacheControl: headers.has("Set-Cookie")
+          ? "no-store"
+          : (recoveredPolicy?.cacheControl ?? headers.get("Cache-Control") ?? ""),
+      },
+      recoveredPolicy ? { replaceGenericPolicy: true } : undefined,
+    );
     const nextHeaders = [...headers];
     if (
       originalHeaders.length === nextHeaders.length &&
@@ -182,6 +199,27 @@ export function applyCdnPolicyToBoundaryResponse(response: Response, request: Re
   // public overload also accepts async callbacks, so its inferred return is a
   // wider union than this boundary helper can produce.
   return result as Response;
+}
+
+export function applyCdnPolicyToBoundaryResponse(response: Response, request: Request): Response {
+  return applyCdnPolicyToBoundaryResponseInternal(response, request, false);
+}
+
+/**
+ * Ensure a final response crossed the active adapter exactly once. Rendered
+ * ISR/static responses may already carry an adapter-owned edge policy; direct
+ * user responses and other short-circuits still need request credential and
+ * provider policy handling at the outer request boundary.
+ */
+export function finalizeCdnPolicyOnResponse(response: Response, request: Request): Response {
+  const adapter = getCdnCacheAdapter();
+  if (!adapter.readResponseCachePolicy) {
+    // Preserve the pre-capability behavior for existing third-party adapters.
+    // Adapters that need strict final-boundary request revalidation opt in by
+    // implementing readResponseCachePolicy().
+    return enforceCdnCacheDenialOnResponse(response);
+  }
+  return applyCdnPolicyToBoundaryResponseInternal(response, request, true);
 }
 
 /**

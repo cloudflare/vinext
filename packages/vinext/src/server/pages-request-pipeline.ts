@@ -60,7 +60,7 @@ import {
 import {
   applyCdnPolicyToBoundaryResponse,
   denyCdnCacheOnSourceDependentResponse,
-  enforceCdnCacheDenialOnResponse,
+  finalizeCdnPolicyOnResponse,
   includeEffectiveCdnCacheRequestCredentials,
 } from "./cache-control.js";
 import {
@@ -345,7 +345,7 @@ export async function runPagesRequest(
   const finalizeSourceSafeCdnResponse = (response: Response): Response =>
     deps.prewarmSourceObservation && !isPrewarmSourceIndependent(deps.prewarmSourceObservation)
       ? denyCdnCacheOnSourceDependentResponse(response)
-      : enforceCdnCacheDenialOnResponse(response);
+      : finalizeCdnPolicyOnResponse(response, cachePolicyRequest);
   const applySourceSafeCdnPolicyToBoundaryResponse = (
     response: Response,
     policyRequest: Request,

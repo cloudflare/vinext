@@ -6,6 +6,7 @@
  */
 import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
+import { mergeVaryHeader } from "./middleware-response-headers.js";
 
 /**
  * Merge middleware/config headers into a response.
@@ -79,6 +80,10 @@ export function mergeHeaders(
   }
   response.headers.forEach((v, k) => {
     if (k === "set-cookie") return;
+    if (k === "vary") {
+      mergeVaryHeader(merged, v);
+      return;
+    }
     merged.set(k, v);
   });
   const responseCookies = response.headers.getSetCookie?.() ?? [];

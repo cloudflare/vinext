@@ -5632,12 +5632,21 @@ export const config = { matcher: ["/protected"] };
       buildManifest,
       "virtual:vinext-client-entry",
     );
-    for (const moduleName of ["navigation", "rsc-request-identity"]) {
-      const moduleKey = findManifestEntryKey(buildManifest, moduleName);
-      expect(moduleKey, `expected a lazy ${moduleName} manifest entry`).toBeDefined();
+    const navigationKey = findManifestEntryKey(buildManifest, "navigation");
+    expect(navigationKey, "expected a lazy navigation manifest entry").toBeDefined();
+    expect(
+      eagerEntryKeys.has(navigationKey!),
+      "navigation must stay outside the Pages entry closure",
+    ).toBe(false);
+
+    // Rolldown may inline the identity helper into the lazy cache-busting
+    // chunk instead of retaining a standalone manifest module. If it does
+    // retain one, it must still remain outside the eager Pages closure.
+    const identityKey = findManifestEntryKey(buildManifest, "rsc-request-identity");
+    if (identityKey) {
       expect(
-        eagerEntryKeys.has(moduleKey!),
-        `${moduleName} must stay outside the Pages entry closure`,
+        eagerEntryKeys.has(identityKey),
+        "rsc-request-identity must stay outside the Pages entry closure",
       ).toBe(false);
     }
 
@@ -10125,7 +10134,7 @@ describe("custom App optional pageProps envelope parity", () => {
       const buildId = (JSON.parse(nextDataMatch![1]) as { buildId: string }).buildId;
 
       const runtimeResponse = await fetch(`${baseUrl}/_next/data/${buildId}/missing.json`, {
-        headers: { "x-middleware-prefetch": "1" },
+        headers: { "x-middleware-prefetch": "prefetch" },
       });
       expect(runtimeResponse.status).toBe(200);
       expect(runtimeResponse.headers.get("x-middleware-skip")).toBe("1");

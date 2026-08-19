@@ -42,6 +42,7 @@ import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { createPrewarmSourceObservation } from "./prewarm-source-independence.js";
+import { finalizeCdnPolicyOnResponse } from "./cache-control.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -118,6 +119,9 @@ async function handleRequest(
   registerConfiguredCacheAdapters(env);
   const adapterResponse = await getCdnCacheAdapter().handleRequest?.(request);
   if (adapterResponse) return adapterResponse;
+  const cachePolicyRequest = request;
+  const finalizeResponse = (response: Response): Response =>
+    finalizeCdnPolicyOnResponse(response, cachePolicyRequest);
 
   const ctx = createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
     handleRequest(internalRequest, env, internalCtx),
@@ -138,12 +142,12 @@ async function handleRequest(
     // Location headers, so encoded variants must be rejected before any
     // downstream redirect can echo them.
     if (isOpenRedirectShaped(pathname)) {
-      return new Response("This page could not be found", { status: 404 });
+      return finalizeResponse(new Response("This page could not be found", { status: 404 }));
     }
     try {
       normalizePathnameForRouteMatchStrict(pathname);
     } catch {
-      return new Response("Bad Request", { status: 400 });
+      return finalizeResponse(new Response("Bad Request", { status: 400 }));
     }
 
     // Valid assets are served by Cloudflare's ASSETS binding before the worker
@@ -175,7 +179,7 @@ async function handleRequest(
     const middlewareRequest = request;
     const dataNorm = normalizeDataRequest(request);
     if (dataNorm.notFoundResponse && !vinextConfig?.skipProxyUrlNormalize) {
-      return dataNorm.notFoundResponse;
+      return finalizeResponse(dataNorm.notFoundResponse);
     }
     const isDataReq = dataNorm.isDataReq;
     if (isDataReq && dataNorm.normalizedPathname) {
@@ -249,16 +253,20 @@ async function handleRequest(
 
     const result = await runPagesRequest(request, deps);
     if (result.type === "response") {
-      return finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
+      return finalizeResponse(
+        finalizeMissingStaticAssetResponse(result.response, missingBuildAsset),
+      );
     }
 
     // Should not reach here for a production Worker because all callbacks are
     // supplied by virtual:vinext-server-entry.
-    return missingBuildAsset
-      ? notFoundStaticAssetResponse()
-      : new Response("This page could not be found", { status: 404 });
+    return finalizeResponse(
+      missingBuildAsset
+        ? notFoundStaticAssetResponse()
+        : new Response("This page could not be found", { status: 404 }),
+    );
   } catch (error) {
     console.error("[vinext] Worker error:", error);
-    return new Response("Internal Server Error", { status: 500 });
+    return finalizeResponse(new Response("Internal Server Error", { status: 500 }));
   }
 }

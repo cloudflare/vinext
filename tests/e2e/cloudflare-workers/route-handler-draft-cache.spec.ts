@@ -44,6 +44,16 @@ async function readDraftIsrRoute(request: APIRequestContext, scenario: string) {
 }
 
 test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
+  test("fails stale Pages data URLs closed before the shared request pipeline", async ({
+    request,
+  }) => {
+    const response = await request.get(`${BASE_URL}/_next/data/stale/pages-about.json`);
+
+    expect(response.status()).toBe(404);
+    expect(response.headers()["cache-control"]).toContain("no-store");
+    expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+  });
+
   test.beforeAll(async () => {
     server = spawn(
       "created_node_modules=0; if ! test -e node_modules && ! test -L node_modules; then ln -s ../../../node_modules node_modules; created_node_modules=1; fi; trap 'if test \"$created_node_modules\" = 1; then rm node_modules; fi' EXIT; ../../../node_modules/.bin/vp run vinext#build && VINEXT_TEST_CDN_CACHE=1 node ../../../packages/vinext/dist/cli.js build && npx wrangler dev --config dist/server/wrangler.json --port 4195",

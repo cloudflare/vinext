@@ -232,7 +232,7 @@ describe("renderPagesFallback", () => {
     async (dataKind) => {
       const renderPage = vi.fn(() => new Response('{"pageProps":{"unexpected":true}}'));
       const request = new Request("http://localhost/pages-dir/legacy", {
-        headers: { "x-middleware-prefetch": "1" },
+        headers: { "x-middleware-prefetch": "prefetch" },
       });
 
       const response = await renderPagesFallback(

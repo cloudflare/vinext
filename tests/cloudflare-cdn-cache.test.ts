@@ -899,6 +899,23 @@ describe("CloudflareCdnCacheAdapter", () => {
     ).toBe(true);
   });
 
+  it("recovers a Cloudflare-scoped denial without relying on the separate denial hook", () => {
+    expect(
+      adapter.readResponseCachePolicy(
+        new Headers({ "Cloudflare-CDN-Cache-Control": "private, no-store" }),
+      ),
+    ).toEqual({ cacheControl: "no-store" });
+    expect(
+      adapter.readResponseCachePolicy(
+        new Headers({
+          "Cache-Control": "public, max-age=0, must-revalidate",
+          "CDN-Cache-Control": "public, max-age=60",
+          "Cloudflare-CDN-Cache-Control": "no-store",
+        }),
+      ),
+    ).toEqual({ cacheControl: "no-store" });
+  });
+
   it("replaces Cloudflare headers on pending HTML and still skips a late-dynamic cache write", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const pendingCacheWrites: Promise<void>[] = [];

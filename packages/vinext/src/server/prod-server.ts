@@ -50,6 +50,7 @@ import {
   type PagesRenderOptions,
 } from "./pages-request-pipeline.js";
 import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
+import { mergeVaryHeader as mergeWebVaryHeader } from "./middleware-response-headers.js";
 import {
   normalizeNextDataPagePathname,
   isNextDataPathname,
@@ -367,6 +368,17 @@ function mergeResponseHeaders(
   // Headers.forEach() always yields lowercase keys
   response.headers.forEach((v, k) => {
     if (k === "set-cookie") return;
+    if (k.toLowerCase() === "vary") {
+      const varyHeaders = new Headers();
+      const varyKey = Object.keys(merged).find((name) => name.toLowerCase() === "vary") ?? k;
+      const existing = merged[varyKey];
+      if (existing) {
+        varyHeaders.set("Vary", Array.isArray(existing) ? existing.join(", ") : existing);
+      }
+      mergeWebVaryHeader(varyHeaders, v);
+      merged[varyKey] = varyHeaders.get("Vary") ?? v;
+      return;
+    }
     merged[k] = v;
   });
 

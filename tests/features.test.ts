@@ -4606,6 +4606,17 @@ describe("Set-Cookie header preservation in prod-server", () => {
     expect(merged["x-custom"]).toBe("from-response");
   });
 
+  it("mergeResponseHeaders unions staged and response Vary values", async () => {
+    const { mergeResponseHeaders } = await import("../packages/vinext/src/server/prod-server.js");
+
+    const merged = mergeResponseHeaders(
+      { vary: "Accept-Language" },
+      new Response("ok", { headers: { Vary: "Cookie, Authorization" } }),
+    );
+
+    expect(merged.vary).toBe("Accept-Language, Cookie, Authorization");
+  });
+
   it("mergeWebResponse preserves the original body stream while applying header overrides", async () => {
     const { mergeWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
 

@@ -211,7 +211,13 @@ export function buildNextDataPropsJsonResponse(
  * before checking the status code.
  */
 export function buildNextDataNotFoundResponse(): Response {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    // Next routes a stale build-id data request through render404(), whose
+    // error response is always private and non-cacheable. Keep the compact
+    // JSON body while preserving that cache policy in every runtime.
+    "Cache-Control": "private, no-cache, no-store, max-age=0, must-revalidate",
+  };
   // Mirror Next.js pages-handler.ts: always include x-nextjs-deployment-id so
   // the client router can detect a new deployment and trigger a hard navigation
   // instead of silently rendering stale data (deployment-skew protection).

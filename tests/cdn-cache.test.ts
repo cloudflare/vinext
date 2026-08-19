@@ -40,6 +40,7 @@ import {
   buildPagesCacheValue,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { setHeadersAccessPhase } from "../packages/vinext/src/shims/headers.js";
+import { finalizeCdnPolicyOnResponse } from "../packages/vinext/src/server/cache-control.js";
 
 function resetAdapters(): void {
   setDataCacheHandler(new MemoryCacheHandler());
@@ -136,6 +137,7 @@ describe("getCdnCacheAdapter / setCdnCacheAdapter", () => {
     "handleRequest",
     "buildSourceDependentResponseHeaders",
     "hasExplicitNonCacheableResponsePolicy",
+    "readResponseCachePolicy",
   ])("rejects a malformed optional %s hook", (hook) => {
     const adapter = new DefaultCdnCacheAdapter() as CdnCacheAdapter & Record<string, unknown>;
     adapter[hook] = true;
@@ -191,6 +193,56 @@ class EdgeCdnAdapter implements CdnCacheAdapter {
 }
 
 describe("edge CDN adapter integration", () => {
+  it("preserves legacy edge adapter behavior without the recovery capability", async () => {
+    setCdnCacheAdapter(new EdgeCdnAdapter());
+
+    const response = finalizeCdnPolicyOnResponse(
+      new Response("cached", {
+        headers: {
+          "Cache-Control": "public, max-age=0, must-revalidate",
+          "CDN-Cache-Control": "s-maxage=60",
+        },
+      }),
+      new Request("https://example.test/page"),
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBe("s-maxage=60");
+  });
+
+  it("recovers a split edge policy instead of reusing its private browser policy", async () => {
+    class RecoveringEdgeCdnAdapter extends EdgeCdnAdapter {
+      override buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
+        if (/\b(?:no-store|private)\b/i.test(input.cacheControl)) {
+          return { "Cache-Control": "no-store", "CDN-Cache-Control": null };
+        }
+        return {
+          "Cache-Control": "private, no-cache, no-store",
+          "CDN-Cache-Control": input.cacheControl,
+        };
+      }
+
+      readResponseCachePolicy(headers: Headers): CdnCacheableHeaderInput | null {
+        const cacheControl = headers.get("CDN-Cache-Control");
+        return cacheControl ? { cacheControl } : null;
+      }
+    }
+
+    setCdnCacheAdapter(new RecoveringEdgeCdnAdapter());
+    const response = finalizeCdnPolicyOnResponse(
+      new Response("cached", {
+        headers: {
+          "Cache-Control": "private, no-cache, no-store",
+          "CDN-Cache-Control": "s-maxage=60",
+        },
+      }),
+      new Request("https://example.test/page"),
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("private, no-cache, no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBe("s-maxage=60");
+  });
+
   it("isrGet returns null (origin renders) even after isrSet", async () => {
     setCdnCacheAdapter(new EdgeCdnAdapter());
     await isrSet("app:/p:html", buildPagesCacheValue("<p>cached</p>", {}), {

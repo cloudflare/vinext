@@ -5829,7 +5829,7 @@ export const loadServerActionClient = ${
                   const shouldClassifyDataKind =
                     isDataRequest &&
                     capturedMiddlewarePath !== null &&
-                    request.headers.get("x-middleware-prefetch") === "1";
+                    Boolean(request.headers.get("x-middleware-prefetch"));
                   return m
                     ? {
                         route: {

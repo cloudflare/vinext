@@ -231,9 +231,15 @@ describe("pages-data-route", () => {
 
   describe("buildNextDataNotFoundResponse", () => {
     it("returns a 404 JSON response with empty body", async () => {
+      // Next.js routes a wrong-build data request through render404(), and
+      // renderErrorImpl applies this private no-store policy.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
       const res = buildNextDataNotFoundResponse();
       expect(res.status).toBe(404);
       expect(res.headers.get("Content-Type")).toBe("application/json");
+      expect(res.headers.get("Cache-Control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
       // Body is `{}` — clients blindly calling `.json()` won't throw before
       // checking the status code.
       expect(await res.json()).toEqual({});

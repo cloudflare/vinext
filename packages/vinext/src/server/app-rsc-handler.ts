@@ -94,6 +94,7 @@ import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js"
 import {
   applyCdnResponseHeaders,
   denyCdnCacheOnSourceDependentResponse,
+  finalizeCdnPolicyOnResponse,
   includeEffectiveCdnCacheRequestCredentials,
   NEVER_CACHE_CONTROL,
 } from "./cache-control.js";
@@ -123,6 +124,7 @@ import {
   createAppRscPrewarmObservation,
   type AppRscPrewarmObservation,
 } from "vinext/shims/rsc-prewarm-server";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { configRuleMayVaryAcrossPrewarmRequests } from "./prewarm-source-independence.js";
 
 type AppPageParams = Record<string, string | string[]>;
@@ -131,9 +133,27 @@ const STATIC_METADATA_CONFIG_HEADER_OVERRIDES = new Set(["cache-control"]);
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const HAS_CONFIG_REDIRECTS = process.env.__VINEXT_HAS_CONFIG_REDIRECTS !== "false";
 const HAS_CONFIG_REWRITES = process.env.__VINEXT_HAS_CONFIG_REWRITES !== "false";
-const RESPONSE_VARY_RSC_CACHE = process.env.__VINEXT_RSC_CACHE_KEY_MODE !== "header-digest";
 type StaticParamsMap = AppPrerenderStaticParamsMap;
 type RootParamNamesMap = AppPrerenderRootParamNamesMap;
+
+type AppRscPrewarmObservationOptions = Parameters<typeof createAppRscPrewarmObservation>[0];
+
+async function createAppSourceObservation(
+  options: AppRscPrewarmObservationOptions,
+): Promise<AppRscPrewarmObservation | null> {
+  const registeredObservation = createAppRscPrewarmObservation(options);
+  if (registeredObservation || getCdnCacheAdapter().ownsBackgroundRevalidation) {
+    return registeredObservation;
+  }
+
+  // A backwards-compatible imperative edge adapter can be installed without
+  // enabling the response-Vary prewarm runtime at build time. Source safety is
+  // still mandatory because an edge hit can bypass middleware entirely. Keep
+  // the implementation lazy so origin-managed/default builds do not eagerly
+  // retain the prewarm runtime.
+  const implementation = await import("./rsc-prewarm-runtime.js");
+  return implementation.createAppRscPrewarmObservation(options);
+}
 
 type AppRscMiddlewareContext = AppMiddlewareContext;
 type MiddlewareObservation = {
@@ -1988,7 +2008,10 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
           )
         : null;
     if (pagesDataNormalization?.notFoundResponse) {
-      return pagesDataNormalization.notFoundResponse;
+      // This hybrid Pages response exits before the normal App/Pages render
+      // pipelines. It is nevertheless a final framework response, so route it
+      // through the adapter boundary just like the Pages-only Worker entry.
+      return finalizeCdnPolicyOnResponse(pagesDataNormalization.notFoundResponse, rawRequest);
     }
     const isPagesDataRequest = pagesDataNormalization?.isDataReq === true;
     const executionContext = isExecutionContextLike(ctx)
@@ -2064,19 +2087,17 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             explicitNextUrlVary: false,
             resolvedPathCouldBeIntercepted: false,
           };
-          const prewarmObservation = RESPONSE_VARY_RSC_CACHE
-            ? createAppRscPrewarmObservation({
-                hasConfigRules:
-                  options.configHeaders.length > 0 ||
-                  options.configRedirects.length > 0 ||
-                  options.configRewrites.beforeFiles.length > 0 ||
-                  options.configRewrites.afterFiles.length > 0 ||
-                  options.configRewrites.fallback.length > 0,
-                i18nConfig: options.i18nConfig,
-                request,
-                requestKind: request.headers.get(RSC_HEADER) === "1" ? "rsc" : "document",
-              })
-            : null;
+          const prewarmObservation = await createAppSourceObservation({
+            hasConfigRules:
+              options.configHeaders.length > 0 ||
+              options.configRedirects.length > 0 ||
+              options.configRewrites.beforeFiles.length > 0 ||
+              options.configRewrites.afterFiles.length > 0 ||
+              options.configRewrites.fallback.length > 0,
+            i18nConfig: options.i18nConfig,
+            request,
+            requestKind: request.headers.get(RSC_HEADER) === "1" ? "rsc" : "document",
+          });
 
           try {
             response = await handleAppRscRequest(

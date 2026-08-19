@@ -66,7 +66,6 @@ import {
   canonicalizeFullRscRequestHeaders,
   isRscPrewarmEligibleHrefForPrefetch,
 } from "./rsc-prewarm-client.js";
-import { createRscClientRequestIdentity } from "../client/rsc-request-identity.js";
 import {
   clearLinkForCurrentNavigation,
   notifyLinkNavigationStart,
@@ -479,7 +478,11 @@ function prefetchUrl(
           DYNAMIC_NAVIGATION_CACHE_TTL,
           PREFETCH_CACHE_TTL,
         } = navigation;
-        const { createRscClientCacheVariantKey, createRscRequestUrl } = rscCacheBusting;
+        const {
+          createRscClientCacheVariantKey,
+          createRscClientRequestIdentity,
+          createRscRequestUrl,
+        } = rscCacheBusting;
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
           NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,

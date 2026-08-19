@@ -8,7 +8,7 @@ import { NEXT_URL_HEADER } from "./headers.js";
 import {
   applyCdnPolicyToBoundaryResponse,
   denyCdnCacheOnSourceDependentResponse,
-  enforceCdnCacheDenialOnResponse,
+  finalizeCdnPolicyOnResponse,
 } from "./cache-control.js";
 import {
   buildMiddlewarePrefetchSkipResponse,
@@ -159,7 +159,7 @@ export async function renderPagesFallback(
   const finalizeSourceSafePagesResponse = (response: Response): Response =>
     !sourceIndependent || middlewareContext.matched || middlewareContext.conditionalPathMatched
       ? denyCdnCacheOnSourceDependentResponse(response)
-      : enforceCdnCacheDenialOnResponse(response);
+      : finalizeCdnPolicyOnResponse(response, request);
 
   if (isRscRequest && !allowRscDocumentFallback) return null;
 
@@ -247,7 +247,7 @@ export async function renderPagesFallback(
     pageMatch !== null &&
     hasMiddleware &&
     isDataRequest &&
-    pagesRequest.headers.get("x-middleware-prefetch") === "1" &&
+    Boolean(pagesRequest.headers.get("x-middleware-prefetch")) &&
     isNonSsgPagesRoute(pageMatch.route.dataKind, pageMatch.route.isDynamic) &&
     !isPagesErrorRoutePattern(pageMatch.route.pattern)
   ) {

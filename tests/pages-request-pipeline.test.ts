@@ -64,6 +64,170 @@ function makeCacheableResponse(body: string, status = 200): Response {
   return new Response(body, { status, headers });
 }
 
+describe("final Pages CDN adapter boundary", () => {
+  it("denies a user-cacheable response rendered for a credential-bearing request", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/account", { Cookie: "session=private" }),
+        baseDeps({
+          renderPage: async () =>
+            new Response("personalized", {
+              headers: { "Cache-Control": "public, max-age=60" },
+            }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("does not trust a user-supplied adapter policy on a credential-bearing request", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/forged", { Cookie: "session=private" }),
+        baseDeps({
+          renderPage: async () =>
+            new Response("personalized", {
+              headers: {
+                "Cache-Control": "public, max-age=0, must-revalidate",
+                "CDN-Cache-Control": "public, max-age=600",
+              },
+            }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("adapts a user-cacheable response once for a credential-free request", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/public"),
+        baseDeps({
+          renderPage: async () =>
+            new Response("public", {
+              headers: { "Cache-Control": "public, max-age=60" },
+            }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe(
+        "public, max-age=0, must-revalidate",
+      );
+      expect(result.response.headers.get("CDN-Cache-Control")).toContain("max-age=60");
+      expect(result.response.headers.get("Vary")).toContain("Cookie");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("preserves an inner adapter policy and cache tags at the final boundary", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/tagged"),
+        baseDeps({
+          renderPage: async () => {
+            const headers = new Headers();
+            applyCdnResponseHeaders(headers, {
+              cacheControl: "s-maxage=60, stale-while-revalidate=120",
+              tags: ["tag one"],
+            });
+            return new Response("tagged", { headers });
+          },
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("CDN-Cache-Control")).toContain("max-age=60");
+      expect(result.response.headers.get("Cache-Tag")).toBe("tag%20one");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("fails malformed recovered cache tags closed", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/malformed-tag"),
+        baseDeps({
+          renderPage: async () =>
+            new Response("tagged", {
+              headers: {
+                "Cache-Control": "public, max-age=0, must-revalidate",
+                "CDN-Cache-Control": "public, max-age=60",
+                "Cache-Tag": "%not-encoded",
+              },
+            }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+      expect(result.response.headers.get("Cache-Tag")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("fails an unclassified direct response closed through the adapter", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/direct"),
+        baseDeps({ renderPage: async () => new Response("direct") }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("unions config Vary with an adapter-owned cache policy", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/varied"),
+        baseDeps({
+          configHeaders: [{ source: "/varied", headers: [{ key: "Vary", value: "*" }] }],
+          renderPage: async () => makeCacheableResponse("varied"),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Vary")).toBe("*");
+      expect(result.response.headers.get("CDN-Cache-Control")).toContain("max-age=");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+});
+
 describe("on-demand revalidation middleware bypass", () => {
   it("uses the runtime adapter's authoritative credential verifier", async () => {
     const runMiddleware = makeMiddleware({});
