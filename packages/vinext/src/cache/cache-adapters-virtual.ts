@@ -197,11 +197,15 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
 
   if (data?.adapter) {
     lines.push(`import __vinextDataAdapterFactory from ${JSON.stringify(data.adapter)};`);
-    lines.push(`import { setDataCacheHandler } from "vinext/shims/cache-handler";`);
+    lines.push(
+      `import { resetDataCacheHandler, setDataCacheHandler } from "vinext/shims/cache-handler";`,
+    );
   }
   if (cdn?.adapter) {
     lines.push(`import __vinextCdnAdapterFactory from ${JSON.stringify(cdn.adapter)};`);
-    lines.push(`import { setCdnCacheAdapter } from "vinext/shims/cdn-cache";`);
+    lines.push(
+      `import { resetCdnCacheAdapter, setCdnCacheAdapter } from "vinext/shims/cdn-cache";`,
+    );
   }
 
   lines.push(
@@ -221,17 +225,25 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     'const __vinextCacheAdaptersRegistrationKey = Symbol.for("vinext.cacheAdaptersRegistration");',
     `const __vinextCacheAdaptersRegistrationId = ${JSON.stringify(registrationId)};`,
     "const __vinextCacheAdaptersGlobal = globalThis;",
+    "if (import.meta.hot) {",
+    "  import.meta.hot.accept();",
+    "  import.meta.hot.dispose(() => {",
+    "    if (__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] === __vinextCacheAdaptersRegistrationId) {",
+    "      delete __vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey];",
+    "    }",
+    "  });",
+    "}",
     "",
     "export function registerConfiguredCacheAdapters(env) {",
     "  if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
     "  if (__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] === __vinextCacheAdaptersRegistrationId) return;",
-    "  __vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] = __vinextCacheAdaptersRegistrationId;",
   );
   if (data?.adapter) {
     lines.push(
       "  try {",
       `    setDataCacheHandler(__vinextDataAdapterFactory({ env, options: ${dataOptions} }));`,
       "  } catch (error) {",
+      "    resetDataCacheHandler();",
       '    console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
         'using the default handler.\\n" + __vinextFormatAdapterError(error));',
       "  }",
@@ -242,14 +254,13 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
       "  try {",
       `    setCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: ${cdnOptions} }));`,
       "  } catch (error) {",
+      "    resetCdnCacheAdapter();",
     );
     if (cdnCapabilitiesAffectProtocol) {
       lines.push(
         "    // Browser/server request identity was compiled against this adapter's",
         "    // declared capabilities. The generic adapter cannot safely replace it.",
-        "    if (__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] === __vinextCacheAdaptersRegistrationId) {",
-        "      delete __vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey];",
-        "    }",
+        ...(data?.adapter ? ["    resetDataCacheHandler();"] : []),
         '    throw new Error("[vinext] failed to initialize the configured CDN cache adapter; ' +
           'the declared cache capabilities require it.\\n" + __vinextFormatAdapterError(error), { cause: error });',
       );
@@ -261,7 +272,11 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     }
     lines.push("  }");
   }
-  lines.push("}", "");
+  lines.push(
+    "  __vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] = __vinextCacheAdaptersRegistrationId;",
+    "}",
+    "",
+  );
 
   return lines.join("\n");
 }

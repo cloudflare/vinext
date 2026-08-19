@@ -120,6 +120,15 @@ describe("getCdnCacheAdapter / setCdnCacheAdapter", () => {
     setCdnCacheAdapter(custom);
     expect(getCdnCacheAdapter()).toBe(custom);
   });
+
+  it("rejects falsy and malformed configured adapters", () => {
+    for (const invalid of [undefined, null, {}, { buildResponseHeaders() {} }]) {
+      expect(() => setCdnCacheAdapter(invalid as unknown as CdnCacheAdapter)).toThrow(
+        /factory returned an invalid adapter/,
+      );
+    }
+    expect(getCdnCacheAdapter()).toBeInstanceOf(DefaultCdnCacheAdapter);
+  });
 });
 
 // ─── Edge-managed (Cloudflare-style) adapter ─────────────────────────────

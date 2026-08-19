@@ -59,7 +59,7 @@ import {
 } from "./prewarm-source-independence.js";
 import {
   applyCdnPolicyToBoundaryResponse,
-  denyCdnCacheOnResponse,
+  denyCdnCacheOnSourceDependentResponse,
   enforceCdnCacheDenialOnResponse,
   includeEffectiveCdnCacheRequestCredentials,
 } from "./cache-control.js";
@@ -344,7 +344,7 @@ export async function runPagesRequest(
   } = deps;
   const finalizeSourceSafeCdnResponse = (response: Response): Response =>
     deps.prewarmSourceObservation && !isPrewarmSourceIndependent(deps.prewarmSourceObservation)
-      ? denyCdnCacheOnResponse(response)
+      ? denyCdnCacheOnSourceDependentResponse(response)
       : enforceCdnCacheDenialOnResponse(response);
   const applySourceSafeCdnPolicyToBoundaryResponse = (
     response: Response,
@@ -353,7 +353,7 @@ export async function runPagesRequest(
     const finalized = applyCdnPolicyToBoundaryResponse(response, policyRequest);
     return deps.prewarmSourceObservation &&
       !isPrewarmSourceIndependent(deps.prewarmSourceObservation)
-      ? denyCdnCacheOnResponse(finalized)
+      ? denyCdnCacheOnSourceDependentResponse(finalized)
       : finalized;
   };
 
@@ -380,15 +380,10 @@ export async function runPagesRequest(
   const isOnDemandRevalidate = deps.authorizeOnDemandRevalidate
     ? deps.authorizeOnDemandRevalidate(revalidateHeader)
     : isOnDemandRevalidateRequest(revalidateHeader);
-  if (isOnDemandRevalidate && deps.prewarmSourceObservation) {
-    // Authenticated on-demand revalidation intentionally bypasses middleware.
-    // Record that trusted bypass as an explicit non-match so regenerated base
-    // route output keeps its cache policy while config rules remain observed.
-    observePrewarmMiddlewareMatcher(deps.prewarmSourceObservation, {
-      conditionalPathMatched: false,
-      matched: false,
-    });
-  }
+  // Authenticated on-demand revalidation intentionally bypasses middleware.
+  // That bypass is not proof that the normal route matcher misses. Leaving the
+  // observation incomplete keeps only the internal response out of shared
+  // storage; ISR persistence still completes independently.
   const requestConfigPathname = deps.configMatchPathname ?? pathname;
 
   // Step 1: Reconstruct basePathState
@@ -813,8 +808,9 @@ export async function runPagesRequest(
         apiRequest = cloneRequestWithUrl(request, apiRequestUrl.toString());
       }
       const response = await deps.handleApi(apiRequest, apiLookupUrl, deps.ctx ?? null);
-      const merged = finalizeSourceSafeCdnResponse(
+      const merged = applySourceSafeCdnPolicyToBoundaryResponse(
         mergeHeaders(response, middlewareHeaders, middlewareStatus),
+        cachePolicyRequest,
       );
       // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
       // mergeHeaders may create a new Response object (losing non-standard

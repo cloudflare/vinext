@@ -109,6 +109,18 @@ export type CdnCacheAdapter = {
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders;
 
   /**
+   * Build headers that deny provider/shared-cache storage because framework
+   * routing observed request-source dependence (for example matched
+   * middleware). The original origin cache policy is supplied separately from
+   * CDN admission so origin-managed adapters can preserve Next.js ISR
+   * semantics while edge-managed adapters emit a provider-scoped denial.
+   *
+   * Adapters that omit this hook fail closed through `buildResponseHeaders()`
+   * with a generic `no-store` policy.
+   */
+  buildSourceDependentResponseHeaders?(input: CdnCacheableHeaderInput): CdnResponseHeaders;
+
+  /**
    * Whether existing response headers explicitly opt out of storage. Adapters
    * that split browser and provider cache policy should implement this so they
    * can interpret the provider-specific headers they own.
@@ -171,6 +183,14 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
     return { "Cache-Control": input.cacheControl };
   }
 
+  buildSourceDependentResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
+    // The default adapter owns an origin ISR store and mirrors Next.js's
+    // Cache-Control contract. Middleware/config response effects are applied
+    // outside the stored page representation, so there is no provider edge
+    // cache to deny here.
+    return { "Cache-Control": input.cacheControl };
+  }
+
   async revalidateTag(_tags: string | string[], _durations?: { expire?: number }): Promise<void> {
     // Purge-only hook. The default store is the data cache, which already
     // invalidated the matching tags, so there is nothing extra to do here.
@@ -217,7 +237,23 @@ let _defaultAdapter: DefaultCdnCacheAdapter | null = null;
  * recommended consumer API.
  */
 export function setCdnCacheAdapter(adapter: CdnCacheAdapter): void {
+  if (
+    !adapter ||
+    (typeof adapter !== "object" && typeof adapter !== "function") ||
+    typeof adapter.get !== "function" ||
+    typeof adapter.set !== "function" ||
+    typeof adapter.buildResponseHeaders !== "function" ||
+    typeof adapter.revalidateTag !== "function" ||
+    typeof adapter.ownsBackgroundRevalidation !== "boolean"
+  ) {
+    throw new TypeError("[vinext] CDN cache adapter factory returned an invalid adapter.");
+  }
   _gCdn[_CDN_KEY] = adapter;
+}
+
+/** Clear an explicitly configured adapter and restore lazy default resolution. */
+export function resetCdnCacheAdapter(): void {
+  delete _gCdn[_CDN_KEY];
 }
 
 /**

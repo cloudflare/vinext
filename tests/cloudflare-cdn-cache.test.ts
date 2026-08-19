@@ -827,6 +827,19 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
   });
 
+  it("denies provider storage without discarding the origin ISR policy", () => {
+    expect(
+      adapter.buildSourceDependentResponseHeaders({
+        cacheControl: "s-maxage=2, stale-while-revalidate=31535998",
+      }),
+    ).toEqual({
+      "Cache-Control": "s-maxage=2, stale-while-revalidate=31535998",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": "no-store",
+      "Cache-Tag": null,
+    });
+  });
+
   it("passes a non-cacheable policy through without promoting it to the edge", () => {
     // revalidate=0 / gssp paths produce no-store / private — must never become
     // a CDN-Cache-Control directive (which would cache an uncacheable response).

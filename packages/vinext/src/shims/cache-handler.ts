@@ -386,7 +386,21 @@ export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions)
 }
 
 export function setDataCacheHandler(handler: CacheHandler): void {
+  if (
+    !handler ||
+    (typeof handler !== "object" && typeof handler !== "function") ||
+    typeof handler.get !== "function" ||
+    typeof handler.set !== "function" ||
+    typeof handler.revalidateTag !== "function"
+  ) {
+    throw new TypeError("[vinext] data cache adapter factory returned an invalid handler.");
+  }
   globalHandlers[HANDLER_KEY] = handler;
+}
+
+/** Clear an explicitly configured handler and restore lazy memory-cache resolution. */
+export function resetDataCacheHandler(): void {
+  delete globalHandlers[HANDLER_KEY];
 }
 
 export function getDataCacheHandler(): CacheHandler {

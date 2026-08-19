@@ -1291,6 +1291,43 @@ describe("Pages Router integration", () => {
     await expect(res.json()).resolves.toEqual({});
   });
 
+  it("reclassifies middleware data prefetches after a dev route edit", async () => {
+    // Next.js keeps Pages data-hook classification live across dev edits.
+    // Related HMR coverage:
+    // https://github.com/vercel/next.js/blob/canary/test/development/pages-dir/custom-app-hmr/index.test.ts
+    const aboutPath = path.join(FIXTURE_DIR, "pages", "about.tsx");
+    const original = await fsp.readFile(aboutPath, "utf8");
+    const requestPrefetch = () =>
+      fetch(`${baseUrl}/_next/data/test-build-id/about.json`, {
+        headers: { "x-middleware-prefetch": "1" },
+      });
+    const waitForSkip = async (expected: string | null) => {
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const response = await requestPrefetch();
+        if (response.headers.get("x-middleware-skip") === expected) return response;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return requestPrefetch();
+    };
+
+    try {
+      await fsp.writeFile(
+        aboutPath,
+        `${original}\nexport function getStaticProps() { return { props: {} }; }\n`,
+      );
+      server.watcher.emit("change", aboutPath);
+      const gspResponse = await waitForSkip(null);
+      expect(gspResponse.headers.get("x-middleware-skip")).toBeNull();
+      await expect(gspResponse.json()).resolves.toMatchObject({ pageProps: {} });
+    } finally {
+      await fsp.writeFile(aboutPath, original);
+      server.watcher.emit("change", aboutPath);
+    }
+
+    const restoredResponse = await waitForSkip("1");
+    expect(restoredResponse.headers.get("x-middleware-skip")).toBe("1");
+  });
+
   it("does not collapse encoded slashes onto nested routes in dev", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-encoded-dev-"));
     writeEncodedSlashPagesFixture(tmpDir);

@@ -5721,54 +5721,48 @@ export const loadServerActionClient = ${
                   hasAppDir && appDir
                     ? appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
                     : Promise.resolve([]));
-              const devPageRouteDataKinds = new Map<string, Promise<PagesRouteDataKind>>();
-              let devAppComponent: Promise<{
+              const getDevAppComponent = async (): Promise<{
                 getInitialProps?: unknown;
                 origGetInitialProps?: unknown;
-              } | null> | null = null;
-              const getDevAppComponent = () =>
-                (devAppComponent ??= (async () => {
-                  const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
-                  if (!appFilePath) return null;
-                  const appModule = (await getPagesRunner().import(appFilePath)) as {
-                    default?: {
-                      getInitialProps?: unknown;
-                      origGetInitialProps?: unknown;
-                    };
+              } | null> => {
+                const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+                if (!appFilePath) return null;
+                const appModule = (await getPagesRunner().import(appFilePath)) as {
+                  default?: {
+                    getInitialProps?: unknown;
+                    origGetInitialProps?: unknown;
                   };
-                  return appModule.default ?? null;
-                })());
+                };
+                return appModule.default ?? null;
+              };
               const classifyDevPageRoute = async (
                 route: (typeof devPageRoutes)[number],
               ): Promise<PagesRouteDataKind> => {
-                const cached = devPageRouteDataKinds.get(route.filePath);
-                if (cached) return cached;
-
-                const classification = (async () => {
-                  try {
-                    const source = fs.readFileSync(route.filePath, "utf8");
-                    if (hasExportedName(source, "getStaticProps")) return "static";
-                    if (hasExportedName(source, "getServerSideProps")) return "server";
-                    const pageModule = (await getPagesRunner().import(route.filePath)) as {
-                      default?: { getInitialProps?: unknown };
-                    };
-                    const dataKind = resolvePagesRouteDataKind(
-                      "none",
-                      pageModule.default ?? null,
-                      await getDevAppComponent(),
-                    );
-                    // Next only promotes automatically static pages to SSG
-                    // from the prerender manifest in production. During dev,
-                    // middleware-prefetch requests therefore use the same
-                    // non-SSG skip protocol as GSSP/getInitialProps routes.
-                    return dataKind === "none" ? "development" : dataKind;
-                  } catch {
-                    // Dev can race with an editor deleting/renaming a page file.
-                  }
-                  return "none";
-                })() satisfies Promise<PagesRouteDataKind>;
-                devPageRouteDataKinds.set(route.filePath, classification);
-                return classification;
+                try {
+                  // Always classify through the current dev module graph.
+                  // Vite invalidates imported modules after edits; retaining
+                  // our own promise would pin stale exports (or a transient
+                  // rejected import) until the dev server restarted.
+                  const source = fs.readFileSync(route.filePath, "utf8");
+                  if (hasExportedName(source, "getStaticProps")) return "static";
+                  if (hasExportedName(source, "getServerSideProps")) return "server";
+                  const pageModule = (await getPagesRunner().import(route.filePath)) as {
+                    default?: { getInitialProps?: unknown };
+                  };
+                  const dataKind = resolvePagesRouteDataKind(
+                    "none",
+                    pageModule.default ?? null,
+                    await getDevAppComponent(),
+                  );
+                  // Next only promotes automatically static pages to SSG
+                  // from the prerender manifest in production. During dev,
+                  // middleware-prefetch requests therefore use the same
+                  // non-SSG skip protocol as GSSP/getInitialProps routes.
+                  return dataKind === "none" ? "development" : dataKind;
+                } catch {
+                  // Dev can race with an editor deleting/renaming a page file.
+                }
+                return "none";
               };
 
               const pipelineDeps: PagesPipelineDeps = {

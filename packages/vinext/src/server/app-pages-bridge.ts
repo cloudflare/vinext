@@ -5,7 +5,11 @@ import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { NEXT_URL_HEADER } from "./headers.js";
-import { denyCdnCacheOnResponse, enforceCdnCacheDenialOnResponse } from "./cache-control.js";
+import {
+  applyCdnPolicyToBoundaryResponse,
+  denyCdnCacheOnSourceDependentResponse,
+  enforceCdnCacheDenialOnResponse,
+} from "./cache-control.js";
 import {
   buildMiddlewarePrefetchSkipResponse,
   isNonSsgPagesRoute,
@@ -154,7 +158,7 @@ export async function renderPagesFallback(
   } = dependencies;
   const finalizeSourceSafePagesResponse = (response: Response): Response =>
     !sourceIndependent || middlewareContext.matched || middlewareContext.conditionalPathMatched
-      ? denyCdnCacheOnResponse(response)
+      ? denyCdnCacheOnSourceDependentResponse(response)
       : enforceCdnCacheDenialOnResponse(response);
 
   if (isRscRequest && !allowRscDocumentFallback) return null;
@@ -215,9 +219,12 @@ export async function renderPagesFallback(
     );
     const draftCookie = getDraftModeCookieHeader();
     return finalizeSourceSafePagesResponse(
-      applyDraftModeCookie(
-        applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext),
-        draftCookie,
+      applyCdnPolicyToBoundaryResponse(
+        applyDraftModeCookie(
+          applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext),
+          draftCookie,
+        ),
+        request,
       ),
     );
   }

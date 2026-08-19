@@ -910,11 +910,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     });
   };
 
-  const runMiddleware = isOnDemandRevalidateRequest(
+  const isOnDemandRevalidate = isOnDemandRevalidateRequest(
     request.headers.get(PRERENDER_REVALIDATE_HEADER),
-  )
-    ? undefined
-    : options.runMiddleware;
+  );
+  const runMiddleware = isOnDemandRevalidate ? undefined : options.runMiddleware;
+  if (isOnDemandRevalidate && options.runMiddleware) {
+    // Revalidation deliberately skips user middleware, but that does not prove
+    // its matcher misses for ordinary requests to the regenerated Pages route.
+    pagesFallbackSourceDependent = true;
+  }
   // Branch the exact downstream body owner before creating URL aliases. URL
   // reconstruction shares a stream; cloning an alias would lock the body still
   // referenced by `request` and break the subsequent action/route-handler read.

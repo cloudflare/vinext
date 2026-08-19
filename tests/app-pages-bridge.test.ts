@@ -419,10 +419,35 @@ describe("renderPagesFallback", () => {
         loadPagesEntry: () => ({
           handleApiRoute: () =>
             new Response("tenant api", {
-              headers: {
-                "Cache-Control": "public, max-age=60",
-                "CDN-Cache-Control": "public, max-age=60",
-              },
+              headers: { "Cache-Control": "public, max-age=60" },
+            }),
+        }),
+      },
+    );
+
+    expect(response?.headers.get("cache-control")).not.toContain("no-store");
+    expect(response?.headers.get("cdn-cache-control")).toBeNull();
+    expect(response?.headers.get("cloudflare-cdn-cache-control")).toBe("no-store");
+  });
+
+  it("routes raw hybrid Pages API cache policy through the adapter", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/api/public", {
+      headers: { Authorization: "Bearer private" },
+    });
+    const response = await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request,
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({
+          handleApiRoute: () =>
+            new Response("public api", {
+              headers: { "Cache-Control": "public, max-age=60" },
             }),
         }),
       },

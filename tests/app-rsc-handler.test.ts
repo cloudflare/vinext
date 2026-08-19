@@ -11,6 +11,10 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
+import {
+  getRevalidateSecret,
+  PRERENDER_REVALIDATE_HEADER,
+} from "../packages/vinext/src/server/isr-cache.js";
 import * as rscPrewarmServerImplementation from "../packages/vinext/src/server/rsc-prewarm-runtime.js";
 import {
   renderPagesFallback as renderHybridPagesFallback,
@@ -4770,6 +4774,31 @@ describe("createAppRscHandler", () => {
 
     expect(renderPagesFallback).toHaveBeenCalledWith(
       expect.objectContaining({ pathname: "/market-a", sourceIndependent: false }),
+    );
+  });
+
+  it("does not treat a hybrid revalidation middleware bypass as source-independent", async () => {
+    const runMiddleware = vi.fn(async () => {
+      throw new Error("revalidation must bypass middleware");
+    });
+    const renderPagesFallback = vi.fn(async () => new Response("pages", { status: 200 }));
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: () => null,
+      renderPagesFallback,
+      runMiddleware,
+    });
+
+    await handler(
+      new Request("https://example.test/docs/about", {
+        headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+      }),
+      null,
+    );
+
+    expect(runMiddleware).not.toHaveBeenCalled();
+    expect(renderPagesFallback).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceIndependent: false }),
     );
   });
 

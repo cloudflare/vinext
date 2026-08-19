@@ -202,9 +202,37 @@ export function enforceCdnCacheDenialOnResponse(response: Response): Response {
 }
 
 /** Remove every adapter-owned shared-cache policy from a response. */
-export function denyCdnCacheOnResponse(response: Response): Response {
+function denyCdnCacheOnResponse(response: Response): Response {
   const headers = new Headers(response.headers);
   applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+/**
+ * Deny shared-cache admission for a response whose route/result depended on
+ * non-URL request state without discarding the framework's origin ISR policy.
+ * Provider-specific behavior stays behind the cache-adapter boundary.
+ */
+export function denyCdnCacheOnSourceDependentResponse(response: Response): Response {
+  const headers = new Headers(response.headers);
+  const input = { cacheControl: headers.get("Cache-Control") ?? "" };
+  const adapter = getCdnCacheAdapter();
+  const map = adapter.buildSourceDependentResponseHeaders
+    ? adapter.buildSourceDependentResponseHeaders(input)
+    : adapter.buildResponseHeaders({ cacheControl: NO_STORE_CACHE_CONTROL });
+  headers.delete("Cache-Control");
+  for (const [name, value] of Object.entries(map)) {
+    if (value === null) {
+      headers.delete(name);
+    } else if (value !== "") {
+      if (name.toLowerCase() === "vary") mergeVaryHeader(headers, value);
+      else headers.set(name, value);
+    }
+  }
   return new Response(response.body, {
     headers,
     status: response.status,

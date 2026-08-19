@@ -55,7 +55,9 @@ describe("generateCacheAdaptersModule", () => {
   it("wires only the data adapter when only data is configured", () => {
     const code = generateCacheAdaptersModule({ data: { adapter: "my-data-adapter" } });
     expect(code).toContain(`import __vinextDataAdapterFactory from "my-data-adapter";`);
-    expect(code).toContain(`import { setDataCacheHandler } from "vinext/shims/cache-handler";`);
+    expect(code).toContain(
+      `import { resetDataCacheHandler, setDataCacheHandler } from "vinext/shims/cache-handler";`,
+    );
     expect(code).toContain(
       "setDataCacheHandler(__vinextDataAdapterFactory({ env, options: undefined }));",
     );
@@ -66,7 +68,9 @@ describe("generateCacheAdaptersModule", () => {
   it("wires only the cdn adapter when only cdn is configured", () => {
     const code = generateCacheAdaptersModule({ cdn: { adapter: "my-cdn-adapter" } });
     expect(code).toContain(`import __vinextCdnAdapterFactory from "my-cdn-adapter";`);
-    expect(code).toContain(`import { setCdnCacheAdapter } from "vinext/shims/cdn-cache";`);
+    expect(code).toContain(
+      `import { resetCdnCacheAdapter, setCdnCacheAdapter } from "vinext/shims/cdn-cache";`,
+    );
     expect(code).toContain(
       "setCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: undefined }));",
     );
@@ -102,6 +106,12 @@ describe("generateCacheAdaptersModule", () => {
     expect(code).toContain(
       "__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] = __vinextCacheAdaptersRegistrationId;",
     );
+    expect(code).toContain("import.meta.hot.dispose(() => {");
+    expect(code.indexOf("setCdnCacheAdapter(")).toBeLessThan(
+      code.indexOf(
+        "__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] = __vinextCacheAdaptersRegistrationId;",
+      ),
+    );
   });
 
   it("logs registration failures without printing raw Error stack traces", () => {
@@ -133,6 +143,7 @@ describe("generateCacheAdaptersModule", () => {
       expect(code).toContain(
         "delete __vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey];",
       );
+      expect(code).toContain("resetCdnCacheAdapter();");
       expect(code).toContain("the declared cache capabilities require it");
       expect(code).toContain("{ cause: error }");
       expect(code).not.toContain("using the default adapter");
