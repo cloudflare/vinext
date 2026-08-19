@@ -18,9 +18,17 @@ export function canonicalizeFilePath(filePath: string): string {
   }
 }
 
+/**
+ * `path.relative` for internal vinext use. Node emits backslashes on Windows;
+ * Vite module ids, glob entries, and `../` boundary checks are forward-slash.
+ */
+export function toPosixRelative(from: string, to: string): string {
+  return toSlash(path.relative(from, to));
+}
+
 /** Whether `filePath` is a strict descendant of `directory`. */
 export function isPathInside(directory: string, filePath: string): boolean {
-  const relativePath = path.relative(directory, filePath);
+  const relativePath = toPosixRelative(directory, filePath);
   return (
     relativePath !== "" &&
     relativePath !== ".." &&
@@ -31,7 +39,7 @@ export function isPathInside(directory: string, filePath: string): boolean {
 
 /** Whether `filePath` is `directory` itself or one of its descendants. */
 export function isPathInsideOrEqual(directory: string, filePath: string): boolean {
-  return path.relative(directory, filePath) === "" || isPathInside(directory, filePath);
+  return toPosixRelative(directory, filePath) === "" || isPathInside(directory, filePath);
 }
 
 /** Strip a trailing `.js` extension from a module specifier so

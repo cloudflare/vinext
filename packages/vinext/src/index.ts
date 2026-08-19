@@ -283,6 +283,7 @@ import { createTransformCache } from "./plugins/transform-cache.js";
 import {
   isPathInside,
   isPathInsideOrEqual,
+  toPosixRelative,
   stripJsExtension,
   stripViteModuleQuery,
 } from "./utils/path.js";
@@ -430,7 +431,7 @@ function isVinextOgShimImporter(importer: string | undefined): boolean {
 }
 
 function toRelativeFileEntry(root: string, absPath: string): string {
-  return path.relative(root, absPath);
+  return toPosixRelative(root, absPath);
 }
 
 const DEV_PAGES_CLIENT_ENTRY = "/@id/__x00__virtual:vinext-client-entry";
@@ -571,8 +572,13 @@ function resolvedStylesheetToDevManifestAsset(root: string, resolvedId: string):
 
   const rootForRelative = tryRealpathSync(root) ?? root;
   const fileForRelative = tryRealpathSync(cleanId) ?? cleanId;
-  const relativePath = path.relative(rootForRelative, fileForRelative);
-  if (relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
+  const relativePath = toPosixRelative(rootForRelative, fileForRelative);
+  if (
+    relativePath !== "" &&
+    relativePath !== ".." &&
+    !relativePath.startsWith("../") &&
+    !path.isAbsolute(relativePath)
+  ) {
     return relativePath;
   }
 
@@ -3656,13 +3662,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           validateHybridRouteConflicts(
             [...pageRoutes, ...apiRoutes].map((route) => ({
               ...route,
-              sourcePath: path.relative(root, route.filePath),
+              sourcePath: toPosixRelative(root, route.filePath),
             })),
             appRoutes
               .filter((route) => route.pagePath !== null || route.routePath !== null)
               .map((route) => ({
                 ...route,
-                sourcePath: path.relative(root, route.pagePath ?? route.routePath!),
+                sourcePath: toPosixRelative(root, route.pagePath ?? route.routePath!),
               })),
           );
         }
@@ -4690,13 +4696,13 @@ export const loadServerActionClient = ${
               validateHybridRouteConflicts(
                 [...pageRoutes, ...apiRoutes].map((route) => ({
                   ...route,
-                  sourcePath: path.relative(root, route.filePath),
+                  sourcePath: toPosixRelative(root, route.filePath),
                 })),
                 appRoutes
                   .filter((route) => route.pagePath !== null || route.routePath !== null)
                   .map((route) => ({
                     ...route,
-                    sourcePath: path.relative(root, route.pagePath ?? route.routePath!),
+                    sourcePath: toPosixRelative(root, route.pagePath ?? route.routePath!),
                   })),
               );
               if (hybridRouteValidationError) {

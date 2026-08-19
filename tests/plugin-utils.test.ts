@@ -24,6 +24,7 @@ import {
   isPathInsideOrEqual,
   NODE_MODULES_PATH_RE,
   stripViteModuleQuery,
+  toPosixRelative,
 } from "../packages/vinext/src/utils/path.js";
 
 describe("plugin AST utilities", () => {
@@ -118,6 +119,18 @@ describe("plugin path utilities", () => {
     expect(isPathInside(root, root)).toBe(false);
     expect(isPathInsideOrEqual(root, root)).toBe(true);
     expect(isPathInsideOrEqual(root, sibling)).toBe(false);
+  });
+
+  it("emits forward-slash relatives for Vite globs and ../ boundary checks", () => {
+    const root = path.join("C:", "proj", "app");
+    const nested = path.join(root, "src", "page.tsx");
+    const posix = toPosixRelative(root, nested);
+    expect(posix.includes("\\")).toBe(false);
+    expect(posix).toBe("src/page.tsx");
+
+    // Mixed separators must not break the descendant check (Windows glob / join).
+    expect(isPathInside(toSlash(root), `${toSlash(root)}/src/page.tsx`)).toBe(true);
+    expect(isPathInside(toSlash(root), `${toSlash(root)}/../outside.tsx`)).toBe(false);
   });
 
   it("canonicalizes existing files and preserves missing paths", () => {
