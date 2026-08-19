@@ -44,6 +44,7 @@ async function observeTargetRsc(page: Page, action: () => Promise<unknown>): Pro
   });
   await action();
   const response = await responsePromise;
+  expect(await response.finished()).toBeNull();
   return {
     requestHeaders: response.request().headers(),
     response,
