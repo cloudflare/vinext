@@ -1256,6 +1256,7 @@ describe("App Router entry templates", () => {
     expect(code).toContain(
       "{ allowRscDocumentFallback, appRouteMatch, hasMiddleware, isDataRequest, isRscRequest",
     );
+    expect(code).toContain("request, sourceIndependent, url");
   });
 
   it("generateRscEntry only includes the PPR runtime when Cache Components is enabled", () => {

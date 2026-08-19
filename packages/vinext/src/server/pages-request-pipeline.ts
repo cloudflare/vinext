@@ -34,7 +34,7 @@ import {
 } from "../config/config-matchers.js";
 import {
   buildMiddlewarePrefetchSkipResponse,
-  isNonSsgPagesRouteDataKind,
+  isNonSsgPagesRoute,
   isPagesErrorRoutePattern,
   type PagesRouteDataKind,
 } from "./pages-data-route.js";
@@ -53,11 +53,13 @@ import {
 } from "./http-error-responses.js";
 import {
   configRuleMayVaryAcrossPrewarmRequests,
+  isPrewarmSourceIndependent,
   observePrewarmMiddlewareMatcher,
   type PrewarmSourceObservation,
 } from "./prewarm-source-independence.js";
 import {
   applyCdnPolicyToBoundaryResponse,
+  denyCdnCacheOnResponse,
   enforceCdnCacheDenialOnResponse,
   includeEffectiveCdnCacheRequestCredentials,
 } from "./cache-control.js";
@@ -201,7 +203,7 @@ export type PagesPipelineDeps = {
         },
       ) => Promise<MiddlewareResult>)
     | null;
-  /** Mutable proof state supplied only by an authenticated prerender request. */
+  /** Mutable proof state used for both runtime cache admission and authenticated prewarming. */
   prewarmSourceObservation?: PrewarmSourceObservation;
   /** Original URL presented to middleware when URL normalization is disabled. */
   middlewareRequest?: Request;
@@ -340,6 +342,16 @@ export async function runPagesRequest(
     isDataReq,
     isDataRequest,
   } = deps;
+  const applySourceSafeCdnPolicyToBoundaryResponse = (
+    response: Response,
+    policyRequest: Request,
+  ): Response => {
+    const finalized = applyCdnPolicyToBoundaryResponse(response, policyRequest);
+    return deps.prewarmSourceObservation &&
+      !isPrewarmSourceIndependent(deps.prewarmSourceObservation)
+      ? denyCdnCacheOnResponse(finalized)
+      : finalized;
+  };
 
   // Proxy helper: use deps.proxyExternal when supplied (dev adapter forwards
   // Node req body), otherwise fall back to proxyExternalRequest(currentReq, url).
@@ -488,7 +500,7 @@ export async function runPagesRequest(
       }
       return {
         type: "response",
-        response: applyCdnPolicyToBoundaryResponse(response, cachePolicyRequest),
+        response: applySourceSafeCdnPolicyToBoundaryResponse(response, cachePolicyRequest),
       };
     }
     return served ? { type: "handled" } : null;
@@ -551,7 +563,7 @@ export async function runPagesRequest(
         }
         return {
           type: "response",
-          response: applyCdnPolicyToBoundaryResponse(
+          response: applySourceSafeCdnPolicyToBoundaryResponse(
             new Response(null, {
               status: result.redirectStatus ?? 307,
               headers,
@@ -563,7 +575,7 @@ export async function runPagesRequest(
       if (result.response) {
         return {
           type: "response",
-          response: applyCdnPolicyToBoundaryResponse(result.response, cachePolicyRequest),
+          response: applySourceSafeCdnPolicyToBoundaryResponse(result.response, cachePolicyRequest),
         };
       }
     }
@@ -598,7 +610,7 @@ export async function runPagesRequest(
   if (deps.dataNotFoundResponse && resolvedUrl === originalResolvedUrl) {
     return {
       type: "response",
-      response: applyCdnPolicyToBoundaryResponse(
+      response: applySourceSafeCdnPolicyToBoundaryResponse(
         mergeHeaders(deps.dataNotFoundResponse, middlewareHeaders, middlewareStatus),
         cachePolicyRequest,
       ),
@@ -656,9 +668,8 @@ export async function runPagesRequest(
   ): PagesPipelineResult | null => {
     if (!match) return null;
 
-    const dataKind = match.route.dataKind;
     if (
-      !isNonSsgPagesRouteDataKind(dataKind) ||
+      !isNonSsgPagesRoute(match.route.dataKind, match.route.isDynamic) ||
       isPagesErrorRoutePattern(match.route.pattern) ||
       !isDataRequest ||
       !deps.hasMiddleware ||
@@ -669,7 +680,7 @@ export async function runPagesRequest(
 
     return {
       type: "response",
-      response: applyCdnPolicyToBoundaryResponse(
+      response: applySourceSafeCdnPolicyToBoundaryResponse(
         mergeHeaders(
           buildMiddlewarePrefetchSkipResponse(matchedPathnameForRoute(match.route.pattern)),
           middlewareHeaders,
@@ -711,7 +722,7 @@ export async function runPagesRequest(
     const proxyResponse = await proxyExternal(request, resolvedUrl);
     return {
       type: "response",
-      response: applyCdnPolicyToBoundaryResponse(
+      response: applySourceSafeCdnPolicyToBoundaryResponse(
         mergeHeaders(proxyResponse, middlewareHeaders, undefined),
         cachePolicyRequest,
       ),
@@ -735,7 +746,7 @@ export async function runPagesRequest(
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
         return {
           type: "response",
-          response: applyCdnPolicyToBoundaryResponse(
+          response: applySourceSafeCdnPolicyToBoundaryResponse(
             await proxyExternal(request, rewritten),
             cachePolicyRequest,
           ),
@@ -844,7 +855,7 @@ export async function runPagesRequest(
           // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
           return {
             type: "response",
-            response: applyCdnPolicyToBoundaryResponse(
+            response: applySourceSafeCdnPolicyToBoundaryResponse(
               await proxyExternal(request, rewritten),
               cachePolicyRequest,
             ),
@@ -904,7 +915,7 @@ export async function runPagesRequest(
         if (isExternalUrl(fallbackRewrite)) {
           return {
             type: "response",
-            response: applyCdnPolicyToBoundaryResponse(
+            response: applySourceSafeCdnPolicyToBoundaryResponse(
               await proxyExternal(request, fallbackRewrite),
               cachePolicyRequest,
             ),
@@ -968,7 +979,7 @@ export async function runPagesRequest(
           // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
           return {
             type: "response",
-            response: applyCdnPolicyToBoundaryResponse(
+            response: applySourceSafeCdnPolicyToBoundaryResponse(
               await proxyExternal(request, fallbackRewrite),
               cachePolicyRequest,
             ),
@@ -1025,9 +1036,11 @@ export async function runPagesRequest(
         renderPageMatch?.route.pattern,
       );
     }
-    const merged = enforceCdnCacheDenialOnResponse(
-      mergeHeaders(response, matchedPathHeaders, middlewareStatus),
-    );
+    const responseWithHeaders = mergeHeaders(response, matchedPathHeaders, middlewareStatus);
+    const merged =
+      deps.prewarmSourceObservation && !isPrewarmSourceIndependent(deps.prewarmSourceObservation)
+        ? denyCdnCacheOnResponse(responseWithHeaders)
+        : enforceCdnCacheDenialOnResponse(responseWithHeaders);
     // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
     // mergeHeaders may create a new Response object (losing non-standard properties),
     // so we copy the marker from the original render response to the merged one.
@@ -1065,7 +1078,7 @@ export async function runPagesRequest(
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
         return {
           type: "response",
-          response: applyCdnPolicyToBoundaryResponse(
+          response: applySourceSafeCdnPolicyToBoundaryResponse(
             await proxyExternal(request, fallbackRewrite),
             cachePolicyRequest,
           ),

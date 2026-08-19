@@ -101,6 +101,149 @@ describe("on-demand revalidation middleware bypass", () => {
 });
 
 describe("Pages prewarm source-independence observation", () => {
+  it("denies shared cache admission after matched middleware", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const observation = createPrewarmSourceObservation(true);
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/about"),
+        baseDeps({
+          hasMiddleware: true,
+          matchPageRoute: () => ({
+            route: { dataKind: "none", isDynamic: false, pattern: "/about" },
+          }),
+          prewarmSourceObservation: observation,
+          runMiddleware: async (_request, _ctx, options) => {
+            options.onMatcherEvaluation?.({ conditionalPathMatched: false, matched: true });
+            return { continue: true };
+          },
+          renderPage: async () => {
+            const headers = new Headers();
+            applyCdnResponseHeaders(headers, {
+              cacheControl: "s-maxage=31536000, stale-while-revalidate",
+            });
+            return new Response("auto-static", { headers });
+          },
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("keeps matcher-missed auto-static responses cacheable", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const observation = createPrewarmSourceObservation(true);
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/about"),
+        baseDeps({
+          hasMiddleware: true,
+          matchPageRoute: () => ({
+            route: { dataKind: "none", isDynamic: false, pattern: "/about" },
+          }),
+          prewarmSourceObservation: observation,
+          runMiddleware: async (_request, _ctx, options) => {
+            options.onMatcherEvaluation?.({ conditionalPathMatched: false, matched: false });
+            return { continue: true };
+          },
+          renderPage: async () => {
+            const headers = new Headers();
+            applyCdnResponseHeaders(headers, {
+              cacheControl: "s-maxage=31536000, stale-while-revalidate",
+            });
+            return new Response("auto-static", { headers });
+          },
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("cache-control")).not.toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toContain("max-age=31536000");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("denies shared cache admission after a header-dependent config match", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const observation = createPrewarmSourceObservation(false);
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/about", { "x-tenant": "a" }),
+        baseDeps({
+          configHeaders: [
+            {
+              source: "/about",
+              has: [{ type: "header", key: "x-tenant", value: "a" }],
+              headers: [{ key: "x-selected-tenant", value: "a" }],
+            },
+          ],
+          matchPageRoute: () => ({
+            route: { dataKind: "none", isDynamic: false, pattern: "/about" },
+          }),
+          prewarmSourceObservation: observation,
+          renderPage: async () => {
+            const headers = new Headers();
+            applyCdnResponseHeaders(headers, {
+              cacheControl: "s-maxage=31536000, stale-while-revalidate",
+            });
+            return new Response("auto-static", { headers });
+          },
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("x-selected-tenant")).toBe("a");
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("denies source-dependent filesystem rewrite responses", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const observation = createPrewarmSourceObservation(false);
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/logo", { "x-market": "a" }),
+        baseDeps({
+          configRewrites: {
+            beforeFiles: [
+              {
+                source: "/logo",
+                destination: "/market-a.png",
+                has: [{ type: "header", key: "x-market", value: "a" }],
+              },
+            ],
+            afterFiles: [],
+            fallback: [],
+          },
+          prewarmSourceObservation: observation,
+          serveFilesystemRoute: async (pathname) =>
+            pathname === "/market-a.png"
+              ? new Response("asset", { headers: { "Cache-Control": "public, max-age=60" } })
+              : false,
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   // Ported from Next.js's custom-routes and middleware matcher behavior:
   // https://github.com/vercel/next.js/blob/canary/test/e2e/custom-routes/custom-routes.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers/test/index.test.ts
@@ -887,6 +1030,30 @@ describe("middleware", () => {
     expect(renderPage).toHaveBeenCalledOnce();
     expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBeNull();
     expect(await result.response.text()).toBe('{"pageProps":{"message":"from gssp"}}');
+  });
+
+  it("skips middleware data prefetches for dynamic pages without data hooks", async () => {
+    const renderPage = makeRenderPage(200, '{"pageProps":{"unexpected":true}}');
+    const result = await runPagesRequest(
+      makeRequest("/blog/post", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi.fn().mockReturnValue({
+          route: { isDynamic: true, pattern: "/blog/:slug", dataKind: "none" },
+        }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(result.response.headers.get("x-matched-path")).toBe("/blog/[slug]");
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBe("1");
+    expect(await result.response.json()).toEqual({});
   });
 
   it("does not skip middleware data prefetches for matched SSG pages", async () => {

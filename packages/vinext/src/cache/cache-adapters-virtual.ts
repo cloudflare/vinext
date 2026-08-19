@@ -154,6 +154,9 @@ function inlineOptions(adapter: string, options: Record<string, unknown> | undef
 export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   const data = cache?.data;
   const cdn = cache?.cdn;
+  const cdnCapabilitiesAffectProtocol =
+    cdn?.capabilities?.responseVary === "verbatim" ||
+    resolveControlledResponseVaryHeaders(cache).length > 0;
 
   // Nothing configured → a no-op so the unconditional import in the server
   // entries stays valid and tree-shakes to almost nothing.
@@ -219,10 +222,22 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
         cdn.options,
       )} }));`,
       "  } catch (error) {",
-      '    console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
-        'using the default adapter.\\n" + __vinextFormatAdapterError(error));',
-      "  }",
     );
+    if (cdnCapabilitiesAffectProtocol) {
+      lines.push(
+        "    // Browser/server request identity was compiled against this adapter's",
+        "    // declared capabilities. The generic adapter cannot safely replace it.",
+        "    __vinextCacheAdaptersRegistered = false;",
+        '    throw new Error("[vinext] failed to initialize the configured CDN cache adapter; ' +
+          'the declared cache capabilities require it.\\n" + __vinextFormatAdapterError(error), { cause: error });',
+      );
+    } else {
+      lines.push(
+        '    console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
+          'using the default adapter.\\n" + __vinextFormatAdapterError(error));',
+      );
+    }
+    lines.push("  }");
   }
   lines.push("}", "");
 

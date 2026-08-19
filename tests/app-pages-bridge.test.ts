@@ -333,6 +333,76 @@ describe("renderPagesFallback", () => {
     },
   );
 
+  it("skips hybrid middleware data prefetches for dynamic Pages routes without data hooks", async () => {
+    const renderPage = vi.fn(() => new Response('{"pageProps":{"unexpected":true}}'));
+    const request = new Request("http://localhost/pages-dir/post", {
+      headers: { "x-middleware-prefetch": "1" },
+    });
+
+    const response = await renderPagesFallback(
+      {
+        hasMiddleware: true,
+        isDataRequest: true,
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request,
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({
+          matchPageRoute: () => ({
+            route: { dataKind: "none", isDynamic: true, pattern: "/pages-dir/:slug" },
+          }),
+          renderPage,
+        }),
+      },
+    );
+
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(response?.headers.get("x-middleware-skip")).toBe("1");
+    expect(response?.headers.get("x-matched-path")).toBe("/pages-dir/[slug]");
+    await expect(response?.json()).resolves.toEqual({});
+  });
+
+  it("denies shared caching for a source-dependent hybrid Pages response", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const response = await renderPagesFallback(
+        {
+          hasMiddleware: true,
+          isDataRequest: false,
+          isRscRequest: false,
+          middlewareContext: {
+            headers: null,
+            requestHeaders: null,
+            status: null,
+          },
+          request: new Request("https://example.com/about"),
+          sourceIndependent: false,
+          url: new URL("https://example.com/about"),
+        },
+        {
+          ...defaultDeps,
+          loadPagesEntry: () => ({
+            matchPageRoute: () => ({
+              route: { dataKind: "none", isDynamic: false, pattern: "/about" },
+            }),
+            renderPage: () =>
+              new Response("auto-static", {
+                headers: { "CDN-Cache-Control": "public, max-age=31536000" },
+              }),
+          }),
+        },
+      );
+
+      expect(response?.headers.get("cache-control")).toContain("no-store");
+      expect(response?.headers.get("cdn-cache-control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   it("renders a hybrid custom 404 during middleware data prefetches", async () => {
     const renderPage = vi.fn(() => new Response('{"pageProps":{"error":"not found"}}'));
     const request = new Request("http://localhost/404", {

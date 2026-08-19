@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
   buildMiddlewarePrefetchSkipResponse,
+  isNonSsgPagesRoute,
   isNonSsgPagesRouteDataKind,
   isPagesErrorRoutePattern,
   isNextDataPathname,
@@ -18,6 +19,12 @@ describe("pages-data-route", () => {
   it("treats development-only auto-static classification as non-SSG", () => {
     expect(isNonSsgPagesRouteDataKind("development")).toBe(true);
     expect(isNonSsgPagesRouteDataKind("none")).toBe(false);
+  });
+
+  it("treats a dynamic route without a data hook as non-SSG", () => {
+    expect(isNonSsgPagesRoute("none", true)).toBe(true);
+    expect(isNonSsgPagesRoute("none", false)).toBe(false);
+    expect(isNonSsgPagesRoute("static", true)).toBe(false);
   });
 
   it("recognizes Next.js error document route patterns", () => {

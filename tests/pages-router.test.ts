@@ -1267,6 +1267,17 @@ describe("Pages Router integration", () => {
     expect(await res.json()).toEqual({});
   });
 
+  it("skips dynamic no-data middleware data prefetches in dev", async () => {
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/nav-compat/foobar.json?q=pages`, {
+      headers: { "x-middleware-prefetch": "1" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-middleware-skip")).toBe("1");
+    expect(res.headers.get("x-matched-path")).toBe("/nav-compat/[slug]");
+    expect(await res.json()).toEqual({});
+  });
+
   it("skips auto-static middleware data prefetches before production prerendering", async () => {
     // Ported from Next.js: packages/next/src/server/base-server.ts
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
@@ -7944,6 +7955,17 @@ describe("Production server middleware (Pages Router)", () => {
       expect(res.status).toBe(200);
       expect(res.headers.get("x-middleware-skip")).toBe("1");
       expect(res.headers.get("x-matched-path")).toBe("/nav-compat-gip/[slug]");
+      expect(await res.json()).toEqual({});
+    });
+
+    it("skips middleware prefetch rendering for dynamic pages without data hooks", async () => {
+      const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/nav-compat/foobar.json?q=pages`, {
+        headers: { "x-middleware-prefetch": "1" },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-middleware-skip")).toBe("1");
+      expect(res.headers.get("x-matched-path")).toBe("/nav-compat/[slug]");
       expect(await res.json()).toEqual({});
     });
 

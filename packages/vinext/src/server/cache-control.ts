@@ -198,6 +198,11 @@ export function enforceCdnCacheDenialOnResponse(response: Response): Response {
   ) {
     return response;
   }
+  return denyCdnCacheOnResponse(response);
+}
+
+/** Remove every adapter-owned shared-cache policy from a response. */
+export function denyCdnCacheOnResponse(response: Response): Response {
   const headers = new Headers(response.headers);
   applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
   return new Response(response.body, {

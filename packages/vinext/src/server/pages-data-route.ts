@@ -41,6 +41,14 @@ export function isNonSsgPagesRouteDataKind(dataKind: PagesRouteDataKind | undefi
   return dataKind === "server" || dataKind === "runtime" || dataKind === "development";
 }
 
+/** Dynamic Pages routes without a data hook cannot be automatically prerendered as SSG. */
+export function isNonSsgPagesRoute(
+  dataKind: PagesRouteDataKind | undefined,
+  isDynamic: boolean,
+): boolean {
+  return isNonSsgPagesRouteDataKind(dataKind) || (dataKind === "none" && isDynamic);
+}
+
 /** Next renders its error documents even when a middleware prefetch is speculative. */
 export function isPagesErrorRoutePattern(pattern: string | undefined): boolean {
   return pattern === "/404" || pattern === "/_error";

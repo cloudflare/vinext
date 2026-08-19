@@ -116,6 +116,22 @@ describe("generateCacheAdaptersModule", () => {
     expect(code).not.toContain('", error);');
   });
 
+  it("fails closed when CDN adapter capabilities affect the compiled protocol", () => {
+    for (const capabilities of [
+      { responseVary: "verbatim" as const },
+      { controlledResponseVaryHeaders: ["X-Forwarded-Proto"] },
+    ]) {
+      const code = generateCacheAdaptersModule({
+        cdn: { adapter: "capability-cdn-adapter", capabilities },
+      });
+
+      expect(code).toContain("__vinextCacheAdaptersRegistered = false;");
+      expect(code).toContain("the declared cache capabilities require it");
+      expect(code).toContain("{ cause: error }");
+      expect(code).not.toContain("using the default adapter");
+    }
+  });
+
   it("escapes adapter specifiers so absolute paths are safe", () => {
     // require.resolve() yields an absolute path which may contain characters
     // that must not break the generated import statement.

@@ -122,6 +122,7 @@ import {
   createAppRscPrewarmObservation,
   type AppRscPrewarmObservation,
 } from "vinext/shims/rsc-prewarm-server";
+import { configRuleMayVaryAcrossPrewarmRequests } from "./prewarm-source-independence.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -355,6 +356,8 @@ type RenderPagesFallbackOptions = {
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
+  /** Whether routing to this Pages response was independent of non-URL request state. */
+  sourceIndependent?: boolean;
   url: URL;
 };
 
@@ -798,11 +801,33 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // `/rewrite`, unlike Next.js. Dynamic captures must likewise retain their
   // original percent-encoding for Location substitution.
   const redirectPathname = matchPathname(requestCleanPathname);
+  const pagesVariantConfigRules = [
+    ...options.configHeaders,
+    ...options.configRedirects,
+    ...options.configRewrites.beforeFiles,
+    ...options.configRewrites.afterFiles,
+    ...options.configRewrites.fallback,
+  ].filter((rule) => configRuleMayVaryAcrossPrewarmRequests(rule, "document"));
+  let pagesFallbackSourceDependent = false;
   const configMatchers =
     (HAS_CONFIG_REDIRECTS && options.configRedirects.length) ||
+    pagesVariantConfigRules.length > 0 ||
     prewarmObservation?.shouldLoadConfigMatchers === true
       ? await import("../config/config-matchers.js")
       : null;
+  if (configMatchers && pagesVariantConfigRules.length > 0) {
+    pagesFallbackSourceDependent =
+      options.configHeaders.some(
+        (rule) =>
+          configRuleMayVaryAcrossPrewarmRequests(rule, "document") &&
+          configMatchers.matchesHeaderSource(redirectPathname, rule, basePathState),
+      ) ||
+      options.configRedirects.some(
+        (rule) =>
+          configRuleMayVaryAcrossPrewarmRequests(rule, "document") &&
+          configMatchers.matchesRedirectSource(redirectPathname, rule, basePathState),
+      );
+  }
   if (prewarmObservation && configMatchers) {
     prewarmObservation.observeConfigRules({
       basePathState,
@@ -815,6 +840,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
   const observeRewrite = (rewrite: NextRewrite, pathname: string): void => {
     const rewritePathname = matchPathname(pathname);
+    if (
+      configMatchers &&
+      configRuleMayVaryAcrossPrewarmRequests(rewrite, "document") &&
+      configMatchers.matchesRewriteSource(rewritePathname, rewrite, basePathState)
+    ) {
+      pagesFallbackSourceDependent = true;
+    }
     if (prewarmObservation && configMatchers) {
       prewarmObservation.observeRewrite({
         basePathState,
@@ -919,6 +951,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       conditionalPathMatched: middlewareContext.conditionalPathMatched === true,
       matched: middlewareContext.matched === true,
     });
+    pagesFallbackSourceDependent ||=
+      middlewareContext.conditionalPathMatched === true || middlewareContext.matched === true;
     const effectiveMiddlewareRequestHeaders =
       getHeadersContext()?.headers ?? middlewareContext.requestHeaders;
     if (effectiveMiddlewareRequestHeaders) {
@@ -1516,6 +1550,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             pathname: resolvedUrl,
             pagesDataRequest,
             request,
+            sourceIndependent: !pagesFallbackSourceDependent,
             url,
           })) ?? null)
         : null;

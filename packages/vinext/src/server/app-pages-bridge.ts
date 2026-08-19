@@ -5,10 +5,10 @@ import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { NEXT_URL_HEADER } from "./headers.js";
-import { enforceCdnCacheDenialOnResponse } from "./cache-control.js";
+import { denyCdnCacheOnResponse, enforceCdnCacheDenialOnResponse } from "./cache-control.js";
 import {
   buildMiddlewarePrefetchSkipResponse,
-  isNonSsgPagesRouteDataKind,
+  isNonSsgPagesRoute,
   isPagesErrorRoutePattern,
   type PagesRouteDataKind,
 } from "./pages-data-route.js";
@@ -94,6 +94,8 @@ type RenderPagesFallbackOptions = {
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
+  /** Whether routing to this Pages response was independent of non-URL request state. */
+  sourceIndependent?: boolean;
   url: URL;
 };
 
@@ -140,6 +142,7 @@ export async function renderPagesFallback(
     pathname = options.url.pathname,
     pagesDataRequest = null,
     request,
+    sourceIndependent = true,
     url,
   } = options;
   const {
@@ -234,7 +237,7 @@ export async function renderPagesFallback(
     hasMiddleware &&
     isDataRequest &&
     pagesRequest.headers.get("x-middleware-prefetch") === "1" &&
-    isNonSsgPagesRouteDataKind(pageMatch.route.dataKind) &&
+    isNonSsgPagesRoute(pageMatch.route.dataKind, pageMatch.route.isDynamic) &&
     !isPagesErrorRoutePattern(pageMatch.route.pattern)
   ) {
     preparePagesWinnerRequest();
@@ -269,12 +272,13 @@ export async function renderPagesFallback(
         pagesMiddlewareRequestHeaders,
       );
   if (pagesRes.status === 404 && pageMatch === null) return null;
-  return enforceCdnCacheDenialOnResponse(
-    applyDraftModeCookie(
-      applyPagesMiddlewareContext(pagesRes, middlewareContext),
-      getDraftModeCookieHeader(),
-    ),
+  const finalized = applyDraftModeCookie(
+    applyPagesMiddlewareContext(pagesRes, middlewareContext),
+    getDraftModeCookieHeader(),
   );
+  return !sourceIndependent || middlewareContext.matched || middlewareContext.conditionalPathMatched
+    ? denyCdnCacheOnResponse(finalized)
+    : enforceCdnCacheDenialOnResponse(finalized);
 }
 
 /**

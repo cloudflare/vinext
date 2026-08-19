@@ -41,6 +41,7 @@ import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
+import { createPrewarmSourceObservation } from "./prewarm-source-independence.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -193,6 +194,10 @@ async function handleRequest(
       isDataReq,
       isDataRequest: isDataReq,
       hasMiddleware,
+      // Cache admission uses the same source-independence proof as deploy
+      // prewarming. A response influenced by matched middleware or a
+      // header/cookie/host-dependent config rule must not fill shared storage.
+      prewarmSourceObservation: createPrewarmSourceObservation(hasMiddleware),
       ctx,
       middlewareRequest:
         isDataReq && vinextConfig?.skipProxyUrlNormalize ? middlewareRequest : undefined,

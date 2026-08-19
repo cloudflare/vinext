@@ -4742,6 +4742,37 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it("marks header-dependent rewrites to Pages routes as source-dependent", async () => {
+    const renderPagesFallback = vi.fn(async ({ pathname }) =>
+      pathname === "/market-a" ? new Response("pages", { status: 200 }) : null,
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [],
+        afterFiles: [
+          {
+            source: "/shop",
+            destination: "/market-a",
+            has: [{ type: "header", key: "x-market", value: "a" }],
+          },
+        ],
+        fallback: [],
+      },
+      matchRoute: () => null,
+      renderPagesFallback,
+    });
+
+    await handler(
+      new Request("https://example.test/docs/shop", { headers: { "x-market": "a" } }),
+      null,
+    );
+
+    expect(renderPagesFallback).toHaveBeenCalledWith(
+      expect.objectContaining({ pathname: "/market-a", sourceIndependent: false }),
+    );
+  });
+
   it("clears App interception topology when a concrete Pages route wins", async () => {
     const dynamicAppRoute = createPageRoute({
       isDynamic: true,

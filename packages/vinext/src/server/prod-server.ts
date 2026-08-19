@@ -2219,9 +2219,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         process.env.VINEXT_PRERENDER === "1" &&
         Boolean(prerenderSecret) &&
         rawReqHeaders.get(VINEXT_PRERENDER_SECRET_HEADER) === prerenderSecret;
-      const prewarmSourceObservation = isTrustedPrewarmProbe
-        ? createPrewarmSourceObservation(hasMiddleware)
-        : undefined;
+      // Track source dependence on every production request so a runtime MISS
+      // cannot populate shared storage with middleware/config-specific output.
+      // Only authenticated prerender probes surface the proof header below.
+      const prewarmSourceObservation = createPrewarmSourceObservation(hasMiddleware);
       const revalidationHostname = readTrustedRevalidationHostname(
         rawReqHeaders,
         i18nConfig,
@@ -2391,8 +2392,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         let { response } = result;
         response = applyPrewarmSourceIndependentHeader(
           response,
-          prewarmSourceObservation !== undefined &&
-            isPrewarmSourceIndependent(prewarmSourceObservation),
+          isTrustedPrewarmProbe && isPrewarmSourceIndependent(prewarmSourceObservation),
         );
         if (missingBuildAsset && response.status === 404) {
           await sendWebResponse(
