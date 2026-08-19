@@ -229,53 +229,6 @@ describe("prefetch cache eviction", () => {
     expect(headers.get("next-router-state-tree")).toBeNull();
   });
 
-  it.each([
-    {
-      basePath: "",
-      expected: "/dashboard/",
-      href: "/dashboard",
-      trailingSlash: "true",
-    },
-    {
-      basePath: "/docs",
-      expected: "/docs",
-      href: "/",
-      trailingSlash: "false",
-    },
-  ])(
-    "normalizes path-form navigation $href to the prefetch identity $expected",
-    async ({ basePath, expected, href, trailingSlash }) => {
-      vi.stubEnv("__NEXT_ROUTER_BASEPATH", basePath);
-      vi.stubEnv("__VINEXT_TRAILING_SLASH", trailingSlash);
-      vi.resetModules();
-      const navigation = await import("../packages/vinext/src/shims/navigation.js");
-      const navigate = vi.fn(async (_href: string, ..._args: unknown[]) => {});
-      (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
-        bootstrap: { routeManifest: null, rsc: undefined },
-        functions: { navigate },
-      };
-
-      await navigation.navigateClientSide(href, "push", true);
-
-      expect(navigate.mock.calls[0]?.[0]).toBe(expected);
-    },
-  );
-
-  it("preserves same-origin absolute navigation spelling", async () => {
-    vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
-    vi.resetModules();
-    const navigation = await import("../packages/vinext/src/shims/navigation.js");
-    const navigate = vi.fn(async (_href: string, ..._args: unknown[]) => {});
-    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
-      bootstrap: { routeManifest: null, rsc: undefined },
-      functions: { navigate },
-    };
-
-    await navigation.navigateClientSide("http://localhost/dashboard", "push", true);
-
-    expect(navigate.mock.calls[0]?.[0]).toBe("http://localhost/dashboard");
-  });
-
   it("router.prefetch preserves contextual RSC behavior when eligibility is unavailable", async () => {
     vi.useFakeTimers();
     vi.stubEnv(

@@ -367,12 +367,21 @@ declare global {
       __VINEXT_RSC_COMPATIBILITY_ID?: string;
 
       /**
+       * Opaque identity minted for every production build and emitted on RSC
+       * responses so deploy tooling can prove which build handled a request.
+       */
+      __VINEXT_RSC_BUILD_IDENTITY?: string;
+
+      /**
        * Build-only coordination variable set by the `vinext build` CLI so that
        * every vinext() plugin instance in a single build resolves the same RSC
        * compatibility token (companion to `__VINEXT_SHARED_BUILD_ID`). Never read
        * by dev or standalone createRscCompatibilityId() resolution.
        */
       __VINEXT_SHARED_RSC_COMPATIBILITY_ID?: string;
+
+      /** Build-only coordination value for __VINEXT_RSC_BUILD_IDENTITY. */
+      __VINEXT_SHARED_RSC_BUILD_IDENTITY?: string;
 
       /**
        * Build-time secret that authenticates on-demand ISR revalidation

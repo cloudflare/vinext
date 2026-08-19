@@ -25,6 +25,7 @@ import {
 import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
 export {
   isRscPrewarmEligibleHref,
+  normalizeRscPrewarmHref,
   preloadRscPrewarmManifest,
   resolveRscPrewarmEligibility,
   RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
@@ -104,7 +105,7 @@ export function getVinextRscCompatibilityId(): string | null {
 }
 
 function getVinextRscBuildId(): string | null {
-  return normalizeCompatibilityId(process.env.__VINEXT_BUILD_ID);
+  return normalizeCompatibilityId(process.env.__VINEXT_RSC_BUILD_IDENTITY);
 }
 
 export function applyRscCompatibilityIdHeader(

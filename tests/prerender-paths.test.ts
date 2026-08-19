@@ -52,6 +52,7 @@ describe("prerender path manifest", () => {
   it("writes concrete warmup paths without rendering page artifacts", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
     writeFile("dist/server/index.js", "export default {};\n");
     writeFile("app/page.tsx", "export default function Page() { return null; }\n");
     writeFile(
@@ -74,6 +75,7 @@ describe("prerender path manifest", () => {
 
     expect(manifest).toEqual({
       buildId: "build-a",
+      rscBuildId: "rsc-build-a",
       trailingSlash: false,
       paths: ["/", "/cached/intro", "/cached/featured"],
     });
@@ -276,6 +278,7 @@ describe("prerender path manifest", () => {
     });
 
     expect(manifest?.paths).toEqual(["/pages-only"]);
+    expect(manifest?.pagesPaths).toEqual(["/pages-only"]);
   });
 
   it("does not reload disk config when supplied resolved config", async () => {

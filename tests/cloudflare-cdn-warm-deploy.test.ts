@@ -104,7 +104,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
     const url = await deployWithCdnWarmup(tmpDir, ["/", "/about"], {
       deploymentId: "dpl_123",
-      expectedBuildId: "build-a",
+      expectedRscBuildId: "build-a",
       rscPaths: ["/about"],
       warmCdnConcurrency: 1,
     });
@@ -189,15 +189,17 @@ describe("Cloudflare CDN warmup deploy flow", () => {
   });
 
   it("uses the shared HTML and RSC warm flow against a preview alias", async () => {
+    let rscAttempt = 0;
     vi.mocked(fetch).mockImplementation(async (_url, init) => {
       const isRsc = new Headers(init?.headers).get("rsc") === "1";
+      if (isRsc) rscAttempt++;
       return new Response(isRsc ? "flight" : "html", {
         headers: isRsc
           ? {
               "cache-control": "public, max-age=0, must-revalidate",
               "cf-cache-status": "MISS",
               "content-type": "text/x-component",
-              [VINEXT_RSC_BUILD_ID_HEADER]: "build-a",
+              [VINEXT_RSC_BUILD_ID_HEADER]: rscAttempt === 1 ? "old-build" : "build-a",
               vary: VINEXT_RSC_VARY_HEADER,
             }
           : { "content-type": "text/html" },
@@ -217,7 +219,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
     const url = await deployWithCdnWarmup(tmpDir, ["/about"], {
-      expectedBuildId: "build-a",
+      expectedRscBuildId: "build-a",
       previewAlias: "pr-123",
       rscPaths: ["/about"],
       warmCdnStrict: true,
@@ -225,6 +227,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
     expect(url).toBe("https://pr-123-workers-cache.example.workers.dev");
     expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(fetch).toHaveBeenNthCalledWith(
       1,
       new URL("https://pr-123-workers-cache.example.workers.dev/about?_rsc"),
@@ -232,10 +235,15 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
+      new URL("https://pr-123-workers-cache.example.workers.dev/about?_rsc"),
+      expect.any(Object),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
       new URL("https://pr-123-workers-cache.example.workers.dev/about"),
       expect.any(Object),
     );
-    const rscHeaders = new Headers(vi.mocked(fetch).mock.calls[0]![1]?.headers);
+    const rscHeaders = new Headers(vi.mocked(fetch).mock.calls[1]![1]?.headers);
     expect(rscHeaders.get("accept")).toBe("text/x-component");
     expect(rscHeaders.get("rsc")).toBe("1");
     expect(rscHeaders.get("Cloudflare-Workers-Version-Overrides")).toBeNull();

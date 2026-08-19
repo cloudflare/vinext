@@ -26,7 +26,7 @@ export type CdnWarmOptions = {
   /** App Router ISR paths whose definitive client-navigation payload is warmed. */
   rscPaths?: readonly string[];
   /** Build identity that the warmed RSC response must have been rendered by. */
-  expectedBuildId?: string;
+  expectedRscBuildId?: string;
   deploymentId?: string;
   headers?: HeadersInit;
   concurrency?: number;
@@ -54,9 +54,9 @@ export type CdnWarmResult = {
 };
 
 export type PrerenderWarmPlan = {
-  buildId?: string;
   deploymentId?: string;
   paths: string[];
+  rscBuildId?: string;
   rscPaths: string[];
 };
 
@@ -94,11 +94,15 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
     if (
       !Array.isArray(manifest.paths) ||
       !manifest.paths.every((pathname) => typeof pathname === "string") ||
+      (manifest.pagesPaths !== undefined &&
+        (!Array.isArray(manifest.pagesPaths) ||
+          !manifest.pagesPaths.every((pathname) => typeof pathname === "string"))) ||
       (manifest.rscPaths !== undefined &&
         (!Array.isArray(manifest.rscPaths) ||
           !manifest.rscPaths.every((pathname) => typeof pathname === "string"))) ||
       (manifest.basePath !== undefined && typeof manifest.basePath !== "string") ||
       (manifest.deploymentId !== undefined && typeof manifest.deploymentId !== "string") ||
+      (manifest.rscBuildId !== undefined && typeof manifest.rscBuildId !== "string") ||
       (manifest.trailingSlash !== undefined && typeof manifest.trailingSlash !== "boolean") ||
       (manifest.responseVary !== undefined && manifest.responseVary !== "verbatim")
     ) {
@@ -114,7 +118,7 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
 function readPrerenderPathWarmPaths(
   root: string,
   options?: { strict?: boolean },
-): { manifest: PrerenderPathManifest; paths: string[] } | null {
+): { manifest: PrerenderPathManifest; pagesPaths: string[]; paths: string[] } | null {
   const manifest = readPrerenderPathManifest(
     path.join(root, "dist", "server", PRERENDER_PATHS_MANIFEST),
   );
@@ -131,6 +135,9 @@ function readPrerenderPathWarmPaths(
 
   return {
     manifest,
+    pagesPaths: (manifest.pagesPaths ?? [])
+      .filter((pathname) => pathname.startsWith("/"))
+      .map((pathname) => applyWarmPathConfig(pathname, manifest)),
     paths: manifest.paths
       .filter((pathname) => pathname.startsWith("/"))
       .map((pathname) => applyWarmPathConfig(pathname, manifest)),
@@ -173,7 +180,9 @@ export function readPrerenderWarmPlan(
   const pathConfig = pathPlan?.manifest ?? {};
   const appPaths = getPrewarmableAppPaths(manifest);
   const hasFinalRscEligibility =
-    pathPlan?.manifest.responseVary === "verbatim" && pathPlan.manifest.rscPaths !== undefined;
+    pathPlan?.manifest.responseVary === "verbatim" &&
+    pathPlan.manifest.rscPaths !== undefined &&
+    !!pathPlan.manifest.rscBuildId;
   const appHtmlPaths =
     hasFinalRscEligibility && !options?.includeFallbackShells
       ? appPaths
@@ -185,20 +194,23 @@ export function readPrerenderWarmPlan(
     ...options,
     router: "pages",
   });
+  const pagesHtmlPaths =
+    pathPlan?.manifest.pagesPaths !== undefined
+      ? pathPlan.pagesPaths
+      : pagePaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig));
+  const completedHtmlPaths = Array.from(
+    new Set([
+      ...appHtmlPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig)),
+      ...pagesHtmlPaths,
+    ]),
+  );
   return {
-    buildId: builtBuildId,
     ...(pathPlan?.manifest.deploymentId ? { deploymentId: pathPlan.manifest.deploymentId } : {}),
-    paths: Array.from(
-      new Set(
-        [...appHtmlPaths, ...pagePaths].map((pathname) =>
-          applyWarmPathConfig(pathname, pathConfig),
-        ),
-      ),
-    ),
-    rscPaths:
-      pathPlan?.manifest.responseVary === "verbatim"
-        ? appPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig))
-        : [],
+    ...(hasFinalRscEligibility ? { rscBuildId: pathPlan.manifest.rscBuildId } : {}),
+    paths: completedHtmlPaths,
+    rscPaths: hasFinalRscEligibility
+      ? appPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig))
+      : [],
   };
 }
 
@@ -295,7 +307,7 @@ const ADMITTED_CF_CACHE_STATUSES = new Set([
   "STALE",
 ]);
 
-function validateRscWarmResponse(response: Response, expectedBuildId?: string): string | null {
+function validateRscWarmResponse(response: Response, expectedRscBuildId?: string): string | null {
   if (response.redirected || response.status < 200 || response.status >= 300) {
     return response.redirected ? "redirected response" : `HTTP ${response.status}`;
   }
@@ -303,10 +315,10 @@ function validateRscWarmResponse(response: Response, expectedBuildId?: string): 
     return `expected ${VINEXT_RSC_CONTENT_TYPE} response`;
   }
   if (
-    expectedBuildId !== undefined &&
-    response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) !== expectedBuildId
+    expectedRscBuildId !== undefined &&
+    response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) !== expectedRscBuildId
   ) {
-    return `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build ${expectedBuildId}`;
+    return `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build ${expectedRscBuildId}`;
   }
 
   const vary = new Set(
@@ -339,7 +351,7 @@ async function warmOnePath(
   options: Required<Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries">> & {
     fetchImpl: typeof fetch;
     headers?: HeadersInit;
-    expectedBuildId?: string;
+    expectedRscBuildId?: string;
     retryAllValidationErrors: boolean;
     retryDeadlineAt?: number;
     retryDelayMs: number;
@@ -378,7 +390,7 @@ async function warmOnePath(
       );
 
       if (target.kind === "rsc") {
-        const validationError = validateRscWarmResponse(response, options.expectedBuildId);
+        const validationError = validateRscWarmResponse(response, options.expectedRscBuildId);
         if (validationError === null) return { path: target.label, ok: true };
         lastError = validationError;
         if (
@@ -477,20 +489,40 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
 
   console.log(`\n  Warming CDN cache with ${requests.length} prerendered request(s)...`);
 
-  const results = await runWithConcurrency(requests, concurrency, (target) =>
+  const warmTarget = (target: WarmTarget) =>
     warmOnePath(target, {
       targetUrl: options.targetUrl,
       timeoutMs,
       retries,
       fetchImpl,
       headers: options.headers,
-      expectedBuildId: options.expectedBuildId,
+      expectedRscBuildId: options.expectedRscBuildId,
       retryAllValidationErrors: propagatingTarget,
       retryDeadlineAt,
       retryDelayMs,
       retryNotFound: propagatingTarget,
-    }),
-  );
+    });
+
+  const gateIndex = propagatingTarget ? requests.findIndex((target) => target.kind === "rsc") : -1;
+  let results: Awaited<ReturnType<typeof warmOnePath>>[];
+  if (gateIndex >= 0) {
+    const gateResult = await warmTarget(requests[gateIndex]);
+    const remaining = requests.filter((_target, index) => index !== gateIndex);
+    if (gateResult.ok) {
+      results = [gateResult, ...(await runWithConcurrency(remaining, concurrency, warmTarget))];
+    } else {
+      results = [
+        gateResult,
+        ...remaining.map((target) => ({
+          path: target.label,
+          ok: false as const,
+          error: "skipped because the uploaded RSC build identity was not confirmed",
+        })),
+      ];
+    }
+  } else {
+    results = await runWithConcurrency(requests, concurrency, warmTarget);
+  }
 
   const failures = results
     .filter((result): result is { path: string; ok: false; error: string } => !result.ok)

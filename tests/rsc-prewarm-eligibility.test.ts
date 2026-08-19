@@ -14,6 +14,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   delete process.env.__VINEXT_RSC_PREWARM_MANIFEST_URL;
   vi.unstubAllGlobals();
 });
@@ -44,6 +45,7 @@ describe("RSC prewarm browser eligibility", () => {
     expect(fetchMock).toHaveBeenCalledWith(MANIFEST_URL, {
       cache: "force-cache",
       credentials: "same-origin",
+      signal: expect.any(AbortSignal),
     });
   });
 
@@ -70,18 +72,39 @@ describe("RSC prewarm browser eligibility", () => {
   });
 
   it("fails closed within a bound when the optional manifest stalls", async () => {
+    vi.useFakeTimers();
     vi.stubGlobal(
       "fetch",
       vi.fn(() => new Promise<Response>(() => {})),
     );
-    const { resolveRscPrewarmEligibility, RSC_PREWARM_NAVIGATION_TIMEOUT_MS } =
-      await import("../packages/vinext/src/client/rsc-prewarm-eligibility.js");
+    const {
+      resolveRscPrewarmEligibility,
+      RSC_PREWARM_MANIFEST_FETCH_TIMEOUT_MS,
+      RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
+    } = await import("../packages/vinext/src/client/rsc-prewarm-eligibility.js");
 
     expect(RSC_PREWARM_NAVIGATION_TIMEOUT_MS).toBe(250);
+    const first = resolveRscPrewarmEligibility("/cached/intro", {
+      timeoutMs: RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
+    });
+    await vi.advanceTimersByTimeAsync(RSC_PREWARM_NAVIGATION_TIMEOUT_MS);
+    await expect(first).resolves.toBe("ineligible");
+
+    const second = resolveRscPrewarmEligibility("/cached/intro", {
+      timeoutMs: RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
+    });
+    await vi.advanceTimersByTimeAsync(RSC_PREWARM_NAVIGATION_TIMEOUT_MS);
+    await expect(second).resolves.toBe("ineligible");
+
+    await vi.advanceTimersByTimeAsync(
+      RSC_PREWARM_MANIFEST_FETCH_TIMEOUT_MS - RSC_PREWARM_NAVIGATION_TIMEOUT_MS * 2,
+    );
     await expect(
       resolveRscPrewarmEligibility("/cached/intro", {
         timeoutMs: RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
       }),
     ).resolves.toBe("ineligible");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
   });
 });

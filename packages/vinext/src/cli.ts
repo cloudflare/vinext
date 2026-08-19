@@ -537,6 +537,11 @@ async function buildApp() {
   // instances).
   process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = createRscCompatibilityId(resolvedNextConfig);
 
+  // Unlike buildId and deploymentId, this identity is always fresh for each
+  // build. Deploy warmers use it to distinguish an uploaded Worker from a
+  // still-propagating previous version even when user-facing IDs are pinned.
+  process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY = randomBytes(16).toString("hex");
+
   // On-demand ISR revalidation secret — the vinext analog of Next.js's
   // prerender-manifest `previewModeId`. `res.revalidate()` loops back into the
   // server via an internal `fetch()`; on Cloudflare Workers that loopback can

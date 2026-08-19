@@ -38,7 +38,6 @@ type CapturedClickEvent = {
 type CapturedIntentEvent = Pick<MouseEvent, "currentTarget">;
 
 type CapturedAnchorProps = {
-  href?: string;
   onClick?: (event: CapturedClickEvent) => void | Promise<void>;
   onMouseEnter?: (event: CapturedIntentEvent) => void;
   onTouchStart?: (event: CapturedIntentEvent) => void;
@@ -2009,26 +2008,6 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("does not rewrite or prefetch a noncanonical same-origin absolute Link", async () => {
-    vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
-    const observer = stubIntersectionObserver();
-    const result = await renderIsolatedLink({
-      href: "https://example.com/about",
-      nodeEnv: "production",
-      prewarmablePaths: ["/about/"],
-    });
-
-    try {
-      observer.dispatchIntersectingEntry(result.anchor);
-      await flushPrefetchTasks();
-
-      expect(result.fetch).not.toHaveBeenCalled();
-      expect(result.capturedAnchorProps.href).toBe("https://example.com/about");
-    } finally {
-      result.restoreNodeEnv();
-    }
-  });
-
   it("preserves contextual Link prefetch when eligibility is unavailable", async () => {
     vi.useFakeTimers();
     const observer = stubIntersectionObserver();
@@ -3187,34 +3166,6 @@ describe("Link prefetch scheduling", () => {
           href: "/pages-disabled-mouse-intent-prefetch-target",
           rel: "prefetch",
         },
-      ]);
-    } finally {
-      result.restoreNodeEnv();
-    }
-  });
-
-  it("preserves same-origin absolute Pages prefetch spelling", async () => {
-    vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
-    const result = await renderIsolatedLink({
-      appNavigation: false,
-      href: "https://example.com/about",
-      nodeEnv: "production",
-      props: { prefetch: false },
-      windowOverrides: {
-        __NEXT_DATA__: {
-          __vinext: {
-            pageModuleUrl: "/_next/static/chunks/pages/current.js",
-          },
-        },
-      },
-    });
-
-    try {
-      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
-      await flushPrefetchTasks();
-
-      expect(result.pagePrefetchLinks).toEqual([
-        { as: "document", href: "/about", rel: "prefetch" },
       ]);
     } finally {
       result.restoreNodeEnv();

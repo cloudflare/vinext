@@ -405,6 +405,7 @@ describe("deploy prerender config wiring", () => {
       expect.objectContaining({
         emitRscPrewarmManifest: false,
         root: tmpDir,
+        router: "app",
       }),
     );
     expect(
@@ -423,18 +424,19 @@ describe("deploy prerender config wiring", () => {
   });
 
   it.each([
-    ["no prerender setting", undefined, undefined],
-    ["the prerender-all flag disabled", undefined, false],
-    ["the prerender-all flag enabled independently", undefined, true],
-    ["prerender config enabled independently", "true", undefined],
+    ["no prerender setting", undefined, undefined, "app"],
+    ["the prerender-all flag disabled", undefined, false, "app"],
+    ["the prerender-all flag enabled independently", undefined, true, "both"],
+    ["prerender config enabled independently", "true", undefined, "both"],
   ])(
     "emits RSC warm paths after warm-triggered classification with %s",
-    async (_label, config, prerenderAll) => {
+    async (_label, config, prerenderAll, expectedRouter) => {
       writeProject(
         config,
         '{ cdn: { adapter: "test-cdn-adapter", capabilities: { responseVary: "verbatim" } } }',
       );
       writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
       writeFile("dist/server/index.js", "export default {};\n");
       runPrerenderMock.mockImplementationOnce(async () => {
         writeFile(
@@ -462,6 +464,7 @@ describe("deploy prerender config wiring", () => {
         expect.objectContaining({
           emitRscPrewarmManifest: true,
           root: tmpDir,
+          router: expectedRouter,
         }),
       );
       expect(
@@ -471,6 +474,7 @@ describe("deploy prerender config wiring", () => {
       ).toMatchObject({
         buildId: "build-a",
         responseVary: "verbatim",
+        rscBuildId: "rsc-build-a",
         rscPaths: ["/about"],
       });
     },

@@ -556,7 +556,7 @@ export async function deployWithCdnWarmup(
     | "warmCdnRetries"
     | "warmCdnStrict"
   > &
-    Pick<CdnWarmOptions, "deploymentId" | "expectedBuildId" | "rscPaths">,
+    Pick<CdnWarmOptions, "deploymentId" | "expectedRscBuildId" | "rscPaths">,
 ): Promise<string> {
   const upload = runWranglerVersionUpload(root, options);
   const warmUploadedVersion = (
@@ -570,7 +570,7 @@ export async function deployWithCdnWarmup(
       headers,
       propagatingTarget,
       deploymentId: options.deploymentId,
-      expectedBuildId: options.expectedBuildId,
+      expectedRscBuildId: options.expectedRscBuildId,
       rscPaths: options.rscPaths,
       concurrency: options.warmCdnConcurrency,
       timeoutMs: options.warmCdnTimeout,
@@ -927,8 +927,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
       concurrency: options.prerenderConcurrency,
       emitRscPrewarmManifest: hasStrictResponseVary,
       nextConfig,
+      router: prerenderDecision ? "both" : "app",
     });
-    ranPrerender = true;
+    ranPrerender = !!prerenderDecision;
   }
 
   if (shouldEmitPrerenderPathManifest) {
@@ -988,7 +989,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       url = await deployWithCdnWarmup(root, warmPlan.paths, {
         ...wranglerOptions,
         deploymentId: warmPlan.deploymentId,
-        expectedBuildId: warmPlan.buildId,
+        expectedRscBuildId: warmPlan.rscBuildId,
         rscPaths: warmPlan.rscPaths,
         warmCdnConcurrency: options.warmCdnConcurrency,
         warmCdnTimeout: options.warmCdnTimeout,

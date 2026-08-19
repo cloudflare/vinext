@@ -1,3 +1,5 @@
+import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
+
 type RscPrewarmManifest = {
   version: 1;
   paths: string[];
@@ -10,10 +12,24 @@ type RscPrewarmManifestState =
 export type RscPrewarmEligibility = "eligible" | "ineligible";
 
 const manifestUrl = process.env.__VINEXT_RSC_PREWARM_MANIFEST_URL ?? "";
+const trailingSlash = process.env.__VINEXT_TRAILING_SLASH === "true";
 let manifestPromise: Promise<RscPrewarmManifestState> | null = null;
 
 /** Keep an unavailable optional manifest from visibly stalling a user click. */
 export const RSC_PREWARM_NAVIGATION_TIMEOUT_MS = 250;
+export const RSC_PREWARM_MANIFEST_FETCH_TIMEOUT_MS = 5_000;
+
+export function normalizeRscPrewarmHref(href: string): string {
+  if (typeof window === "undefined") return href;
+  try {
+    const url = new URL(href, window.location.href);
+    if (url.origin !== window.location.origin) return href;
+    url.pathname = normalizePathTrailingSlash(url.pathname, trailingSlash);
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return href;
+  }
+}
 
 function parseManifest(value: unknown): ReadonlySet<string> | null {
   if (!value || typeof value !== "object") return null;
@@ -30,16 +46,30 @@ function parseManifest(value: unknown): ReadonlySet<string> | null {
 
 async function loadManifest(): Promise<RscPrewarmManifestState> {
   if (!manifestUrl || typeof window === "undefined") return { kind: "unavailable" };
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const response = await fetch(manifestUrl, {
-      cache: "force-cache",
-      credentials: "same-origin",
+    const request = (async (): Promise<RscPrewarmManifestState> => {
+      const response = await fetch(manifestUrl, {
+        cache: "force-cache",
+        credentials: "same-origin",
+        signal: controller.signal,
+      });
+      if (!response.ok) return { kind: "unavailable" };
+      const paths = parseManifest(await response.json());
+      return paths ? { kind: "ready", paths } : { kind: "unavailable" };
+    })();
+    const deadline = new Promise<RscPrewarmManifestState>((resolve) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        resolve({ kind: "unavailable" });
+      }, RSC_PREWARM_MANIFEST_FETCH_TIMEOUT_MS);
     });
-    if (!response.ok) return { kind: "unavailable" };
-    const paths = parseManifest(await response.json());
-    return paths ? { kind: "ready", paths } : { kind: "unavailable" };
+    return await Promise.race([request, deadline]);
   } catch {
     return { kind: "unavailable" };
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
@@ -66,7 +96,7 @@ export async function resolveRscPrewarmEligibility(
 
   let url: URL;
   try {
-    url = new URL(href, window.location.href);
+    url = new URL(normalizeRscPrewarmHref(href), window.location.href);
   } catch {
     return "ineligible";
   }

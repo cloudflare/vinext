@@ -364,7 +364,6 @@ function prefetchUrl(
   priority: "low" | "high" = "low",
   pagesRouteHref?: string,
   locale?: string | false,
-  preserveAbsoluteSpelling = false,
 ): void {
   if (typeof window === "undefined") return;
   const navigationEpoch = linkPrefetchNavigationEpoch;
@@ -376,12 +375,7 @@ function prefetchUrl(
   });
   if (prefetchHref == null) return;
 
-  const isAppPrefetch = hasAppNavigationRuntime();
-  const rawFullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
-  const fullHref =
-    isAppPrefetch && !preserveAbsoluteSpelling
-      ? normalizePathTrailingSlash(rawFullHref, __trailingSlash)
-      : rawFullHref;
+  const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
   const routePrefetchHref =
     pagesRouteHref === undefined
       ? prefetchHref
@@ -390,15 +384,11 @@ function prefetchUrl(
           basePath: __basePath,
           currentOrigin: window.location.origin,
         }) ?? prefetchHref);
-  const rawFullRouteHref = toBrowserNavigationHref(
+  const fullRouteHref = toBrowserNavigationHref(
     routePrefetchHref,
     window.location.href,
     __basePath,
   );
-  const fullRouteHref =
-    isAppPrefetch && !preserveAbsoluteSpelling
-      ? normalizePathTrailingSlash(rawFullRouteHref, __trailingSlash)
-      : rawFullRouteHref;
   const target = new URL(fullHref, window.location.href);
   if (
     target.origin === window.location.origin &&
@@ -423,7 +413,7 @@ function prefetchUrl(
 
   const runPrefetch = () => {
     void (async () => {
-      if (isAppPrefetch) {
+      if (hasAppNavigationRuntime()) {
         if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
 
         const [
@@ -467,6 +457,7 @@ function prefetchUrl(
         const {
           canonicalizePrewarmableRscRequestHeaders,
           createRscRequestUrl,
+          normalizeRscPrewarmHref,
           resolveRscPrewarmEligibility,
         } = rscCacheBusting;
         const {
@@ -497,8 +488,9 @@ function prefetchUrl(
           interceptionContext === null &&
           mountedSlotsHeader === null &&
           (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref);
+        const canonicalPrewarmHref = normalizeRscPrewarmHref(fullHref);
         const prewarmEligibility = canUseCanonicalPrewarm
-          ? await resolveRscPrewarmEligibility(fullHref, { timeoutMs: 5_000 })
+          ? await resolveRscPrewarmEligibility(canonicalPrewarmHref, { timeoutMs: 5_000 })
           : "ineligible";
         const isCanonicalPrewarmCandidate = prewarmEligibility === "eligible";
         if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
@@ -550,9 +542,10 @@ function prefetchUrl(
         }
         const usesCanonicalPrewarmedRequest =
           isCanonicalPrewarmCandidate && canonicalizePrewarmableRscRequestHeaders(headers);
+        const requestHref = usesCanonicalPrewarmedRequest ? canonicalPrewarmHref : fullHref;
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
-        const rscUrl = await createRscRequestUrl(fullHref, headers);
+        const rscUrl = await createRscRequestUrl(requestHref, headers);
         const additionalRscUrls =
           rewrittenPrefetchHref && rewrittenPrefetchHref !== fullHref
             ? [await createRscRequestUrl(rewrittenPrefetchHref, headers)]
@@ -851,7 +844,6 @@ type LinkPrefetchInstance = {
   locale?: string | false;
   mode: LinkPrefetchMode;
   pagesRouteHref?: string;
-  preserveAbsoluteSpelling: boolean;
   queuedViewportPrefetch: boolean;
   routerMode: LinkPrefetchRouterMode;
   viewportPrefetched: boolean;
@@ -869,14 +861,7 @@ function drainVisibleAppPrefetchQueue(): void {
     if (!instance) return;
     instance.queuedViewportPrefetch = false;
     if (!instance.isVisible || instance.routerMode !== "app") continue;
-    prefetchUrl(
-      instance.href,
-      instance.mode,
-      "low",
-      instance.pagesRouteHref,
-      undefined,
-      instance.preserveAbsoluteSpelling,
-    );
+    prefetchUrl(instance.href, instance.mode, "low", instance.pagesRouteHref);
   }
 }
 
@@ -897,14 +882,7 @@ function setVisibleLinkPrefetch(instance: LinkPrefetchInstance, isVisible: boole
     if (instance.routerMode === "app") {
       scheduleVisibleAppPrefetch(instance);
     } else {
-      prefetchUrl(
-        instance.href,
-        instance.mode,
-        "low",
-        instance.pagesRouteHref,
-        instance.locale,
-        instance.preserveAbsoluteSpelling,
-      );
+      prefetchUrl(instance.href, instance.mode, "low", instance.pagesRouteHref, instance.locale);
     }
     instance.viewportPrefetched = true;
   } else {
@@ -1184,7 +1162,6 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Apply locale prefix if specified (safe even for dangerous hrefs since we
   // won't use the result when isDangerous is true)
   const localizedHref = applyLocaleToHref(isDangerous ? "/" : resolvedHref, locale);
-  const preserveAbsoluteSpelling = isAbsoluteOrProtocolRelativeUrl(resolvedHref);
   // Normalise trailing slash to match `trailingSlash` config so that rendered
   // hrefs avoid the redirect bounce. Mirrors Next.js's `addLocale`/`addBasePath`,
   // both of which run `normalizePathTrailingSlash` after prefixing — we apply
@@ -1265,7 +1242,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     if (!node) return;
 
     const hrefToPrefetch = getLinkPrefetchHref({
-      href: preserveAbsoluteSpelling ? resolvedHref : normalizedHref,
+      href: normalizedHref,
       basePath: __basePath,
       currentOrigin: window.location.origin,
     });
@@ -1288,7 +1265,6 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
               basePath: __basePath,
               currentOrigin: window.location.origin,
             }) ?? undefined),
-      preserveAbsoluteSpelling,
       queuedViewportPrefetch: false,
       routerMode: prefetchRouterMode,
       viewportPrefetched: false,
@@ -1308,8 +1284,6 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     prefetchRouterMode,
     normalizedHref,
     normalizedRouteHref,
-    preserveAbsoluteSpelling,
-    resolvedHref,
     locale,
   ]);
 
@@ -1334,12 +1308,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       void promotePrefetchEntriesForNavigation(normalizedHref);
     }
     prefetchUrl(
-      preserveAbsoluteSpelling ? resolvedHref : normalizedHref,
+      normalizedHref,
       intentMode,
       "high",
       normalizedRouteHref === normalizedHref ? undefined : normalizedRouteHref,
       locale,
-      preserveAbsoluteSpelling,
     );
   }, [
     effectivePrefetchProp,
@@ -1349,8 +1322,6 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     prefetchRouterMode,
     normalizedHref,
     normalizedRouteHref,
-    preserveAbsoluteSpelling,
-    resolvedHref,
     locale,
     unstable_dynamicOnHover,
   ]);
@@ -1524,18 +1495,12 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       if (setter) setLinkForCurrentNavigation(setter);
       setPending(true);
       React.startTransition(() => {
-        const appNavigationHref = isAbsoluteOrProtocolRelativeUrl(resolvedHref)
-          ? resolvedHref
-          : navigateHref;
-        void navigateClientSide(
-          appNavigationHref,
-          replace ? "replace" : "push",
-          scroll,
-          false,
-        ).finally(() => {
-          if (mountedRef.current) setPending(false);
-          if (setter) clearLinkForCurrentNavigation(setter);
-        });
+        void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, false).finally(
+          () => {
+            if (mountedRef.current) setPending(false);
+            if (setter) clearLinkForCurrentNavigation(setter);
+          },
+        );
       });
       return;
     } else if (HAS_PAGES_ROUTER) {

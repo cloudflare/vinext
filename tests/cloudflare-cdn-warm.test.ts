@@ -114,6 +114,7 @@ describe("Cloudflare CDN warmup", () => {
         deploymentId: "dpl_123",
         paths: ["/cached/intro", "/dynamic", "/pages"],
         responseVary: "verbatim",
+        rscBuildId: "rsc-build-a",
         rscPaths: ["/cached/intro"],
         trailingSlash: true,
       }),
@@ -152,10 +153,46 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      buildId: "build-a",
       deploymentId: "dpl_123",
       paths: ["/docs/cached/intro/", "/docs/pages/"],
+      rscBuildId: "rsc-build-a",
       rscPaths: ["/docs/cached/intro/"],
+    });
+  });
+
+  it("preserves discovered Pages HTML paths without prerendering Pages for RSC eligibility", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        pagesPaths: ["/pages"],
+        paths: ["/cached/intro", "/pages"],
+        responseVary: "verbatim",
+        rscBuildId: "rsc-build-a",
+        rscPaths: ["/cached/intro"],
+      }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/cached/intro",
+            status: "rendered",
+            router: "app",
+            revalidate: 60,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: ["/cached/intro", "/pages"],
+      rscBuildId: "rsc-build-a",
+      rscPaths: ["/cached/intro"],
     });
   });
 
@@ -234,6 +271,7 @@ describe("Cloudflare CDN warmup", () => {
         deploymentId: "old-deployment",
         paths: ["/old"],
         responseVary: "verbatim",
+        rscBuildId: "old-rsc-build",
         rscPaths: ["/old"],
         trailingSlash: true,
       }),
@@ -256,7 +294,6 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "new-build\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      buildId: "new-build",
       paths: ["/current"],
       rscPaths: [],
     });
@@ -270,6 +307,7 @@ describe("Cloudflare CDN warmup", () => {
         buildId: "fixed-build-id",
         paths: ["/old"],
         responseVary: "verbatim",
+        rscBuildId: "rsc-build-a",
         rscPaths: ["/old"],
         trailingSlash: true,
       }),
@@ -297,8 +335,8 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "fixed-build-id\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      buildId: "fixed-build-id",
       paths: ["/docs/current/"],
+      rscBuildId: "rsc-build-a",
       rscPaths: ["/docs/current/"],
     });
   });
@@ -394,6 +432,7 @@ describe("Cloudflare CDN warmup", () => {
         buildId: "build-a",
         paths: ["/café au lait"],
         responseVary: "verbatim",
+        rscBuildId: "rsc-build-a",
         rscPaths: ["/café au lait"],
       }),
     );
@@ -415,8 +454,8 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      buildId: "build-a",
       paths: ["/caf%C3%A9%20au%20lait"],
+      rscBuildId: "rsc-build-a",
       rscPaths: ["/caf%C3%A9%20au%20lait"],
     });
   });
@@ -522,6 +561,49 @@ describe("Cloudflare CDN warmup", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("gates explicit warmup concurrency on the uploaded RSC build identity", async () => {
+    let releaseRsc!: () => void;
+    const rscGate = new Promise<void>((resolve) => {
+      releaseRsc = resolve;
+    });
+    const events: string[] = [];
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (new Headers(init?.headers).get("rsc") === "1") {
+        events.push("start:rsc");
+        await rscGate;
+        events.push("end:rsc");
+        return new Response("flight", {
+          headers: {
+            "cache-control": "public, max-age=0, must-revalidate",
+            "cf-cache-status": "MISS",
+            "content-type": "text/x-component",
+            [VINEXT_RSC_BUILD_ID_HEADER]: "build-a",
+            vary: VINEXT_RSC_VARY_HEADER,
+          },
+        });
+      }
+      events.push("start:html");
+      return new Response("html", { status: 200 });
+    });
+
+    const warming = warmCdnCache({
+      concurrency: 2,
+      expectedRscBuildId: "build-a",
+      fetchImpl: fetchMock as typeof fetch,
+      paths: ["/cached/intro"],
+      propagatingTarget: true,
+      retryDelayMs: 0,
+      rscPaths: ["/cached/intro"],
+      targetUrl: "https://app.example.com",
+    });
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(events).toEqual(["start:rsc"]);
+    releaseRsc();
+    await expect(warming).resolves.toMatchObject({ total: 2, warmed: 2, failed: 0 });
+    expect(events).toEqual(["start:rsc", "end:rsc", "start:html"]);
+  });
+
   it("retries transient RSC validation failures for a propagating target", async () => {
     const fetchMock = vi
       .fn()
@@ -574,7 +656,7 @@ describe("Cloudflare CDN warmup", () => {
       .mockResolvedValueOnce(new Response("html", { status: 200 }));
 
     const result = await warmCdnCache({
-      expectedBuildId: "new-build",
+      expectedRscBuildId: "new-build",
       fetchImpl: fetchMock as typeof fetch,
       paths: ["/cached/intro"],
       propagatingTarget: true,
@@ -604,7 +686,7 @@ describe("Cloudflare CDN warmup", () => {
     });
 
     const result = await warmCdnCache({
-      expectedBuildId: "new-build",
+      expectedRscBuildId: "new-build",
       fetchImpl: fetchMock as typeof fetch,
       paths: ["/cached/intro"],
       propagatingTarget: true,

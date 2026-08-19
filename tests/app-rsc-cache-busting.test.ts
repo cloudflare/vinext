@@ -462,7 +462,9 @@ describe("App Router RSC cache-busting", () => {
   it("applies the built RSC identity to response headers", () => {
     const headers = new Headers();
 
-    withEnvVar("__VINEXT_BUILD_ID", "build-a", () => applyRscCompatibilityIdHeader(headers));
+    withEnvVar("__VINEXT_RSC_BUILD_IDENTITY", "build-a", () =>
+      applyRscCompatibilityIdHeader(headers),
+    );
 
     expect(headers.get(VINEXT_RSC_BUILD_ID_HEADER)).toBe("build-a");
   });

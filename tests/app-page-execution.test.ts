@@ -14,6 +14,11 @@ import {
   hasFrameworkLinkHeaders,
   markFrameworkLinkHeaders,
 } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import {
+  VINEXT_RSC_BUILD_ID_HEADER,
+  VINEXT_RSC_COMPATIBILITY_ID_HEADER,
+} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { withEnvVar } from "./env-test-helpers.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -471,23 +476,31 @@ describe("app page execution helpers", () => {
 
   it("keeps framework redirect side-channel headers authoritative over middleware", async () => {
     const middlewareHeaders = new Headers({
+      [VINEXT_RSC_BUILD_ID_HEADER]: "middleware-build",
+      [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "middleware-compat",
       "X-Vinext-Rsc-Redirect": "/middleware-target",
       "X-Vinext-Rsc-Redirect-Type": "push",
     });
-    const response = await buildAppPageSpecialErrorResponse({
-      buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
-      clearRequestContext: vi.fn(),
-      isRscRequest: true,
-      middlewareContext: { headers: middlewareHeaders },
-      request: new Request("https://example.com/start.rsc"),
-      specialError: {
-        kind: "redirect",
-        location: "/actual-target",
-        statusCode: 307,
-        type: "replace",
-      },
-    });
+    const response = await withEnvVar("__VINEXT_RSC_COMPATIBILITY_ID", "framework-compat", () =>
+      withEnvVar("__VINEXT_RSC_BUILD_IDENTITY", "framework-build", () =>
+        buildAppPageSpecialErrorResponse({
+          buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
+          clearRequestContext: vi.fn(),
+          isRscRequest: true,
+          middlewareContext: { headers: middlewareHeaders },
+          request: new Request("https://example.com/start.rsc"),
+          specialError: {
+            kind: "redirect",
+            location: "/actual-target",
+            statusCode: 307,
+            type: "replace",
+          },
+        }),
+      ),
+    );
 
+    expect(response.headers.get(VINEXT_RSC_BUILD_ID_HEADER)).toBe("framework-build");
+    expect(response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("framework-compat");
     expect(response.headers.get("x-vinext-rsc-redirect")).toBe("/actual-target");
     expect(response.headers.get("x-vinext-rsc-redirect-type")).toBe("replace");
   });

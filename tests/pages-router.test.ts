@@ -4665,6 +4665,8 @@ describe("Plugin config", () => {
   it("injects an opaque App Router RSC compatibility ID instead of the raw build ID", async () => {
     const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-rsc-compat-id-"));
     const buildId = "release-2026-05-15";
+    const previousSharedRscBuildIdentity = process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY;
+    delete process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY;
 
     await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
     await fsp.writeFile(
@@ -4700,7 +4702,30 @@ describe("Plugin config", () => {
       expect(repeatedResult.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).toBe(
         result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"],
       );
+      const rscBuildIdentity = result.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"];
+      expect(JSON.parse(rscBuildIdentity)).toMatch(/^[0-9a-f]{32}$/);
+      expect(repeatedResult.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"]).toBe(
+        rscBuildIdentity,
+      );
+
+      const nextBuildPlugins = vinext({
+        nextConfig: { generateBuildId: () => buildId },
+      }) as any[];
+      const nextBuildConfigPlugin = nextBuildPlugins.find((p) => p.name === "vinext:config");
+      const nextBuildResult = await nextBuildConfigPlugin.config(
+        { root: tmpDir, plugins: [] },
+        { command: "build", mode: "production" },
+      );
+      expect(nextBuildResult.define["process.env.__VINEXT_BUILD_ID"]).toBe(JSON.stringify(buildId));
+      expect(nextBuildResult.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"]).not.toBe(
+        rscBuildIdentity,
+      );
     } finally {
+      if (previousSharedRscBuildIdentity === undefined) {
+        delete process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY;
+      } else {
+        process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY = previousSharedRscBuildIdentity;
+      }
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
   });

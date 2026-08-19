@@ -30,9 +30,13 @@ export type PrerenderPathManifest = {
   basePath?: string;
   buildId?: string;
   deploymentId?: string;
+  /** Opaque per-build identity emitted by RSC responses. */
+  rscBuildId?: string;
   responseVary?: CdnCacheAdapterCapabilities["responseVary"];
   /** App Router paths whose completed prerender produced a cacheable full RSC variant. */
   rscPaths?: string[];
+  /** Pages Router paths selected by the existing HTML warm discovery pass. */
+  pagesPaths?: string[];
   trailingSlash?: boolean;
   paths: string[];
 };
@@ -57,6 +61,18 @@ type EmitPrerenderPathManifestOptions = {
 function readBuiltBuildId(serverDir: string): string | null {
   try {
     const buildId = fs.readFileSync(path.join(serverDir, "BUILD_ID"), "utf-8").trim();
+    return buildId.length > 0 ? buildId : null;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function readBuiltRscBuildId(serverDir: string): string | null {
+  try {
+    const buildId = fs.readFileSync(path.join(serverDir, "RSC_BUILD_ID"), "utf-8").trim();
     return buildId.length > 0 ? buildId : null;
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
@@ -385,12 +401,15 @@ export async function emitPrerenderPathManifest(
     ? { ...options.nextConfig }
     : { ...(await resolveNextConfig(await loadNextConfig(root, PHASE_PRODUCTION_BUILD), root)) };
   const builtBuildId = readBuiltBuildId(manifestDir) ?? readBuiltBuildId(bundleServerDir);
+  const rscBuildId = readBuiltRscBuildId(manifestDir) ?? readBuiltRscBuildId(bundleServerDir);
   if (builtBuildId) {
     config.buildId = builtBuildId;
   }
 
   const paths: string[] = [];
   const seen = new Set<string>();
+  const discoveredPagesPaths: string[] = [];
+  const seenPagesPaths = new Set<string>();
   await withPrerenderEndpoints(async () => {
     let prodServer: { server: HttpServer; port: number } | null = null;
     const needsServer = await shouldStartPathDiscoveryServer({
@@ -440,6 +459,7 @@ export async function emitPrerenderPathManifest(
           secretHeaders,
         })) {
           addPath(paths, seen, pathname);
+          addPath(discoveredPagesPaths, seenPagesPaths, pathname);
         }
       }
     } finally {
@@ -460,6 +480,8 @@ export async function emitPrerenderPathManifest(
     ...(config.basePath ? { basePath: config.basePath } : {}),
     buildId: config.buildId,
     ...(config.deploymentId ? { deploymentId: config.deploymentId } : {}),
+    ...(pagesDir ? { pagesPaths: discoveredPagesPaths } : {}),
+    ...(rscBuildId ? { rscBuildId } : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
     ...(options.responseVary ? { rscPaths } : {}),
     trailingSlash: config.trailingSlash,

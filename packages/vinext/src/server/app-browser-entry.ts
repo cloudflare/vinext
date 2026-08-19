@@ -187,6 +187,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   getVinextRscCompatibilityId,
+  normalizeRscPrewarmHref,
   preloadRscPrewarmManifest,
   resolveRscPrewarmEligibility,
   RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
@@ -2099,19 +2100,23 @@ function bootstrapHydration(
         // A settled prefetch must remain synchronously consumable in the click
         // task. Only wait for optional canonical eligibility when this
         // navigation actually needs to derive a network/cache request key.
+        const canonicalPrewarmHref = normalizeRscPrewarmHref(targetPathAndSearch);
         const prewarmEligibility =
           navigationKind === "navigate" &&
           settledPrefetchedResponse === null &&
           requestInterceptionContext === null &&
           mountedSlotsHeader === null &&
           (rewrittenNavigationHref === null || rewrittenNavigationHref === currentHref)
-            ? await resolveRscPrewarmEligibility(currentHref, {
+            ? await resolveRscPrewarmEligibility(canonicalPrewarmHref, {
                 timeoutMs: RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
               })
             : "ineligible";
         const usesCanonicalPrewarmedRequest =
           prewarmEligibility === "eligible" &&
           canonicalizePrewarmableRscRequestHeaders(requestHeaders);
+        const requestPathAndSearch = usesCanonicalPrewarmedRequest
+          ? canonicalPrewarmHref
+          : targetPathAndSearch;
         const rscUrl = settledPrefetchedResponse
           ? resolvePrefetchNavigationResponseUrl({
               additionalRscUrls: additionalPrefetchPathAndSearch,
@@ -2119,7 +2124,7 @@ function bootstrapHydration(
               responseUrl: settledPrefetchedResponse.url,
               visibleRscUrl: targetPathAndSearch,
             })
-          : await createRscRequestUrl(targetPathAndSearch, requestHeaders);
+          : await createRscRequestUrl(requestPathAndSearch, requestHeaders);
         const additionalPrefetchRscUrls = settledPrefetchedResponse
           ? additionalPrefetchPathAndSearch
           : await Promise.all(

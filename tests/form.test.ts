@@ -369,9 +369,9 @@ describe("Form client GET interception", () => {
       '<Form> received an `action` that contains search params: "/search?lang=en". This is not supported, and they will be ignored. If you need to pass in additional search params, use an `<input type="hidden" />` instead.',
     );
     expect(event.preventDefault).toHaveBeenCalledOnce();
-    // Next.js App Router Form passes targetUrl.href through to router.push().
+    // navigateClientSide delegates URL push to the App Router navigation runtime.
     expect(navigate).toHaveBeenCalledWith(
-      "http://localhost:3000/search?q=react",
+      "/search?q=react",
       0,
       "navigate",
       "push",
@@ -409,7 +409,7 @@ describe("Form client GET interception", () => {
 
     expect(event.preventDefault).toHaveBeenCalledOnce();
     expect(navigate).toHaveBeenCalledWith(
-      "http://localhost:3000/search-alt?q=button&lang=fr&source=submitter-action",
+      "/search-alt?q=button&lang=fr&source=submitter-action",
       0,
       "navigate",
       "push",
@@ -443,7 +443,7 @@ describe("Form client GET interception", () => {
     void onSubmit(event);
 
     expect(navigate).toHaveBeenCalledWith(
-      "http://localhost:3000/search-alt?q=fallback&lang=de&source=fallback-submitter",
+      "/search-alt?q=fallback&lang=de&source=fallback-submitter",
       0,
       "navigate",
       "push",
@@ -501,7 +501,7 @@ describe("Form client GET interception", () => {
       '<Form> received a `formAction` that contains search params: "/search-alt?lang=fr". This is not supported, and they will be ignored. If you need to pass in additional search params, use an `<input type="hidden" />` instead.',
     );
     expect(navigate).toHaveBeenCalledWith(
-      "http://localhost:3000/search-alt?q=button&source=submitter-action",
+      "/search-alt?q=button&source=submitter-action",
       0,
       "navigate",
       "push",
@@ -609,7 +609,7 @@ describe("Form client GET interception", () => {
     void onSubmit(event);
 
     expect(navigate).toHaveBeenCalledWith(
-      "http://localhost:3000/search?q=react",
+      "/search?q=react",
       0,
       "navigate",
       "replace",

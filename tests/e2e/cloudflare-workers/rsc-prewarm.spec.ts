@@ -88,6 +88,9 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
   const expectedBuildId = fs
     .readFileSync("examples/workers-cache/dist/server/BUILD_ID", "utf-8")
     .trim();
+  const expectedRscBuildId = fs
+    .readFileSync("examples/workers-cache/dist/server/RSC_BUILD_ID", "utf-8")
+    .trim();
   await expect
     .poll(
       async () => {
@@ -105,7 +108,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
   expect(warmed.headers()["content-type"]).toContain("text/x-component");
   expect(warmed.headers()["cache-control"]).not.toContain("no-store");
   expect(warmed.headers()["cf-cache-status"]).toBe("HIT");
-  expect(warmed.headers()["x-vinext-rsc-build-id"]).toBe(expectedBuildId);
+  expect(warmed.headers()["x-vinext-rsc-build-id"]).toBe(expectedRscBuildId);
   expect(await warmed.text()).toContain(expectedBuildId);
 
   const withFreshPage = async (

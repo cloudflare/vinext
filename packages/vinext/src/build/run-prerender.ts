@@ -108,6 +108,8 @@ type RunPrerenderOptions = {
   rscBundlePath?: string;
   /** Emit browser eligibility metadata for a strict response-Vary CDN adapter. */
   emitRscPrewarmManifest?: boolean;
+  /** Limit rendering to one router. Defaults to both routers. */
+  router?: "app" | "pages" | "both";
   /**
    * Maximum number of routes rendered in parallel.
    * Defaults to prerenderApp/prerenderPages internal defaults when omitted.
@@ -163,8 +165,10 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // Detect directories
   const appDir = findDir(root, "app", "src/app");
   const pagesDir = findDir(root, "pages", "src/pages");
+  const runApp = options.router !== "pages";
+  const runPages = options.router !== "app";
 
-  if (!appDir && !pagesDir) return null;
+  if ((!appDir || !runApp) && (!pagesDir || !runPages)) return null;
 
   // The manifest lands in dist/server/ alongside the server bundle so it's
   // cleaned with the rest of vinext's build output on rebuild and co-located
@@ -230,7 +234,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   const restorePrerenderPhase = enterPrerenderPhase();
 
   try {
-    if (appDir && pagesDir) {
+    if (appDir && pagesDir && runApp && runPages) {
       // Hybrid build: start a single shared prod server.
       // The App Router bundle (dist/server/index.js) handles both App Router and
       // Pages Router routes in a hybrid build, so we only need one server.
@@ -248,7 +252,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     }
 
     // ── App Router phase ──────────────────────────────────────────────────────
-    if (appDir) {
+    if (appDir && runApp) {
       const routes = await appRouter(appDir, config.pageExtensions);
       const metadataRoutes = scanMetadataFiles(appDir);
 
@@ -283,7 +287,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     }
 
     // ── Pages Router phase ────────────────────────────────────────────────────
-    if (pagesDir) {
+    if (pagesDir && runPages) {
       const [pageRoutes, apiRoutes] = await Promise.all([
         pagesRouter(pagesDir, config.pageExtensions),
         apiRouter(pagesDir, config.pageExtensions),
@@ -376,7 +380,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     );
   }
 
-  if (options.emitRscPrewarmManifest) {
+  if (options.emitRscPrewarmManifest && runApp) {
     emitRscPrewarmManifest(root, config);
   }
 
