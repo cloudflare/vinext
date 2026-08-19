@@ -695,6 +695,7 @@ export async function resolveInvalidRscCacheBustingRequest(
     }
     if (
       !options.request.headers.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER) &&
+      !options.request.headers.has(VINEXT_INTERCEPTION_ID_HEADER) &&
       normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
         null
     ) {

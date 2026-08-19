@@ -807,6 +807,21 @@ describe("prefetch cache eviction", () => {
       await import("../packages/vinext/src/shims/internal/app-route-prefetch-policy.js");
     expect(resolveAutoAppRoutePrefetch("/aaa").requiresRouteTreePrefetch).toBe(true);
     const routeTree = createDeferredResponse();
+    seedPrefetchResponseSnapshot(
+      "/aaa?_rsc=different-source",
+      {
+        buffer: new TextEncoder().encode("wrong source payload").buffer,
+        contentType: "text/x-component",
+        mountedSlotsHeader: null,
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: "/aaa?_rsc=different-source",
+      },
+      null,
+      null,
+      undefined,
+      "different-source",
+    );
     const fetch = vi
       .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
       .mockImplementationOnce(() => routeTree.promise)
@@ -826,7 +841,14 @@ describe("prefetch cache eviction", () => {
     expect(routeTreeHeaders?.get("Next-Router-Prefetch")).toBe("1");
     expect(routeTreeHeaders?.get("Next-Router-Segment-Prefetch")).toBe("/_tree");
 
-    routeTree.resolve(new Response("tree", { headers: { "content-type": "text/x-component" } }));
+    routeTree.resolve(
+      new Response("tree", {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/aaa"),
+        },
+      }),
+    );
     await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
 
     const pageUrl = toRscUrlString(fetch.mock.calls[1]![0]);
@@ -874,6 +896,15 @@ describe("prefetch cache eviction", () => {
       },
       null,
       null,
+      undefined,
+      createRscClientCacheVariantKey(
+        createAppPrefetchRequestHeaders({
+          fetchPriority: "low",
+          interceptionContext: null,
+          mountedSlotsHeader: null,
+          nextUrl: "/",
+        }),
+      ),
     );
     const seededRenderedEntry = Array.from(getPrefetchCache().values()).find(
       (entry) => entry.outcome === "cache-seeded",
@@ -936,6 +967,12 @@ describe("prefetch cache eviction", () => {
 
     const oldRenderedPath = "/old-rendered-bbb";
     const newRenderedPath = "/new-rendered-bbb";
+    const routeTreeHeaders = createAppPrefetchRequestHeaders({
+      fetchPriority: "low",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+    });
+    const requestVariantKey = createRscClientCacheVariantKey(routeTreeHeaders);
     const seedRenderedAlias = (pathAndSearch: string, body: string) =>
       seedPrefetchResponseSnapshot(
         `${pathAndSearch}?_rsc=existing`,
@@ -950,15 +987,12 @@ describe("prefetch cache eviction", () => {
         },
         null,
         null,
+        undefined,
+        requestVariantKey,
       );
     seedRenderedAlias(oldRenderedPath, "stale rendered page");
     seedRenderedAlias(newRenderedPath, "fresh rendered page");
 
-    const routeTreeHeaders = createAppPrefetchRequestHeaders({
-      fetchPriority: "low",
-      interceptionContext: null,
-      mountedSlotsHeader: null,
-    });
     routeTreeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
     routeTreeHeaders.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/_tree");
     const routeTreeRscUrl = await createRscRequestUrl("/bbb", routeTreeHeaders);

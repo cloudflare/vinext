@@ -507,13 +507,6 @@ function metadataOutputPath(servedUrl: string): string | null {
   return segments.join("/");
 }
 
-function isConcreteStaticMetadataRoute(route: MetadataFileRoute): boolean {
-  return (
-    !route.isDynamic &&
-    !route.routeSegments?.some((segment) => segment.startsWith("[") && segment.endsWith("]"))
-  );
-}
-
 function emitStaticMetadataFiles(
   metadataRoutes: readonly MetadataFileRoute[],
   outDir: string,
@@ -1849,53 +1842,6 @@ export async function prerenderApp({
       return result;
     });
     results.push(...appResults);
-
-    // Metadata URLs have no RSC companion, but still pass through middleware
-    // and config headers at runtime. Record their final response policy so the
-    // deploy warm plan cannot treat a redirect/private/cookie response as a
-    // warmable static asset merely because its source file is static.
-    const metadataResults = await runWithConcurrency(
-      metadataRoutes.filter(isConcreteStaticMetadataRoute),
-      concurrency,
-      async (route): Promise<PrerenderRouteResult> => {
-        try {
-          const request = new Request(`http://localhost${route.servedUrl}`);
-          const response = await runWithHeadersContext(headersContextFromRequest(request), () =>
-            rscHandler(request),
-          );
-          const persistedHeaders: Record<string, string> = {};
-          for (const [name, value] of response.headers) {
-            if (isCdnCachePolicyHeaderName(name) || name.toLowerCase() === "vary") {
-              persistedHeaders[name] = value;
-            }
-          }
-          const hasSetCookie = response.headers.has("set-cookie");
-          const prewarmable =
-            response.status === 200 &&
-            !hasNonCacheablePrewarmHeaders(response.headers, {
-              controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
-            });
-          await response.body?.cancel();
-          return {
-            route: route.servedUrl,
-            status: "rendered",
-            outputFiles: [],
-            revalidate: false,
-            router: "metadata",
-            ...(!prewarmable ? { prewarmable: false as const } : {}),
-            ...(hasSetCookie ? { hasSetCookie: true as const } : {}),
-            ...(Object.keys(persistedHeaders).length > 0 ? { headers: persistedHeaders } : {}),
-          };
-        } catch (error) {
-          return {
-            route: route.servedUrl,
-            status: "error",
-            error: error instanceof Error ? error.message : String(error),
-          };
-        }
-      },
-    );
-    results.push(...metadataResults);
 
     // Fail loudly if a render worker crashed mid-build (otherwise its routes
     // fail with connection errors recorded as non-fatal → partial output).

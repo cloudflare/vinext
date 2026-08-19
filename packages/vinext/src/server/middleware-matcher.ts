@@ -85,6 +85,7 @@ export function hasConditionalMiddlewarePathMatch(
   pathname: string,
   matcher: MatcherConfig | undefined,
   i18nConfig?: NextI18nConfig | null,
+  localeContext?: MiddlewareLocaleMatchContext,
 ): boolean {
   if (!Array.isArray(matcher)) return false;
 
@@ -96,7 +97,7 @@ export function hasConditionalMiddlewarePathMatch(
     ) {
       return false;
     }
-    return matchObjectMatcher(pathname, candidate, i18nConfig);
+    return matchObjectMatcher(pathname, candidate, i18nConfig, localeContext);
   });
 }
 

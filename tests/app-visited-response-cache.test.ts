@@ -32,14 +32,21 @@ describe("visited response cache freshness", () => {
       params: {},
       response: createCachedResponse(),
     });
+    const sourceSpecificEntry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      params: {},
+      requestVariantKey: "source-a",
+      response: createCachedResponse({ variesOnNextUrl: true }),
+    });
     const cache = new Map([
       ["/dashboard?_rsc=initial", entry],
       ["/dashboard?_rsc=state-a", entry],
+      ["/dashboard?_rsc=source-a", sourceSpecificEntry],
       ["/dashboard?_rsc=state-b\0/interception", entry],
       ["/other?_rsc=state-c", entry],
     ]);
 
-    expect(deleteAllVisitedResponseCacheEntries(cache, "/dashboard?_rsc=latest", null)).toBe(2);
+    expect(deleteAllVisitedResponseCacheEntries(cache, "/dashboard?_rsc=latest", null)).toBe(3);
     expect([...cache.keys()]).toEqual([
       "/dashboard?_rsc=state-b\0/interception",
       "/other?_rsc=state-c",

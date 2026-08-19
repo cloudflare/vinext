@@ -17,6 +17,7 @@ import {
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import type { VinextLinkPrefetchRoute } from "../packages/vinext/src/client/vinext-next-data.js";
@@ -3122,6 +3123,23 @@ describe("Link prefetch scheduling", () => {
     });
 
     try {
+      const { seedPrefetchResponseSnapshot } =
+        await import("../packages/vinext/src/shims/navigation.js");
+      seedPrefetchResponseSnapshot(
+        "/viewport-prefetch-target?_rsc=different-source",
+        {
+          buffer: new TextEncoder().encode("wrong source payload").buffer,
+          contentType: "text/x-component",
+          mountedSlotsHeader: null,
+          paramsHeader: null,
+          renderedPathAndSearch: null,
+          url: "/viewport-prefetch-target?_rsc=different-source",
+        },
+        null,
+        null,
+        undefined,
+        "different-source",
+      );
       let releaseRouteTree: ((response: Response) => void) | undefined;
       const routeTreeResponse = new Promise<Response>((resolve) => {
         releaseRouteTree = resolve;
@@ -3149,7 +3167,15 @@ describe("Link prefetch scheduling", () => {
       await flushPrefetchTasks();
       expect(result.fetch).toHaveBeenCalledTimes(1);
 
-      releaseRouteTree?.(new Response(""));
+      releaseRouteTree?.(
+        new Response("", {
+          headers: {
+            [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent(
+              "/viewport-prefetch-target",
+            ),
+          },
+        }),
+      );
       await waitForFetchCalls(result.fetch, 2);
 
       expect(result.fetch).toHaveBeenCalledTimes(2);

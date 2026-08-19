@@ -271,6 +271,37 @@ describe("middleware redirect protocol", () => {
     expect(middleware).not.toHaveBeenCalled();
   });
 
+  it("reports default-locale locale:false conditional matches when conditions miss", async () => {
+    const middleware = vi.fn(() => undefined);
+    const onMatcherEvaluation = vi.fn();
+    const result = await executeMiddleware({
+      i18nConfig: { defaultLocale: "en", locales: ["en", "fr"] },
+      isProxy: false,
+      module: {
+        config: {
+          matcher: [
+            {
+              source: "/en/about",
+              locale: false,
+              has: [{ type: "header", key: "Next-Url", value: "/source" }],
+            },
+          ],
+        },
+        default: middleware,
+      },
+      normalizedPathname: "/about",
+      onMatcherEvaluation,
+      request: new Request("https://example.test/about"),
+    });
+
+    expect(result).toEqual({ continue: true });
+    expect(onMatcherEvaluation).toHaveBeenCalledWith({
+      matched: false,
+      conditionalPathMatched: true,
+    });
+    expect(middleware).not.toHaveBeenCalled();
+  });
+
   it("releases an unread middleware body branch in development", async () => {
     vi.stubEnv("NODE_ENV", "development");
     let resolveCancelled!: () => void;

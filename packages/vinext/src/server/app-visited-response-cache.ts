@@ -156,7 +156,21 @@ export function deleteAllVisitedResponseCacheEntries(
   interceptionContext: string | null,
 ): number {
   let deleted = 0;
-  while (deleteVisitedResponseCacheEntry(cache, rscUrl, interceptionContext)) {
+  const exactCacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  if (cache.delete(exactCacheKey)) deleted++;
+
+  const normalizedTarget = normalizeVisitedResponseCacheLookupUrl(rscUrl);
+  if (normalizedTarget === null) return deleted;
+
+  // This is replacement invalidation, not a reuse lookup. Every older
+  // fingerprint for the visible route is stale once a newer response commits,
+  // including source-specific entries that intentionally vary on Next-Url and
+  // therefore must not match `findVisitedResponseCacheEntry`.
+  for (const cacheKey of cache.keys()) {
+    const source = parseVisitedResponseCacheKey(cacheKey);
+    if (source.interceptionContext !== interceptionContext) continue;
+    if (normalizeVisitedResponseCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
+    cache.delete(cacheKey);
     deleted++;
   }
   return deleted;

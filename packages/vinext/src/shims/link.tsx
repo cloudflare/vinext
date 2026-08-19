@@ -755,6 +755,7 @@ function prefetchUrl(
                   headers,
                   interceptionContext,
                   mountedSlotsHeader,
+                  requestVariantKey,
                 });
               })()
             : fetchFullRscPayload();

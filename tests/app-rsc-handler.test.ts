@@ -266,6 +266,31 @@ describe("createAppRscHandler", () => {
     expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
   });
 
+  it("does not certify default-locale paths covered by locale:false conditional middleware", async () => {
+    const middleware = vi.fn(() => undefined);
+    const response = await runRscPrewarmProbe(
+      createHandler({
+        configHeaders: [],
+        i18nConfig: { defaultLocale: "en", locales: ["en", "fr"] },
+        middlewareModule: {
+          config: {
+            matcher: [
+              {
+                source: "/en/about",
+                locale: false,
+                has: [{ type: "header", key: "Next-Url", value: "/source" }],
+              },
+            ],
+          },
+          default: middleware,
+        },
+      }),
+    );
+
+    expect(middleware).not.toHaveBeenCalled();
+    expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
+  });
+
   it("removes a userland-forged source-independence proof header", async () => {
     const response = await runRscPrewarmProbe(
       createHandler({

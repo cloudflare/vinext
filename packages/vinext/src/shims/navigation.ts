@@ -1467,6 +1467,7 @@ export async function fetchRouteTreeGatedPrefetch(options: {
   headers: Headers;
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
+  requestVariantKey?: string | null;
 }): Promise<Response> {
   const {
     fetchFullRscPayload,
@@ -1475,6 +1476,7 @@ export async function fetchRouteTreeGatedPrefetch(options: {
     headers,
     interceptionContext,
     mountedSlotsHeader,
+    requestVariantKey,
   } = options;
   const routeTreeHeaders = new Headers(headers);
   routeTreeHeaders.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
@@ -1507,6 +1509,7 @@ export async function fetchRouteTreeGatedPrefetch(options: {
       renderedRscUrl,
       interceptionContext,
       mountedSlotsHeader,
+      { requestVariantKey },
     );
     if (cachedRenderedResponse) {
       return restoreRscResponse(cachedRenderedResponse);
@@ -3052,6 +3055,7 @@ const _appRouter: AppRouterInstance = {
               headers,
               interceptionContext,
               mountedSlotsHeader,
+              requestVariantKey,
             })
           : fetchFullRscPayload();
       prefetchRscResponse(

@@ -666,6 +666,28 @@ describe("App Router RSC cache-busting", () => {
     expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${currentHash}`);
   });
 
+  it("rejects oldest compatibility hashes that omit an active interception id", async () => {
+    const headers = createRscRequestHeaders({
+      interceptionContext: "/feed",
+      interceptionId: "interception:slot:modal:/feed:/feed->/photos/:id",
+    });
+    const previousInput = "0,0,0,0,/feed,0";
+    const previousHashes = [await sha256CacheBustingHash(previousInput), fnv1a64(previousInput)];
+    const currentHash = await computeRscCacheBustingSearchParam(headers);
+
+    for (const previousHash of previousHashes) {
+      const response = await resolveInvalidRscCacheBustingRequest({
+        isRscRequest: true,
+        request: new Request(`https://example.com/photos/42.rsc?_rsc=${previousHash}`, {
+          headers,
+        }),
+      });
+
+      expect(response?.status).toBe(307);
+      expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${currentHash}`);
+    }
+  });
+
   it("accepts the prior bare navigation query after adding the state fingerprint", async () => {
     const headers = createRscRequestHeaders({
       routerState: { pathAndSearch: "/current", routeId: "route:/current" },

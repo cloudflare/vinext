@@ -25,6 +25,7 @@ import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/serv
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import { getAppRouteOutputPath } from "../packages/vinext/src/utils/prerender-output-paths.js";
+import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed-cache.js";
 
 const PAGES_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
 const APP_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/app-basic");
@@ -223,6 +224,92 @@ describe("extractRscPayloadFromPrerenderedHtml", () => {
 });
 
 describe("prerenderApp — RSC extraction", () => {
+  it("renders static metadata once and preserves its seeded response metadata", async () => {
+    const root = tmpDir("vinext-prerender-static-metadata-once-");
+    const outDir = path.join(root, "prerendered-routes");
+    let metadataRequests = 0;
+    const server = createServer((req, res) => {
+      if (req.url === "/__vinext/prerender/metadata-routes") {
+        res.setHeader("content-type", "application/json");
+        res.end(
+          JSON.stringify([{ path: "/robots.txt", routePattern: "/robots.txt", routeSegments: [] }]),
+        );
+        return;
+      }
+      if (req.url === "/robots.txt") {
+        metadataRequests++;
+        res.statusCode = 202;
+        res.setHeader("content-type", "text/plain");
+        res.setHeader("set-cookie", ["first=1; Path=/", "second=2; Path=/"]);
+        res.end("User-Agent: *\nAllow: /buildtime\n");
+        return;
+      }
+      if (req.url === "/__vinext_nonexistent_for_404__") {
+        res.statusCode = 200;
+        res.end("not a not-found response");
+        return;
+      }
+      res.statusCode = 404;
+      res.end("not found");
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: [],
+        metadataRoutes: [
+          {
+            type: "robots",
+            isDynamic: false,
+            filePath: path.join(root, "app", "robots.txt"),
+            routePrefix: "",
+            routeSegments: [],
+            servedUrl: "/robots.txt",
+            contentType: "text/plain",
+          },
+        ],
+        outDir,
+        manifestDir: root,
+        config: await resolveNextConfig({ generateBuildId: () => "metadata-once-build" }),
+        _prodServer: { server, port },
+      });
+
+      expect(metadataRequests).toBe(1);
+      expect(result.routes.filter((route) => route.route === "/robots.txt")).toHaveLength(1);
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(root, "vinext-prerender.json"), "utf8"),
+      );
+      expect(
+        manifest.routes.filter((route: { route: string }) => route.route === "/robots.txt"),
+      ).toHaveLength(1);
+
+      const writes: Array<{ headers: Record<string, string | string[]>; status: number }> = [];
+      expect(
+        await seedMemoryCacheFromPrerender(root, {
+          async writeAppRouteEntry(_key, data) {
+            writes.push({ headers: data.headers, status: data.status });
+          },
+        }),
+      ).toBe(1);
+      expect(writes).toEqual([
+        {
+          headers: expect.objectContaining({
+            "content-type": "text/plain",
+            "set-cookie": ["first=1; Path=/", "second=2; Path=/"],
+          }),
+          status: 202,
+        },
+      ]);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("requests metadata routes through basePath while writing basePath-free artifacts", async () => {
     const root = tmpDir("vinext-prerender-metadata-basepath-");
     const outDir = path.join(root, "out");

@@ -455,7 +455,7 @@ export async function executeMiddleware(
       (pathname, index, values) =>
         pathname !== null &&
         values.indexOf(pathname) === index &&
-        hasConditionalMiddlewarePathMatch(pathname, matcher, options.i18nConfig),
+        hasConditionalMiddlewarePathMatch(pathname, matcher, options.i18nConfig, localeContext),
     );
     options.onMatcherEvaluation?.({ matched: false, conditionalPathMatched });
     return { continue: true };
