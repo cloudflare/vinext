@@ -183,6 +183,10 @@ export async function proxyExternalMiddlewareRewrite(
     requestWithMiddlewareRequestHeaders(request, context.requestHeaders ?? context.headers),
     request,
   );
+  // Retain the decoded effective request identity for cache-policy adapters.
+  // The external-response branch returns before the normal middleware footer
+  // applies request overrides to the live headers context.
+  context.requestHeaders = new Headers(proxyRequest.headers);
   setHeadersContext(null);
   setNavigationContext(null);
 

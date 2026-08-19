@@ -25,6 +25,45 @@ import { MIDDLEWARE_SKIP_HEADER } from "../utils/protocol-headers.js";
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
 
+/**
+ * How a Pages route obtains request-time data.
+ *
+ * `none` is reserved for automatically static pages. `runtime` covers a page
+ * or custom `_app` with `getInitialProps`; it is distinct from `server`
+ * (`getServerSideProps`) because the renderers invoke the two mechanisms
+ * differently, even though neither is an SSG route.
+ */
+export type PagesRouteDataKind = "static" | "server" | "runtime" | "none";
+
+export function isNonSsgPagesRouteDataKind(dataKind: PagesRouteDataKind | undefined): boolean {
+  return dataKind === "server" || dataKind === "runtime";
+}
+
+/** Next renders its error documents even when a middleware prefetch is speculative. */
+export function isPagesErrorRoutePattern(pattern: string | undefined): boolean {
+  return pattern === "/404" || pattern === "/_error";
+}
+
+type InitialPropsComponent = {
+  getInitialProps?: unknown;
+  origGetInitialProps?: unknown;
+} | null;
+
+/** Resolve the runtime-only part of Next.js automatic static optimization. */
+export function resolvePagesRouteDataKind(
+  dataKind: PagesRouteDataKind,
+  PageComponent: InitialPropsComponent,
+  AppComponent: InitialPropsComponent,
+): PagesRouteDataKind {
+  if (dataKind !== "none") return dataKind;
+  const appHasCustomGetInitialProps =
+    typeof AppComponent?.getInitialProps === "function" &&
+    AppComponent.getInitialProps !== AppComponent.origGetInitialProps;
+  return typeof PageComponent?.getInitialProps === "function" || appHasCustomGetInitialProps
+    ? "runtime"
+    : "none";
+}
+
 type NextDataMatch = {
   /**
    * The normalized page pathname (with leading slash, no trailing slash,

@@ -105,7 +105,9 @@ import {
   isNextDataPathname,
   normalizeNextDataPagePathname,
   parseNextDataPathname,
+  resolvePagesRouteDataKind,
   shouldAddTrailingSlashToPagesDataPath,
+  type PagesRouteDataKind,
   urlParserCreatesPagesDataPath,
 } from "./server/pages-data-route.js";
 import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
@@ -5719,26 +5721,49 @@ export const loadServerActionClient = ${
                   hasAppDir && appDir
                     ? appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
                     : Promise.resolve([]));
-              const devPageRouteDataKinds = new Map<string, "static" | "server" | "none">();
-              const classifyDevPageRoute = (
+              const devPageRouteDataKinds = new Map<string, Promise<PagesRouteDataKind>>();
+              let devAppComponent: Promise<{
+                getInitialProps?: unknown;
+                origGetInitialProps?: unknown;
+              } | null> | null = null;
+              const getDevAppComponent = () =>
+                (devAppComponent ??= (async () => {
+                  const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+                  if (!appFilePath) return null;
+                  const appModule = (await getPagesRunner().import(appFilePath)) as {
+                    default?: {
+                      getInitialProps?: unknown;
+                      origGetInitialProps?: unknown;
+                    };
+                  };
+                  return appModule.default ?? null;
+                })());
+              const classifyDevPageRoute = async (
                 route: (typeof devPageRoutes)[number],
-              ): "static" | "server" | "none" => {
+              ): Promise<PagesRouteDataKind> => {
                 const cached = devPageRouteDataKinds.get(route.filePath);
                 if (cached) return cached;
 
-                let dataKind: "static" | "server" | "none" = "none";
-                try {
-                  const source = fs.readFileSync(route.filePath, "utf8");
-                  dataKind = hasExportedName(source, "getStaticProps")
-                    ? "static"
-                    : hasExportedName(source, "getServerSideProps")
-                      ? "server"
-                      : "none";
-                } catch {
-                  // Dev can race with an editor deleting/renaming a page file.
-                }
-                devPageRouteDataKinds.set(route.filePath, dataKind);
-                return dataKind;
+                const classification = (async () => {
+                  try {
+                    const source = fs.readFileSync(route.filePath, "utf8");
+                    if (hasExportedName(source, "getStaticProps")) return "static";
+                    if (hasExportedName(source, "getServerSideProps")) return "server";
+                    const pageModule = (await getPagesRunner().import(route.filePath)) as {
+                      default?: { getInitialProps?: unknown };
+                    };
+                    return resolvePagesRouteDataKind(
+                      "none",
+                      pageModule.default ?? null,
+                      await getDevAppComponent(),
+                    );
+                  } catch {
+                    // Dev can race with an editor deleting/renaming a page file.
+                  }
+                  return "none";
+                })() satisfies Promise<PagesRouteDataKind>;
+                devPageRouteDataKinds.set(route.filePath, classification);
+                return classification;
               };
 
               const pipelineDeps: PagesPipelineDeps = {
@@ -5773,7 +5798,7 @@ export const loadServerActionClient = ${
                   const devAppRoutes = await getDevAppRoutes();
                   return matchAppRoute(apiUrl, devAppRoutes);
                 },
-                matchPageRoute: (resolvedPathname, request) => {
+                matchPageRoute: async (resolvedPathname, request) => {
                   const routeUrl = nextConfig?.i18n
                     ? resolvePagesI18nRequest(
                         resolvedPathname,
@@ -5785,10 +5810,16 @@ export const loadServerActionClient = ${
                       ).url
                     : resolvedPathname;
                   const m = matchRoute(routeUrl, devPageRoutes);
+                  const shouldClassifyDataKind =
+                    isDataRequest &&
+                    capturedMiddlewarePath !== null &&
+                    request.headers.get("x-middleware-prefetch") === "1";
                   return m
                     ? {
                         route: {
-                          dataKind: classifyDevPageRoute(m.route),
+                          dataKind: shouldClassifyDataKind
+                            ? await classifyDevPageRoute(m.route)
+                            : undefined,
                           isDynamic: m.route.isDynamic,
                           pattern: m.route.pattern,
                         },

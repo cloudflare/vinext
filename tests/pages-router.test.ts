@@ -1255,6 +1255,28 @@ describe("Pages Router integration", () => {
     expect(search).toEqual({ q: "pages" });
   });
 
+  it("classifies Page.getInitialProps for middleware data-prefetch skipping in dev", async () => {
+    const res = await fetch(
+      `${baseUrl}/_next/data/test-build-id/nav-compat-gip/foobar.json?q=pages`,
+      { headers: { "x-middleware-prefetch": "1" } },
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-middleware-skip")).toBe("1");
+    expect(res.headers.get("x-matched-path")).toBe("/nav-compat-gip/[slug]");
+    expect(await res.json()).toEqual({});
+  });
+
+  it("keeps auto-static middleware data prefetches renderable in dev", async () => {
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/about.json`, {
+      headers: { "x-middleware-prefetch": "1" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-middleware-skip")).toBeNull();
+    await expect(res.json()).resolves.toMatchObject({ pageProps: {} });
+  });
+
   it("does not collapse encoded slashes onto nested routes in dev", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-encoded-dev-"));
     writeEncodedSlashPagesFixture(tmpDir);
@@ -7906,6 +7928,30 @@ describe("Production server middleware (Pages Router)", () => {
       expect(res.headers.get("content-type")).toContain("application/json");
       const json = (await res.json()) as { pageProps: { message: string } };
       expect(json.pageProps.message).toBe("Hello from getServerSideProps");
+    });
+
+    it("skips middleware prefetch rendering for Page.getInitialProps routes", async () => {
+      // Ported from Next.js: packages/next/src/server/base-server.ts
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
+      const res = await fetch(
+        `${prodUrl}/_next/data/${BUILD_ID}/nav-compat-gip/foobar.json?q=pages`,
+        { headers: { "x-middleware-prefetch": "1" } },
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-middleware-skip")).toBe("1");
+      expect(res.headers.get("x-matched-path")).toBe("/nav-compat-gip/[slug]");
+      expect(await res.json()).toEqual({});
+    });
+
+    it("still renders auto-static routes during middleware data prefetches", async () => {
+      const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/about.json`, {
+        headers: { "x-middleware-prefetch": "1" },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-middleware-skip")).toBeNull();
+      await expect(res.json()).resolves.toMatchObject({ pageProps: {} });
     });
 
     it("returns { pageProps } JSON for a getStaticProps page (bypasses HTML cache)", async () => {

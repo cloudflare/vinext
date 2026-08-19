@@ -6,6 +6,13 @@ import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline
 import { mergeHeaders } from "./worker-utils.js";
 import { NEXT_URL_HEADER } from "./headers.js";
 import { enforceCdnCacheDenialOnResponse } from "./cache-control.js";
+import {
+  buildMiddlewarePrefetchSkipResponse,
+  isNonSsgPagesRouteDataKind,
+  isPagesErrorRoutePattern,
+  type PagesRouteDataKind,
+} from "./pages-data-route.js";
+import { patternToNextFormat } from "../routing/route-validation.js";
 
 export type PagesEntry = {
   handleApiRoute?: (
@@ -16,7 +23,10 @@ export type PagesEntry = {
     edgeRuntime: EdgeApiExecutionRuntime,
   ) => Promise<Response> | Response;
   matchApiRoute?: (url: string, request: Request) => PagesRouteMatch | null;
-  matchPageRoute?: (url: string, request: Request) => PagesRouteMatch | null;
+  matchPageRoute?: (
+    url: string,
+    request: Request,
+  ) => PagesRouteMatch | null | Promise<PagesRouteMatch | null>;
   renderPage?: (
     request: Request,
     url: string,
@@ -29,6 +39,7 @@ export type PagesEntry = {
 
 type PagesRouteMatch = {
   route: {
+    dataKind?: PagesRouteDataKind;
     isDynamic: boolean;
     pattern: string;
   };
@@ -73,6 +84,7 @@ type RenderPagesFallbackDependencies = {
 type RenderPagesFallbackOptions = {
   allowRscDocumentFallback?: boolean;
   appRouteMatch?: AppRouteMatch | null;
+  hasMiddleware?: boolean;
   isDataRequest?: boolean;
   isRscRequest: boolean;
   matchKind?: "dynamic" | "static";
@@ -119,6 +131,7 @@ export async function renderPagesFallback(
   const {
     allowRscDocumentFallback = false,
     appRouteMatch = null,
+    hasMiddleware = false,
     isDataRequest = false,
     isRscRequest,
     matchKind,
@@ -205,7 +218,7 @@ export async function renderPagesFallback(
   if (typeof pagesEntry.renderPage !== "function") return null;
   const hasPageMatcher = typeof pagesEntry.matchPageRoute === "function";
   const pageMatch = hasPageMatcher
-    ? (pagesEntry.matchPageRoute?.(pagesUrl, pagesRequest) ?? null)
+    ? ((await pagesEntry.matchPageRoute?.(pagesUrl, pagesRequest)) ?? null)
     : null;
   if (hasPageMatcher && pageMatch === null) return null;
   if (pageMatch !== null && matchKind === "static" && pageMatch.route.isDynamic) return null;
@@ -215,6 +228,25 @@ export async function renderPagesFallback(
     (pageMatch === null || !pagesRouteHasPriorityOverAppRoute(pageMatch.route, appRouteMatch.route))
   ) {
     return null;
+  }
+  if (
+    pageMatch !== null &&
+    hasMiddleware &&
+    isDataRequest &&
+    pagesRequest.headers.get("x-middleware-prefetch") === "1" &&
+    isNonSsgPagesRouteDataKind(pageMatch.route.dataKind) &&
+    !isPagesErrorRoutePattern(pageMatch.route.pattern)
+  ) {
+    preparePagesWinnerRequest();
+    return enforceCdnCacheDenialOnResponse(
+      applyDraftModeCookie(
+        applyPagesMiddlewareContext(
+          buildMiddlewarePrefetchSkipResponse(patternToNextFormat(pageMatch.route.pattern)),
+          { ...middlewareContext, status: null },
+        ),
+        getDraftModeCookieHeader(),
+      ),
+    );
   }
   const pagesMiddlewareRequestHeaders = preparePagesWinnerRequest();
   const renderRequest = pagesDataRequest

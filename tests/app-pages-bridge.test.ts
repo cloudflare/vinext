@@ -227,6 +227,143 @@ describe("renderPagesFallback", () => {
     );
   });
 
+  it.each(["server", "runtime"] as const)(
+    "skips hybrid middleware data prefetches for %s Pages routes",
+    async (dataKind) => {
+      const renderPage = vi.fn(() => new Response('{"pageProps":{"unexpected":true}}'));
+      const request = new Request("http://localhost/pages-dir/legacy", {
+        headers: { "x-middleware-prefetch": "1" },
+      });
+
+      const response = await renderPagesFallback(
+        {
+          hasMiddleware: true,
+          isDataRequest: true,
+          isRscRequest: false,
+          middlewareContext: { headers: null, requestHeaders: null, status: null },
+          request,
+          url: new URL(request.url),
+        },
+        {
+          ...defaultDeps,
+          loadPagesEntry: () => ({
+            matchPageRoute: () => ({
+              route: { dataKind, isDynamic: false, pattern: "/pages-dir/legacy" },
+            }),
+            renderPage,
+          }),
+        },
+      );
+
+      expect(renderPage).not.toHaveBeenCalled();
+      expect(response?.headers.get("x-middleware-skip")).toBe("1");
+      expect(response?.headers.get("x-matched-path")).toBe("/pages-dir/legacy");
+      await expect(response?.json()).resolves.toEqual({});
+    },
+  );
+
+  it("appends and drains a hybrid middleware draft cookie on a prefetch skip", async () => {
+    const getDraftModeCookieHeader = vi
+      .fn<() => string | null>()
+      .mockReturnValueOnce("__prerender_bypass=secret; Path=/; HttpOnly")
+      .mockReturnValue(null);
+    const request = new Request("http://localhost/pages-dir/legacy", {
+      headers: { "x-middleware-prefetch": "1" },
+    });
+
+    const response = await renderPagesFallback(
+      {
+        hasMiddleware: true,
+        isDataRequest: true,
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request,
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        getDraftModeCookieHeader,
+        loadPagesEntry: () => ({
+          matchPageRoute: () => ({
+            route: { dataKind: "runtime", isDynamic: false, pattern: "/pages-dir/legacy" },
+          }),
+          renderPage: vi.fn(() => new Response("unexpected")),
+        }),
+      },
+    );
+
+    expect(getDraftModeCookieHeader).toHaveBeenCalledOnce();
+    expect(response?.headers.getSetCookie()).toEqual([
+      "__prerender_bypass=secret; Path=/; HttpOnly",
+    ]);
+    expect(response?.headers.get("cache-control")).toContain("no-store");
+  });
+
+  it.each(["static", "none"] as const)(
+    "renders hybrid middleware data prefetches for %s Pages routes",
+    async (dataKind) => {
+      const renderPage = vi.fn(() => new Response('{"pageProps":{"ok":true}}'));
+      const request = new Request("http://localhost/pages-dir/static", {
+        headers: { "x-middleware-prefetch": "1" },
+      });
+
+      const response = await renderPagesFallback(
+        {
+          hasMiddleware: true,
+          isDataRequest: true,
+          isRscRequest: false,
+          middlewareContext: { headers: null, requestHeaders: null, status: null },
+          request,
+          url: new URL(request.url),
+        },
+        {
+          ...defaultDeps,
+          loadPagesEntry: () => ({
+            matchPageRoute: () => ({
+              route: { dataKind, isDynamic: false, pattern: "/pages-dir/static" },
+            }),
+            renderPage,
+          }),
+        },
+      );
+
+      expect(renderPage).toHaveBeenCalledOnce();
+      expect(response?.headers.get("x-middleware-skip")).toBeNull();
+      await expect(response?.json()).resolves.toEqual({ pageProps: { ok: true } });
+    },
+  );
+
+  it("renders a hybrid custom 404 during middleware data prefetches", async () => {
+    const renderPage = vi.fn(() => new Response('{"pageProps":{"error":"not found"}}'));
+    const request = new Request("http://localhost/404", {
+      headers: { "x-middleware-prefetch": "1" },
+    });
+
+    const response = await renderPagesFallback(
+      {
+        hasMiddleware: true,
+        isDataRequest: true,
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request,
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({
+          matchPageRoute: () => ({
+            route: { dataKind: "runtime", isDynamic: false, pattern: "/404" },
+          }),
+          renderPage,
+        }),
+      },
+    );
+
+    expect(renderPage).toHaveBeenCalledOnce();
+    expect(response?.headers.get("x-middleware-skip")).toBeNull();
+    await expect(response?.json()).resolves.toEqual({ pageProps: { error: "not found" } });
+  });
+
   it("forwards the basePath-stripped Pages data request after App pipeline normalization", async () => {
     const matchPageRoute = vi.fn(() => ({
       route: { isDynamic: false, pattern: "/pages-dir/search" },

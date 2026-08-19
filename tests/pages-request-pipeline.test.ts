@@ -18,6 +18,7 @@ import {
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
 
 // Helpers
 
@@ -797,6 +798,53 @@ describe("middleware", () => {
     expect(await result.response.json()).toEqual({});
   });
 
+  it("skips middleware data prefetches for getInitialProps pages", async () => {
+    const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gip"}}');
+    const result = await runPagesRequest(
+      makeRequest("/legacy", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi.fn().mockReturnValue({
+          route: { isDynamic: false, pattern: "/legacy", dataKind: "runtime" },
+        }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(result.response.headers.get("x-matched-path")).toBe("/legacy");
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBe("1");
+    expect(await result.response.json()).toEqual({});
+  });
+
+  it("renders custom 404 getInitialProps during middleware data prefetches", async () => {
+    const renderPage = makeRenderPage(200, '{"pageProps":{"error":"not found"}}');
+    const result = await runPagesRequest(
+      makeRequest("/404", { "x-middleware-prefetch": "1" }),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({ continue: true }),
+        matchPageRoute: vi.fn().mockReturnValue({
+          route: { isDynamic: false, pattern: "/404", dataKind: "runtime" },
+        }),
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(renderPage).toHaveBeenCalledOnce();
+    expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBeNull();
+    expect(await result.response.json()).toEqual({ pageProps: { error: "not found" } });
+  });
+
   it("falls back to normal data handling when route data kind is unknown", async () => {
     const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
     const result = await runPagesRequest(
@@ -818,7 +866,7 @@ describe("middleware", () => {
     expect(await result.response.text()).toBe('{"pageProps":{"message":"from gssp"}}');
   });
 
-  it("does not skip middleware data prefetches for unexpected route data kinds", async () => {
+  it("does not skip middleware data prefetches for auto-static pages", async () => {
     const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
     const result = await runPagesRequest(
       makeRequest("/ssr", { "x-middleware-prefetch": "1" }),
@@ -1161,6 +1209,168 @@ describe("middleware", () => {
     const cookies = result.response.headers.getSetCookie?.() ?? [];
     expect(cookies).toContain("a=1");
     expect(cookies).toContain("b=2");
+  });
+});
+
+describe("Pages late response cache denial", () => {
+  it("keeps original credentials in cache identity after middleware deletes them", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/private-page", { Cookie: "session=private" }),
+        baseDeps({
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            responseHeaders: [
+              ["x-middleware-override-headers", "x-added"],
+              ["x-middleware-request-x-added", "1"],
+            ],
+          }),
+          renderPage: async (request) => {
+            expect(request.headers.get("Cookie")).toBeNull();
+            const response = new Response("page");
+            applyCdnResponseHeaders(response.headers, { cacheControl: "s-maxage=60" });
+            return response;
+          },
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("adds middleware-injected credentials to cache identity for external rewrites", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const proxyExternal = vi.fn(async (request: Request) => {
+        expect(request.headers.get("Authorization")).toBe("Bearer injected");
+        const response = new Response("upstream");
+        applyCdnResponseHeaders(response.headers, { cacheControl: "s-maxage=60" });
+        return response;
+      });
+      const result = await runPagesRequest(
+        makeRequest("/internal"),
+        baseDeps({
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            rewriteUrl: "https://external.example/private",
+            responseHeaders: [
+              ["x-middleware-override-headers", "authorization"],
+              ["x-middleware-request-authorization", "Bearer injected"],
+            ],
+          }),
+          proxyExternal,
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+      expect(proxyExternal).toHaveBeenCalledOnce();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("removes a cacheable edge policy when middleware adds Set-Cookie after page render", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/private-page"),
+        baseDeps({
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            responseHeaders: [["Set-Cookie", "session=private; Path=/"]],
+          }),
+          renderPage: async () =>
+            new Response("page", {
+              headers: {
+                "Cache-Control": "public, max-age=0, must-revalidate",
+                "CDN-Cache-Control": "public, max-age=60",
+              },
+            }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+      expect(result.response.headers.getSetCookie()).toEqual(["session=private; Path=/"]);
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("removes a cacheable edge policy when middleware adds Set-Cookie after an API response", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/api/private"),
+        baseDeps({
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            responseHeaders: [["Set-Cookie", "session=private; Path=/"]],
+          }),
+          matchApiRoute: () => ({ route: { isDynamic: false, pattern: "/api/private" } }),
+          handleApi: async () =>
+            new Response("api", {
+              headers: {
+                "Cache-Control": "public, max-age=0, must-revalidate",
+                "CDN-Cache-Control": "public, max-age=60",
+              },
+            }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+      expect(result.response.headers.getSetCookie()).toEqual(["session=private; Path=/"]);
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("removes a cacheable edge policy from middleware data-miss normalization", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/_next/data/build/missing.json"),
+        baseDeps({
+          hasMiddleware: true,
+          isDataRequest: true,
+          runMiddleware: makeMiddleware({
+            responseHeaders: [["Set-Cookie", "session=private; Path=/"]],
+          }),
+          matchPageRoute: () => null,
+          renderPage: async () =>
+            new Response("not found", {
+              status: 404,
+              headers: {
+                "Cache-Control": "public, max-age=0, must-revalidate",
+                "CDN-Cache-Control": "public, max-age=60",
+              },
+            }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.status).toBe(200);
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+      expect(result.response.headers.getSetCookie()).toEqual(["session=private; Path=/"]);
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 });
 

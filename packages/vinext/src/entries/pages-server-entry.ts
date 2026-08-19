@@ -15,6 +15,7 @@ import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 import { hasExportedName } from "../build/report.js";
+import type { PagesRouteDataKind } from "../server/pages-data-route.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
@@ -28,7 +29,7 @@ const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
 const _pagesPageHandlerPath = resolveEntryPath("../server/pages-page-handler.js", import.meta.url);
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 
-async function getPagesDataKind(filePath: string): Promise<"static" | "server" | "none"> {
+async function getPagesDataKind(filePath: string): Promise<PagesRouteDataKind> {
   const source = await readFile(filePath, "utf8");
   if (hasExportedName(source, "getStaticProps")) return "static";
   if (hasExportedName(source, "getServerSideProps")) return "server";
@@ -236,7 +237,7 @@ import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSO
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_pagesApiRoutePath)};
-import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
+import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse, resolvePagesRouteDataKind as __resolvePagesRouteDataKind } from ${JSON.stringify(_pagesDataRoutePath)};
 import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { createPagesPageHandler as __createPagesPageHandler } from ${JSON.stringify(_pagesPageHandlerPath)};
 import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_isrCachePath)};
@@ -326,6 +327,13 @@ ${errorImportCode}
 export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
+for (const route of pageRoutes) {
+  route.dataKind = __resolvePagesRouteDataKind(
+    route.dataKind,
+    route.module.default ?? null,
+    AppComponent,
+  );
+}
 export const publicFiles = new Set(${JSON.stringify(publicFiles)});
 const _pageRouteTrie = _buildRouteTrie(pageRoutes);
 const _errorPageRoute = {

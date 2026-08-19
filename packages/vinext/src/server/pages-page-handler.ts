@@ -65,6 +65,7 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { getHeadersContext } from "vinext/shims/headers";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
 import {
@@ -609,10 +610,17 @@ export function createPagesPageHandler(
       ? extractLocaleFromUrl(routerAsPathSource, i18nConfig, locale).url
       : routerAsPathSource;
     const inheritedRequestContext = isInsideUnifiedScope() ? getRequestContext() : null;
+    const inheritedHeadersContext = getHeadersContext();
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
-      cdnCacheRequestHeaders: inheritedRequestContext?.cdnCacheRequestHeaders ?? request.headers,
-      cdnCacheRequestUrl: inheritedRequestContext?.cdnCacheRequestUrl ?? request.url,
+      cdnCacheRequestHeaders:
+        inheritedRequestContext?.cdnCacheRequestHeaders ??
+        inheritedHeadersContext?.originalRequestHeaders ??
+        request.headers,
+      cdnCacheRequestUrl:
+        inheritedRequestContext?.cdnCacheRequestUrl ??
+        inheritedHeadersContext?.originalRequestUrl ??
+        request.url,
     });
 
     const response = await runWithRequestContext(uCtx, async () => {

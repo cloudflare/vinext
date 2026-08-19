@@ -1707,15 +1707,21 @@ describe("createAppRscHandler", () => {
     // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/interception-middleware-rewrite
     // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/middleware-rsc-external-rewrite
     const receivedUrls: string[] = [];
+    const receivedAuthorization: Array<string | undefined> = [];
     const server = createServer((req, res) => {
       receivedUrls.push(req.url ?? "");
-      res.writeHead(200, { "content-type": "text/plain" });
+      receivedAuthorization.push(req.headers.authorization);
+      res.writeHead(200, {
+        "cache-control": "s-maxage=60",
+        "content-type": "text/plain",
+      });
       res.end("upstream");
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address() as AddressInfo;
     const upstreamUrl = `http://127.0.0.1:${address.port}/proxy`;
 
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     try {
       const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
       const sourceRoute = createPageRoute({ pattern: "/feed" });
@@ -1730,7 +1736,13 @@ describe("createAppRscHandler", () => {
         middlewareModule: {
           default(request: NextRequest) {
             return request.nextUrl.pathname === "/feed"
-              ? new Response(null, { headers: { "x-middleware-rewrite": upstreamUrl } })
+              ? new Response(null, {
+                  headers: {
+                    "x-middleware-override-headers": "authorization",
+                    "x-middleware-request-authorization": "Bearer source",
+                    "x-middleware-rewrite": upstreamUrl,
+                  },
+                })
               : new Response(null, { headers: { "x-middleware-next": "1" } });
           },
         },
@@ -1743,10 +1755,14 @@ describe("createAppRscHandler", () => {
 
       expect(response.status).toBe(200);
       expect(receivedUrls).toHaveLength(1);
+      expect(receivedAuthorization).toEqual(["Bearer source"]);
       const forwardedUrl = new URL(`http://vinext.local${receivedUrls[0]}`);
       expect(forwardedUrl.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(true);
       expect(forwardedUrl.searchParams.get("tab")).toBe("latest");
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
@@ -3565,6 +3581,49 @@ describe("createAppRscHandler", () => {
       expect(forwardedUrl.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(true);
       expect(forwardedUrl.searchParams.get("tab")).toBe("latest");
     } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("keeps middleware-injected external rewrite credentials out of shared caches", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const receivedAuthorization: Array<string | undefined> = [];
+    const server = createServer((req, res) => {
+      receivedAuthorization.push(req.headers.authorization);
+      res.writeHead(200, {
+        "cache-control": "s-maxage=60",
+        "content-type": "text/plain",
+      });
+      res.end("private upstream");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    const upstreamUrl = `http://127.0.0.1:${address.port}/private`;
+
+    try {
+      const handler = createHandler({
+        configHeaders: [],
+        matchRoute: () => null,
+        middlewareModule: {
+          default: () =>
+            new Response(null, {
+              headers: {
+                "x-middleware-override-headers": "authorization",
+                "x-middleware-request-authorization": "Bearer injected",
+                "x-middleware-rewrite": upstreamUrl,
+              },
+            }),
+        },
+      });
+
+      const response = await handler(new Request("https://example.test/docs/proxy"), null);
+
+      expect(response.status).toBe(200);
+      expect(receivedAuthorization).toEqual(["Bearer injected"]);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
@@ -5426,6 +5485,52 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("cache-control")).toBe("max-age=1234");
     expect(response.headers.get("content-type")).toBe("image/x-icon");
     await expect(response.text()).resolves.toBe("icon-bytes");
+  });
+
+  it("keeps middleware-influenced metadata responses with credentials out of shared caches", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const handler = createHandler({
+        configHeaders: [],
+        matchRoute: () => null,
+        metadataRoutes: [
+          {
+            type: "favicon",
+            isDynamic: false,
+            filePath: "/tmp/app/favicon.ico",
+            routePrefix: "",
+            routeSegments: [],
+            servedUrl: "/favicon.ico",
+            contentType: "image/x-icon",
+            fileDataBase64: btoa("icon-bytes"),
+          },
+        ],
+        middlewareModule: {
+          middleware() {
+            return new Response(null, {
+              headers: {
+                "Cache-Control": "s-maxage=60",
+                "x-middleware-next": "1",
+              },
+            });
+          },
+        },
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/favicon.ico", {
+          headers: { Cookie: "session=private" },
+        }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+      await expect(response.text()).resolves.toBe("icon-bytes");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("lets next.config headers override static metadata route defaults", async () => {

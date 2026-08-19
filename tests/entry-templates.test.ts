@@ -1695,6 +1695,10 @@ describe("Pages Router entry template", () => {
         path.join(pagesDir, "plain.tsx"),
         "export default function Page() { return null; }",
       );
+      fs.writeFileSync(
+        path.join(pagesDir, "legacy.tsx"),
+        "function Page() { return null; } Page.getInitialProps = async () => ({ ok: true }); export default Page;",
+      );
 
       const code = await generateServerEntry(
         pagesDir,
@@ -1710,7 +1714,9 @@ describe("Pages Router entry template", () => {
       expect(code).toContain('dataKind: "server"');
       expect(code).toContain('pattern: "/plain",');
       expect(code).toContain('dataKind: "none"');
-      expect(code).not.toContain("typeof page_");
+      expect(code).toContain("resolvePagesRouteDataKind as __resolvePagesRouteDataKind");
+      expect(code).toContain("route.dataKind = __resolvePagesRouteDataKind(");
+      expect(code).toContain("route.module.default ?? null");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

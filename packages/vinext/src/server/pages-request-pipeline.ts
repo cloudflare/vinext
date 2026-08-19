@@ -32,7 +32,12 @@ import {
   proxyExternalRequest,
   sanitizeDestination,
 } from "../config/config-matchers.js";
-import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
+import {
+  buildMiddlewarePrefetchSkipResponse,
+  isNonSsgPagesRouteDataKind,
+  isPagesErrorRoutePattern,
+  type PagesRouteDataKind,
+} from "./pages-data-route.js";
 import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.js";
 import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
@@ -51,7 +56,16 @@ import {
   observePrewarmMiddlewareMatcher,
   type PrewarmSourceObservation,
 } from "./prewarm-source-independence.js";
-import { applyCdnPolicyToBoundaryResponse } from "./cache-control.js";
+import {
+  applyCdnPolicyToBoundaryResponse,
+  enforceCdnCacheDenialOnResponse,
+  includeEffectiveCdnCacheRequestCredentials,
+} from "./cache-control.js";
+import {
+  getHeadersContext,
+  headersContextFromRequest,
+  runWithHeadersContext,
+} from "vinext/shims/headers";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -63,7 +77,7 @@ export type PagesRenderOptions = {
 export type FilesystemRoutePhase = "direct" | "beforeFiles" | "afterFiles" | "fallback";
 
 type PageRouteMatch = {
-  route: { isDynamic: boolean; pattern?: string; dataKind?: "static" | "server" | "none" };
+  route: { isDynamic: boolean; pattern?: string; dataKind?: PagesRouteDataKind };
 };
 
 export async function fetchWorkerFilesystemRoute(
@@ -159,7 +173,12 @@ export type PagesPipelineDeps = {
   authorizeOnDemandRevalidate?: (headerValue: string | null) => boolean;
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
-  matchPageRoute?: ((pathname: string, request: Request) => PageRouteMatch | null) | null;
+  matchPageRoute?:
+    | ((
+        pathname: string,
+        request: Request,
+      ) => PageRouteMatch | null | Promise<PageRouteMatch | null>)
+    | null;
   /**
    * Return the matching Pages (or hybrid App) API route, if one exists.
    *
@@ -301,7 +320,15 @@ export async function runPagesRequest(
   request: Request,
   deps: PagesPipelineDeps,
 ): Promise<PagesPipelineResult> {
-  const cachePolicyRequest = request;
+  // Pure Pages runtimes do not otherwise retain the original request identity
+  // across middleware header overrides. Use the lightweight headers context;
+  // unlike the unified request scope, it does not own after() lifecycle work.
+  if (!getHeadersContext()) {
+    return runWithHeadersContext(headersContextFromRequest(request), () =>
+      runPagesRequest(request, deps),
+    );
+  }
+  let cachePolicyRequest = request;
   const {
     basePath,
     trailingSlash,
@@ -584,6 +611,14 @@ export async function runPagesRequest(
     request,
   );
   request = postMwReq;
+  // Middleware may add credentials that were absent on the client request.
+  // Cache admission is conservative across both identities: deleting an
+  // original credential cannot make the response public, and adding one to
+  // the effective request cannot cache a credential-bearing render/upstream.
+  const cacheIdentityHeaders = includeEffectiveCdnCacheRequestCredentials(request.headers);
+  if (cacheIdentityHeaders && cacheIdentityHeaders !== cachePolicyRequest.headers) {
+    cachePolicyRequest = new Request(cachePolicyRequest.url, { headers: cacheIdentityHeaders });
+  }
   const pathnameForResolvedUrl = (value: string): string => value.split("#", 1)[0].split("?", 1)[0];
   const rewriteRequestContext = (): RequestContext => ({
     ...postMwReqCtx,
@@ -623,7 +658,8 @@ export async function runPagesRequest(
 
     const dataKind = match.route.dataKind;
     if (
-      dataKind !== "server" ||
+      !isNonSsgPagesRouteDataKind(dataKind) ||
+      isPagesErrorRoutePattern(match.route.pattern) ||
       !isDataRequest ||
       !deps.hasMiddleware ||
       request.headers.get("x-middleware-prefetch") !== "1"
@@ -753,7 +789,9 @@ export async function runPagesRequest(
         apiRequest = cloneRequestWithUrl(request, apiRequestUrl.toString());
       }
       const response = await deps.handleApi(apiRequest, apiLookupUrl, deps.ctx ?? null);
-      const merged = mergeHeaders(response, middlewareHeaders, middlewareStatus);
+      const merged = enforceCdnCacheDenialOnResponse(
+        mergeHeaders(response, middlewareHeaders, middlewareStatus),
+      );
       // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
       // mergeHeaders may create a new Response object (losing non-standard
       // properties), so copy the marker from the original API response.
@@ -787,7 +825,7 @@ export async function runPagesRequest(
   // Step 12: afterFiles rewrites
   let pageMatch =
     !isOutsideBasePathUnclaimed() && deps.matchPageRoute
-      ? deps.matchPageRoute(resolvedPathname, request)
+      ? await deps.matchPageRoute(resolvedPathname, request)
       : null;
   // matchPageRoute is a route-table scan; only re-run it below if afterFiles
   // actually rewrote resolvedPathname (the common case leaves it unchanged).
@@ -824,7 +862,9 @@ export async function runPagesRequest(
         if (afterFilesFilesystemResult) return afterFilesFilesystemResult;
         const afterFilesApiResult = await handleResolvedApiRoute();
         if (afterFilesApiResult) return afterFilesApiResult;
-        pageMatch = deps.matchPageRoute ? deps.matchPageRoute(resolvedPathname, request) : null;
+        pageMatch = deps.matchPageRoute
+          ? await deps.matchPageRoute(resolvedPathname, request)
+          : null;
         if (pageMatch) break;
       }
     }
@@ -879,7 +919,7 @@ export async function runPagesRequest(
         const fallbackApiResult = await handleResolvedApiRoute();
         if (fallbackApiResult) return fallbackApiResult;
         renderPageMatch = deps.matchPageRoute
-          ? deps.matchPageRoute(resolvedPathname, request)
+          ? await deps.matchPageRoute(resolvedPathname, request)
           : null;
         refreshDataRewriteHeader();
         if (renderPageMatch) break;
@@ -943,7 +983,7 @@ export async function runPagesRequest(
         const fallbackApiResult = await handleResolvedApiRoute();
         if (fallbackApiResult) return fallbackApiResult;
         renderPageMatch = deps.matchPageRoute
-          ? deps.matchPageRoute(resolvedPathname, request)
+          ? await deps.matchPageRoute(resolvedPathname, request)
           : null;
         response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
         matchedFallbackRewrite = true;
@@ -970,7 +1010,9 @@ export async function runPagesRequest(
       const notFoundResponse = new Response("{}", { status: 200, headers });
       return {
         type: "response",
-        response: mergeHeaders(notFoundResponse, matchedPathHeaders, undefined),
+        response: enforceCdnCacheDenialOnResponse(
+          mergeHeaders(notFoundResponse, matchedPathHeaders, undefined),
+        ),
         defaultContentType: "application/json",
       };
     }
@@ -983,7 +1025,9 @@ export async function runPagesRequest(
         renderPageMatch?.route.pattern,
       );
     }
-    const merged = mergeHeaders(response, matchedPathHeaders, middlewareStatus);
+    const merged = enforceCdnCacheDenialOnResponse(
+      mergeHeaders(response, matchedPathHeaders, middlewareStatus),
+    );
     // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
     // mergeHeaders may create a new Response object (losing non-standard properties),
     // so we copy the marker from the original render response to the merged one.
@@ -1004,7 +1048,7 @@ export async function runPagesRequest(
     ? null
     : resolvedPathnameChanged
       ? deps.matchPageRoute
-        ? deps.matchPageRoute(resolvedPathname, request)
+        ? await deps.matchPageRoute(resolvedPathname, request)
         : null
       : pageMatch;
   if (!devPageMatch && configRewrites.fallback?.length) {
@@ -1035,7 +1079,7 @@ export async function runPagesRequest(
       if (fallbackFilesystemResult) return fallbackFilesystemResult;
       const fallbackApiResult = await handleResolvedApiRoute();
       if (fallbackApiResult) return fallbackApiResult;
-      devPageMatch = deps.matchPageRoute?.(resolvedPathname, request) ?? null;
+      devPageMatch = (await deps.matchPageRoute?.(resolvedPathname, request)) ?? null;
       if (devPageMatch) break;
     }
   }

@@ -1,17 +1,60 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
   buildMiddlewarePrefetchSkipResponse,
+  isPagesErrorRoutePattern,
   isNextDataPathname,
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
   encodeUrlParserIgnoredCharacters,
   normalizePagesDataRequest,
+  resolvePagesRouteDataKind,
   shouldAddTrailingSlashToPagesDataPath,
   normalizeNextDataPagePathname,
   urlParserCreatesPagesDataPath,
 } from "../packages/vinext/src/server/pages-data-route.js";
 
 describe("pages-data-route", () => {
+  it("recognizes Next.js error document route patterns", () => {
+    expect(isPagesErrorRoutePattern("/404")).toBe(true);
+    expect(isPagesErrorRoutePattern("/_error")).toBe(true);
+    expect(isPagesErrorRoutePattern("/articles/:slug")).toBe(false);
+  });
+
+  describe("resolvePagesRouteDataKind", () => {
+    it("distinguishes auto-static pages from page getInitialProps", () => {
+      expect(resolvePagesRouteDataKind("none", {}, null)).toBe("none");
+      expect(resolvePagesRouteDataKind("none", { getInitialProps() {} }, null)).toBe("runtime");
+    });
+
+    it("distinguishes inherited and custom _app getInitialProps", () => {
+      const original = () => undefined;
+      expect(
+        resolvePagesRouteDataKind(
+          "none",
+          {},
+          { getInitialProps: original, origGetInitialProps: original },
+        ),
+      ).toBe("none");
+      expect(
+        resolvePagesRouteDataKind(
+          "none",
+          {},
+          { getInitialProps() {}, origGetInitialProps: original },
+        ),
+      ).toBe("runtime");
+    });
+
+    it("preserves explicit SSG and GSSP classification", () => {
+      const runtimeComponent = { getInitialProps() {} };
+      expect(resolvePagesRouteDataKind("static", runtimeComponent, runtimeComponent)).toBe(
+        "static",
+      );
+      expect(resolvePagesRouteDataKind("server", runtimeComponent, runtimeComponent)).toBe(
+        "server",
+      );
+    });
+  });
+
   describe("isNextDataPathname", () => {
     it("returns true for valid _next/data paths regardless of buildId", () => {
       expect(isNextDataPathname("/_next/data/abc/about.json")).toBe(true);

@@ -1,5 +1,10 @@
 import { getCdnCacheAdapter, type CdnCacheableHeaderInput } from "vinext/shims/cdn-cache";
-import { headersContextFromRequest, runWithHeadersContext } from "vinext/shims/headers";
+import {
+  getHeadersContext,
+  headersContextFromRequest,
+  runWithHeadersContext,
+} from "vinext/shims/headers";
+import { getRequestContext, isInsideUnifiedScope } from "vinext/shims/unified-request-context";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
@@ -14,6 +19,7 @@ export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
 
 const SHARED_CACHE_DIRECTIVE_RE = /(?:^|,)\s*s-maxage\s*=/i;
 const NON_CACHEABLE_DIRECTIVE_RE = /(?:private|no-store|no-cache)/i;
+const CDN_CACHE_CREDENTIAL_HEADERS = ["Cookie", "Authorization"] as const;
 
 export function shouldUseNextDeployCacheControl(): boolean {
   return process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL === "1";
@@ -35,6 +41,38 @@ export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean
   }
   const cacheControl = headers.get("Cache-Control");
   return Boolean(cacheControl && NON_CACHEABLE_DIRECTIVE_RE.test(cacheControl));
+}
+
+/**
+ * Conservatively retain credentials from the effective post-middleware
+ * request alongside the original client request used for CDN cache policy.
+ * Middleware can add or delete request headers, but neither transition may
+ * turn a credential-influenced response into a shared cache entry.
+ */
+export function includeEffectiveCdnCacheRequestCredentials(
+  effectiveHeaders: Headers,
+): Headers | null {
+  const unifiedContext = isInsideUnifiedScope() ? getRequestContext() : null;
+  const headersContext = getHeadersContext();
+  const cacheIdentityHeaders =
+    unifiedContext?.cdnCacheRequestHeaders ?? headersContext?.originalRequestHeaders ?? null;
+  if (!cacheIdentityHeaders) return null;
+
+  let merged: Headers | null = null;
+  for (const name of CDN_CACHE_CREDENTIAL_HEADERS) {
+    if (!effectiveHeaders.has(name) || cacheIdentityHeaders.has(name)) continue;
+    merged ??= new Headers(cacheIdentityHeaders);
+    merged.set(name, effectiveHeaders.get(name) ?? "");
+  }
+  if (!merged) return cacheIdentityHeaders;
+
+  if (unifiedContext?.cdnCacheRequestHeaders) {
+    unifiedContext.cdnCacheRequestHeaders = merged;
+  }
+  if (headersContext?.originalRequestHeaders) {
+    headersContext.originalRequestHeaders = merged;
+  }
+  return merged;
 }
 
 /**

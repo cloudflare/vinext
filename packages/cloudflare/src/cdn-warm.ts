@@ -257,7 +257,15 @@ export function readPrerenderWarmPlan(
     basePath: pathManifestConfig.pathConfig.basePath,
     trailingSlash: pathManifestConfig.pathConfig.trailingSlash ?? manifest.trailingSlash,
   };
-  const manifestPaths = getPrewarmableConcretePaths(manifest, options)
+  // Metadata routes retain Next.js's `public, max-age=0, must-revalidate`
+  // policy. They can be persisted by prerender/seed adapters, but issuing a
+  // deploy warm request only creates an immediately stale CDN object. Limit
+  // the Cloudflare warm plan to page documents (plus App RSC below).
+  const prewarmablePagePaths = [
+    ...getPrewarmableConcretePaths(manifest, { ...options, router: "app" }),
+    ...getPrewarmableConcretePaths(manifest, { ...options, router: "pages" }),
+  ];
+  const manifestPaths = [...new Set(prewarmablePagePaths)]
     .filter(isSafeWarmPathname)
     .map((pathname) => applyWarmPathConfig(pathname, pathConfig));
   const finalPathSet = new Set(manifestPaths);
@@ -289,7 +297,13 @@ export function getWarmPathsFromPrerenderManifest(
   manifest: PrerenderManifest,
   options?: PrerenderedPathSelectionOptions,
 ): string[] {
-  return getPrewarmableConcretePaths(manifest, options);
+  if (options?.router) return getPrewarmableConcretePaths(manifest, options);
+  return [
+    ...new Set([
+      ...getPrewarmableConcretePaths(manifest, { ...options, router: "app" }),
+      ...getPrewarmableConcretePaths(manifest, { ...options, router: "pages" }),
+    ]),
+  ];
 }
 
 export function buildWarmupUrl(targetUrl: string, pathname: string): URL {

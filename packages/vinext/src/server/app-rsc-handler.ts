@@ -90,7 +90,11 @@ import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
-import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  includeEffectiveCdnCacheRequestCredentials,
+  NEVER_CACHE_CONTROL,
+} from "./cache-control.js";
 import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
@@ -340,6 +344,7 @@ type RenderNotFoundOptions<TRoute> = {
 type RenderPagesFallbackOptions = {
   allowRscDocumentFallback?: boolean;
   appRouteMatch?: { route: { isDynamic: boolean; pattern: string } } | null;
+  hasMiddleware?: boolean;
   isDataRequest?: boolean;
   isRscRequest: boolean;
   matchKind?: "dynamic" | "static";
@@ -912,6 +917,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       conditionalPathMatched: middlewareContext.conditionalPathMatched === true,
       matched: middlewareContext.matched === true,
     });
+    const effectiveMiddlewareRequestHeaders =
+      getHeadersContext()?.headers ?? middlewareContext.requestHeaders;
+    if (effectiveMiddlewareRequestHeaders) {
+      includeEffectiveCdnCacheRequestCredentials(effectiveMiddlewareRequestHeaders);
+    }
     if (middlewareResult.kind === "response") {
       if (request.body && !request.body.locked) {
         void request.body.cancel().catch(() => {});
@@ -1109,7 +1119,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           requestContext: preMiddlewareRequestContext,
         });
       }
-      return applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);
+      const response = applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);
+      // Metadata responses always carry a Next-compatible Cache-Control value,
+      // so the finalizer's missing-policy fallback cannot route them through
+      // the adapter. Mark every metadata response to apply credential and Vary
+      // isolation, including conditional config/middleware misses.
+      return markAppCdnAdapterBoundaryResponse(response);
     }
   }
 
@@ -1293,6 +1308,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }
     }
     if (sourceMiddlewareResult.kind === "response") {
+      if (sourceMiddlewareContext.requestHeaders) {
+        includeEffectiveCdnCacheRequestCredentials(sourceMiddlewareContext.requestHeaders);
+      }
       options.clearRequestContext();
       return markAppCdnAdapterBoundaryResponse(sourceMiddlewareResult.response);
     }
@@ -1327,6 +1345,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
     if (addedSourceHeader) {
       targetHeadersContext.readonlyHeaders = undefined;
+      includeEffectiveCdnCacheRequestCredentials(targetHeadersContext.headers);
     }
     if (sourceMiddlewareResult.rewritten) {
       // Rewrites such as locale insertion are valid only when they resolve to
@@ -1483,6 +1502,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             appRouteMatch: match ?? null,
             allowRscDocumentFallback:
               didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
+            hasMiddleware: typeof options.runMiddleware === "function",
             isDataRequest,
             isRscRequest,
             matchKind,

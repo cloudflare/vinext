@@ -779,6 +779,53 @@ describe("Cloudflare CDN warmup", () => {
     );
   });
 
+  it("limits deploy warm paths to App and Pages documents", () => {
+    expect(
+      getWarmPathsFromPrerenderManifest({
+        routes: [
+          { route: "/app", status: "rendered", router: "app", revalidate: false },
+          { route: "/pages", status: "rendered", router: "pages", revalidate: 60 },
+          { route: "/robots.txt", status: "rendered", router: "metadata", revalidate: false },
+        ],
+      }),
+    ).toEqual(["/app", "/pages"]);
+  });
+
+  it("builds a mixed App/Pages warm plan without immediately stale metadata", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/app", "/pages", "/robots.txt"],
+        appPaths: ["/app"],
+        rscCacheKeyMode: "response-vary",
+      }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          { route: "/app", status: "rendered", router: "app", revalidate: false },
+          { route: "/pages", status: "rendered", router: "pages", revalidate: 60 },
+          {
+            route: "/robots.txt",
+            status: "rendered",
+            router: "metadata",
+            revalidate: false,
+          },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: ["/app", "/pages"],
+      rscPaths: ["/app"],
+      rscCacheKeyMode: "response-vary",
+    });
+  });
+
   it("can select fallback-shell placeholder paths when requested", () => {
     expect(
       getWarmPathsFromPrerenderManifest(
