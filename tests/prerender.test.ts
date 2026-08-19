@@ -25,7 +25,6 @@ import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/serv
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import { getAppRouteOutputPath } from "../packages/vinext/src/utils/prerender-output-paths.js";
-import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed-cache.js";
 
 const PAGES_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
 const APP_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/app-basic");
@@ -224,22 +223,22 @@ describe("extractRscPayloadFromPrerenderedHtml", () => {
 });
 
 describe("prerenderApp — RSC extraction", () => {
-  it("renders static metadata once and preserves its seeded response metadata", async () => {
+  it("probes static metadata once using production enumeration semantics", async () => {
     const root = tmpDir("vinext-prerender-static-metadata-once-");
     const outDir = path.join(root, "prerendered-routes");
     let metadataRequests = 0;
     const server = createServer((req, res) => {
       if (req.url === "/__vinext/prerender/metadata-routes") {
         res.setHeader("content-type", "application/json");
-        res.end(
-          JSON.stringify([{ path: "/robots.txt", routePattern: "/robots.txt", routeSegments: [] }]),
-        );
+        // Production enumeration only returns dynamic `use cache` metadata.
+        // Concrete static files are discovered from `metadataRoutes` below.
+        res.end("[]");
         return;
       }
-      if (req.url === "/robots.txt") {
+      if (req.url === "/docs/robots.txt") {
         metadataRequests++;
-        res.statusCode = 202;
         res.setHeader("content-type", "text/plain");
+        res.setHeader("cloudflare-cdn-cache-control", "no-store");
         res.setHeader("set-cookie", ["first=1; Path=/", "second=2; Path=/"]);
         res.end("User-Agent: *\nAllow: /buildtime\n");
         return;
@@ -274,7 +273,10 @@ describe("prerenderApp — RSC extraction", () => {
         ],
         outDir,
         manifestDir: root,
-        config: await resolveNextConfig({ generateBuildId: () => "metadata-once-build" }),
+        config: await resolveNextConfig({
+          basePath: "/docs",
+          generateBuildId: () => "metadata-once-build",
+        }),
         _prodServer: { server, port },
       });
 
@@ -286,24 +288,14 @@ describe("prerenderApp — RSC extraction", () => {
       expect(
         manifest.routes.filter((route: { route: string }) => route.route === "/robots.txt"),
       ).toHaveLength(1);
-
-      const writes: Array<{ headers: Record<string, string | string[]>; status: number }> = [];
-      expect(
-        await seedMemoryCacheFromPrerender(root, {
-          async writeAppRouteEntry(_key, data) {
-            writes.push({ headers: data.headers, status: data.status });
-          },
-        }),
-      ).toBe(1);
-      expect(writes).toEqual([
-        {
-          headers: expect.objectContaining({
-            "content-type": "text/plain",
-            "set-cookie": ["first=1; Path=/", "second=2; Path=/"],
-          }),
-          status: 202,
-        },
-      ]);
+      expect(manifest.routes[0]).toMatchObject({
+        route: "/robots.txt",
+        status: "rendered",
+        router: "metadata",
+        prewarmable: false,
+        hasSetCookie: true,
+        headers: { "cloudflare-cdn-cache-control": "no-store" },
+      });
     } finally {
       await closeServer(server);
       fs.rmSync(root, { recursive: true, force: true });
@@ -583,12 +575,7 @@ describe("prerenderApp — RSC extraction", () => {
       const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
       if (pathname === "/__vinext/prerender/metadata-routes") {
         res.setHeader("content-type", "application/json");
-        res.end(
-          JSON.stringify([
-            { path: "/robots.txt", routePattern: "/robots.txt", routeSegments: [] },
-            { path: "/icon.png", routePattern: "/icon.png", routeSegments: [] },
-          ]),
-        );
+        res.end("[]");
         return;
       }
       if (pathname === "/__vinext_nonexistent_for_404__") {

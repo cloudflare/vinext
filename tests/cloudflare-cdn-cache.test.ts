@@ -187,8 +187,16 @@ describe("CloudflareCdnCacheAdapter", () => {
       { RSC: "1", "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell" },
       { RSC: "1", "X-Vinext-Client-Reuse-Manifest": "source-state" },
       { "X-Vinext-Interception-Context": "/feed" },
-      { RSC: "1", "X-Vinext-Interception-Id": "interception:slot:source->target" },
-      { RSC: "1", "X-Vinext-Rsc-State-Fingerprint": "attacker-selected" },
+      {
+        RSC: "1",
+        Accept: "text/x-component",
+        "X-Vinext-Interception-Id": "interception:slot:source->target",
+      },
+      {
+        RSC: "1",
+        Accept: "text/x-component",
+        "X-Vinext-Rsc-State-Fingerprint": "attacker-selected",
+      },
     ];
     for (const headers of variantHeaders) {
       await expect(buildFor(headers)).resolves.toEqual({
