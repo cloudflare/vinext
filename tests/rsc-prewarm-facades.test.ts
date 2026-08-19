@@ -45,10 +45,6 @@ describe("RSC prewarm capability facades", () => {
   it("delegates after the capability bootstrap registers implementations", async () => {
     const client = {
       canonicalizeFullRscRequestHeaders: vi.fn(() => true),
-      createRscClientRequestIdentity: vi.fn(async (href: string) => ({
-        cacheKeyUrl: href,
-        requestUrl: href,
-      })),
       getLoadedRscPrewarmEligibility: vi.fn(() => true),
       isLoadedRscPrewarmEligibleHref: vi.fn(() => true),
       isRscPrewarmEligibleHref: vi.fn(async () => true),
@@ -79,9 +75,6 @@ describe("RSC prewarm capability facades", () => {
     const waitForEligibility = Promise.resolve(true);
     registerRscPrewarmClientImplementation({
       canonicalizeFullRscRequestHeaders: () => true,
-      async createRscClientRequestIdentity(href) {
-        return { cacheKeyUrl: href, requestUrl: href };
-      },
       getLoadedRscPrewarmEligibility: () => null,
       isLoadedRscPrewarmEligibleHref: () => false,
       isRscPrewarmEligibleHref: () => waitForEligibility,
@@ -96,10 +89,6 @@ describe("RSC prewarm capability facades", () => {
   it("lets a dev generation dispose only the implementation it registered", () => {
     const implementation = (eligible: boolean) => ({
       canonicalizeFullRscRequestHeaders: vi.fn(() => eligible),
-      createRscClientRequestIdentity: vi.fn(async (href: string) => ({
-        cacheKeyUrl: href,
-        requestUrl: href,
-      })),
       getLoadedRscPrewarmEligibility: vi.fn(() => eligible),
       isLoadedRscPrewarmEligibleHref: vi.fn(() => eligible),
       isRscPrewarmEligibleHref: vi.fn(async () => eligible),

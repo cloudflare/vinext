@@ -30,6 +30,8 @@ import {
 import { applyPrerenderCacheLifeHeader } from "./prerender-cache-life-header.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 
+const RESPONSE_VARY_RSC_CACHE = process.env.__VINEXT_RSC_CACHE_KEY_MODE !== "header-digest";
+
 export type AppPageMiddlewareContext = {
   headers: Headers | null;
   status: number | null;
@@ -390,12 +392,15 @@ export function buildAppPageHtmlResponse(
 
   applyTimingHeader(headers, options.timing);
 
-  removeRscPrewarmManifestInvalidatedHeaders(headers);
+  if (RESPONSE_VARY_RSC_CACHE) removeRscPrewarmManifestInvalidatedHeaders(headers);
 
-  const response = new Response(injectRscPrewarmManifestMeta(body), {
-    status: options.middlewareContext.status ?? 200,
-    headers,
-  });
+  const response = new Response(
+    RESPONSE_VARY_RSC_CACHE ? injectRscPrewarmManifestMeta(body) : body,
+    {
+      status: options.middlewareContext.status ?? 200,
+      headers,
+    },
+  );
   markFrameworkLinkHeaders(response.headers, options.linkHeader);
   return response;
 }

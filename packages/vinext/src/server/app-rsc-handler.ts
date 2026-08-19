@@ -131,6 +131,7 @@ const STATIC_METADATA_CONFIG_HEADER_OVERRIDES = new Set(["cache-control"]);
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const HAS_CONFIG_REDIRECTS = process.env.__VINEXT_HAS_CONFIG_REDIRECTS !== "false";
 const HAS_CONFIG_REWRITES = process.env.__VINEXT_HAS_CONFIG_REWRITES !== "false";
+const RESPONSE_VARY_RSC_CACHE = process.env.__VINEXT_RSC_CACHE_KEY_MODE !== "header-digest";
 type StaticParamsMap = AppPrerenderStaticParamsMap;
 type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
@@ -2063,17 +2064,19 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             explicitNextUrlVary: false,
             resolvedPathCouldBeIntercepted: false,
           };
-          const prewarmObservation = createAppRscPrewarmObservation({
-            hasConfigRules:
-              options.configHeaders.length > 0 ||
-              options.configRedirects.length > 0 ||
-              options.configRewrites.beforeFiles.length > 0 ||
-              options.configRewrites.afterFiles.length > 0 ||
-              options.configRewrites.fallback.length > 0,
-            i18nConfig: options.i18nConfig,
-            request,
-            requestKind: request.headers.get(RSC_HEADER) === "1" ? "rsc" : "document",
-          });
+          const prewarmObservation = RESPONSE_VARY_RSC_CACHE
+            ? createAppRscPrewarmObservation({
+                hasConfigRules:
+                  options.configHeaders.length > 0 ||
+                  options.configRedirects.length > 0 ||
+                  options.configRewrites.beforeFiles.length > 0 ||
+                  options.configRewrites.afterFiles.length > 0 ||
+                  options.configRewrites.fallback.length > 0,
+                i18nConfig: options.i18nConfig,
+                request,
+                requestKind: request.headers.get(RSC_HEADER) === "1" ? "rsc" : "document",
+              })
+            : null;
 
           try {
             response = await handleAppRscRequest(

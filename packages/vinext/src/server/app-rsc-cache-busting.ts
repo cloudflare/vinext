@@ -55,6 +55,7 @@ export { VINEXT_RSC_RENDER_MODE_HEADER } from "./headers.js";
 export {
   computeRscCacheBustingSearchParam,
   createRscClientCacheVariantKey,
+  createRscClientRequestIdentity,
   createRscRequestUrl,
   getRscCacheKeyMode,
   hasRscCacheBustingSearchParam,

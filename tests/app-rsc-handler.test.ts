@@ -358,6 +358,31 @@ describe("createAppRscHandler", () => {
     }
   });
 
+  it("denies shared caching when matched middleware continues to a cacheable route", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage: async () =>
+          new Response("page", { headers: { "Cache-Control": "s-maxage=60" } }),
+        middlewareModule: {
+          default() {
+            return undefined;
+          },
+        },
+      });
+
+      const response = await handler(new Request("https://example.test/docs/about"), null);
+
+      await expect(response.text()).resolves.toBe("page");
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe("no-store");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   it("does not certify default-locale paths covered by locale:false conditional middleware", async () => {
     const middleware = vi.fn(() => undefined);
     const response = await runRscPrewarmProbe(

@@ -64,9 +64,9 @@ import { RouterContext } from "./internal/router-context.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 import {
   canonicalizeFullRscRequestHeaders,
-  createRscClientRequestIdentity,
   isRscPrewarmEligibleHrefForPrefetch,
 } from "./rsc-prewarm-client.js";
+import { createRscClientRequestIdentity } from "../client/rsc-request-identity.js";
 import {
   clearLinkForCurrentNavigation,
   notifyLinkNavigationStart,
@@ -86,6 +86,7 @@ type NavigateEvent = {
 
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
+const RESPONSE_VARY_RSC_CACHE = process.env.__VINEXT_RSC_CACHE_KEY_MODE === "response-vary";
 
 type NavigationModule = typeof import("./navigation.js");
 type HybridClientRouteOwnerModule = typeof import("./internal/hybrid-client-route-owner.js");
@@ -478,8 +479,7 @@ function prefetchUrl(
           DYNAMIC_NAVIGATION_CACHE_TTL,
           PREFETCH_CACHE_TTL,
         } = navigation;
-        const { createRscClientCacheVariantKey, createRscRequestUrl, getRscCacheKeyMode } =
-          rscCacheBusting;
+        const { createRscClientCacheVariantKey, createRscRequestUrl } = rscCacheBusting;
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
           NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -509,7 +509,7 @@ function prefetchUrl(
         if (!autoPrefetch.shouldPrefetch) return;
 
         const isPrewarmEligible =
-          getRscCacheKeyMode() === "response-vary" &&
+          RESPONSE_VARY_RSC_CACHE &&
           (await isRscPrewarmEligibleHrefForPrefetch(fullHref, __basePath));
         // A prerender-certified route has a complete source-independent Flight
         // payload. Prefer that one navigation-reusable request over a loading

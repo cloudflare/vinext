@@ -32,9 +32,9 @@ import {
 } from "../server/app-history-state.js";
 import {
   createRscClientCacheVariantKey,
+  createRscClientRequestIdentity,
   createRscRequestHeaders,
   createRscRequestUrl,
-  getRscCacheKeyMode,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -42,7 +42,6 @@ import {
 } from "../server/app-rsc-cache-busting.js";
 import {
   canonicalizeFullRscRequestHeaders,
-  createRscClientRequestIdentity,
   isRscPrewarmEligibleHrefForPrefetch,
 } from "./rsc-prewarm-client.js";
 import { hasPendingAppRouterPageRedirect } from "../server/app-browser-mpa-navigation.js";
@@ -111,6 +110,7 @@ import {
 
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
+const RESPONSE_VARY_RSC_CACHE = process.env.__VINEXT_RSC_CACHE_KEY_MODE === "response-vary";
 type HybridClientRouteOwnerModule = typeof import("./internal/hybrid-client-route-owner.js");
 let hybridClientRouteOwnerModule: HybridClientRouteOwnerModule | null = null;
 let hybridClientRouteOwnerModulePromise: Promise<HybridClientRouteOwnerModule> | null = null;
@@ -2968,7 +2968,7 @@ const _appRouter: AppRouterInstance = {
           ? resolveFullAppRoutePrefetch()
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
       const isPrewarmEligible =
-        getRscCacheKeyMode() === "response-vary" &&
+        RESPONSE_VARY_RSC_CACHE &&
         (await isRscPrewarmEligibleHrefForPrefetch(fullHref, __basePath));
       const reusable = policy.shouldPrefetch && (policy.cacheForNavigation || isPrewarmEligible);
       const requiresRouteTreePrefetch = policy.requiresRouteTreePrefetch === true;

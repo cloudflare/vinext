@@ -79,9 +79,13 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(draftFirst.cacheTag).toBeUndefined();
     expect(anonymousAfterDraft.payload.draftMode).toBe(false);
     expect(anonymousAfterDraft.payload.token).not.toBe(draftFirst.payload.token);
+    expect(anonymousAfterDraft.cacheControl).toContain("no-store");
+    expect(anonymousAfterDraft.cdnCacheControl).toBeUndefined();
 
     const publicFirstScenario = `public-first-${Date.now()}`;
     const anonymousFirst = await readDraftIsrRoute(request, publicFirstScenario);
+    expect(anonymousFirst.cacheControl).toContain("no-store");
+    expect(anonymousFirst.cdnCacheControl).toBeUndefined();
     await setDraftMode(request, true);
     try {
       const draftAfterAnonymous = await readDraftIsrRoute(request, publicFirstScenario);
@@ -102,7 +106,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
   }) => {
     const readScenario = async (scenario: string, authorization?: string) => {
       const response = await request.get(
-        `${BASE_URL}/api/draft-isr/${scenario}`,
+        `${BASE_URL}/cdn-cache-isolation/${scenario}`,
         authorization ? { headers: { Authorization: authorization } } : undefined,
       );
       expect(response.status()).toBe(200);

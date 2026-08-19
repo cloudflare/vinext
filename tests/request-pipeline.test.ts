@@ -26,6 +26,7 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATED_TAG_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -870,6 +871,7 @@ describe("filterInternalHeaders", () => {
       [VINEXT_PRERENDER_CACHE_LIFE_HEADER]: "forged",
       [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
       [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "forged",
+      [VINEXT_REVALIDATED_TAG_HEADER]: "forged",
       [VINEXT_REVALIDATE_HOST_HEADER]: "example.fr",
       [VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER]: "forged",
       "user-agent": "test",
@@ -886,6 +888,7 @@ describe("filterInternalHeaders", () => {
       VINEXT_PRERENDER_CACHE_LIFE_HEADER,
       VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
       VINEXT_REVALIDATE_HOST_HEADER,
+      VINEXT_REVALIDATED_TAG_HEADER,
     ]);
     for (const name of VINEXT_INTERNAL_HEADERS) {
       expect(name).toBe(name.toLowerCase());
@@ -895,6 +898,7 @@ describe("filterInternalHeaders", () => {
     expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
     expect(result.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
     expect(result.has(VINEXT_REVALIDATE_HOST_HEADER)).toBe(false);
+    expect(result.has(VINEXT_REVALIDATED_TAG_HEADER)).toBe(false);
     expect(result.get("user-agent")).toBe("test");
   });
 

@@ -29,6 +29,7 @@ import {
 } from "vinext/shims/rsc-prewarm-server";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
+const RESPONSE_VARY_RSC_CACHE = process.env.__VINEXT_RSC_CACHE_KEY_MODE !== "header-digest";
 export {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -300,12 +301,15 @@ export function buildAppPageCachedResponse(
     middlewareHeaders: options.middlewareHeaders,
     staleTimeSeconds,
   });
-  removeRscPrewarmManifestInvalidatedHeaders(htmlHeaders);
+  if (RESPONSE_VARY_RSC_CACHE) removeRscPrewarmManifestInvalidatedHeaders(htmlHeaders);
 
-  const response = new Response(injectRscPrewarmManifestMetaHtml(cachedValue.html), {
-    status,
-    headers: htmlHeaders,
-  });
+  const response = new Response(
+    RESPONSE_VARY_RSC_CACHE ? injectRscPrewarmManifestMetaHtml(cachedValue.html) : cachedValue.html,
+    {
+      status,
+      headers: htmlHeaders,
+    },
+  );
   markFrameworkLinkHeaders(response.headers, cachedValue.headers?.link);
   return response;
 }

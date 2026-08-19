@@ -14,6 +14,8 @@ import {
 } from "vinext/shims/rsc-prewarm-server";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 
+const RESPONSE_VARY_RSC_CACHE = process.env.__VINEXT_RSC_CACHE_KEY_MODE !== "header-digest";
+
 export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 
 export type AppPageFontData = {
@@ -323,12 +325,15 @@ export async function renderAppPageHtmlResponse(
     headers.append("Link", frameworkLinkHeader);
   }
 
-  removeRscPrewarmManifestInvalidatedHeaders(headers);
+  if (RESPONSE_VARY_RSC_CACHE) removeRscPrewarmManifestInvalidatedHeaders(headers);
 
-  const response = new Response(injectRscPrewarmManifestMeta(safeStream), {
-    status: options.status,
-    headers,
-  });
+  const response = new Response(
+    RESPONSE_VARY_RSC_CACHE ? injectRscPrewarmManifestMeta(safeStream) : safeStream,
+    {
+      status: options.status,
+      headers,
+    },
+  );
   markFrameworkLinkHeaders(response.headers, frameworkLinkHeader);
   return response;
 }

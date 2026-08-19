@@ -1,5 +1,5 @@
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
-import { createRscRequestUrl, getRscCacheKeyMode } from "./rsc-request-identity.js";
+import { getRscCacheKeyMode } from "./rsc-request-identity.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -36,16 +36,4 @@ export function canonicalizeFullRscRequestHeaders(
   headers.delete(NEXT_URL_HEADER);
   headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
   return true;
-}
-
-export async function createRscClientRequestIdentity(
-  href: string,
-  headers: Headers,
-  requestCacheKeyMode: RscCacheKeyMode = "header-digest",
-): Promise<{ cacheKeyUrl: string; requestUrl: string }> {
-  const requestUrl = await createRscRequestUrl(href, headers, requestCacheKeyMode);
-  return {
-    cacheKeyUrl: await createRscRequestUrl(href, headers, "header-digest"),
-    requestUrl,
-  };
 }

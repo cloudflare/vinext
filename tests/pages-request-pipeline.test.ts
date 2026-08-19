@@ -819,6 +819,62 @@ describe("config redirects", () => {
     expect(result.response.headers.get("Location")).toBe("/new");
   });
 
+  it("denies CDN caching for request-conditional config redirects", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const observation = createPrewarmSourceObservation(false);
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/old", { "x-tenant": "a" }),
+        baseDeps({
+          configRedirects: [
+            {
+              source: "/old",
+              has: [{ type: "header", key: "x-tenant", value: "a" }],
+              destination: "/new",
+              permanent: true,
+            },
+          ],
+          prewarmSourceObservation: observation,
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.status).toBe(308);
+      expect(result.response.headers.get("Location")).toBe("/new");
+      expect(isPrewarmSourceIndependent(observation)).toBe(false);
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+      expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("preserves the default adapter's redirect behavior for request-conditional redirects", async () => {
+    const observation = createPrewarmSourceObservation(false);
+    const result = await runPagesRequest(
+      makeRequest("/old", { "x-tenant": "a" }),
+      baseDeps({
+        configRedirects: [
+          {
+            source: "/old",
+            has: [{ type: "header", key: "x-tenant", value: "a" }],
+            destination: "/new",
+            permanent: false,
+          },
+        ],
+        prewarmSourceObservation: observation,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.status).toBe(307);
+    expect(result.response.headers.get("Location")).toBe("/new");
+    expect(result.response.headers.get("cache-control")).toBeNull();
+  });
+
   it("keeps the real redirect status for trusted data requests", async () => {
     // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
     // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/middleware-general/test/index.test.ts
@@ -899,6 +955,94 @@ describe("config redirects", () => {
     expect(rawCapture.type).toBe("response");
     if (rawCapture.type !== "response") return;
     expect(rawCapture.response.headers.get("Location")).toBe("/target/a%252Fb/a%252Fb");
+  });
+});
+
+describe("i18n locale-detection cache safety", () => {
+  it("does not certify or CDN-cache the unprefixed root when locale detection is enabled", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const observation = createPrewarmSourceObservation(false);
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/"),
+        baseDeps({
+          i18nConfig: { defaultLocale: "en", locales: ["en", "fr"] },
+          prewarmSourceObservation: observation,
+          renderPage: async () => makeCacheableResponse("home"),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(isPrewarmSourceIndependent(observation)).toBe(false);
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+      expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBe("no-store");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it.each([
+    ["a locale-prefixed route", "/fr", undefined],
+    ["the root with locale detection disabled", "/", false],
+  ])("keeps %s eligible for its normal CDN policy", async (_name, pathname, localeDetection) => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const observation = createPrewarmSourceObservation(false);
+    try {
+      const result = await runPagesRequest(
+        makeRequest(pathname),
+        baseDeps({
+          i18nConfig: {
+            defaultLocale: "en",
+            locales: ["en", "fr"],
+            ...(localeDetection === false ? { localeDetection: false } : {}),
+          },
+          prewarmSourceObservation: observation,
+          renderPage: async () => makeCacheableResponse("page"),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(isPrewarmSourceIndependent(observation)).toBe(true);
+      expect(result.response.headers.get("cache-control")).not.toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toContain("max-age=");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("denies a fallback rewrite whose final target is the locale-detected root", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const observation = createPrewarmSourceObservation(false);
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/alias"),
+        baseDeps({
+          configRewrites: {
+            beforeFiles: [],
+            afterFiles: [],
+            fallback: [{ source: "/en/alias", destination: "/" }],
+          },
+          i18nConfig: { defaultLocale: "en", locales: ["en", "fr"] },
+          matchPageRoute: (pathname) =>
+            pathname === "/" ? { route: { isDynamic: false, pattern: "/" } } : null,
+          prewarmSourceObservation: observation,
+          renderPage: async (_request, resolvedUrl) =>
+            resolvedUrl === "/"
+              ? makeCacheableResponse("home")
+              : new Response("missing", { status: 404 }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(isPrewarmSourceIndependent(observation)).toBe(false);
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 });
 
@@ -1089,7 +1233,7 @@ describe("middleware", () => {
     // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
     const renderPage = makeRenderPage(200, '{"pageProps":{"message":"from gssp"}}');
     const result = await runPagesRequest(
-      makeRequest("/ssr", { "x-middleware-prefetch": "1" }),
+      makeRequest("/ssr", { "x-middleware-prefetch": "prefetch" }),
       baseDeps({
         isDataReq: true,
         isDataRequest: true,

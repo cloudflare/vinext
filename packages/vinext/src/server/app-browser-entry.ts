@@ -187,7 +187,6 @@ import {
   createRscClientCacheVariantKey,
   createRscRequestHeaders,
   createRscRequestUrl,
-  getRscCacheKeyMode,
   getVinextRscCompatibilityId,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
@@ -230,6 +229,7 @@ import {
 import { hasServerActions, loadServerActionClient } from "virtual:vinext-app-capabilities";
 
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
+const RESPONSE_VARY_RSC_CACHE = process.env.__VINEXT_RSC_CACHE_KEY_MODE === "response-vary";
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 type DevErrorOverlayModule = typeof import("../client/dev-error-overlay.js");
@@ -1740,7 +1740,7 @@ function registerServerActionCallback(): void {
 }
 
 async function main(): Promise<void> {
-  if (getRscCacheKeyMode() === "response-vary") {
+  if (RESPONSE_VARY_RSC_CACHE) {
     void preloadRscPrewarmManifest();
   }
   if (!claimInitialAppRouterBootstrap()) return;
@@ -2119,7 +2119,7 @@ function bootstrapHydration(
         });
         const loadedPrewarmEligibility = getLoadedRscPrewarmEligibility(currentHref, __basePath);
         const isPrewarmEligible =
-          getRscCacheKeyMode() === "response-vary" &&
+          RESPONSE_VARY_RSC_CACHE &&
           (loadedPrewarmEligibility ?? (await isRscPrewarmEligibleHref(currentHref, __basePath)));
         const usesCanonicalSharedRequest =
           isPrewarmEligible && canonicalizeFullRscRequestHeaders(requestHeaders);

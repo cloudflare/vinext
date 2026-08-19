@@ -194,3 +194,19 @@ export async function createRscRequestUrl(
   setRscCacheBustingSearchParam(url, hash);
   return `${url.pathname}${url.search}`;
 }
+
+/** Derive the network URL and the stable browser-local cache identity together. */
+export async function createRscClientRequestIdentity(
+  href: string,
+  headers: Headers,
+  requestCacheKeyMode: RscCacheKeyMode = "header-digest",
+): Promise<{ cacheKeyUrl: string; requestUrl: string }> {
+  const requestUrl = await createRscRequestUrl(href, headers, requestCacheKeyMode);
+  return {
+    cacheKeyUrl:
+      requestCacheKeyMode === "header-digest"
+        ? requestUrl
+        : await createRscRequestUrl(href, headers, "header-digest"),
+    requestUrl,
+  };
+}

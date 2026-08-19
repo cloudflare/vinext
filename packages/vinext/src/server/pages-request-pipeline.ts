@@ -470,10 +470,13 @@ export async function runPagesRequest(
       const location = preserveRedirectDestinationQuery(dest, deps.rawSearch ?? search);
       return {
         type: "response",
-        response: new Response(null, {
-          status: redirect.permanent ? 308 : 307,
-          headers: { Location: location },
-        }),
+        response: applySourceSafeCdnPolicyToBoundaryResponse(
+          new Response(null, {
+            status: redirect.permanent ? 308 : 307,
+            headers: { Location: location },
+          }),
+          cachePolicyRequest,
+        ),
       };
     }
   }
@@ -681,7 +684,7 @@ export async function runPagesRequest(
       isPagesErrorRoutePattern(match.route.pattern) ||
       !isDataRequest ||
       !deps.hasMiddleware ||
-      request.headers.get("x-middleware-prefetch") !== "1"
+      !request.headers.get("x-middleware-prefetch")
     ) {
       return null;
     }
@@ -890,6 +893,20 @@ export async function runPagesRequest(
     }
   }
 
+  const observeLocaleDetectionSource = () => {
+    // Automatic locale detection can redirect the final unprefixed root
+    // according to Accept-Language (and domain-locale host state). Evaluate
+    // the resolved target after fallback rewrites so aliases into `/` are
+    // denied while `/` rewritten away is not over-classified.
+    if (
+      deps.prewarmSourceObservation &&
+      i18nConfig &&
+      i18nConfig.localeDetection !== false &&
+      resolvedPathname === "/"
+    ) {
+      deps.prewarmSourceObservation.conditionalConfigPathMatched = true;
+    }
+  };
   const refreshDataRewriteHeader = () => {
     if (
       (isDataReq || isDataRequest) &&
@@ -1016,6 +1033,7 @@ export async function runPagesRequest(
       response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
     }
 
+    observeLocaleDetectionSource();
     const matchedPathHeaders = { ...middlewareHeaders };
     if (
       (isDataReq || isDataRequest) &&

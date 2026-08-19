@@ -42,6 +42,8 @@ import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER } from "./headers.js";
 import { matchesIfNoneMatch } from "./http-conditional.js";
 
+const RESPONSE_VARY_RSC_CACHE = process.env.__VINEXT_RSC_CACHE_KEY_MODE !== "header-digest";
+
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
 //
@@ -738,7 +740,7 @@ export async function renderPagesPageResponse(
   if (options.fontLinkHeader) {
     responseHeaders.set("Link", options.fontLinkHeader);
   }
-  removeRscPrewarmManifestInvalidatedHeaders(responseHeaders);
+  if (RESPONSE_VARY_RSC_CACHE) removeRscPrewarmManifestInvalidatedHeaders(responseHeaders);
 
   // Bot / crawler path: buffer the complete HTML, emit as a single chunk, and
   // attach an ETag. Bots (Googlebot, Google-PageRenderer, etc.) cannot parse
@@ -770,7 +772,10 @@ export async function renderPagesPageResponse(
   // NOTE: This check is intentionally placed after the Cache-Control / header
   // setup above so bot responses still carry the correct cache semantics.
   if (options.userAgent && isPagesStreamingBot(options.userAgent)) {
-    const fullHtml = injectRscPrewarmManifestMetaHtml(await readStreamAsText(compositeStream));
+    const renderedHtml = await readStreamAsText(compositeStream);
+    const fullHtml = RESPONSE_VARY_RSC_CACHE
+      ? injectRscPrewarmManifestMetaHtml(renderedHtml)
+      : renderedHtml;
     const etag = generatePagesETag(fullHtml);
     responseHeaders.set("ETag", etag);
     const noCacheRequested = requestsNoCache(options.requestCacheControl);
@@ -787,10 +792,13 @@ export async function renderPagesPageResponse(
   }
 
   const response: PagesStreamedHtmlResponse = Object.assign(
-    new Response(injectRscPrewarmManifestMeta(compositeStream), {
-      status: finalStatus,
-      headers: responseHeaders,
-    }),
+    new Response(
+      RESPONSE_VARY_RSC_CACHE ? injectRscPrewarmManifestMeta(compositeStream) : compositeStream,
+      {
+        status: finalStatus,
+        headers: responseHeaders,
+      },
+    ),
     {
       __vinextStreamedHtmlResponse: true,
     },
