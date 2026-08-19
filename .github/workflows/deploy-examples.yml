@@ -127,8 +127,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: >-
           vp exec wrangler deploy
-          --config ${{ matrix.example.wrangler_config }}
+          ../../tests/e2e/cloudflare-workers/fixture/prewarm-seed-worker.mjs
           --name rsc-prewarm-pr-${{ github.event.pull_request.number }}
+          --compatibility-date 2026-04-08
 
       - name: Deploy and warm workers-cache production test Worker
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
