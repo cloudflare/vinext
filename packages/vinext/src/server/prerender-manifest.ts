@@ -7,8 +7,10 @@ import {
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
+  VINEXT_RSC_STATE_FINGERPRINT_HEADER,
 } from "./headers.js";
 
 export type PrerenderManifestRoute = {
@@ -25,11 +27,13 @@ export type PrerenderManifestRoute = {
   path?: string;
   router?: string;
   fallback?: boolean;
-  headers?: Record<string, string>;
+  headers?: Record<string, string | string[]>;
   /** The final rendered response attempted to set a cookie; values are never persisted. */
   hasSetCookie?: boolean;
   /** A required response-side prewarm probe rejected this route. */
   prewarmable?: false;
+  responseStatus?: number;
+  routeSegments?: string[];
   tags?: string[];
 };
 
@@ -80,9 +84,11 @@ const CONTROLLED_PREWARM_VARY_HEADERS = new Set(
     NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
     NEXT_URL_HEADER,
     VINEXT_INTERCEPTION_CONTEXT_HEADER,
+    VINEXT_INTERCEPTION_ID_HEADER,
     VINEXT_MOUNTED_SLOTS_HEADER,
     VINEXT_RSC_RENDER_MODE_HEADER,
     VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+    VINEXT_RSC_STATE_FINGERPRINT_HEADER,
     "Cookie",
     "Authorization",
     "Host",
@@ -90,7 +96,7 @@ const CONTROLLED_PREWARM_VARY_HEADERS = new Set(
 );
 
 export function hasNonCacheablePrewarmHeaders(
-  headers: Headers | Record<string, string> | undefined,
+  headers: Headers | Record<string, string | string[]> | undefined,
   options?: {
     allowRscAcceptVary?: boolean;
     controlledResponseVaryHeaders?: readonly string[];
@@ -102,9 +108,10 @@ export function hasNonCacheablePrewarmHeaders(
     if (typeof name !== "string") continue;
     controlledVaryHeaders.add(name.toLowerCase());
   }
-  for (const [name, value] of headers instanceof Headers ? headers : Object.entries(headers)) {
+  for (const [name, rawValue] of headers instanceof Headers ? headers : Object.entries(headers)) {
     const lowerName = name.toLowerCase();
     if (lowerName === "set-cookie") return true;
+    const value = Array.isArray(rawValue) ? rawValue.join(", ") : rawValue;
     if (lowerName === "vary") {
       for (const token of value.split(",")) {
         const fieldName = token.trim().toLowerCase();
@@ -152,6 +159,12 @@ export function isPrewarmableRoute(
     route.hasSetCookie !== true &&
     !hasNonCacheablePrewarmHeaders(route.headers, { controlledResponseVaryHeaders })
   );
+}
+
+export function getRenderedMetadataRoutes(
+  routes: PrerenderManifestRoute[],
+): PrerenderManifestRoute[] {
+  return routes.filter((route) => route.status === "rendered" && route.router === "metadata");
 }
 
 function groupRoutesByPattern(routes: PrerenderManifestRoute[]): Map<string, string[]> {

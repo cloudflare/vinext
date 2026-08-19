@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   type AppPageCacheOutcomeMetric,
   buildAppPageCacheTags,
@@ -23,7 +23,35 @@ import {
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 import { NEXT_ROUTER_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 import { withEnvVar } from "./env-test-helpers.js";
+
+function createHeaderClearingCdnAdapter(): CdnCacheAdapter {
+  return {
+    ownsBackgroundRevalidation: false,
+    async get() {
+      return null;
+    },
+    async set() {},
+    buildResponseHeaders(input) {
+      return {
+        "Cache-Control": input.pendingDynamicCheck
+          ? "no-store, must-revalidate"
+          : input.cacheControl,
+        "CDN-Cache-Control": null,
+        "Cloudflare-CDN-Cache-Control": null,
+        "Cache-Tag": null,
+      };
+    },
+    async revalidateTag() {},
+  };
+}
+
+afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 function buildISRCacheEntry(
   value: CachedAppPageValue,
@@ -236,7 +264,7 @@ describe("app page cache helpers", () => {
     expect(response?.headers.get("X-Vinext-Cache")).toBe("HIT");
   });
 
-  it("replays prerendered Link headers before middleware overrides", () => {
+  it("replays prerendered Link headers after middleware Link values", () => {
     const cachedValue = buildCachedAppPageValue("<h1>cached</h1>");
     cachedValue.headers = {
       link: "</font.woff2>; rel=preload; as=font",
@@ -249,7 +277,9 @@ describe("app page cache helpers", () => {
       revalidateSeconds: 60,
     });
 
-    expect(response?.headers.get("link")).toBe("</middleware.css>; rel=preload; as=style");
+    expect(response?.headers.get("link")).toBe(
+      "</middleware.css>; rel=preload; as=style, </font.woff2>; rel=preload; as=font",
+    );
   });
 
   it("merges middleware response headers into cached RSC responses", async () => {
@@ -1164,6 +1194,7 @@ describe("app page cache helpers", () => {
         },
         expireSeconds: 300,
         revalidateSeconds: 60,
+        linkHeader: "</fresh.css>; rel=preload; as=style",
         waitUntil(promise) {
           pendingCacheWrites.push(promise);
         },
@@ -1202,6 +1233,7 @@ describe("app page cache helpers", () => {
   });
 
   it("skips HTML and RSC cache writes when dynamic usage appears during stream rendering", async () => {
+    setCdnCacheAdapter(createHeaderClearingCdnAdapter());
     const pendingCacheWrites: Promise<void>[] = [];
     const debugCalls: Array<[string, string]> = [];
     const isrSet = vi.fn();
@@ -1225,6 +1257,7 @@ describe("app page cache helpers", () => {
       },
       isrSet,
       revalidateSeconds: 60,
+      linkHeader: null,
       waitUntil(promise: Promise<void>) {
         pendingCacheWrites.push(promise);
       },
@@ -1298,6 +1331,7 @@ describe("app page cache helpers", () => {
         },
         isrSet,
         revalidateSeconds: 60,
+        linkHeader: null,
         waitUntil(promise) {
           pendingCacheWrites.push(promise);
         },
@@ -1418,6 +1452,8 @@ describe("app page cache helpers", () => {
         headers: {
           "Content-Type": "text/x-component",
           "Cache-Control": "s-maxage=60, stale-while-revalidate",
+          "X-Example-Edge-Policy": "public, max-age=60",
+          "X-Example-Cache-Tag": "/fresh-rsc",
           "X-Vinext-Cache": "MISS",
         },
       }),
@@ -1445,11 +1481,48 @@ describe("app page cache helpers", () => {
     // The slot variant is never written to the ISR store, but the fresh MISS
     // still has to leave the origin uncacheable by shared caches.
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("X-Example-Edge-Policy")).toBe("public, max-age=60");
+    expect(response.headers.get("X-Example-Cache-Tag")).toBe("/fresh-rsc");
     expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
     await expect(response.text()).resolves.toBe("flight");
     expect(pendingCacheWrites).toEqual([]);
     expect(isrRscKey).not.toHaveBeenCalled();
     expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  it("preserves adapter-unowned headers on mounted dynamic RSC responses", async () => {
+    const response = finalizeAppPageRscCacheResponse(
+      new Response("dynamic flight", {
+        headers: {
+          "Cache-Control": "no-store, must-revalidate",
+          "X-Example-Edge-Policy": "public, max-age=60",
+          "X-Example-Cache-Tag": "/dynamic-rsc",
+        },
+      }),
+      {
+        capturedRscDataPromise: null,
+        cleanPathname: "/dynamic-rsc",
+        consumeDynamicUsage() {
+          return true;
+        },
+        dynamicUsedDuringBuild: true,
+        getPageTags() {
+          return ["/dynamic-rsc"];
+        },
+        isrRscKey: vi.fn(),
+        isrSet: vi.fn(),
+        mountedSlotsHeader: "slot:auth:/",
+        preserveClientResponseHeaders: true,
+        revalidateSeconds: null,
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("X-Example-Edge-Policy")).toBe("public, max-age=60");
+    expect(response.headers.get("X-Example-Cache-Tag")).toBe("/dynamic-rsc");
+    expect(response.headers.get("X-Vinext-Cache")).toBeNull();
+    expect(response.headers.get("X-Nextjs-Cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("dynamic flight");
   });
 
   it("marks client-facing RSC cache MISS responses no-store until the stream dynamic check finishes", async () => {
@@ -1461,6 +1534,8 @@ describe("app page cache helpers", () => {
         headers: {
           "Content-Type": "text/x-component",
           "Cache-Control": "s-maxage=60, stale-while-revalidate",
+          "X-Example-Edge-Policy": "public, max-age=60",
+          "X-Example-Cache-Tag": "/fresh-rsc",
           "X-Vinext-Cache": "MISS",
         },
       }),
@@ -1488,6 +1563,8 @@ describe("app page cache helpers", () => {
     );
 
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("X-Example-Edge-Policy")).toBe("public, max-age=60");
+    expect(response.headers.get("X-Example-Cache-Tag")).toBe("/fresh-rsc");
     expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
     await expect(response.text()).resolves.toBe("flight");
     expect(pendingCacheWrites).toHaveLength(1);

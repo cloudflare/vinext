@@ -24,6 +24,7 @@ import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
 import { scanMetadataFiles } from "../server/metadata-routes.js";
+import { enterPrerenderPhase } from "./prerender-phase.js";
 
 export type PrerenderPathManifest = {
   basePath?: string;
@@ -200,15 +201,13 @@ async function shouldStartPathDiscoveryServer(options: {
 }
 
 async function withPrerenderEndpoints<T>(fn: () => Promise<T>): Promise<T> {
-  const previousPrerenderFlag = process.env.VINEXT_PRERENDER;
+  const restorePrerenderPhase = enterPrerenderPhase();
   const previousPathDiscoveryFlag = process.env[PRERENDER_PATH_DISCOVERY_ENV];
-  process.env.VINEXT_PRERENDER = "1";
   process.env[PRERENDER_PATH_DISCOVERY_ENV] = "1";
   try {
     return await fn();
   } finally {
-    if (previousPrerenderFlag === undefined) delete process.env.VINEXT_PRERENDER;
-    else process.env.VINEXT_PRERENDER = previousPrerenderFlag;
+    restorePrerenderPhase();
     if (previousPathDiscoveryFlag === undefined) delete process.env[PRERENDER_PATH_DISCOVERY_ENV];
     else process.env[PRERENDER_PATH_DISCOVERY_ENV] = previousPathDiscoveryFlag;
   }

@@ -22,6 +22,7 @@ import {
   shouldWriteAppRouteHandlerCache,
   type AppRouteHandlerModule,
 } from "./app-route-handler-policy.js";
+import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
 import {
   applyRouteHandlerMiddlewareContext,
   applyRouteHandlerRevalidateHeader,
@@ -97,11 +98,13 @@ export function applyDraftModeCachePolicy(response: Response, isDraftMode: boole
 
   const headers = new Headers(response.headers);
   applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
-  return new Response(response.body, {
+  const result = new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers,
   });
+  copyLinkHeaderProvenance(response.headers, result.headers);
+  return result;
 }
 
 type ExecuteAppRouteHandlerOptions = {
@@ -193,6 +196,10 @@ export async function executeAppRouteHandler(
   options: ExecuteAppRouteHandlerOptions,
 ): Promise<Response> {
   const previousHeadersPhase = options.setHeadersAccessPhase("route-handler");
+  const middlewareMergeOptions = {
+    appendResponseLink:
+      options.handler.runtime === "edge" || options.handler.runtime === "experimental-edge",
+  };
 
   try {
     let handlerResult: RunAppRouteHandlerResult;
@@ -228,7 +235,7 @@ export async function executeAppRouteHandler(
       markKnownDynamicAppRoute(options.routePattern);
     }
 
-    // The route's cache tags, shared by the response Cache-Tag header (so edge
+    // The route's cache tags, shared by the adapter's response policy (so edge
     // adapters can purge by tag) and the ISR write below. Cheap + side-effect free.
     const routeTags = options.buildPageCacheTags(
       options.cleanPathname,
@@ -303,6 +310,7 @@ export async function executeAppRouteHandler(
           isHead: options.isAutoHead,
         }),
         options.middlewareContext,
+        middlewareMergeOptions,
       ),
       shouldApplyDraftPolicy,
     );
@@ -336,6 +344,7 @@ export async function executeAppRouteHandler(
               },
             ),
             options.middlewareContext,
+            middlewareMergeOptions,
           ),
           shouldApplyDraftPolicy,
         );
@@ -345,6 +354,7 @@ export async function executeAppRouteHandler(
         applyRouteHandlerMiddlewareContext(
           new Response(null, { status: specialError.statusCode }),
           options.middlewareContext,
+          middlewareMergeOptions,
         ),
         shouldApplyDraftPolicy,
       );
@@ -369,6 +379,7 @@ export async function executeAppRouteHandler(
       applyRouteHandlerMiddlewareContext(
         new Response(null, { status: 500 }),
         options.middlewareContext,
+        middlewareMergeOptions,
       ),
       shouldApplyDraftPolicy,
     );

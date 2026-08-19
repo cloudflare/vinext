@@ -11,6 +11,7 @@ import {
 import {
   type FetchCacheMode,
   setCurrentFetchCacheMode,
+  setCurrentFetchRevalidate,
   setCurrentFetchSoftTags,
   setCurrentForceDynamicFetchDefault,
 } from "vinext/shims/fetch-cache";
@@ -224,6 +225,8 @@ export type HandleProgressiveServerActionRequestOptions = {
   decodeFormState: AppServerActionFormStateDecoder;
   getAndClearPendingCookies: () => string[];
   getDraftModeCookieHeader: () => string | null | undefined;
+  forwardAction?: (actionId: string) => Promise<Response | null>;
+  validateActionReferences?: (actionIds: readonly string[]) => boolean;
   /**
    * Whether the posted-to route resolves to an App Router *page* (as opposed to
    * a route handler or no match). Multipart form POSTs to a page are always
@@ -240,6 +243,71 @@ export type HandleProgressiveServerActionRequestOptions = {
   request: Request;
   setHeadersAccessPhase: (phase: HeadersAccessPhase) => HeadersAccessPhase;
 };
+
+function parseBoundProgressiveActionReference(
+  body: FormData,
+  referencePrefix: string,
+): { actionId: string; referencedActionIds: string[] } | null {
+  const fieldPrefix = `$ACTION_${referencePrefix}:`;
+  const chunks = new Map<string, unknown>();
+  for (const [key, value] of body) {
+    if (!key.startsWith(fieldPrefix) || typeof value !== "string") continue;
+    const chunkId = key.slice(fieldPrefix.length);
+    if (chunks.has(chunkId)) return null;
+    try {
+      chunks.set(chunkId, JSON.parse(value));
+    } catch {
+      return null;
+    }
+  }
+
+  const rootMetadata = chunks.get("0");
+  if (
+    typeof rootMetadata !== "object" ||
+    rootMetadata === null ||
+    typeof Reflect.get(rootMetadata, "id") !== "string"
+  ) {
+    return null;
+  }
+
+  const actionId = Reflect.get(rootMetadata, "id");
+  const referencedActionIds = new Set<string>([actionId]);
+  for (const chunk of chunks.values()) {
+    const values: unknown[] = [chunk];
+    while (values.length > 0) {
+      const value = values.pop();
+      if (typeof value === "string") {
+        if (!value.startsWith("$h")) continue;
+        const [encodedChunkId, ...path] = value.slice(2).split(":");
+        const chunkId = Number.parseInt(encodedChunkId, 16);
+        if (!Number.isSafeInteger(chunkId) || chunkId < 0) return null;
+        let metadata = chunks.get(String(chunkId));
+        for (const segment of path) {
+          if (
+            typeof metadata !== "object" ||
+            metadata === null ||
+            !Object.hasOwn(metadata, segment)
+          ) {
+            return null;
+          }
+          metadata = Reflect.get(metadata, segment);
+        }
+        if (
+          typeof metadata !== "object" ||
+          metadata === null ||
+          typeof Reflect.get(metadata, "id") !== "string"
+        ) {
+          return null;
+        }
+        referencedActionIds.add(Reflect.get(metadata, "id"));
+      } else if (typeof value === "object" && value !== null) {
+        values.push(...Object.values(value));
+      }
+    }
+  }
+
+  return { actionId, referencedActionIds: [...referencedActionIds] };
+}
 
 export type HandleServerActionRscRequestOptions<
   TElement,
@@ -322,6 +390,7 @@ export type HandleServerActionRscRequestOptions<
   ) => BodyInit | null | Promise<BodyInit | null>;
   reportRequestError: AppServerActionErrorReporter;
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
+  resolveRouteRevalidateSeconds?: (route: TRoute) => number | null;
   resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
   resolveRouteRuntime?: (route: TRoute) => AppServerActionRouteRuntime;
   request: Request;
@@ -1086,6 +1155,46 @@ export async function handleProgressiveServerActionRequest(
       return payloadResponse;
     }
 
+    let actionKey: string | null = null;
+    for (const key of body.keys()) {
+      if (key.startsWith("$ACTION_ID_") || key.startsWith("$ACTION_REF_")) actionKey = key;
+    }
+    let directActionId: string | null = null;
+    let referencedActionIds: string[] = [];
+    let invalidDirectActionReference = false;
+    if (actionKey?.startsWith("$ACTION_ID_")) {
+      directActionId = actionKey.slice("$ACTION_ID_".length);
+      referencedActionIds = [directActionId];
+    } else if (actionKey?.startsWith("$ACTION_REF_")) {
+      const referencePrefix = actionKey.slice("$ACTION_REF_".length);
+      const reference = parseBoundProgressiveActionReference(body, referencePrefix);
+      if (reference) {
+        directActionId = reference.actionId;
+        referencedActionIds = reference.referencedActionIds;
+      } else {
+        invalidDirectActionReference = true;
+      }
+    }
+    if (invalidDirectActionReference) {
+      return createActionNotFoundResponse(null, {
+        clearRequestContext: options.clearRequestContext,
+        getAndClearPendingCookies: options.getAndClearPendingCookies,
+      });
+    }
+    if (directActionId && options.forwardAction) {
+      const forwardResponse = await options.forwardAction(directActionId);
+      if (forwardResponse) return forwardResponse;
+    }
+    if (
+      options.validateActionReferences &&
+      !options.validateActionReferences(referencedActionIds)
+    ) {
+      return createActionNotFoundResponse(directActionId, {
+        clearRequestContext: options.clearRequestContext,
+        getAndClearPendingCookies: options.getAndClearPendingCookies,
+      });
+    }
+
     const action = await options.decodeAction(body);
     if (!isAppServerActionFunction(action)) {
       // A multipart POST to a *page* is always a server-action attempt; a body
@@ -1101,6 +1210,16 @@ export async function handleProgressiveServerActionRequest(
         });
       }
       return null;
+    }
+
+    const decodedActionId = Reflect.get(action, "$$id");
+    if (
+      typeof decodedActionId === "string" &&
+      decodedActionId !== directActionId &&
+      options.forwardAction
+    ) {
+      const forwardResponse = await options.forwardAction(decodedActionId);
+      if (forwardResponse) return forwardResponse;
     }
 
     let actionRedirect: AppServerActionRedirect | null = null;
@@ -1670,6 +1789,9 @@ export async function handleServerActionRscRequest<
       });
       setCurrentFetchCacheMode(
         options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
+      );
+      setCurrentFetchRevalidate(
+        options.resolveRouteRevalidateSeconds?.(actionRerenderTarget.route) ?? null,
       );
       setCurrentForceDynamicFetchDefault(actionRerenderDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(

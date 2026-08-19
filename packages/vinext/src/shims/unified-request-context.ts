@@ -127,6 +127,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     currentRequestTags: [],
     currentFetchSoftTags: [],
     currentFetchCacheMode: null,
+    currentFetchRevalidate: null,
     currentForceDynamicFetchDefault: false,
     dynamicFetchUrls: new Set<string>(),
     refreshStaleFetchesInForeground: false,

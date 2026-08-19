@@ -615,9 +615,12 @@ describe("app elements payload helpers", () => {
         [APP_ROUTE_KEY]: "route:/dashboard/settings",
         [APP_SLOT_BINDINGS_KEY]: [
           {
+            activeRouteId: "route:/dashboard/settings",
+            interceptionId: "interception:slot:team:/dashboard:/dashboard->/dashboard/settings",
+            interceptionSourceMatchedUrl: "/dashboard",
             ownerLayoutId: "layout:/dashboard",
             slotId: "slot:team:/dashboard",
-            state: "default",
+            state: "active",
           },
           {
             ownerLayoutId: "layout:/dashboard",
@@ -635,9 +638,12 @@ describe("app elements payload helpers", () => {
         state: "unmatched",
       },
       {
+        activeRouteId: "route:/dashboard/settings",
+        interceptionId: "interception:slot:team:/dashboard:/dashboard->/dashboard/settings",
+        interceptionSourceMatchedUrl: "/dashboard",
         ownerLayoutId: "layout:/dashboard",
         slotId: "slot:team:/dashboard",
-        state: "default",
+        state: "active",
       },
     ]);
   });
@@ -713,6 +719,30 @@ describe("app elements payload helpers", () => {
         { ownerLayoutId: "layout:/dashboard", slotId: "slot:team:/dashboard", state: "stale" },
       ],
       message: "[vinext] Invalid __slotBindings in App Router payload: expected state",
+    },
+    {
+      label: "invalid interception id",
+      value: [
+        {
+          interceptionId: 1,
+          ownerLayoutId: "layout:/dashboard",
+          slotId: "slot:team:/dashboard",
+          state: "active",
+        },
+      ],
+      message: "[vinext] Invalid __slotBindings in App Router payload: expected interception ids",
+    },
+    {
+      label: "invalid interception source URL",
+      value: [
+        {
+          interceptionSourceMatchedUrl: "https://example.test/dashboard",
+          ownerLayoutId: "layout:/dashboard",
+          slotId: "slot:team:/dashboard",
+          state: "active",
+        },
+      ],
+      message: "[vinext] Invalid __interception in App Router payload: expected path URLs",
     },
     {
       label: "duplicate slot id",

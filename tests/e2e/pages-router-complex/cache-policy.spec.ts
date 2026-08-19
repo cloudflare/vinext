@@ -19,7 +19,7 @@ test.describe("surrogate cache policy", () => {
     expect(standard.headers()["surrogate-control"]).toBe("max-age=10800s, delta=noop");
   });
 
-  test.fixme("unacceptable gallery queries produce a cacheable 404", async ({ request }) => {
+  test("unacceptable gallery queries produce a cacheable 404", async ({ request }) => {
     const response = await request.get("/gallery/tides?page=abc");
     expect(response.status()).toBe(404);
     expect(response.headers()["surrogate-control"]).toBe("max-age=600s, delta=noop");

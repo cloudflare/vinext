@@ -3,6 +3,7 @@ import {
   getCollectedFetchTags,
   ensureFetchPatch,
   setCurrentFetchCacheMode,
+  setCurrentFetchRevalidate,
   setCurrentFetchSoftTags,
   setCurrentForceDynamicFetchDefault,
   type FetchCacheMode,
@@ -117,6 +118,7 @@ async function runInRouteHandlerRevalidationContext(
     draftModeSecret: string;
     dynamicConfig?: string;
     fetchCacheMode: FetchCacheMode | null;
+    revalidateSeconds: number | null;
     routePattern: string;
     routeSegments: string[];
   },
@@ -143,6 +145,7 @@ async function runInRouteHandlerRevalidationContext(
     // The revalidation render runs in a fresh request context, so the fetch
     // defaults applied by `dispatchAppRouteHandler` must be re-applied here.
     setCurrentFetchCacheMode(options.fetchCacheMode);
+    setCurrentFetchRevalidate(options.revalidateSeconds);
     setCurrentForceDynamicFetchDefault(options.dynamicConfig === "force-dynamic");
     try {
       await renderFn();
@@ -169,6 +172,7 @@ export async function dispatchAppRouteHandler(
   const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);
   const isDevelopment = options.isDevelopment ?? process.env.NODE_ENV === "development";
   const isProduction = options.isProduction ?? process.env.NODE_ENV === "production";
+  const appendResponseLink = handler.runtime === "edge" || handler.runtime === "experimental-edge";
   // Middleware may enable or disable draft mode before dispatch. Prefer the
   // live headers context over the original request cookie, and retain the
   // pending transition now so a force-static context replacement or cache HIT
@@ -186,7 +190,9 @@ export async function dispatchAppRouteHandler(
     });
     options.clearRequestContext();
     return applyDraftModeCachePolicy(
-      applyRouteHandlerMiddlewareContext(finalized, options.middlewareContext),
+      applyRouteHandlerMiddlewareContext(finalized, options.middlewareContext, {
+        appendResponseLink,
+      }),
       isDraftMode || hasDraftModeTransition,
     );
   };
@@ -229,6 +235,7 @@ export async function dispatchAppRouteHandler(
   // where handlers ignored their `fetchCache`/`force-dynamic` segment config.
   const fetchCacheMode = resolveAppRouteHandlerFetchCacheMode(handler);
   setCurrentFetchCacheMode(fetchCacheMode);
+  setCurrentFetchRevalidate(revalidateSeconds);
   setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
 
   if (
@@ -259,6 +266,7 @@ export async function dispatchAppRouteHandler(
       i18n: options.i18n,
       trailingSlash: options.trailingSlash,
       isAutoHead,
+      appendResponseLink,
       isrDebug: options.isrDebug,
       isrGet: options.isrGet,
       isrRouteKey: options.isrRouteKey,
@@ -278,6 +286,7 @@ export async function dispatchAppRouteHandler(
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: handler.dynamic,
             fetchCacheMode,
+            revalidateSeconds,
             routePattern: route.pattern,
             routeSegments: route.routeSegments,
           },

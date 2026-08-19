@@ -1,15 +1,17 @@
 import { buildRouteTrie, trieMatchRaw } from "../routing/route-trie.js";
 import {
-  matchRoutePattern,
+  extractRawRoutePatternParams,
   matchRoutePatternRaw,
   matchRoutePatternPrefix,
   type RoutePatternParams,
 } from "../routing/route-pattern.js";
+import { createAppRouteGraphInterceptionId } from "../routing/app-route-graph.js";
 import {
   decodeMatchedParams,
   splitPathnameForRouteMatch,
   splitPathSegments,
 } from "../routing/utils.js";
+import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
 
 /**
  * Sentinel slot key used for sibling-style interception entries.
@@ -115,6 +117,7 @@ type AppRscInterceptLoadState = {
 };
 
 type AppRscInterceptLookupEntry = {
+  interceptionId: string | null;
   interceptionGraphId: string | null;
   sourceRouteIndex: number;
   slotKey: string;
@@ -166,23 +169,6 @@ function appRscInterceptionSourcePathnameParts(pathname: string): string[] {
   });
 }
 
-function canonicalizeAppPageParam(value: string): string {
-  try {
-    return encodeURIComponent(decodeURIComponent(value));
-  } catch {
-    return value;
-  }
-}
-
-function canonicalizeAppPageParams(params: AppRscRouteParams): void {
-  for (const key of Object.keys(params)) {
-    const value = params[key];
-    params[key] = Array.isArray(value)
-      ? value.map(canonicalizeAppPageParam)
-      : canonicalizeAppPageParam(value);
-  }
-}
-
 function isAppRouteHandlerRoute(route: AppRscRouteForMatching): boolean {
   // Generated manifests retain the lazy loader before the first request and
   // hydrate routeHandler afterwards. Classification must not change when that
@@ -201,57 +187,37 @@ function normalizeMatchedParamsForRoute(result: {
   }
 }
 
-function extractRawParamsForMatchedRoute(
-  patternParts: readonly string[],
-  pathnameParts: readonly string[],
-): AppRscRouteParams {
-  // Route selection uses the normalized pathname so encoded static segments
-  // cannot alias filesystem routes. Param values come from the encoded URL
-  // parts, matching Next.js client/route-params.ts before the route-kind-
-  // specific canonicalize/decode step below.
-  const params = createRouteParams();
-  let pathnameIndex = 0;
-
-  for (const part of patternParts) {
-    if (!part.startsWith(":")) {
-      pathnameIndex += 1;
-      continue;
-    }
-
-    const isCatchAll = part.endsWith("+") || part.endsWith("*");
-    const paramName = part.slice(1, isCatchAll ? -1 : undefined);
-    if (isCatchAll) {
-      const remaining = pathnameParts.slice(pathnameIndex);
-      if (remaining.length > 0) params[paramName] = [...remaining];
-      break;
-    }
-
-    const value = pathnameParts[pathnameIndex];
-    if (value !== undefined) params[paramName] = value;
-    pathnameIndex += 1;
-  }
-
-  return params;
-}
-
 export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   routes: Route[],
 ): {
+  hasInterceptionId(interceptionId: string): boolean;
   matchRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   matchRequestRoute(url: string): { route: Route; params: AppRscRouteParams } | null;
   pathCouldBeIntercepted(pathname: string): boolean;
-  findIntercept(pathname: string, sourcePathname?: string | null): AppRscInterceptMatch | null;
+  findIntercept(
+    pathname: string,
+    sourcePathname?: string | null,
+    interceptionId?: string | null,
+  ): AppRscInterceptMatch | null;
 } {
   const routeTrie = buildRouteTrie(routes);
   const interceptLookup = createInterceptLookup(routes);
+  const interceptionIds = new Set(
+    interceptLookup.flatMap((entry) =>
+      entry.interceptionId === null ? [] : [entry.interceptionId],
+    ),
+  );
   const routeIndexes = new Map<Route, number>(routes.map((route, index) => [route, index]));
 
   return {
+    hasInterceptionId(interceptionId) {
+      return interceptionIds.has(interceptionId);
+    },
     matchRoute(url) {
       const rawParts = appRscPathnameParts(url, true);
       const result = trieMatchRaw(routeTrie, appRscPathnameParts(url, false));
       if (!result) return null;
-      result.params = extractRawParamsForMatchedRoute(result.route.patternParts, rawParts);
+      result.params = extractRawRoutePatternParams(result.route.patternParts, rawParts);
       normalizeMatchedParamsForRoute(result);
       return result;
     },
@@ -267,7 +233,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         (entry) => matchRoutePatternRaw(pathnameParts, entry.targetPatternParts) !== null,
       );
     },
-    findIntercept(pathname, sourcePathname = null) {
+    findIntercept(pathname, sourcePathname = null, interceptionId = null) {
       // Mirror Next.js' rewrite semantics: interception only fires when the
       // Next-URL header is present AND matches the intercepting route's regex
       // (with descendants allowed). Without a source pathname there is no
@@ -280,6 +246,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       const matchedSourceRoute = trieMatchRaw(routeTrie, sourceParts);
 
       for (const entry of interceptLookup) {
+        if (interceptionId !== null && entry.interceptionId !== interceptionId) continue;
         // Primary gate: when the intercept declares a `sourceMatchPattern`
         // (the intercepting route's path, descendants allowed), require the
         // request's source pathname to satisfy it. This mirrors Next.js'
@@ -375,7 +342,7 @@ function matchSlotOwnerSourceParams(
   const exact = matchRoutePatternRaw(sourceParts, patternParts);
   if (exact !== null) return exact;
   if (!descendantsAllowed || !matchRoutePatternPrefix(sourceParts, patternParts)) return null;
-  return extractRawParamsForMatchedRoute(patternParts, sourceParts);
+  return extractRawRoutePatternParams(patternParts, sourceParts);
 }
 
 /**
@@ -495,6 +462,14 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
               ? (patternToIndex.get(sourceMatchPattern) ?? routeIndex)
               : routeIndex;
           interceptLookup.push({
+            interceptionId:
+              typeof slotModule.id === "string" && sourceMatchPattern !== null
+                ? createAppRouteGraphInterceptionId(
+                    slotModule.id,
+                    sourceMatchPattern,
+                    intercept.targetPattern,
+                  )
+                : null,
             interceptionGraphId: null,
             sourceRouteIndex: ownerRouteIndex,
             slotKey,
@@ -537,6 +512,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           ? sourceMatchPattern.split("/").filter(Boolean)
           : null;
         interceptLookup.push({
+          interceptionId: typeof intercept.id === "string" ? intercept.id : null,
           interceptionGraphId: typeof intercept.id === "string" ? intercept.id : null,
           sourceRouteIndex: routeIndex,
           slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
@@ -575,13 +551,6 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
   // Array.prototype.sort is stable, so entries with identical target patterns
   // retain declaration order across slots and sources.
   return interceptLookup.sort(compareInterceptTargetPatterns);
-}
-
-export function matchAppRscRoutePattern(
-  urlParts: string[],
-  patternParts: string[],
-): AppRscRouteParams | null {
-  return matchRoutePattern(urlParts, patternParts);
 }
 
 function mergeMatchedParams(

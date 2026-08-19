@@ -1,54 +1,7 @@
 import fs from "node:fs";
 import path from "pathslash";
-import { builtinModules } from "node:module";
 import type { Plugin } from "vite";
-
-const BUILTIN_MODULES = new Set(
-  builtinModules.flatMap((name) =>
-    name.startsWith("node:") ? [name, name.slice(5)] : [name, `node:${name}`],
-  ),
-);
-
-/**
- * Extract the npm package name from a bare module specifier.
- *
- * Returns null for:
- *  - Relative imports ("./foo", "../bar")
- *  - Absolute paths ("/abs/path")
- *  - Node built-ins ("node:fs")
- *  - Package self-references ("#imports")
- */
-function packageNameFromSpecifier(specifier: string): string | null {
-  if (
-    !specifier ||
-    specifier.startsWith(".") ||
-    specifier.startsWith("/") ||
-    specifier.startsWith("\\") ||
-    specifier.startsWith("#")
-  ) {
-    return null;
-  }
-
-  // External specifiers can include non-package schemes such as
-  // "virtual:vite-rsc" or "file:...". Those are never npm packages.
-  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(specifier)) {
-    return null;
-  }
-
-  if (specifier.startsWith("@")) {
-    const parts = specifier.split("/");
-    if (parts.length >= 2) {
-      return `${parts[0]}/${parts[1]}`;
-    }
-    return null;
-  }
-
-  const packageName = specifier.split("/")[0] || null;
-  if (!packageName || BUILTIN_MODULES.has(specifier) || BUILTIN_MODULES.has(packageName)) {
-    return null;
-  }
-  return packageName;
-}
+import { packageNameFromSpecifier } from "../utils/package-name.js";
 
 /**
  * vinext:server-externals-manifest

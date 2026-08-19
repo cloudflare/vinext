@@ -1,5 +1,9 @@
 import { fnv1a64 } from "../utils/hash.js";
 import {
+  createAppRscStateFingerprint,
+  type AppRscStateFingerprintInput,
+} from "./app-rsc-state-fingerprint.js";
+import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   parseAppRscRenderMode,
   type AppRscRenderMode,
@@ -12,9 +16,11 @@ import {
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
+  VINEXT_RSC_STATE_FINGERPRINT_HEADER,
 } from "./headers.js";
 import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
@@ -47,9 +53,11 @@ const VINEXT_APP_BASE_VARY_HEADERS = [
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  VINEXT_RSC_STATE_FINGERPRINT_HEADER,
 ] as const;
 
 /** App response identity for requests without active interception context. */
@@ -74,9 +82,11 @@ const SHARED_RSC_VARIANT_HEADERS = [
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   NEXT_URL_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  VINEXT_RSC_STATE_FINGERPRINT_HEADER,
 ] as const;
 
 const CACHE_BUSTING_DIGEST_BYTES = 12;
@@ -85,6 +95,7 @@ const textEncoder = new TextEncoder();
 type CreateRscRequestHeadersOptions = {
   clientReuseManifestHeader?: string | null;
   interceptionContext?: string | null;
+  interceptionId?: string | null;
   mountedSlotsHeader?: string | null;
   includePrefetchHeader?: boolean;
   renderMode?: AppRscRenderMode;
@@ -95,6 +106,7 @@ type CreateRscRequestHeadersOptions = {
     pathAndSearch: string;
     routeId: string;
   } | null;
+  routerState?: AppRscStateFingerprintInput | null;
 };
 
 type ResolveInvalidRscCacheBustingRequestOptions = {
@@ -238,7 +250,9 @@ function normalizeRenderModeHeaderValue(value: string | null): string | null {
 type CreateCacheBustingInputOptions = {
   includeClientReuseManifestHeader?: boolean;
   includePrefetchHeaders?: boolean;
+  includeInterceptionIdHeader?: boolean;
   includeRenderModeHeader?: boolean;
+  includeStateFingerprintHeader?: boolean;
 };
 
 function createCacheBustingInput(
@@ -257,6 +271,9 @@ function createCacheBustingInput(
     headers.get(NEXT_ROUTER_STATE_TREE_HEADER),
     headers.get(NEXT_URL_HEADER),
     headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
+    ...(options.includeInterceptionIdHeader === false
+      ? []
+      : [headers.get(VINEXT_INTERCEPTION_ID_HEADER)]),
     headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     ...(options.includeRenderModeHeader === false
       ? []
@@ -265,6 +282,10 @@ function createCacheBustingInput(
       ? []
       : [headers.get(VINEXT_CLIENT_REUSE_MANIFEST_HEADER)]),
   ];
+  const stateFingerprint = headers.get(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
+  if (options.includeStateFingerprintHeader !== false && stateFingerprint !== null) {
+    values.push(stateFingerprint);
+  }
 
   if (values.every((value) => value === null)) {
     return null;
@@ -283,7 +304,12 @@ export function createRscClientCacheVariantKey(headers: Headers): string | null 
 }
 
 async function sha256CacheBustingHash(input: string): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", textEncoder.encode(input));
+  const subtle = globalThis.crypto?.subtle;
+  // `globalThis.crypto.subtle` is undefined in non-secure browser contexts
+  // just fallback to legacy fnv1a64.
+  if (!subtle) return fnv1a64(input);
+
+  const digest = await subtle.digest("SHA-256", textEncoder.encode(input));
   return encodeBase64Url(new Uint8Array(digest).subarray(0, CACHE_BUSTING_DIGEST_BYTES));
 }
 
@@ -306,7 +332,9 @@ async function computeRscCacheBustingSearchParamWithOptions(
 async function computePreviousRscCacheBustingSearchParam(headers: Headers): Promise<string | null> {
   const input = createCacheBustingInput(headers, {
     includeClientReuseManifestHeader: false,
+    includeInterceptionIdHeader: false,
     includeRenderModeHeader: false,
+    includeStateFingerprintHeader: false,
   });
   if (input === null) {
     return null;
@@ -318,7 +346,9 @@ async function computePreviousRscCacheBustingSearchParam(headers: Headers): Prom
 function computePreviousLegacyRscCacheBustingSearchParam(headers: Headers): string | null {
   const input = createCacheBustingInput(headers, {
     includeClientReuseManifestHeader: false,
+    includeInterceptionIdHeader: false,
     includeRenderModeHeader: false,
+    includeStateFingerprintHeader: false,
   });
   return input === null ? null : fnv1a64(input);
 }
@@ -336,7 +366,6 @@ function computePreviousClientReuseLegacyRscCacheBustingSearchParam(
   const input = createCacheBustingInput(headers, { includeClientReuseManifestHeader: false });
   return input === null ? null : fnv1a64(input);
 }
-
 function getSearchPairsWithoutRscCacheBusting(url: URL): string[] {
   const rawQuery = url.search.startsWith("?") ? url.search.slice(1) : url.search;
   return rawQuery
@@ -418,6 +447,11 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
     );
   }
 
+  const routerState = options.routerState ?? options.prefetchRouterState;
+  if (routerState) {
+    headers.set(VINEXT_RSC_STATE_FINGERPRINT_HEADER, createAppRscStateFingerprint(routerState));
+  }
+
   if (options.nextUrl) {
     headers.set(NEXT_URL_HEADER, options.nextUrl);
   }
@@ -428,6 +462,9 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
 
   if (options.interceptionContext !== undefined && options.interceptionContext !== null) {
     headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, options.interceptionContext);
+  }
+  if (options.interceptionId !== undefined && options.interceptionId !== null) {
+    headers.set(VINEXT_INTERCEPTION_ID_HEADER, options.interceptionId);
   }
 
   if (options.mountedSlotsHeader !== undefined && options.mountedSlotsHeader !== null) {
@@ -467,6 +504,7 @@ export function canonicalizeFullRscRequestHeaders(
     cacheKeyMode !== "response-vary" ||
     headers.has(VINEXT_RSC_RENDER_MODE_HEADER) ||
     headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER) ||
+    headers.has(VINEXT_INTERCEPTION_ID_HEADER) ||
     headers.has(VINEXT_MOUNTED_SLOTS_HEADER) ||
     headers.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER)
   ) {
@@ -477,6 +515,7 @@ export function canonicalizeFullRscRequestHeaders(
   headers.delete(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER);
   headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
   headers.delete(NEXT_URL_HEADER);
+  headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
   return true;
 }
 
@@ -665,6 +704,63 @@ export async function resolveInvalidRscCacheBustingRequest(
       );
       if (previousHash !== null) acceptedHashes.add(previousHash);
       if (previousLegacyHash !== null) acceptedHashes.add(previousLegacyHash);
+    }
+
+    const compatibilityInputs: CreateCacheBustingInputOptions[] = [];
+    const hasInterceptionId = options.request.headers.has(VINEXT_INTERCEPTION_ID_HEADER);
+    const hasStateFingerprint = options.request.headers.has(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
+    const hasNormalRenderMode =
+      normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
+      null;
+    // The interception ID is a positional hash input, so omitting it changes
+    // hashes even when the request does not carry the header. Requests from
+    // clients predating that positional input remain compatible when the
+    // header is absent. Once the header is present, however, only hashes that
+    // include its value are safe: Cloudflare's default cache key is URL-based
+    // and does not vary on arbitrary headers, while different graph-owned IDs
+    // can intentionally select different slot bytes for one source/target.
+    if (!hasInterceptionId) {
+      compatibilityInputs.push({ includeInterceptionIdHeader: false });
+    }
+    if (hasStateFingerprint) {
+      compatibilityInputs.push({ includeStateFingerprintHeader: false });
+      if (!hasInterceptionId) {
+        compatibilityInputs.push({
+          includeInterceptionIdHeader: false,
+          includeStateFingerprintHeader: false,
+        });
+      }
+    }
+    if (hasNormalRenderMode) {
+      compatibilityInputs.push({ includeRenderModeHeader: false });
+      if (!hasInterceptionId) {
+        compatibilityInputs.push({
+          includeInterceptionIdHeader: false,
+          includeRenderModeHeader: false,
+        });
+      }
+    }
+    if (hasStateFingerprint && hasNormalRenderMode) {
+      compatibilityInputs.push({
+        includeRenderModeHeader: false,
+        includeStateFingerprintHeader: false,
+      });
+      if (!hasInterceptionId) {
+        compatibilityInputs.push({
+          includeInterceptionIdHeader: false,
+          includeRenderModeHeader: false,
+          includeStateFingerprintHeader: false,
+        });
+      }
+    }
+    for (const compatibilityOptions of compatibilityInputs) {
+      const input = createCacheBustingInput(options.request.headers, compatibilityOptions);
+      if (input === null) {
+        acceptedHashes.add("");
+      } else {
+        acceptedHashes.add(await sha256CacheBustingHash(input));
+        acceptedHashes.add(fnv1a64(input));
+      }
     }
   }
 

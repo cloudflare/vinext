@@ -151,6 +151,15 @@ export type PagesPipelineDeps = {
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
   matchPageRoute?: ((pathname: string, request: Request) => PageRouteMatch | null) | null;
+  /**
+   * Return the matching Pages (or hybrid App) API route, if one exists.
+   *
+   * When supplied, an `/api/*` filesystem miss continues through afterFiles and
+   * fallback rewrites instead of being committed to the API 404 response.
+   */
+  matchApiRoute?:
+    | ((url: string, request: Request) => PageRouteMatch | null | Promise<PageRouteMatch | null>)
+    | null;
   runMiddleware?:
     | ((
         request: Request,
@@ -158,6 +167,10 @@ export type PagesPipelineDeps = {
         opts: { isDataRequest: boolean },
       ) => Promise<MiddlewareResult>)
     | null;
+  /** Original URL presented to middleware when URL normalization is disabled. */
+  middlewareRequest?: Request;
+  /** Stale/malformed data response emitted only if middleware does not handle the request. */
+  dataNotFoundResponse?: Response | null;
   renderPage?:
     | ((
         request: Request,
@@ -178,7 +191,7 @@ export type PagesPipelineDeps = {
   /**
    * Optional filesystem/static-asset probe supplied by each runtime adapter.
    * Called post-middleware (so middleware can intercept/redirect public files) with the
-   * original basePath-stripped pathname and the staged middleware response headers.
+   * resolved basePath-stripped pathname and URL plus the staged middleware response headers.
    * Node may write directly to `res` and return true; dev/Workers return a Response.
    * Resolves false to continue through rewrites, API routes, and page rendering.
    */
@@ -187,6 +200,7 @@ export type PagesPipelineDeps = {
         requestPathname: string,
         stagedHeaders: HeaderRecord,
         phase: FilesystemRoutePhase,
+        resolvedUrl: string,
       ) => Promise<boolean | Response>)
     | null;
 };
@@ -242,6 +256,8 @@ export type PagesPipelineResult =
   | {
       type: "api";
       apiUrl: string;
+      /** True only when next.config rewrites changed API resolution. */
+      configRewriteFired: boolean;
       stagedHeaders: HeaderRecord;
       /** Post-middleware request headers — dev adapters apply these to req.headers before API handler. */
       requestHeaders: Headers;
@@ -364,7 +380,12 @@ export async function runPagesRequest(
     phase: FilesystemRoutePhase,
   ): Promise<PagesPipelineResult | null> => {
     if (!deps.serveFilesystemRoute) return null;
-    const served = await deps.serveFilesystemRoute(requestPathname, middlewareHeaders, phase);
+    const served = await deps.serveFilesystemRoute(
+      requestPathname,
+      middlewareHeaders,
+      phase,
+      resolvedUrl,
+    );
     if (served instanceof Response) {
       const isStaticMethodNotAllowed =
         served.status === 405 && served.headers.get("allow") === "GET, HEAD";
@@ -388,7 +409,9 @@ export async function runPagesRequest(
   // parity, this keeps the internal credential out of user middleware and any
   // external destination it may choose.
   if (!isOnDemandRevalidate && typeof deps.runMiddleware === "function") {
-    const result = await deps.runMiddleware(request, deps.ctx ?? null, { isDataRequest });
+    const result = await deps.runMiddleware(deps.middlewareRequest ?? request, deps.ctx ?? null, {
+      isDataRequest,
+    });
 
     // Bubble waitUntil promises
     if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
@@ -466,6 +489,13 @@ export async function runPagesRequest(
 
     // Reconciled superset: result.status takes priority over result.rewriteStatus
     middlewareStatus = result.status ?? result.rewriteStatus;
+  }
+
+  if (deps.dataNotFoundResponse && resolvedUrl === originalResolvedUrl) {
+    return {
+      type: "response",
+      response: mergeHeaders(deps.dataNotFoundResponse, middlewareHeaders, middlewareStatus),
+    };
   }
 
   // Step 6: Unpack middleware request headers
@@ -599,6 +629,10 @@ export async function runPagesRequest(
     const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, i18nConfig);
     const apiLookupPathname = apiLookupUrl.split("?")[0];
     if (!apiLookupPathname.startsWith("/api/") && apiLookupPathname !== "/api") return null;
+    // Next.js performs the API filesystem check before afterFiles/fallback
+    // rewrites. Only a real API match owns the request at this point; a miss
+    // must continue through the remaining custom-route phases.
+    if (deps.matchApiRoute && !(await deps.matchApiRoute(apiLookupUrl, request))) return null;
     if (typeof deps.handleApi === "function") {
       let apiRequest = request;
       // Prod re-adds basePath only when the original request carried it.
@@ -630,6 +664,7 @@ export async function runPagesRequest(
     return {
       type: "api",
       apiUrl: apiLookupUrl,
+      configRewriteFired,
       stagedHeaders: middlewareHeaders,
       requestHeaders: request.headers,
       middlewareStatus,

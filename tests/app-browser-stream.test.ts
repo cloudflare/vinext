@@ -17,7 +17,6 @@ function resetBrowserGlobals(): void {
   delete vinext.__VINEXT_RSC_CHUNKS__;
   delete vinext.__VINEXT_RSC_DONE__;
   delete vinext.__VINEXT_RSC_PARAMS__;
-  delete vinext.__VINEXT_RSC_NAV__;
   Reflect.deleteProperty(globalThis, "window");
 }
 

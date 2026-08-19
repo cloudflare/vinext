@@ -1,5 +1,15 @@
 # create-vinext-app
 
+## 1.0.0-beta.2
+
+### Bug Fixes
+
+- **Create Vinext App:** generate next env on first run (#2768)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.1
 
 ### Features

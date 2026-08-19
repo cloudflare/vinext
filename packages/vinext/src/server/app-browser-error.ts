@@ -75,11 +75,6 @@ export function createDevOnCaughtError(
   };
 }
 
-export function prodOnCaughtError(error: unknown, errorInfo: VinextHydrateRootErrorInfo): void {
-  if (isNavigationSignalError(error)) return;
-  logCaughtError(error, errorInfo);
-}
-
 export function prodOnRecoverableError(error: unknown): void {
   reportGlobalError(error instanceof Error && error.cause !== undefined ? error.cause : error);
 }

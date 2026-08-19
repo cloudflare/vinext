@@ -178,6 +178,10 @@ export type NextConfig = {
   crossOrigin?: "anonymous" | "use-credentials";
   /** Whether to add trailing slashes */
   trailingSlash?: boolean;
+  /** Keep the original request URL visible to middleware/proxy. */
+  skipProxyUrlNormalize?: boolean;
+  /** @deprecated Use `skipProxyUrlNormalize` instead. */
+  skipMiddlewareUrlNormalize?: boolean;
   /** TypeScript build settings. */
   typescript?: {
     /** Project-relative path to the TypeScript configuration file. */
@@ -400,6 +404,7 @@ export type ResolvedNextConfig = {
    */
   assetPrefix: string;
   trailingSlash: boolean;
+  skipProxyUrlNormalize: boolean;
   typescript: { tsconfigPath?: string };
   output: "" | "export" | "standalone";
   pageExtensions: string[];
@@ -1019,9 +1024,16 @@ export async function loadNextConfig(
   const normalizedConfigPath = safeRealpath(path.resolve(configPath));
 
   try {
-    // Load config via Vite's module runner (TS + extensionless import support)
+    // Resolve and invoke the config inside the temporary Vite runner. This
+    // keeps the runner alive while an async config performs deferred imports,
+    // while preserving Vite's TS aliases, CJS shims, and fresh evaluation on
+    // every load.
     const { runnerImport } = await import("vite");
-    const { module: mod } = await runnerImport(configPath, {
+    const virtualConfigId = "virtual:vinext-resolved-next-config";
+    const resolvedVirtualConfigId = `\0${virtualConfigId}`;
+    const configPathLiteral = JSON.stringify(configPath);
+    const phaseLiteral = JSON.stringify(phase);
+    const { module: mod } = await runnerImport<{ default: NextConfig }>(virtualConfigId, {
       root,
       logLevel: "error",
       clearScreen: false,
@@ -1062,6 +1074,24 @@ export async function loadNextConfig(
       // same source produces an `Identifier 'module' has already been
       // declared` syntax error.
       plugins: [
+        {
+          name: "vinext:resolve-next-config-value",
+          resolveId(id: string) {
+            if (id === virtualConfigId) return resolvedVirtualConfigId;
+          },
+          load(id: string) {
+            if (id !== resolvedVirtualConfigId) return;
+            return (
+              `import * as configModule from ${configPathLiteral};\n` +
+              `const cjsModule = configModule[${JSON.stringify(VINEXT_CJS_EXPORTS_KEY)}];\n` +
+              `const cjsInitial = configModule[${JSON.stringify(VINEXT_CJS_INITIAL_KEY)}];\n` +
+              `const cjsExports = cjsModule && cjsModule.exports;\n` +
+              `const cjsValue = cjsExports != null && (cjsExports !== cjsInitial || (typeof cjsExports === "object" && Object.keys(cjsExports).length > 0)) ? cjsExports : undefined;\n` +
+              `const value = cjsValue ?? configModule.default ?? configModule;\n` +
+              `export default typeof value === "function" ? await value(${phaseLiteral}, { defaultConfig: {} }) : value;\n`
+            );
+          },
+        },
         ...(isTypeScriptConfig ? [cjsGlobalsInjectorPlugin(configPath)] : []),
         commonjs({
           filter: (id: string) => {
@@ -1077,7 +1107,7 @@ export async function loadNextConfig(
         }),
       ],
     });
-    return await unwrapConfig(mod, phase);
+    return mod.default as NextConfig;
   } catch (e) {
     // If the error indicates a CJS file loaded in ESM context, retry with
     // createRequire which provides a proper CommonJS environment.
@@ -1549,6 +1579,7 @@ export async function resolveNextConfig(
       basePath: "",
       assetPrefix: "",
       trailingSlash: false,
+      skipProxyUrlNormalize: false,
       typescript: {},
       output: "",
       pageExtensions: normalizePageExtensions(),
@@ -1613,6 +1644,15 @@ export async function resolveNextConfig(
       "Invalid next.config options detected:\n" +
         '    Invalid option at "crossOrigin": expected "anonymous" or "use-credentials"\n' +
         "See more info here: https://nextjs.org/docs/messages/invalid-next-config",
+    );
+  }
+
+  if (
+    config.skipProxyUrlNormalize !== undefined &&
+    config.skipMiddlewareUrlNormalize !== undefined
+  ) {
+    throw new Error(
+      "Config options `skipProxyUrlNormalize` and `skipMiddlewareUrlNormalize` cannot be set at the same time. Please use `skipProxyUrlNormalize` instead.",
     );
   }
 
@@ -1895,6 +1935,8 @@ export async function resolveNextConfig(
     basePath: config.basePath ?? "",
     assetPrefix: normalizeAssetPrefix(config.assetPrefix),
     trailingSlash: config.trailingSlash ?? false,
+    skipProxyUrlNormalize:
+      config.skipProxyUrlNormalize ?? config.skipMiddlewareUrlNormalize ?? false,
     typescript:
       typeof config.typescript?.tsconfigPath === "string"
         ? { tsconfigPath: config.typescript.tsconfigPath }

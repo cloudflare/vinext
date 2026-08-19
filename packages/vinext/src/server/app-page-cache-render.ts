@@ -52,6 +52,7 @@ export type RenderAppPageCacheArtifactsOptions = {
   rootParams?: RootParams;
   route: AppPageCacheRoute;
   waitForAllReady?: boolean;
+  isForceStatic?: boolean;
 };
 
 export type RenderAppPageCacheArtifactsResult = {
@@ -94,6 +95,8 @@ export async function renderAppPageCacheArtifacts(
       reactMaxHeadersLength: options.reactMaxHeadersLength,
       rootParams: options.rootParams,
       waitForAllReady: options.waitForAllReady,
+      isStaticGeneration: true,
+      isForceStatic: options.isForceStatic,
       ...(rscCapture.sideStream
         ? {
             sideStream: rscCapture.sideStream,

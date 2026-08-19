@@ -568,6 +568,64 @@ describe("vinext:local-fonts plugin", () => {
     expect(addedStyles).toContain("font-style: italic");
   });
 
+  it("omits the font-weight descriptor when local font weight is unspecified", () => {
+    // Regression for #2793. Next.js only emits the @font-face descriptor
+    // when the source or top-level options provide a weight.
+    // https://github.com/vercel/next.js/blob/canary/packages/font/src/local/loader.ts
+    const beforeCount = getSSRFontStyles().length;
+    const result = localFont({
+      src: "./variable-no-weight.ttf",
+      style: "normal",
+    });
+
+    expect(result.style).not.toHaveProperty("fontWeight");
+
+    const fontFaceCSS = getSSRFontStyles()
+      .slice(beforeCount)
+      .find((css) => css.includes("@font-face") && css.includes("variable-no-weight.ttf"));
+    expect(fontFaceCSS).toBeDefined();
+    expect(fontFaceCSS).not.toContain("font-weight:");
+    expect(fontFaceCSS).toContain("font-style: normal");
+  });
+
+  it("preserves explicit top-level, source-level, and ranged local font weights", () => {
+    const cases: Array<{
+      options: Parameters<typeof localFont>[0];
+      path: string;
+      expectedWeight: string;
+    }> = [
+      {
+        options: { src: "./top-level-400.woff2", weight: "400" },
+        path: "top-level-400.woff2",
+        expectedWeight: "400",
+      },
+      {
+        options: { src: "./top-level-700.woff2", weight: "700" },
+        path: "top-level-700.woff2",
+        expectedWeight: "700",
+      },
+      {
+        options: {
+          src: { path: "./source-range.woff2", weight: "100 900" },
+          weight: "400",
+        },
+        path: "source-range.woff2",
+        expectedWeight: "100 900",
+      },
+    ];
+
+    for (const { options, path, expectedWeight } of cases) {
+      const beforeCount = getSSRFontStyles().length;
+      localFont(options);
+
+      const fontFaceCSS = getSSRFontStyles()
+        .slice(beforeCount)
+        .find((css) => css.includes("@font-face") && css.includes(path));
+      expect(fontFaceCSS).toBeDefined();
+      expect(fontFaceCSS).toContain(`font-weight: ${expectedWeight};`);
+    }
+  });
+
   it("sanitizes declaration props to prevent injection", () => {
     const beforeCount = getSSRFontStyles().length;
     const result = localFont({

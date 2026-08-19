@@ -51,6 +51,9 @@ export const VINEXT_PRERENDER_STATIC_PARAMS_PATH = "/__vinext/prerender/static-p
 /** Internal endpoint used to evaluate Pages Router getStaticPaths exports. */
 export const VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH = "/__vinext/prerender/pages-static-paths";
 
+/** Internal endpoint used to enumerate cached dynamic metadata route paths. */
+export const VINEXT_PRERENDER_METADATA_ROUTES_PATH = "/__vinext/prerender/metadata-routes";
+
 /** TPR (Tailored Per-Request) revalidation interval in seconds. */
 export const VINEXT_REVALIDATE_HEADER = "x-vinext-revalidate";
 
@@ -77,11 +80,23 @@ export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life
 export const VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER =
   "x-vinext-rsc-prewarm-source-independent";
 
+/** Marks a local prerender-server 500 that originated from a thrown render error. */
+export const VINEXT_PRERENDER_RENDER_ERROR_HEADER = "x-vinext-prerender-render-error";
+
+/** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
+export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
+
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
 
+/** Exact interception declaration requested by supplemental refreshes. */
+export const VINEXT_INTERCEPTION_ID_HEADER = "X-Vinext-Interception-Id";
+
 /** RSC render mode (e.g. "navigation", "prefetch"). */
 export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
+
+/** Stable visible-router-state variant for RSC cache busting. */
+export const VINEXT_RSC_STATE_FINGERPRINT_HEADER = "X-Vinext-Rsc-State-Fingerprint";
 
 /** Disabled-by-default client hint describing already-held App Router payload entries. */
 export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";
@@ -201,6 +216,7 @@ export const FLIGHT_HEADERS: readonly string[] = [
   "next-router-prefetch",
   "next-hmr-refresh",
   "next-router-segment-prefetch",
+  "x-vinext-rsc-state-fingerprint",
 ];
 
 // ---------------------------------------------------------------------------

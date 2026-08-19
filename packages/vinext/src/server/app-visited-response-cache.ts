@@ -17,10 +17,19 @@ export type VisitedResponseCacheEntry = {
    * also does not vary on Next-Url, it can be re-keyed across source variants.
    */
   completePayload?: true;
+  reuseAfterHistoryRestore: boolean;
 };
 
 export const VISITED_RESPONSE_CACHE_TTL = 5 * 60_000;
 export const MAX_TRAVERSAL_CACHE_TTL = 30 * 60_000;
+
+export function hasNavigationResponseHistoryLifetime(snapshot: CachedRscResponse): boolean {
+  const dynamicStaleTime =
+    snapshot.completedDynamicStaleTimeSeconds ?? snapshot.dynamicStaleTimeSeconds;
+  return dynamicStaleTime !== undefined
+    ? dynamicStaleTime > 0
+    : snapshot.serverStaleTime !== undefined;
+}
 
 export function createVisitedResponseCacheEntry(options: {
   elements?: AppElements;
@@ -31,6 +40,7 @@ export function createVisitedResponseCacheEntry(options: {
   requestVariantKey?: string | null;
   response: CachedRscResponse;
   completePayload?: boolean;
+  reuseAfterHistoryRestore?: boolean;
 }): VisitedResponseCacheEntry {
   return {
     createdAt: options.now,
@@ -45,6 +55,7 @@ export function createVisitedResponseCacheEntry(options: {
     requestVariantKey: options.requestVariantKey,
     response: options.response,
     ...(options.completePayload === true ? { completePayload: true as const } : {}),
+    reuseAfterHistoryRestore: options.reuseAfterHistoryRestore === true,
   };
 }
 
@@ -137,4 +148,25 @@ export function deleteVisitedResponseCacheEntry(
   );
   if (!match) return false;
   return cache.delete(match.cacheKey);
+}
+
+export function deleteAllVisitedResponseCacheEntries(
+  cache: Map<string, VisitedResponseCacheEntry>,
+  rscUrl: string,
+  interceptionContext: string | null,
+): number {
+  let deleted = 0;
+  while (deleteVisitedResponseCacheEntry(cache, rscUrl, interceptionContext)) {
+    deleted++;
+  }
+  return deleted;
+}
+
+export function deleteInvalidatedHistoryRestoreEntries(
+  cache: Map<string, VisitedResponseCacheEntry>,
+): void {
+  for (const [cacheKey, entry] of cache) {
+    if (entry.reuseAfterHistoryRestore) continue;
+    cache.delete(cacheKey);
+  }
 }
