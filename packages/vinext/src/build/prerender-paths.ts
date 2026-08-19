@@ -23,9 +23,13 @@ import { BLOCKED_PAGES, PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
+import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
 
 export type PrerenderPathManifest = {
+  basePath?: string;
   buildId?: string;
+  deploymentId?: string;
+  responseVary?: CdnCacheAdapterCapabilities["responseVary"];
   trailingSlash?: boolean;
   paths: string[];
 };
@@ -44,6 +48,7 @@ type EmitPrerenderPathManifestOptions = {
   routeRootConfig?: VinextRouteRootConfig | null;
   pagesBundlePath?: string;
   rscBundlePath?: string;
+  responseVary?: CdnCacheAdapterCapabilities["responseVary"];
 };
 
 function readBuiltBuildId(serverDir: string): string | null {
@@ -442,7 +447,10 @@ export async function emitPrerenderPathManifest(
   });
 
   const manifest: PrerenderPathManifest = {
+    ...(config.basePath ? { basePath: config.basePath } : {}),
     buildId: config.buildId,
+    ...(config.deploymentId ? { deploymentId: config.deploymentId } : {}),
+    ...(options.responseVary ? { responseVary: options.responseVary } : {}),
     trailingSlash: config.trailingSlash,
     paths,
   };

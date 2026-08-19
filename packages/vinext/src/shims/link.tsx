@@ -454,7 +454,11 @@ function prefetchUrl(
           DYNAMIC_NAVIGATION_CACHE_TTL,
           PREFETCH_CACHE_TTL,
         } = navigation;
-        const { createRscRequestUrl } = rscCacheBusting;
+        const {
+          canonicalizePrewarmableRscRequestHeaders,
+          createRscRequestUrl,
+          isRscPrewarmEligibleHref,
+        } = rscCacheBusting;
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
           NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -477,14 +481,21 @@ function prefetchUrl(
           ? hybridRouteOwner!.resolveHybridClientRewriteHref(fullHref, __basePath)
           : null;
         const prefetchPolicyHref = rewrittenPrefetchHref ?? prefetchHref;
-        const autoPrefetch =
-          mode === "auto"
+        const interceptionContext = getPrefetchInterceptionContext(fullHref);
+        const mountedSlotsHeader = getMountedSlotsHeader();
+        const isCanonicalPrewarmCandidate =
+          interceptionContext === null &&
+          mountedSlotsHeader === null &&
+          (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref) &&
+          (await isRscPrewarmEligibleHref(fullHref));
+        if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
+        const autoPrefetch = isCanonicalPrewarmCandidate
+          ? resolveFullAppRoutePrefetch()
+          : mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchPolicyHref)
             : resolveFullAppRoutePrefetch();
         if (!autoPrefetch.shouldPrefetch) return;
 
-        const interceptionContext = getPrefetchInterceptionContext(fullHref);
-        const mountedSlotsHeader = getMountedSlotsHeader();
         const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
@@ -524,6 +535,8 @@ function prefetchUrl(
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
         }
+        const usesCanonicalPrewarmedRequest =
+          isCanonicalPrewarmCandidate && canonicalizePrewarmableRscRequestHeaders(headers);
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
         const rscUrl = await createRscRequestUrl(fullHref, headers);
@@ -654,6 +667,7 @@ function prefetchUrl(
         // timing so duplicate visible links see the full payload as already
         // pending while tests/userland can still observe the later data fetch.
         const gateViaRouteTree =
+          !usesCanonicalPrewarmedRequest &&
           (__prefetchInlining || requiresRouteTreePrefetch) &&
           mode === "auto" &&
           autoPrefetch.prefetchShellFirst;
@@ -663,6 +677,7 @@ function prefetchUrl(
           autoPrefetch.prefetchShellFirst &&
           mountedSlotsHeader === null;
         const gateViaLoadingShell =
+          !usesCanonicalPrewarmedRequest &&
           (mode === "full-after-shell" || gateViaExplicitSearchShell) &&
           autoPrefetch.prefetchShellFirst;
         const fetchPromise =
@@ -695,6 +710,7 @@ function prefetchUrl(
               })()
             : fetchFullRscPayload();
         if (
+          !usesCanonicalPrewarmedRequest &&
           !__prefetchInlining &&
           mode === "full" &&
           autoPrefetch.cacheForNavigation &&

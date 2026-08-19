@@ -7,9 +7,11 @@ import {
   DEFAULT_CDN_WARM_TIMEOUT_MS,
   warmCdnCache,
   getWarmPathsFromPrerenderManifest,
+  readPrerenderWarmPlan,
   readPrerenderWarmPaths,
   warmCdnCacheFromPrerender,
 } from "../packages/cloudflare/src/cdn-warm.js";
+import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
 let tmpDir: string;
 
@@ -78,7 +80,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/", "/docs/intro"]);
   });
 
-  it("prefers the build-discovered prerender path manifest", () => {
+  it("prefers completed prerender results over discovery-only paths", () => {
     writeFile(
       "dist/server/vinext-prerender-paths.json",
       JSON.stringify({
@@ -97,7 +99,59 @@ describe("Cloudflare CDN warmup", () => {
     );
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
-    expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/", "/cached/intro"]);
+    expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/old"]);
+  });
+
+  it("selects RSC warm paths only from final cacheable App prerenders", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        basePath: "/docs",
+        buildId: "build-a",
+        deploymentId: "dpl_123",
+        paths: ["/cached/intro", "/dynamic", "/pages"],
+        responseVary: "verbatim",
+        trailingSlash: true,
+      }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/cached/:slug",
+            path: "/cached/intro",
+            status: "rendered",
+            router: "app",
+            revalidate: 60,
+            fallback: false,
+          },
+          { route: "/dynamic", status: "skipped", router: "app" },
+          {
+            route: "/pages",
+            status: "rendered",
+            router: "pages",
+            revalidate: false,
+            fallback: false,
+          },
+          {
+            route: "/zero",
+            status: "rendered",
+            router: "app",
+            revalidate: 0,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      deploymentId: "dpl_123",
+      paths: ["/docs/cached/intro/", "/docs/pages/"],
+      rscPaths: ["/docs/cached/intro/"],
+    });
   });
 
   it("uses the full prerender manifest when fallback shell paths are requested", () => {
@@ -149,7 +203,7 @@ describe("Cloudflare CDN warmup", () => {
       "/cached/intro",
     ]);
     expect(warn).toHaveBeenCalledWith(
-      "[vinext] CDN warmup fallback shells requested, but prerender manifest not found; warming build-discovered paths only.",
+      "[vinext] CDN warmup has no completed prerender manifest; RSC warmup is disabled.",
     );
   });
 
@@ -306,6 +360,73 @@ describe("Cloudflare CDN warmup", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("issues exactly one HTML and one canonical RSC request for an eligible path", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      if (headers.get("rsc") === "1") {
+        return new Response("flight", {
+          headers: {
+            "cache-control": "public, max-age=0, must-revalidate",
+            "cf-cache-status": "MISS",
+            "content-type": "text/x-component",
+            vary: VINEXT_RSC_VARY_HEADER,
+          },
+        });
+      }
+      return new Response("html", { headers: { "content-type": "text/html" } });
+    });
+
+    const result = await warmCdnCache({
+      deploymentId: "dpl_123",
+      fetchImpl: fetchMock as typeof fetch,
+      paths: ["/cached/intro"],
+      rscPaths: ["/cached/intro"],
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect((fetchMock.mock.calls[0]![0] as URL).href).toBe("https://app.example.com/cached/intro");
+    expect((fetchMock.mock.calls[1]![0] as URL).href).toBe(
+      "https://app.example.com/cached/intro?_rsc",
+    );
+    const rscInit = fetchMock.mock.calls[1]![1]!;
+    expect(rscInit.redirect).toBe("manual");
+    const headers = new Headers(rscInit.headers);
+    expect(headers.get("accept")).toBe("text/x-component");
+    expect(headers.get("rsc")).toBe("1");
+    expect(headers.get("x-deployment-id")).toBe("dpl_123");
+    expect(headers.get("next-router-prefetch")).toBeNull();
+    expect(headers.get("next-router-state-tree")).toBeNull();
+    expect(headers.get("next-url")).toBeNull();
+  });
+
+  it("rejects an RSC response that Cloudflare bypassed", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const isRsc = new Headers(init?.headers).get("rsc") === "1";
+      return new Response(isRsc ? "flight" : "html", {
+        headers: isRsc
+          ? {
+              "cache-control": "no-store",
+              "cf-cache-status": "BYPASS",
+              "content-type": "text/x-component",
+              vary: VINEXT_RSC_VARY_HEADER,
+            }
+          : { "content-type": "text/html" },
+      });
+    });
+
+    await expect(
+      warmCdnCache({
+        fetchImpl: fetchMock as typeof fetch,
+        paths: ["/cached/intro"],
+        rscPaths: ["/cached/intro"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow("Cache-Control is not cacheable");
+  });
+
   it("reports warmup failures and throws in strict mode", async () => {
     writeFile(
       "dist/server/vinext-prerender.json",
@@ -335,6 +456,6 @@ describe("Cloudflare CDN warmup", () => {
         strict: true,
         fetchImpl: fetchMock as typeof fetch,
       }),
-    ).rejects.toThrow("CDN warmup failed for 1/1 path");
+    ).rejects.toThrow("CDN warmup failed for 1/1 request");
   });
 });

@@ -30,6 +30,7 @@ import {
   findVinextPrerenderConfigInPlugins,
   findVinextRouteRootConfigInPlugins,
   formatVinextPrerenderLabel,
+  hasVerbatimResponseVary,
   resolveVinextPrerenderDecision,
   type ResolvedVinextPrerenderConfig,
   type VinextCacheConfig,
@@ -43,7 +44,7 @@ import {
   type ProjectInfo,
 } from "vinext/internal/utils/project";
 import { parseWranglerConfig, runTPR } from "./tpr.js";
-import { readPrerenderWarmPaths, warmCdnCache } from "./cdn-warm.js";
+import { readPrerenderWarmPlan, warmCdnCache, type CdnWarmOptions } from "./cdn-warm.js";
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
@@ -72,6 +73,8 @@ export type DeployOptions = {
   root: string;
   /** Deploy to preview environment (default: production) */
   preview?: boolean;
+  /** Upload and warm a version preview alias without changing production traffic. */
+  previewAlias?: string;
   /** Wrangler environment name from wrangler.jsonc env.<name> */
   env?: string;
   /** Custom project name for the Worker */
@@ -150,6 +153,7 @@ function formatUnknownError(error: unknown): string {
 const deployArgOptions = {
   help: { type: "boolean", short: "h", default: false },
   preview: { type: "boolean", default: false },
+  "preview-alias": { type: "string" },
   env: { type: "string" },
   name: { type: "string" },
   config: { type: "string" },
@@ -185,6 +189,7 @@ export function parseDeployArgs(args: string[]) {
   return {
     help: values.help,
     preview: values.preview,
+    previewAlias: values["preview-alias"]?.trim() || undefined,
     env: values.env?.trim() || undefined,
     name: values.name?.trim() || undefined,
     config: values.config?.trim() || undefined,
@@ -542,6 +547,7 @@ export async function deployWithCdnWarmup(
   options: Pick<
     DeployOptions,
     | "preview"
+    | "previewAlias"
     | "env"
     | "name"
     | "config"
@@ -549,9 +555,34 @@ export async function deployWithCdnWarmup(
     | "warmCdnTimeout"
     | "warmCdnRetries"
     | "warmCdnStrict"
-  >,
+  > &
+    Pick<CdnWarmOptions, "deploymentId" | "rscPaths">,
 ): Promise<string> {
   const upload = runWranglerVersionUpload(root, options);
+  if (options.previewAlias) {
+    if (!upload.previewUrl) {
+      if (options.warmCdnStrict) {
+        throw new Error(
+          `CDN warmup failed: Wrangler did not return a URL for preview alias ${options.previewAlias}.`,
+        );
+      }
+      console.warn(
+        `  CDN warmup skipped: Wrangler did not return a URL for preview alias ${options.previewAlias}.`,
+      );
+      return "(URL not detected in wrangler output)";
+    }
+    await warmCdnCache({
+      targetUrl: upload.previewUrl,
+      paths,
+      deploymentId: options.deploymentId,
+      rscPaths: options.rscPaths,
+      concurrency: options.warmCdnConcurrency,
+      timeoutMs: options.warmCdnTimeout,
+      retries: options.warmCdnRetries,
+      strict: options.warmCdnStrict,
+    });
+    return upload.previewUrl;
+  }
   const wranglerConfig = parseWranglerConfig(root, options.config);
   const deploymentStatus = readWranglerDeploymentStatus(root, options);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
@@ -586,6 +617,8 @@ export async function deployWithCdnWarmup(
           targetUrl,
           paths,
           headers,
+          deploymentId: options.deploymentId,
+          rscPaths: options.rscPaths,
           concurrency: options.warmCdnConcurrency,
           timeoutMs: options.warmCdnTimeout,
           retries: options.warmCdnRetries,
@@ -629,6 +662,8 @@ export async function deployWithCdnWarmup(
       await warmCdnCache({
         targetUrl,
         paths,
+        deploymentId: options.deploymentId,
+        rscPaths: options.rscPaths,
         concurrency: options.warmCdnConcurrency,
         timeoutMs: options.warmCdnTimeout,
         retries: options.warmCdnRetries,
@@ -767,6 +802,9 @@ function withPromotedVersionTriggerNote(error: unknown): Error {
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
 export async function deploy(options: DeployOptions): Promise<void> {
+  if (options.previewAlias && !options.warmCdnCache) {
+    throw new Error("--preview-alias requires --experimental-warm-cdn-cache.");
+  }
   const deployEnv = validateWranglerEnvName(
     options.env || (options.preview ? "preview" : "production"),
   );
@@ -864,6 +902,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     vinextPrerenderConfig,
     nextOutput: nextConfig.output,
   });
+  const hasStrictResponseVary = hasVerbatimResponseVary(viteConfigMetadata.cacheConfig);
   const shouldEmitPrerenderPathManifest =
     options.warmCdnCache || (!options.skipBuild && prerenderDecision);
 
@@ -878,6 +917,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     await emitPrerenderPathManifest({
       root: info.root,
       nextConfig,
+      responseVary: hasStrictResponseVary ? "verbatim" : undefined,
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
   }
@@ -887,8 +927,14 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // when next.config.js sets `output: 'export'` (every route must be statically
   // exportable). The CLI flag wins when more than one trigger is present.
   let ranPrerender = false;
-  if (prerenderDecision) {
-    console.log(`\n  ${formatVinextPrerenderLabel(prerenderDecision)}`);
+  if (prerenderDecision || options.warmCdnCache) {
+    console.log(
+      `\n  ${
+        prerenderDecision
+          ? formatVinextPrerenderLabel(prerenderDecision)
+          : "Pre-rendering cacheable routes for CDN warmup..."
+      }`,
+    );
     if (nextConfig.enablePrerenderSourceMaps) {
       process.setSourceMapsEnabled(true);
       Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
@@ -896,6 +942,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     await runPrerender({
       root: info.root,
       concurrency: options.prerenderConcurrency,
+      emitRscPrewarmManifest: hasStrictResponseVary,
       nextConfig,
     });
     ranPrerender = true;
@@ -936,17 +983,20 @@ export async function deploy(options: DeployOptions): Promise<void> {
     env: deployEnv === "production" && !options.env ? undefined : deployEnv,
     name: options.name,
     config: options.config,
+    previewAlias: options.previewAlias,
   };
   let url: string;
 
   if (options.warmCdnCache) {
-    const warmPaths = readPrerenderWarmPaths(root, {
+    const warmPlan = readPrerenderWarmPlan(root, {
       includeFallbackShells: options.warmCdnIncludeFallbacks,
       strict: options.warmCdnStrict,
     });
-    if (warmPaths.length > 0) {
-      url = await deployWithCdnWarmup(root, warmPaths, {
+    if (warmPlan.paths.length > 0 || options.previewAlias) {
+      url = await deployWithCdnWarmup(root, warmPlan.paths, {
         ...wranglerOptions,
+        deploymentId: warmPlan.deploymentId,
+        rscPaths: warmPlan.rscPaths,
         warmCdnConcurrency: options.warmCdnConcurrency,
         warmCdnTimeout: options.warmCdnTimeout,
         warmCdnRetries: options.warmCdnRetries,

@@ -398,6 +398,12 @@ describe("deploy prerender config wiring", () => {
 
     await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
 
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        emitRscPrewarmManifest: false,
+        root: tmpDir,
+      }),
+    );
     expect(
       JSON.parse(
         fs.readFileSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"), "utf-8"),

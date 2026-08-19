@@ -1361,6 +1361,7 @@ async function renderIsolatedLink(options: {
   appNavigation?: boolean;
   href: string;
   nodeEnv: string;
+  prewarmablePaths?: string[];
   props?: Record<string, unknown>;
   requireRef?: boolean;
   routeManifest?: RouteManifest;
@@ -1372,6 +1373,11 @@ async function renderIsolatedLink(options: {
     vi.unstubAllEnvs();
   };
   vi.stubEnv("NODE_ENV", options.nodeEnv);
+  const prewarmManifestUrl = "/_next/static/build-test/vinext-rsc-prewarm.json";
+  vi.stubEnv(
+    "__VINEXT_RSC_PREWARM_MANIFEST_URL",
+    options.prewarmablePaths ? prewarmManifestUrl : "",
+  );
 
   const effects: CapturedEffect[] = [];
   let capturedAnchorProps: CapturedAnchorProps | undefined;
@@ -1405,7 +1411,18 @@ async function renderIsolatedLink(options: {
       ? undefined
       : createTestNavigationRuntime(navigate, options.routeManifest ?? null);
 
-  vi.stubGlobal("fetch", fetch);
+  vi.stubGlobal(
+    "fetch",
+    options.prewarmablePaths
+      ? vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+          const url =
+            typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+          return url === prewarmManifestUrl
+            ? Promise.resolve(Response.json({ version: 1, paths: options.prewarmablePaths }))
+            : fetch(input, init);
+        })
+      : fetch,
+  );
   vi.stubGlobal("document", {
     createElement: vi.fn(() => ({})),
     getElementById: vi.fn(() => null),
@@ -1937,6 +1954,35 @@ describe("Link prefetch scheduling", () => {
       const entry = Array.from(getPrefetchCache().values())[0];
       expect(entry?.cacheForNavigation).toBe(false);
       expect(entry?.optimisticRouteShell).toBe(true);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("promotes an ISR loading route to one canonical full prefetch", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      prewarmablePaths: ["/blog/hello"],
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      const [input, init] = result.fetch.mock.calls[0]!;
+      expect(input).toBe("/blog/hello?_rsc");
+      const headers = new Headers((init as RequestInit).headers);
+      expect(headers.get("accept")).toBe("text/x-component");
+      expect(headers.get("rsc")).toBe("1");
+      expect(headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
+      expect(headers.get(NEXT_ROUTER_PREFETCH_HEADER)).toBeNull();
+      expect(headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBeNull();
+      expect(headers.get("next-router-state-tree")).toBeNull();
+      expect(headers.get("next-url")).toBeNull();
+      expect(headers.get("x-vinext-rsc-state-fingerprint")).toBeNull();
     } finally {
       result.restoreNodeEnv();
     }

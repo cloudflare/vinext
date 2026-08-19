@@ -88,6 +88,10 @@
       "types": "./dist/server/app-page-cache.d.ts",
       "import": "./dist/server/app-page-cache.js"
     },
+    "./internal/server/app-rsc-cache-busting": {
+      "types": "./dist/server/app-rsc-cache-busting.d.ts",
+      "import": "./dist/server/app-rsc-cache-busting.js"
+    },
     "./internal/server/prerender-manifest": {
       "types": "./dist/server/prerender-manifest.d.ts",
       "import": "./dist/server/prerender-manifest.js"

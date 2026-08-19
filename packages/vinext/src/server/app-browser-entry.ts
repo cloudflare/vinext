@@ -183,9 +183,12 @@ import {
 } from "../client/app-nav-failure-handler.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
+  canonicalizePrewarmableRscRequestHeaders,
   createRscRequestHeaders,
   createRscRequestUrl,
   getVinextRscCompatibilityId,
+  isRscPrewarmEligibleHref,
+  preloadRscPrewarmManifest,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
@@ -1710,6 +1713,7 @@ function registerServerActionCallback(): void {
 }
 
 async function main(): Promise<void> {
+  void preloadRscPrewarmManifest();
   if (!claimInitialAppRouterBootstrap()) return;
 
   if (hasServerActions) registerServerActionCallback();
@@ -2074,6 +2078,10 @@ function bootstrapHydration(
           navigationKind === "navigate" && HAS_CLIENT_REWRITES
             ? resolveLoadedHybridClientRewriteHref(currentHref, __basePath)
             : null;
+        const usesCanonicalPrewarmedRequest =
+          (rewrittenNavigationHref === null || rewrittenNavigationHref === currentHref) &&
+          (await isRscPrewarmEligibleHref(currentHref)) &&
+          canonicalizePrewarmableRscRequestHeaders(requestHeaders);
         const targetPathAndSearch = url.pathname + url.search;
         const additionalPrefetchPathAndSearch =
           rewrittenNavigationHref && rewrittenNavigationHref !== currentHref
@@ -2388,7 +2396,7 @@ function bootstrapHydration(
           // paths did not satisfy the navigation and a real request is required.
           // Computed from the nav-start router state so it matches the snapshot
           // the request would have carried if produced earlier.
-          if (navigationKind === "navigate") {
+          if (navigationKind === "navigate" && !usesCanonicalPrewarmedRequest) {
             const clientReuseManifestHeader =
               createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
             if (clientReuseManifestHeader !== null) {

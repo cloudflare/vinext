@@ -16,6 +16,7 @@ import {
   findVinextCacheConfigInPlugins,
   loadVinextCacheConfigFromViteConfig,
   generateCacheAdaptersModule,
+  hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
 } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
@@ -276,6 +277,9 @@ describe("cdnAdapter builder + factory", () => {
     expect(path.isAbsolute(descriptor.adapter)).toBe(true);
     expect(descriptor.adapter.endsWith("cdn-adapter.runtime.js")).toBe(true);
     expect(descriptor.options).toBeUndefined();
+    expect(descriptor.capabilities).toEqual({ responseVary: "verbatim" });
+    expect(hasVerbatimResponseVary({ cdn: descriptor })).toBe(true);
+    expect(hasVerbatimResponseVary({ cdn: { adapter: "url-only-cache" } })).toBe(false);
   });
 
   it("factory returns a CloudflareCdnCacheAdapter", () => {

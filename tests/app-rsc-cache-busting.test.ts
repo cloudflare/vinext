@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
+  canonicalizePrewarmableRscRequestHeaders,
   computeRscCacheBustingSearchParam,
+  createCanonicalRscRequestHeaders,
   createRscRequestHeaders,
   createRscRequestUrl,
   createServerActionRequestUrl,
@@ -55,6 +57,48 @@ describe("App Router RSC cache-busting", () => {
     await expect(createRscRequestUrl("/dashboard?tab=activity", headers)).resolves.toBe(
       "/dashboard?tab=activity&_rsc",
     );
+  });
+
+  it("builds the exact canonical deploy-warmer request headers", async () => {
+    const headers = createCanonicalRscRequestHeaders("dpl_123");
+
+    expect(Object.fromEntries(headers)).toEqual({
+      accept: "text/x-component",
+      rsc: "1",
+      "x-deployment-id": "dpl_123",
+    });
+    await expect(createRscRequestUrl("/cached/intro", headers)).resolves.toBe("/cached/intro?_rsc");
+  });
+
+  it("normalizes full prefetch and navigation headers to the warmer shape", async () => {
+    const headers = createRscRequestHeaders({
+      clientReuseManifestHeader: '{"entries":[]}',
+      deploymentId: "dpl_123",
+      nextUrl: "/source",
+      prefetchRouterState: { pathAndSearch: "/source", routeId: "route:/source" },
+    });
+    headers.set("next-router-segment-prefetch", "1");
+
+    expect(canonicalizePrewarmableRscRequestHeaders(headers)).toBe(true);
+    expect(Object.fromEntries(headers)).toEqual({
+      accept: "text/x-component",
+      rsc: "1",
+      "x-deployment-id": "dpl_123",
+    });
+    await expect(createRscRequestUrl("/cached/intro", headers)).resolves.toBe("/cached/intro?_rsc");
+  });
+
+  it("does not canonicalize partial, intercepted, or mounted-slot payloads", () => {
+    for (const headers of [
+      createRscRequestHeaders({ renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL }),
+      createRscRequestHeaders({ interceptionContext: "/source" }),
+      createRscRequestHeaders({ interceptionId: "modal" }),
+      createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" }),
+    ]) {
+      const before = Array.from(headers);
+      expect(canonicalizePrewarmableRscRequestHeaders(headers)).toBe(false);
+      expect(Array.from(headers)).toEqual(before);
+    }
   });
 
   it("uses the canonical route URL for root RSC navigations", async () => {

@@ -37,6 +37,7 @@ import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js"
 import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
+import { emitRscPrewarmManifest } from "./rsc-prewarm-manifest.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -105,6 +106,8 @@ type RunPrerenderOptions = {
    * Intended for tests that build to a custom outDir.
    */
   rscBundlePath?: string;
+  /** Emit browser eligibility metadata for a strict response-Vary CDN adapter. */
+  emitRscPrewarmManifest?: boolean;
   /**
    * Maximum number of routes rendered in parallel.
    * Defaults to prerenderApp/prerenderPages internal defaults when omitted.
@@ -371,6 +374,10 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         `Remove server-side data fetching (getServerSideProps, force-dynamic, revalidate) from these routes, ` +
         `or remove \`output: "export"\` from next.config.js.`,
     );
+  }
+
+  if (options.emitRscPrewarmManifest) {
+    emitRscPrewarmManifest(root, config);
   }
 
   injectPregeneratedConcretePaths(root);

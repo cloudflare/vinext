@@ -51,6 +51,7 @@ import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
   VIRTUAL_CACHE_ADAPTERS,
   generateCacheAdaptersModule,
+  hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
@@ -156,6 +157,7 @@ import {
   assertNoPublicNextRequestConflict,
 } from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
+import { getRscPrewarmManifestUrl } from "./build/rsc-prewarm-manifest.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
@@ -2431,6 +2433,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Also used to namespace ISR cache keys so old cached entries from a
         // previous deploy are never served by the new one.
         defines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
+        // A strict response-Vary CDN adapter may share one deploy-warmed full
+        // RSC response for routes whose completed prerender proves ISR
+        // cacheability. The file is emitted after prerendering, but its
+        // build-scoped URL is known while the browser bundle is compiled.
+        defines["process.env.__VINEXT_RSC_PREWARM_MANIFEST_URL"] = JSON.stringify(
+          env?.command === "build" && hasVerbatimResponseVary(options.cache)
+            ? getRscPrewarmManifestUrl(nextConfig)
+            : "",
+        );
         // Public browser-facing identity for App Router RSC compatibility
         // checks. Prefer Next.js-style deploymentId when configured; otherwise
         // generate a separate token so RSC headers do not expose

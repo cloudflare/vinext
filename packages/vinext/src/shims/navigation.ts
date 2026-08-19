@@ -31,8 +31,10 @@ import {
   isAppOwnedHistoryState,
 } from "../server/app-history-state.js";
 import {
+  canonicalizePrewarmableRscRequestHeaders,
   createRscRequestHeaders,
   createRscRequestUrl,
+  isRscPrewarmEligibleHref,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -2875,8 +2877,14 @@ const _appRouter: AppRouterInstance = {
       // dependencies off the startup path of every next/navigation consumer.
       const { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch } =
         await import("./internal/app-route-prefetch-policy.js");
+      const isCanonicalPrewarmCandidate =
+        interceptionContext === null &&
+        mountedSlotsHeader === null &&
+        (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref) &&
+        (await isRscPrewarmEligibleHref(fullHref));
+      if (setup.cancelled) return;
       const policy =
-        kind === "full"
+        isCanonicalPrewarmCandidate || kind === "full"
           ? resolveFullAppRoutePrefetch()
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
       const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
@@ -2893,6 +2901,8 @@ const _appRouter: AppRouterInstance = {
           __prefetchInlining || requiresRouteTreePrefetch ? "/__PAGE__" : "1",
         );
       }
+      const usesCanonicalPrewarmedRequest =
+        isCanonicalPrewarmCandidate && canonicalizePrewarmableRscRequestHeaders(headers);
       // Both derive from the same headers and neither feeds the other, so the
       // rewrite variant is generated alongside rather than after.
       const [rscUrl, ...additionalRscUrls] = await Promise.all([
@@ -2942,7 +2952,7 @@ const _appRouter: AppRouterInstance = {
           "low",
         );
       const fetchPromise =
-        reusable && kind === "auto" && requiresRouteTreePrefetch
+        !usesCanonicalPrewarmedRequest && reusable && kind === "auto" && requiresRouteTreePrefetch
           ? fetchRouteTreeGatedPrefetch({
               fetchFullRscPayload,
               fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>

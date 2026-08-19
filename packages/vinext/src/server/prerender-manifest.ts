@@ -30,6 +30,7 @@ export type PrerenderManifest = {
 export type PrerenderedPathSelectionOptions = {
   includeFallbackShells?: boolean;
   includeErrorDocuments?: boolean;
+  router?: "app" | "pages";
 };
 
 export function readPrerenderManifest(manifestPath: string): PrerenderManifest | null {
@@ -75,6 +76,11 @@ function isErrorDocumentRoute(pathname: string, route: PrerenderManifestRoute): 
     route.route === "/500" ||
     route.route === "/_error"
   );
+}
+
+function isUnresolvedRoutePattern(pathname: string, route: PrerenderManifestRoute): boolean {
+  if (route.path !== undefined || pathname !== route.route) return false;
+  return route.route.split("/").some((segment) => segment.startsWith(":"));
 }
 
 /**
@@ -147,6 +153,7 @@ export function getPrerenderedConcretePaths(
   const seen = new Set<string>();
   for (const route of routes) {
     if (route.status !== "rendered") continue;
+    if (options?.router && route.router !== options.router) continue;
     const pathname = route.path ?? route.route;
     if (!options?.includeFallbackShells && isFallbackShellArtifactPath(pathname, route)) {
       continue;
@@ -155,6 +162,42 @@ export function getPrerenderedConcretePaths(
       continue;
     }
     if (seen.has(pathname)) continue;
+    seen.add(pathname);
+    paths.push(pathname);
+  }
+  return paths;
+}
+
+/**
+ * Select exact App Router paths whose completed prerender produced a reusable
+ * static/ISR artifact. This deliberately follows the same final `revalidate`
+ * decision as page ISR instead of trying to predict cacheability from source.
+ */
+export function getPrewarmableAppPaths(manifest: PrerenderManifest): string[] {
+  const routes = manifest.routes;
+  if (!routes?.length) return [];
+
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const route of routes) {
+    const hasCacheableLifetime =
+      route.revalidate === false ||
+      (typeof route.revalidate === "number" &&
+        Number.isFinite(route.revalidate) &&
+        route.revalidate > 0);
+    if (route.status !== "rendered" || route.router !== "app" || !hasCacheableLifetime) {
+      continue;
+    }
+
+    const pathname = route.path ?? route.route;
+    if (
+      isUnresolvedRoutePattern(pathname, route) ||
+      isFallbackShellArtifactPath(pathname, route) ||
+      isErrorDocumentRoute(pathname, route) ||
+      seen.has(pathname)
+    ) {
+      continue;
+    }
     seen.add(pathname);
     paths.push(pathname);
   }

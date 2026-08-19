@@ -23,6 +23,10 @@ import {
   VINEXT_RSC_STATE_FINGERPRINT_HEADER,
 } from "./headers.js";
 import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
+export {
+  isRscPrewarmEligibleHref,
+  preloadRscPrewarmManifest,
+} from "../client/rsc-prewarm-eligibility.js";
 
 /**
  * RSC cache-busting hashes cover the headers that make an RSC payload vary.
@@ -67,6 +71,7 @@ type CreateRscRequestHeadersOptions = {
     routeId: string;
   } | null;
   routerState?: AppRscStateFingerprintInput | null;
+  deploymentId?: string | null;
 };
 
 type ResolveInvalidRscCacheBustingRequestOptions = {
@@ -301,12 +306,19 @@ export function stripRscSuffix(pathname: string): string {
   return pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
 }
 
-export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions = {}): Headers {
+export function createCanonicalRscRequestHeaders(
+  deploymentId: string | null | undefined = getDeploymentId(),
+): Headers {
   const headers = new Headers({
     Accept: VINEXT_RSC_CONTENT_TYPE,
     [RSC_HEADER]: "1",
   });
-  applyDeploymentIdHeader(headers);
+  applyDeploymentIdHeader(headers, deploymentId ?? undefined);
+  return headers;
+}
+
+export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions = {}): Headers {
+  const headers = createCanonicalRscRequestHeaders(options.deploymentId);
 
   if (options.prefetchRouterState) {
     if (options.includePrefetchHeader !== false) {
@@ -355,6 +367,30 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
   }
 
   return headers;
+}
+
+/**
+ * Convert a full, non-contextual navigation request to the definitive ISR RSC
+ * variant. Partial/intercepted/mounted-slot payloads remain contextual because
+ * their bytes can legitimately differ from the destination's full route.
+ */
+export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): boolean {
+  if (
+    headers.has(VINEXT_RSC_RENDER_MODE_HEADER) ||
+    headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER) ||
+    headers.has(VINEXT_INTERCEPTION_ID_HEADER) ||
+    headers.has(VINEXT_MOUNTED_SLOTS_HEADER)
+  ) {
+    return false;
+  }
+
+  headers.delete(NEXT_ROUTER_PREFETCH_HEADER);
+  headers.delete(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER);
+  headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
+  headers.delete(NEXT_URL_HEADER);
+  headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
+  headers.delete(VINEXT_CLIENT_REUSE_MANIFEST_HEADER);
+  return true;
 }
 
 function toRscRequestPath(href: string): string {

@@ -5,15 +5,26 @@ import {
   type PrerenderPathManifest,
 } from "vinext/internal/build/prerender-paths";
 import {
+  getPrewarmableAppPaths,
   getPrerenderedConcretePaths,
   readPrerenderManifest,
   type PrerenderManifest,
   type PrerenderedPathSelectionOptions,
 } from "vinext/internal/server/prerender-manifest";
+import {
+  createCanonicalRscRequestHeaders,
+  createRscRequestUrl,
+  VINEXT_RSC_CONTENT_TYPE,
+  VINEXT_RSC_VARY_HEADER,
+} from "vinext/internal/server/app-rsc-cache-busting";
+import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 
 export type CdnWarmOptions = {
   targetUrl: string;
   paths: readonly string[];
+  /** App Router ISR paths whose definitive client-navigation payload is warmed. */
+  rscPaths?: readonly string[];
+  deploymentId?: string;
   headers?: HeadersInit;
   concurrency?: number;
   timeoutMs?: number;
@@ -36,6 +47,24 @@ export type CdnWarmResult = {
   failures: Array<{ path: string; error: string }>;
 };
 
+export type PrerenderWarmPlan = {
+  deploymentId?: string;
+  paths: string[];
+  rscPaths: string[];
+};
+
+function applyWarmPathConfig(
+  pathname: string,
+  config: Pick<PrerenderPathManifest, "basePath" | "trailingSlash">,
+): string {
+  const withBasePath = config.basePath
+    ? pathname === "/"
+      ? config.basePath
+      : `${config.basePath}${pathname}`
+    : pathname;
+  return normalizePathTrailingSlash(withBasePath, config.trailingSlash === true);
+}
+
 function readBuiltBuildId(root: string): string | null {
   try {
     const buildId = fs.readFileSync(path.join(root, "dist", "server", "BUILD_ID"), "utf-8").trim();
@@ -54,7 +83,16 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
     const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as unknown;
     if (!parsed || typeof parsed !== "object") return null;
     const manifest = parsed as PrerenderPathManifest;
-    if (!Array.isArray(manifest.paths)) return null;
+    if (
+      !Array.isArray(manifest.paths) ||
+      !manifest.paths.every((pathname) => typeof pathname === "string") ||
+      (manifest.basePath !== undefined && typeof manifest.basePath !== "string") ||
+      (manifest.deploymentId !== undefined && typeof manifest.deploymentId !== "string") ||
+      (manifest.trailingSlash !== undefined && typeof manifest.trailingSlash !== "boolean") ||
+      (manifest.responseVary !== undefined && manifest.responseVary !== "verbatim")
+    ) {
+      return null;
+    }
     return manifest;
   } catch (error) {
     console.warn(`[vinext] Failed to read prerender path manifest at ${manifestPath}:`, error);
@@ -62,7 +100,10 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
   }
 }
 
-function readPrerenderPathWarmPaths(root: string, options?: { strict?: boolean }): string[] | null {
+function readPrerenderPathWarmPaths(
+  root: string,
+  options?: { strict?: boolean },
+): { manifest: PrerenderPathManifest; paths: string[] } | null {
   const manifest = readPrerenderPathManifest(
     path.join(root, "dist", "server", PRERENDER_PATHS_MANIFEST),
   );
@@ -74,38 +115,39 @@ function readPrerenderPathWarmPaths(root: string, options?: { strict?: boolean }
       "[vinext] CDN warmup skipped: prerender path manifest buildId does not match dist/server/BUILD_ID.";
     if (options?.strict) throw new Error(message);
     console.warn(message);
-    return [];
+    return { manifest, paths: [] };
   }
 
-  return manifest.paths.filter((pathname) => pathname.startsWith("/"));
+  return {
+    manifest,
+    paths: manifest.paths
+      .filter((pathname) => pathname.startsWith("/"))
+      .map((pathname) => applyWarmPathConfig(pathname, manifest)),
+  };
 }
 
-export function readPrerenderWarmPaths(
+export function readPrerenderWarmPlan(
   root: string,
   options?: { includeFallbackShells?: boolean; strict?: boolean },
-): string[] {
-  const shouldPreferPrerenderManifest = options?.includeFallbackShells === true;
-  if (!shouldPreferPrerenderManifest) {
-    const pathManifestPaths = readPrerenderPathWarmPaths(root, options);
-    if (pathManifestPaths !== null) return pathManifestPaths;
-  }
-
+): PrerenderWarmPlan {
+  const pathPlan = readPrerenderPathWarmPaths(root, options);
   const manifest = readPrerenderManifest(
     path.join(root, "dist", "server", "vinext-prerender.json"),
   );
   if (!manifest) {
-    if (shouldPreferPrerenderManifest) {
-      const pathManifestPaths = readPrerenderPathWarmPaths(root, options);
-      if (pathManifestPaths !== null) {
-        console.warn(
-          "[vinext] CDN warmup fallback shells requested, but prerender manifest not found; warming build-discovered paths only.",
-        );
-        return pathManifestPaths;
-      }
+    if (pathPlan) {
+      console.warn(
+        "[vinext] CDN warmup has no completed prerender manifest; RSC warmup is disabled.",
+      );
+      return {
+        ...(pathPlan.manifest.deploymentId ? { deploymentId: pathPlan.manifest.deploymentId } : {}),
+        paths: pathPlan.paths,
+        rscPaths: [],
+      };
     }
     const message = "[vinext] CDN warmup skipped: prerender manifest not found.";
     if (options?.strict) throw new Error(message);
-    return [];
+    return { paths: [], rscPaths: [] };
   }
 
   const builtBuildId = readBuiltBuildId(root);
@@ -114,10 +156,39 @@ export function readPrerenderWarmPaths(
       "[vinext] CDN warmup skipped: prerender manifest buildId does not match dist/server/BUILD_ID.";
     if (options?.strict) throw new Error(message);
     console.warn(message);
-    return [];
+    return { paths: [], rscPaths: [] };
   }
 
-  return getPrerenderedConcretePaths(manifest, options);
+  const pathConfig = pathPlan?.manifest ?? {};
+  const appPaths = getPrewarmableAppPaths(manifest);
+  const appHtmlPaths = options?.includeFallbackShells
+    ? getPrerenderedConcretePaths(manifest, { ...options, router: "app" })
+    : appPaths;
+  const pagePaths = getPrerenderedConcretePaths(manifest, {
+    ...options,
+    router: "pages",
+  });
+  return {
+    ...(pathPlan?.manifest.deploymentId ? { deploymentId: pathPlan.manifest.deploymentId } : {}),
+    paths: Array.from(
+      new Set(
+        [...appHtmlPaths, ...pagePaths].map((pathname) =>
+          applyWarmPathConfig(pathname, pathConfig),
+        ),
+      ),
+    ),
+    rscPaths:
+      pathPlan?.manifest.responseVary === "verbatim"
+        ? appPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig))
+        : [],
+  };
+}
+
+export function readPrerenderWarmPaths(
+  root: string,
+  options?: { includeFallbackShells?: boolean; strict?: boolean },
+): string[] {
+  return readPrerenderWarmPlan(root, options).paths;
 }
 
 export function getWarmPathsFromPrerenderManifest(
@@ -147,6 +218,7 @@ async function fetchWithTimeout(
   url: URL,
   timeoutMs: number,
   headers: HeadersInit | undefined,
+  redirect: RequestRedirect,
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -155,7 +227,7 @@ async function fetchWithTimeout(
   try {
     return await fetchImpl(url, {
       method: "GET",
-      redirect: "follow",
+      redirect,
       headers: requestHeaders,
       signal: controller.signal,
     });
@@ -164,14 +236,55 @@ async function fetchWithTimeout(
   }
 }
 
+type WarmTarget = {
+  headers?: HeadersInit;
+  kind: "html" | "rsc";
+  label: string;
+  pathname: string;
+};
+
+const REQUIRED_RSC_VARY_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =>
+  name.trim().toLowerCase(),
+);
+
+function validateRscWarmResponse(response: Response): string | null {
+  if (response.redirected || response.status < 200 || response.status >= 300) {
+    return response.redirected ? "redirected response" : `HTTP ${response.status}`;
+  }
+  if (!response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)) {
+    return `expected ${VINEXT_RSC_CONTENT_TYPE} response`;
+  }
+
+  const vary = new Set(
+    (response.headers.get("Vary") ?? "")
+      .split(",")
+      .map((name) => name.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  const missingVary = REQUIRED_RSC_VARY_HEADERS.find((name) => !vary.has(name));
+  if (missingVary) return `response Vary is missing ${missingVary}`;
+
+  for (const name of ["Cache-Control", "CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"]) {
+    const value = response.headers.get(name);
+    if (value && /\b(?:private|no-store|no-cache)\b/i.test(value)) {
+      return `${name} is not cacheable`;
+    }
+  }
+  const cacheStatus = response.headers.get("CF-Cache-Status")?.toUpperCase();
+  if (cacheStatus === "BYPASS" || cacheStatus === "DYNAMIC" || cacheStatus === "ERROR") {
+    return `CF-Cache-Status is ${cacheStatus}`;
+  }
+  return null;
+}
+
 async function warmOnePath(
-  pathname: string,
+  target: WarmTarget,
   options: Required<Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries">> & {
     fetchImpl: typeof fetch;
     headers?: HeadersInit;
   },
 ): Promise<{ path: string; ok: true } | { path: string; ok: false; error: string }> {
-  const url = buildWarmupUrl(options.targetUrl, pathname);
+  const url = buildWarmupUrl(options.targetUrl, target.pathname);
   let lastError = "unknown error";
 
   for (let attempt = 0; attempt <= options.retries; attempt++) {
@@ -180,12 +293,21 @@ async function warmOnePath(
         options.fetchImpl,
         url,
         options.timeoutMs,
-        options.headers,
+        target.headers ?? options.headers,
+        target.kind === "rsc" ? "manual" : "follow",
       );
       await response.arrayBuffer();
 
+      if (target.kind === "rsc") {
+        const validationError = validateRscWarmResponse(response);
+        if (validationError === null) return { path: target.label, ok: true };
+        lastError = validationError;
+        if (!isRetryableStatus(response.status)) break;
+        continue;
+      }
+
       if (response.status < 400) {
-        return { path: pathname, ok: true };
+        return { path: target.label, ok: true };
       }
 
       lastError = `HTTP ${response.status}`;
@@ -199,7 +321,7 @@ async function warmOnePath(
     }
   }
 
-  return { path: pathname, ok: false, error: lastError };
+  return { path: target.label, ok: false, error: lastError };
 }
 
 async function runWithConcurrency<T, R>(
@@ -224,20 +346,37 @@ async function runWithConcurrency<T, R>(
 }
 
 export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResult> {
-  const paths = options.paths;
+  const requests: WarmTarget[] = [];
+  const rscPaths = new Set(options.rscPaths ?? []);
+  const commonHeaders = new Headers(options.headers);
+  for (const pathname of options.paths) {
+    requests.push({ kind: "html", label: pathname, pathname });
+    if (!rscPaths.has(pathname)) continue;
+
+    const rscHeaders = new Headers(commonHeaders);
+    for (const [name, value] of createCanonicalRscRequestHeaders(options.deploymentId)) {
+      rscHeaders.set(name, value);
+    }
+    requests.push({
+      headers: rscHeaders,
+      kind: "rsc",
+      label: `${pathname} (RSC)`,
+      pathname: await createRscRequestUrl(pathname, rscHeaders),
+    });
+  }
   const concurrency = Math.max(1, options.concurrency ?? 10);
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
   const retries = Math.max(0, options.retries ?? 1);
   const fetchImpl = options.fetchImpl ?? fetch;
 
-  if (paths.length === 0) {
+  if (requests.length === 0) {
     return { total: 0, warmed: 0, failed: 0, failures: [] };
   }
 
-  console.log(`\n  Warming CDN cache for ${paths.length} build-discovered path(s)...`);
+  console.log(`\n  Warming CDN cache with ${requests.length} prerendered request(s)...`);
 
-  const results = await runWithConcurrency(paths, concurrency, (pathname) =>
-    warmOnePath(pathname, {
+  const results = await runWithConcurrency(requests, concurrency, (target) =>
+    warmOnePath(target, {
       targetUrl: options.targetUrl,
       timeoutMs,
       retries,
@@ -251,7 +390,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     .map(({ path, error }) => ({ path, error }));
   const warmed = results.length - failures.length;
 
-  console.log(`  CDN warmup: ${warmed}/${paths.length} path(s) warmed.`);
+  console.log(`  CDN warmup: ${warmed}/${requests.length} request(s) warmed.`);
   if (failures.length > 0) {
     for (const failure of failures.slice(0, 5)) {
       console.warn(`  CDN warmup failed for ${failure.path}: ${failure.error}`);
@@ -262,7 +401,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   }
 
   const result = {
-    total: paths.length,
+    total: requests.length,
     warmed,
     failed: failures.length,
     failures,
@@ -270,7 +409,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
 
   if (options.strict && failures.length > 0) {
     throw new Error(
-      `CDN warmup failed for ${failures.length}/${paths.length} path(s). ` +
+      `CDN warmup failed for ${failures.length}/${requests.length} request(s). ` +
         `First failure: ${failures[0].path}: ${failures[0].error}`,
     );
   }
@@ -281,9 +420,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
 export async function warmCdnCacheFromPrerender(
   options: PrerenderCdnWarmOptions,
 ): Promise<CdnWarmResult> {
-  const paths = readPrerenderWarmPaths(options.root, {
+  const plan = readPrerenderWarmPlan(options.root, {
     includeFallbackShells: options.includeFallbackShells,
     strict: options.strict,
   });
-  return warmCdnCache({ ...options, paths });
+  return warmCdnCache({ ...options, ...plan });
 }
