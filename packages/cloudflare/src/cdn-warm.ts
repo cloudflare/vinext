@@ -349,7 +349,7 @@ async function warmOnePath(
         lastError = validationError;
         if (!isRetryableStatus(response.status, options.retryNotFound)) break;
         if (attempt < options.retries && options.retryDelayMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, options.retryDelayMs * 2 ** attempt));
+          await new Promise((resolve) => setTimeout(resolve, options.retryDelayMs));
         }
         continue;
       }
@@ -368,7 +368,7 @@ async function warmOnePath(
       }
     }
     if (attempt < options.retries && options.retryDelayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, options.retryDelayMs * 2 ** attempt));
+      await new Promise((resolve) => setTimeout(resolve, options.retryDelayMs));
     }
   }
 
@@ -420,8 +420,8 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const concurrency = Math.max(1, options.concurrency ?? 10);
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
   const hasVersionOverride = new Headers(options.headers).has(WORKER_VERSION_OVERRIDE_HEADER);
-  const retries = Math.max(0, options.retries ?? (hasVersionOverride ? 5 : 1));
-  const retryDelayMs = Math.max(0, options.retryDelayMs ?? (hasVersionOverride ? 500 : 0));
+  const retries = Math.max(0, options.retries ?? (hasVersionOverride ? 30 : 1));
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? (hasVersionOverride ? 1_000 : 0));
   const fetchImpl = options.fetchImpl ?? fetch;
 
   if (requests.length === 0) {
