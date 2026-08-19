@@ -37,6 +37,7 @@ export {
  * repeated canonicalization redirects.
  */
 export const VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM = "_rsc";
+export const VINEXT_RSC_BUILD_ID_HEADER = "X-Vinext-RSC-Build-Id";
 export const VINEXT_RSC_COMPATIBILITY_ID_HEADER = "X-Vinext-RSC-Compatibility-Id";
 export const VINEXT_RSC_CONTENT_TYPE = "text/x-component";
 
@@ -102,15 +103,27 @@ export function getVinextRscCompatibilityId(): string | null {
   return normalizeCompatibilityId(process.env.__VINEXT_RSC_COMPATIBILITY_ID);
 }
 
+function getVinextRscBuildId(): string | null {
+  return normalizeCompatibilityId(process.env.__VINEXT_BUILD_ID);
+}
+
 export function applyRscCompatibilityIdHeader(
   headers: Headers,
   compatibilityId: string | null | undefined = getVinextRscCompatibilityId(),
+  buildId: string | null | undefined = getVinextRscBuildId(),
 ): void {
   const normalized = normalizeCompatibilityId(compatibilityId);
   if (normalized) {
     headers.set(VINEXT_RSC_COMPATIBILITY_ID_HEADER, normalized);
   } else {
     headers.delete(VINEXT_RSC_COMPATIBILITY_ID_HEADER);
+  }
+
+  const normalizedBuildId = normalizeCompatibilityId(buildId);
+  if (normalizedBuildId) {
+    headers.set(VINEXT_RSC_BUILD_ID_HEADER, normalizedBuildId);
+  } else {
+    headers.delete(VINEXT_RSC_BUILD_ID_HEADER);
   }
 }
 

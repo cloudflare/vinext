@@ -14,6 +14,7 @@ import {
 import {
   createCanonicalRscRequestHeaders,
   createRscRequestUrl,
+  VINEXT_RSC_BUILD_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
 } from "vinext/internal/server/app-rsc-cache-busting";
@@ -24,6 +25,8 @@ export type CdnWarmOptions = {
   paths: readonly string[];
   /** App Router ISR paths whose definitive client-navigation payload is warmed. */
   rscPaths?: readonly string[];
+  /** Build identity that the warmed RSC response must have been rendered by. */
+  expectedBuildId?: string;
   deploymentId?: string;
   headers?: HeadersInit;
   concurrency?: number;
@@ -51,6 +54,7 @@ export type CdnWarmResult = {
 };
 
 export type PrerenderWarmPlan = {
+  buildId?: string;
   deploymentId?: string;
   paths: string[];
   rscPaths: string[];
@@ -182,6 +186,7 @@ export function readPrerenderWarmPlan(
     router: "pages",
   });
   return {
+    buildId: builtBuildId,
     ...(pathPlan?.manifest.deploymentId ? { deploymentId: pathPlan.manifest.deploymentId } : {}),
     paths: Array.from(
       new Set(
@@ -290,12 +295,18 @@ const ADMITTED_CF_CACHE_STATUSES = new Set([
   "STALE",
 ]);
 
-function validateRscWarmResponse(response: Response): string | null {
+function validateRscWarmResponse(response: Response, expectedBuildId?: string): string | null {
   if (response.redirected || response.status < 200 || response.status >= 300) {
     return response.redirected ? "redirected response" : `HTTP ${response.status}`;
   }
   if (!response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)) {
     return `expected ${VINEXT_RSC_CONTENT_TYPE} response`;
+  }
+  if (
+    expectedBuildId !== undefined &&
+    response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) !== expectedBuildId
+  ) {
+    return `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build ${expectedBuildId}`;
   }
 
   const vary = new Set(
@@ -328,16 +339,16 @@ async function warmOnePath(
   options: Required<Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries">> & {
     fetchImpl: typeof fetch;
     headers?: HeadersInit;
+    expectedBuildId?: string;
     retryAllValidationErrors: boolean;
-    retryDeadlineMs?: number;
+    retryDeadlineAt?: number;
     retryDelayMs: number;
     retryNotFound: boolean;
   },
 ): Promise<{ path: string; ok: true } | { path: string; ok: false; error: string }> {
   const url = buildWarmupUrl(options.targetUrl, target.pathname);
-  let lastError = "unknown error";
-  const retryDeadline =
-    options.retryDeadlineMs === undefined ? undefined : Date.now() + options.retryDeadlineMs;
+  let lastError = "propagation deadline expired before request";
+  const retryDeadline = options.retryDeadlineAt;
 
   const canRetry = (attempt: number): boolean =>
     attempt < options.retries && (retryDeadline === undefined || Date.now() < retryDeadline);
@@ -367,7 +378,7 @@ async function warmOnePath(
       );
 
       if (target.kind === "rsc") {
-        const validationError = validateRscWarmResponse(response);
+        const validationError = validateRscWarmResponse(response, options.expectedBuildId);
         if (validationError === null) return { path: target.label, ok: true };
         lastError = validationError;
         if (
@@ -423,25 +434,30 @@ async function runWithConcurrency<T, R>(
 
 export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResult> {
   const requests: WarmTarget[] = [];
+  const htmlRequests: WarmTarget[] = [];
   const rscPaths = new Set(options.rscPaths ?? []);
   const commonHeaders = new Headers(options.headers);
   for (const pathname of options.paths) {
+    if (rscPaths.has(pathname)) {
+      const rscHeaders = new Headers(commonHeaders);
+      for (const [name, value] of createCanonicalRscRequestHeaders(options.deploymentId)) {
+        rscHeaders.set(name, value);
+      }
+      requests.push({
+        headers: rscHeaders,
+        kind: "rsc",
+        label: `${pathname} (RSC)`,
+        pathname: await createRscRequestUrl(pathname, rscHeaders),
+      });
+    }
+
     const htmlHeaders = new Headers(commonHeaders);
     htmlHeaders.set("Accept", "text/html");
-    requests.push({ headers: htmlHeaders, kind: "html", label: pathname, pathname });
-    if (!rscPaths.has(pathname)) continue;
-
-    const rscHeaders = new Headers(commonHeaders);
-    for (const [name, value] of createCanonicalRscRequestHeaders(options.deploymentId)) {
-      rscHeaders.set(name, value);
-    }
-    requests.push({
-      headers: rscHeaders,
-      kind: "rsc",
-      label: `${pathname} (RSC)`,
-      pathname: await createRscRequestUrl(pathname, rscHeaders),
-    });
+    htmlRequests.push({ headers: htmlHeaders, kind: "html", label: pathname, pathname });
   }
+  // For a serialized propagating target, prove that requests have reached the
+  // uploaded build before filling any HTML cache entries.
+  requests.push(...htmlRequests);
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
   const hasVersionOverride = new Headers(options.headers).has(WORKER_VERSION_OVERRIDE_HEADER);
   const propagatingTarget = options.propagatingTarget ?? hasVersionOverride;
@@ -452,6 +468,8 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const retries = Math.max(0, options.retries ?? (propagatingTarget ? 30 : 1));
   const retryDelayMs = Math.max(0, options.retryDelayMs ?? (propagatingTarget ? 1_000 : 0));
   const fetchImpl = options.fetchImpl ?? fetch;
+  const retryDeadlineAt =
+    propagatingTarget && options.retries === undefined ? Date.now() + 30_000 : undefined;
 
   if (requests.length === 0) {
     return { total: 0, warmed: 0, failed: 0, failures: [] };
@@ -466,8 +484,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       retries,
       fetchImpl,
       headers: options.headers,
+      expectedBuildId: options.expectedBuildId,
       retryAllValidationErrors: propagatingTarget,
-      retryDeadlineMs: propagatingTarget && options.retries === undefined ? 30_000 : undefined,
+      retryDeadlineAt,
       retryDelayMs,
       retryNotFound: propagatingTarget,
     }),

@@ -12,6 +12,7 @@ import {
   resolveInvalidRscCacheBustingRequest,
   setRscCacheBustingSearchParam,
   stripRscCacheBustingSearchParam,
+  VINEXT_RSC_BUILD_ID_HEADER,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
   VINEXT_RSC_RENDER_MODE_HEADER,
@@ -458,6 +459,14 @@ describe("App Router RSC cache-busting", () => {
     expect(headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-env");
   });
 
+  it("applies the built RSC identity to response headers", () => {
+    const headers = new Headers();
+
+    withEnvVar("__VINEXT_BUILD_ID", "build-a", () => applyRscCompatibilityIdHeader(headers));
+
+    expect(headers.get(VINEXT_RSC_BUILD_ID_HEADER)).toBe("build-a");
+  });
+
   it("leaves the Next.js deployment ID header out of compatibility-only response headers", () => {
     const headers = new Headers();
 
@@ -491,11 +500,13 @@ describe("App Router RSC cache-busting", () => {
 
   it("removes a spoofed compatibility ID header when no framework ID is available", () => {
     const headers = new Headers({
+      [VINEXT_RSC_BUILD_ID_HEADER]: "spoofed-build",
       [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "spoofed-compat",
     });
 
-    applyRscCompatibilityIdHeader(headers, "");
+    applyRscCompatibilityIdHeader(headers, "", "");
 
+    expect(headers.has(VINEXT_RSC_BUILD_ID_HEADER)).toBe(false);
     expect(headers.has(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe(false);
   });
 

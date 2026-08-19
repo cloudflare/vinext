@@ -105,6 +105,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
   expect(warmed.headers()["content-type"]).toContain("text/x-component");
   expect(warmed.headers()["cache-control"]).not.toContain("no-store");
   expect(warmed.headers()["cf-cache-status"]).toBe("HIT");
+  expect(warmed.headers()["x-vinext-rsc-build-id"]).toBe(expectedBuildId);
   expect(await warmed.text()).toContain(expectedBuildId);
 
   const withFreshPage = async (
@@ -198,13 +199,17 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
     await page.route("**/vinext-rsc-prewarm.json", (route) => route.abort());
     await page.goto("/prewarm/soft");
     await expect(page.getByTestId("build-id")).toHaveText(expectedBuildId);
-    await page.getByTestId("soft-navigation").click();
+    const observed = await observeTargetRsc(page, () =>
+      page.getByTestId("soft-navigation").click(),
+    );
 
     await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
     await expect(page.getByRole("heading", { name: "Post: intro" })).toBeVisible();
     await expect(page.getByTestId("build-id")).toHaveText(expectedBuildId);
-    expect(targetRscRequests).toEqual([]);
-    expect(targetDocumentRequests).toHaveLength(1);
+    expect(new URL(observed.url).searchParams.get("_rsc")).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(observed.requestHeaders["next-router-state-tree"]).toBeDefined();
+    expect(targetRscRequests).toHaveLength(1);
+    expect(targetDocumentRequests).toEqual([]);
   });
 
   const context = await browser.newContext();
