@@ -246,6 +246,26 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       label: "a nested root inline environment table",
       config: `env = { "staging.eu" = { cache = { "cross_version_cache" = true } } }\n`,
     },
+    {
+      label: "a root key with spaced dot separators",
+      config: `cache . cross_version_cache = true\n`,
+    },
+    {
+      label: "an environment table with spaced dot separators",
+      config: `[env . staging . cache]\ncross_version_cache = true\n`,
+    },
+    {
+      label: "an inline environment assignment",
+      config: `env.staging = { cache = { cross_version_cache = true } }\n`,
+    },
+    {
+      label: "a Unicode-escaped quoted cache key",
+      config: `[cache]\n"cross_version_cach\\u0065" = true\n`,
+    },
+    {
+      label: "an escaped quote before an inline cache setting",
+      config: `cache = { note = "\\u0022 #", cross_version_cache = true }\n`,
+    },
   ])("rejects cross-version caching declared through $label", async ({ config }) => {
     writeFile("wrangler.toml", config);
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");

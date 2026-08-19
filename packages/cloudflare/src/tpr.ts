@@ -85,7 +85,7 @@ type WranglerConfig = {
   customDomain?: string;
   name?: string;
   legacyEnv?: boolean;
-  hasUnparsedCrossVersionCache?: boolean;
+  hasEnabledCrossVersionCache?: boolean;
   warmTargetDomain?: string;
   env?: Record<string, WranglerEnvironmentConfig>;
 };
@@ -478,8 +478,8 @@ function extractFromTOML(content: string): WranglerConfig {
 
   const env = extractEnvConfigsFromTOML(content);
   if (env) result.env = env;
-  if (tomlHasUnparsedCrossVersionCache(content)) {
-    result.hasUnparsedCrossVersionCache = true;
+  if (tomlEnablesCrossVersionCache(content)) {
+    result.hasEnabledCrossVersionCache = true;
   }
 
   return result;
@@ -574,21 +574,18 @@ function getTomlRootBody(content: string): string {
   return firstSection === -1 ? content : content.slice(0, firstSection);
 }
 
-function tomlHasUnparsedCrossVersionCache(content: string): boolean {
+function tomlEnablesCrossVersionCache(content: string): boolean {
   const enabledAssignment =
     /(?:^|[,{.\s])(?:cross_version_cache|"cross_version_cache"|'cross_version_cache')\s*=\s*true\b/;
-  for (const rawLine of getTomlRootBody(content).split("\n")) {
-    const line = stripTomlComment(rawLine);
-    if (!enabledAssignment.test(line)) continue;
-    if (/["']/.test(line) || /^\s*env\s*=/.test(line)) return true;
-  }
-  return getTomlSections(content).some((section) => {
-    const body = section.body
-      .split("\n")
-      .map((line) => stripTomlComment(line))
-      .join("\n");
-    if (!enabledAssignment.test(body)) return false;
-    return section.header === "env" || /["']/.test(section.header) || /["']/.test(body);
+  return content
+    .split("\n")
+    .some((line) => enabledAssignment.test(decodeTomlUnicodeEscapes(stripTomlComment(line))));
+}
+
+function decodeTomlUnicodeEscapes(content: string): string {
+  return content.replace(/\\(u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})/g, (escape) => {
+    const codePoint = Number.parseInt(escape.slice(2), 16);
+    return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : escape;
   });
 }
 

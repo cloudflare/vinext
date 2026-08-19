@@ -559,7 +559,7 @@ export async function deployWithCdnWarmup(
   const targetEnv = getWranglerTargetEnv(options);
   const targetEnvConfig = targetEnv ? wranglerConfig?.env?.[targetEnv] : undefined;
   const crossVersionCache =
-    wranglerConfig?.hasUnparsedCrossVersionCache === true ||
+    wranglerConfig?.hasEnabledCrossVersionCache === true ||
     (targetEnvConfig?.hasCacheConfig
       ? targetEnvConfig.crossVersionCache === true
       : wranglerConfig?.crossVersionCache === true);
