@@ -115,20 +115,25 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
     ) => Promise<void>,
   ): Promise<void> => {
     const context = await browser.newContext();
-    const page = await context.newPage();
-    const targetDocumentRequests: string[] = [];
-    const targetRscRequests: string[] = [];
-    page.on("request", (request) => {
-      const url = new URL(request.url());
-      if (url.pathname === TARGET_PATH && request.resourceType() === "document") {
-        targetDocumentRequests.push(request.url());
-      }
-      if (url.pathname === TARGET_PATH && request.headers()["rsc"] === "1") {
-        targetRscRequests.push(request.url());
-      }
-    });
     try {
-      await waitForStablePreviewAlias(page, expectedBuildId);
+      const readinessPage = await context.newPage();
+      try {
+        await waitForStablePreviewAlias(readinessPage, expectedBuildId);
+      } finally {
+        await readinessPage.close();
+      }
+      const page = await context.newPage();
+      const targetDocumentRequests: string[] = [];
+      const targetRscRequests: string[] = [];
+      page.on("request", (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === TARGET_PATH && request.resourceType() === "document") {
+          targetDocumentRequests.push(request.url());
+        }
+        if (url.pathname === TARGET_PATH && request.headers()["rsc"] === "1") {
+          targetRscRequests.push(request.url());
+        }
+      });
       await run(page, targetDocumentRequests, targetRscRequests);
     } finally {
       await context.close();
@@ -203,9 +208,14 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
   });
 
   const context = await browser.newContext();
-  const page = await context.newPage();
   try {
-    await waitForStablePreviewAlias(page, expectedBuildId);
+    const readinessPage = await context.newPage();
+    try {
+      await waitForStablePreviewAlias(readinessPage, expectedBuildId);
+    } finally {
+      await readinessPage.close();
+    }
+    const page = await context.newPage();
     const dynamicResponsePromise = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/dynamic" && response.request().headers()["rsc"] === "1";
