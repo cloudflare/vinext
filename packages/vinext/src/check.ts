@@ -9,6 +9,7 @@ import { detectPackageManager, findDir } from "./utils/project.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
 import path from "pathslash";
+import { toPosixRelative } from "./utils/path.js";
 
 // ── Support status definitions ─────────────────────────────────────────────
 
@@ -654,7 +655,7 @@ export function scanImports(root: string): CheckItem[] {
         // Normalize: next/font/google -> next/font/google
         const normalized = mod === "next" ? "next" : mod;
         if (!importUsage.has(normalized)) importUsage.set(normalized, []);
-        const relFile = path.relative(root, file);
+        const relFile = toPosixRelative(root, file);
         const usedInFiles = importUsage.get(normalized) ?? [];
         if (!usedInFiles.includes(relFile)) {
           usedInFiles.push(relFile);
@@ -1102,7 +1103,7 @@ export function checkConventions(root: string): CheckItem[] {
   const cjsGlobalFiles: string[] = [];
   for (const file of allSourceFiles) {
     const content = fs.readFileSync(file, "utf-8");
-    const rel = path.relative(root, file);
+    const rel = toPosixRelative(root, file);
 
     if (viewTransitionRegex.test(content)) {
       viewTransitionFiles.push(rel);

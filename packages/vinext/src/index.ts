@@ -4479,7 +4479,7 @@ export const loadServerActionClient = ${
         handler(options: HotUpdateOptions) {
           if (!hasPagesDir) return;
           const isPagesAppFile = (filePath: string): boolean => {
-            const relativePath = path.relative(pagesDir, filePath);
+            const relativePath = toPosixRelative(pagesDir, filePath);
             return (
               !relativePath.includes("/") &&
               relativePath.startsWith("_app.") &&
@@ -4490,7 +4490,7 @@ export const loadServerActionClient = ${
             const cleanPath = stripViteModuleQuery(filePath);
             if (!path.isAbsolute(cleanPath)) return false;
             if (!isScriptModuleId(cleanPath) || cleanPath.endsWith(".d.ts")) return false;
-            const relativeRootPath = path.relative(root, cleanPath);
+            const relativeRootPath = toPosixRelative(root, cleanPath);
             if (relativeRootPath.startsWith("..") || path.isAbsolute(relativeRootPath))
               return false;
             if (
@@ -4721,7 +4721,7 @@ export const loadServerActionClient = ${
         let appRouteTypeGenerationPending = false;
 
         function isPagesAppFile(filePath: string): boolean {
-          const relativePath = path.relative(pagesDir, filePath);
+          const relativePath = toPosixRelative(pagesDir, filePath);
           return (
             !relativePath.includes("/") &&
             relativePath.startsWith("_app.") &&
@@ -4733,7 +4733,7 @@ export const loadServerActionClient = ${
           const cleanPath = stripViteModuleQuery(filePath);
           if (!path.isAbsolute(cleanPath)) return false;
           if (!isScriptModuleId(cleanPath) || cleanPath.endsWith(".d.ts")) return false;
-          const relativeRootPath = path.relative(root, cleanPath);
+          const relativeRootPath = toPosixRelative(root, cleanPath);
           if (relativeRootPath.startsWith("..") || path.isAbsolute(relativeRootPath)) return false;
           if (
             relativeRootPath.includes("/node_modules/") ||
