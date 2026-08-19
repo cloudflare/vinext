@@ -8,6 +8,7 @@ import {
   getRscPrewarmManifestUrl,
   writeRscPrewarmManifest,
 } from "../packages/vinext/src/build/rsc-prewarm-manifest.js";
+import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
 
 let root: string;
 
@@ -32,6 +33,8 @@ describe("RSC prewarm build manifest", () => {
             router: "app",
             revalidate: false,
             fallback: false,
+            rscVary: VINEXT_RSC_VARY_HEADER,
+            rscPrewarmable: true,
           },
           {
             route: "/cached/:slug",
@@ -40,6 +43,8 @@ describe("RSC prewarm build manifest", () => {
             router: "app",
             revalidate: 60,
             fallback: false,
+            rscVary: VINEXT_RSC_VARY_HEADER,
+            rscPrewarmable: true,
           },
           {
             route: "/dynamic",
@@ -123,6 +128,8 @@ describe("RSC prewarm build manifest", () => {
             router: "app",
             revalidate: 60,
             fallback: false,
+            rscVary: VINEXT_RSC_VARY_HEADER,
+            rscPrewarmable: true,
           },
         ],
       }),

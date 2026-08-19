@@ -661,7 +661,7 @@ export async function deployWithCdnWarmup(
       options,
     );
     if (targetUrl) {
-      await warmUploadedVersion(targetUrl);
+      await warmUploadedVersion(targetUrl, undefined, true);
     } else if (options.warmCdnStrict) {
       throw new Error(
         "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +

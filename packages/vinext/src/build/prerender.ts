@@ -39,6 +39,10 @@ import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
+  createCanonicalRscRequestHeaders,
+  VINEXT_RSC_CONTENT_TYPE,
+} from "../server/app-rsc-cache-busting.js";
+import {
   NEXT_CACHE_TAGS_HEADER,
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
@@ -92,6 +96,18 @@ function getErrorMessageWithStack(err: Error): string {
   // and the server bundle includes sourcemaps, this resolves bundled stack frames to
   // original source files, matching Next.js's enablePrerenderSourceMaps behavior.
   return err.stack || err.message;
+}
+
+function hasReusableRscResponseHeaders(response: Response): boolean {
+  if (!response.ok) return false;
+  if (!response.headers.get("content-type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)) {
+    return false;
+  }
+  for (const name of ["cache-control", "cdn-cache-control"]) {
+    const value = response.headers.get(name);
+    if (value && /\b(?:private|no-store|no-cache)\b/i.test(value)) return false;
+  }
+  return true;
 }
 
 async function startOptionalPrerenderServerPool(
@@ -168,6 +184,10 @@ export type PrerenderRouteResult =
       router: "app" | "pages" | "metadata";
       /** Response headers that must be replayed with the prerendered artifact. */
       headers?: Record<string, string | string[]>;
+      /** Final Vary value observed from the canonical RSC request, when probed. */
+      rscVary?: string;
+      /** Whether the canonical RSC probe completed with a reusable response. */
+      rscPrewarmable?: boolean;
       /** Original HTTP status for prerendered App Route-style responses. */
       responseStatus?: number;
       /** Cache tags collected while rendering this route. */
@@ -240,6 +260,11 @@ type PrerenderOptions = {
    * multiple phases and write a single unified manifest itself.
    */
   skipManifest?: boolean;
+  /**
+   * Render one additional canonical RSC request per completed App route and
+   * record its final response Vary for shared-cache eligibility.
+   */
+  captureRscVary?: boolean;
 };
 
 type PrerenderPagesOptions = {
@@ -1647,32 +1672,68 @@ export async function prerenderApp({
         // framing-aware hint normalization at the stream source, so the
         // resulting `.rsc` file contains the same Flight bytes.
         //
-        // Falls back to a second invocation with `RSC: 1` when the HTML has
-        // no chunk scripts at all — covers cases where middleware
-        // short-circuits the App Router pipeline with a custom 200 HTML
-        // response that never went through createRscEmbedTransform.
+        // Falls back to a second invocation with the canonical `?_rsc` URL and
+        // `RSC: 1` when the HTML has no chunk scripts at all. When shared RSC
+        // prewarming is enabled, the same request is also used to certify the
+        // final response Vary even when the payload was embedded in the HTML.
         let rscData = extractRscPayloadFromPrerenderedHtml(html);
-        if (rscData === null) {
-          const rscHeaders = new Headers({ Accept: "text/x-component", RSC: "1" });
+        let rscVary: string | undefined;
+        let rscPrewarmable: boolean | undefined;
+        if (rscData === null || options.captureRscVary) {
+          rscPrewarmable = false;
+          const rscHeaders = createCanonicalRscRequestHeaders(config.deploymentId ?? null);
           if (prerenderRouteParamsHeader !== null) {
             rscHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
           }
           if (isSpeculative) {
             rscHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
           }
-          const rscRequest = new Request(`http://localhost${urlPath}`, {
+          const rscRequest = new Request(`http://localhost${urlPath}?_rsc`, {
             headers: rscHeaders,
           });
-          const rscRes = await runWithHeadersContext(headersContextFromRequest(rscRequest), () =>
-            rscHandler(rscRequest),
-          );
-          if (!rscRes.ok) {
-            await rscRes.body?.cancel();
-            throw new Error(
-              `[vinext] prerenderApp: RSC fallback returned ${rscRes.status} for ${urlPath}`,
+          let rscRes: Response | null = null;
+          try {
+            rscRes = await runWithHeadersContext(headersContextFromRequest(rscRequest), () =>
+              rscHandler(rscRequest),
             );
+          } catch (error) {
+            if (rscData === null) throw error;
+            // A transport failure in the optional eligibility probe does not
+            // invalidate the already completed HTML/RSC artifact.
+            rscVary = "";
           }
-          rscData = new Uint8Array(await rscRes.arrayBuffer());
+          if (rscRes === null) {
+            // The optional eligibility probe failed above.
+          } else if (!rscRes.ok) {
+            await rscRes.body?.cancel();
+            if (rscData === null) {
+              throw new Error(
+                `[vinext] prerenderApp: RSC fallback returned ${rscRes.status} for ${urlPath}`,
+              );
+            }
+            // The HTML artifact remains valid, but an unsuccessful canonical
+            // probe cannot certify this route for shared RSC prewarming.
+            rscVary = "";
+          } else {
+            rscVary = rscRes.headers.get("vary") ?? "";
+            if (rscData === null) {
+              const probeData = new Uint8Array(await rscRes.arrayBuffer());
+              rscData = probeData;
+              rscPrewarmable = hasReusableRscResponseHeaders(rscRes) && probeData.byteLength > 0;
+            } else if (hasReusableRscResponseHeaders(rscRes)) {
+              try {
+                const probeData = await rscRes.arrayBuffer();
+                rscPrewarmable = probeData.byteLength > 0;
+              } catch {
+                rscPrewarmable = false;
+              }
+            } else {
+              await rscRes.body?.cancel();
+            }
+          }
+        }
+        if (rscData === null) {
+          throw new Error(`[vinext] prerenderApp: RSC payload was not produced for ${urlPath}`);
         }
 
         const outputFiles: string[] = [];
@@ -1718,6 +1779,8 @@ export async function prerenderApp({
           router: "app",
           ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
+          ...(rscVary === undefined ? {} : { rscVary }),
+          ...(rscPrewarmable === undefined ? {} : { rscPrewarmable }),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
         };
@@ -1940,6 +2003,8 @@ export function writePrerenderIndex(
         ...(r.tags && r.tags.length > 0 ? { tags: r.tags } : {}),
         ...(r.routeSegments ? { routeSegments: r.routeSegments } : {}),
         ...(r.headers ? { headers: r.headers } : {}),
+        ...(r.rscVary === undefined ? {} : { rscVary: r.rscVary }),
+        ...(r.rscPrewarmable === undefined ? {} : { rscPrewarmable: r.rscPrewarmable }),
         ...(typeof r.responseStatus === "number" ? { responseStatus: r.responseStatus } : {}),
         ...(r.path ? { path: r.path } : {}),
         ...(r.fallback ? { fallback: true } : {}),

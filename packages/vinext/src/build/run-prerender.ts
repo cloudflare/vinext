@@ -268,6 +268,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         skipManifest: true,
         config,
         concurrency: options.concurrency,
+        captureRscVary: options.emitRscPrewarmManifest,
         rscBundlePath,
         // For hybrid builds pass the shared prod server via internal field.
         // prerenderApp will use it instead of starting its own.

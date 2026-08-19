@@ -3,6 +3,7 @@ import {
   getPrewarmableAppPaths,
   type PrerenderManifest,
 } from "../packages/vinext/src/server/prerender-manifest.js";
+import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
 
 describe("getPrewarmableAppPaths", () => {
   it("selects exact App paths using the completed ISR lifetime and safe Vary fields", () => {
@@ -14,6 +15,8 @@ describe("getPrewarmableAppPaths", () => {
           router: "app",
           revalidate: false,
           fallback: false,
+          rscVary: VINEXT_RSC_VARY_HEADER,
+          rscPrewarmable: true,
         },
         {
           route: "/posts/:slug",
@@ -22,6 +25,8 @@ describe("getPrewarmableAppPaths", () => {
           router: "app",
           revalidate: 60,
           fallback: false,
+          rscVary: VINEXT_RSC_VARY_HEADER,
+          rscPrewarmable: true,
         },
         {
           route: "/custom-policy",
@@ -29,6 +34,8 @@ describe("getPrewarmableAppPaths", () => {
           router: "app",
           revalidate: 30,
           fallback: false,
+          rscVary: VINEXT_RSC_VARY_HEADER,
+          rscPrewarmable: true,
           headers: { "cache-control": "private" },
         },
         {
@@ -37,7 +44,8 @@ describe("getPrewarmableAppPaths", () => {
           router: "app",
           revalidate: 30,
           fallback: false,
-          headers: { vary: "RSC, User-Agent" },
+          rscVary: `${VINEXT_RSC_VARY_HEADER}, User-Agent`,
+          rscPrewarmable: true,
         },
         {
           route: "/static",
@@ -45,6 +53,8 @@ describe("getPrewarmableAppPaths", () => {
           router: "app",
           revalidate: false,
           fallback: false,
+          rscVary: VINEXT_RSC_VARY_HEADER,
+          rscPrewarmable: true,
         },
       ],
     };

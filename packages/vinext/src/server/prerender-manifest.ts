@@ -16,6 +16,8 @@ export type PrerenderManifestRoute = {
   router?: string;
   fallback?: boolean;
   headers?: Record<string, string | string[]>;
+  rscVary?: string;
+  rscPrewarmable?: boolean;
   responseStatus?: number;
   routeSegments?: string[];
   tags?: string[];
@@ -189,22 +191,24 @@ export function getPrewarmableAppPaths(manifest: PrerenderManifest): string[] {
       (typeof route.revalidate === "number" &&
         Number.isFinite(route.revalidate) &&
         route.revalidate > 0);
-    if (route.status !== "rendered" || route.router !== "app" || !hasCacheableLifetime) {
+    if (
+      route.status !== "rendered" ||
+      route.router !== "app" ||
+      !hasCacheableLifetime ||
+      route.rscPrewarmable !== true
+    ) {
       continue;
     }
 
-    const vary = Object.entries(route.headers ?? {}).find(
-      ([name]) => name.toLowerCase() === "vary",
-    )?.[1];
-    const varyValues = Array.isArray(vary) ? vary : vary === undefined ? [] : [vary];
-    const hasUnsupportedVary = varyValues.some((value) =>
-      value
+    const vary = new Set(
+      (route.rscVary ?? "")
         .split(",")
         .map((name) => name.trim().toLowerCase())
-        .filter(Boolean)
-        .some((name) => !supportedVary.has(name)),
+        .filter(Boolean),
     );
-    if (hasUnsupportedVary) continue;
+    const hasExactVary =
+      vary.size === supportedVary.size && Array.from(supportedVary).every((name) => vary.has(name));
+    if (!hasExactVary) continue;
 
     const pathname = route.path ?? route.route;
     if (

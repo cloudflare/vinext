@@ -4,6 +4,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
 
@@ -450,6 +451,8 @@ describe("deploy prerender config wiring", () => {
                 revalidate: 60,
                 router: "app",
                 fallback: false,
+                rscVary: VINEXT_RSC_VARY_HEADER,
+                rscPrewarmable: true,
               },
             ],
           }),

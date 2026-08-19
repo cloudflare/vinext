@@ -15,13 +15,20 @@ import os from "node:os";
 import path from "node:path";
 import { buildPagesFixture, buildAppFixture, buildCloudflareAppFixture } from "./helpers.js";
 import {
+  getPrewarmableAppPaths,
+  type PrerenderManifest,
+} from "../packages/vinext/src/server/prerender-manifest.js";
+import {
   extractRscPayloadFromPrerenderedHtml,
   resolveParentParams,
   writePrerenderIndex,
   type PrerenderRouteResult,
   type StaticParamsMap,
 } from "../packages/vinext/src/build/prerender.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_RSC_VARY_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import { getAppRouteOutputPath } from "../packages/vinext/src/utils/prerender-output-paths.js";
@@ -478,6 +485,7 @@ describe("prerenderApp — RSC extraction", () => {
     const fallbackRscPayload = '0:["$","div",null,{"children":"from fallback"}]\n';
     let pageRequestCount = 0;
     let rscRequestCount = 0;
+    const rscRequestUrls: string[] = [];
     const server = createServer((req, res) => {
       const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
 
@@ -489,7 +497,9 @@ describe("prerenderApp — RSC extraction", () => {
 
       if (isRsc) {
         rscRequestCount++;
+        rscRequestUrls.push(req.url ?? "");
         res.setHeader("content-type", "text/x-component");
+        res.setHeader("vary", "RSC, User-Agent");
         res.end(fallbackRscPayload);
         return;
       }
@@ -515,13 +525,21 @@ describe("prerenderApp — RSC extraction", () => {
         routes,
         outDir,
         config,
+        captureRscVary: true,
         _prodServer: { server, port },
       });
 
       expect(findRoute(prerenderResult.routes, "/")).toMatchObject({
         route: "/",
         status: "rendered",
+        rscVary: "RSC, User-Agent",
+        rscPrewarmable: true,
       });
+
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(outDir, "vinext-prerender.json"), "utf-8"),
+      ) as PrerenderManifest;
+      expect(getPrewarmableAppPaths(manifest)).toEqual([]);
 
       // HTML on disk is the middleware response.
       expect(fs.readFileSync(path.join(outDir, "index.html"), "utf-8")).toBe(middlewareHtml);
@@ -531,6 +549,147 @@ describe("prerenderApp — RSC extraction", () => {
       // Exactly one page request and one RSC fallback request per route.
       expect(pageRequestCount).toBe(1);
       expect(rscRequestCount).toBe(1);
+      expect(rscRequestUrls).toEqual(["/?_rsc"]);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("certifies embedded RSC with the canonical request and fails closed on probe errors", async () => {
+    const root = tmpDir("vinext-prerender-rsc-vary-probe-");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "page.tsx"),
+      "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
+    );
+
+    const rscPayload = '0:["$","div",null,{"children":"embedded"}]\n';
+    const observedRscRequests: Array<{ url: string; headers: Record<string, string | undefined> }> =
+      [];
+    const server = createServer((req, res) => {
+      const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
+      if (req.url === "/__vinext_nonexistent_for_404__") {
+        res.statusCode = 404;
+        res.end("<html>not found</html>");
+        return;
+      }
+      if (isRsc) {
+        observedRscRequests.push({
+          url: req.url ?? "",
+          headers: {
+            accept: req.headers.accept,
+            deploymentId: req.headers["x-deployment-id"] as string | undefined,
+            rsc: req.headers.rsc as string | undefined,
+          },
+        });
+        if (observedRscRequests.length === 2) {
+          req.socket.destroy();
+          return;
+        }
+        res.setHeader("content-type", "text/x-component");
+        res.setHeader("vary", VINEXT_RSC_VARY_HEADER);
+        if (observedRscRequests.length === 3) {
+          res.setHeader("cache-control", "no-store");
+        }
+        res.end("probe payload is not used");
+        return;
+      }
+      res.setHeader("content-type", "text/html");
+      res.end(
+        `<html><body>${runtimeRscChunkScript(rscPayload)}${runtimeRscDoneScript()}</body></html>`,
+      );
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await appRouter(appDir);
+      const config = await resolveNextConfig({ deploymentId: "dpl_probe" });
+
+      const firstOutDir = path.join(root, "first");
+      const first = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist/server/index.js"),
+        routes,
+        outDir: firstOutDir,
+        config,
+        captureRscVary: true,
+        _prodServer: { server, port },
+      });
+      expect(findRoute(first.routes, "/")).toMatchObject({
+        status: "rendered",
+        rscVary: VINEXT_RSC_VARY_HEADER,
+        rscPrewarmable: true,
+      });
+      expect(fs.readFileSync(path.join(firstOutDir, "index.rsc"), "utf-8")).toBe(rscPayload);
+      expect(
+        getPrewarmableAppPaths(
+          JSON.parse(fs.readFileSync(path.join(firstOutDir, "vinext-prerender.json"), "utf-8")),
+        ),
+      ).toEqual(["/"]);
+
+      const failedOutDir = path.join(root, "failed");
+      const failed = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist/server/index.js"),
+        routes,
+        outDir: failedOutDir,
+        config,
+        captureRscVary: true,
+        _prodServer: { server, port },
+      });
+      expect(findRoute(failed.routes, "/")).toMatchObject({
+        status: "rendered",
+        rscVary: "",
+        rscPrewarmable: false,
+      });
+      expect(fs.readFileSync(path.join(failedOutDir, "index.rsc"), "utf-8")).toBe(rscPayload);
+      expect(
+        getPrewarmableAppPaths(
+          JSON.parse(fs.readFileSync(path.join(failedOutDir, "vinext-prerender.json"), "utf-8")),
+        ),
+      ).toEqual([]);
+
+      const noStoreOutDir = path.join(root, "no-store");
+      const noStore = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist/server/index.js"),
+        routes,
+        outDir: noStoreOutDir,
+        config,
+        captureRscVary: true,
+        _prodServer: { server, port },
+      });
+      expect(findRoute(noStore.routes, "/")).toMatchObject({
+        status: "rendered",
+        rscVary: VINEXT_RSC_VARY_HEADER,
+        rscPrewarmable: false,
+      });
+      expect(fs.readFileSync(path.join(noStoreOutDir, "index.rsc"), "utf-8")).toBe(rscPayload);
+      expect(
+        getPrewarmableAppPaths(
+          JSON.parse(fs.readFileSync(path.join(noStoreOutDir, "vinext-prerender.json"), "utf-8")),
+        ),
+      ).toEqual([]);
+
+      expect(observedRscRequests).toEqual([
+        {
+          url: "/?_rsc",
+          headers: { accept: "text/x-component", deploymentId: "dpl_probe", rsc: "1" },
+        },
+        {
+          url: "/?_rsc",
+          headers: { accept: "text/x-component", deploymentId: "dpl_probe", rsc: "1" },
+        },
+        {
+          url: "/?_rsc",
+          headers: { accept: "text/x-component", deploymentId: "dpl_probe", rsc: "1" },
+        },
+      ]);
     } finally {
       await closeServer(server);
       fs.rmSync(root, { recursive: true, force: true });

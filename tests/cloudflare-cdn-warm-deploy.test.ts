@@ -190,6 +190,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
   it("falls back to post-promotion warming after a non-strict staged failure", async () => {
     const events: string[] = [];
+    let promotedRscAttempts = 0;
     writeFile(
       "wrangler.jsonc",
       JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
@@ -199,13 +200,15 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       const isRsc = headers.get("rsc") === "1";
       const staged = headers.has("Cloudflare-Workers-Version-Overrides");
       events.push(`fetch:${staged ? "staged" : "promoted"}:${isRsc ? "rsc" : "html"}`);
+      if (isRsc && !staged) promotedRscAttempts++;
       return new Response(isRsc ? "flight" : "html", {
         headers: isRsc
           ? {
               "cache-control": "public, max-age=0, must-revalidate",
               "cf-cache-status": "MISS",
               "content-type": "text/x-component",
-              [VINEXT_RSC_BUILD_ID_HEADER]: staged ? "old-build" : "new-build",
+              [VINEXT_RSC_BUILD_ID_HEADER]:
+                staged || promotedRscAttempts === 1 ? "old-build" : "new-build",
               vary: VINEXT_RSC_VARY_HEADER,
             }
           : { "content-type": "text/html" },
@@ -241,7 +244,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     await deployWithCdnWarmup(tmpDir, ["/about"], {
       expectedRscBuildId: "new-build",
       rscPaths: ["/about"],
-      warmCdnRetries: 0,
+      warmCdnRetries: 1,
     });
 
     expect(events).toEqual([
@@ -250,7 +253,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "stage",
       "triggers",
       "fetch:staged:rsc",
+      "fetch:staged:rsc",
       "promote",
+      "fetch:promoted:rsc",
       "fetch:promoted:rsc",
       "fetch:promoted:html",
     ]);
