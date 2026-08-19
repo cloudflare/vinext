@@ -22,6 +22,7 @@ import {
 afterEach(() => {
   resetRscPrewarmClientImplementationForTesting();
   resetRscPrewarmServerImplementationForTesting();
+  vi.unstubAllEnvs();
 });
 
 describe("RSC prewarm capability facades", () => {
@@ -68,6 +69,26 @@ describe("RSC prewarm capability facades", () => {
     expect(getLoadedRscPrewarmEligibility("/about")).toBe(true);
     expect(isServerRscPrewarmEligiblePathname("/about")).toBe(true);
     expect(injectRscPrewarmManifestMetaHtml("html")).toBe("meta:html");
+  });
+
+  it("treats a registered implementation as authoritative in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("__VINEXT_RSC_CACHE_KEY_MODE", "header-digest");
+    const waitForEligibility = Promise.resolve(true);
+    registerRscPrewarmClientImplementation({
+      canonicalizeFullRscRequestHeaders: () => true,
+      async createRscClientRequestIdentity(href) {
+        return { cacheKeyUrl: href, requestUrl: href };
+      },
+      getLoadedRscPrewarmEligibility: () => null,
+      isLoadedRscPrewarmEligibleHref: () => false,
+      isRscPrewarmEligibleHref: () => waitForEligibility,
+      isRscPrewarmEligibleHrefForPrefetch: () => waitForEligibility,
+      preloadRscPrewarmManifest: async () => new Set(["/about"]),
+    });
+
+    expect(getLoadedRscPrewarmEligibility("/about")).toBeNull();
+    expect(isRscPrewarmEligibleHref("/about")).toBe(waitForEligibility);
   });
 });
 

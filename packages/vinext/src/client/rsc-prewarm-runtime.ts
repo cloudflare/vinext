@@ -1,5 +1,5 @@
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
-import { createRscRequestUrl, getRscCacheKeyMode } from "../server/app-rsc-cache-busting.js";
+import { createRscRequestUrl, getRscCacheKeyMode } from "./rsc-request-identity.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -11,7 +11,7 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_STATE_FINGERPRINT_HEADER,
-} from "../server/headers.js";
+} from "../utils/rsc-headers.js";
 
 export * from "./rsc-prewarm-eligibility.js";
 

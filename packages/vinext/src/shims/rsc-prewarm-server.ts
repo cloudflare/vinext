@@ -81,7 +81,7 @@ function getState(): RscPrewarmServerState {
 function isResponseVaryRscCacheEnabled(): boolean {
   return (
     process.env.__VINEXT_RSC_CACHE_KEY_MODE === "response-vary" ||
-    (process.env.NODE_ENV === "test" && getState().implementation !== null)
+    getState().implementation !== null
   );
 }
 

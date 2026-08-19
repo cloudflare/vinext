@@ -3564,6 +3564,42 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it("never certifies external rewrite payloads for shared RSC prewarming", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, {
+        "cache-control": "public, max-age=60",
+        "content-type": "text/x-component",
+      });
+      res.end("external flight");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+
+    try {
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [
+            {
+              source: "/about",
+              destination: `http://127.0.0.1:${address.port}/external`,
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+        matchRoute: () => null,
+      });
+
+      const response = await runRscPrewarmProbe(handler);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
     "validates out-of-basePath RSC requests before %s external rewrite proxies",
     async (phase) => {

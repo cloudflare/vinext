@@ -1,13 +1,23 @@
-import { fnv1a64 } from "../utils/hash.js";
+import {
+  type CreateRscCacheBustingInputOptions,
+  computeLegacyRscCacheBustingSearchParam,
+  computeRscCacheBustingSearchParam,
+  createRscCacheBustingInput,
+  createRscRequestUrl,
+  getRscCacheKeyMode,
+  hasRscCacheBustingSearchParam,
+  normalizeRscRenderModeHeaderValue,
+  setRscCacheBustingSearchParam,
+  sha256RscCacheBustingHash,
+  stripRscCacheBustingSearchParam,
+  stripRscSuffix,
+  VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
+} from "../client/rsc-request-identity.js";
 import {
   createAppRscStateFingerprint,
   type AppRscStateFingerprintInput,
 } from "./app-rsc-state-fingerprint.js";
-import {
-  APP_RSC_RENDER_MODE_NAVIGATION,
-  parseAppRscRenderMode,
-  type AppRscRenderMode,
-} from "./app-rsc-render-mode.js";
+import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -36,13 +46,23 @@ import {
  * proxies; stripping them changes the server hash and turns stale URLs into
  * repeated canonicalization redirects.
  */
-export const VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM = "_rsc";
 export const VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER = "X-Vinext-RSC-Cache-Busting-Redirect";
 export const VINEXT_RSC_COMPATIBILITY_ID_HEADER = "X-Vinext-RSC-Compatibility-Id";
 export const VINEXT_RSC_CONTENT_TYPE = "text/x-component";
 
 // Re-export so existing consumers that import from this module keep working.
 export { VINEXT_RSC_RENDER_MODE_HEADER } from "./headers.js";
+export {
+  computeRscCacheBustingSearchParam,
+  createRscClientCacheVariantKey,
+  createRscRequestUrl,
+  getRscCacheKeyMode,
+  hasRscCacheBustingSearchParam,
+  setRscCacheBustingSearchParam,
+  stripRscCacheBustingSearchParam,
+  stripRscSuffix,
+  VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
+} from "../client/rsc-request-identity.js";
 
 const VINEXT_APP_BASE_VARY_HEADERS = [
   RSC_HEADER,
@@ -73,9 +93,6 @@ export const VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER = `${VINEXT_APP_NON_CONTEXTUA
 /** RSC response identity for requests whose interception context can affect the payload. */
 export const VINEXT_RSC_VARY_HEADER = `${VINEXT_APP_VARY_HEADER}, Accept`;
 
-const CACHE_BUSTING_DIGEST_BYTES = 12;
-const textEncoder = new TextEncoder();
-
 type CreateRscRequestHeadersOptions = {
   clientReuseManifestHeader?: string | null;
   interceptionContext?: string | null;
@@ -101,25 +118,6 @@ type ResolveInvalidRscCacheBustingRequestOptions = {
   cacheKeyMode?: RscCacheKeyMode;
   validateDocumentRequest?: boolean;
 };
-
-export function getRscCacheKeyMode(): RscCacheKeyMode {
-  return process.env.__VINEXT_RSC_CACHE_KEY_MODE === "response-vary"
-    ? "response-vary"
-    : "header-digest";
-}
-
-function encodeBase64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
-
-function normalizeHeaderValue(value: string | null): string {
-  return value ?? "0";
-}
 
 function normalizeCompatibilityId(value: string | null | undefined): string | null {
   return value && value.length > 0 ? value : null;
@@ -212,95 +210,8 @@ export function resolveRscCompatibilityNavigationDecision(options: {
   };
 }
 
-function normalizeRenderModeHeaderValue(value: string | null): string | null {
-  const renderMode = parseAppRscRenderMode(value);
-  return renderMode === APP_RSC_RENDER_MODE_NAVIGATION ? null : renderMode;
-}
-
-type CreateCacheBustingInputOptions = {
-  includeClientReuseManifestHeader?: boolean;
-  includePrefetchHeaders?: boolean;
-  includeInterceptionIdHeader?: boolean;
-  includeRenderModeHeader?: boolean;
-  includeStateFingerprintHeader?: boolean;
-};
-
-function createCacheBustingInput(
-  headers: Headers,
-  options: CreateCacheBustingInputOptions = {},
-): string | null {
-  // The order of these values determines the hash. Changing it is a breaking
-  // cache-key change and requires accepting the previous hash during rollout.
-  const values = [
-    ...(options.includePrefetchHeaders === false
-      ? []
-      : [
-          headers.get(NEXT_ROUTER_PREFETCH_HEADER),
-          headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
-        ]),
-    headers.get(NEXT_ROUTER_STATE_TREE_HEADER),
-    headers.get(NEXT_URL_HEADER),
-    headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
-    ...(options.includeInterceptionIdHeader === false
-      ? []
-      : [headers.get(VINEXT_INTERCEPTION_ID_HEADER)]),
-    headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
-    ...(options.includeRenderModeHeader === false
-      ? []
-      : [normalizeRenderModeHeaderValue(headers.get(VINEXT_RSC_RENDER_MODE_HEADER))]),
-    ...(options.includeClientReuseManifestHeader === false
-      ? []
-      : [headers.get(VINEXT_CLIENT_REUSE_MANIFEST_HEADER)]),
-  ];
-  const stateFingerprint = headers.get(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
-  if (options.includeStateFingerprintHeader !== false && stateFingerprint !== null) {
-    values.push(stateFingerprint);
-  }
-
-  if (values.every((value) => value === null)) {
-    return null;
-  }
-
-  return values.map(normalizeHeaderValue).join(",");
-}
-
-/**
- * Browser-local identity for a navigation-reusable RSC payload. Prefetch-only
- * headers do not change the eventual page payload, while source/router/slot
- * context does and must remain part of the identity.
- */
-export function createRscClientCacheVariantKey(headers: Headers): string | null {
-  return createCacheBustingInput(headers, { includePrefetchHeaders: false });
-}
-
-async function sha256CacheBustingHash(input: string): Promise<string> {
-  const subtle = globalThis.crypto?.subtle;
-  // `globalThis.crypto.subtle` is undefined in non-secure browser contexts
-  // just fallback to legacy fnv1a64.
-  if (!subtle) return fnv1a64(input);
-
-  const digest = await subtle.digest("SHA-256", textEncoder.encode(input));
-  return encodeBase64Url(new Uint8Array(digest).subarray(0, CACHE_BUSTING_DIGEST_BYTES));
-}
-
-function computeLegacyRscCacheBustingSearchParam(
-  headers: Headers,
-  options?: CreateCacheBustingInputOptions,
-): string {
-  const input = createCacheBustingInput(headers, options);
-  return input === null ? "" : fnv1a64(input);
-}
-
-async function computeRscCacheBustingSearchParamWithOptions(
-  headers: Headers,
-  options?: CreateCacheBustingInputOptions,
-): Promise<string> {
-  const input = createCacheBustingInput(headers, options);
-  return input === null ? "" : sha256CacheBustingHash(input);
-}
-
 async function computePreviousRscCacheBustingSearchParam(headers: Headers): Promise<string | null> {
-  const input = createCacheBustingInput(headers, {
+  const input = createRscCacheBustingInput(headers, {
     includeClientReuseManifestHeader: false,
     includeInterceptionIdHeader: false,
     includeRenderModeHeader: false,
@@ -310,90 +221,42 @@ async function computePreviousRscCacheBustingSearchParam(headers: Headers): Prom
     return null;
   }
 
-  return sha256CacheBustingHash(input);
+  return sha256RscCacheBustingHash(input);
 }
 
 function computePreviousLegacyRscCacheBustingSearchParam(headers: Headers): string | null {
-  const input = createCacheBustingInput(headers, {
+  const input = createRscCacheBustingInput(headers, {
     includeClientReuseManifestHeader: false,
     includeInterceptionIdHeader: false,
     includeRenderModeHeader: false,
     includeStateFingerprintHeader: false,
   });
-  return input === null ? null : fnv1a64(input);
+  return input === null
+    ? null
+    : computeLegacyRscCacheBustingSearchParam(headers, {
+        includeClientReuseManifestHeader: false,
+        includeInterceptionIdHeader: false,
+        includeRenderModeHeader: false,
+        includeStateFingerprintHeader: false,
+      });
 }
 
 async function computePreviousClientReuseRscCacheBustingSearchParam(
   headers: Headers,
 ): Promise<string | null> {
-  const input = createCacheBustingInput(headers, { includeClientReuseManifestHeader: false });
-  return input === null ? null : sha256CacheBustingHash(input);
+  const input = createRscCacheBustingInput(headers, { includeClientReuseManifestHeader: false });
+  return input === null ? null : sha256RscCacheBustingHash(input);
 }
 
 function computePreviousClientReuseLegacyRscCacheBustingSearchParam(
   headers: Headers,
 ): string | null {
-  const input = createCacheBustingInput(headers, { includeClientReuseManifestHeader: false });
-  return input === null ? null : fnv1a64(input);
-}
-function getSearchPairsWithoutRscCacheBusting(url: URL): string[] {
-  const rawQuery = url.search.startsWith("?") ? url.search.slice(1) : url.search;
-  return rawQuery
-    .split("&")
-    .filter((pair) => pair.length > 0 && !isRscCacheBustingSearchPair(pair));
-}
-
-function isRscCacheBustingSearchPair(pair: string): boolean {
-  const separatorIndex = pair.indexOf("=");
-  const rawKey = separatorIndex === -1 ? pair : pair.slice(0, separatorIndex);
-
-  try {
-    return (
-      decodeURIComponent(rawKey.replaceAll("+", " ")) === VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM
-    );
-  } catch {
-    return rawKey === VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM;
-  }
-}
-
-/**
- * Detect the internal RSC cache-busting search param using the same
- * encoding-aware matching as `stripRscCacheBustingSearchParam`
- * (`isRscCacheBustingSearchPair`). The two share a single matcher so a guard
- * built on this helper and the stripper can never disagree on which pairs
- * count as `_rsc`, including encoded-key edge cases like `%5Frsc`.
- */
-export function hasRscCacheBustingSearchParam(url: URL): boolean {
-  const rawQuery = url.search.startsWith("?") ? url.search.slice(1) : url.search;
-  return rawQuery.split("&").some((pair) => pair.length > 0 && isRscCacheBustingSearchPair(pair));
-}
-
-export async function computeRscCacheBustingSearchParam(headers: Headers): Promise<string> {
-  return computeRscCacheBustingSearchParamWithOptions(headers);
-}
-
-export function setRscCacheBustingSearchParam(url: URL, hash: string): void {
-  const pairs = getSearchPairsWithoutRscCacheBusting(url);
-
-  pairs.push(
-    hash.length > 0
-      ? `${VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM}=${hash}`
-      : VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
-  );
-  url.search = `?${pairs.join("&")}`;
-}
-
-export function stripRscCacheBustingSearchParam(url: URL): void {
-  const pairs = getSearchPairsWithoutRscCacheBusting(url);
-  url.search = pairs.length > 0 ? `?${pairs.join("&")}` : "";
-}
-
-/**
- * Remove a trailing `.rsc` suffix from a pathname. Returns the pathname
- * unchanged when the suffix is absent.
- */
-export function stripRscSuffix(pathname: string): string {
-  return pathname.replace(/(?:\.|%2[eE])(?:r|%72)(?:s|%73)(?:c|%63)$/, "");
+  const input = createRscCacheBustingInput(headers, { includeClientReuseManifestHeader: false });
+  return input === null
+    ? null
+    : computeLegacyRscCacheBustingSearchParam(headers, {
+        includeClientReuseManifestHeader: false,
+      });
 }
 
 export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions = {}): Headers {
@@ -454,34 +317,6 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
   }
 
   return headers;
-}
-
-/**
- * Collapse a complete, source-independent RSC payload onto the same request
- * shape used by an uncached client navigation. Caches with verbatim `Vary`
- * support can then reuse one warmed response for Link prefetches and soft
- * navigations instead of storing one variant per source route.
- *
- * Contextual requests must retain their full header shape: interception and
- * mounted-slot state can change the rendered tree, while a non-navigation
- * render mode represents a partial payload rather than the full destination.
- */
-function toRscRequestPath(href: string): string {
-  const hashIndex = href.indexOf("#");
-  const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
-  return beforeHash;
-}
-
-export async function createRscRequestUrl(
-  href: string,
-  headers: Headers,
-  cacheKeyMode: RscCacheKeyMode = "header-digest",
-): Promise<string> {
-  const url = new URL(toRscRequestPath(href), "http://vinext.local");
-  const hash =
-    cacheKeyMode === "response-vary" ? "" : await computeRscCacheBustingSearchParam(headers);
-  setRscCacheBustingSearchParam(url, hash);
-  return `${url.pathname}${url.search}`;
 }
 
 /**
@@ -591,8 +426,9 @@ export async function resolveInvalidRscCacheBustingRequest(
     if (
       !options.request.headers.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER) &&
       !options.request.headers.has(VINEXT_INTERCEPTION_ID_HEADER) &&
-      normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
-        null
+      normalizeRscRenderModeHeaderValue(
+        options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER),
+      ) === null
     ) {
       const previousHash = await computePreviousRscCacheBustingSearchParam(options.request.headers);
       const previousLegacyHash = computePreviousLegacyRscCacheBustingSearchParam(
@@ -602,12 +438,13 @@ export async function resolveInvalidRscCacheBustingRequest(
       if (previousLegacyHash !== null) acceptedHashes.add(previousLegacyHash);
     }
 
-    const compatibilityInputs: CreateCacheBustingInputOptions[] = [];
+    const compatibilityInputs: CreateRscCacheBustingInputOptions[] = [];
     const hasInterceptionId = options.request.headers.has(VINEXT_INTERCEPTION_ID_HEADER);
     const hasStateFingerprint = options.request.headers.has(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
     const hasNormalRenderMode =
-      normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
-      null;
+      normalizeRscRenderModeHeaderValue(
+        options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER),
+      ) === null;
     // The interception ID is a positional hash input, so omitting it changes
     // hashes even when the request does not carry the header. Requests from
     // clients predating that positional input remain compatible when the
@@ -650,12 +487,14 @@ export async function resolveInvalidRscCacheBustingRequest(
       }
     }
     for (const compatibilityOptions of compatibilityInputs) {
-      const input = createCacheBustingInput(options.request.headers, compatibilityOptions);
+      const input = createRscCacheBustingInput(options.request.headers, compatibilityOptions);
       if (input === null) {
         acceptedHashes.add("");
       } else {
-        acceptedHashes.add(await sha256CacheBustingHash(input));
-        acceptedHashes.add(fnv1a64(input));
+        acceptedHashes.add(await sha256RscCacheBustingHash(input));
+        acceptedHashes.add(
+          computeLegacyRscCacheBustingSearchParam(options.request.headers, compatibilityOptions),
+        );
       }
     }
   }

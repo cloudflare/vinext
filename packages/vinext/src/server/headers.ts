@@ -18,6 +18,20 @@ import {
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "../utils/protocol-headers.js";
 
+export {
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_URL_HEADER,
+  RSC_HEADER,
+  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
+  VINEXT_RSC_STATE_FINGERPRINT_HEADER,
+} from "../utils/rsc-headers.js";
+
 // ---------------------------------------------------------------------------
 // Vinext-proprietary headers (`x-vinext-*` / `X-Vinext-*`)
 // ---------------------------------------------------------------------------
@@ -63,9 +77,6 @@ export const VINEXT_RSC_MARKER_HEADER = "x-vinext-rsc";
 /** URL-encoded JSON route params carried on RSC responses. */
 export const VINEXT_PARAMS_HEADER = "X-Vinext-Params";
 
-/** Deduplicated, sorted list of mounted layout slots for cache keying. */
-export const VINEXT_MOUNTED_SLOTS_HEADER = "X-Vinext-Mounted-Slots";
-
 /** Per-page dynamic stale time in seconds for App Router RSC responses. */
 export const VINEXT_DYNAMIC_STALE_TIME_HEADER = "X-Vinext-Dynamic-Stale-Time";
 
@@ -90,21 +101,6 @@ export const VINEXT_PRERENDER_RENDER_ERROR_HEADER = "x-vinext-prerender-render-e
 /** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
 export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
 
-/** Route interception context for parallel/intercepting routes. */
-export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
-
-/** Exact interception declaration requested by supplemental refreshes. */
-export const VINEXT_INTERCEPTION_ID_HEADER = "X-Vinext-Interception-Id";
-
-/** RSC render mode (e.g. "navigation", "prefetch"). */
-export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
-
-/** Stable visible-router-state variant for RSC cache busting. */
-export const VINEXT_RSC_STATE_FINGERPRINT_HEADER = "X-Vinext-Rsc-State-Fingerprint";
-
-/** Disabled-by-default client hint describing already-held App Router payload entries. */
-export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";
-
 /**
  * Side-channel signal that an RSC response (HTTP 200) encodes a `redirect()`
  * thrown during render. The header value is the redirect target (path-only
@@ -125,9 +121,6 @@ export const VINEXT_RSC_REDIRECT_TYPE_HEADER = "X-Vinext-Rsc-Redirect-Type";
 // ---------------------------------------------------------------------------
 // RSC protocol headers
 // ---------------------------------------------------------------------------
-
-/** Standard RSC header — value "1" indicates an RSC payload request. */
-export const RSC_HEADER = "RSC";
 
 /** Server Action invocation header (vinext/vite-rsc protocol). */
 export const RSC_ACTION_HEADER = "x-rsc-action";
@@ -206,10 +199,6 @@ const MIDDLEWARE_REDIRECT_HEADER = "x-middleware-redirect";
 // Next.js / RSC flight headers (forwarded through middleware)
 // ---------------------------------------------------------------------------
 
-export const NEXT_ROUTER_STATE_TREE_HEADER = "Next-Router-State-Tree";
-export const NEXT_ROUTER_PREFETCH_HEADER = "Next-Router-Prefetch";
-export const NEXT_ROUTER_SEGMENT_PREFETCH_HEADER = "Next-Router-Segment-Prefetch";
-export const NEXT_URL_HEADER = "Next-Url";
 export const NEXT_REQUEST_ID_HEADER = "x-nextjs-request-id";
 export const NEXT_HTML_REQUEST_ID_HEADER = "x-nextjs-html-request-id";
 

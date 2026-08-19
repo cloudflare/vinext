@@ -26,7 +26,10 @@ import {
 } from "../packages/vinext/src/shims/headers.js";
 import { createStaticGenerationHeadersContext } from "../packages/vinext/src/server/app-static-generation.js";
 import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
-import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import {
+  finalizeAppRscResponse,
+  markAppExternalRewriteResponse,
+} from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import { buildAppPageRscResponse } from "../packages/vinext/src/server/app-page-response.js";
 import {
   finalizeAppPageHtmlCacheResponse,
@@ -493,6 +496,128 @@ describe("CloudflareCdnCacheAdapter", () => {
         },
       });
     });
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+  });
+
+  it.each([
+    ["Cookie", "session=private"],
+    ["Authorization", "Bearer private"],
+  ])(
+    "does not let config headers promote a %s response rejected by the adapter",
+    async (headerName, headerValue) => {
+      setCdnCacheAdapter(adapter);
+      const request = new Request("https://example.com/blog?_rsc", {
+        headers: {
+          Accept: "text/x-component",
+          [headerName]: headerValue,
+          RSC: "1",
+        },
+      });
+      const response = new Response("private flight", {
+        headers: { "Content-Type": "text/x-component" },
+      });
+
+      await runWithHeadersContext(headersContextFromRequest(request), async () => {
+        applyCdnResponseHeaders(response.headers, {
+          cacheControl: "s-maxage=60",
+          tags: ["/blog"],
+        });
+        await finalizeAppRscResponse(response, request, {
+          basePath: "",
+          configHeaders: [
+            {
+              source: "/blog",
+              headers: [{ key: "Cache-Control", value: "public, max-age=3600" }],
+            },
+          ],
+          i18nConfig: null,
+          requestContext: {
+            cookies: {},
+            headers: request.headers,
+            host: "example.com",
+            query: new URL(request.url).searchParams,
+          },
+        });
+      });
+
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+      expect(response.headers.get("Cache-Tag")).toBeNull();
+    },
+  );
+
+  it("normalizes cacheable external rewrite responses through the adapter", async () => {
+    setCdnCacheAdapter(adapter);
+    const request = new Request("https://example.com/proxy?_rsc", {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    const response = markAppExternalRewriteResponse(
+      new Response("external flight", {
+        headers: {
+          "Cache-Control": "public, max-age=60",
+          "Content-Type": "text/x-component",
+        },
+      }),
+    );
+
+    await runWithHeadersContext(headersContextFromRequest(request), () =>
+      finalizeAppRscResponse(response, request, {
+        basePath: "",
+        configHeaders: [],
+        i18nConfig: null,
+        requestContext: {
+          cookies: {},
+          headers: request.headers,
+          host: "example.com",
+          query: new URL(request.url).searchParams,
+        },
+      }),
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=60");
+    expect(response.headers.get("Vary")).toContain("Cookie");
+    expect(response.headers.get("Vary")).toContain("Authorization");
+    expect(response.headers.get("Vary")).toContain("Host");
+    expect(response.headers.get("Vary")).toContain("X-Forwarded-Proto");
+  });
+
+  it("does not cache credential-bearing external rewrite responses", async () => {
+    setCdnCacheAdapter(adapter);
+    const request = new Request("https://example.com/proxy?_rsc", {
+      headers: {
+        Accept: "text/x-component",
+        Authorization: "Bearer private",
+        RSC: "1",
+      },
+    });
+    const response = markAppExternalRewriteResponse(
+      new Response("private external flight", {
+        headers: {
+          "Cache-Control": "public, max-age=60",
+          "Content-Type": "text/x-component",
+        },
+      }),
+    );
+
+    await runWithHeadersContext(headersContextFromRequest(request), () =>
+      finalizeAppRscResponse(response, request, {
+        basePath: "",
+        configHeaders: [],
+        i18nConfig: null,
+        requestContext: {
+          cookies: {},
+          headers: request.headers,
+          host: "example.com",
+          query: new URL(request.url).searchParams,
+        },
+      }),
+    );
 
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();

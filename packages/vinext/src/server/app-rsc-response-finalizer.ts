@@ -1,7 +1,7 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
 import { NEXT_URL_HEADER, RSC_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import { applyCdnResponseHeaders, hasExplicitNonCacheableResponsePolicy } from "./cache-control.js";
 import {
   VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER,
   VINEXT_APP_VARY_HEADER,
@@ -44,6 +44,7 @@ const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const configHeadersAlreadyApplied = new WeakSet<Response>();
 const preserveAppliedNextUrlVary = new WeakSet<Response>();
 const userlandExplicitNextUrlVary = new WeakSet<Response>();
+const externalRewriteResponses = new WeakSet<Response>();
 
 function varyIncludesHeader(vary: string | null, headerName: string): boolean {
   if (vary === null) return false;
@@ -61,6 +62,12 @@ export function markAppUserlandResponseVaryProvenance(response: Response): Respo
   if (varyIncludesHeader(response.headers.get("Vary"), NEXT_URL_HEADER)) {
     userlandExplicitNextUrlVary.add(response);
   }
+  return response;
+}
+
+/** Mark an externally proxied response so its upstream policy crosses the active adapter boundary. */
+export function markAppExternalRewriteResponse(response: Response): Response {
+  externalRewriteResponses.add(response);
   return response;
 }
 
@@ -102,7 +109,14 @@ export async function applyAppRscConfigHeaders(
   });
 }
 
-function reapplyNonCacheableCdnPolicy(headers: Headers): void {
+function reapplyNonCacheableCdnPolicy(
+  headers: Headers,
+  hadExplicitNonCacheablePolicy = false,
+): void {
+  if (hadExplicitNonCacheablePolicy) {
+    applyCdnResponseHeaders(headers, { cacheControl: "no-store" });
+    return;
+  }
   const cacheControl = headers.get("Cache-Control");
   if (cacheControl && /\b(?:no-store|no-cache|private)\b/i.test(cacheControl)) {
     applyCdnResponseHeaders(headers, { cacheControl });
@@ -200,12 +214,23 @@ export async function finalizeAppRscResponse(
   // origin-managed adapter leaves it absent (unchanged behavior). This runs only
   // when Cache-Control is absent, so it never clobbers a policy a renderer
   // already applied. Redirects are already skipped above.
-  if (!response.headers.has("Cache-Control")) {
+  if (externalRewriteResponses.has(response)) {
+    applyCdnResponseHeaders(response.headers, {
+      cacheControl: response.headers.has("Set-Cookie")
+        ? "no-store"
+        : (response.headers.get("Cache-Control") ?? ""),
+    });
+  } else if (!response.headers.has("Cache-Control")) {
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
   }
+  // Snapshot the adapter-aware decision before next.config headers can
+  // overwrite either generic or provider-owned no-store policy. Once a
+  // request variant has been rejected for shared caching, later user config
+  // must not be able to promote it back into the CDN cache.
+  const hadExplicitNonCacheablePolicy = hasExplicitNonCacheableResponsePolicy(response.headers);
 
   if (configHeadersAlreadyApplied.has(response)) {
-    reapplyNonCacheableCdnPolicy(response.headers);
+    reapplyNonCacheableCdnPolicy(response.headers, hadExplicitNonCacheablePolicy);
     return response;
   }
   await applyAppRscConfigHeaders(response.headers, request, options);
@@ -226,7 +251,7 @@ export async function finalizeAppRscResponse(
   // that would otherwise re-enable shared caching. Cacheable responses are not
   // re-applied because their browser-facing Cache-Control does not retain the
   // original shared-cache lifetime.
-  reapplyNonCacheableCdnPolicy(response.headers);
+  reapplyNonCacheableCdnPolicy(response.headers, hadExplicitNonCacheablePolicy);
 
   // Static-file 405 responses are synthesized before config headers run.
   // Reassert their body metadata afterward so a matching headers() rule cannot

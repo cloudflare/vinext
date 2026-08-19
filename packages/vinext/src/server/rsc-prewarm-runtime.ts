@@ -185,10 +185,12 @@ export function createAppRscPrewarmObservation(options: {
         );
       });
     },
-    observeExternalResponse(response) {
-      if (varyDeclaresCanonicalizedRscHeader(response.headers.get("Vary"))) {
-        conditionalConfigPathMatched = true;
-      }
+    observeExternalResponse(_response) {
+      // External origins cannot provide framework-owned proof that a payload
+      // is independent of credentials and source-route context. Keep their RSC
+      // requests on the contextual digest URL and out of deploy prewarming,
+      // even though the final response policy still crosses the cache adapter.
+      conditionalConfigPathMatched = true;
     },
     observeMiddleware({ conditionalPathMatched, matched }) {
       conditionalMiddlewarePathMatched ||= conditionalPathMatched;

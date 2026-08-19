@@ -64,6 +64,7 @@ import {
 import {
   applyAppRscConfigHeaders,
   finalizeAppRscResponse,
+  markAppExternalRewriteResponse,
   markAppUserlandResponseVaryProvenance,
 } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
@@ -510,7 +511,7 @@ async function applyRewrite(
     options.clearRequestContext();
     const response = await configMatchers.proxyExternalRequest(options.request, rewritten);
     options.observeExternalResponse(response);
-    return markAppUserlandResponseVaryProvenance(response);
+    return markAppExternalRewriteResponse(markAppUserlandResponseVaryProvenance(response));
   }
 
   return rewritten;

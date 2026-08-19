@@ -1,5 +1,5 @@
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
-import { createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
+import { createRscRequestUrl } from "../client/rsc-request-identity.js";
 
 export type RscPrewarmClientImplementation = {
   canonicalizeFullRscRequestHeaders(headers: Headers, cacheKeyMode?: RscCacheKeyMode): boolean;
@@ -32,7 +32,7 @@ function getState(): RscPrewarmClientState {
 function isResponseVaryRscCacheEnabled(): boolean {
   return (
     process.env.__VINEXT_RSC_CACHE_KEY_MODE === "response-vary" ||
-    (process.env.NODE_ENV === "test" && getState().implementation !== null)
+    getState().implementation !== null
   );
 }
 
@@ -76,7 +76,8 @@ export function preloadRscPrewarmManifest(): Promise<ReadonlySet<string>> {
 
 export function getLoadedRscPrewarmEligibility(href: string, basePath = ""): boolean | null {
   if (!isResponseVaryRscCacheEnabled()) return false;
-  return getState().implementation?.getLoadedRscPrewarmEligibility(href, basePath) ?? false;
+  const implementation = getState().implementation;
+  return implementation ? implementation.getLoadedRscPrewarmEligibility(href, basePath) : false;
 }
 
 export function isLoadedRscPrewarmEligibleHref(href: string, basePath = ""): boolean {
