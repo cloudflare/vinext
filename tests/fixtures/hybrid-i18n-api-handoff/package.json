@@ -1,4 +1,5 @@
 {
   "name": "hybrid-i18n-api-handoff-fixture",
+  "private": true,
   "type": "module"
 }
