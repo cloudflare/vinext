@@ -56,6 +56,14 @@ function makeRenderPage(status = 200, body = "ok") {
   );
 }
 
+function makeCacheableResponse(body: string, status = 200): Response {
+  const headers = new Headers();
+  applyCdnResponseHeaders(headers, {
+    cacheControl: "s-maxage=31536000, stale-while-revalidate",
+  });
+  return new Response(body, { status, headers });
+}
+
 describe("on-demand revalidation middleware bypass", () => {
   it("uses the runtime adapter's authoritative credential verifier", async () => {
     const runMiddleware = makeMiddleware({});
@@ -98,9 +106,92 @@ describe("on-demand revalidation middleware bypass", () => {
 
     expect(runMiddleware).toHaveBeenCalledOnce();
   });
+
+  it("keeps regenerated base-route output cacheable when trusted revalidation bypasses middleware", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const observation = createPrewarmSourceObservation(true);
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/revalidate-target", {
+          [PRERENDER_REVALIDATE_HEADER]: "build-secret",
+        }),
+        baseDeps({
+          authorizeOnDemandRevalidate: (value) => value === "build-secret",
+          hasMiddleware: true,
+          prewarmSourceObservation: observation,
+          renderPage: async () => makeCacheableResponse("regenerated"),
+          runMiddleware: makeMiddleware({}),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(isPrewarmSourceIndependent(observation)).toBe(true);
+      expect(result.response.headers.get("cache-control")).not.toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toContain("max-age=31536000");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
 });
 
 describe("Pages prewarm source-independence observation", () => {
+  it("denies shared cache admission for a source-dependent API response", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const observation = createPrewarmSourceObservation(true);
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/api/tenant"),
+        baseDeps({
+          hasMiddleware: true,
+          handleApi: async () => makeCacheableResponse("tenant api"),
+          prewarmSourceObservation: observation,
+          runMiddleware: async (_request, _ctx, options) => {
+            options.onMatcherEvaluation?.({ conditionalPathMatched: false, matched: true });
+            return { continue: true };
+          },
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("denies shared cache admission for a source-dependent middleware data miss", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const observation = createPrewarmSourceObservation(true);
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/missing"),
+        baseDeps({
+          hasMiddleware: true,
+          isDataReq: true,
+          isDataRequest: true,
+          matchPageRoute: () => null,
+          prewarmSourceObservation: observation,
+          renderPage: async () => makeCacheableResponse("missing", 404),
+          runMiddleware: async (_request, _ctx, options) => {
+            options.onMatcherEvaluation?.({ conditionalPathMatched: false, matched: true });
+            return { continue: true };
+          },
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(await result.response.json()).toEqual({});
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   it("denies shared cache admission after matched middleware", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const observation = createPrewarmSourceObservation(true);

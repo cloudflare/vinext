@@ -403,6 +403,35 @@ describe("renderPagesFallback", () => {
     }
   });
 
+  it("denies shared caching for a source-dependent hybrid Pages API response", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/api/tenant");
+    const response = await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request,
+        sourceIndependent: false,
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({
+          handleApiRoute: () =>
+            new Response("tenant api", {
+              headers: {
+                "Cache-Control": "public, max-age=60",
+                "CDN-Cache-Control": "public, max-age=60",
+              },
+            }),
+        }),
+      },
+    );
+
+    expect(response?.headers.get("cache-control")).toContain("no-store");
+    expect(response?.headers.get("cdn-cache-control")).toBeNull();
+  });
+
   it("renders a hybrid custom 404 during middleware data prefetches", async () => {
     const renderPage = vi.fn(() => new Response('{"pageProps":{"error":"not found"}}'));
     const request = new Request("http://localhost/404", {

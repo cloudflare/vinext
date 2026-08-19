@@ -152,6 +152,10 @@ export async function renderPagesFallback(
     applyRouteHandlerMiddlewareContext,
     getDraftModeCookieHeader,
   } = dependencies;
+  const finalizeSourceSafePagesResponse = (response: Response): Response =>
+    !sourceIndependent || middlewareContext.matched || middlewareContext.conditionalPathMatched
+      ? denyCdnCacheOnResponse(response)
+      : enforceCdnCacheDenialOnResponse(response);
 
   if (isRscRequest && !allowRscDocumentFallback) return null;
 
@@ -210,7 +214,7 @@ export async function renderPagesFallback(
       executionContext?.hostRuntime ?? "node",
     );
     const draftCookie = getDraftModeCookieHeader();
-    return enforceCdnCacheDenialOnResponse(
+    return finalizeSourceSafePagesResponse(
       applyDraftModeCookie(
         applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext),
         draftCookie,
@@ -241,7 +245,7 @@ export async function renderPagesFallback(
     !isPagesErrorRoutePattern(pageMatch.route.pattern)
   ) {
     preparePagesWinnerRequest();
-    return enforceCdnCacheDenialOnResponse(
+    return finalizeSourceSafePagesResponse(
       applyDraftModeCookie(
         applyPagesMiddlewareContext(
           buildMiddlewarePrefetchSkipResponse(patternToNextFormat(pageMatch.route.pattern)),
@@ -276,9 +280,7 @@ export async function renderPagesFallback(
     applyPagesMiddlewareContext(pagesRes, middlewareContext),
     getDraftModeCookieHeader(),
   );
-  return !sourceIndependent || middlewareContext.matched || middlewareContext.conditionalPathMatched
-    ? denyCdnCacheOnResponse(finalized)
-    : enforceCdnCacheDenialOnResponse(finalized);
+  return finalizeSourceSafePagesResponse(finalized);
 }
 
 /**

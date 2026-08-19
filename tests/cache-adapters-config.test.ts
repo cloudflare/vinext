@@ -95,8 +95,13 @@ describe("generateCacheAdaptersModule", () => {
     expect(code).toContain(
       "if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
     );
-    expect(code).toContain("if (__vinextCacheAdaptersRegistered) return;");
-    expect(code).toContain("__vinextCacheAdaptersRegistered = true;");
+    expect(code).toContain('Symbol.for("vinext.cacheAdaptersRegistration")');
+    expect(code).toContain(
+      "__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] === __vinextCacheAdaptersRegistrationId",
+    );
+    expect(code).toContain(
+      "__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] = __vinextCacheAdaptersRegistrationId;",
+    );
   });
 
   it("logs registration failures without printing raw Error stack traces", () => {
@@ -125,7 +130,9 @@ describe("generateCacheAdaptersModule", () => {
         cdn: { adapter: "capability-cdn-adapter", capabilities },
       });
 
-      expect(code).toContain("__vinextCacheAdaptersRegistered = false;");
+      expect(code).toContain(
+        "delete __vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey];",
+      );
       expect(code).toContain("the declared cache capabilities require it");
       expect(code).toContain("{ cause: error }");
       expect(code).not.toContain("using the default adapter");
@@ -158,6 +165,17 @@ describe("cache adapter capabilities", () => {
         cdn: { adapter: "custom", capabilities: { responseVary: "verbatim" } },
       }),
     ).toBe("response-vary");
+  });
+
+  it("rejects protocol-affecting CDN capabilities without an adapter", () => {
+    for (const capabilities of [
+      { responseVary: "verbatim" as const },
+      { controlledResponseVaryHeaders: ["X-Forwarded-Proto"] },
+    ]) {
+      const cache = { cdn: { adapter: "", capabilities } };
+      expect(() => resolveRscCacheKeyMode(cache)).toThrow(/require a configured adapter/);
+      expect(() => generateCacheAdaptersModule(cache)).toThrow(/require a configured adapter/);
+    }
   });
 
   it("normalizes adapter-owned response Vary fields for prerender admission", () => {

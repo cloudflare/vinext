@@ -342,6 +342,10 @@ export async function runPagesRequest(
     isDataReq,
     isDataRequest,
   } = deps;
+  const finalizeSourceSafeCdnResponse = (response: Response): Response =>
+    deps.prewarmSourceObservation && !isPrewarmSourceIndependent(deps.prewarmSourceObservation)
+      ? denyCdnCacheOnResponse(response)
+      : enforceCdnCacheDenialOnResponse(response);
   const applySourceSafeCdnPolicyToBoundaryResponse = (
     response: Response,
     policyRequest: Request,
@@ -376,6 +380,15 @@ export async function runPagesRequest(
   const isOnDemandRevalidate = deps.authorizeOnDemandRevalidate
     ? deps.authorizeOnDemandRevalidate(revalidateHeader)
     : isOnDemandRevalidateRequest(revalidateHeader);
+  if (isOnDemandRevalidate && deps.prewarmSourceObservation) {
+    // Authenticated on-demand revalidation intentionally bypasses middleware.
+    // Record that trusted bypass as an explicit non-match so regenerated base
+    // route output keeps its cache policy while config rules remain observed.
+    observePrewarmMiddlewareMatcher(deps.prewarmSourceObservation, {
+      conditionalPathMatched: false,
+      matched: false,
+    });
+  }
   const requestConfigPathname = deps.configMatchPathname ?? pathname;
 
   // Step 1: Reconstruct basePathState
@@ -800,7 +813,7 @@ export async function runPagesRequest(
         apiRequest = cloneRequestWithUrl(request, apiRequestUrl.toString());
       }
       const response = await deps.handleApi(apiRequest, apiLookupUrl, deps.ctx ?? null);
-      const merged = enforceCdnCacheDenialOnResponse(
+      const merged = finalizeSourceSafeCdnResponse(
         mergeHeaders(response, middlewareHeaders, middlewareStatus),
       );
       // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
@@ -1021,7 +1034,7 @@ export async function runPagesRequest(
       const notFoundResponse = new Response("{}", { status: 200, headers });
       return {
         type: "response",
-        response: enforceCdnCacheDenialOnResponse(
+        response: finalizeSourceSafeCdnResponse(
           mergeHeaders(notFoundResponse, matchedPathHeaders, undefined),
         ),
         defaultContentType: "application/json",
@@ -1037,10 +1050,7 @@ export async function runPagesRequest(
       );
     }
     const responseWithHeaders = mergeHeaders(response, matchedPathHeaders, middlewareStatus);
-    const merged =
-      deps.prewarmSourceObservation && !isPrewarmSourceIndependent(deps.prewarmSourceObservation)
-        ? denyCdnCacheOnResponse(responseWithHeaders)
-        : enforceCdnCacheDenialOnResponse(responseWithHeaders);
+    const merged = finalizeSourceSafeCdnResponse(responseWithHeaders);
     // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
     // mergeHeaders may create a new Response object (losing non-standard properties),
     // so we copy the marker from the original render response to the merged one.

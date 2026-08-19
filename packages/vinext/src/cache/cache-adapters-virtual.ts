@@ -55,13 +55,27 @@ export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<st
 
 export type RscCacheKeyMode = "header-digest" | "response-vary";
 
+function assertProtocolCapabilitiesHaveAdapter(cache?: VinextCacheConfig | null): void {
+  const cdn = cache?.cdn;
+  const affectsProtocol =
+    cdn?.capabilities?.responseVary === "verbatim" ||
+    (cdn?.capabilities?.controlledResponseVaryHeaders?.length ?? 0) > 0;
+  if (affectsProtocol && (typeof cdn?.adapter !== "string" || cdn.adapter.trim() === "")) {
+    throw new Error(
+      "[vinext] cache.cdn capabilities that affect request identity require a configured adapter.",
+    );
+  }
+}
+
 export function resolveRscCacheKeyMode(cache?: VinextCacheConfig | null): RscCacheKeyMode {
+  assertProtocolCapabilitiesHaveAdapter(cache);
   return cache?.cdn?.capabilities?.responseVary === "verbatim" ? "response-vary" : "header-digest";
 }
 
 const HTTP_FIELD_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 export function resolveControlledResponseVaryHeaders(cache?: VinextCacheConfig | null): string[] {
+  assertProtocolCapabilitiesHaveAdapter(cache);
   const headers = cache?.cdn?.capabilities?.controlledResponseVaryHeaders;
   if (!headers) return [];
 
@@ -154,6 +168,7 @@ function inlineOptions(adapter: string, options: Record<string, unknown> | undef
 export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   const data = cache?.data;
   const cdn = cache?.cdn;
+  assertProtocolCapabilitiesHaveAdapter(cache);
   const cdnCapabilitiesAffectProtocol =
     cdn?.capabilities?.responseVary === "verbatim" ||
     resolveControlledResponseVaryHeaders(cache).length > 0;
@@ -171,6 +186,14 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   const lines: string[] = [
     "// vinext: generated from the `cache` option in your vinext() plugin config.",
   ];
+  const dataOptions = data?.adapter ? inlineOptions(data.adapter, data.options) : "undefined";
+  const cdnOptions = cdn?.adapter ? inlineOptions(cdn.adapter, cdn.options) : "undefined";
+  const registrationId = JSON.stringify([
+    data?.adapter ?? null,
+    dataOptions,
+    cdn?.adapter ?? null,
+    cdnOptions,
+  ]);
 
   if (data?.adapter) {
     lines.push(`import __vinextDataAdapterFactory from ${JSON.stringify(data.adapter)};`);
@@ -194,20 +217,20 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     "  }",
     "}",
     "",
-    "let __vinextCacheAdaptersRegistered = false;",
+    "// The active adapters are global across Vite environments, so the guard must be global too.",
+    'const __vinextCacheAdaptersRegistrationKey = Symbol.for("vinext.cacheAdaptersRegistration");',
+    `const __vinextCacheAdaptersRegistrationId = ${JSON.stringify(registrationId)};`,
+    "const __vinextCacheAdaptersGlobal = globalThis;",
     "",
     "export function registerConfiguredCacheAdapters(env) {",
     "  if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
-    "  if (__vinextCacheAdaptersRegistered) return;",
-    "  __vinextCacheAdaptersRegistered = true;",
+    "  if (__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] === __vinextCacheAdaptersRegistrationId) return;",
+    "  __vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] = __vinextCacheAdaptersRegistrationId;",
   );
   if (data?.adapter) {
     lines.push(
       "  try {",
-      `    setDataCacheHandler(__vinextDataAdapterFactory({ env, options: ${inlineOptions(
-        data.adapter,
-        data.options,
-      )} }));`,
+      `    setDataCacheHandler(__vinextDataAdapterFactory({ env, options: ${dataOptions} }));`,
       "  } catch (error) {",
       '    console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
         'using the default handler.\\n" + __vinextFormatAdapterError(error));',
@@ -217,17 +240,16 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   if (cdn?.adapter) {
     lines.push(
       "  try {",
-      `    setCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: ${inlineOptions(
-        cdn.adapter,
-        cdn.options,
-      )} }));`,
+      `    setCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: ${cdnOptions} }));`,
       "  } catch (error) {",
     );
     if (cdnCapabilitiesAffectProtocol) {
       lines.push(
         "    // Browser/server request identity was compiled against this adapter's",
         "    // declared capabilities. The generic adapter cannot safely replace it.",
-        "    __vinextCacheAdaptersRegistered = false;",
+        "    if (__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] === __vinextCacheAdaptersRegistrationId) {",
+        "      delete __vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey];",
+        "    }",
         '    throw new Error("[vinext] failed to initialize the configured CDN cache adapter; ' +
           'the declared cache capabilities require it.\\n" + __vinextFormatAdapterError(error), { cause: error });',
       );

@@ -469,15 +469,28 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
   });
 
   test("handles staged-version probes through the generated Worker entry", async ({ request }) => {
-    const response = await request.get(`${BASE_URL}/?__vinext_version_probe=expected`, {
+    const firstResponse = await request.get(`${BASE_URL}/?__vinext_version_probe=expected`, {
       headers: { "X-Vinext-Version-Probe": "1" },
     });
 
-    expect(response.status()).toBe(204);
-    expect(response.headers()["cache-control"]).toBe("no-store");
-    expect(response.headers()["cdn-cache-control"]).toBeUndefined();
-    expect(response.headers()["x-vinext-worker-version"]).toBeTruthy();
-    expect(response.headers()["x-vinext-worker-version"]).not.toBe("unavailable");
+    expect(firstResponse.status()).toBe(204);
+    expect(firstResponse.headers()["cache-control"]).toBe("no-store");
+    expect(firstResponse.headers()["cdn-cache-control"]).toBeUndefined();
+    const version = firstResponse.headers()["x-vinext-worker-version"];
+    expect(version).toBeTruthy();
+    expect(version).not.toBe("unavailable");
+
+    // Hybrid Pages rendering runs in the separate SSR module graph. Its
+    // generated registrar must observe the RSC graph's global registration
+    // instead of replacing the env-bound adapter with an env-less instance.
+    const pagesResponse = await request.get(`${BASE_URL}/pages-about`);
+    expect(pagesResponse.status()).toBe(200);
+
+    const secondResponse = await request.get(`${BASE_URL}/?__vinext_version_probe=expected`, {
+      headers: { "X-Vinext-Version-Probe": "1" },
+    });
+    expect(secondResponse.status()).toBe(204);
+    expect(secondResponse.headers()["x-vinext-worker-version"]).toBe(version);
   });
 
   test("keeps source-specific headers and hashed URLs for force-dynamic RSC requests", async ({
