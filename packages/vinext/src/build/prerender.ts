@@ -1558,6 +1558,7 @@ export async function prerenderApp({
           const hasSetCookie = response.headers.has("set-cookie");
           const prewarmable =
             response.status === 200 &&
+            response.headers.get(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER) === "1" &&
             !hasNonCacheablePrewarmHeaders(response.headers, {
               controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
             });

@@ -305,7 +305,7 @@ describe("prerenderApp — RSC extraction", () => {
     }
   });
 
-  it("requests metadata routes through basePath while writing basePath-free artifacts", async () => {
+  it("requires source-independence proof for enumerated metadata prewarming", async () => {
     const root = tmpDir("vinext-prerender-metadata-basepath-");
     const outDir = path.join(root, "out");
     const requestedPaths: string[] = [];
@@ -314,7 +314,14 @@ describe("prerenderApp — RSC extraction", () => {
       if (req.url === "/__vinext/prerender/metadata-routes") {
         res.setHeader("content-type", "application/json");
         res.end(
-          JSON.stringify([{ path: "/robots.txt", routePattern: "/robots.txt", routeSegments: [] }]),
+          JSON.stringify([
+            { path: "/robots.txt", routePattern: "/robots.txt", routeSegments: [] },
+            {
+              path: "/manifest.webmanifest",
+              routePattern: "/manifest.webmanifest",
+              routeSegments: [],
+            },
+          ]),
         );
         return;
       }
@@ -323,7 +330,14 @@ describe("prerenderApp — RSC extraction", () => {
         res.setHeader("cache-control", "public, max-age=0, must-revalidate");
         res.setHeader("x-next-cache-tags", "metadata-user-tag");
         res.setHeader("x-vinext-prerender-cache-life", '{"revalidate":900}');
+        res.setHeader(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER, "1");
         res.end("User-Agent: *\nAllow: /buildtime\n");
+        return;
+      }
+      if (req.url === "/docs/manifest.webmanifest") {
+        res.setHeader("content-type", "application/manifest+json");
+        res.setHeader("cache-control", "public, max-age=0, must-revalidate");
+        res.end('{"name":"source-dependent"}');
         return;
       }
       res.statusCode = 404;
@@ -332,8 +346,12 @@ describe("prerenderApp — RSC extraction", () => {
 
     const port = await listen(server);
     try {
-      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
-      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const [{ prerenderApp }, { resolveNextConfig }, { getPrewarmableConcretePaths }] =
+        await Promise.all([
+          import("../packages/vinext/src/build/prerender.js"),
+          import("../packages/vinext/src/config/next-config.js"),
+          import("../packages/vinext/src/server/prerender-manifest.js"),
+        ]);
       const config = await resolveNextConfig({ basePath: "/docs" });
       const result = await prerenderApp({
         mode: "default",
@@ -349,6 +367,15 @@ describe("prerenderApp — RSC extraction", () => {
             servedUrl: "/robots.txt",
             contentType: "text/plain",
           },
+          {
+            type: "manifest",
+            isDynamic: true,
+            filePath: path.join(root, "app", "manifest.ts"),
+            routePrefix: "",
+            routeSegments: [],
+            servedUrl: "/manifest.webmanifest",
+            contentType: "application/manifest+json",
+          },
         ],
         outDir,
         config,
@@ -356,6 +383,7 @@ describe("prerenderApp — RSC extraction", () => {
       });
 
       expect(requestedPaths).toContain("/docs/robots.txt");
+      expect(requestedPaths).toContain("/docs/manifest.webmanifest");
       expect(requestedPaths).not.toContain("/robots.txt");
       const metadataResult = findRoute(result.routes, "/robots.txt");
       expect(metadataResult).toMatchObject({
@@ -365,7 +393,14 @@ describe("prerenderApp — RSC extraction", () => {
       });
       if (metadataResult?.status === "rendered") {
         expect(metadataResult.headers?.["x-next-cache-tags"]).toBeUndefined();
+        expect(metadataResult.prewarmable).toBeUndefined();
       }
+      expect(findRoute(result.routes, "/manifest.webmanifest")).toMatchObject({
+        status: "rendered",
+        router: "metadata",
+        prewarmable: false,
+      });
+      expect(getPrewarmableConcretePaths({ routes: result.routes })).toEqual(["/robots.txt"]);
       expect(fs.readFileSync(path.join(outDir, "robots.txt.route"), "utf8")).toContain(
         "/buildtime",
       );

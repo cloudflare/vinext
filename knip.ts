@@ -58,6 +58,11 @@ export default {
         // Runtime helpers imported by generated virtual entries. The imports
         // are emitted as strings, so knip cannot trace them statically.
         "src/client/react-instance-bootstrap.ts",
+        // Capability-selected virtual modules import these implementation
+        // namespaces through generated strings, so Knip cannot see every
+        // registered method as a static consumer.
+        "src/client/rsc-prewarm-runtime.ts",
+        "src/server/rsc-prewarm-runtime.ts",
         "src/server/app-middleware.ts",
         "src/server/app-page-dispatch.ts",
         "src/server/app-page-head.ts",
