@@ -29,6 +29,7 @@ export type CdnWarmOptions = {
   concurrency?: number;
   timeoutMs?: number;
   retries?: number;
+  retryDelayMs?: number;
   strict?: boolean;
   fetchImpl?: typeof fetch;
 };
@@ -219,9 +220,11 @@ export function buildWarmupUrl(targetUrl: string, pathname: string): URL {
   );
 }
 
-function isRetryableStatus(status: number): boolean {
-  return status === 408 || status === 429 || status >= 500;
+function isRetryableStatus(status: number, retryNotFound: boolean): boolean {
+  return status === 408 || status === 429 || status >= 500 || (retryNotFound && status === 404);
 }
+
+const WORKER_VERSION_OVERRIDE_HEADER = "Cloudflare-Workers-Version-Overrides";
 
 async function fetchWithTimeout(
   fetchImpl: typeof fetch,
@@ -323,6 +326,8 @@ async function warmOnePath(
   options: Required<Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries">> & {
     fetchImpl: typeof fetch;
     headers?: HeadersInit;
+    retryDelayMs: number;
+    retryNotFound: boolean;
   },
 ): Promise<{ path: string; ok: true } | { path: string; ok: false; error: string }> {
   const url = buildWarmupUrl(options.targetUrl, target.pathname);
@@ -342,7 +347,10 @@ async function warmOnePath(
         const validationError = validateRscWarmResponse(response);
         if (validationError === null) return { path: target.label, ok: true };
         lastError = validationError;
-        if (!isRetryableStatus(response.status)) break;
+        if (!isRetryableStatus(response.status, options.retryNotFound)) break;
+        if (attempt < options.retries && options.retryDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, options.retryDelayMs * 2 ** attempt));
+        }
         continue;
       }
 
@@ -351,13 +359,16 @@ async function warmOnePath(
       }
 
       lastError = `HTTP ${response.status}`;
-      if (!isRetryableStatus(response.status)) break;
+      if (!isRetryableStatus(response.status, options.retryNotFound)) break;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         lastError = `timed out after ${options.timeoutMs}ms`;
       } else {
         lastError = error instanceof Error ? error.message : String(error);
       }
+    }
+    if (attempt < options.retries && options.retryDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, options.retryDelayMs * 2 ** attempt));
     }
   }
 
@@ -408,7 +419,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   }
   const concurrency = Math.max(1, options.concurrency ?? 10);
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
-  const retries = Math.max(0, options.retries ?? 1);
+  const hasVersionOverride = new Headers(options.headers).has(WORKER_VERSION_OVERRIDE_HEADER);
+  const retries = Math.max(0, options.retries ?? (hasVersionOverride ? 5 : 1));
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? (hasVersionOverride ? 500 : 0));
   const fetchImpl = options.fetchImpl ?? fetch;
 
   if (requests.length === 0) {
@@ -424,6 +437,8 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       retries,
       fetchImpl,
       headers: options.headers,
+      retryDelayMs,
+      retryNotFound: hasVersionOverride,
     }),
   );
 

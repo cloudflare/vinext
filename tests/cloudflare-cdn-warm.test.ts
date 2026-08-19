@@ -470,6 +470,26 @@ describe("Cloudflare CDN warmup", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("retries a staged-version 404 while the Worker version override propagates", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("old version", { status: 404 }))
+      .mockResolvedValueOnce(new Response("new version", { status: 200 }));
+
+    const result = await warmCdnCache({
+      fetchImpl: fetchMock as typeof fetch,
+      headers: {
+        "Cloudflare-Workers-Version-Overrides": 'my-worker="22222222-2222-4222-8222-222222222222"',
+      },
+      paths: ["/new-route"],
+      retryDelayMs: 0,
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(result).toMatchObject({ total: 1, warmed: 1, failed: 0 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("issues exactly one HTML and one canonical RSC request for an eligible path", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
