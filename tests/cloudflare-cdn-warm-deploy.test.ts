@@ -231,6 +231,37 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      label: "a quoted environment cache table",
+      config:
+        `[env.other.cache]\ncross_version_cache = true\n\n` +
+        `[env."staging.eu".cache]\n"cross_version_cache" = true\n`,
+    },
+    {
+      label: "a parent environment table",
+      config: `[env]\n"staging.eu".cache."cross_version_cache" = true\n`,
+    },
+    {
+      label: "a nested root inline environment table",
+      config: `env = { "staging.eu" = { cache = { "cross_version_cache" = true } } }\n`,
+    },
+  ])("rejects cross-version caching declared through $label", async ({ config }) => {
+    writeFile("wrangler.toml", config);
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/cached/intro"], {
+        env: "staging.eu",
+        rscPaths: ["/cached/intro"],
+        warmCdnStrict: true,
+      }),
+    ).rejects.toThrow("does not support cache.cross_version_cache=true");
+
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("uses env config and does not inherit a replaced top-level cache block", async () => {
     writeFile(
       "wrangler.jsonc",

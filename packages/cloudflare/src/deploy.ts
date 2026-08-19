@@ -558,9 +558,11 @@ export async function deployWithCdnWarmup(
   const wranglerConfig = parseWranglerConfig(root, options.config);
   const targetEnv = getWranglerTargetEnv(options);
   const targetEnvConfig = targetEnv ? wranglerConfig?.env?.[targetEnv] : undefined;
-  const crossVersionCache = targetEnvConfig?.hasCacheConfig
-    ? targetEnvConfig.crossVersionCache === true
-    : wranglerConfig?.crossVersionCache === true;
+  const crossVersionCache =
+    wranglerConfig?.hasUnparsedCrossVersionCache === true ||
+    (targetEnvConfig?.hasCacheConfig
+      ? targetEnvConfig.crossVersionCache === true
+      : wranglerConfig?.crossVersionCache === true);
   if (crossVersionCache) {
     throw new Error(
       "CDN warmup does not support cache.cross_version_cache=true because an existing entry can hide the uploaded Worker version. Disable cross-version caching or deploy without CDN warmup.",
@@ -694,11 +696,9 @@ export function resolveCdnWarmupTargetUrl(
   const config = parseWranglerConfig(root, options?.config);
   const env = getWranglerTargetEnv(options ?? {});
   const envConfig = env ? config?.env?.[env] : undefined;
-  const customDomain = envConfig?.hasRouteConfig
-    ? envConfig.customDomain
-    : (envConfig?.customDomain ?? config?.customDomain);
-  if (customDomain) {
-    return `https://${customDomain}`;
+  const warmTargetDomain = env ? envConfig?.warmTargetDomain : config?.warmTargetDomain;
+  if (warmTargetDomain) {
+    return `https://${warmTargetDomain}`;
   }
   return deployedUrl;
 }

@@ -85,6 +85,8 @@ type WranglerConfig = {
   customDomain?: string;
   name?: string;
   legacyEnv?: boolean;
+  hasUnparsedCrossVersionCache?: boolean;
+  warmTargetDomain?: string;
   env?: Record<string, WranglerEnvironmentConfig>;
 };
 
@@ -94,6 +96,7 @@ export type WranglerEnvironmentConfig = {
   hasRouteConfig?: boolean;
   customDomain?: string;
   name?: string;
+  warmTargetDomain?: string;
 };
 
 // ─── Wrangler Config Parsing ─────────────────────────────────────────────────
@@ -296,6 +299,8 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     extractDomainFromRoutes(config.routes) ??
     extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
+  const warmTargetDomain = extractDomainFromCustomDomains(config);
+  if (warmTargetDomain) result.warmTargetDomain = warmTargetDomain;
 
   const env = extractEnvConfigs(config.env);
   if (env) result.env = env;
@@ -342,6 +347,8 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
     extractDomainFromRoutes(config.routes) ??
     extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
+  const warmTargetDomain = extractDomainFromCustomDomains(config);
+  if (warmTargetDomain) result.warmTargetDomain = warmTargetDomain;
   return result;
 }
 
@@ -425,7 +432,6 @@ function extractFromTOML(content: string): WranglerConfig {
       result.crossVersionCache = cacheConfig.crossVersionCache;
     }
   }
-
   // account_id = "..."
   const accountMatch = rootBody.match(/^account_id\s*=\s*"([^"]+)"/m);
   if (accountMatch) result.accountId = accountMatch[1];
@@ -458,6 +464,7 @@ function extractFromTOML(content: string): WranglerConfig {
     const configuredDomain =
       extractTomlRoutesArrayDomain(rootBody) ?? extractTomlCustomDomainsArrayDomain(rootBody);
     if (!result.customDomain && configuredDomain) result.customDomain = configuredDomain;
+    result.warmTargetDomain = extractTomlCustomDomainsArrayDomain(rootBody) ?? undefined;
   }
 
   // [[routes]] blocks
@@ -471,6 +478,9 @@ function extractFromTOML(content: string): WranglerConfig {
 
   const env = extractEnvConfigsFromTOML(content);
   if (env) result.env = env;
+  if (tomlHasUnparsedCrossVersionCache(content)) {
+    result.hasUnparsedCrossVersionCache = true;
+  }
 
   return result;
 }
@@ -491,6 +501,7 @@ function extractEnvConfigsFromTOML(
         extractTomlRoutesArrayDomain(section.body) ??
         extractTomlCustomDomainsArrayDomain(section.body);
       if (domain) envConfig.customDomain = domain;
+      envConfig.warmTargetDomain = extractTomlCustomDomainsArrayDomain(section.body) ?? undefined;
       if (/^\s*(?:route|routes|custom_domains)\s*=/m.test(section.body)) {
         envConfig.hasRouteConfig = true;
       }
@@ -561,6 +572,50 @@ function extractEnvConfigsFromTOML(
 function getTomlRootBody(content: string): string {
   const firstSection = content.search(/^\s*\[\[?[^\n]+\]\]?\s*(?:#.*)?$/m);
   return firstSection === -1 ? content : content.slice(0, firstSection);
+}
+
+function tomlHasUnparsedCrossVersionCache(content: string): boolean {
+  const enabledAssignment =
+    /(?:^|[,{.\s])(?:cross_version_cache|"cross_version_cache"|'cross_version_cache')\s*=\s*true\b/;
+  for (const rawLine of getTomlRootBody(content).split("\n")) {
+    const line = stripTomlComment(rawLine);
+    if (!enabledAssignment.test(line)) continue;
+    if (/["']/.test(line) || /^\s*env\s*=/.test(line)) return true;
+  }
+  return getTomlSections(content).some((section) => {
+    const body = section.body
+      .split("\n")
+      .map((line) => stripTomlComment(line))
+      .join("\n");
+    if (!enabledAssignment.test(body)) return false;
+    return section.header === "env" || /["']/.test(section.header) || /["']/.test(body);
+  });
+}
+
+function stripTomlComment(line: string): string {
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (quote === '"' && escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === '"' && char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === "#") {
+      return line.slice(0, index);
+    }
+  }
+  return line;
 }
 
 function extractDirectTomlCacheConfig(body: string): { crossVersionCache?: boolean } | null {

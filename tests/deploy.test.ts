@@ -3417,11 +3417,13 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     const config = parseWranglerConfig(tmpDir);
     expect(config?.name).toBe("my-worker");
     expect(config?.customDomain).toBe("app.example.com");
+    expect(config?.warmTargetDomain).toBe("app.example.com");
     expect(config?.kvNamespaceId).toBe("abc123");
     expect(config?.env?.staging).toEqual({
       name: "my-worker-staging",
       customDomain: "staging.example.com",
       hasRouteConfig: true,
+      warmTargetDomain: "staging.example.com",
     });
   });
 
@@ -3587,6 +3589,8 @@ cross_version_cache = false
     writeFile(tmpDir, "wrangler.json", JSON.stringify({ custom_domains: ["shop.example.com.au"] }));
     const config = parseWranglerConfig(tmpDir);
     expect(config?.customDomain).toBe("shop.example.com.au");
+    expect(config?.warmTargetDomain).toBe("shop.example.com.au");
+    expect(resolveCdnWarmupTargetUrl(tmpDir, null)).toBe("https://shop.example.com.au");
   });
 
   it("ignores workers.dev domains", () => {
@@ -3627,7 +3631,11 @@ cross_version_cache = false
       name: "my-worker-staging-custom",
       customDomain: "staging.example.com",
       hasRouteConfig: true,
+      warmTargetDomain: "staging.example.com",
     });
+    expect(resolveCdnWarmupTargetUrl(tmpDir, null, { env: "staging" })).toBe(
+      "https://staging.example.com",
+    );
   });
 
   it("extracts environment custom domains from TOML route arrays", () => {

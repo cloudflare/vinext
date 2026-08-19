@@ -18,6 +18,26 @@ type ObservedRsc = {
   url: string;
 };
 
+test.describe.configure({ retries: 0 });
+
+async function waitForStablePreviewAlias(page: Page, expectedBuildId: string): Promise<void> {
+  let consecutiveCurrentBuilds = 0;
+  await expect
+    .poll(
+      async () => {
+        await page.goto(`/prewarm/readiness?probe=${Date.now()}-${Math.random()}`);
+        const buildId = await page.getByTestId("build-id").textContent();
+        consecutiveCurrentBuilds = buildId === expectedBuildId ? consecutiveCurrentBuilds + 1 : 0;
+        return consecutiveCurrentBuilds;
+      },
+      {
+        message: "preview alias did not converge on the newly built Worker",
+        timeout: 30_000,
+      },
+    )
+    .toBeGreaterThanOrEqual(3);
+}
+
 async function observeTargetRsc(page: Page, action: () => Promise<unknown>): Promise<ObservedRsc> {
   const responsePromise = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -110,6 +130,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
       }
     });
     try {
+      await waitForStablePreviewAlias(page, expectedBuildId);
       await run(page, targetDocumentRequests, targetRscRequests);
     } finally {
       await context.close();
@@ -174,6 +195,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
   await withFreshPage(async (page, targetDocumentRequests, targetRscRequests) => {
     await page.route("**/vinext-rsc-prewarm.json", (route) => route.abort());
     await page.goto("/prewarm/soft");
+    await expect(page.getByTestId("build-id")).toHaveText(expectedBuildId);
     await page.getByTestId("soft-navigation").click();
 
     await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
@@ -186,6 +208,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
   const context = await browser.newContext();
   const page = await context.newPage();
   try {
+    await waitForStablePreviewAlias(page, expectedBuildId);
     const dynamicResponsePromise = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.pathname === "/dynamic" && response.request().headers()["rsc"] === "1";
