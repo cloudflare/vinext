@@ -294,6 +294,204 @@ describe("import-meta asset phase", () => {
     expect(result.code).toContain(Buffer.from("Hello, from text-file.txt!").toString("base64"));
   });
 
+  it("preserves a replaced global fetch for module-scope arrayBuffer chains", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `const originalFetch = globalThis.fetch;`,
+      `let calls = 0;`,
+      `globalThis.fetch = async () => { calls += 1; return new Response("instrumented"); };`,
+      `export const asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+      `export { calls };`,
+      `export function restore() { globalThis.fetch = originalFetch; }`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code).toContain("fetch(new URL(__vinext_asset_data)).then");
+    expect(result.code).not.toContain("__vinext_decode_asset_data");
+    expect(result.code).not.toContain("import.meta.url");
+
+    const module = await importCode(result.code);
+    try {
+      expect(Buffer.from(await module.asset).toString()).toBe("instrumented");
+      expect(module.calls).toBe(1);
+    } finally {
+      module.restore();
+    }
+  });
+
+  it("preserves a bare replacement of global fetch for module-scope arrayBuffer chains", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `const originalFetch = globalThis.fetch;`,
+      `let calls = 0;`,
+      `fetch = async () => { calls += 1; return new Response("instrumented"); };`,
+      `export const asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+      `export { calls };`,
+      `export function restore() { globalThis.fetch = originalFetch; }`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code).toContain("fetch(new URL(__vinext_asset_data)).then");
+    expect(result.code).not.toContain("__vinext_decode_asset_data");
+    expect(result.code).not.toContain("import.meta.url");
+
+    const module = await importCode(result.code);
+    try {
+      expect(Buffer.from(await module.asset).toString()).toBe("instrumented");
+      expect(module.calls).toBe(1);
+    } finally {
+      module.restore();
+    }
+  });
+
+  it("keeps the decoder when global fetch is replaced after the asset chain", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `export const asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+      `globalThis.fetch = instrumentedFetch;`,
+      `function instrumentedFetch() { throw new Error("later replacement"); }`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code).toContain("__vinext_decode_asset_data(");
+    expect(result.code).not.toContain("fetch(");
+  });
+
+  it("changes fetch eligibility after evaluating a replacement assignment", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `const instrumentedFetch = globalThis.fetch;`,
+      `globalThis.fetch = (fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer()), instrumentedFetch);`,
+      `export const after = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code.match(/__vinext_decode_asset_data\(/g)).toHaveLength(1);
+    expect(result.code.match(/fetch\(new URL\(__vinext_asset_data\)\)\.then/g)).toHaveLength(1);
+  });
+
+  it("evaluates declaration initializers before destructuring defaults", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `const instrumentedFetch = globalThis.fetch;`,
+      `export const [asset = (globalThis.fetch = instrumentedFetch)] = [fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer())];`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code).toContain("__vinext_decode_asset_data(");
+    expect(result.code).not.toContain("fetch(new URL(__vinext_asset_data)).then");
+  });
+
+  it("preserves global fetch replacements made by module-scope IIFEs", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `const originalFetch = globalThis.fetch;`,
+      `let calls = 0;`,
+      `(() => { globalThis.fetch = async () => { calls += 1; return new Response("instrumented"); }; })();`,
+      `export const asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+      `export { calls };`,
+      `export function restore() { globalThis.fetch = originalFetch; }`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code).toContain("fetch(new URL(__vinext_asset_data)).then");
+    expect(result.code).not.toContain("__vinext_decode_asset_data");
+
+    const module = await importCode(result.code);
+    try {
+      expect(Buffer.from(await module.asset).toString()).toBe("instrumented");
+      expect(module.calls).toBe(1);
+    } finally {
+      module.restore();
+    }
+  });
+
+  it("does not execute generator IIFE bodies during module initialization analysis", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `(function* () { globalThis.fetch = instrumentedFetch; })();`,
+      `export const asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code).toContain("__vinext_decode_asset_data(");
+    expect(result.code).not.toContain("fetch(");
+  });
+
+  it("evaluates IIFE defaults only for arguments that may be undefined", async () => {
+    const plugin = await createPlugin();
+    const iife = (argument: string) =>
+      [
+        `const instrumentedFetch = globalThis.fetch;`,
+        `export const asset = ((value = (globalThis.fetch = instrumentedFetch)) => fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer()))(${argument});`,
+      ].join("\n");
+
+    const supplied = await transformHandler(plugin).call(context(), iife("1"), routePath);
+    expect(supplied.code).toContain("__vinext_decode_asset_data(");
+    expect(supplied.code).not.toContain("fetch(new URL(__vinext_asset_data)).then");
+
+    const missing = await transformHandler(plugin).call(context(), iife(""), routePath);
+    expect(missing.code).toContain("fetch(new URL(__vinext_asset_data)).then");
+    expect(missing.code).not.toContain("__vinext_decode_asset_data");
+  });
+
+  it("keeps the module-scope decoder for read-only globalThis members", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `export const crypto = globalThis.crypto;`,
+      `export const asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code).toContain("__vinext_decode_asset_data(");
+    expect(result.code).not.toContain("fetch(");
+  });
+
+  it("keeps the module-scope decoder for global object feature detection", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `export const supported = typeof globalThis !== "undefined";`,
+      `export const asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code).toContain("__vinext_decode_asset_data(");
+    expect(result.code).not.toContain("fetch(");
+  });
+
+  it("preserves possible module-scope replacements through global object aliases", async () => {
+    const plugin = await createPlugin();
+    for (const replacement of [
+      `globalThis["fetch"] = instrumentedFetch;`,
+      `self.fetch = instrumentedFetch;`,
+      `global.fetch = instrumentedFetch;`,
+      `const host = globalThis; host.fetch = instrumentedFetch;`,
+      `Object.defineProperty(globalThis, "fetch", { value: instrumentedFetch });`,
+    ]) {
+      const source = [
+        `const instrumentedFetch = fetch;`,
+        replacement,
+        `export const asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+      ].join("\n");
+      const result = await transformHandler(plugin).call(context(), source, routePath);
+
+      expect(result.code).toContain("fetch(new URL(__vinext_asset_data)).then");
+      expect(result.code).not.toContain("__vinext_decode_asset_data");
+    }
+  });
+
+  it("ignores global object escapes in deferred execution", async () => {
+    const plugin = await createPlugin();
+    const source = [
+      `export function exposeGlobal() { return globalThis; }`,
+      `export const asset = fetch(new URL("../../src/text-file.txt", import.meta.url)).then((response) => response.arrayBuffer());`,
+    ].join("\n");
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code).toContain("__vinext_decode_asset_data(");
+    expect(result.code).not.toContain("fetch(");
+  });
+
   it("preserves fetch semantics for exact arrayBuffer chains inside functions", async () => {
     const plugin = await createPlugin();
     const source = [

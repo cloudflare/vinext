@@ -309,6 +309,66 @@ function invalidateAssetTarget(scope: AssetScope, value: unknown): void {
   }
 }
 
+const globalObjectNames = new Set(["globalThis", "self", "global"]);
+
+function isUnboundGlobalObject(scope: AssetScope, value: unknown): boolean {
+  const node = unwrapExpression(value);
+  return (
+    node?.type === "Identifier" &&
+    typeof node.name === "string" &&
+    globalObjectNames.has(node.name) &&
+    !hasAstBinding(scope, node.name)
+  );
+}
+
+function mayReplaceGlobalFetchTarget(scope: AssetScope, value: unknown): boolean {
+  const node = unwrapExpression(value);
+  if (!node) return false;
+  if (node.type === "Identifier") {
+    return isIdentifierNamed(node, "fetch") && !hasAstBinding(scope, "fetch");
+  }
+  if (node.type === "MemberExpression") {
+    if (!isUnboundGlobalObject(scope, node.object)) return false;
+    if (node.computed !== true) return isIdentifierNamed(node.property, "fetch");
+    const property = staticStringValue(unwrapExpression(node.property));
+    return property === null || property === "fetch";
+  }
+  if (node.type === "AssignmentPattern" || node.type === "RestElement") {
+    return mayReplaceGlobalFetchTarget(
+      scope,
+      node.type === "AssignmentPattern" ? node.left : node.argument,
+    );
+  }
+  if (node.type === "ArrayPattern") {
+    return nodeArray(node.elements).some((element) => mayReplaceGlobalFetchTarget(scope, element));
+  }
+  if (node.type === "ObjectPattern") {
+    return nodeArray(node.properties).some((property) => {
+      if (!isAstRecord(property)) return false;
+      return mayReplaceGlobalFetchTarget(
+        scope,
+        property.type === "RestElement" ? property.argument : property.value,
+      );
+    });
+  }
+  return false;
+}
+
+function isDefinitelyDefinedArgument(value: unknown): boolean {
+  const node = unwrapExpression(value);
+  if (!node) return false;
+  if (node.type === "Literal") return node.value !== undefined;
+  return (
+    node.type === "ArrayExpression" ||
+    node.type === "ObjectExpression" ||
+    node.type === "ArrowFunctionExpression" ||
+    node.type === "FunctionExpression" ||
+    node.type === "ClassExpression" ||
+    node.type === "NewExpression" ||
+    node.type === "TemplateLiteral"
+  );
+}
+
 function hasScopedCapability(
   scope: AssetScope,
   name: string,
@@ -388,6 +448,7 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
   const assets: AssetUrl[] = [];
   const usedNames = new Set<string>();
   const handledFetchCalls = new Set<AstRecord>();
+  let globalFetchCapabilityMayBeReplaced = false;
   let deferredExecutionDepth = 0;
   const rootScope = createAssetScope(null);
   collectVarScopeBindings(ast, rootScope);
@@ -442,31 +503,56 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
     }
   }
 
+  function visitFunction(
+    node: AstRecord,
+    parentScope: AssetScope,
+    execution: "current" | "deferred",
+    callArguments?: unknown[],
+  ): void {
+    visitDecorators(node, parentScope);
+    const parameterScope = createAssetScope(parentScope);
+    collectBindingNames(node.id, parameterScope.bindings);
+    collectBindingNames(node.id, usedNames);
+    for (const parameter of nodeArray(node.params)) {
+      collectBindingNames(parameter, parameterScope.bindings);
+      collectBindingNames(parameter, usedNames);
+    }
+    addScopeBindingNames(parameterScope, usedNames);
+    const visitRuntime = execution === "deferred" ? visitDeferred : visit;
+    const parameters = nodeArray(node.params);
+    for (const [index, parameter] of parameters.entries()) {
+      if (isAstRecord(parameter)) {
+        visitDecorators(parameter, parentScope);
+        const unwrapped = unwrapExpression(parameter);
+        const argumentsBeforeOrAtParameter = callArguments?.slice(0, index + 1) ?? [];
+        const suppliedArgument = callArguments?.[index];
+        if (
+          execution === "current" &&
+          unwrapped?.type === "AssignmentPattern" &&
+          argumentsBeforeOrAtParameter.every(
+            (argument) => unwrapExpression(argument)?.type !== "SpreadElement",
+          ) &&
+          isDefinitelyDefinedArgument(suppliedArgument)
+        ) {
+          visitBindingPatternRuntime(unwrapped.left, parameterScope);
+          continue;
+        }
+        visitRuntime(parameter, parameterScope);
+      }
+    }
+    if (isAstRecord(node.body)) {
+      const bodyScope = createAssetScope(parameterScope);
+      if (node.body.type === "BlockStatement") {
+        collectVarScopeBindings(node.body, bodyScope);
+        collectAssetScopeBindings(node.body, bodyScope);
+      }
+      visitRuntime(node.body, bodyScope);
+    }
+  }
+
   function visit(node: AstRecord, parentScope: AssetScope, safeAssetReference = false): void {
     if (isFunctionNode(node)) {
-      visitDecorators(node, parentScope);
-      const parameterScope = createAssetScope(parentScope);
-      collectBindingNames(node.id, parameterScope.bindings);
-      collectBindingNames(node.id, usedNames);
-      for (const parameter of nodeArray(node.params)) {
-        collectBindingNames(parameter, parameterScope.bindings);
-        collectBindingNames(parameter, usedNames);
-      }
-      addScopeBindingNames(parameterScope, usedNames);
-      for (const parameter of nodeArray(node.params)) {
-        if (isAstRecord(parameter)) {
-          visitDecorators(parameter, parentScope);
-          visitDeferred(parameter, parameterScope);
-        }
-      }
-      if (isAstRecord(node.body)) {
-        const bodyScope = createAssetScope(parameterScope);
-        if (node.body.type === "BlockStatement") {
-          collectVarScopeBindings(node.body, bodyScope);
-          collectAssetScopeBindings(node.body, bodyScope);
-        }
-        visitDeferred(node.body, bodyScope);
-      }
+      visitFunction(node, parentScope, "deferred");
       return;
     }
 
@@ -507,6 +593,13 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
 
     if (node.type === "Identifier" && typeof node.name === "string") {
       usedNames.add(node.name);
+      if (
+        deferredExecutionDepth === 0 &&
+        globalObjectNames.has(node.name) &&
+        !hasAstBinding(scope, node.name)
+      ) {
+        globalFetchCapabilityMayBeReplaced = true;
+      }
       if (!safeAssetReference) invalidateAssetBinding(scope, node.name);
       return;
     }
@@ -516,31 +609,56 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
       for (const declarator of nodeArray(node.declarations)) {
         if (!isAstRecord(declarator)) continue;
         collectBindingNames(declarator.id, usedNames);
-        visitBindingPatternRuntime(declarator.id, scope);
         if (isAstRecord(declarator.init)) {
           visit(declarator.init, scope);
         }
+        visitBindingPatternRuntime(declarator.id, scope);
       }
       return;
     }
 
     if (node.type === "AssignmentExpression") {
+      const replacesGlobalFetch =
+        deferredExecutionDepth === 0 && mayReplaceGlobalFetchTarget(scope, node.left);
       invalidateAssetTarget(scope, node.left);
-      if (isAstRecord(node.left)) visit(node.left, scope);
-      if (isAstRecord(node.right)) visit(node.right, scope);
+      const left = unwrapExpression(node.left);
+      if (left?.type === "ArrayPattern" || left?.type === "ObjectPattern") {
+        if (isAstRecord(node.right)) visit(node.right, scope);
+        if (isAstRecord(node.left)) visit(node.left, scope);
+      } else {
+        if (isAstRecord(node.left)) visit(node.left, scope);
+        if (isAstRecord(node.right)) visit(node.right, scope);
+      }
+      if (replacesGlobalFetch) globalFetchCapabilityMayBeReplaced = true;
       return;
     }
     if (node.type === "UpdateExpression") {
+      const replacesGlobalFetch =
+        deferredExecutionDepth === 0 && mayReplaceGlobalFetchTarget(scope, node.argument);
       invalidateAssetTarget(scope, node.argument);
       if (isAstRecord(node.argument)) visit(node.argument, scope);
+      if (replacesGlobalFetch) globalFetchCapabilityMayBeReplaced = true;
       return;
     }
     if (node.type === "UnaryExpression" && node.operator === "delete") {
+      const replacesGlobalFetch =
+        deferredExecutionDepth === 0 && mayReplaceGlobalFetchTarget(scope, node.argument);
       invalidateAssetTarget(scope, node.argument);
       if (isAstRecord(node.argument)) visit(node.argument, scope);
+      if (replacesGlobalFetch) globalFetchCapabilityMayBeReplaced = true;
+      return;
+    }
+    if (
+      node.type === "UnaryExpression" &&
+      node.operator !== "delete" &&
+      isUnboundGlobalObject(scope, node.argument)
+    ) {
+      const argument = unwrapExpression(node.argument);
+      usedNames.add(String(argument?.name));
       return;
     }
     if (node.type === "ForInStatement" || node.type === "ForOfStatement") {
+      if (isAstRecord(node.right)) visit(node.right, scope);
       if (isAstRecord(node.left) && node.left.type === "VariableDeclaration") {
         for (const declarator of nodeArray(node.left.declarations)) {
           if (!isAstRecord(declarator)) continue;
@@ -548,10 +666,12 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
           visitBindingPatternRuntime(declarator.id, scope);
         }
       } else {
+        const replacesGlobalFetch =
+          deferredExecutionDepth === 0 && mayReplaceGlobalFetchTarget(scope, node.left);
         invalidateAssetTarget(scope, node.left);
         if (isAstRecord(node.left)) visit(node.left, scope);
+        if (replacesGlobalFetch) globalFetchCapabilityMayBeReplaced = true;
       }
-      if (isAstRecord(node.right)) visit(node.right, scope);
       if (isAstRecord(node.body)) visit(node.body, scope);
       return;
     }
@@ -602,13 +722,27 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
     if (node.type.startsWith("TS")) return;
 
     if (node.type === "CallExpression") {
+      const callee = unwrapExpression(node.callee);
+      if (
+        (callee?.type === "ArrowFunctionExpression" || callee?.type === "FunctionExpression") &&
+        callee.generator !== true
+      ) {
+        for (const argument of nodeArray(node.arguments)) {
+          if (isAstRecord(argument)) visit(argument, scope);
+        }
+        visitFunction(callee, scope, "current", nodeArray(node.arguments));
+        return;
+      }
       const arrayBufferAsset =
         deferredExecutionDepth === 0 ? arrayBufferFetchAssetFromCall(node, scope) : null;
       if (arrayBufferAsset !== null) {
+        if (globalFetchCapabilityMayBeReplaced) {
+          arrayBufferAsset.asset.range = arrayBufferAsset.asset.sourceRange;
+          delete arrayBufferAsset.asset.replacementKind;
+        }
         assets.push(arrayBufferAsset.asset);
         handledFetchCalls.add(arrayBufferAsset.fetchCall);
       }
-      const callee = unwrapExpression(node.callee);
       const isGlobalFetch = isIdentifierNamed(callee, "fetch") && !hasAstBinding(scope, "fetch");
       const isReadOnlyUrlConsumer = isNodeUrlFileUrlToPath(scope, callee);
       const isDirectEval =
@@ -663,7 +797,12 @@ function collectAssetUrlRewrites(ast: AstRecord): { assets: AssetUrl[]; usedName
           "search",
           "username",
         ].includes(String(property.name));
-      if (isAstRecord(node.object)) visit(node.object, scope, safeUrlValue);
+      const object = unwrapExpression(node.object);
+      if (isUnboundGlobalObject(scope, object)) {
+        usedNames.add(String(object?.name));
+      } else if (isAstRecord(node.object)) {
+        visit(node.object, scope, safeUrlValue);
+      }
       if (node.computed === true && isAstRecord(node.property)) visit(node.property, scope);
       return;
     }
