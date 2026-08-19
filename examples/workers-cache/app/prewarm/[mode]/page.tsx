@@ -11,6 +11,7 @@ export default async function PrewarmSourcePage({
   return (
     <main>
       <h1>RSC prewarm source: {mode}</h1>
+      <output data-testid="build-id">{process.env.__VINEXT_BUILD_ID}</output>
       <PrewarmControls mode={mode} />
     </main>
   );

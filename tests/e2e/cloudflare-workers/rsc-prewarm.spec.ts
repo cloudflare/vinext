@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Response } from "@playwright/test";
+import fs from "node:fs";
 
 const TARGET_PATH = "/cached/intro";
 const VARIANT_HEADERS = [
@@ -51,6 +52,17 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
 }) => {
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
   test.setTimeout(120_000);
+
+  const expectedBuildId = fs.readFileSync("examples/workers-cache/dist/server/BUILD_ID", "utf-8");
+  await expect
+    .poll(
+      async () => {
+        const readiness = await request.get(`${baseURL}/prewarm/readiness`);
+        return (await readiness.text()).includes(expectedBuildId.trim());
+      },
+      { message: "preview alias did not reach the newly built Worker", timeout: 30_000 },
+    )
+    .toBe(true);
 
   const warmerHeaders = { accept: "text/x-component", rsc: "1" };
   const warmedUrl = `${baseURL}${TARGET_PATH}?_rsc`;
