@@ -6,6 +6,7 @@ import {
 } from "vinext/internal/build/prerender-paths";
 import {
   getPrerenderedConcretePaths,
+  getPrewarmableAppPaths,
   readPrerenderManifest,
   type PrerenderManifest,
   type PrerenderedPathSelectionOptions,
@@ -163,7 +164,7 @@ export function readPrerenderWarmPlan(
   }
 
   const pathConfig = pathPlan?.manifest ?? {};
-  const appPaths = pathPlan?.manifest.rscPaths ?? [];
+  const appPaths = getPrewarmableAppPaths(manifest);
   const hasFinalRscEligibility =
     pathPlan?.manifest.responseVary === "verbatim" && pathPlan.manifest.rscPaths !== undefined;
   const appHtmlPaths =

@@ -2594,10 +2594,7 @@ export async function navigateClientSide(
     return;
   }
 
-  const fullHref = normalizePathTrailingSlash(
-    toBrowserNavigationHref(normalizedHref, window.location.href, __basePath),
-    __trailingSlash,
-  );
+  const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
   stageAppNavigationFailureTarget(fullHref);
   // Match Next.js: App Router reports navigation start before dispatching,
   // including hash-only navigations that short-circuit after URL update.

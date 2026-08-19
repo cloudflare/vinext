@@ -38,6 +38,7 @@ type CapturedClickEvent = {
 type CapturedIntentEvent = Pick<MouseEvent, "currentTarget">;
 
 type CapturedAnchorProps = {
+  href?: string;
   onClick?: (event: CapturedClickEvent) => void | Promise<void>;
   onMouseEnter?: (event: CapturedIntentEvent) => void;
   onTouchStart?: (event: CapturedIntentEvent) => void;
@@ -1983,6 +1984,46 @@ describe("Link prefetch scheduling", () => {
       expect(headers.get("next-router-state-tree")).toBeNull();
       expect(headers.get("next-url")).toBeNull();
       expect(headers.get("x-vinext-rsc-state-fingerprint")).toBeNull();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("uses the canonical basePath root for an eligible Link prefetch", async () => {
+    vi.stubEnv("__NEXT_ROUTER_BASEPATH", "/docs");
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "false");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/",
+      nodeEnv: "production",
+      prewarmablePaths: ["/docs"],
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(result.fetch.mock.calls[0]?.[0]).toBe("/docs?_rsc");
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("normalizes a same-origin absolute Link only for canonical prefetch identity", async () => {
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "https://example.com/about",
+      nodeEnv: "production",
+      prewarmablePaths: ["/about/"],
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(result.fetch.mock.calls[0]?.[0]).toBe("/about/?_rsc");
+      expect(result.capturedAnchorProps.href).toBe("https://example.com/about");
     } finally {
       result.restoreNodeEnv();
     }

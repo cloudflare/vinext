@@ -3440,7 +3440,9 @@ describe("parseWranglerConfig — custom domain extraction", () => {
 
     const config = parseWranglerConfig(tmpDir);
     expect(config?.crossVersionCache).toBe(false);
+    expect(config?.hasCacheConfig).toBe(true);
     expect(config?.env?.staging?.crossVersionCache).toBe(true);
+    expect(config?.env?.staging?.hasCacheConfig).toBe(true);
   });
 
   it("extracts top-level and environment cross-version cache settings from TOML", () => {
@@ -3458,7 +3460,38 @@ cross_version_cache = true
 
     const config = parseWranglerConfig(tmpDir);
     expect(config?.crossVersionCache).toBe(false);
+    expect(config?.hasCacheConfig).toBe(true);
     expect(config?.env?.staging?.crossVersionCache).toBe(true);
+    expect(config?.env?.staging?.hasCacheConfig).toBe(true);
+  });
+
+  it("extracts inline, dotted, and commented TOML cache settings", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+cache = { cross_version_cache = true } # inline table
+env.preview.cache.cross_version_cache = false # dotted key
+
+[env.staging]
+cache = { enabled = true, cross_version_cache = true } # inline environment table
+
+[env.inherited.cache]
+enabled = true
+`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.crossVersionCache).toBe(true);
+    expect(config?.env?.preview).toEqual({
+      crossVersionCache: false,
+      hasCacheConfig: true,
+    });
+    expect(config?.env?.staging).toEqual({
+      crossVersionCache: true,
+      hasCacheConfig: true,
+    });
+    expect(config?.env?.inherited).toEqual({ hasCacheConfig: true });
   });
 
   it("extracts custom domain from routes array (string form)", () => {

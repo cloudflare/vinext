@@ -452,9 +452,10 @@ export async function emitPrerenderPathManifest(
   const completedPrerenderManifest = options.responseVary
     ? readPrerenderManifest(path.join(root, "dist", "server", "vinext-prerender.json"))
     : null;
-  const rscPaths = completedPrerenderManifest
-    ? getPrewarmableAppPaths(completedPrerenderManifest)
-    : [];
+  const rscPaths =
+    completedPrerenderManifest?.buildId === config.buildId
+      ? getPrewarmableAppPaths(completedPrerenderManifest)
+      : [];
   const manifest: PrerenderPathManifest = {
     ...(config.basePath ? { basePath: config.basePath } : {}),
     buildId: config.buildId,

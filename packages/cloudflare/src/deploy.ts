@@ -560,9 +560,10 @@ export async function deployWithCdnWarmup(
 ): Promise<string> {
   const wranglerConfig = parseWranglerConfig(root, options.config);
   const targetEnv = getWranglerTargetEnv(options);
-  const crossVersionCache =
-    (targetEnv ? wranglerConfig?.env?.[targetEnv]?.crossVersionCache : undefined) ??
-    wranglerConfig?.crossVersionCache;
+  const targetEnvConfig = targetEnv ? wranglerConfig?.env?.[targetEnv] : undefined;
+  const crossVersionCache = targetEnvConfig?.hasCacheConfig
+    ? targetEnvConfig.crossVersionCache === true
+    : wranglerConfig?.crossVersionCache === true;
   if (crossVersionCache) {
     throw new Error(
       "CDN warmup does not support cache.cross_version_cache=true because an existing entry can hide the uploaded Worker version. Disable cross-version caching or deploy without CDN warmup.",
@@ -610,50 +611,28 @@ export async function deployWithCdnWarmup(
     triggersApplied = true;
   }
 
-  if (stagingTraffic) {
+  if (stagingTraffic && upload.previewUrl) {
     staged = runWranglerVersionDeploy(root, stagingTraffic, options, "stage");
     try {
-      applyTriggers();
+      await warmCdnCache({
+        targetUrl: upload.previewUrl,
+        paths,
+        deploymentId: options.deploymentId,
+        rscPaths: options.rscPaths,
+        concurrency: options.warmCdnConcurrency,
+        timeoutMs: options.warmCdnTimeout,
+        retries: options.warmCdnRetries,
+        strict: options.warmCdnStrict,
+      });
     } catch (error) {
       throw withStagedVersionCleanupNote(error);
     }
-    const targetUrl = resolveCdnWarmupTargetUrl(
-      root,
-      staged.deployedUrl ?? triggersDeployedUrl,
-      options,
-    );
-    const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, options);
-    const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
-    const exactVersionTarget = upload.previewUrl;
-    const warmTargetUrl = exactVersionTarget ?? targetUrl;
-    const warmHeaders = exactVersionTarget ? undefined : headers;
-    if (warmTargetUrl && (exactVersionTarget || warmHeaders)) {
-      try {
-        await warmCdnCache({
-          targetUrl: warmTargetUrl,
-          paths,
-          headers: warmHeaders,
-          deploymentId: options.deploymentId,
-          rscPaths: options.rscPaths,
-          concurrency: options.warmCdnConcurrency,
-          timeoutMs: options.warmCdnTimeout,
-          retries: options.warmCdnRetries,
-          strict: options.warmCdnStrict,
-        });
-      } catch (error) {
-        throw withStagedVersionCleanupNote(error);
-      }
-      warmedBeforePromotion = true;
-    } else if (options.warmCdnStrict) {
-      throw new Error(
-        "CDN warmup failed: pre-traffic warmup needs an immutable version preview URL, or a production URL and Worker name for version overrides. " +
-          "Enable Worker preview URLs or configure a route/custom domain and Worker name, then rerun without --warm-cdn-strict if exact-version warming is unavailable. " +
-          getStagedVersionCleanupNote(),
-      );
-    }
+    warmedBeforePromotion = true;
   } else {
     console.warn(
-      "  CDN warmup: pre-traffic version override skipped because the current deployment is not a single 100% version.",
+      stagingTraffic
+        ? "  CDN warmup: immutable version preview URL unavailable; warming after promotion instead."
+        : "  CDN warmup: pre-traffic warming skipped because the current deployment is not a single 100% version.",
     );
   }
 
@@ -663,12 +642,12 @@ export async function deployWithCdnWarmup(
     options,
     warmedBeforePromotion ? "promote-warmed" : "promote-uploaded",
   );
+  try {
+    applyTriggers();
+  } catch (error) {
+    throw withPromotedVersionTriggerNote(error);
+  }
   if (!warmedBeforePromotion) {
-    try {
-      applyTriggers();
-    } catch (error) {
-      throw withPromotedVersionTriggerNote(error);
-    }
     const targetUrl = resolveCdnWarmupTargetUrl(
       root,
       deployed.deployedUrl ?? triggersDeployedUrl,

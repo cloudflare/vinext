@@ -375,7 +375,10 @@ function prefetchUrl(
   });
   if (prefetchHref == null) return;
 
-  const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
+  const fullHref = normalizePathTrailingSlash(
+    toBrowserNavigationHref(prefetchHref, window.location.href, __basePath),
+    __trailingSlash,
+  );
   const routePrefetchHref =
     pagesRouteHref === undefined
       ? prefetchHref
@@ -384,10 +387,9 @@ function prefetchUrl(
           basePath: __basePath,
           currentOrigin: window.location.origin,
         }) ?? prefetchHref);
-  const fullRouteHref = toBrowserNavigationHref(
-    routePrefetchHref,
-    window.location.href,
-    __basePath,
+  const fullRouteHref = normalizePathTrailingSlash(
+    toBrowserNavigationHref(routePrefetchHref, window.location.href, __basePath),
+    __trailingSlash,
   );
   const target = new URL(fullHref, window.location.href);
   if (

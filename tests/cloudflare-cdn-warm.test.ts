@@ -257,6 +257,46 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
+  it("derives RSC eligibility from completed prerender data when path metadata is stale", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        basePath: "/docs",
+        buildId: "fixed-build-id",
+        paths: ["/old"],
+        responseVary: "verbatim",
+        rscPaths: ["/old"],
+        trailingSlash: true,
+      }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "fixed-build-id",
+        routes: [
+          {
+            route: "/current",
+            status: "rendered",
+            router: "app",
+            revalidate: 60,
+            fallback: false,
+          },
+          {
+            route: "/old",
+            status: "skipped",
+            router: "app",
+          },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "fixed-build-id\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: ["/docs/current/"],
+      rscPaths: ["/docs/current/"],
+    });
+  });
+
   it("skips warm paths when the manifest build ID does not match the built Worker", () => {
     writeFile(
       "dist/server/vinext-prerender.json",

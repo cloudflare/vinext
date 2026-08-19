@@ -6,6 +6,9 @@ type RscPrewarmManifest = {
 const manifestUrl = process.env.__VINEXT_RSC_PREWARM_MANIFEST_URL ?? "";
 let manifestPromise: Promise<ReadonlySet<string>> | null = null;
 
+/** Keep an unavailable optional manifest from visibly stalling a user click. */
+export const RSC_PREWARM_NAVIGATION_TIMEOUT_MS = 250;
+
 function parseManifest(value: unknown): ReadonlySet<string> {
   if (!value || typeof value !== "object") return new Set();
   const manifest = value as Partial<RscPrewarmManifest>;

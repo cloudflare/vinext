@@ -72,7 +72,7 @@ function createMockChildProcess(output: string, code: number): ChildProcess {
   return child;
 }
 
-function writeProject(prerenderConfig: string, cacheConfig?: string): void {
+function writeProject(prerenderConfig?: string, cacheConfig?: string): void {
   writeFile("package.json", JSON.stringify({ name: "prerender-config-app", type: "module" }));
   writeFile("app/page.tsx", "export default function Page() { return <div>home</div>; }\n");
   writeFile(
@@ -98,7 +98,10 @@ function writeProject(prerenderConfig: string, cacheConfig?: string): void {
         : []),
       "",
       "export default defineConfig({",
-      `  plugins: [vinext({ prerender: ${prerenderConfig}${cacheConfig ? `, cache: ${cacheConfig}` : ""} }), cloudflare()],`,
+      `  plugins: [vinext({ ${[
+        ...(prerenderConfig === undefined ? [] : [`prerender: ${prerenderConfig}`]),
+        ...(cacheConfig ? [`cache: ${cacheConfig}`] : []),
+      ].join(", ")} }), cloudflare()],`,
       "});",
       "",
     ].join("\n"),
@@ -419,9 +422,12 @@ describe("deploy prerender config wiring", () => {
     ]);
   });
 
-  it("emits RSC warm paths after warm-triggered classification with no prerender setting", async () => {
+  it.each([
+    ["no prerender setting", undefined],
+    ["prerender enabled independently", "true"],
+  ])("emits RSC warm paths after warm-triggered classification with %s", async (_label, config) => {
     writeProject(
-      "undefined",
+      config,
       '{ cdn: { adapter: "test-cdn-adapter", capabilities: { responseVary: "verbatim" } } }',
     );
     writeFile("dist/server/BUILD_ID", "build-a\n");

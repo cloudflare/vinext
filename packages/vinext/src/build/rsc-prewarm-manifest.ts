@@ -48,8 +48,9 @@ export function emitRscPrewarmManifest(root: string, config: RscPrewarmBuildConf
   const manifest = readPrerenderManifest(
     path.join(root, "dist", "server", "vinext-prerender.json"),
   );
-  const paths = manifest
-    ? getPrewarmableAppPaths(manifest).map((pathname) => toDeploymentPath(pathname, config))
-    : [];
+  const paths =
+    manifest?.buildId === config.buildId
+      ? getPrewarmableAppPaths(manifest).map((pathname) => toDeploymentPath(pathname, config))
+      : [];
   writeRscPrewarmManifest(path.join(root, "dist", "client"), config, paths);
 }

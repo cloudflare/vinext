@@ -79,6 +79,7 @@ type PrerenderResult = {
 type WranglerConfig = {
   accountId?: string;
   crossVersionCache?: boolean;
+  hasCacheConfig?: boolean;
   kvNamespaceId?: string;
   customDomain?: string;
   name?: string;
@@ -88,6 +89,7 @@ type WranglerConfig = {
 
 export type WranglerEnvironmentConfig = {
   crossVersionCache?: boolean;
+  hasCacheConfig?: boolean;
   customDomain?: string;
   name?: string;
 };
@@ -257,14 +259,12 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
   if (typeof config.legacy_env === "boolean") {
     result.legacyEnv = config.legacy_env;
   }
-  if (
-    config.cache &&
-    typeof config.cache === "object" &&
-    !Array.isArray(config.cache) &&
-    typeof (config.cache as Record<string, unknown>).cross_version_cache === "boolean"
-  ) {
-    result.crossVersionCache = (config.cache as Record<string, unknown>)
-      .cross_version_cache as boolean;
+  if (config.cache && typeof config.cache === "object" && !Array.isArray(config.cache)) {
+    result.hasCacheConfig = true;
+    if (typeof (config.cache as Record<string, unknown>).cross_version_cache === "boolean") {
+      result.crossVersionCache = (config.cache as Record<string, unknown>)
+        .cross_version_cache as boolean;
+    }
   }
 
   // account_id
@@ -302,7 +302,7 @@ function extractEnvConfigs(envs: unknown): Record<string, WranglerEnvironmentCon
   for (const [envName, rawConfig] of Object.entries(envs)) {
     if (!rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) continue;
     const envConfig = extractEnvironmentConfig(rawConfig as Record<string, unknown>);
-    if (envConfig.name || envConfig.customDomain || envConfig.crossVersionCache !== undefined) {
+    if (envConfig.name || envConfig.customDomain || envConfig.hasCacheConfig) {
       result[envName] = envConfig;
     }
   }
@@ -314,14 +314,12 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
   if (typeof config.name === "string" && config.name.length > 0) {
     result.name = config.name;
   }
-  if (
-    config.cache &&
-    typeof config.cache === "object" &&
-    !Array.isArray(config.cache) &&
-    typeof (config.cache as Record<string, unknown>).cross_version_cache === "boolean"
-  ) {
-    result.crossVersionCache = (config.cache as Record<string, unknown>)
-      .cross_version_cache as boolean;
+  if (config.cache && typeof config.cache === "object" && !Array.isArray(config.cache)) {
+    result.hasCacheConfig = true;
+    if (typeof (config.cache as Record<string, unknown>).cross_version_cache === "boolean") {
+      result.crossVersionCache = (config.cache as Record<string, unknown>)
+        .cross_version_cache as boolean;
+    }
   }
   const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
@@ -387,11 +385,16 @@ function extractFromTOML(content: string): WranglerConfig {
   const legacyEnvMatch = content.match(/^legacy_env\s*=\s*(true|false)\s*$/m);
   if (legacyEnvMatch) result.legacyEnv = legacyEnvMatch[1] === "true";
 
+  const rootCache = extractNamedTomlCacheConfig(getTomlRootBody(content), "cache");
   const cacheSection = getTomlSections(content).find((section) => section.header === "cache");
-  const crossVersionCacheMatch = cacheSection?.body.match(
-    /^cross_version_cache\s*=\s*(true|false)\s*$/m,
-  );
-  if (crossVersionCacheMatch) result.crossVersionCache = crossVersionCacheMatch[1] === "true";
+  const sectionCache = cacheSection ? extractDirectTomlCacheConfig(cacheSection.body) : null;
+  const cacheConfig = sectionCache ?? rootCache;
+  if (cacheConfig) {
+    result.hasCacheConfig = true;
+    if (cacheConfig.crossVersionCache !== undefined) {
+      result.crossVersionCache = cacheConfig.crossVersionCache;
+    }
+  }
 
   // account_id = "..."
   const accountMatch = content.match(/^account_id\s*=\s*"([^"]+)"/m);
@@ -459,7 +462,12 @@ function extractEnvConfigsFromTOML(
       const domain =
         extractTomlScalarRouteDomain(section.body) ?? extractTomlRoutesArrayDomain(section.body);
       if (domain) envConfig.customDomain = domain;
-      if (envConfig.name || envConfig.customDomain) {
+      const cacheConfig = extractNamedTomlCacheConfig(section.body, "cache");
+      if (cacheConfig) {
+        envConfig.hasCacheConfig = true;
+        envConfig.crossVersionCache = cacheConfig.crossVersionCache;
+      }
+      if (envConfig.name || envConfig.customDomain || envConfig.hasCacheConfig) {
         result[envName] = envConfig;
       }
       continue;
@@ -479,17 +487,51 @@ function extractEnvConfigsFromTOML(
     const cacheEnvName = section.header.match(/^env\.([^.]+)\.cache$/)?.[1];
     if (cacheEnvName) {
       const envConfig = result[cacheEnvName] ?? {};
-      const crossVersionCacheMatch = section.body.match(
-        /^cross_version_cache\s*=\s*(true|false)\s*$/m,
-      );
-      if (crossVersionCacheMatch) {
-        envConfig.crossVersionCache = crossVersionCacheMatch[1] === "true";
-        result[cacheEnvName] = envConfig;
+      const cacheConfig = extractDirectTomlCacheConfig(section.body);
+      envConfig.hasCacheConfig = true;
+      if (cacheConfig?.crossVersionCache !== undefined) {
+        envConfig.crossVersionCache = cacheConfig.crossVersionCache;
       }
+      result[cacheEnvName] = envConfig;
     }
   }
 
+  for (const match of getTomlRootBody(content).matchAll(
+    /^\s*env\.([^.\s=]+)\.cache\.cross_version_cache\s*=\s*(true|false)\b/gm,
+  )) {
+    const envName = match[1];
+    const envConfig = result[envName] ?? {};
+    envConfig.hasCacheConfig = true;
+    envConfig.crossVersionCache = match[2] === "true";
+    result[envName] = envConfig;
+  }
+
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function getTomlRootBody(content: string): string {
+  const firstSection = content.search(/^\s*\[\[?[^\n]+\]\]?\s*(?:#.*)?$/m);
+  return firstSection === -1 ? content : content.slice(0, firstSection);
+}
+
+function extractDirectTomlCacheConfig(body: string): { crossVersionCache?: boolean } | null {
+  const match = body.match(/^\s*cross_version_cache\s*=\s*(true|false)\b/m);
+  return match ? { crossVersionCache: match[1] === "true" } : {};
+}
+
+function extractNamedTomlCacheConfig(
+  body: string,
+  name: string,
+): { crossVersionCache?: boolean } | null {
+  const dotted = body.match(
+    new RegExp(`^\\s*${name}\\.cross_version_cache\\s*=\\s*(true|false)\\b`, "m"),
+  );
+  if (dotted) return { crossVersionCache: dotted[1] === "true" };
+
+  const inline = body.match(new RegExp(`^\\s*${name}\\s*=\\s*\\{([^}]*)\\}`, "m"));
+  if (!inline) return null;
+  const value = inline[1].match(/\bcross_version_cache\s*=\s*(true|false)\b/);
+  return value ? { crossVersionCache: value[1] === "true" } : {};
 }
 
 function getTomlSections(content: string): Array<{ header: string; body: string }> {
