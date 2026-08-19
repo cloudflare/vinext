@@ -90,4 +90,39 @@ describe("RSC prewarm build manifest", () => {
       ),
     ).toEqual({ version: 1, paths: [] });
   });
+
+  it("emits URL-encoded paths that match browser URL.pathname", () => {
+    fs.writeFileSync(
+      path.join(root, "dist/server/vinext-prerender.json"),
+      JSON.stringify({
+        routes: [
+          {
+            route: "/café au lait",
+            status: "rendered",
+            router: "app",
+            revalidate: 60,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    const config = {
+      assetPrefix: "",
+      basePath: "",
+      buildId: "build-a",
+      deploymentId: undefined,
+      trailingSlash: false,
+    };
+
+    emitRscPrewarmManifest(root, config);
+
+    expect(
+      JSON.parse(
+        fs.readFileSync(
+          path.join(root, "dist/client/_next/static/build-a/vinext-rsc-prewarm.json"),
+          "utf-8",
+        ),
+      ),
+    ).toEqual({ version: 1, paths: ["/caf%C3%A9%20au%20lait"] });
+  });
 });

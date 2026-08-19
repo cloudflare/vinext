@@ -8,13 +8,22 @@ export function PrewarmControls({ mode }: { mode: string }) {
 
   if (mode === "router") {
     return (
-      <button
-        data-testid="router-prefetch"
-        type="button"
-        onClick={() => router.prefetch("/cached/intro")}
-      >
-        Prefetch /cached/intro
-      </button>
+      <>
+        <button
+          data-testid="router-prefetch"
+          type="button"
+          onClick={() => router.prefetch("/cached/intro")}
+        >
+          Prefetch /cached/intro
+        </button>
+        <button
+          data-testid="router-navigate"
+          type="button"
+          onClick={() => router.push("/cached/intro")}
+        >
+          Navigate to /cached/intro
+        </button>
+      </>
     );
   }
 

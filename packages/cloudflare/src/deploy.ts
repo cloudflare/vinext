@@ -558,6 +558,17 @@ export async function deployWithCdnWarmup(
   > &
     Pick<CdnWarmOptions, "deploymentId" | "rscPaths">,
 ): Promise<string> {
+  const wranglerConfig = parseWranglerConfig(root, options.config);
+  const targetEnv = getWranglerTargetEnv(options);
+  const crossVersionCache =
+    (targetEnv ? wranglerConfig?.env?.[targetEnv]?.crossVersionCache : undefined) ??
+    wranglerConfig?.crossVersionCache;
+  if (crossVersionCache) {
+    throw new Error(
+      "CDN warmup does not support cache.cross_version_cache=true because an existing entry can hide the uploaded Worker version. Disable cross-version caching or deploy without CDN warmup.",
+    );
+  }
+
   const upload = runWranglerVersionUpload(root, options);
   if (options.previewAlias) {
     if (!upload.previewUrl) {
@@ -569,9 +580,12 @@ export async function deployWithCdnWarmup(
       console.warn(
         `  CDN warmup skipped: Wrangler did not return a URL for preview alias ${options.previewAlias}.`,
       );
-      return "(URL not detected in wrangler output)";
+      return upload.previewAliasUrl ?? "(URL not detected in wrangler output)";
     }
     await warmCdnCache({
+      // The immutable version URL is available immediately and populates the
+      // uploaded version's host-independent Workers cache. The alias can lag
+      // behind the upload, so it is only the user-facing return URL.
       targetUrl: upload.previewUrl,
       paths,
       deploymentId: options.deploymentId,
@@ -581,9 +595,8 @@ export async function deployWithCdnWarmup(
       retries: options.warmCdnRetries,
       strict: options.warmCdnStrict,
     });
-    return upload.previewUrl;
+    return upload.previewAliasUrl ?? upload.previewUrl;
   }
-  const wranglerConfig = parseWranglerConfig(root, options.config);
   const deploymentStatus = readWranglerDeploymentStatus(root, options);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
@@ -611,12 +624,15 @@ export async function deployWithCdnWarmup(
     );
     const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, options);
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
-    if (targetUrl && headers) {
+    const exactVersionTarget = upload.previewUrl;
+    const warmTargetUrl = exactVersionTarget ?? targetUrl;
+    const warmHeaders = exactVersionTarget ? undefined : headers;
+    if (warmTargetUrl && (exactVersionTarget || warmHeaders)) {
       try {
         await warmCdnCache({
-          targetUrl,
+          targetUrl: warmTargetUrl,
           paths,
-          headers,
+          headers: warmHeaders,
           deploymentId: options.deploymentId,
           rscPaths: options.rscPaths,
           concurrency: options.warmCdnConcurrency,
@@ -630,8 +646,8 @@ export async function deployWithCdnWarmup(
       warmedBeforePromotion = true;
     } else if (options.warmCdnStrict) {
       throw new Error(
-        "CDN warmup failed: pre-traffic warmup needs a production URL and Worker name for version overrides. " +
-          "Configure a route/custom domain and Worker name, or rerun without --warm-cdn-strict. " +
+        "CDN warmup failed: pre-traffic warmup needs an immutable version preview URL, or a production URL and Worker name for version overrides. " +
+          "Enable Worker preview URLs or configure a route/custom domain and Worker name, then rerun without --warm-cdn-strict if exact-version warming is unavailable. " +
           getStagedVersionCleanupNote(),
       );
     }

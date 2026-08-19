@@ -72,12 +72,6 @@ jobs:
         run: vp run build
 
       - name: Build example
-        if: matrix.example.name != 'workers-cache'
-        run: vp build
-        working-directory: ${{ matrix.example.working_directory }}
-
-      - name: Build workers-cache example
-        if: matrix.example.name == 'workers-cache'
         run: vp build
         working-directory: ${{ matrix.example.working_directory }}
 

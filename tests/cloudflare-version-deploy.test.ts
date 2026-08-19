@@ -184,10 +184,11 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     expect(parseWranglerVersionUploadOutput(output)).toMatchObject({
       versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
       previewUrl: "https://app-warm.example.workers.dev",
+      previewAliasUrl: null,
     });
   });
 
-  it("prefers Wrangler's named preview alias URL over the hashed version URL", () => {
+  it("preserves Wrangler's immutable version URL and named preview alias URL", () => {
     const output = `
       Worker Version ID: 095f00a7-23a7-43b7-a227-e4c97cab5f22
       Version Preview URL: https://095f00a7-workers-cache.example.workers.dev
@@ -196,7 +197,23 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
 
     expect(parseWranglerVersionUploadOutput(output)).toMatchObject({
       versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
-      previewUrl: "https://pr-123-workers-cache.example.workers.dev",
+      previewUrl: "https://095f00a7-workers-cache.example.workers.dev",
+      previewAliasUrl: "https://pr-123-workers-cache.example.workers.dev",
+    });
+  });
+
+  it("does not misclassify an alias-only upload URL as an immutable version URL", () => {
+    expect(
+      parseWranglerVersionUploadOutput(
+        JSON.stringify({
+          version_id: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+          preview_alias_url: "https://pr-123-workers-cache.example.workers.dev",
+        }),
+      ),
+    ).toMatchObject({
+      versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+      previewUrl: null,
+      previewAliasUrl: "https://pr-123-workers-cache.example.workers.dev",
     });
   });
 
@@ -218,6 +235,7 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     ).toMatchObject({
       versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
       previewUrl: "https://app-warm.example.workers.dev",
+      previewAliasUrl: null,
     });
   });
 
@@ -236,6 +254,7 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     ).toMatchObject({
       versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
       previewUrl: "https://app-warm.example.workers.dev",
+      previewAliasUrl: null,
     });
   });
 
@@ -249,6 +268,7 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     expect(parseWranglerVersionUploadOutput("095f00a7-23a7-43b7-a227-e4c97cab5f22")).toMatchObject({
       versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
       previewUrl: null,
+      previewAliasUrl: null,
     });
   });
 

@@ -19,7 +19,8 @@ function toDeploymentPath(pathname: string, config: RscPrewarmBuildConfig): stri
       ? config.basePath
       : `${config.basePath}${pathname}`
     : pathname;
-  return normalizePathTrailingSlash(withBasePath, config.trailingSlash);
+  const normalized = normalizePathTrailingSlash(withBasePath, config.trailingSlash);
+  return new URL(normalized, "http://vinext.local").pathname;
 }
 
 export function getRscPrewarmManifestUrl(config: RscPrewarmBuildConfig): string {

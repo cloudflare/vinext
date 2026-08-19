@@ -419,7 +419,7 @@ describe("deploy prerender config wiring", () => {
     ]);
   });
 
-  it("emits RSC warm paths after warm-triggered prerender completes", async () => {
+  it("emits RSC warm paths after warm-triggered classification with no prerender setting", async () => {
     writeProject(
       "undefined",
       '{ cdn: { adapter: "test-cdn-adapter", capabilities: { responseVary: "verbatim" } } }',

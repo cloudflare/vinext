@@ -2584,10 +2584,7 @@ export async function navigateClientSide(
   // `link.tsx`.
   const hybridOwner = resolveHybridClientRouteOwner(normalizedHref);
   if (hybridOwner === "pages" || hybridOwner === "document") {
-    const fullHref = normalizePathTrailingSlash(
-      toBrowserNavigationHref(normalizedHref, window.location.href, __basePath),
-      __trailingSlash,
-    );
+    const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
     notifyAppRouterTransitionStart(fullHref, mode);
     if (mode === "push") {
       saveScrollPosition();
@@ -2893,7 +2890,7 @@ const _appRouter: AppRouterInstance = {
         interceptionContext === null &&
         mountedSlotsHeader === null &&
         (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref) &&
-        (await isRscPrewarmEligibleHref(fullHref));
+        (await isRscPrewarmEligibleHref(fullHref, { timeoutMs: 5_000 }));
       if (setup.cancelled) return;
       const policy =
         isCanonicalPrewarmCandidate || kind === "full"

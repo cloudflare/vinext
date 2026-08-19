@@ -78,6 +78,7 @@ type PrerenderResult = {
 
 type WranglerConfig = {
   accountId?: string;
+  crossVersionCache?: boolean;
   kvNamespaceId?: string;
   customDomain?: string;
   name?: string;
@@ -86,6 +87,7 @@ type WranglerConfig = {
 };
 
 export type WranglerEnvironmentConfig = {
+  crossVersionCache?: boolean;
   customDomain?: string;
   name?: string;
 };
@@ -255,6 +257,15 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
   if (typeof config.legacy_env === "boolean") {
     result.legacyEnv = config.legacy_env;
   }
+  if (
+    config.cache &&
+    typeof config.cache === "object" &&
+    !Array.isArray(config.cache) &&
+    typeof (config.cache as Record<string, unknown>).cross_version_cache === "boolean"
+  ) {
+    result.crossVersionCache = (config.cache as Record<string, unknown>)
+      .cross_version_cache as boolean;
+  }
 
   // account_id
   if (typeof config.account_id === "string") {
@@ -291,7 +302,7 @@ function extractEnvConfigs(envs: unknown): Record<string, WranglerEnvironmentCon
   for (const [envName, rawConfig] of Object.entries(envs)) {
     if (!rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) continue;
     const envConfig = extractEnvironmentConfig(rawConfig as Record<string, unknown>);
-    if (envConfig.name || envConfig.customDomain) {
+    if (envConfig.name || envConfig.customDomain || envConfig.crossVersionCache !== undefined) {
       result[envName] = envConfig;
     }
   }
@@ -302,6 +313,15 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
   const result: WranglerEnvironmentConfig = {};
   if (typeof config.name === "string" && config.name.length > 0) {
     result.name = config.name;
+  }
+  if (
+    config.cache &&
+    typeof config.cache === "object" &&
+    !Array.isArray(config.cache) &&
+    typeof (config.cache as Record<string, unknown>).cross_version_cache === "boolean"
+  ) {
+    result.crossVersionCache = (config.cache as Record<string, unknown>)
+      .cross_version_cache as boolean;
   }
   const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
@@ -366,6 +386,12 @@ function extractFromTOML(content: string): WranglerConfig {
 
   const legacyEnvMatch = content.match(/^legacy_env\s*=\s*(true|false)\s*$/m);
   if (legacyEnvMatch) result.legacyEnv = legacyEnvMatch[1] === "true";
+
+  const cacheSection = getTomlSections(content).find((section) => section.header === "cache");
+  const crossVersionCacheMatch = cacheSection?.body.match(
+    /^cross_version_cache\s*=\s*(true|false)\s*$/m,
+  );
+  if (crossVersionCacheMatch) result.crossVersionCache = crossVersionCacheMatch[1] === "true";
 
   // account_id = "..."
   const accountMatch = content.match(/^account_id\s*=\s*"([^"]+)"/m);
@@ -446,6 +472,19 @@ function extractEnvConfigsFromTOML(
       if (domain) envConfig.customDomain = domain;
       if (envConfig.name || envConfig.customDomain) {
         result[routesEnvName] = envConfig;
+      }
+      continue;
+    }
+
+    const cacheEnvName = section.header.match(/^env\.([^.]+)\.cache$/)?.[1];
+    if (cacheEnvName) {
+      const envConfig = result[cacheEnvName] ?? {};
+      const crossVersionCacheMatch = section.body.match(
+        /^cross_version_cache\s*=\s*(true|false)\s*$/m,
+      );
+      if (crossVersionCacheMatch) {
+        envConfig.crossVersionCache = crossVersionCacheMatch[1] === "true";
+        result[cacheEnvName] = envConfig;
       }
     }
   }

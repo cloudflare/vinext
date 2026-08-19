@@ -1361,6 +1361,7 @@ async function renderIsolatedLink(options: {
   appNavigation?: boolean;
   href: string;
   nodeEnv: string;
+  prewarmManifestStalls?: boolean;
   prewarmablePaths?: string[];
   props?: Record<string, unknown>;
   requireRef?: boolean;
@@ -1374,10 +1375,9 @@ async function renderIsolatedLink(options: {
   };
   vi.stubEnv("NODE_ENV", options.nodeEnv);
   const prewarmManifestUrl = "/_next/static/build-test/vinext-rsc-prewarm.json";
-  vi.stubEnv(
-    "__VINEXT_RSC_PREWARM_MANIFEST_URL",
-    options.prewarmablePaths ? prewarmManifestUrl : "",
-  );
+  const hasPrewarmManifest =
+    options.prewarmablePaths !== undefined || options.prewarmManifestStalls === true;
+  vi.stubEnv("__VINEXT_RSC_PREWARM_MANIFEST_URL", hasPrewarmManifest ? prewarmManifestUrl : "");
 
   const effects: CapturedEffect[] = [];
   let capturedAnchorProps: CapturedAnchorProps | undefined;
@@ -1413,13 +1413,13 @@ async function renderIsolatedLink(options: {
 
   vi.stubGlobal(
     "fetch",
-    options.prewarmablePaths
+    hasPrewarmManifest
       ? vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
           const url =
             typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-          return url === prewarmManifestUrl
-            ? Promise.resolve(Response.json({ version: 1, paths: options.prewarmablePaths }))
-            : fetch(input, init);
+          if (url !== prewarmManifestUrl) return fetch(input, init);
+          if (options.prewarmManifestStalls) return new Promise<Response>(() => {});
+          return Promise.resolve(Response.json({ version: 1, paths: options.prewarmablePaths }));
         })
       : fetch,
   );
@@ -1984,6 +1984,35 @@ describe("Link prefetch scheduling", () => {
       expect(headers.get("next-url")).toBeNull();
       expect(headers.get("x-vinext-rsc-state-fingerprint")).toBeNull();
     } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("falls back to the contextual Link prefetch when the eligibility manifest stalls", async () => {
+    vi.useFakeTimers();
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      prewarmManifestStalls: true,
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await vi.advanceTimersByTimeAsync(5_000);
+      vi.useRealTimers();
+      await waitForFetchCalls(result.fetch, 1);
+
+      expectCanonicalRscFetchCall(
+        result.fetch.mock.calls[0],
+        "/blog/hello",
+        expect.objectContaining({ credentials: "include" }),
+      );
+      const headers = new Headers(result.fetch.mock.calls[0]?.[1]?.headers);
+      expect(headers.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
+      expect(headers.get("next-router-state-tree")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
       result.restoreNodeEnv();
     }
   });

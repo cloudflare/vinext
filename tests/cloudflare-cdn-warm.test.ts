@@ -221,6 +221,42 @@ describe("Cloudflare CDN warmup", () => {
     expect(readPrerenderWarmPaths(tmpDir)).toEqual([]);
   });
 
+  it("does not consume stale path-manifest configuration when final prerender data is current", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        basePath: "/stale",
+        buildId: "old-build",
+        deploymentId: "old-deployment",
+        paths: ["/old"],
+        responseVary: "verbatim",
+        rscPaths: ["/old"],
+        trailingSlash: true,
+      }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "new-build",
+        routes: [
+          {
+            route: "/current",
+            status: "rendered",
+            router: "app",
+            revalidate: 60,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "new-build\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: ["/current"],
+      rscPaths: [],
+    });
+  });
+
   it("skips warm paths when the manifest build ID does not match the built Worker", () => {
     writeFile(
       "dist/server/vinext-prerender.json",
@@ -303,6 +339,39 @@ describe("Cloudflare CDN warmup", () => {
     expect(buildWarmupUrl("https://worker.example.workers.dev", "/docs/intro").toString()).toBe(
       "https://worker.example.workers.dev/docs/intro",
     );
+  });
+
+  it("encodes Unicode and spaces in deployment warm paths", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/café au lait"],
+        responseVary: "verbatim",
+        rscPaths: ["/café au lait"],
+      }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/café au lait",
+            status: "rendered",
+            router: "app",
+            revalidate: 60,
+            fallback: false,
+          },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      paths: ["/caf%C3%A9%20au%20lait"],
+      rscPaths: ["/caf%C3%A9%20au%20lait"],
+    });
   });
 
   it("requests every warmable path through the target URL", async () => {

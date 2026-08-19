@@ -2078,10 +2078,6 @@ function bootstrapHydration(
           navigationKind === "navigate" && HAS_CLIENT_REWRITES
             ? resolveLoadedHybridClientRewriteHref(currentHref, __basePath)
             : null;
-        const usesCanonicalPrewarmedRequest =
-          (rewrittenNavigationHref === null || rewrittenNavigationHref === currentHref) &&
-          (await isRscPrewarmEligibleHref(currentHref, { timeoutMs: 100 })) &&
-          canonicalizePrewarmableRscRequestHeaders(requestHeaders);
         const targetPathAndSearch = url.pathname + url.search;
         const additionalPrefetchPathAndSearch =
           rewrittenNavigationHref && rewrittenNavigationHref !== currentHref
@@ -2099,6 +2095,14 @@ function bootstrapHydration(
           navigationKind,
           targetPathAndSearch,
         });
+        // A settled prefetch must remain synchronously consumable in the click
+        // task. Only wait for optional canonical eligibility when this
+        // navigation actually needs to derive a network/cache request key.
+        const usesCanonicalPrewarmedRequest =
+          settledPrefetchedResponse === null &&
+          (rewrittenNavigationHref === null || rewrittenNavigationHref === currentHref) &&
+          (await isRscPrewarmEligibleHref(currentHref, { timeoutMs: 5_000 })) &&
+          canonicalizePrewarmableRscRequestHeaders(requestHeaders);
         const rscUrl = settledPrefetchedResponse
           ? resolvePrefetchNavigationResponseUrl({
               additionalRscUrls: additionalPrefetchPathAndSearch,

@@ -229,6 +229,35 @@ describe("prefetch cache eviction", () => {
     expect(headers.get("next-router-state-tree")).toBeNull();
   });
 
+  it("router.prefetch falls back to contextual identity when the eligibility manifest stalls", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv(
+      "__VINEXT_RSC_PREWARM_MANIFEST_URL",
+      "/_next/static/build-a/vinext-rsc-prewarm.json",
+    );
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = toRscUrlString(input);
+      if (url.endsWith("vinext-rsc-prewarm.json")) return new Promise<Response>(() => {});
+      return new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    try {
+      navigation.appRouterInstance.prefetch("/dashboard");
+      await vi.advanceTimersByTimeAsync(5_000);
+      vi.useRealTimers();
+      await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+
+      expect(toRscUrlString(fetch.mock.calls[1]![0])).toMatch(/^\/dashboard\?_rsc=.+$/);
+      const headers = new Headers(fetch.mock.calls[1]![1]?.headers);
+      expect(headers.get("next-url")).toBe("/");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("router.prefetch calls onInvalidate once when the prefetched response is invalidated", async () => {
     let fetchedUrl: unknown;
     const fetch = vi.fn(async (input: RequestInfo | URL) => {

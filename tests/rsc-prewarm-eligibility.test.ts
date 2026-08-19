@@ -21,7 +21,10 @@ afterEach(() => {
 describe("RSC prewarm browser eligibility", () => {
   it("loads once and matches only exact same-origin queryless paths", async () => {
     const fetchMock = vi.fn(async () =>
-      Response.json({ version: 1, paths: ["/cached/intro", "/cached/featured"] }),
+      Response.json({
+        version: 1,
+        paths: ["/cached/intro", "/cached/featured", "/caf%C3%A9%20au%20lait"],
+      }),
     );
     vi.stubGlobal("fetch", fetchMock);
     const { isRscPrewarmEligibleHref } =
@@ -31,6 +34,7 @@ describe("RSC prewarm browser eligibility", () => {
     await expect(isRscPrewarmEligibleHref("https://example.com/cached/featured")).resolves.toBe(
       true,
     );
+    await expect(isRscPrewarmEligibleHref("/café au lait")).resolves.toBe(true);
     await expect(isRscPrewarmEligibleHref("/cached/intro?tab=one")).resolves.toBe(false);
     await expect(isRscPrewarmEligibleHref("https://other.example/cached/intro")).resolves.toBe(
       false,

@@ -487,7 +487,7 @@ function prefetchUrl(
           interceptionContext === null &&
           mountedSlotsHeader === null &&
           (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref) &&
-          (await isRscPrewarmEligibleHref(fullHref));
+          (await isRscPrewarmEligibleHref(fullHref, { timeoutMs: 5_000 }));
         if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
         const autoPrefetch = isCanonicalPrewarmCandidate
           ? resolveFullAppRoutePrefetch()

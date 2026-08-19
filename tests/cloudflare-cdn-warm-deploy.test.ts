@@ -69,7 +69,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
         events.push("upload");
-        return "Uploaded version 22222222-2222-4222-8222-222222222222\nhttps://preview.example.workers.dev\n";
+        return [
+          "Uploaded version 22222222-2222-4222-8222-222222222222",
+          "Version Preview URL: https://22222222-my-worker.example.workers.dev",
+          "",
+        ].join("\n");
       }
       if (args.includes("status")) {
         events.push("status");
@@ -131,26 +135,22 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     const firstInit = vi.mocked(fetch).mock.calls[0]![1] as RequestInit;
     expect(fetch).toHaveBeenNthCalledWith(
       1,
-      new URL("https://app.example.com/"),
+      new URL("https://22222222-my-worker.example.workers.dev/"),
       expect.any(Object),
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
-      new URL("https://app.example.com/about"),
+      new URL("https://22222222-my-worker.example.workers.dev/about"),
       expect.any(Object),
     );
     expect(fetch).toHaveBeenNthCalledWith(
       3,
-      new URL("https://app.example.com/about?_rsc"),
+      new URL("https://22222222-my-worker.example.workers.dev/about?_rsc"),
       expect.any(Object),
     );
-    expect(new Headers(firstInit.headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
-      'my-worker="22222222-2222-4222-8222-222222222222"',
-    );
+    expect(new Headers(firstInit.headers).get("Cloudflare-Workers-Version-Overrides")).toBeNull();
     const rscHeaders = new Headers(vi.mocked(fetch).mock.calls[2]![1]?.headers);
-    expect(rscHeaders.get("Cloudflare-Workers-Version-Overrides")).toBe(
-      'my-worker="22222222-2222-4222-8222-222222222222"',
-    );
+    expect(rscHeaders.get("Cloudflare-Workers-Version-Overrides")).toBeNull();
     expect(rscHeaders.get("x-deployment-id")).toBe("dpl_123");
     expect(execFileSyncMock).toHaveBeenNthCalledWith(
       4,
@@ -169,9 +169,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status",
       "stage",
       "triggers",
-      "fetch:https://app.example.com/",
-      "fetch:https://app.example.com/about",
-      "fetch:https://app.example.com/about?_rsc",
+      "fetch:https://22222222-my-worker.example.workers.dev/",
+      "fetch:https://22222222-my-worker.example.workers.dev/about",
+      "fetch:https://22222222-my-worker.example.workers.dev/about?_rsc",
       "promote",
     ]);
   });
@@ -196,7 +196,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       );
       return [
         "Uploaded version 22222222-2222-4222-8222-222222222222",
-        "https://pr-123-workers-cache.example.workers.dev",
+        "Version Preview URL: https://22222222-workers-cache.example.workers.dev",
+        "Version Preview Alias URL: https://pr-123-workers-cache.example.workers.dev",
         "",
       ].join("\n");
     });
@@ -212,14 +213,35 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(execFileSyncMock).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenNthCalledWith(
       1,
-      new URL("https://pr-123-workers-cache.example.workers.dev/cached/intro"),
+      new URL("https://22222222-workers-cache.example.workers.dev/cached/intro"),
       expect.any(Object),
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
-      new URL("https://pr-123-workers-cache.example.workers.dev/cached/intro?_rsc"),
+      new URL("https://22222222-workers-cache.example.workers.dev/cached/intro?_rsc"),
       expect.any(Object),
     );
+  });
+
+  it("rejects cross-version caching before uploading a Worker version", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      `{
+        // A shared entry could make an old version look successfully warmed.
+        "cache": { "cross_version_cache": true },
+      }`,
+    );
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/cached/intro"], {
+        rscPaths: ["/cached/intro"],
+        warmCdnStrict: true,
+      }),
+    ).rejects.toThrow("does not support cache.cross_version_cache=true");
+
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("uses the env Worker name and env custom domain for version override warmup", async () => {

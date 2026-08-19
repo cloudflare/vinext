@@ -61,7 +61,8 @@ function applyWarmPathConfig(
       ? config.basePath
       : `${config.basePath}${pathname}`
     : pathname;
-  return normalizePathTrailingSlash(withBasePath, config.trailingSlash === true);
+  const normalized = normalizePathTrailingSlash(withBasePath, config.trailingSlash === true);
+  return new URL(normalized, "http://vinext.local").pathname;
 }
 
 function readBuiltBuildId(root: string): string | null {
@@ -117,7 +118,7 @@ function readPrerenderPathWarmPaths(
       "[vinext] CDN warmup skipped: prerender path manifest buildId does not match dist/server/BUILD_ID.";
     if (options?.strict) throw new Error(message);
     console.warn(message);
-    return { manifest, paths: [] };
+    return null;
   }
 
   return {

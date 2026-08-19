@@ -33,7 +33,7 @@ async function observeTargetRsc(page: Page, action: () => Promise<unknown>): Pro
   };
 }
 
-function expectCanonicalRsc(observed: ObservedRsc): void {
+function expectCanonicalRsc(observed: ObservedRsc, expectedBuildId: string): void {
   const url = new URL(observed.url);
   expect(url.pathname).toBe(TARGET_PATH);
   expect(url.search).toBe("?_rsc");
@@ -43,6 +43,20 @@ function expectCanonicalRsc(observed: ObservedRsc): void {
     expect(observed.requestHeaders[header]).toBeUndefined();
   }
   expect(observed.response.headers()["cf-cache-status"]).toBe("HIT");
+  expect(observed.body.toString("utf-8")).toContain(expectedBuildId);
+}
+
+async function expectSoftNavigationCommit(
+  page: Page,
+  expectedBuildId: string,
+  targetDocumentRequests: string[],
+  targetRscRequests: string[],
+): Promise<void> {
+  await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
+  await expect(page.getByRole("heading", { name: "Post: intro" })).toBeVisible();
+  await expect(page.getByTestId("build-id")).toHaveText(expectedBuildId);
+  expect(targetDocumentRequests).toEqual([]);
+  expect(targetRscRequests).toHaveLength(1);
 }
 
 test("deploy-warmed ISR RSC is reused by every full browser navigation shape", async ({
@@ -53,12 +67,14 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
   test.setTimeout(120_000);
 
-  const expectedBuildId = fs.readFileSync("examples/workers-cache/dist/server/BUILD_ID", "utf-8");
+  const expectedBuildId = fs
+    .readFileSync("examples/workers-cache/dist/server/BUILD_ID", "utf-8")
+    .trim();
   await expect
     .poll(
       async () => {
         const readiness = await request.get(`${baseURL}/prewarm/readiness`);
-        return (await readiness.text()).includes(expectedBuildId.trim());
+        return (await readiness.text()).includes(expectedBuildId);
       },
       { message: "preview alias did not reach the newly built Worker", timeout: 30_000 },
     )
@@ -71,42 +87,89 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
   expect(warmed.headers()["content-type"]).toContain("text/x-component");
   expect(warmed.headers()["cache-control"]).not.toContain("no-store");
   expect(warmed.headers()["cf-cache-status"]).toBe("HIT");
+  expect(await warmed.text()).toContain(expectedBuildId);
 
-  const runInFreshPage = async (
-    sourcePath: string,
-    action?: (page: Page) => Promise<unknown>,
-  ): Promise<ObservedRsc> => {
+  const withFreshPage = async (
+    run: (
+      page: Page,
+      targetDocumentRequests: string[],
+      targetRscRequests: string[],
+    ) => Promise<void>,
+  ): Promise<void> => {
     const context = await browser.newContext();
     const page = await context.newPage();
+    const targetDocumentRequests: string[] = [];
+    const targetRscRequests: string[] = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === TARGET_PATH && request.resourceType() === "document") {
+        targetDocumentRequests.push(request.url());
+      }
+      if (url.pathname === TARGET_PATH && request.headers()["rsc"] === "1") {
+        targetRscRequests.push(request.url());
+      }
+    });
     try {
-      return await observeTargetRsc(page, async () => {
-        await page.goto(sourcePath);
-        if (action) await action(page);
-      });
+      await run(page, targetDocumentRequests, targetRscRequests);
     } finally {
       await context.close();
     }
   };
 
-  const linkA = await runInFreshPage("/prewarm/link-a");
-  expectCanonicalRsc(linkA);
+  let firstLinkPrefetch: ObservedRsc | null = null;
+  for (const sourcePath of ["/prewarm/link-a", "/prewarm/link-b"]) {
+    await withFreshPage(async (page, targetDocumentRequests, targetRscRequests) => {
+      const observed = await observeTargetRsc(page, () => page.goto(sourcePath));
+      await expect(page.getByTestId("build-id")).toHaveText(expectedBuildId);
+      expectCanonicalRsc(observed, expectedBuildId);
+      if (firstLinkPrefetch) {
+        expect(observed.url).toBe(firstLinkPrefetch.url);
+        expect(observed.body).toEqual(firstLinkPrefetch.body);
+        expect(observed.requestHeaders["rsc"]).toBe(firstLinkPrefetch.requestHeaders["rsc"]);
+        expect(observed.requestHeaders["accept"]).toBe(firstLinkPrefetch.requestHeaders["accept"]);
+      } else {
+        firstLinkPrefetch = observed;
+      }
+      await page.getByTestId("link-prefetch").click();
+      await expectSoftNavigationCommit(
+        page,
+        expectedBuildId,
+        targetDocumentRequests,
+        targetRscRequests,
+      );
+    });
+  }
 
-  const linkB = await runInFreshPage("/prewarm/link-b");
-  expectCanonicalRsc(linkB);
-  expect(linkB.url).toBe(linkA.url);
-  expect(linkB.body).toEqual(linkA.body);
-  expect(linkB.requestHeaders["rsc"]).toBe(linkA.requestHeaders["rsc"]);
-  expect(linkB.requestHeaders["accept"]).toBe(linkA.requestHeaders["accept"]);
+  await withFreshPage(async (page, targetDocumentRequests, targetRscRequests) => {
+    await page.goto("/prewarm/router");
+    await expect(page.getByTestId("build-id")).toHaveText(expectedBuildId);
+    const observed = await observeTargetRsc(page, () =>
+      page.getByTestId("router-prefetch").click(),
+    );
+    expectCanonicalRsc(observed, expectedBuildId);
+    await page.getByTestId("router-navigate").click();
+    await expectSoftNavigationCommit(
+      page,
+      expectedBuildId,
+      targetDocumentRequests,
+      targetRscRequests,
+    );
+  });
 
-  const routerPrefetch = await runInFreshPage("/prewarm/router", (page) =>
-    page.getByTestId("router-prefetch").click(),
-  );
-  expectCanonicalRsc(routerPrefetch);
-
-  const softNavigation = await runInFreshPage("/prewarm/soft", (page) =>
-    page.getByTestId("soft-navigation").click(),
-  );
-  expectCanonicalRsc(softNavigation);
+  await withFreshPage(async (page, targetDocumentRequests, targetRscRequests) => {
+    await page.goto("/prewarm/soft");
+    await expect(page.getByTestId("build-id")).toHaveText(expectedBuildId);
+    const observed = await observeTargetRsc(page, () =>
+      page.getByTestId("soft-navigation").click(),
+    );
+    expectCanonicalRsc(observed, expectedBuildId);
+    await expectSoftNavigationCommit(
+      page,
+      expectedBuildId,
+      targetDocumentRequests,
+      targetRscRequests,
+    );
+  });
 
   const context = await browser.newContext();
   const page = await context.newPage();

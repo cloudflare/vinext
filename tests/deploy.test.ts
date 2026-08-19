@@ -3424,6 +3424,43 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     });
   });
 
+  it("extracts top-level and environment cross-version cache settings from JSONC", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `{
+        "cache": { "cross_version_cache": false },
+        "env": {
+          "staging": {
+            "cache": { "cross_version_cache": true },
+          },
+        },
+      }`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.crossVersionCache).toBe(false);
+    expect(config?.env?.staging?.crossVersionCache).toBe(true);
+  });
+
+  it("extracts top-level and environment cross-version cache settings from TOML", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+[cache]
+cross_version_cache = false
+
+[env.staging.cache]
+cross_version_cache = true
+`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.crossVersionCache).toBe(false);
+    expect(config?.env?.staging?.crossVersionCache).toBe(true);
+  });
+
   it("extracts custom domain from routes array (string form)", () => {
     writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ routes: ["example.co.uk/*"] }));
     const config = parseWranglerConfig(tmpDir);
