@@ -2,9 +2,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createServer, type Plugin } from "vite";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
+  resetCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 
 const CAPTURE_RSC_REQUEST = "__vinextCaptureWorkerRscRequest";
+const REGISTER_ADAPTER = "__vinextRegisterAppWorkerAdapter";
+const HANDLE_RSC_REQUEST = "__vinextHandleWorkerRscRequest";
 
 function workerEntryVirtualModules(): Plugin {
   const modules = new Map([
@@ -16,12 +23,16 @@ export const __basePath = "";
 export const __imageAllowedWidths = [];
 export const __imageConfig = {};
 export default async function rscHandler(request) {
-  globalThis.${CAPTURE_RSC_REQUEST}(request);
-  return new Response("ok");
+  globalThis.${CAPTURE_RSC_REQUEST}?.(request);
+  const handler = globalThis.${HANDLE_RSC_REQUEST};
+  return handler ? handler(request) : new Response("ok");
 }
 `,
     ],
-    ["virtual:vinext-cache-adapters", "export function registerConfiguredCacheAdapters() {}"],
+    [
+      "virtual:vinext-cache-adapters",
+      `export function registerConfiguredCacheAdapters() { globalThis.${REGISTER_ADAPTER}?.(); }`,
+    ],
     ["virtual:vinext-image-adapters", "export function registerConfiguredImageOptimizer() {}"],
   ]);
 
@@ -36,7 +47,47 @@ export default async function rscHandler(request) {
   };
 }
 
+afterEach(() => {
+  resetCdnCacheAdapter();
+  Reflect.deleteProperty(globalThis, REGISTER_ADAPTER);
+  Reflect.deleteProperty(globalThis, HANDLE_RSC_REQUEST);
+  Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
+});
+
 describe("App Router Production server worker entry compatibility", () => {
+  it("fails a final fallback response closed through the configured adapter", async () => {
+    Reflect.set(globalThis, REGISTER_ADAPTER, () => {
+      setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    });
+    Reflect.set(globalThis, HANDLE_RSC_REQUEST, () => null);
+
+    const server = await createServer({
+      appType: "custom",
+      configFile: false,
+      logLevel: "silent",
+      plugins: [workerEntryVirtualModules()],
+      resolve: {
+        alias: {
+          "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+        },
+      },
+      server: { middlewareMode: true },
+    });
+
+    try {
+      const entry = (await server.ssrLoadModule(
+        path.resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts"),
+      )) as { default: { fetch(request: Request): Promise<Response> } };
+      const response = await entry.default.fetch(new Request("https://example.test/missing"));
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      await server.close();
+    }
+  });
+
   it("restores prerender route params only for the server-owned Node context", async () => {
     // No Next.js test port applies: these headers and this Worker boundary are vinext-specific.
     const capturedRequests: Request[] = [];

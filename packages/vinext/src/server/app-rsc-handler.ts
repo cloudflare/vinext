@@ -1369,6 +1369,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         void sourceRequest.body.cancel().catch(() => {});
       }
     }
+    prewarmObservation?.observeMiddleware({
+      conditionalPathMatched: sourceMiddlewareContext.conditionalPathMatched === true,
+      matched: sourceMiddlewareContext.matched === true,
+    });
     if (sourceMiddlewareResult.kind === "response") {
       if (sourceMiddlewareContext.requestHeaders) {
         includeEffectiveCdnCacheRequestCredentials(sourceMiddlewareContext.requestHeaders);

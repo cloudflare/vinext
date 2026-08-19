@@ -277,9 +277,11 @@ export const vinextConfig = ${vinextConfigJson};
 
 // Default to the in-memory data cache; a configured cache.data/cache.cdn adapter
 // overrides it on the first request via registerConfiguredCacheAdapters (called
-// from renderPage/handleApiRoute below, and with env from the worker entry on
-// Cloudflare). The registration self-guards, so the first call wins.
+// by the outer Pages pipeline before early responses, from renderPage/API as a
+// defensive fallback, and with env from the worker entry on Cloudflare). The
+// registration self-guards, so the first call wins.
 __configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemorySize });
+export const registerConfiguredCacheAdapters = __registerConfiguredCacheAdapters;
 
 // Path to the user's pages/_app file (or null). Used to look up the
 // _app's CSS/JS chunks in the SSR manifest so any global styles imported

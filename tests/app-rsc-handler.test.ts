@@ -1238,6 +1238,43 @@ describe("createAppRscHandler", () => {
     }
   });
 
+  it("denies shared caching when only interception source middleware matches", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({ pattern: "/feed" });
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage: async () =>
+          new Response("intercepted", {
+            headers: { "Cache-Control": "public, s-maxage=60" },
+          }),
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
+        matchRoute: (pathname: string) =>
+          pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+        async runMiddleware({ cleanPathname, context }) {
+          if (cleanPathname === "/feed") context.matched = true;
+          return { kind: "continue", cleanPathname, rewritten: false, search: null };
+        },
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("intercepted");
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   // Next.js exercises interception routes and middleware together here:
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/interception-dynamic-segment-middleware/interception-dynamic-segment-middleware.test.ts
   // Vinext's additional source-authorization pass must preserve the same

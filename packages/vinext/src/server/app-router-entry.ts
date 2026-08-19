@@ -62,6 +62,7 @@ import {
 } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
+import { finalizeCdnPolicyOnResponse } from "./cache-control.js";
 
 // Precompute the path components used for `_next/static/*` 404 short-circuit
 // detection. Both `__basePath` and `__assetPrefix` are inlined as
@@ -97,6 +98,9 @@ async function handleRequest(
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
   const adapterResponse = await getCdnCacheAdapter().handleRequest?.(request);
   if (adapterResponse) return adapterResponse;
+  const cachePolicyRequest = request;
+  const finalizeResponse = (response: Response): Response =>
+    finalizeCdnPolicyOnResponse(response, cachePolicyRequest);
 
   // The Node production server calls this Worker-style entry with a
   // server-owned loopback origin and must retain its HTTP revalidation path.
@@ -114,12 +118,14 @@ async function handleRequest(
 
   if (isImageOptimizationPath(url.pathname) && env?.ASSETS && getImageOptimizer()) {
     const assetFetcher = env.ASSETS;
-    return handleConfiguredImageOptimization(
-      request,
-      (assetPath) =>
-        Promise.resolve(assetFetcher.fetch(new Request(new URL(assetPath, request.url)))),
-      __rscImageAllowedWidths,
-      __rscImageConfig,
+    return finalizeResponse(
+      await handleConfiguredImageOptimization(
+        request,
+        (assetPath) =>
+          Promise.resolve(assetFetcher.fetch(new Request(new URL(assetPath, request.url)))),
+        __rscImageAllowedWidths,
+        __rscImageConfig,
+      ),
     );
   }
 
@@ -128,7 +134,7 @@ async function handleRequest(
   // percent-encoded variants are caught — encoded forms survive segment-wise
   // decoding and would otherwise reach trailing-slash redirect emitters.
   if (isOpenRedirectShaped(url.pathname)) {
-    return notFoundResponse();
+    return finalizeResponse(notFoundResponse());
   }
 
   // Validate that percent-encoding is well-formed. The RSC handler performs
@@ -138,7 +144,7 @@ async function handleRequest(
     decodeURIComponent(url.pathname);
   } catch {
     // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
-    return badRequestResponse();
+    return finalizeResponse(badRequestResponse());
   }
 
   // Valid assets are served by Cloudflare's ASSETS binding before the worker
@@ -197,12 +203,12 @@ async function handleRequest(
       });
       if (assetResponse) response = assetResponse;
     }
-    return finalizeMissingStaticAssetResponse(response, missingBuildAsset);
+    return finalizeResponse(finalizeMissingStaticAssetResponse(response, missingBuildAsset));
   }
 
   if (result === null || result === undefined) {
-    return missingBuildAsset ? notFoundStaticAssetResponse() : notFoundResponse();
+    return finalizeResponse(missingBuildAsset ? notFoundStaticAssetResponse() : notFoundResponse());
   }
 
-  return new Response(String(result), { status: 200 });
+  return finalizeResponse(new Response(String(result), { status: 200 }));
 }

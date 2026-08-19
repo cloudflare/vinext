@@ -1976,6 +1976,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     handleApiRoute: handleApi,
     authorizeOnDemandRevalidate,
     runMiddleware,
+    registerConfiguredCacheAdapters,
     vinextConfig,
     buildId: pagesBuildId,
   } = serverEntry;
@@ -2274,6 +2275,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         isDataReq,
         isDataRequest,
         hasMiddleware,
+        registerCacheAdapters:
+          typeof registerConfiguredCacheAdapters === "function"
+            ? registerConfiguredCacheAdapters
+            : undefined,
         prewarmSourceObservation,
         middlewareRequest,
         dataNotFoundResponse,

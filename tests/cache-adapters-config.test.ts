@@ -545,7 +545,7 @@ describe("registration is wired into every router/runtime entry", () => {
     expect(code).toContain("registerCacheAdapters: __registerConfiguredCacheAdapters");
   });
 
-  it("Pages Router server entry registers in renderPage and handleApiRoute", async () => {
+  it("Pages Router server entry exports registration and retains render/API fallbacks", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cache-pages-entry-"));
     try {
       const pagesDir = path.join(tmpDir, "pages");
@@ -562,7 +562,10 @@ describe("registration is wired into every router/runtime entry", () => {
         null,
       );
       expect(code).toContain('from "virtual:vinext-cache-adapters"');
-      // Called from both request handlers (covers Node, dev, and Workers).
+      expect(code).toContain(
+        "export const registerConfiguredCacheAdapters = __registerConfiguredCacheAdapters",
+      );
+      // Retained inside both handlers as a defensive fallback for direct users.
       const calls = code.split("__registerConfiguredCacheAdapters();").length - 1;
       expect(calls).toBeGreaterThanOrEqual(2);
     } finally {

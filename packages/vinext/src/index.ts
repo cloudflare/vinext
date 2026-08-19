@@ -5797,6 +5797,12 @@ export const loadServerActionClient = ${
                 isDataReq,
                 isDataRequest,
                 hasMiddleware: capturedMiddlewarePath !== null,
+                registerCacheAdapters: async () => {
+                  const cacheAdapters = (await getPagesRunner().import(VIRTUAL_CACHE_ADAPTERS)) as {
+                    registerConfiguredCacheAdapters?: () => void;
+                  };
+                  cacheAdapters.registerConfiguredCacheAdapters?.();
+                },
                 dataNotFoundResponse,
                 // Raw query so redirect Locations aren't re-encoded by URL parsing.
                 rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",

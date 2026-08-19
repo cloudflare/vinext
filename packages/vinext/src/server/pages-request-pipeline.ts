@@ -156,6 +156,8 @@ export type PagesPipelineDeps = {
   isDataRequest: boolean; // trusted data classification for middleware protocol handling
   hasMiddleware: boolean; // true only when the app defines middleware/proxy
   ctx?: unknown; // Cloudflare ExecutionContext or undefined (for Node)
+  /** Register configured adapters before any early middleware/config response can exit. */
+  registerCacheAdapters?: (() => void | Promise<void>) | null;
   // Raw, un-re-encoded query string (incl. leading "?") for building redirect Location
   // headers. Node adapters that build the Web Request from a raw req.url string should
   // pass it so the redirect query isn't re-encoded by URL parsing (e.g. a literal "#"
@@ -330,6 +332,7 @@ export async function runPagesRequest(
       runPagesRequest(request, deps),
     );
   }
+  await deps.registerCacheAdapters?.();
   let cachePolicyRequest = request;
   const {
     basePath,

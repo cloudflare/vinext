@@ -227,7 +227,7 @@ export function finalizeCdnPolicyOnResponse(response: Response, request: Request
  * reconstructing an already-emitted cacheable adapter policy from the
  * browser-facing Cache-Control header.
  */
-export function enforceCdnCacheDenialOnResponse(response: Response): Response {
+function enforceCdnCacheDenialOnResponse(response: Response): Response {
   const cacheControl = response.headers.get("Cache-Control");
   if (
     !response.headers.has("Set-Cookie") &&

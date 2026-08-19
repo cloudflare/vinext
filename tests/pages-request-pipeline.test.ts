@@ -65,6 +65,36 @@ function makeCacheableResponse(body: string, status = 200): Response {
 }
 
 describe("final Pages CDN adapter boundary", () => {
+  it("registers a configured adapter before a cold middleware response exits", async () => {
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    const registerCacheAdapters = vi.fn(() => {
+      setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    });
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/account", { Cookie: "session=private" }),
+        baseDeps({
+          hasMiddleware: true,
+          registerCacheAdapters,
+          runMiddleware: async () => ({
+            continue: false,
+            response: new Response("personalized", {
+              headers: { "Cache-Control": "public, max-age=60" },
+            }),
+          }),
+        }),
+      );
+
+      expect(registerCacheAdapters).toHaveBeenCalledTimes(1);
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   it("denies a user-cacheable response rendered for a credential-bearing request", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     try {
