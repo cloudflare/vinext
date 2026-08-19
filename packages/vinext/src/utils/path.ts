@@ -19,11 +19,11 @@ export function canonicalizeFilePath(filePath: string): string {
 }
 
 /**
- * `path.relative` for internal vinext use. Node emits backslashes on Windows;
- * Vite module ids, glob entries, and `../` boundary checks are forward-slash.
+ * `path.relative` for internal vinext use. `path` is pathslash, so the
+ * result is already forward-slash on Windows — no extra `toSlash`.
  */
 export function toPosixRelative(from: string, to: string): string {
-  return toSlash(path.relative(from, to));
+  return path.relative(from, to);
 }
 
 /** Whether `filePath` is a strict descendant of `directory`. */

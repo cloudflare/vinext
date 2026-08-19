@@ -180,7 +180,7 @@ export function rebaseCssUrlAssetReferences(
     if (!CSS_ASSET_EXT_RE.test(lower) || lower.endsWith(".css")) return null;
 
     const absolutePath = path.resolve(sourceDirectory, parts.path);
-    let rebasedPath = toSlash(path.relative(targetDirectory, absolutePath));
+    let rebasedPath = path.relative(targetDirectory, absolutePath);
     if (!rebasedPath.startsWith(".")) rebasedPath = `./${rebasedPath}`;
     return joinUrl({ ...parts, path: rebasedPath });
   });
