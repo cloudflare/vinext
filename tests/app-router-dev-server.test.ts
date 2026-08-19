@@ -240,6 +240,28 @@ describe("App Router integration", () => {
     expect(html).toContain("Old School Pages Directory");
   });
 
+  it("uses Next's middleware-prefetch skip protocol for hybrid Pages routes in dev", async () => {
+    // Ported from Next.js: packages/next/src/server/base-server.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
+    const documentResponse = await fetch(`${baseUrl}/old-school`);
+    const documentHtml = await documentResponse.text();
+    const nextDataMatch = documentHtml.match(
+      /<script id="__NEXT_DATA__" type="application\/json">([^<]+)<\/script>/,
+    );
+    expect(nextDataMatch).not.toBeNull();
+    const buildId = (JSON.parse(nextDataMatch![1]) as { buildId: string }).buildId;
+
+    for (const pathname of ["old-school", "pages-header-override-delete"]) {
+      const response = await fetch(`${baseUrl}/_next/data/${buildId}/${pathname}.json`, {
+        headers: { "x-middleware-prefetch": "1" },
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-middleware-skip")).toBe("1");
+      expect(await response.json()).toEqual({});
+    }
+  });
+
   it("returns RSC stream for .rsc requests", async () => {
     const res = await fetch(`${baseUrl}/.rsc`);
     expect(res.status).toBe(200);

@@ -31,12 +31,14 @@ const NEXT_DATA_SUFFIX = ".json";
  * `none` is reserved for automatically static pages. `runtime` covers a page
  * or custom `_app` with `getInitialProps`; it is distinct from `server`
  * (`getServerSideProps`) because the renderers invoke the two mechanisms
- * differently, even though neither is an SSG route.
+ * differently, even though neither is an SSG route. `development` represents
+ * an otherwise auto-static page before Next's production prerender manifest
+ * promotes it to SSG.
  */
-export type PagesRouteDataKind = "static" | "server" | "runtime" | "none";
+export type PagesRouteDataKind = "static" | "server" | "runtime" | "development" | "none";
 
 export function isNonSsgPagesRouteDataKind(dataKind: PagesRouteDataKind | undefined): boolean {
-  return dataKind === "server" || dataKind === "runtime";
+  return dataKind === "server" || dataKind === "runtime" || dataKind === "development";
 }
 
 /** Next renders its error documents even when a middleware prefetch is speculative. */

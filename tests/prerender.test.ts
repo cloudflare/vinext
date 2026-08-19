@@ -30,6 +30,7 @@ import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import { getAppRouteOutputPath } from "../packages/vinext/src/utils/prerender-output-paths.js";
 
 const PAGES_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
+const PAGES_APP_PROPS_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/pages-app-props");
 const APP_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/app-basic");
 const CF_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/cf-app-basic");
 
@@ -1320,6 +1321,53 @@ describe("writePrerenderIndex", () => {
   });
 });
 
+describe("prerenderPages — custom App getInitialProps", () => {
+  let outDir: string;
+  let results: PrerenderRouteResult[];
+
+  beforeAll(async () => {
+    const pagesBundlePath = await buildPagesFixture(PAGES_APP_PROPS_FIXTURE);
+    outDir = tmpDir("vinext-prerender-pages-app-props-");
+
+    const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+    const { pagesRouter, apiRouter } =
+      await import("../packages/vinext/src/routing/pages-router.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const pagesDir = path.resolve(PAGES_APP_PROPS_FIXTURE, "pages");
+    const prerenderResult = await prerenderPages({
+      mode: "default",
+      pagesBundlePath,
+      routes: await pagesRouter(pagesDir),
+      apiRoutes: await apiRouter(pagesDir),
+      pagesDir,
+      outDir,
+      config: await resolveNextConfig({}),
+    });
+    results = prerenderResult.routes;
+  }, 60_000);
+
+  afterAll(() => {
+    fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  it("does not emit runtime Page or custom App getInitialProps artifacts", () => {
+    for (const route of ["/missing", "/page-gip"]) {
+      expect(findRoute(results, route)).toMatchObject({
+        route,
+        status: "skipped",
+        reason: "ssr",
+      });
+      expect(fs.existsSync(path.join(outDir, `${route.slice(1)}.html`))).toBe(false);
+    }
+  });
+
+  it("keeps explicit GSP ahead of custom App getInitialProps", () => {
+    const route = findRoute(results, "/gsp-string");
+    expect(route).toMatchObject({ route: "/gsp-string", status: "rendered" });
+    expect(fs.existsSync(path.join(outDir, "gsp-string.html"))).toBe(true);
+  });
+});
+
 describe("prerenderPages — export mode (pages-basic)", () => {
   let outDir: string;
   let results: PrerenderRouteResult[];
@@ -1872,6 +1920,66 @@ describe("runPrerender — hybrid app+pages (app-basic)", () => {
 });
 
 describe("prerenderPages — CDN prewarm eligibility", () => {
+  it("excludes built getInitialProps routes while preserving auto-static and GSP routes", async () => {
+    const root = tmpDir("vinext-prerender-pages-runtime-data-");
+    const outDir = path.join(root, "out");
+    const pagesDir = path.join(root, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.writeFileSync(path.join(pagesDir, "auto.tsx"), "export default function Page() {}\n");
+    fs.writeFileSync(path.join(pagesDir, "legacy.tsx"), "export default function Page() {}\n");
+    fs.writeFileSync(
+      path.join(pagesDir, "gsp.tsx"),
+      "export function getStaticProps() { return { props: {} }; } export default function Page() {}\n",
+    );
+
+    const requestedPaths: string[] = [];
+    const server = createServer((req, res) => {
+      requestedPaths.push(req.url ?? "");
+      if (req.url === "/__vinext/prerender/pages-route-data") {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ "/auto": "none", "/gsp": "static", "/legacy": "runtime" }));
+        return;
+      }
+      if (req.url === "/auto" || req.url === "/gsp") {
+        res.setHeader("content-type", "text/html");
+        res.setHeader("cache-control", "s-maxage=31536000, stale-while-revalidate");
+        res.end(`<html><body>${req.url}</body></html>`);
+        return;
+      }
+      res.statusCode = 404;
+      res.end("not found");
+    });
+    const port = await listen(server);
+
+    try {
+      const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+      const { pagesRouter } = await import("../packages/vinext/src/routing/pages-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderPages({
+        mode: "default",
+        routes: await pagesRouter(pagesDir),
+        apiRoutes: [],
+        pagesDir,
+        outDir,
+        config: await resolveNextConfig({}),
+        _prerenderSecret: "test-secret",
+        _prodServer: { server, port },
+      });
+
+      expect(findRoute(result.routes, "/legacy")).toMatchObject({
+        route: "/legacy",
+        status: "skipped",
+        reason: "ssr",
+      });
+      expect(findRoute(result.routes, "/auto")).toMatchObject({ status: "rendered" });
+      expect(findRoute(result.routes, "/gsp")).toMatchObject({ status: "rendered" });
+      expect(requestedPaths).not.toContain("/legacy");
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("excludes redirects and final non-cacheable responses", async () => {
     const root = tmpDir("vinext-prerender-pages-prewarm-");
     const outDir = path.join(root, "out");

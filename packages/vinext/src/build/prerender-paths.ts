@@ -20,7 +20,10 @@ import { readPrerenderSecret } from "./server-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
 import { findDir } from "../utils/project.js";
 import { BLOCKED_PAGES, PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
-import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
+import {
+  VINEXT_PRERENDER_PAGES_ROUTE_DATA_PATH,
+  VINEXT_PRERENDER_SECRET_HEADER,
+} from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
 import { scanMetadataFiles } from "../server/metadata-routes.js";
@@ -115,6 +118,41 @@ async function fetchDiscoveryEndpoint(
   }
 }
 
+type BuiltPagesRouteDataKind = "static" | "server" | "runtime" | "development" | "none";
+
+async function readBuiltPagesRouteDataKinds(
+  baseUrl: string | null,
+  secretHeaders: Record<string, string>,
+): Promise<Map<string, BuiltPagesRouteDataKind> | null> {
+  if (!baseUrl) return null;
+  const text = await fetchDiscoveryEndpoint(
+    `${baseUrl}${VINEXT_PRERENDER_PAGES_ROUTE_DATA_PATH}`,
+    secretHeaders,
+  );
+  if (!text) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const validKinds = new Set<BuiltPagesRouteDataKind>([
+    "static",
+    "server",
+    "runtime",
+    "development",
+    "none",
+  ]);
+  const result = new Map<string, BuiltPagesRouteDataKind>();
+  for (const [pattern, dataKind] of Object.entries(value)) {
+    if (validKinds.has(dataKind as BuiltPagesRouteDataKind)) {
+      result.set(pattern, dataKind as BuiltPagesRouteDataKind);
+    }
+  }
+  return result;
+}
+
 function fileHasNamedExport(filePath: string | null | undefined, name: string): boolean {
   if (!filePath) return false;
   try {
@@ -188,13 +226,9 @@ async function shouldStartPathDiscoveryServer(options: {
 
   if (options.pagesDir) {
     const routes = await pagesRouter(options.pagesDir, options.pageExtensions);
-    if (
-      routes.some(
-        (route) => route.isDynamic && fileHasNamedExport(route.filePath, "getStaticPaths"),
-      )
-    ) {
-      return true;
-    }
+    // Pages route modules (including custom `_app.getInitialProps`) must be
+    // evaluated to distinguish truly auto-static routes from runtime routes.
+    if (routes.length > 0) return true;
   }
 
   return false;
@@ -226,6 +260,7 @@ async function collectPagesPaths(options: {
   const apiPatterns = new Set(apiRoutes.map((route) => route.pattern));
   const paths: string[] = [];
   const seen = new Set<string>();
+  const builtDataKinds = await readBuiltPagesRouteDataKinds(options.baseUrl, options.secretHeaders);
 
   for (const route of pageRoutes) {
     if (apiPatterns.has(route.pattern)) continue;
@@ -236,6 +271,14 @@ async function collectPagesPaths(options: {
 
     const { type } = classifyPagesRoute(route.filePath);
     if (type === "api" || type === "ssr") continue;
+    const builtDataKind = builtDataKinds?.get(route.pattern);
+    if (
+      builtDataKind === "server" ||
+      builtDataKind === "runtime" ||
+      builtDataKind === "development"
+    ) {
+      continue;
+    }
 
     if (!route.isDynamic) {
       addPath(paths, seen, route.pattern);

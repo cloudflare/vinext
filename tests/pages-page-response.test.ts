@@ -670,6 +670,30 @@ describe("pages page response", () => {
     expect(response.headers.get("cache-control")).toBeNull();
   });
 
+  it("applies a shared static policy only to proven auto-static Pages responses", async () => {
+    const autoStatic = createCommonOptions();
+    const staticResponse = await renderPagesPageResponse({
+      ...autoStatic.options,
+      gsspRes: null,
+      isAutoStaticRoute: true,
+      isrRevalidateSeconds: null,
+      routeUrl: "/about",
+    });
+    expect(staticResponse.headers.get("cache-control")).toBe(
+      "s-maxage=31536000, stale-while-revalidate",
+    );
+
+    const runtime = createCommonOptions();
+    const runtimeResponse = await renderPagesPageResponse({
+      ...runtime.options,
+      gsspRes: null,
+      isAutoStaticRoute: false,
+      isrRevalidateSeconds: null,
+      routeUrl: "/legacy",
+    });
+    expect(runtimeResponse.headers.get("cache-control")).toBeNull();
+  });
+
   it("sets browser revalidation Cache-Control for static Pages responses in Next deploy mode", async () => {
     const oldValue = process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL;
     process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = "1";

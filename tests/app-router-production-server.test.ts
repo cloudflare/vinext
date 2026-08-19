@@ -1174,6 +1174,32 @@ describe("App Router Production server (startProdServer)", () => {
     });
   });
 
+  it("skips hybrid non-SSG middleware prefetches after production route classification", async () => {
+    // Ported from Next.js: packages/next/src/server/base-server.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
+    const buildId = fs.readFileSync(path.join(outDir, "server", "BUILD_ID"), "utf8").trim();
+    const response = await fetch(
+      `${baseUrl}/_next/data/${buildId}/pages-header-override-delete.json`,
+      { headers: { "x-middleware-prefetch": "1" } },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-middleware-skip")).toBe("1");
+    expect(response.headers.get("x-matched-path")).toBe("/pages-header-override-delete");
+    expect(await response.json()).toEqual({});
+  });
+
+  it("still renders hybrid auto-static middleware prefetches after production prerendering", async () => {
+    const buildId = fs.readFileSync(path.join(outDir, "server", "BUILD_ID"), "utf8").trim();
+    const response = await fetch(`${baseUrl}/_next/data/${buildId}/old-school.json`, {
+      headers: { "x-middleware-prefetch": "1" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-middleware-skip")).toBeNull();
+    await expect(response.json()).resolves.toMatchObject({ pageProps: {} });
+  });
+
   it("serves Pages Router edge API ImageResponse routes in hybrid production", async () => {
     // Ported from Next.js: test/e2e/og-api/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/og-api/index.test.ts

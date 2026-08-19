@@ -1267,14 +1267,17 @@ describe("Pages Router integration", () => {
     expect(await res.json()).toEqual({});
   });
 
-  it("keeps auto-static middleware data prefetches renderable in dev", async () => {
+  it("skips auto-static middleware data prefetches before production prerendering", async () => {
+    // Ported from Next.js: packages/next/src/server/base-server.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
     const res = await fetch(`${baseUrl}/_next/data/test-build-id/about.json`, {
       headers: { "x-middleware-prefetch": "1" },
     });
 
     expect(res.status).toBe(200);
-    expect(res.headers.get("x-middleware-skip")).toBeNull();
-    await expect(res.json()).resolves.toMatchObject({ pageProps: {} });
+    expect(res.headers.get("x-middleware-skip")).toBe("1");
+    expect(res.headers.get("x-matched-path")).toBe("/about");
+    await expect(res.json()).resolves.toEqual({});
   });
 
   it("does not collapse encoded slashes onto nested routes in dev", async () => {
@@ -9946,6 +9949,36 @@ describe("custom App optional pageProps envelope parity", () => {
       expect(gsspHtml).toContain(
         '<div id="page-props-json">{&quot;0&quot;:&quot;first&quot;,&quot;1&quot;:&quot;second&quot;,&quot;fromData&quot;:&quot;gssp&quot;}</div>',
       );
+    });
+
+    it(`classifies custom App getInitialProps for middleware prefetches in ${mode}`, async () => {
+      // Ported from Next.js: packages/next/src/server/base-server.ts
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
+      const baseUrl = mode === "dev" ? devUrl : prodUrl;
+      const documentResponse = await fetch(`${baseUrl}/missing`);
+      const documentHtml = await documentResponse.text();
+      const nextDataMatch = documentHtml.match(
+        /<script id="__NEXT_DATA__" type="application\/json">([^<]+)<\/script>/,
+      );
+      expect(nextDataMatch).not.toBeNull();
+      const buildId = (JSON.parse(nextDataMatch![1]) as { buildId: string }).buildId;
+
+      const runtimeResponse = await fetch(`${baseUrl}/_next/data/${buildId}/missing.json`, {
+        headers: { "x-middleware-prefetch": "1" },
+      });
+      expect(runtimeResponse.status).toBe(200);
+      expect(runtimeResponse.headers.get("x-middleware-skip")).toBe("1");
+      expect(await runtimeResponse.json()).toEqual({});
+
+      const gspResponse = await fetch(`${baseUrl}/_next/data/${buildId}/gsp-string.json`, {
+        headers: { "x-middleware-prefetch": "1" },
+      });
+      expect(gspResponse.status).toBe(200);
+      expect(gspResponse.headers.get("x-middleware-skip")).toBeNull();
+      await expect(gspResponse.json()).resolves.toMatchObject({
+        appExtra: "custom-extra",
+        pageProps: { fromData: "gsp" },
+      });
     });
   }
 

@@ -74,6 +74,7 @@ import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_PAGES_ROUTE_DATA_PATH,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -1703,6 +1704,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // is not preserved in the bundle output format.
     if (
       pathname === "/__vinext/prerender/static-params" ||
+      pathname === VINEXT_PRERENDER_PAGES_ROUTE_DATA_PATH ||
       pathname === "/__vinext/prerender/pages-static-paths" ||
       pathname === "/__vinext/prerender/metadata-routes"
     ) {
@@ -1904,6 +1906,7 @@ type PagesRouterServerOptions = {
 };
 
 type PagesServerEntryPageRoute = {
+  dataKind?: "static" | "server" | "runtime" | "development" | "none";
   pattern: string;
   module?: {
     getStaticPaths?: (opts: { locales: string[]; defaultLocale: string }) => Promise<unknown>;
@@ -1913,6 +1916,17 @@ type PagesServerEntryPageRoute = {
 function isPagesServerEntryPageRoute(value: unknown): value is PagesServerEntryPageRoute {
   if (!value || typeof value !== "object" || !("pattern" in value)) return false;
   if (typeof value.pattern !== "string") return false;
+  if (
+    "dataKind" in value &&
+    value.dataKind !== undefined &&
+    value.dataKind !== "static" &&
+    value.dataKind !== "server" &&
+    value.dataKind !== "runtime" &&
+    value.dataKind !== "development" &&
+    value.dataKind !== "none"
+  ) {
+    return false;
+  }
 
   if (!("module" in value) || value.module === undefined) return true;
   const pageModule = value.module;
@@ -2047,6 +2061,24 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
     // Internal prerender endpoint — only reachable with the correct build-time secret.
     // Used by the prerender phase to fetch getStaticPaths results via HTTP.
+    if (pathname === VINEXT_PRERENDER_PAGES_ROUTE_DATA_PATH) {
+      const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
+      if (!prerenderSecret || secret !== prerenderSecret) {
+        res.writeHead(403);
+        res.end("Forbidden");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify(
+          Object.fromEntries(
+            (pageRoutes ?? []).map((route) => [route.pattern, route.dataKind ?? "none"]),
+          ),
+        ),
+      );
+      return;
+    }
+
     if (pathname === "/__vinext/prerender/pages-static-paths") {
       const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {

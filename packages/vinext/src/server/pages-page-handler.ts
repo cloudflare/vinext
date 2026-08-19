@@ -33,6 +33,7 @@ import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
 import {
   BROWSER_REVALIDATE_CACHE_CONTROL,
+  STATIC_CACHE_CONTROL,
   applyCdnResponseHeaders,
   hasExplicitNonCacheableResponsePolicy,
   shouldUseNextDeployCacheControl,
@@ -42,6 +43,7 @@ import {
   buildNextDataNotFoundResponse,
   normalizePagesDataRequest,
   parseNextDataPathname,
+  type PagesRouteDataKind,
 } from "./pages-data-route.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
 import {
@@ -176,6 +178,7 @@ function applyPagesErrorCachePolicy(
 // ---------------------------------------------------------------------------
 
 type PageRoute = {
+  dataKind?: PagesRouteDataKind;
   pattern: string;
   patternParts: string[];
   isDynamic: boolean;
@@ -569,6 +572,8 @@ export function createPagesPageHandler(
     const { route, params } = match;
     const pageModule = route.module;
     const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
+    const isAutoStaticRoute =
+      route.dataKind === "none" && !route.isDynamic && !isRouteMissErrorRender;
     const isStaticPropsRender =
       isStaticPropsRoute && typeof pageModule.getServerSideProps !== "function";
     const shouldCoalesceOnDemand =
@@ -1031,6 +1036,12 @@ export function createPagesPageHandler(
             } else if (shouldUseNextDeployCacheControl()) {
               init.headers["Cache-Control"] = BROWSER_REVALIDATE_CACHE_CONTROL;
             }
+          } else if (isAutoStaticRoute) {
+            const headers = new Headers(init.headers);
+            applyCdnResponseHeaders(headers, { cacheControl: STATIC_CACHE_CONTROL });
+            for (const [key, value] of headers) {
+              init.headers[key] = value;
+            }
           }
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
@@ -1101,6 +1112,7 @@ export function createPagesPageHandler(
           isrRevalidateSeconds,
           isOnDemandRevalidate,
           isStaticPropsRoute,
+          isAutoStaticRoute,
           isrSet,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isFallback: isFallbackRender,

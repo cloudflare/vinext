@@ -108,6 +108,7 @@ function getWorkersCache(): WorkersCacheLike | null {
 const NO_STORE = "no-store";
 const HTML_CACHE_TAG = "__vinext_html";
 const RSC_CACHE_TAG = "__vinext_rsc";
+const PAGE_CACHE_TAGS = [HTML_CACHE_TAG, RSC_CACHE_TAG] as const;
 const VINEXT_VERSION_PROBE_HEADER = "X-Vinext-Version-Probe";
 const VINEXT_VERSION_PROBE_QUERY = "__vinext_version_probe";
 const VINEXT_WORKER_VERSION_HEADER = "X-Vinext-Worker-Version";
@@ -149,11 +150,12 @@ function getCacheRequestMetadata(): { headers: Headers | null; url: string | nul
 
 /**
  * Workers Caching purges every Vary variant of one URL together and requires
- * every stored variant to carry the same Cache-Tag values. RSC responses use
- * one stable family tag, so validated digest-keyed contextual requests can be
- * stored alongside the bare canonical navigation shape. Invalid RSC protocol
- * requests, `.rsc` compatibility transports, and HTML requests carrying RSC
- * variant headers still bypass the shared cache.
+ * every stored variant to carry the same Cache-Tag values. Page responses use
+ * one stable pair of HTML/RSC family tags, so validated digest-keyed contextual
+ * requests can be stored alongside the bare canonical navigation shape without
+ * an HTML request to the same query-bearing URL creating a different tag set.
+ * Invalid RSC protocol requests, `.rsc` compatibility transports, and HTML
+ * requests carrying RSC variant headers still bypass the shared cache.
  */
 function hasNonCanonicalWorkersCacheVariant(): boolean {
   const { headers, url } = getCacheRequestMetadata();
@@ -394,16 +396,12 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     };
 
     // Workers Caching requires every Vary variant of one URL to carry the same
-    // Cache-Tag set. HTML and canonical RSC can legitimately vary by host, so
-    // give every stored variant a stable family tag. Any tag/path invalidation
-    // purges both families below. Requests outside a known page request context
-    // retain their precise render-derived tags.
+    // Cache-Tag set. HTML and RSC can be Vary variants of the same URL when a
+    // legitimate user query contains `_rsc`, so both kinds must carry the same
+    // stable family set. Any tag/path invalidation already purges both families
+    // below. Requests outside a known page context retain precise render tags.
     const responseTags =
-      requestKind === "html"
-        ? [HTML_CACHE_TAG]
-        : requestKind === "rsc"
-          ? [RSC_CACHE_TAG]
-          : input.tags;
+      requestKind === "html" || requestKind === "rsc" ? PAGE_CACHE_TAGS : input.tags;
     if (responseTags && responseTags.length > 0) {
       const cacheTag = formatCacheTag(responseTags);
       if (!cacheTag.complete && requestKind !== "html") {

@@ -436,6 +436,7 @@ export const config = {
   runtime: "nodejs",
   matcher: [
     "/about",
+    "/old-school",
     "/exists-but-not-routed",
     "/pages-data-rewrite-source",
     "/middleware-redirect",

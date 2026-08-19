@@ -65,6 +65,9 @@ export const VINEXT_PRERENDER_STATIC_PARAMS_PATH = "/__vinext/prerender/static-p
 /** Internal endpoint used to evaluate Pages Router getStaticPaths exports. */
 export const VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH = "/__vinext/prerender/pages-static-paths";
 
+/** Internal endpoint used to read authoritative built Pages route data kinds. */
+export const VINEXT_PRERENDER_PAGES_ROUTE_DATA_PATH = "/__vinext/prerender/pages-route-data";
+
 /** Internal endpoint used to enumerate cached dynamic metadata route paths. */
 export const VINEXT_PRERENDER_METADATA_ROUTES_PATH = "/__vinext/prerender/metadata-routes";
 

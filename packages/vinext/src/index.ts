@@ -5752,11 +5752,16 @@ export const loadServerActionClient = ${
                     const pageModule = (await getPagesRunner().import(route.filePath)) as {
                       default?: { getInitialProps?: unknown };
                     };
-                    return resolvePagesRouteDataKind(
+                    const dataKind = resolvePagesRouteDataKind(
                       "none",
                       pageModule.default ?? null,
                       await getDevAppComponent(),
                     );
+                    // Next only promotes automatically static pages to SSG
+                    // from the prerender manifest in production. During dev,
+                    // middleware-prefetch requests therefore use the same
+                    // non-SSG skip protocol as GSSP/getInitialProps routes.
+                    return dataKind === "none" ? "development" : dataKind;
                   } catch {
                     // Dev can race with an editor deleting/renaming a page file.
                   }

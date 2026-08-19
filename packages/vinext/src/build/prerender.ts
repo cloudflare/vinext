@@ -47,6 +47,7 @@ import {
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_PAGES_ROUTE_DATA_PATH,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -139,6 +140,48 @@ async function startOptionalPrerenderServerPool(
 // server, connection reset) so only genuine user-function errors are marked
 // fatal to the build. Refs cloudflare/vinext#1982
 class PrerenderUserFunctionError extends Error {}
+
+type BuiltPagesRouteDataKind = "static" | "server" | "runtime" | "development" | "none";
+
+async function readBuiltPagesRouteDataKinds(
+  baseUrl: string,
+  secretHeaders: Record<string, string>,
+): Promise<Map<string, BuiltPagesRouteDataKind> | null> {
+  const response = await fetch(`${baseUrl}${VINEXT_PRERENDER_PAGES_ROUTE_DATA_PATH}`, {
+    headers: secretHeaders,
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(
+      `[vinext] Failed to read built Pages route data classification: ${response.status}`,
+    );
+  }
+  if (!response.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+    return null;
+  }
+
+  let value: unknown;
+  try {
+    value = await response.json();
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const validKinds = new Set<BuiltPagesRouteDataKind>([
+    "static",
+    "server",
+    "runtime",
+    "development",
+    "none",
+  ]);
+  const result = new Map<string, BuiltPagesRouteDataKind>();
+  for (const [pattern, dataKind] of Object.entries(value)) {
+    if (validKinds.has(dataKind as BuiltPagesRouteDataKind)) {
+      result.set(pattern, dataKind as BuiltPagesRouteDataKind);
+    }
+  }
+  return result;
+}
 
 // The prerender static-params / static-paths endpoints return the real error
 // thrown by a user's generateStaticParams/getStaticPaths as `{ error }` in a 500
@@ -718,6 +761,7 @@ export async function prerenderPages({
     const secretHeaders: Record<string, string> = prerenderSecret
       ? { [VINEXT_PRERENDER_SECRET_HEADER]: prerenderSecret }
       : {};
+    const builtPagesRouteDataKinds = await readBuiltPagesRouteDataKinds(baseUrl, secretHeaders);
 
     // Next.js allows `paths` to be either a list of strings or a list of
     // { params, locale? } objects. The `StaticPathsEntry` type and the
@@ -821,7 +865,14 @@ export async function prerenderPages({
       // Route type detection uses static file analysis (classifyPagesRoute).
       // Rendering is always done via HTTP through a local prod server, so we
       // don't have direct access to module exports at prerender time.
-      const effectiveType = type;
+      const builtDataKind = builtPagesRouteDataKinds?.get(route.pattern);
+      const effectiveType =
+        mode !== "export" &&
+        (builtDataKind === "server" ||
+          builtDataKind === "runtime" ||
+          builtDataKind === "development")
+          ? "ssr"
+          : type;
 
       if (effectiveType === "ssr") {
         if (mode === "export") {

@@ -11,6 +11,7 @@ import {
 import {
   applyCdnResponseHeaders,
   BROWSER_REVALIDATE_CACHE_CONTROL,
+  STATIC_CACHE_CONTROL,
   shouldUseNextDeployCacheControl,
 } from "./cache-control.js";
 import {
@@ -167,6 +168,8 @@ type RenderPagesPageResponseOptions = {
   /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
   isOnDemandRevalidate?: boolean;
   isStaticPropsRoute?: boolean;
+  /** Automatically static Pages route proven free of request-time data hooks. */
+  isAutoStaticRoute?: boolean;
   isrSet: (key: string, data: CachedPagesValue, policy: IsrWritePolicy) => Promise<void>;
   i18n: PagesI18nRenderContext;
   /**
@@ -720,6 +723,12 @@ export async function renderPagesPageResponse(
     }
   } else if (options.isStaticPropsRoute && shouldUseNextDeployCacheControl()) {
     responseHeaders.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
+  } else if (options.isAutoStaticRoute) {
+    const stem = options.routeUrl.split("?", 1)[0].replace(/\/$/, "") || "/";
+    applyCdnResponseHeaders(responseHeaders, {
+      cacheControl: STATIC_CACHE_CONTROL,
+      tags: [encodeCacheTag(`_N_T_${stem}`)],
+    });
   } else if (options.gsspRes && !userSetCacheControl) {
     // Default for getServerSideProps responses, matching Next.js
     // pages-handler.ts (revalidate: 0 → getCacheControlHeader). Without this,

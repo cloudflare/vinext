@@ -197,11 +197,11 @@ describe("CloudflareCdnCacheAdapter", () => {
 
     await expect(buildFor({})).resolves.toMatchObject({
       "CDN-Cache-Control": "public, max-age=60",
-      "Cache-Tag": "__vinext_html",
+      "Cache-Tag": "__vinext_html,__vinext_rsc",
     });
     await expect(buildFor({ RSC: "1", Accept: "text/x-component" })).resolves.toMatchObject({
       "CDN-Cache-Control": "public, max-age=60",
-      "Cache-Tag": "__vinext_rsc",
+      "Cache-Tag": "__vinext_html,__vinext_rsc",
       Vary: "Accept, Cookie, Authorization, Host, X-Forwarded-Proto",
     });
 
@@ -245,7 +245,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     ] as HeadersInit[]) {
       await expect(buildFor(headers)).resolves.toMatchObject({
         "CDN-Cache-Control": "public, max-age=60",
-        "Cache-Tag": "__vinext_rsc",
+        "Cache-Tag": "__vinext_html,__vinext_rsc",
         Vary: "Accept, Cookie, Authorization, Host, X-Forwarded-Proto",
       });
     }
@@ -277,7 +277,7 @@ describe("CloudflareCdnCacheAdapter", () => {
 
     const baseResponse = await buildFor({ RSC: "1", Accept: "text/x-component" });
     expect(baseResponse.headers.get("CDN-Cache-Control")).toContain("max-age=31536000");
-    expect(baseResponse.headers.get("Cache-Tag")).toBe("__vinext_rsc");
+    expect(baseResponse.headers.get("Cache-Tag")).toBe("__vinext_html,__vinext_rsc");
     expect(baseResponse.headers.get("Vary")).toContain("RSC");
     expect(baseResponse.headers.get("Vary")).toContain("Cookie");
     expect(baseResponse.headers.get("Vary")).toContain("Host");
@@ -289,7 +289,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
     expect(sourceVariantResponse.headers.get("CDN-Cache-Control")).toContain("max-age=31536000");
     expect(sourceVariantResponse.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
-    expect(sourceVariantResponse.headers.get("Cache-Tag")).toBe("__vinext_rsc");
+    expect(sourceVariantResponse.headers.get("Cache-Tag")).toBe("__vinext_html,__vinext_rsc");
 
     const mountedRequest = new Request("https://example.com/blog?_rsc", {
       headers: {
@@ -319,7 +319,7 @@ describe("CloudflareCdnCacheAdapter", () => {
         ),
     );
     expect(mountedMissResponse.headers.get("CDN-Cache-Control")).toContain("max-age=60");
-    expect(mountedMissResponse.headers.get("Cache-Tag")).toBe("__vinext_rsc");
+    expect(mountedMissResponse.headers.get("Cache-Tag")).toBe("__vinext_html,__vinext_rsc");
   });
 
   it("bypasses non-base variants after force-static rendering hides request APIs", async () => {
@@ -471,7 +471,7 @@ describe("CloudflareCdnCacheAdapter", () => {
       const http = await buildVaryIdentity("http", rsc);
       const https = await buildVaryIdentity("https", rsc);
       expect(http.identity).not.toBe(https.identity);
-      expect(http.cacheTag).toBe(rsc ? "__vinext_rsc" : "__vinext_html");
+      expect(http.cacheTag).toBe("__vinext_html,__vinext_rsc");
       expect(https.cacheTag).toBe(http.cacheTag);
     }
   });
@@ -792,7 +792,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(headers).toMatchObject({
       "Cache-Control": "public, max-age=0, must-revalidate",
       "CDN-Cache-Control": "public, max-age=60",
-      "Cache-Tag": "__vinext_rsc",
+      "Cache-Tag": "__vinext_html,__vinext_rsc",
       Vary: "Accept, Cookie, Authorization, Host, X-Forwarded-Proto",
     });
   });

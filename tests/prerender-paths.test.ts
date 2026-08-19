@@ -291,6 +291,45 @@ describe("prerender path manifest", () => {
     expect(manifest?.paths).toEqual(["/pages-only"]);
   });
 
+  it("excludes runtime Pages routes from the deploy warm path manifest", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const rawUrl =
+          input instanceof URL ? input.href : typeof input === "string" ? input : input.url;
+        const url = new URL(rawUrl);
+        if (url.pathname === "/__vinext/prerender/pages-route-data") {
+          return Response.json({
+            "/auto": "none",
+            "/gsp": "static",
+            "/legacy": "runtime",
+          });
+        }
+        return new Response("null", { headers: { "content-type": "application/json" } });
+      }),
+    );
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile("pages/auto.tsx", "export default function Page() { return null; }\n");
+    writeFile("pages/legacy.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "pages/gsp.tsx",
+      "export function getStaticProps() { return { props: {} }; } export default function Page() { return null; }\n",
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      pagesBundlePath: path.join(tmpDir, "dist/server/entry.js"),
+    });
+
+    expect(manifest?.paths).toEqual(["/auto", "/gsp"]);
+    expect(manifest?.paths).not.toContain("/legacy");
+    expect(startProdServerMock).toHaveBeenCalledOnce();
+  });
+
   it("does not reload disk config when supplied resolved config", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("next.config.mjs", 'throw new Error("disk config loaded unexpectedly");\n');

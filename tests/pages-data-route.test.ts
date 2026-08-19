@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
   buildMiddlewarePrefetchSkipResponse,
+  isNonSsgPagesRouteDataKind,
   isPagesErrorRoutePattern,
   isNextDataPathname,
   parseNextDataPathname,
@@ -14,6 +15,11 @@ import {
 } from "../packages/vinext/src/server/pages-data-route.js";
 
 describe("pages-data-route", () => {
+  it("treats development-only auto-static classification as non-SSG", () => {
+    expect(isNonSsgPagesRouteDataKind("development")).toBe(true);
+    expect(isNonSsgPagesRouteDataKind("none")).toBe(false);
+  });
+
   it("recognizes Next.js error document route patterns", () => {
     expect(isPagesErrorRoutePattern("/404")).toBe(true);
     expect(isPagesErrorRoutePattern("/_error")).toBe(true);

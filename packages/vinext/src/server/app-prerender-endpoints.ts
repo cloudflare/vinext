@@ -1,6 +1,7 @@
 import { callAppPrerenderStaticParams } from "./app-prerender-static-params.js";
 import {
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_PAGES_ROUTE_DATA_PATH,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
 } from "./headers.js";
@@ -13,6 +14,7 @@ export type AppPrerenderStaticParamsMap = Record<string, GenerateStaticParams | 
 export type AppPrerenderRootParamNamesMap = Record<string, readonly string[] | undefined>;
 
 type AppPrerenderPageRoute = {
+  dataKind?: string;
   pattern: string;
   module?: {
     getStaticPaths?: (opts: { locales: string[]; defaultLocale: string }) => unknown;
@@ -43,12 +45,39 @@ export async function handleAppPrerenderEndpoint(
     return handlePagesStaticPathsEndpoint(request, options);
   }
 
+  if (options.pathname === VINEXT_PRERENDER_PAGES_ROUTE_DATA_PATH) {
+    if (!options.loadPagesRoutes) return null;
+    return handlePagesRouteDataEndpoint(options);
+  }
+
   if (options.pathname === VINEXT_PRERENDER_METADATA_ROUTES_PATH) {
     if (!options.getMetadataRoutePaths) return null;
     return handleMetadataRoutesEndpoint(options);
   }
 
   return null;
+}
+
+async function handlePagesRouteDataEndpoint(
+  options: HandleAppPrerenderEndpointOptions,
+): Promise<Response> {
+  if (!isEnabled(options)) {
+    return notFoundResponse();
+  }
+
+  try {
+    const pageRoutes = await options.loadPagesRoutes?.();
+    if (!Array.isArray(pageRoutes)) return jsonResponse({});
+    return jsonResponse(
+      Object.fromEntries(
+        pageRoutes
+          .filter(isPageRoute)
+          .map((route) => [route.pattern, route.dataKind ?? "none"] as const),
+      ),
+    );
+  } catch (error) {
+    return jsonResponse({ error: String(error) }, 500);
+  }
 }
 
 async function handleMetadataRoutesEndpoint(

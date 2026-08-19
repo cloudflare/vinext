@@ -1238,6 +1238,26 @@ describe("App Router entry templates", () => {
     expect(withMiddleware).toContain("validateExternalRewriteRequest,");
   });
 
+  it("generateRscEntry forwards middleware presence to hybrid Pages fallback", () => {
+    const code = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      "/tmp/test/middleware.ts",
+      [],
+      null,
+      "",
+      false,
+      { hasPagesDir: true },
+    );
+
+    expect(code).toContain(
+      "async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, hasMiddleware, isDataRequest",
+    );
+    expect(code).toContain(
+      "{ allowRscDocumentFallback, appRouteMatch, hasMiddleware, isDataRequest, isRscRequest",
+    );
+  });
+
   it("generateRscEntry only includes the PPR runtime when Cache Components is enabled", () => {
     const withoutCacheComponents = generateRscEntry(
       "/tmp/test/app",
@@ -1715,8 +1735,10 @@ describe("Pages Router entry template", () => {
       expect(code).toContain('pattern: "/plain",');
       expect(code).toContain('dataKind: "none"');
       expect(code).toContain("resolvePagesRouteDataKind as __resolvePagesRouteDataKind");
-      expect(code).toContain("route.dataKind = __resolvePagesRouteDataKind(");
+      expect(code).toContain("const resolvedDataKind = __resolvePagesRouteDataKind(");
       expect(code).toContain("route.module.default ?? null");
+      expect(code).toContain('route.dataKind = import.meta.env.DEV && resolvedDataKind === "none"');
+      expect(code).toContain('? "development"');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

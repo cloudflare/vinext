@@ -4,6 +4,7 @@ import { createAppPrerenderStaticParamsResolver } from "../packages/vinext/src/s
 import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 
 type TestPageRoute = {
+  dataKind?: "static" | "server" | "runtime" | "none";
   pattern: string;
   module?: {
     getStaticPaths?: (opts: { locales: string[]; defaultLocale: string }) => unknown;
@@ -226,6 +227,30 @@ describe("App prerender endpoint helpers", () => {
     await expect(response?.json()).resolves.toEqual({
       fallback: false,
       paths: [{ params: { id: "first" } }],
+    });
+  });
+
+  it("returns authoritative built Pages route data classifications", async () => {
+    const response = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/pages-route-data"),
+      {
+        isPrerenderEnabled: () => true,
+        loadPagesRoutes: async () =>
+          [
+            { dataKind: "none", pattern: "/auto" },
+            { dataKind: "runtime", pattern: "/legacy" },
+            { dataKind: "static", pattern: "/gsp" },
+          ] satisfies TestPageRoute[],
+        pathname: "/__vinext/prerender/pages-route-data",
+        staticParamsMap: {},
+      },
+    );
+
+    expect(response?.status).toBe(200);
+    await expect(response?.json()).resolves.toEqual({
+      "/auto": "none",
+      "/gsp": "static",
+      "/legacy": "runtime",
     });
   });
 
