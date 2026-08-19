@@ -497,6 +497,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect((fetchMock.mock.calls[0]![0] as URL).href).toBe("https://app.example.com/cached/intro");
+    expect(new Headers(fetchMock.mock.calls[0]![1]?.headers).get("accept")).toBe("text/html");
     expect((fetchMock.mock.calls[1]![0] as URL).href).toBe(
       "https://app.example.com/cached/intro?_rsc",
     );

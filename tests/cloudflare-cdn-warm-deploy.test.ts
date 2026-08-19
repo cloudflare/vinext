@@ -148,6 +148,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(new Headers(firstInit.headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
       'my-worker="22222222-2222-4222-8222-222222222222"',
     );
+    expect(new Headers(firstInit.headers).get("accept")).toBe("text/html");
     const rscHeaders = new Headers(vi.mocked(fetch).mock.calls[2]![1]?.headers);
     expect(rscHeaders.get("Cloudflare-Workers-Version-Overrides")).toBe(
       'my-worker="22222222-2222-4222-8222-222222222222"',

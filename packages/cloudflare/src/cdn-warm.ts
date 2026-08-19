@@ -390,7 +390,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const rscPaths = new Set(options.rscPaths ?? []);
   const commonHeaders = new Headers(options.headers);
   for (const pathname of options.paths) {
-    requests.push({ kind: "html", label: pathname, pathname });
+    const htmlHeaders = new Headers(commonHeaders);
+    htmlHeaders.set("Accept", "text/html");
+    requests.push({ headers: htmlHeaders, kind: "html", label: pathname, pathname });
     if (!rscPaths.has(pathname)) continue;
 
     const rscHeaders = new Headers(commonHeaders);
