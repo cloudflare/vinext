@@ -1,4 +1,10 @@
-import { getCdnCacheAdapter, type CdnCacheableHeaderInput } from "vinext/shims/cdn-cache";
+import {
+  getCdnCacheAdapter,
+  isNonCacheableCacheControl,
+  type CdnCacheableHeaderInput,
+} from "vinext/shims/cdn-cache";
+
+export { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
 
@@ -11,8 +17,6 @@ const STALE_REVALIDATE_CACHE_CONTROL = "s-maxage=0, stale-while-revalidate";
 export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
 
 const SHARED_CACHE_DIRECTIVE_RE = /(?:^|,)\s*s-maxage\s*=/i;
-const NON_CACHEABLE_DIRECTIVE_RE = /(?:private|no-store|no-cache)/i;
-
 export function shouldUseNextDeployCacheControl(): boolean {
   return process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL === "1";
 }
@@ -32,7 +36,7 @@ export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean
     return adapter.hasExplicitNonCacheableResponsePolicy(headers);
   }
   const cacheControl = headers.get("Cache-Control");
-  return Boolean(cacheControl && NON_CACHEABLE_DIRECTIVE_RE.test(cacheControl));
+  return Boolean(cacheControl && isNonCacheableCacheControl(cacheControl));
 }
 
 /**

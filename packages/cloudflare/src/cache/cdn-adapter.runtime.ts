@@ -34,15 +34,15 @@
  * `require.resolve`s this file).
  */
 
-import type {
-  CdnCacheAdapter,
-  CdnCacheableHeaderInput,
-  CdnResponseHeaders,
+import {
+  isNonCacheableCacheControl,
+  type CdnCacheAdapter,
+  type CdnCacheableHeaderInput,
+  type CdnResponseHeaders,
 } from "vinext/shims/cdn-cache";
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 
-const NON_CACHEABLE_DIRECTIVE_RE = /\b(?:private|no-store|no-cache)\b/i;
 const CACHEABLE_EDGE_DIRECTIVE_RE = /(?:^|,)\s*(?:s-maxage|max-age)\s*=/i;
 const EDGE_POLICY_HEADERS = ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"] as const;
 
@@ -59,7 +59,7 @@ function clearCloudflareCdnResponseHeaders(cacheControl: string): CdnResponseHea
 /** Interpret Cloudflare's edge policy before core applies a replacement policy. */
 function hasExplicitCloudflareNonCacheableResponsePolicy(headers: Headers): boolean {
   const edgePolicies = EDGE_POLICY_HEADERS.map((name) => headers.get(name));
-  if (edgePolicies.some((value) => value && NON_CACHEABLE_DIRECTIVE_RE.test(value))) {
+  if (edgePolicies.some((value) => value && isNonCacheableCacheControl(value))) {
     return true;
   }
 
@@ -68,7 +68,7 @@ function hasExplicitCloudflareNonCacheableResponsePolicy(headers: Headers): bool
   );
   const browserPolicy = headers.get("Cache-Control");
   return Boolean(
-    !hasCacheableEdgePolicy && browserPolicy && NON_CACHEABLE_DIRECTIVE_RE.test(browserPolicy),
+    !hasCacheableEdgePolicy && browserPolicy && isNonCacheableCacheControl(browserPolicy),
   );
 }
 
@@ -181,7 +181,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     // A non-cacheable policy (no-store / no-cache / private) must never be
     // promoted to an edge cache. Clear any cacheable headers this adapter owns
     // in case middleware stamped them before the final policy was known.
-    if (/\b(?:no-store|no-cache|private)\b/.test(input.cacheControl)) {
+    if (isNonCacheableCacheControl(input.cacheControl)) {
       return clearCloudflareCdnResponseHeaders(input.cacheControl);
     }
 

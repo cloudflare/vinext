@@ -61,6 +61,36 @@ export type CdnCacheableHeaderInput = {
   tags?: readonly string[];
 };
 
+const NON_CACHEABLE_CACHE_DIRECTIVES = new Set(["private", "no-store", "no-cache"]);
+
+/** Whether a Cache-Control value contains an exact non-cacheable directive. */
+export function isNonCacheableCacheControl(cacheControl: string): boolean {
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+
+  for (let index = 0; index <= cacheControl.length; index++) {
+    const char = cacheControl[index];
+    if (index === cacheControl.length || (char === "," && !quoted)) {
+      const directive = cacheControl.slice(start, index);
+      const equals = directive.indexOf("=");
+      const name = (equals === -1 ? directive : directive.slice(0, equals)).trim().toLowerCase();
+      if (NON_CACHEABLE_CACHE_DIRECTIVES.has(name)) return true;
+      start = index + 1;
+      continue;
+    }
+
+    if (quoted && char === "\\" && !escaped) {
+      escaped = true;
+      continue;
+    }
+    if (char === '"' && !escaped) quoted = !quoted;
+    escaped = false;
+  }
+
+  return false;
+}
+
 /**
  * The serving strategy for page-level ISR. Implement this to delegate
  * page/route/image caching to a CDN edge instead of the origin store.

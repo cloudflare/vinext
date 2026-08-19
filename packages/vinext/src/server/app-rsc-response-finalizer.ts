@@ -4,6 +4,7 @@ import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import {
   applyCdnResponseHeaders,
   hasExplicitNonCacheableResponsePolicy,
+  isNonCacheableCacheControl,
   NO_STORE_CACHE_CONTROL,
 } from "./cache-control.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
@@ -39,7 +40,13 @@ const configHeadersAlreadyApplied = new WeakSet<Response>();
 
 function normalizeExplicitNonCacheablePolicy(headers: Headers): void {
   if (!hasExplicitNonCacheableResponsePolicy(headers)) return;
-  applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+  const cacheControl = headers.get("Cache-Control");
+  applyCdnResponseHeaders(headers, {
+    cacheControl:
+      cacheControl && isNonCacheableCacheControl(cacheControl)
+        ? cacheControl
+        : NO_STORE_CACHE_CONTROL,
+  });
 }
 
 /** Mark a response whose final target pipeline has already applied config headers. */

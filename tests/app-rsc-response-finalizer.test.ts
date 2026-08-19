@@ -30,6 +30,24 @@ function makeRequestContext(headers: Headers = new Headers()): RequestContext {
 // ── config headers applied to non-redirect responses ────────────────────
 
 describe("finalizeAppRscResponse — config header application", () => {
+  it.each(["no-cache", "private, no-cache, no-store, max-age=0, must-revalidate"])(
+    "preserves an existing generic non-cacheable policy: %s",
+    async (cacheControl) => {
+      const response = new Response("body", {
+        headers: { "Cache-Control": cacheControl },
+      });
+
+      await finalizeAppRscResponse(response, new Request("http://example.com/about"), {
+        basePath: "",
+        configHeaders: [],
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      });
+
+      expect(response.headers.get("cache-control")).toBe(cacheControl);
+    },
+  );
+
   it("normalizes an adapter-owned cache opt-out after response headers are finalized", async () => {
     const adapter: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,

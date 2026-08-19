@@ -20,11 +20,22 @@ import {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
 } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
+import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
 
 const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
 
 function resetActiveAdapter(): void {
   delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
+}
+
+function makeRequestContext(): RequestContext {
+  return {
+    headers: new Headers(),
+    cookies: {},
+    query: new URLSearchParams(),
+    host: "example.com",
+  };
 }
 
 function finalizePendingDynamicRscResponse(): Response {
@@ -158,6 +169,41 @@ describe("CloudflareCdnCacheAdapter", () => {
         new Headers({ "Cloudflare-CDN-Cache-Control": "private, no-store" }),
       ),
     ).toBe(true);
+  });
+
+  it("preserves mixed-case generic opt-outs during final response normalization", async () => {
+    setCdnCacheAdapter(adapter);
+    const response = new Response("body", { headers: { "Cache-Control": "No-Cache" } });
+
+    await finalizeAppRscResponse(response, new Request("https://example.com/page"), {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("No-Cache");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+  });
+
+  it("does not promote an adapter opt-out when Cache-Control has a similar extension", async () => {
+    setCdnCacheAdapter(adapter);
+    const response = new Response("body", {
+      headers: {
+        "Cache-Control": "xprivate=1, s-maxage=60",
+        "CDN-Cache-Control": "no-store",
+      },
+    });
+
+    await finalizeAppRscResponse(response, new Request("https://example.com/page"), {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
   });
 
   it("replaces Cloudflare headers on pending HTML and still skips a late-dynamic cache write", async () => {

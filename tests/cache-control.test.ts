@@ -186,6 +186,17 @@ describe("applyCdnResponseHeaders", () => {
     ).toBe(false);
   });
 
+  it("matches exact non-cacheable directives case-insensitively", () => {
+    expect(
+      hasExplicitNonCacheableResponsePolicy(new Headers({ "Cache-Control": "No-Cache" })),
+    ).toBe(true);
+    expect(
+      hasExplicitNonCacheableResponsePolicy(
+        new Headers({ "Cache-Control": 'extension="value, no-store", xprivate=1, s-maxage=60' }),
+      ),
+    ).toBe(false);
+  });
+
   it("delegates provider-specific policy interpretation to the active adapter", () => {
     const edge: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
