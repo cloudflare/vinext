@@ -1376,6 +1376,47 @@ describe("Pages Router integration", () => {
     expect(restoredResponse?.headers.get("x-middleware-skip")).toBe("1");
   });
 
+  it.each([
+    ["_app.tsx", "ssr.json"],
+    ["_document.tsx", "edge-page.json"],
+  ])(
+    "surfaces %s compile errors before skipping a middleware data prefetch",
+    async (shellFile, dataPath) => {
+      const shellPath = path.join(FIXTURE_DIR, "pages", shellFile);
+      const original = await fsp.readFile(shellPath, "utf8");
+      const requestPrefetch = () =>
+        fetch(`${baseUrl}/_next/data/test-build-id/${dataPath}`, {
+          headers: { "x-middleware-prefetch": "1" },
+        });
+
+      try {
+        await fsp.writeFile(shellPath, "export default function Broken( {");
+        server.watcher.emit("change", shellPath);
+
+        let brokenResponse: Response | undefined;
+        for (let attempt = 0; attempt < 30; attempt++) {
+          brokenResponse = await requestPrefetch();
+          if (brokenResponse.status >= 500) break;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        expect(brokenResponse?.status).toBeGreaterThanOrEqual(500);
+        expect(brokenResponse?.headers.get("x-middleware-skip")).toBeNull();
+      } finally {
+        await fsp.writeFile(shellPath, original);
+        server.watcher.emit("change", shellPath);
+      }
+
+      let restoredResponse: Response | undefined;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        restoredResponse = await requestPrefetch();
+        if (restoredResponse.headers.get("x-middleware-skip") === "1") break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(restoredResponse?.status).toBe(200);
+      expect(restoredResponse?.headers.get("x-middleware-skip")).toBe("1");
+    },
+  );
+
   it("does not collapse encoded slashes onto nested routes in dev", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-encoded-dev-"));
     writeEncodedSlashPagesFixture(tmpDir);

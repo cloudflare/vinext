@@ -99,12 +99,9 @@ export function createAppRscPrewarmObservation(options: {
   request: Request;
   requestKind: "document" | "rsc";
 }): AppRscPrewarmObservation | null {
-  if (
-    process.env.VINEXT_PRERENDER !== "1" ||
-    !options.request.headers.has(VINEXT_PRERENDER_SECRET_HEADER)
-  ) {
-    return null;
-  }
+  const isTrustedPrewarmProbe =
+    process.env.VINEXT_PRERENDER === "1" &&
+    options.request.headers.has(VINEXT_PRERENDER_SECRET_HEADER);
 
   let conditionalConfigPathMatched = false;
   let conditionalMiddlewarePathMatched = false;
@@ -136,7 +133,7 @@ export function createAppRscPrewarmObservation(options: {
   };
 
   return {
-    allowUnlistedPrewarmProbe: true,
+    allowUnlistedPrewarmProbe: isTrustedPrewarmProbe,
     shouldLoadConfigMatchers: options.hasConfigRules,
     applySourceIndependentProof(response) {
       let finalized = applyFrameworkResponseHeader(
@@ -145,6 +142,7 @@ export function createAppRscPrewarmObservation(options: {
         null,
       );
       if (
+        isTrustedPrewarmProbe &&
         !conditionalConfigPathMatched &&
         !conditionalMiddlewarePathMatched &&
         !middlewareMatched
@@ -156,6 +154,11 @@ export function createAppRscPrewarmObservation(options: {
         );
       }
       return finalized;
+    },
+    isSourceIndependent() {
+      return (
+        !conditionalConfigPathMatched && !conditionalMiddlewarePathMatched && !middlewareMatched
+      );
     },
     observeConfigRules({
       basePathState,

@@ -5,7 +5,10 @@ import {
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
-import { VINEXT_REVALIDATE_HOST_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_REVALIDATED_TAG_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -209,6 +212,39 @@ describe("performOnDemandRevalidate", () => {
 
     expect(revalidateTag).toHaveBeenCalledOnce();
     expect(revalidateTag).toHaveBeenCalledWith("_N_T_/nested/page");
+  });
+
+  it("purges the normalized Pages tag returned by basePath and locale routing", async () => {
+    const revalidateTag = vi.fn(async () => {});
+    setCdnCacheAdapter({
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders({ cacheControl }) {
+        return { "Cache-Control": "no-store", "CDN-Cache-Control": cacheControl };
+      },
+      revalidateTag,
+    });
+
+    await runWithExecutionContext(
+      {
+        waitUntil() {},
+        dispatchPagesRevalidate: async () =>
+          new Response(null, {
+            status: 200,
+            headers: {
+              "x-nextjs-cache": "REVALIDATED",
+              [VINEXT_REVALIDATED_TAG_HEADER]: "_N_T_/page",
+            },
+          }),
+      },
+      () =>
+        performOnDemandRevalidate(new Headers({ host: "public-origin.example" }), "/base/fr/page"),
+    );
+
+    expect(revalidateTag).toHaveBeenCalledWith("_N_T_/page");
   });
 
   it("rejects nested internal revalidation dispatch", async () => {

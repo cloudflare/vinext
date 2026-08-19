@@ -93,6 +93,7 @@ import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import {
   applyCdnResponseHeaders,
+  denyCdnCacheOnSourceDependentResponse,
   includeEffectiveCdnCacheRequestCredentials,
   NEVER_CACHE_CONTROL,
 } from "./cache-control.js";
@@ -2107,7 +2108,11 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             preserveNextUrlVary: middlewareObservation.explicitNextUrlVary,
             requestContext: preMiddlewareRequestContext,
           });
+          const sourceIndependent = prewarmObservation?.isSourceIndependent() !== false;
           finalized = prewarmObservation?.applySourceIndependentProof(finalized) ?? finalized;
+          if (!sourceIndependent) {
+            finalized = denyCdnCacheOnSourceDependentResponse(finalized);
+          }
           return interceptionIdRejected
             ? markInvalidInterceptionIdResponseUncacheable(finalized)
             : finalized;

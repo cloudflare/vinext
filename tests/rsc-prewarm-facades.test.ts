@@ -4,6 +4,7 @@ import {
   generateRscPrewarmServerModule,
 } from "../packages/vinext/src/cache/rsc-prewarm-virtual.js";
 import {
+  clearRscPrewarmClientImplementation,
   getLoadedRscPrewarmEligibility,
   isRscPrewarmEligibleHref,
   preloadRscPrewarmManifest,
@@ -11,6 +12,7 @@ import {
   resetRscPrewarmClientImplementationForTesting,
 } from "../packages/vinext/src/shims/rsc-prewarm-client.js";
 import {
+  clearRscPrewarmServerImplementation,
   injectRscPrewarmManifestMeta,
   injectRscPrewarmManifestMetaHtml,
   isServerRscPrewarmEligiblePathname,
@@ -90,6 +92,34 @@ describe("RSC prewarm capability facades", () => {
     expect(getLoadedRscPrewarmEligibility("/about")).toBeNull();
     expect(isRscPrewarmEligibleHref("/about")).toBe(waitForEligibility);
   });
+
+  it("lets a dev generation dispose only the implementation it registered", () => {
+    const implementation = (eligible: boolean) => ({
+      canonicalizeFullRscRequestHeaders: vi.fn(() => eligible),
+      createRscClientRequestIdentity: vi.fn(async (href: string) => ({
+        cacheKeyUrl: href,
+        requestUrl: href,
+      })),
+      getLoadedRscPrewarmEligibility: vi.fn(() => eligible),
+      isLoadedRscPrewarmEligibleHref: vi.fn(() => eligible),
+      isRscPrewarmEligibleHref: vi.fn(async () => eligible),
+      isRscPrewarmEligibleHrefForPrefetch: vi.fn(async () => eligible),
+      preloadRscPrewarmManifest: vi.fn(async () => new Set<string>()),
+    });
+    const disposeFirst = registerRscPrewarmClientImplementation(implementation(true));
+    const disposeSecond = registerRscPrewarmClientImplementation(implementation(false));
+
+    disposeFirst();
+    expect(getLoadedRscPrewarmEligibility("/about")).toBe(false);
+
+    disposeSecond();
+    expect(getLoadedRscPrewarmEligibility("/about")).toBe(false);
+
+    registerRscPrewarmClientImplementation(implementation(true));
+    clearRscPrewarmClientImplementation();
+    expect(getLoadedRscPrewarmEligibility("/about")).toBe(false);
+    clearRscPrewarmServerImplementation();
+  });
 });
 
 describe("RSC prewarm capability virtual modules", () => {
@@ -98,12 +128,33 @@ describe("RSC prewarm capability virtual modules", () => {
     expect(generateRscPrewarmServerModule("header-digest", "/server.js")).toBe("export {};\n");
   });
 
+  it("clears stale response-Vary implementations in header-digest dev modules", () => {
+    expect(generateRscPrewarmClientModule("header-digest", "/client.js", true)).toContain(
+      "clearRscPrewarmClientImplementation();",
+    );
+    expect(generateRscPrewarmServerModule("header-digest", "/server.js", true)).toContain(
+      "clearRscPrewarmServerImplementation();",
+    );
+  });
+
   it("registers the real implementations in response-Vary mode", () => {
     expect(generateRscPrewarmClientModule("response-vary", "/client.js")).toContain(
       'import * as implementation from "/client.js";',
     );
     expect(generateRscPrewarmServerModule("response-vary", "/server.js")).toContain(
       'import * as implementation from "/server.js";',
+    );
+  });
+
+  it("unregisters response-Vary implementations when a dev module is replaced", () => {
+    expect(generateRscPrewarmClientModule("response-vary", "/client.js", true)).toContain(
+      "import.meta.hot.dispose(unregister);",
+    );
+    expect(generateRscPrewarmServerModule("response-vary", "/server.js", true)).toContain(
+      "import.meta.hot.dispose(unregister);",
+    );
+    expect(generateRscPrewarmClientModule("response-vary", "/client.js")).not.toContain(
+      "import.meta.hot",
     );
   });
 });

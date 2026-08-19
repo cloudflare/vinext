@@ -4091,12 +4091,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return generateRscPrewarmClientModule(
               resolveRscCacheKeyMode(options.cache),
               _rscPrewarmClientImplementationPath,
+              this.environment.config.command === "serve",
             );
           }
           if (id === RESOLVED_RSC_PREWARM_SERVER) {
             return generateRscPrewarmServerModule(
               resolveRscCacheKeyMode(options.cache),
               _rscPrewarmServerImplementationPath,
+              this.environment.config.command === "serve",
             );
           }
           if (id === RESOLVED_IMAGE_ADAPTERS) {
@@ -5724,19 +5726,23 @@ export const loadServerActionClient = ${
                   hasAppDir && appDir
                     ? appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
                     : Promise.resolve([]));
-              const getDevAppComponent = async (): Promise<{
+              const loadDevPagesShellComponents = async (): Promise<{
                 getInitialProps?: unknown;
                 origGetInitialProps?: unknown;
               } | null> => {
                 const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
-                if (!appFilePath) return null;
-                const appModule = (await getPagesRunner().import(appFilePath)) as {
+                const documentFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
+                const [appModule] = await Promise.all([
+                  appFilePath ? getPagesRunner().import(appFilePath) : null,
+                  documentFilePath ? getPagesRunner().import(documentFilePath) : null,
+                ]);
+                const typedAppModule = appModule as {
                   default?: {
                     getInitialProps?: unknown;
                     origGetInitialProps?: unknown;
                   };
-                };
-                return appModule.default ?? null;
+                } | null;
+                return typedAppModule?.default ?? null;
               };
               const classifyDevPageRoute = async (
                 route: (typeof devPageRoutes)[number],
@@ -5752,6 +5758,10 @@ export const loadServerActionClient = ${
                   config?: { runtime?: unknown };
                   default?: { getInitialProps?: unknown };
                 };
+                // Next loads the complete Pages component shell before its
+                // middleware-prefetch bailout. Do the same so broken _app or
+                // _document modules cannot hide behind a successful `{}`.
+                const AppComponent = await loadDevPagesShellComponents();
                 if (
                   pageModule.config?.runtime === "edge" ||
                   pageModule.config?.runtime === "experimental-edge"
@@ -5763,7 +5773,7 @@ export const loadServerActionClient = ${
                 const dataKind = resolvePagesRouteDataKind(
                   "none",
                   pageModule.default ?? null,
-                  await getDevAppComponent(),
+                  AppComponent,
                 );
                 // Next only promotes automatically static pages to SSG
                 // from the prerender manifest in production. During dev,

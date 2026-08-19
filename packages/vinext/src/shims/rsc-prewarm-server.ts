@@ -28,6 +28,7 @@ export type AppRscPrewarmObservation = {
   readonly allowUnlistedPrewarmProbe: boolean;
   readonly shouldLoadConfigMatchers: boolean;
   applySourceIndependentProof(response: Response): Response;
+  isSourceIndependent(): boolean;
   observeConfigRules(options: {
     basePathState: BasePathMatchState;
     configHeaders: readonly NextHeader[];
@@ -87,8 +88,17 @@ function isResponseVaryRscCacheEnabled(): boolean {
 
 export function registerRscPrewarmServerImplementation(
   implementation: RscPrewarmServerImplementation,
-): void {
-  getState().implementation = implementation;
+): () => void {
+  const state = getState();
+  state.implementation = implementation;
+  return () => {
+    if (state.implementation === implementation) state.implementation = null;
+  };
+}
+
+/** Clear a previously registered implementation after a dev config reload. */
+export function clearRscPrewarmServerImplementation(): void {
+  getState().implementation = null;
 }
 
 export function createAppRscPrewarmObservation(options: {
@@ -138,5 +148,5 @@ export function removeRscPrewarmManifestInvalidatedHeaders(headers: Headers): vo
 
 /** Test-only reset for source-level module tests without a generated bootstrap. */
 export function resetRscPrewarmServerImplementationForTesting(): void {
-  getState().implementation = null;
+  clearRscPrewarmServerImplementation();
 }

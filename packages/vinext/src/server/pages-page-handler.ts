@@ -74,6 +74,7 @@ import {
   NEXTJS_CACHE_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_CACHE_HEADER,
+  VINEXT_REVALIDATED_TAG_HEADER,
 } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
@@ -628,7 +629,7 @@ export function createPagesPageHandler(
         request.url,
     });
 
-    const response = await runWithRequestContext(uCtx, async () => {
+    let response = await runWithRequestContext(uCtx, async () => {
       ensureFetchPatch();
       try {
         const routePattern = patternToNextFormat(route.pattern);
@@ -1198,6 +1199,17 @@ export function createPagesPageHandler(
         return new Response("Internal Server Error", { status: 500 });
       }
     });
+    if (isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER))) {
+      const pathname = routeUrl.split("?", 1)[0];
+      const stem = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+      const headers = new Headers(response.headers);
+      headers.set(VINEXT_REVALIDATED_TAG_HEADER, encodeCacheTag(`_N_T_${stem || "/"}`));
+      response = new Response(response.body, {
+        headers,
+        status: response.status,
+        statusText: response.statusText,
+      });
+    }
     return closeAfterResponseWithBody(response, uCtx);
   }
 

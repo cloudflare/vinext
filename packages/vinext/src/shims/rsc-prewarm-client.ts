@@ -37,8 +37,17 @@ function isResponseVaryRscCacheEnabled(): boolean {
 
 export function registerRscPrewarmClientImplementation(
   implementation: RscPrewarmClientImplementation,
-): void {
-  getState().implementation = implementation;
+): () => void {
+  const state = getState();
+  state.implementation = implementation;
+  return () => {
+    if (state.implementation === implementation) state.implementation = null;
+  };
+}
+
+/** Clear a previously registered implementation after a dev config reload. */
+export function clearRscPrewarmClientImplementation(): void {
+  getState().implementation = null;
 }
 
 export function canonicalizeFullRscRequestHeaders(
@@ -103,5 +112,5 @@ export function isRscPrewarmEligibleHrefForPrefetch(href: string, basePath = "")
 
 /** Test-only reset for source-level module tests without a generated bootstrap. */
 export function resetRscPrewarmClientImplementationForTesting(): void {
-  getState().implementation = null;
+  clearRscPrewarmClientImplementation();
 }

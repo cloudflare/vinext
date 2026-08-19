@@ -328,6 +328,36 @@ describe("createAppRscHandler", () => {
     expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
   });
 
+  it("denies shared caching for live middleware responses that depend on request headers", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const handler = createHandler({
+        configHeaders: [],
+        middlewareModule: {
+          default(request: NextRequest) {
+            return new Response(request.headers.get("x-tenant"), {
+              headers: { "Cache-Control": "s-maxage=60" },
+            });
+          },
+        },
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/about", {
+          headers: { "x-tenant": "tenant-a" },
+        }),
+        null,
+      );
+
+      await expect(response.text()).resolves.toBe("tenant-a");
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe("no-store");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   it("does not certify default-locale paths covered by locale:false conditional middleware", async () => {
     const middleware = vi.fn(() => undefined);
     const response = await runRscPrewarmProbe(

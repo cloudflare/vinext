@@ -28,6 +28,7 @@ import {
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 import { getHeadersContext } from "../packages/vinext/src/shims/headers.js";
+import { VINEXT_REVALIDATED_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -392,6 +393,7 @@ describe("createPagesPageHandler — on-demand terminal responses", () => {
 
     expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
     expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get(VINEXT_REVALIDATED_TAG_HEADER)).toBe("_N_T_/redirect");
   });
 });
 

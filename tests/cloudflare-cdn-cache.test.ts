@@ -197,11 +197,11 @@ describe("CloudflareCdnCacheAdapter", () => {
 
     await expect(buildFor({})).resolves.toMatchObject({
       "CDN-Cache-Control": "public, max-age=60",
-      "Cache-Tag": "__vinext_html,__vinext_rsc",
+      "Cache-Tag": "%2Fblog,posts",
     });
     await expect(buildFor({ RSC: "1", Accept: "text/x-component" })).resolves.toMatchObject({
       "CDN-Cache-Control": "public, max-age=60",
-      "Cache-Tag": "__vinext_html,__vinext_rsc",
+      "Cache-Tag": "%2Fblog,posts",
       Vary: "Accept, Cookie, Authorization, Host, X-Forwarded-Proto",
     });
 
@@ -245,7 +245,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     ] as HeadersInit[]) {
       await expect(buildFor(headers)).resolves.toMatchObject({
         "CDN-Cache-Control": "public, max-age=60",
-        "Cache-Tag": "__vinext_html,__vinext_rsc",
+        "Cache-Tag": "%2Fblog,posts",
         Vary: "Accept, Cookie, Authorization, Host, X-Forwarded-Proto",
       });
     }
@@ -277,7 +277,7 @@ describe("CloudflareCdnCacheAdapter", () => {
 
     const baseResponse = await buildFor({ RSC: "1", Accept: "text/x-component" });
     expect(baseResponse.headers.get("CDN-Cache-Control")).toContain("max-age=31536000");
-    expect(baseResponse.headers.get("Cache-Tag")).toBe("__vinext_html,__vinext_rsc");
+    expect(baseResponse.headers.get("Cache-Tag")).toBe("%2Fblog,posts");
     expect(baseResponse.headers.get("Vary")).toContain("RSC");
     expect(baseResponse.headers.get("Vary")).toContain("Cookie");
     expect(baseResponse.headers.get("Vary")).toContain("Host");
@@ -289,7 +289,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
     expect(sourceVariantResponse.headers.get("CDN-Cache-Control")).toContain("max-age=31536000");
     expect(sourceVariantResponse.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
-    expect(sourceVariantResponse.headers.get("Cache-Tag")).toBe("__vinext_html,__vinext_rsc");
+    expect(sourceVariantResponse.headers.get("Cache-Tag")).toBe("%2Fblog,posts");
 
     const mountedRequest = new Request("https://example.com/blog?_rsc", {
       headers: {
@@ -319,7 +319,7 @@ describe("CloudflareCdnCacheAdapter", () => {
         ),
     );
     expect(mountedMissResponse.headers.get("CDN-Cache-Control")).toContain("max-age=60");
-    expect(mountedMissResponse.headers.get("Cache-Tag")).toBe("__vinext_html,__vinext_rsc");
+    expect(mountedMissResponse.headers.get("Cache-Tag")).toBe("%2Fblog,posts");
   });
 
   it("bypasses non-base variants after force-static rendering hides request APIs", async () => {
@@ -427,7 +427,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     const buildForHost = (host: string) =>
       runWithHeadersContext(
         headersContextFromRequest(
-          new Request("https://cache-entrypoint.invalid/blog?_rsc", {
+          new Request("https://cache-entrypoint.invalid/blog", {
             headers: { Host: host },
           }),
         ),
@@ -471,9 +471,23 @@ describe("CloudflareCdnCacheAdapter", () => {
       const http = await buildVaryIdentity("http", rsc);
       const https = await buildVaryIdentity("https", rsc);
       expect(http.identity).not.toBe(https.identity);
-      expect(http.cacheTag).toBe("__vinext_html,__vinext_rsc");
+      expect(http.cacheTag).toBe("%2Fblog");
       expect(https.cacheTag).toBe(http.cacheTag);
     }
+  });
+
+  it("does not store an HTML variant on an RSC transport URL", () => {
+    const request = new Request("https://example.com/blog?_rsc");
+    const headers = runWithHeadersContext(headersContextFromRequest(request), () =>
+      adapter.buildResponseHeaders({ cacheControl: "s-maxage=60", tags: ["/blog"] }),
+    );
+
+    expect(headers).toEqual({
+      "Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
+    });
   });
 
   it("uses original unified request Authorization after force-static hides request APIs", async () => {
@@ -779,7 +793,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(headers["Cache-Tag"]).toBe("a%2Cb,posts");
   });
 
-  it("uses the stable RSC family tag when precise tags exceed provider limits", async () => {
+  it("fails closed when precise RSC tags exceed provider limits", async () => {
     const request = new Request("https://example.com/blog?_rsc", {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
@@ -789,11 +803,11 @@ describe("CloudflareCdnCacheAdapter", () => {
         tags: Array.from({ length: 1001 }, (_, index) => `t${index}`),
       }),
     );
-    expect(headers).toMatchObject({
-      "Cache-Control": "public, max-age=0, must-revalidate",
-      "CDN-Cache-Control": "public, max-age=60",
-      "Cache-Tag": "__vinext_html,__vinext_rsc",
-      Vary: "Accept, Cookie, Authorization, Host, X-Forwarded-Proto",
+    expect(headers).toEqual({
+      "Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
     });
   });
 
@@ -1073,12 +1087,12 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 
   it("revalidateTag purges the Workers Cache by tag via ctx.cache.purge", async () => {
-    const purge = vi.fn(async () => ({ success: true }));
+    const purge = vi.fn(async (_options: { tags: string[] }) => ({ success: true }));
     await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
       await adapter.revalidateTag(["posts", "_N_T_/blog"]);
     });
     expect(purge).toHaveBeenCalledWith({
-      tags: ["posts", "_N_T_%2Fblog", "__vinext_html", "__vinext_rsc"],
+      tags: ["posts", "_N_T_%2Fblog"],
     });
   });
 
@@ -1088,8 +1102,32 @@ describe("CloudflareCdnCacheAdapter", () => {
       await adapter.revalidateTag("posts");
     });
     expect(purge).toHaveBeenCalledWith({
-      tags: ["posts", "__vinext_html", "__vinext_rsc"],
+      tags: ["posts"],
     });
+  });
+
+  it("keeps unrelated page families out of a targeted revalidation", async () => {
+    const blogTags = adapter
+      .buildResponseHeaders({
+        cacheControl: "s-maxage=60",
+        tags: ["/blog", "_N_T_/blog", "posts"],
+      })
+      ["Cache-Tag"]!.split(",");
+    const shopTags = adapter
+      .buildResponseHeaders({
+        cacheControl: "s-maxage=60",
+        tags: ["/shop", "_N_T_/shop", "catalog"],
+      })
+      ["Cache-Tag"]!.split(",");
+    const purge = vi.fn(async (_options: { tags: string[] }) => ({ success: true }));
+
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      await adapter.revalidateTag(["posts", "_N_T_/blog"]);
+    });
+
+    const purgedTags = purge.mock.calls[0]![0].tags;
+    expect(blogTags.some((tag) => purgedTags.includes(tag))).toBe(true);
+    expect(shopTags.some((tag) => purgedTags.includes(tag))).toBe(false);
   });
 
   it("revalidateTag is a no-op when the Workers Cache is absent (e.g. Node dev)", async () => {
@@ -1111,7 +1149,7 @@ describe("CloudflareCdnCacheAdapter", () => {
       await adapter.revalidateTag(["a,b", "A,B", "posts", "POSTS"]);
     });
     expect(purge).toHaveBeenCalledWith({
-      tags: ["a%2Cb", "posts", "__vinext_html", "__vinext_rsc"],
+      tags: ["a%2Cb", "posts"],
     });
   });
 
@@ -1136,11 +1174,11 @@ describe("CloudflareCdnCacheAdapter", () => {
 
   it("rejects more than 1000 distinct purge tags after provider de-duplication", async () => {
     const purge = vi.fn(async () => ({ success: true }));
-    const tags = Array.from({ length: 999 }, (_, index) => `t${index}`);
+    const tags = Array.from({ length: 1001 }, (_, index) => `t${index}`);
     tags.push("T0");
     await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
-      // The 999 source identities fit after T0 is de-duplicated, but the HTML
-      // and RSC family tags are required identities and must not be dropped.
+      // Provider identity is case-insensitive, but 1001 unique tags remain
+      // after the duplicate spelling is removed.
       await expect(adapter.revalidateTag(tags)).rejects.toThrow(
         "cannot represent the complete cache tag set",
       );

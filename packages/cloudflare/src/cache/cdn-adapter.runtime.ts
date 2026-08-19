@@ -58,6 +58,7 @@ import {
 } from "vinext/internal/server/headers";
 import {
   stripRscSuffix,
+  VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
   VINEXT_RSC_CONTENT_TYPE,
 } from "vinext/internal/server/app-rsc-cache-busting";
 
@@ -106,9 +107,6 @@ function getWorkersCache(): WorkersCacheLike | null {
 
 /** Non-cacheable responses: nobody (edge or browser) stores them. */
 const NO_STORE = "no-store";
-const HTML_CACHE_TAG = "__vinext_html";
-const RSC_CACHE_TAG = "__vinext_rsc";
-const PAGE_CACHE_TAGS = [HTML_CACHE_TAG, RSC_CACHE_TAG] as const;
 const VINEXT_VERSION_PROBE_HEADER = "X-Vinext-Version-Probe";
 const VINEXT_VERSION_PROBE_QUERY = "__vinext_version_probe";
 const VINEXT_WORKER_VERSION_HEADER = "X-Vinext-Worker-Version";
@@ -149,26 +147,29 @@ function getCacheRequestMetadata(): { headers: Headers | null; url: string | nul
 }
 
 /**
- * Workers Caching purges every Vary variant of one URL together and requires
- * every stored variant to carry the same Cache-Tag values. Page responses use
- * one stable pair of HTML/RSC family tags, so validated digest-keyed contextual
- * requests can be stored alongside the bare canonical navigation shape without
- * an HTML request to the same query-bearing URL creating a different tag set.
- * Invalid RSC protocol requests, `.rsc` compatibility transports, and HTML
- * requests carrying RSC variant headers still bypass the shared cache.
+ * Workers Caching requires every stored Vary variant of one URL to carry the
+ * same Cache-Tag values. RSC requests own `_rsc` transport URLs, so HTML
+ * requests carrying that query parameter bypass shared storage rather than
+ * creating a second response kind with a potentially different render-tag set.
+ * Valid canonical/digest RSC requests and normal HTML URLs can then retain
+ * their precise path and data tags. Invalid RSC protocol requests, `.rsc`
+ * compatibility transports, and HTML requests carrying RSC variant headers
+ * likewise bypass the shared cache.
  */
 function hasNonCanonicalWorkersCacheVariant(): boolean {
   const { headers, url } = getCacheRequestMetadata();
   if (!headers) return false;
 
   const rsc = headers.get(RSC_HEADER);
-  const originalPathname = url ? new URL(url).pathname : null;
+  const originalUrl = url ? new URL(url) : null;
+  const originalPathname = originalUrl?.pathname ?? null;
   if (originalPathname && stripRscSuffix(originalPathname) !== originalPathname) {
     return true;
   }
   if (rsc !== null && rsc !== "1") return true;
   if (rsc === "1" && headers.get("Accept") !== VINEXT_RSC_CONTENT_TYPE) return true;
   if (rsc === "1") return false;
+  if (originalUrl?.searchParams.has(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)) return true;
   return RSC_VARIANT_HEADERS.some((header) => headers.has(header));
 }
 
@@ -395,16 +396,10 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       "Cache-Tag": null,
     };
 
-    // Workers Caching requires every Vary variant of one URL to carry the same
-    // Cache-Tag set. HTML and RSC can be Vary variants of the same URL when a
-    // legitimate user query contains `_rsc`, so both kinds must carry the same
-    // stable family set. Any tag/path invalidation already purges both families
-    // below. Requests outside a known page context retain precise render tags.
-    const responseTags =
-      requestKind === "html" || requestKind === "rsc" ? PAGE_CACHE_TAGS : input.tags;
+    const responseTags = input.tags;
     if (responseTags && responseTags.length > 0) {
       const cacheTag = formatCacheTag(responseTags);
-      if (!cacheTag.complete && requestKind !== "html") {
+      if (!cacheTag.complete) {
         return {
           "Cache-Control": NO_STORE,
           "CDN-Cache-Control": null,
@@ -444,7 +439,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       (t): t is string => typeof t === "string" && t.length > 0,
     );
     if (sourceTags.length === 0) return;
-    const tagList = encodeWorkersCacheTags([...sourceTags, HTML_CACHE_TAG, RSC_CACHE_TAG]);
+    const tagList = encodeWorkersCacheTags(sourceTags);
     if (tagList === null) {
       throw new Error("Cloudflare cache purge cannot represent the complete cache tag set");
     }
