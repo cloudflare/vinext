@@ -29,6 +29,7 @@ import {
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/headers.js";
+import { VINEXT_RSC_BUILD_ID_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import { getAppRouteOutputPath } from "../packages/vinext/src/utils/prerender-output-paths.js";
@@ -533,7 +534,7 @@ describe("prerenderApp — RSC extraction", () => {
         route: "/",
         status: "rendered",
         rscVary: "RSC, User-Agent",
-        rscPrewarmable: true,
+        rscPrewarmable: false,
       });
 
       const manifest = JSON.parse(
@@ -564,6 +565,8 @@ describe("prerenderApp — RSC extraction", () => {
       path.join(appDir, "page.tsx"),
       "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
     );
+    fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
+    fs.writeFileSync(path.join(root, "dist/server/RSC_BUILD_ID"), "rsc-build-a\n");
 
     const rscPayload = '0:["$","div",null,{"children":"embedded"}]\n';
     const observedRscRequests: Array<{ url: string; headers: Record<string, string | undefined> }> =
@@ -590,8 +593,15 @@ describe("prerenderApp — RSC extraction", () => {
         }
         res.setHeader("content-type", "text/x-component");
         res.setHeader("vary", VINEXT_RSC_VARY_HEADER);
-        if (observedRscRequests.length === 3) {
+        res.setHeader(
+          VINEXT_RSC_BUILD_ID_HEADER,
+          observedRscRequests.length === 3 ? "wrong-build" : "rsc-build-a",
+        );
+        if (observedRscRequests.length === 5) {
           res.setHeader("cache-control", "no-store");
+        }
+        if (observedRscRequests.length === 4) {
+          res.setHeader("set-cookie", "session=private; Path=/");
         }
         res.end("probe payload is not used");
         return;
@@ -654,6 +664,50 @@ describe("prerenderApp — RSC extraction", () => {
         ),
       ).toEqual([]);
 
+      const wrongBuildOutDir = path.join(root, "wrong-build");
+      const wrongBuild = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist/server/index.js"),
+        routes,
+        outDir: wrongBuildOutDir,
+        config,
+        captureRscVary: true,
+        _prodServer: { server, port },
+      });
+      expect(findRoute(wrongBuild.routes, "/")).toMatchObject({
+        status: "rendered",
+        rscVary: VINEXT_RSC_VARY_HEADER,
+        rscPrewarmable: false,
+      });
+      expect(
+        getPrewarmableAppPaths(
+          JSON.parse(
+            fs.readFileSync(path.join(wrongBuildOutDir, "vinext-prerender.json"), "utf-8"),
+          ),
+        ),
+      ).toEqual([]);
+
+      const setCookieOutDir = path.join(root, "set-cookie");
+      const setCookie = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist/server/index.js"),
+        routes,
+        outDir: setCookieOutDir,
+        config,
+        captureRscVary: true,
+        _prodServer: { server, port },
+      });
+      expect(findRoute(setCookie.routes, "/")).toMatchObject({
+        status: "rendered",
+        rscVary: VINEXT_RSC_VARY_HEADER,
+        rscPrewarmable: false,
+      });
+      expect(
+        getPrewarmableAppPaths(
+          JSON.parse(fs.readFileSync(path.join(setCookieOutDir, "vinext-prerender.json"), "utf-8")),
+        ),
+      ).toEqual([]);
+
       const noStoreOutDir = path.join(root, "no-store");
       const noStore = await prerenderApp({
         mode: "default",
@@ -677,6 +731,14 @@ describe("prerenderApp — RSC extraction", () => {
       ).toEqual([]);
 
       expect(observedRscRequests).toEqual([
+        {
+          url: "/?_rsc",
+          headers: { accept: "text/x-component", deploymentId: "dpl_probe", rsc: "1" },
+        },
+        {
+          url: "/?_rsc",
+          headers: { accept: "text/x-component", deploymentId: "dpl_probe", rsc: "1" },
+        },
         {
           url: "/?_rsc",
           headers: { accept: "text/x-component", deploymentId: "dpl_probe", rsc: "1" },

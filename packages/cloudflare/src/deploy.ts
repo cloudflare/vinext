@@ -639,7 +639,7 @@ export async function deployWithCdnWarmup(
     }
   } else {
     console.warn(
-      "  CDN warmup: pre-traffic version override skipped because the current deployment is not a single 100% version.",
+      "  CDN warmup: pre-traffic version override skipped because the current deployment is not one version serving 100% traffic.",
     );
   }
 
@@ -661,7 +661,11 @@ export async function deployWithCdnWarmup(
       options,
     );
     if (targetUrl) {
-      await warmUploadedVersion(targetUrl, undefined, true);
+      try {
+        await warmUploadedVersion(targetUrl, undefined, true);
+      } catch (error) {
+        throw withPromotedVersionWarmupNote(error);
+      }
     } else if (options.warmCdnStrict) {
       throw new Error(
         "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +
@@ -718,13 +722,14 @@ export function getZeroPercentStagingTraffic(
   versionId: string,
 ): WranglerVersionTraffic[] | null {
   const current = deployment?.versions ?? [];
-  if (current.length !== 1 || current[0].percentage !== 100) {
+  const serving = current.filter((version) => version.percentage > 0);
+  if (serving.length !== 1 || serving[0].percentage !== 100) {
     return null;
   }
-  if (current[0].versionId === versionId) {
+  if (serving[0].versionId === versionId) {
     return null;
   }
-  return [current[0], { versionId, percentage: 0 }];
+  return [serving[0], { versionId, percentage: 0 }];
 }
 
 function getWranglerTargetEnv(options: Pick<DeployOptions, "preview" | "env">): string | undefined {
@@ -777,7 +782,8 @@ function withStagedVersionCleanupNote(error: unknown): Error {
 function getStagedVersionCleanupNote(): string {
   return (
     "The uploaded version may remain staged at 0% with the previous version still serving 100% traffic; " +
-    "rerun deploy to promote it or use `wrangler versions deploy` to choose the desired version split."
+    "Worker triggers/routes may also have changed because trigger deployment runs before warming. " +
+    "Rerun deploy to promote it or use `wrangler versions deploy` to choose the desired version split."
   );
 }
 
@@ -789,6 +795,15 @@ function withPromotedVersionTriggerNote(error: unknown): Error {
     {
       cause: error,
     },
+  );
+}
+
+function withPromotedVersionWarmupNote(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `${message} The uploaded version is already promoted to 100% and its Worker triggers/routes were updated; ` +
+      "rerun deploy to retry cache warming or roll back with `wrangler versions deploy`.",
+    { cause: error },
   );
 }
 

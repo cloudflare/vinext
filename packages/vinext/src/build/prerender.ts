@@ -40,6 +40,7 @@ import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/rou
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
   createCanonicalRscRequestHeaders,
+  VINEXT_RSC_BUILD_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "../server/app-rsc-cache-busting.js";
 import {
@@ -98,11 +99,33 @@ function getErrorMessageWithStack(err: Error): string {
   return err.stack || err.message;
 }
 
-function hasReusableRscResponseHeaders(response: Response): boolean {
+function readRscBuildIdentity(serverDir: string): string | null {
+  try {
+    const identity = fs.readFileSync(path.join(serverDir, "RSC_BUILD_ID"), "utf-8").trim();
+    return identity || null;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function hasReusableRscResponseHeaders(
+  response: Response,
+  expectedRscBuildIdentity: string | null,
+): boolean {
   if (!response.ok) return false;
   if (!response.headers.get("content-type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)) {
     return false;
   }
+  if (
+    expectedRscBuildIdentity === null ||
+    response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) !== expectedRscBuildIdentity
+  ) {
+    return false;
+  }
+  if (response.headers.has("set-cookie")) return false;
   for (const name of ["cache-control", "cdn-cache-control"]) {
     const value = response.headers.get(name);
     if (value && /\b(?:private|no-store|no-cache)\b/i.test(value)) return false;
@@ -1083,6 +1106,7 @@ export async function prerenderApp({
   const restorePrerenderPhase = enterPrerenderPhase();
 
   const serverDir = path.dirname(rscBundlePath);
+  const expectedRscBuildIdentity = options.captureRscVary ? readRscBuildIdentity(serverDir) : null;
 
   let rscHandler: (request: Request) => Promise<Response>;
   let staticParamsMap: StaticParamsMap = {};
@@ -1719,8 +1743,10 @@ export async function prerenderApp({
             if (rscData === null) {
               const probeData = new Uint8Array(await rscRes.arrayBuffer());
               rscData = probeData;
-              rscPrewarmable = hasReusableRscResponseHeaders(rscRes) && probeData.byteLength > 0;
-            } else if (hasReusableRscResponseHeaders(rscRes)) {
+              rscPrewarmable =
+                hasReusableRscResponseHeaders(rscRes, expectedRscBuildIdentity) &&
+                probeData.byteLength > 0;
+            } else if (hasReusableRscResponseHeaders(rscRes, expectedRscBuildIdentity)) {
               try {
                 const probeData = await rscRes.arrayBuffer();
                 rscPrewarmable = probeData.byteLength > 0;

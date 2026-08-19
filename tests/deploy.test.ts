@@ -3571,6 +3571,39 @@ describe("resolveWorkerNameForVersionOverride", () => {
 });
 
 describe("getZeroPercentStagingTraffic", () => {
+  it("stages beside the sole 100% version and replaces stale 0% versions", () => {
+    expect(
+      getZeroPercentStagingTraffic(
+        {
+          versions: [
+            { versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+            { versionId: "33333333-3333-4333-8333-333333333333", percentage: 0 },
+          ],
+          output: "{}",
+        },
+        "22222222-2222-4222-8222-222222222222",
+      ),
+    ).toEqual([
+      { versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+      { versionId: "22222222-2222-4222-8222-222222222222", percentage: 0 },
+    ]);
+  });
+
+  it("does not stage over an active traffic split", () => {
+    expect(
+      getZeroPercentStagingTraffic(
+        {
+          versions: [
+            { versionId: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+            { versionId: "33333333-3333-4333-8333-333333333333", percentage: 50 },
+          ],
+          output: "{}",
+        },
+        "22222222-2222-4222-8222-222222222222",
+      ),
+    ).toBeNull();
+  });
+
   it("does not stage the uploaded version when it is already the current deployment", () => {
     expect(
       getZeroPercentStagingTraffic(

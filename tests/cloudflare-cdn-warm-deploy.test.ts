@@ -57,6 +57,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       events.push(`fetch:${formatFetchUrl(url)}`);
+      if (new URL(formatFetchUrl(url)).pathname.endsWith("/vinext-rsc-prewarm.json")) {
+        return Response.json({ version: 1, paths: ["/about"] });
+      }
       const isRsc = new Headers(init?.headers).get("rsc") === "1";
       return new Response(isRsc ? "flight" : "html", {
         status: 200,
@@ -103,6 +106,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
     const url = await deployWithCdnWarmup(tmpDir, ["/", "/about"], {
+      buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
       deploymentId: "dpl_123",
       expectedRscBuildId: "build-a",
       rscPaths: ["/about"],
@@ -133,7 +137,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       ]),
       expect.any(Object),
     );
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(4);
     expect(fetch).toHaveBeenNthCalledWith(
       1,
       new URL("https://app.example.com/about?_rsc"),
@@ -141,11 +145,16 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
-      new URL("https://app.example.com/"),
+      new URL("https://app.example.com/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json"),
       expect.any(Object),
     );
     expect(fetch).toHaveBeenNthCalledWith(
       3,
+      new URL("https://app.example.com/"),
+      expect.any(Object),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
       new URL("https://app.example.com/about"),
       expect.any(Object),
     );
@@ -159,7 +168,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(rscHeaders.get("next-router-prefetch")).toBeNull();
     expect(rscHeaders.get("next-router-state-tree")).toBeNull();
     expect(rscHeaders.get("next-url")).toBeNull();
-    const firstHtmlHeaders = new Headers(vi.mocked(fetch).mock.calls[1]![1]?.headers);
+    const identityHeaders = new Headers(vi.mocked(fetch).mock.calls[1]![1]?.headers);
+    expect(identityHeaders.get("Cloudflare-Workers-Version-Overrides")).toBe(
+      'my-worker="22222222-2222-4222-8222-222222222222"',
+    );
+    const firstHtmlHeaders = new Headers(vi.mocked(fetch).mock.calls[2]![1]?.headers);
     expect(firstHtmlHeaders.get("Cloudflare-Workers-Version-Overrides")).toBe(
       'my-worker="22222222-2222-4222-8222-222222222222"',
     );
@@ -182,6 +195,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "stage",
       "triggers",
       "fetch:https://app.example.com/about?_rsc",
+      "fetch:https://app.example.com/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
       "fetch:https://app.example.com/",
       "fetch:https://app.example.com/about",
       "promote",
@@ -263,7 +277,10 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
   it("uses the shared HTML and RSC warm flow against a preview alias", async () => {
     let rscAttempt = 0;
-    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (new URL(formatFetchUrl(url)).pathname.endsWith("/vinext-rsc-prewarm.json")) {
+        return Response.json({ version: 1, paths: ["/about"] });
+      }
       const isRsc = new Headers(init?.headers).get("rsc") === "1";
       if (isRsc) rscAttempt++;
       return new Response(isRsc ? "flight" : "html", {
@@ -292,6 +309,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
     const url = await deployWithCdnWarmup(tmpDir, ["/about"], {
+      buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
       expectedRscBuildId: "build-a",
       previewAlias: "pr-123",
       rscPaths: ["/about"],
@@ -300,7 +318,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
     expect(url).toBe("https://pr-123-workers-cache.example.workers.dev");
     expect(execFileSyncMock).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(4);
     expect(fetch).toHaveBeenNthCalledWith(
       1,
       new URL("https://pr-123-workers-cache.example.workers.dev/about?_rsc"),
@@ -308,18 +326,30 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
-      new URL("https://pr-123-workers-cache.example.workers.dev/about?_rsc"),
+      new URL(
+        "https://pr-123-workers-cache.example.workers.dev/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
+      ),
       expect.any(Object),
     );
     expect(fetch).toHaveBeenNthCalledWith(
       3,
+      new URL("https://pr-123-workers-cache.example.workers.dev/about?_rsc"),
+      expect.any(Object),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
       new URL("https://pr-123-workers-cache.example.workers.dev/about"),
       expect.any(Object),
     );
-    const rscHeaders = new Headers(vi.mocked(fetch).mock.calls[1]![1]?.headers);
+    const rscHeaders = new Headers(vi.mocked(fetch).mock.calls[2]![1]?.headers);
     expect(rscHeaders.get("accept")).toBe("text/x-component");
     expect(rscHeaders.get("rsc")).toBe("1");
     expect(rscHeaders.get("Cloudflare-Workers-Version-Overrides")).toBeNull();
+    expect(
+      new Headers(vi.mocked(fetch).mock.calls[1]![1]?.headers).get(
+        "Cloudflare-Workers-Version-Overrides",
+      ),
+    ).toBeNull();
   });
 
   it("uses the env Worker name and env custom domain for version override warmup", async () => {
@@ -425,7 +455,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ]);
   });
 
-  it("uses the triggers deploy URL for post-promotion fallback warmup", async () => {
+  it("replaces a stale 0% version and uses the triggers URL for pre-promotion warmup", async () => {
     const events: string[] = [];
     writeFile(
       "wrangler.jsonc",
@@ -451,6 +481,14 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           ],
         });
       }
+      if (
+        args.includes("deploy") &&
+        args.includes("11111111-1111-4111-8111-111111111111@100%") &&
+        args.includes("22222222-2222-4222-8222-222222222222@0%")
+      ) {
+        events.push("stage");
+        return "Staged workers-cache version\n";
+      }
       if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
         events.push("promote");
         return "Deployed workers-cache version 22222222-2222-4222-8222-222222222222 at 100%\n";
@@ -475,9 +513,10 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(events).toEqual([
       "upload",
       "status",
-      "promote",
+      "stage",
       "triggers",
       "fetch:https://workers-cache.vinext.workers.dev/cached/intro",
+      "promote",
     ]);
   });
 
@@ -633,5 +672,39 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }),
     ).rejects.toThrow("may already be promoted to 100%");
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("explains promoted version state when strict fallback warming fails", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
+    );
+    vi.mocked(fetch).mockResolvedValue(new Response("not ready", { status: 500 }));
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [
+            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+            { version_id: "33333333-3333-4333-8333-333333333333", percentage: 50 },
+          ],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        return "Deployed version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) return "Triggers deployed\n";
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        warmCdnRetries: 0,
+        warmCdnStrict: true,
+      }),
+    ).rejects.toThrow("already promoted to 100% and its Worker triggers/routes were updated");
   });
 });

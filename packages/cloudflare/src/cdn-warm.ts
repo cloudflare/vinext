@@ -6,6 +6,7 @@ import {
 } from "vinext/internal/build/prerender-paths";
 import {
   getPrerenderedConcretePaths,
+  getCacheableAppPaths,
   getPrewarmableAppPaths,
   readPrerenderManifest,
   type PrerenderManifest,
@@ -191,13 +192,9 @@ export function readPrerenderWarmPlan(
     pathPlan?.manifest.responseVary === "verbatim" &&
     pathPlan.manifest.rscPaths !== undefined &&
     !!pathPlan.manifest.rscBuildId;
-  const appHtmlPaths =
-    hasFinalRscEligibility && !options?.includeFallbackShells
-      ? appPaths
-      : getPrerenderedConcretePaths(manifest, {
-          ...options,
-          router: "app",
-        });
+  const appHtmlPaths = options?.includeFallbackShells
+    ? getPrerenderedConcretePaths(manifest, { ...options, router: "app" })
+    : getCacheableAppPaths(manifest);
   const pagePaths = getPrerenderedConcretePaths(manifest, {
     ...options,
     router: "pages",
@@ -306,6 +303,29 @@ type WarmTarget = {
   pathname: string;
 };
 
+class CdnWarmProgress {
+  private readonly isTTY = process.stderr.isTTY;
+  private lastLineLength = 0;
+
+  update(completed: number, total: number, label: string): void {
+    if (!this.isTTY) return;
+    const percent = total > 0 ? Math.floor((completed / total) * 100) : 0;
+    const filled = Math.floor(percent / 5);
+    const bar = `[${"█".repeat(filled)}${" ".repeat(20 - filled)}]`;
+    const maxLabelLength = 40;
+    const shortLabel =
+      label.length > maxLabelLength ? `…${label.slice(-(maxLabelLength - 1))}` : label;
+    const line = `Warming CDN cache... ${bar} ${String(completed).padStart(String(total).length)}/${total} ${shortLabel}`;
+    process.stderr.write(`\r${line.padEnd(this.lastLineLength)}`);
+    this.lastLineLength = line.length;
+  }
+
+  finish(): void {
+    if (!this.isTTY) return;
+    process.stderr.write(`\r${" ".repeat(this.lastLineLength)}\r`);
+  }
+}
+
 const REQUIRED_RSC_VARY_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =>
   name.trim().toLowerCase(),
 );
@@ -349,6 +369,7 @@ function validateRscWarmResponse(response: Response, expectedRscBuildId?: string
       return `${name} is not cacheable`;
     }
   }
+  if (response.headers.has("Set-Cookie")) return "response sets a cookie";
   const cacheStatus = response.headers.get("CF-Cache-Status")?.toUpperCase();
   if (!cacheStatus) return "response is missing CF-Cache-Status";
   if (!ADMITTED_CF_CACHE_STATUSES.has(cacheStatus)) {
@@ -415,11 +436,26 @@ async function warmOnePath(
       }
 
       if (target.kind === "identity") {
-        if (!response.redirected && response.status >= 200 && response.status < 300) {
+        const contentType =
+          response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() ?? "";
+        if (
+          !response.redirected &&
+          response.status >= 200 &&
+          response.status < 300 &&
+          contentType === "application/json"
+        ) {
           return { path: target.label, ok: true };
         }
-        lastError = response.redirected ? "redirected response" : `HTTP ${response.status}`;
-        if (!isRetryableStatus(response.status, options.retryNotFound)) break;
+        lastError = response.redirected
+          ? "redirected response"
+          : response.status < 200 || response.status >= 300
+            ? `HTTP ${response.status}`
+            : `expected application/json build identity response`;
+        if (
+          !options.retryAllValidationErrors &&
+          !isRetryableStatus(response.status, options.retryNotFound)
+        )
+          break;
       } else if (response.status < 400) {
         return { path: target.label, ok: true };
       } else {
@@ -490,17 +526,17 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
   const hasVersionOverride = new Headers(options.headers).has(WORKER_VERSION_OVERRIDE_HEADER);
   const propagatingTarget = options.propagatingTarget ?? hasVersionOverride;
-  // Immediately after a 0% staging deployment, first prove one RSC request has
-  // reached the uploaded build. Once it has, fill the remaining independent
-  // cache keys with normal concurrency; a propagation deadline must not cap a
-  // large warm plan that has already passed the identity gate.
+  // Immediately after upload, prove the RSC handler and immutable assets have
+  // reached the new build, then give the first real HTML fill the same bounded
+  // propagation policy. Once those gates pass, fill the remaining independent
+  // cache keys with normal concurrency.
   const concurrency = Math.max(1, options.concurrency ?? 10);
   const normalRetries = Math.max(0, options.retries ?? 1);
   const propagationRetries = Math.max(0, options.retries ?? 30);
   const normalRetryDelayMs = Math.max(0, options.retryDelayMs ?? 0);
   const propagationRetryDelayMs = Math.max(0, options.retryDelayMs ?? 1_000);
   const fetchImpl = options.fetchImpl ?? fetch;
-  const propagationDeadlineAt =
+  const createPropagationDeadline = (): number | undefined =>
     propagatingTarget && options.retries === undefined ? Date.now() + 30_000 : undefined;
 
   if (requests.length === 0) {
@@ -509,7 +545,15 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
 
   console.log(`\n  Warming CDN cache with ${requests.length} prerendered request(s)...`);
 
-  const warmTarget = (target: WarmTarget, propagationGate = false) =>
+  const progress = new CdnWarmProgress();
+  let completedRequests = 0;
+  progress.update(0, requests.length, "waiting for uploaded build");
+
+  const warmTarget = (
+    target: WarmTarget,
+    propagationGate = false,
+    retryDeadlineAt = propagationGate ? createPropagationDeadline() : undefined,
+  ) =>
     warmOnePath(target, {
       targetUrl: options.targetUrl,
       timeoutMs,
@@ -518,14 +562,64 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       headers: options.headers,
       expectedRscBuildId: options.expectedRscBuildId,
       retryAllValidationErrors: propagationGate,
-      retryDeadlineAt: propagationGate ? propagationDeadlineAt : undefined,
+      retryDeadlineAt,
       retryDelayMs: propagationGate ? propagationRetryDelayMs : normalRetryDelayMs,
       retryNotFound: propagationGate,
     });
 
+  const warmRequest = async (
+    target: WarmTarget,
+    propagationGate = false,
+    retryDeadlineAt?: number,
+  ): Promise<Awaited<ReturnType<typeof warmOnePath>>> => {
+    const result = await warmTarget(target, propagationGate, retryDeadlineAt);
+    progress.update(++completedRequests, requests.length, target.label);
+    return result;
+  };
+
+  const skipRequests = (
+    targets: readonly WarmTarget[],
+    error: string,
+  ): Array<{ path: string; ok: false; error: string }> =>
+    targets.map((target) => {
+      progress.update(++completedRequests, requests.length, target.label);
+      return { path: target.label, ok: false as const, error };
+    });
+
+  const warmAfterHtmlGate = async (
+    confirmed: Awaited<ReturnType<typeof warmOnePath>>[],
+    remaining: readonly WarmTarget[],
+  ): Promise<Awaited<ReturnType<typeof warmOnePath>>[]> => {
+    const htmlGateIndex = remaining.findIndex((target) => target.kind === "html");
+    if (htmlGateIndex < 0) {
+      return [
+        ...confirmed,
+        ...(await runWithConcurrency(remaining, concurrency, (target) => warmRequest(target))),
+      ];
+    }
+
+    const htmlGateResult = await warmRequest(remaining[htmlGateIndex], true);
+    const afterHtmlGate = remaining.filter((_target, index) => index !== htmlGateIndex);
+    if (!htmlGateResult.ok) {
+      return [
+        ...confirmed,
+        htmlGateResult,
+        ...skipRequests(
+          afterHtmlGate,
+          `skipped because the first HTML request did not reach the uploaded build: ${htmlGateResult.error}`,
+        ),
+      ];
+    }
+    return [
+      ...confirmed,
+      htmlGateResult,
+      ...(await runWithConcurrency(afterHtmlGate, concurrency, (target) => warmRequest(target))),
+    ];
+  };
+
   const gateIndex = propagatingTarget ? requests.findIndex((target) => target.kind === "rsc") : -1;
   const buildIdentityGate =
-    propagatingTarget && gateIndex < 0 && options.buildIdentityPath
+    propagatingTarget && options.buildIdentityPath
       ? ({
           kind: "identity",
           label: "uploaded build identity",
@@ -534,39 +628,41 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       : null;
   let results: Awaited<ReturnType<typeof warmOnePath>>[];
   if (gateIndex >= 0) {
-    const gateResult = await warmTarget(requests[gateIndex], true);
+    const propagationDeadlineAt = createPropagationDeadline();
+    const [gateResult, identityResult] = await Promise.all([
+      warmRequest(requests[gateIndex], true, propagationDeadlineAt),
+      buildIdentityGate
+        ? warmTarget(buildIdentityGate, true, propagationDeadlineAt)
+        : Promise.resolve(null),
+    ]);
     const remaining = requests.filter((_target, index) => index !== gateIndex);
-    if (gateResult.ok) {
-      results = [
-        gateResult,
-        ...(await runWithConcurrency(remaining, concurrency, (target) => warmTarget(target))),
-      ];
+    if (gateResult.ok && (identityResult === null || identityResult.ok)) {
+      results = await warmAfterHtmlGate([gateResult], remaining);
     } else {
-      results = [
-        gateResult,
-        ...remaining.map((target) => ({
-          path: target.label,
-          ok: false as const,
-          error: "skipped because the uploaded RSC build identity was not confirmed",
-        })),
-      ];
+      const gateError = gateResult.ok
+        ? `the uploaded build asset was not confirmed: ${identityResult?.ok === false ? identityResult.error : "unknown error"}`
+        : "the uploaded RSC build identity was not confirmed";
+      results = [gateResult, ...skipRequests(remaining, `skipped because ${gateError}`)];
     }
   } else if (buildIdentityGate) {
     const gateResult = await warmTarget(buildIdentityGate, true);
-    results = gateResult.ok
-      ? await runWithConcurrency(requests, concurrency, (target) => warmTarget(target))
-      : requests.map((target) => ({
-          path: target.label,
-          ok: false as const,
-          error: `skipped because the uploaded build identity was not confirmed: ${gateResult.error}`,
-        }));
+    if (gateResult.ok) {
+      results = await warmAfterHtmlGate([], requests);
+    } else {
+      results = skipRequests(
+        requests,
+        `skipped because the uploaded build identity was not confirmed: ${gateResult.error}`,
+      );
+    }
   } else {
     // Legacy callers/manifests have no build-identity asset. Preserve their
     // propagation retry behavior; current build output always supplies a gate.
     results = await runWithConcurrency(requests, concurrency, (target) =>
-      warmTarget(target, propagatingTarget),
+      warmRequest(target, propagatingTarget),
     );
   }
+
+  progress.finish();
 
   const failures = results
     .filter((result): result is { path: string; ok: false; error: string } => !result.ok)

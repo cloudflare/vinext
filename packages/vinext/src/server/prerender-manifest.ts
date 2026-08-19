@@ -171,6 +171,30 @@ export function getPrerenderedConcretePaths(
   return paths;
 }
 
+function isCacheableAppRoute(route: PrerenderManifestRoute): boolean {
+  const hasCacheableLifetime =
+    route.revalidate === false ||
+    (typeof route.revalidate === "number" &&
+      Number.isFinite(route.revalidate) &&
+      route.revalidate > 0);
+  if (route.status !== "rendered" || route.router !== "app" || !hasCacheableLifetime) return false;
+  const pathname = route.path ?? route.route;
+  return (
+    !isUnresolvedRoutePattern(pathname, route) &&
+    !isFallbackShellArtifactPath(pathname, route) &&
+    !isErrorDocumentRoute(pathname, route)
+  );
+}
+
+/** Select completed App Router artifacts whose final ISR lifetime is cacheable. */
+export function getCacheableAppPaths(manifest: PrerenderManifest): string[] {
+  return Array.from(
+    new Set(
+      (manifest.routes ?? []).filter(isCacheableAppRoute).map((route) => route.path ?? route.route),
+    ),
+  );
+}
+
 /**
  * Select exact App Router paths whose completed prerender produced a reusable
  * static/ISR artifact. This deliberately follows the same final `revalidate`
@@ -186,17 +210,8 @@ export function getPrewarmableAppPaths(manifest: PrerenderManifest): string[] {
     VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
   );
   for (const route of routes) {
-    const hasCacheableLifetime =
-      route.revalidate === false ||
-      (typeof route.revalidate === "number" &&
-        Number.isFinite(route.revalidate) &&
-        route.revalidate > 0);
-    if (
-      route.status !== "rendered" ||
-      route.router !== "app" ||
-      !hasCacheableLifetime ||
-      route.rscPrewarmable !== true
-    ) {
+    const pathname = route.path ?? route.route;
+    if (!isCacheableAppRoute(route) || route.rscPrewarmable !== true) {
       continue;
     }
 
@@ -210,13 +225,7 @@ export function getPrewarmableAppPaths(manifest: PrerenderManifest): string[] {
       vary.size === supportedVary.size && Array.from(supportedVary).every((name) => vary.has(name));
     if (!hasExactVary) continue;
 
-    const pathname = route.path ?? route.route;
-    if (
-      isUnresolvedRoutePattern(pathname, route) ||
-      isFallbackShellArtifactPath(pathname, route) ||
-      isErrorDocumentRoute(pathname, route) ||
-      seen.has(pathname)
-    ) {
+    if (seen.has(pathname)) {
       continue;
     }
     seen.add(pathname);

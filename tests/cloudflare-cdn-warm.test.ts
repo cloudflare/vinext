@@ -43,6 +43,26 @@ describe("Cloudflare CDN warmup", () => {
     expect(DEFAULT_CDN_WARM_TIMEOUT_MS).toBe(5_000);
   });
 
+  it("renders self-replacing progress in interactive terminals", async () => {
+    const originalIsTty = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: true });
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await warmCdnCache({
+        fetchImpl: vi.fn(async () => new Response("html")) as typeof fetch,
+        paths: ["/first", "/second"],
+        targetUrl: "https://app.example.com",
+      });
+
+      const output = write.mock.calls.map(([chunk]) => String(chunk));
+      expect(output.some((line) => line.includes("\rWarming CDN cache..."))).toBe(true);
+      expect(output.at(-1)).toMatch(/^\r +\r$/);
+    } finally {
+      if (originalIsTty) Object.defineProperty(process.stderr, "isTTY", originalIsTty);
+      else delete (process.stderr as { isTTY?: boolean }).isTTY;
+    }
+  });
+
   it("reads warmable paths from the prerender manifest", () => {
     writeFile(
       "dist/server/vinext-prerender.json",
@@ -155,6 +175,15 @@ describe("Cloudflare CDN warmup", () => {
             revalidate: 0,
             fallback: false,
           },
+          {
+            route: "/html-only",
+            status: "rendered",
+            router: "app",
+            revalidate: 60,
+            fallback: false,
+            rscVary: `${VINEXT_RSC_VARY_HEADER}, User-Agent`,
+            rscPrewarmable: true,
+          },
         ],
       }),
     );
@@ -163,7 +192,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
       buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
       deploymentId: "dpl_123",
-      paths: ["/docs/cached/intro/", "/docs/pages/"],
+      paths: ["/docs/cached/intro/", "/docs/html-only/", "/docs/pages/"],
       rscBuildId: "rsc-build-a",
       rscPaths: ["/docs/cached/intro/"],
     });
@@ -584,7 +613,12 @@ describe("Cloudflare CDN warmup", () => {
       releaseRsc = resolve;
     });
     const events: string[] = [];
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = toRequestUrl(input);
+      if (url.pathname.endsWith("/vinext-rsc-prewarm.json")) {
+        events.push("identity");
+        return Response.json({ version: 1, paths: ["/cached/intro"] });
+      }
       if (new Headers(init?.headers).get("rsc") === "1") {
         events.push("start:rsc");
         await rscGate;
@@ -604,6 +638,7 @@ describe("Cloudflare CDN warmup", () => {
     });
 
     const warming = warmCdnCache({
+      buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
       concurrency: 2,
       expectedRscBuildId: "build-a",
       fetchImpl: fetchMock as typeof fetch,
@@ -614,15 +649,16 @@ describe("Cloudflare CDN warmup", () => {
       targetUrl: "https://app.example.com",
     });
 
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(events).toEqual(["start:rsc"]);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(events).toEqual(["start:rsc", "identity"]);
     releaseRsc();
     await expect(warming).resolves.toMatchObject({ total: 2, warmed: 2, failed: 0 });
-    expect(events).toEqual(["start:rsc", "end:rsc", "start:html"]);
+    expect(events).toEqual(["start:rsc", "identity", "end:rsc", "start:html"]);
   });
 
   it("gates HTML-only warmup on an immutable uploaded-build asset", async () => {
     let identityAttempt = 0;
+    let firstHtmlAttempt = 0;
     const events: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = toRequestUrl(input);
@@ -631,9 +667,13 @@ describe("Cloudflare CDN warmup", () => {
         events.push(`identity:${identityAttempt}`);
         return new Response(identityAttempt === 1 ? "missing" : "{}", {
           status: identityAttempt === 1 ? 404 : 200,
+          headers: identityAttempt === 1 ? undefined : { "content-type": "application/json" },
         });
       }
       events.push(`html:${url.pathname}`);
+      if (url.pathname === "/pages-a" && ++firstHtmlAttempt === 1) {
+        return new Response("not propagated", { status: 404 });
+      }
       return new Response("html", { status: 200 });
     });
 
@@ -648,7 +688,7 @@ describe("Cloudflare CDN warmup", () => {
 
     expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
     expect(events.slice(0, 2)).toEqual(["identity:1", "identity:2"]);
-    expect(new Set(events.slice(2))).toEqual(new Set(["html:/pages-a", "html:/pages-b"]));
+    expect(events.slice(2)).toEqual(["html:/pages-a", "html:/pages-a", "html:/pages-b"]);
   });
 
   it("retries transient RSC validation failures for a propagating target", async () => {
@@ -716,12 +756,20 @@ describe("Cloudflare CDN warmup", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it("limits the propagation deadline to the RSC identity gate", async () => {
+  it("shares the first propagation deadline between the RSC and asset identity gates", async () => {
     let now = 0;
+    let releaseRsc!: () => void;
+    const rscGate = new Promise<void>((resolve) => {
+      releaseRsc = resolve;
+    });
     vi.spyOn(Date, "now").mockImplementation(() => now);
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = toRequestUrl(input);
+      if (url.pathname.endsWith("/vinext-rsc-prewarm.json")) {
+        return Response.json({ version: 1, paths: ["/cached/intro"] });
+      }
       if (new Headers(init?.headers).get("rsc") === "1") {
-        now = 31_000;
+        await rscGate;
         return new Response("new flight", {
           headers: {
             "cache-control": "public, max-age=0, must-revalidate",
@@ -735,7 +783,8 @@ describe("Cloudflare CDN warmup", () => {
       return new Response("html", { status: 200 });
     });
 
-    const result = await warmCdnCache({
+    const warming = warmCdnCache({
+      buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
       expectedRscBuildId: "new-build",
       fetchImpl: fetchMock as typeof fetch,
       paths: ["/cached/intro", "/cached/second"],
@@ -745,8 +794,13 @@ describe("Cloudflare CDN warmup", () => {
       targetUrl: "https://app.example.com",
     });
 
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    now = 31_000;
+    releaseRsc();
+    const result = await warming;
+
     expect(result).toMatchObject({ total: 3, warmed: 3, failed: 0 });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("uses ordinary retry policy after the identity gate succeeds", async () => {
@@ -863,6 +917,15 @@ describe("Cloudflare CDN warmup", () => {
       label: "no Cloudflare cache admission evidence",
       headers: { vary: VINEXT_RSC_VARY_HEADER },
       error: "response is missing CF-Cache-Status",
+    },
+    {
+      label: "a Set-Cookie header",
+      headers: {
+        "cf-cache-status": "MISS",
+        "set-cookie": "session=private; Path=/",
+        vary: VINEXT_RSC_VARY_HEADER,
+      },
+      error: "response sets a cookie",
     },
   ])("rejects an RSC response with $label", async ({ headers, error }) => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {

@@ -94,6 +94,20 @@ describe("RSC prewarm build manifest", () => {
     );
   });
 
+  it("keeps browser eligibility metadata same-origin with an absolute assetPrefix", () => {
+    const config = {
+      assetPrefix: "https://cdn.example.com/assets",
+      basePath: "",
+      buildId: "build-a",
+      deploymentId: "deployment-a",
+      trailingSlash: false,
+    };
+
+    expect(getRscPrewarmManifestUrl(config, "rsc-build-a")).toBe(
+      "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json?dpl=deployment-a",
+    );
+  });
+
   it("writes an empty fail-closed manifest for builds without a prerender pass", () => {
     const config = {
       assetPrefix: "",

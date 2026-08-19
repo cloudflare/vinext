@@ -3,7 +3,7 @@ import path from "pathslash";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { getPrewarmableAppPaths, readPrerenderManifest } from "../server/prerender-manifest.js";
 import { resolveAssetsDir } from "../utils/asset-prefix.js";
-import { renderVinextBuiltUrl } from "../utils/built-asset-url.js";
+import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 
 const RSC_PREWARM_MANIFEST_FILENAME = "vinext-rsc-prewarm.json";
@@ -42,8 +42,10 @@ export function getRscPrewarmManifestUrl(
   config: RscPrewarmBuildConfig,
   rscBuildIdentity: string,
 ): string {
-  const fileName = getRscPrewarmManifestFileName(config, rscBuildIdentity);
-  return renderVinextBuiltUrl(fileName, config.assetPrefix, config.deploymentId, "html");
+  return appendDeploymentIdQuery(
+    getRscPrewarmManifestAssetPath(config, rscBuildIdentity),
+    config.deploymentId,
+  );
 }
 
 export function writeRscPrewarmManifest(
