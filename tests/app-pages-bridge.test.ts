@@ -1,5 +1,5 @@
 import { gzipSync } from "node:zlib";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   renderPagesFallback,
   type PagesEntry,
@@ -10,6 +10,15 @@ import {
   runWithExecutionContext,
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+
+afterEach(() => {
+  setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+});
 
 describe("renderPagesFallback", () => {
   const defaultDeps = {
@@ -849,6 +858,38 @@ describe("renderPagesFallback", () => {
 
     expect(res).not.toBeNull();
     expect(res!.headers.getSetCookie().some((c) => c.includes("__prerender_bypass"))).toBe(true);
+  });
+
+  it("denies shared caching after hybrid middleware adds Set-Cookie", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const renderPage = vi.fn(
+      () =>
+        new Response("page-response", {
+          headers: {
+            "Cache-Control": "public, max-age=0, must-revalidate",
+            "CDN-Cache-Control": "public, max-age=60",
+          },
+        }),
+    );
+    const deps = {
+      ...defaultDeps,
+      loadPagesEntry: () => ({ renderPage }) as PagesEntry,
+      getDraftModeCookieHeader: () => "__prerender_bypass=secret; Path=/; HttpOnly",
+    };
+
+    const res = await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request: new Request("http://localhost/page"),
+        url: new URL("http://localhost/page"),
+      },
+      deps,
+    );
+
+    expect(res?.headers.get("Cache-Control")).toBe("no-store");
+    expect(res?.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(res?.headers.getSetCookie()).toHaveLength(1);
   });
 
   it("returns null when Pages renderPage returns 404 status", async () => {

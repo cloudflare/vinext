@@ -5,6 +5,7 @@ import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { NEXT_URL_HEADER } from "./headers.js";
+import { enforceCdnCacheDenialOnResponse } from "./cache-control.js";
 
 export type PagesEntry = {
   handleApiRoute?: (
@@ -193,9 +194,11 @@ export async function renderPagesFallback(
       executionContext?.hostRuntime ?? "node",
     );
     const draftCookie = getDraftModeCookieHeader();
-    return applyDraftModeCookie(
-      applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext),
-      draftCookie,
+    return enforceCdnCacheDenialOnResponse(
+      applyDraftModeCookie(
+        applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext),
+        draftCookie,
+      ),
     );
   }
 
@@ -234,9 +237,11 @@ export async function renderPagesFallback(
         pagesMiddlewareRequestHeaders,
       );
   if (pagesRes.status === 404 && pageMatch === null) return null;
-  return applyDraftModeCookie(
-    applyPagesMiddlewareContext(pagesRes, middlewareContext),
-    getDraftModeCookieHeader(),
+  return enforceCdnCacheDenialOnResponse(
+    applyDraftModeCookie(
+      applyPagesMiddlewareContext(pagesRes, middlewareContext),
+      getDraftModeCookieHeader(),
+    ),
   );
 }
 

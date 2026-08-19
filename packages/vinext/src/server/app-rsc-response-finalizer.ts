@@ -117,6 +117,10 @@ function reapplyNonCacheableCdnPolicy(
   hadExplicitNonCacheablePolicy = false,
   originalNonCacheableCacheControl: string | null = null,
 ): void {
+  if (headers.has("Set-Cookie")) {
+    applyCdnResponseHeaders(headers, { cacheControl: "no-store" });
+    return;
+  }
   if (hadExplicitNonCacheablePolicy) {
     // Preserve the framework/userland generic policy byte-for-byte when it was
     // itself non-cacheable (`no-cache`, `private`, `must-revalidate`, etc.).

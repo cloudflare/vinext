@@ -1479,6 +1479,36 @@ describe("App Router entry templates", () => {
 // ── Pages Router entry template runtime bootstrap ─────────────────────
 
 describe("Pages Router entry template", () => {
+  it("keeps the App RSC prewarm runtime out of hybrid Pages documents", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-hybrid-prewarm-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      const code = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        {
+          appPrefetchRoutes: [
+            { canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["app"] },
+          ],
+        },
+      );
+
+      expect(code).toContain(
+        'window.__VINEXT_LINK_PREFETCH_ROUTES__ = [{"canPrefetchLoadingShell":false,"isDynamic":false,"patternParts":["app"]}]',
+      );
+      expect(code).not.toContain("virtual:vinext-rsc-prewarm-client");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("embeds only client-safe rewrite data in the Pages browser entry", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-client-rewrites-"));
 

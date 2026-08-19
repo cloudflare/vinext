@@ -1138,6 +1138,46 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
+  it("routes interception source middleware responses through the CDN adapter", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+      const sourceRoute = createPageRoute({ pattern: "/feed/private" });
+      const handler = createHandler({
+        configHeaders: [],
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/feed/private" ? { route: sourceRoute, params: {} } : null,
+        matchRoute: (pathname: string) =>
+          pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+        async runMiddleware({ cleanPathname }) {
+          return cleanPathname === "/feed/private"
+            ? {
+                kind: "response",
+                response: new Response("private source", {
+                  headers: { "Cache-Control": "public, max-age=60" },
+                }),
+              }
+            : { kind: "continue", cleanPathname, rewritten: false, search: null };
+        },
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/feed/private" });
+      headers.set("Cookie", "session=private");
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("private source");
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   // Next.js exercises interception routes and middleware together here:
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/interception-dynamic-segment-middleware/interception-dynamic-segment-middleware.test.ts
   // Vinext's additional source-authorization pass must preserve the same
@@ -5279,6 +5319,38 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("vary")).toBeNull();
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
     expect(matchRoute).not.toHaveBeenCalled();
+  });
+
+  it("routes middleware-influenced public file signals through the CDN adapter", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const handler = createHandler({
+        configHeaders: [],
+        middlewareModule: {
+          default: () =>
+            new Response(null, {
+              headers: {
+                "Cache-Control": "public, max-age=60",
+                "x-middleware-next": "1",
+              },
+            }),
+        },
+        publicFiles: new Set(["/logo.svg"]),
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/logo.svg", {
+          headers: { Cookie: "session=private" },
+        }),
+        null,
+      );
+
+      expect(response.headers.get("x-vinext-static-file")).toBe("%2Flogo.svg");
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it.each([

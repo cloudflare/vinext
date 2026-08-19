@@ -136,8 +136,6 @@ export async function generateClientEntry(
     : "";
   const reactPreambleImport =
     options.reactPreamble === false ? "" : 'import "@vitejs/plugin-react/preamble";\n';
-  const rscPrewarmBootstrapImport =
-    appPrefetchRoutes.length > 0 ? 'import "virtual:vinext-rsc-prewarm-client";\n' : "";
 
   // Pages Router React Strict Mode flag. Next.js resolves the `null`/unset
   // default to OFF for the Pages Router (`reactStrictMode === null ? false` in
@@ -149,7 +147,7 @@ export async function generateClientEntry(
   const reactStrictModeEnabled = nextConfig.reactStrictMode === true;
 
   return `import ${JSON.stringify(reactInstanceBootstrapPath)};
-${rscPrewarmBootstrapImport}${userInstrumentationImport}${reactPreambleImport}
+${userInstrumentationImport}${reactPreambleImport}
 import "vinext/instrumentation-client";
 import React from "react";
 import { hydrateRoot } from "react-dom/client";

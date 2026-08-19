@@ -301,6 +301,7 @@ export async function runPagesRequest(
   request: Request,
   deps: PagesPipelineDeps,
 ): Promise<PagesPipelineResult> {
+  const cachePolicyRequest = request;
   const {
     basePath,
     trailingSlash,
@@ -460,7 +461,7 @@ export async function runPagesRequest(
       }
       return {
         type: "response",
-        response,
+        response: applyCdnPolicyToBoundaryResponse(response, cachePolicyRequest),
       };
     }
     return served ? { type: "handled" } : null;
@@ -528,13 +529,14 @@ export async function runPagesRequest(
               status: result.redirectStatus ?? 307,
               headers,
             }),
+            cachePolicyRequest,
           ),
         };
       }
       if (result.response) {
         return {
           type: "response",
-          response: applyCdnPolicyToBoundaryResponse(result.response),
+          response: applyCdnPolicyToBoundaryResponse(result.response, cachePolicyRequest),
         };
       }
     }
@@ -569,7 +571,10 @@ export async function runPagesRequest(
   if (deps.dataNotFoundResponse && resolvedUrl === originalResolvedUrl) {
     return {
       type: "response",
-      response: mergeHeaders(deps.dataNotFoundResponse, middlewareHeaders, middlewareStatus),
+      response: applyCdnPolicyToBoundaryResponse(
+        mergeHeaders(deps.dataNotFoundResponse, middlewareHeaders, middlewareStatus),
+        cachePolicyRequest,
+      ),
     };
   }
 
@@ -628,10 +633,13 @@ export async function runPagesRequest(
 
     return {
       type: "response",
-      response: mergeHeaders(
-        buildMiddlewarePrefetchSkipResponse(matchedPathnameForRoute(match.route.pattern)),
-        middlewareHeaders,
-        undefined,
+      response: applyCdnPolicyToBoundaryResponse(
+        mergeHeaders(
+          buildMiddlewarePrefetchSkipResponse(matchedPathnameForRoute(match.route.pattern)),
+          middlewareHeaders,
+          undefined,
+        ),
+        cachePolicyRequest,
       ),
       defaultContentType: "application/json",
     };
@@ -669,6 +677,7 @@ export async function runPagesRequest(
       type: "response",
       response: applyCdnPolicyToBoundaryResponse(
         mergeHeaders(proxyResponse, middlewareHeaders, undefined),
+        cachePolicyRequest,
       ),
     };
   }
@@ -690,7 +699,10 @@ export async function runPagesRequest(
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
         return {
           type: "response",
-          response: applyCdnPolicyToBoundaryResponse(await proxyExternal(request, rewritten)),
+          response: applyCdnPolicyToBoundaryResponse(
+            await proxyExternal(request, rewritten),
+            cachePolicyRequest,
+          ),
         };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
@@ -794,7 +806,10 @@ export async function runPagesRequest(
           // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
           return {
             type: "response",
-            response: applyCdnPolicyToBoundaryResponse(await proxyExternal(request, rewritten)),
+            response: applyCdnPolicyToBoundaryResponse(
+              await proxyExternal(request, rewritten),
+              cachePolicyRequest,
+            ),
           };
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
@@ -851,6 +866,7 @@ export async function runPagesRequest(
             type: "response",
             response: applyCdnPolicyToBoundaryResponse(
               await proxyExternal(request, fallbackRewrite),
+              cachePolicyRequest,
             ),
           };
         }
@@ -914,6 +930,7 @@ export async function runPagesRequest(
             type: "response",
             response: applyCdnPolicyToBoundaryResponse(
               await proxyExternal(request, fallbackRewrite),
+              cachePolicyRequest,
             ),
           };
         }
@@ -1004,7 +1021,10 @@ export async function runPagesRequest(
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
         return {
           type: "response",
-          response: applyCdnPolicyToBoundaryResponse(await proxyExternal(request, fallbackRewrite)),
+          response: applyCdnPolicyToBoundaryResponse(
+            await proxyExternal(request, fallbackRewrite),
+            cachePolicyRequest,
+          ),
         };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);

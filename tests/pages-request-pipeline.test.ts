@@ -18,10 +18,6 @@ import {
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
-import {
-  headersContextFromRequest,
-  runWithHeadersContext,
-} from "../packages/vinext/src/shims/headers.js";
 
 // Helpers
 
@@ -159,21 +155,19 @@ describe("Pages prewarm source-independence observation", () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const request = makeRequest("/proxy", { Cookie: "session=private" });
     try {
-      const result = await runWithHeadersContext(headersContextFromRequest(request), () =>
-        runPagesRequest(
-          request,
-          baseDeps({
-            configRewrites: {
-              beforeFiles: [{ source: "/proxy", destination: "https://example.com/external" }],
-              afterFiles: [],
-              fallback: [],
-            },
-            proxyExternal: async () =>
-              new Response("external", {
-                headers: { "Cache-Control": "public, max-age=60" },
-              }),
-          }),
-        ),
+      const result = await runPagesRequest(
+        request,
+        baseDeps({
+          configRewrites: {
+            beforeFiles: [{ source: "/proxy", destination: "https://example.com/external" }],
+            afterFiles: [],
+            fallback: [],
+          },
+          proxyExternal: async () =>
+            new Response("external", {
+              headers: { "Cache-Control": "public, max-age=60" },
+            }),
+        }),
       );
 
       expect(result.type).toBe("response");
@@ -189,19 +183,17 @@ describe("Pages prewarm source-independence observation", () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const request = makeRequest("/middleware");
     try {
-      const result = await runWithHeadersContext(headersContextFromRequest(request), () =>
-        runPagesRequest(
-          request,
-          baseDeps({
-            hasMiddleware: true,
-            runMiddleware: makeMiddleware({
-              continue: false,
-              response: new Response("middleware", {
-                headers: { "Cache-Control": "public, max-age=60" },
-              }),
+      const result = await runPagesRequest(
+        request,
+        baseDeps({
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            continue: false,
+            response: new Response("middleware", {
+              headers: { "Cache-Control": "public, max-age=60" },
             }),
           }),
-        ),
+        }),
       );
 
       expect(result.type).toBe("response");
@@ -211,6 +203,86 @@ describe("Pages prewarm source-independence observation", () => {
       expect(result.response.headers.get("Vary")).toContain("Authorization");
       expect(result.response.headers.get("Vary")).toContain("Host");
       expect(result.response.headers.get("Vary")).toContain("X-Forwarded-Proto");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("routes middleware-influenced filesystem responses through the CDN adapter", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = makeRequest("/private-asset", { Cookie: "session=private" });
+    try {
+      const result = await runPagesRequest(
+        request,
+        baseDeps({
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            responseHeaders: [["Cache-Control", "public, max-age=60"]],
+          }),
+          serveFilesystemRoute: async () =>
+            new Response("private asset", {
+              headers: { "Cache-Control": "public, max-age=60" },
+            }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("clears middleware cache promotion from stale data 404 responses", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/stale-data"),
+        baseDeps({
+          dataNotFoundResponse: new Response("{}", {
+            status: 404,
+            headers: { "Cache-Control": "no-store" },
+          }),
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            responseHeaders: [["CDN-Cache-Control", "public, max-age=60"]],
+          }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("clears middleware cache promotion from data prefetch skip responses", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/ssr-data", { "x-middleware-prefetch": "1" }),
+        baseDeps({
+          hasMiddleware: true,
+          isDataRequest: true,
+          matchPageRoute: () => ({
+            route: { isDynamic: false, pattern: "/ssr-data", dataKind: "server" },
+          }),
+          runMiddleware: makeMiddleware({
+            responseHeaders: [["CDN-Cache-Control", "public, max-age=60"]],
+          }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBe("1");
+      expect(result.response.headers.get("Cache-Control")).toContain("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
     } finally {
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     }

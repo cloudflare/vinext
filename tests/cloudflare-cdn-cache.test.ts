@@ -162,6 +162,31 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(headers["CDN-Cache-Control"]).toBe("public, max-age=60");
   });
 
+  it("does not replace an adapter-owned no-store policy with public caching", () => {
+    setCdnCacheAdapter(adapter);
+    const headers = new Headers({
+      "Cache-Control": "public, max-age=60",
+      "Cloudflare-CDN-Cache-Control": "no-store",
+    });
+
+    applyCdnResponseHeaders(headers, { cacheControl: "s-maxage=60" });
+
+    expect(headers.get("Cache-Control")).toBe("no-store");
+    expect(headers.get("CDN-Cache-Control")).toBeNull();
+    expect(headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+  });
+
+  it("never admits a Set-Cookie response to shared caching", () => {
+    setCdnCacheAdapter(adapter);
+    const headers = new Headers({ "Set-Cookie": "session=private; Path=/" });
+
+    applyCdnResponseHeaders(headers, { cacheControl: "s-maxage=60" });
+
+    expect(headers.get("Cache-Control")).toBe("no-store");
+    expect(headers.get("CDN-Cache-Control")).toBeNull();
+    expect(headers.get("Set-Cookie")).toBe("session=private; Path=/");
+  });
+
   it("edge-caches valid digest-keyed RSC variants while rejecting invalid protocol shapes", async () => {
     const input = { cacheControl: "s-maxage=60", tags: ["/blog", "posts"] };
     const buildFor = async (headers: HeadersInit) =>
@@ -519,6 +544,38 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Cache-Tag")).toBeNull();
+  });
+
+  it("makes cacheable App responses no-store when config headers add Set-Cookie", async () => {
+    setCdnCacheAdapter(adapter);
+    const request = new Request("https://example.com/blog");
+    const response = new Response("html", {
+      headers: { "Content-Type": "text/html" },
+    });
+
+    await runWithHeadersContext(headersContextFromRequest(request), async () => {
+      applyCdnResponseHeaders(response.headers, { cacheControl: "s-maxage=60" });
+      await finalizeAppRscResponse(response, request, {
+        basePath: "",
+        configHeaders: [
+          {
+            source: "/blog",
+            headers: [{ key: "Set-Cookie", value: "session=private; Path=/" }],
+          },
+        ],
+        i18nConfig: null,
+        requestContext: {
+          cookies: {},
+          headers: request.headers,
+          host: "example.com",
+          query: new URL(request.url).searchParams,
+        },
+      });
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Set-Cookie")).toBe("session=private; Path=/");
   });
 
   it.each([

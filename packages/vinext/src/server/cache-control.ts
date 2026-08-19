@@ -1,4 +1,5 @@
 import { getCdnCacheAdapter, type CdnCacheableHeaderInput } from "vinext/shims/cdn-cache";
+import { headersContextFromRequest, runWithHeadersContext } from "vinext/shims/headers";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
@@ -46,14 +47,45 @@ export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean
  * while returning `null` removes it. Core only clears the generic header it
  * owns before applying that map.
  */
-export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
+type ApplyCdnResponseHeadersOptions = {
+  /**
+   * Replace a browser-facing generic denial while intentionally transferring
+   * ownership from an inner render to an outer response policy. Adapter-owned
+   * denials and Set-Cookie remain monotonic.
+   */
+  replaceGenericPolicy?: boolean;
+};
+
+export function applyCdnResponseHeaders(
+  headers: Headers,
+  input: CdnCacheableHeaderInput,
+  options?: ApplyCdnResponseHeadersOptions,
+): void {
+  // Cache denial is monotonic. A provider-owned no-store policy or Set-Cookie
+  // observed at the final response boundary must not be replaced by a later
+  // generic cacheable policy.
+  const existingCacheControl = headers.get("Cache-Control");
+  const existingGenericDenial =
+    existingCacheControl && NON_CACHEABLE_DIRECTIVE_RE.test(existingCacheControl)
+      ? existingCacheControl
+      : null;
+  const hasAdapterDenial = hasExplicitNonCacheableResponsePolicy(headers);
+  const requestedDenial = NON_CACHEABLE_DIRECTIVE_RE.test(input.cacheControl);
+  const effectiveInput =
+    requestedDenial && options?.replaceGenericPolicy
+      ? input
+      : headers.has("Set-Cookie") ||
+          hasAdapterDenial ||
+          (existingGenericDenial !== null && !options?.replaceGenericPolicy)
+        ? { ...input, cacheControl: existingGenericDenial ?? "no-store" }
+        : input;
   headers.delete("Cache-Control");
   const useNextDeployPolicy =
-    shouldUseNextDeployCacheControl() && isSharedCacheControl(input.cacheControl);
+    shouldUseNextDeployCacheControl() && isSharedCacheControl(effectiveInput.cacheControl);
   // An empty policy tells the adapter to remove any provider-specific cache
   // metadata it owns before core applies the deployment-specific browser policy.
   const map = getCdnCacheAdapter().buildResponseHeaders(
-    useNextDeployPolicy ? { ...input, cacheControl: "" } : input,
+    useNextDeployPolicy ? { ...effectiveInput, cacheControl: "" } : effectiveInput,
   );
   for (const [name, value] of Object.entries(map)) {
     if (value === null) {
@@ -85,22 +117,51 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
  * Clone the response because redirect headers and some runtime responses are
  * immutable, and never admit a Set-Cookie response to shared storage.
  */
-export function applyCdnPolicyToBoundaryResponse(response: Response): Response {
-  const originalHeaders = [...response.headers];
-  const headers = new Headers(response.headers);
-  applyCdnResponseHeaders(headers, {
-    cacheControl: headers.has("Set-Cookie") ? "no-store" : (headers.get("Cache-Control") ?? ""),
+export function applyCdnPolicyToBoundaryResponse(response: Response, request: Request): Response {
+  const result = runWithHeadersContext(headersContextFromRequest(request), () => {
+    const originalHeaders = [...response.headers];
+    const headers = new Headers(response.headers);
+    applyCdnResponseHeaders(headers, {
+      cacheControl: headers.has("Set-Cookie") ? "no-store" : (headers.get("Cache-Control") ?? ""),
+    });
+    const nextHeaders = [...headers];
+    if (
+      originalHeaders.length === nextHeaders.length &&
+      originalHeaders.every(
+        ([name, value], index) =>
+          nextHeaders[index]?.[0] === name && nextHeaders[index]?.[1] === value,
+      )
+    ) {
+      return response;
+    }
+    return new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
   });
-  const nextHeaders = [...headers];
+  // The callback above is deliberately synchronous; runWithHeadersContext's
+  // public overload also accepts async callbacks, so its inferred return is a
+  // wider union than this boundary helper can produce.
+  return result as Response;
+}
+
+/**
+ * Preserve a cache denial after late response-header merges without
+ * reconstructing an already-emitted cacheable adapter policy from the
+ * browser-facing Cache-Control header.
+ */
+export function enforceCdnCacheDenialOnResponse(response: Response): Response {
+  const cacheControl = response.headers.get("Cache-Control");
   if (
-    originalHeaders.length === nextHeaders.length &&
-    originalHeaders.every(
-      ([name, value], index) =>
-        nextHeaders[index]?.[0] === name && nextHeaders[index]?.[1] === value,
-    )
+    !response.headers.has("Set-Cookie") &&
+    !(cacheControl && NON_CACHEABLE_DIRECTIVE_RE.test(cacheControl)) &&
+    !hasExplicitNonCacheableResponsePolicy(response.headers)
   ) {
     return response;
   }
+  const headers = new Headers(response.headers);
+  applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
   return new Response(response.body, {
     headers,
     status: response.status,

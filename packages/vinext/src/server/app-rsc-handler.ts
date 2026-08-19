@@ -1124,7 +1124,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     : null;
   if (publicFileResponse) {
     options.clearRequestContext();
-    return publicFileResponse;
+    return middlewareContext.headers || middlewareContext.status !== null
+      ? markAppCdnAdapterBoundaryResponse(publicFileResponse)
+      : publicFileResponse;
   }
 
   stripRscCacheBustingSearchParam(url);
@@ -1292,7 +1294,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
     if (sourceMiddlewareResult.kind === "response") {
       options.clearRequestContext();
-      return sourceMiddlewareResult.response;
+      return markAppCdnAdapterBoundaryResponse(sourceMiddlewareResult.response);
     }
     // The source and target share one render context. Existing target headers
     // and all cookies are identity-bearing and may not be replaced/deleted by

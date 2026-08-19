@@ -60,6 +60,8 @@ import {
   closeAfterResponse,
   closeAfterResponseWithBody,
   createRequestContext,
+  getRequestContext,
+  isInsideUnifiedScope,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
@@ -85,7 +87,11 @@ export function finalizePagesPreviewResponse(
   if (preview.data === false && !preview.shouldClear) return response;
   const headers = new Headers(response.headers);
   if (preview.data !== false) {
-    applyCdnResponseHeaders(headers, { cacheControl: PAGES_PREVIEW_CACHE_CONTROL });
+    applyCdnResponseHeaders(
+      headers,
+      { cacheControl: PAGES_PREVIEW_CACHE_CONTROL },
+      { replaceGenericPolicy: true },
+    );
   }
   if (preview.shouldClear) appendPagesPreviewClearCookies(headers);
   return new Response(response.body, {
@@ -141,13 +147,21 @@ function applyPagesErrorCachePolicy(
   // Reapply the source policy through the adapter so this replacement does not
   // need to inspect adapter-owned header names.
   if (revalidateSeconds === undefined) {
-    applyCdnResponseHeaders(headers, { cacheControl: ISR_NEVER_CACHE_CONTROL });
+    applyCdnResponseHeaders(
+      headers,
+      { cacheControl: ISR_NEVER_CACHE_CONTROL },
+      { replaceGenericPolicy: true },
+    );
   } else {
     const stem = cacheTagPathname.endsWith("/") ? cacheTagPathname.slice(0, -1) : cacheTagPathname;
-    applyCdnResponseHeaders(headers, {
-      cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
-      tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
-    });
+    applyCdnResponseHeaders(
+      headers,
+      {
+        cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
+        tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
+      },
+      { replaceGenericPolicy: true },
+    );
   }
   return new Response(response.body, {
     headers,
@@ -594,10 +608,11 @@ export function createPagesPageHandler(
     const routerAsPath = i18nConfig
       ? extractLocaleFromUrl(routerAsPathSource, i18nConfig, locale).url
       : routerAsPathSource;
+    const inheritedRequestContext = isInsideUnifiedScope() ? getRequestContext() : null;
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
-      cdnCacheRequestHeaders: request.headers,
-      cdnCacheRequestUrl: request.url,
+      cdnCacheRequestHeaders: inheritedRequestContext?.cdnCacheRequestHeaders ?? request.headers,
+      cdnCacheRequestUrl: inheritedRequestContext?.cdnCacheRequestUrl ?? request.url,
     });
 
     const response = await runWithRequestContext(uCtx, async () => {
