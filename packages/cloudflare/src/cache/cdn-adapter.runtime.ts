@@ -149,11 +149,11 @@ function getCacheRequestMetadata(): { headers: Headers | null; url: string | nul
 
 /**
  * Workers Caching purges every Vary variant of one URL together and requires
- * every stored variant to carry the same Cache-Tag values. Render-specific RSC
- * variants can discover different data tags, so only the two stable request
- * shapes are admitted to the edge cache: ordinary HTML (no RSC headers) and
- * ordinary client navigation (`RSC: 1` with no additional variant headers).
- * Other RSC variants still render normally but bypass the shared cache.
+ * every stored variant to carry the same Cache-Tag values. RSC responses use
+ * one stable family tag, so validated digest-keyed contextual requests can be
+ * stored alongside the bare canonical navigation shape. Invalid RSC protocol
+ * requests, `.rsc` compatibility transports, and HTML requests carrying RSC
+ * variant headers still bypass the shared cache.
  */
 function hasNonCanonicalWorkersCacheVariant(): boolean {
   const { headers, url } = getCacheRequestMetadata();
@@ -166,6 +166,7 @@ function hasNonCanonicalWorkersCacheVariant(): boolean {
   }
   if (rsc !== null && rsc !== "1") return true;
   if (rsc === "1" && headers.get("Accept") !== VINEXT_RSC_CONTENT_TYPE) return true;
+  if (rsc === "1") return false;
   return RSC_VARIANT_HEADERS.some((header) => headers.has(header));
 }
 

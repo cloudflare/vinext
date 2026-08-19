@@ -1,7 +1,7 @@
 import {
   normalizeRscPrewarmPath,
   RSC_PREWARM_MANIFEST_META_NAME,
-} from "../server/rsc-prewarm-path.js";
+} from "../utils/rsc-prewarm-path.js";
 
 export { normalizeRscPrewarmPath, RSC_PREWARM_MANIFEST_META_NAME };
 // Keep the optimization off the critical path: a very early click may briefly

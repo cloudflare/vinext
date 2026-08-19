@@ -112,15 +112,28 @@ export async function applyAppRscConfigHeaders(
 function reapplyNonCacheableCdnPolicy(
   headers: Headers,
   hadExplicitNonCacheablePolicy = false,
+  originalNonCacheableCacheControl: string | null = null,
 ): void {
   if (hadExplicitNonCacheablePolicy) {
-    applyCdnResponseHeaders(headers, { cacheControl: "no-store" });
+    // Preserve the framework/userland generic policy byte-for-byte when it was
+    // itself non-cacheable (`no-cache`, `private`, `must-revalidate`, etc.).
+    // Fall back to no-store only when provider-owned headers were the sole
+    // adapter-specific denial signal.
+    applyCdnResponseHeaders(headers, {
+      cacheControl: originalNonCacheableCacheControl ?? "no-store",
+    });
     return;
   }
   const cacheControl = headers.get("Cache-Control");
   if (cacheControl && /\b(?:no-store|no-cache|private)\b/i.test(cacheControl)) {
     applyCdnResponseHeaders(headers, { cacheControl });
   }
+}
+
+function applyExternalRewriteCdnPolicy(headers: Headers): void {
+  applyCdnResponseHeaders(headers, {
+    cacheControl: headers.has("Set-Cookie") ? "no-store" : (headers.get("Cache-Control") ?? ""),
+  });
 }
 
 function applyAppRscVaryHeader(
@@ -190,12 +203,18 @@ export async function finalizeAppRscResponse(
   if (response.status >= 300 && response.status < 400) {
     const isCacheBustingRedirect =
       response.headers.get(VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER) === "1";
-    if (request.headers.get(RSC_HEADER) !== "1" && !isCacheBustingRedirect) return response;
+    const isRscRequest = request.headers.get(RSC_HEADER) === "1";
+    const isExternalRewriteResponse = externalRewriteResponses.has(response);
+    if (!isRscRequest && !isCacheBustingRedirect && !isExternalRewriteResponse) return response;
 
     const headers = new Headers(response.headers);
-    headers.delete(VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER);
-    applyAppRscVaryHeader(headers, varyOptions);
-    applyCdnResponseHeaders(headers, { cacheControl: "no-store" });
+    if (isRscRequest || isCacheBustingRedirect) {
+      headers.delete(VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER);
+      applyAppRscVaryHeader(headers, varyOptions);
+      applyCdnResponseHeaders(headers, { cacheControl: "no-store" });
+    } else {
+      applyExternalRewriteCdnPolicy(headers);
+    }
     return new Response(response.body, {
       headers,
       status: response.status,
@@ -215,11 +234,7 @@ export async function finalizeAppRscResponse(
   // when Cache-Control is absent, so it never clobbers a policy a renderer
   // already applied. Redirects are already skipped above.
   if (externalRewriteResponses.has(response)) {
-    applyCdnResponseHeaders(response.headers, {
-      cacheControl: response.headers.has("Set-Cookie")
-        ? "no-store"
-        : (response.headers.get("Cache-Control") ?? ""),
-    });
+    applyExternalRewriteCdnPolicy(response.headers);
   } else if (!response.headers.has("Cache-Control")) {
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
   }
@@ -228,9 +243,18 @@ export async function finalizeAppRscResponse(
   // request variant has been rejected for shared caching, later user config
   // must not be able to promote it back into the CDN cache.
   const hadExplicitNonCacheablePolicy = hasExplicitNonCacheableResponsePolicy(response.headers);
+  const cacheControlBeforeConfig = response.headers.get("Cache-Control");
+  const originalNonCacheableCacheControl =
+    cacheControlBeforeConfig && /\b(?:no-store|no-cache|private)\b/i.test(cacheControlBeforeConfig)
+      ? cacheControlBeforeConfig
+      : null;
 
   if (configHeadersAlreadyApplied.has(response)) {
-    reapplyNonCacheableCdnPolicy(response.headers, hadExplicitNonCacheablePolicy);
+    reapplyNonCacheableCdnPolicy(
+      response.headers,
+      hadExplicitNonCacheablePolicy,
+      originalNonCacheableCacheControl,
+    );
     return response;
   }
   await applyAppRscConfigHeaders(response.headers, request, options);
@@ -251,7 +275,11 @@ export async function finalizeAppRscResponse(
   // that would otherwise re-enable shared caching. Cacheable responses are not
   // re-applied because their browser-facing Cache-Control does not retain the
   // original shared-cache lifetime.
-  reapplyNonCacheableCdnPolicy(response.headers, hadExplicitNonCacheablePolicy);
+  reapplyNonCacheableCdnPolicy(
+    response.headers,
+    hadExplicitNonCacheablePolicy,
+    originalNonCacheableCacheControl,
+  );
 
   // Static-file 405 responses are synthesized before config headers run.
   // Reassert their body metadata afterward so a matching headers() rule cannot

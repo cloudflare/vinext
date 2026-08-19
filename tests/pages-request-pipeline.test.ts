@@ -119,6 +119,33 @@ describe("Pages prewarm source-independence observation", () => {
     expect(observation.conditionalConfigPathMatched).toBe(true);
   });
 
+  it("never certifies external rewrite responses for shared prewarming", async () => {
+    const observation = createPrewarmSourceObservation(false);
+    const proxyExternal = vi.fn(
+      async () =>
+        new Response("external", {
+          headers: { "Cache-Control": "public, max-age=60" },
+        }),
+    );
+
+    const result = await runPagesRequest(
+      makeRequest("/proxy"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [{ source: "/proxy", destination: "https://example.com/external" }],
+          afterFiles: [],
+          fallback: [],
+        },
+        prewarmSourceObservation: observation,
+        proxyExternal,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    expect(proxyExternal).toHaveBeenCalledOnce();
+    expect(isPrewarmSourceIndependent(observation)).toBe(false);
+  });
+
   it("keeps query-only config conditions isolated by the URL cache key", async () => {
     const observation = createPrewarmSourceObservation(false);
     await runPagesRequest(

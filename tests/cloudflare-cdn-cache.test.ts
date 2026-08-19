@@ -162,7 +162,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(headers["CDN-Cache-Control"]).toBe("public, max-age=60");
   });
 
-  it("only edge-caches the stable HTML and base RSC navigation variants", async () => {
+  it("edge-caches valid digest-keyed RSC variants while rejecting invalid protocol shapes", async () => {
     const input = { cacheControl: "s-maxage=60", tags: ["/blog", "posts"] };
     const buildFor = async (headers: HeadersInit) =>
       runWithHeadersContext(
@@ -186,20 +186,10 @@ describe("CloudflareCdnCacheAdapter", () => {
       { RSC: "1", Accept: "application/json" },
       { RSC: "1", Accept: "text/x-component, */*" },
       { RSC: "1", Accept: "TEXT/X-COMPONENT" },
-      { RSC: "1", "Next-Router-State-Tree": "state-a" },
-      { RSC: "1", "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell" },
-      { RSC: "1", "X-Vinext-Client-Reuse-Manifest": "source-state" },
+      { RSC: "1", "Next-Router-State-Tree": "state-without-accept" },
+      { RSC: "1", "X-Vinext-Rsc-Render-Mode": "prefetch-without-accept" },
+      { RSC: "1", "X-Vinext-Client-Reuse-Manifest": "reuse-without-accept" },
       { "X-Vinext-Interception-Context": "/feed" },
-      {
-        RSC: "1",
-        Accept: "text/x-component",
-        "X-Vinext-Interception-Id": "interception:slot:source->target",
-      },
-      {
-        RSC: "1",
-        Accept: "text/x-component",
-        "X-Vinext-Rsc-State-Fingerprint": "attacker-selected",
-      },
     ];
     for (const headers of variantHeaders) {
       await expect(buildFor(headers)).resolves.toEqual({
@@ -207,6 +197,31 @@ describe("CloudflareCdnCacheAdapter", () => {
         "CDN-Cache-Control": null,
         "Cloudflare-CDN-Cache-Control": null,
         "Cache-Tag": null,
+      });
+    }
+
+    for (const headers of [
+      {
+        Accept: "text/x-component",
+        RSC: "1",
+        "Next-Router-State-Tree": "state-a",
+        "Next-Url": "/source",
+      },
+      {
+        Accept: "text/x-component",
+        RSC: "1",
+        "X-Vinext-Interception-Id": "interception:slot:source->target",
+      },
+      {
+        Accept: "text/x-component",
+        RSC: "1",
+        "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell",
+      },
+    ] as HeadersInit[]) {
+      await expect(buildFor(headers)).resolves.toMatchObject({
+        "CDN-Cache-Control": "public, max-age=60",
+        "Cache-Tag": "__vinext_rsc",
+        Vary: "Accept, Cookie, Authorization, Host, X-Forwarded-Proto",
       });
     }
   });
@@ -243,16 +258,20 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(baseResponse.headers.get("Vary")).toContain("Host");
 
     const sourceVariantResponse = await buildFor({
+      Accept: "text/x-component",
       RSC: "1",
       "X-Vinext-Interception-Context": "/feed",
     });
-    expect(sourceVariantResponse.headers.get("Cache-Control")).toBe("no-store");
-    expect(sourceVariantResponse.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(sourceVariantResponse.headers.get("CDN-Cache-Control")).toContain("max-age=31536000");
     expect(sourceVariantResponse.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
-    expect(sourceVariantResponse.headers.get("Cache-Tag")).toBeNull();
+    expect(sourceVariantResponse.headers.get("Cache-Tag")).toBe("__vinext_rsc");
 
     const mountedRequest = new Request("https://example.com/blog?_rsc", {
-      headers: { RSC: "1", "X-Vinext-Mounted-Slots": "slot:modal:/" },
+      headers: {
+        Accept: "text/x-component",
+        RSC: "1",
+        "X-Vinext-Mounted-Slots": "slot:modal:/",
+      },
     });
     const mountedMissResponse = await runWithHeadersContext(
       headersContextFromRequest(mountedRequest),
@@ -274,9 +293,8 @@ describe("CloudflareCdnCacheAdapter", () => {
           },
         ),
     );
-    expect(mountedMissResponse.headers.get("Cache-Control")).toBe("no-store");
-    expect(mountedMissResponse.headers.get("CDN-Cache-Control")).toBeNull();
-    expect(mountedMissResponse.headers.get("Cache-Tag")).toBeNull();
+    expect(mountedMissResponse.headers.get("CDN-Cache-Control")).toContain("max-age=60");
+    expect(mountedMissResponse.headers.get("Cache-Tag")).toBe("__vinext_rsc");
   });
 
   it("bypasses non-base variants after force-static rendering hides request APIs", async () => {
@@ -623,6 +641,37 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Cache-Tag")).toBeNull();
+  });
+
+  it("does not cache credential-bearing external rewrite redirects", async () => {
+    setCdnCacheAdapter(adapter);
+    const request = new Request("https://example.com/proxy", {
+      headers: { Cookie: "session=private" },
+    });
+    const response = markAppExternalRewriteResponse(
+      Response.redirect("https://example.com/private-target", 302),
+    );
+
+    const finalized = await runWithHeadersContext(headersContextFromRequest(request), () =>
+      finalizeAppRscResponse(response, request, {
+        basePath: "",
+        configHeaders: [],
+        i18nConfig: null,
+        requestContext: {
+          cookies: { session: "private" },
+          headers: request.headers,
+          host: "example.com",
+          query: new URL(request.url).searchParams,
+        },
+      }),
+    );
+
+    expect(finalized).not.toBe(response);
+    expect(finalized.status).toBe(302);
+    expect(finalized.headers.get("Location")).toBe("https://example.com/private-target");
+    expect(finalized.headers.get("Cache-Control")).toBe("no-store");
+    expect(finalized.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(finalized.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
   });
 
   it("removes middleware cache directives from no-store responses without config headers", async () => {

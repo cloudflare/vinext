@@ -46,6 +46,12 @@ describe("Pages client module graph", () => {
       expect([...graph].filter((file) => file.startsWith("server/"))).toEqual([]);
       expect([...graph].filter((file) => file.startsWith("plugins/"))).toEqual([]);
       expect(graph.has("config/config-matchers.ts")).toBe(false);
+      expect(graph.has("client/rsc-request-identity.ts")).toBe(false);
     },
   );
+
+  it("the response-Vary prewarm bootstrap remains client-only in hybrid apps", () => {
+    const graph = collectEagerImports("client/rsc-prewarm-runtime.ts");
+    expect([...graph].filter((file) => file.startsWith("server/"))).toEqual([]);
+  });
 });

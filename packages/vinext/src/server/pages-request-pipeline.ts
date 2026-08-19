@@ -315,10 +315,18 @@ export async function runPagesRequest(
   // Proxy helper: use deps.proxyExternal when supplied (dev adapter forwards
   // Node req body), otherwise fall back to proxyExternalRequest(currentReq, url).
   // Accepts a snapshot of the current request so post-middleware headers are included.
-  const proxyExternal = (currentReq: Request, externalUrl: string): Promise<Response> =>
-    deps.proxyExternal
+  const proxyExternal = async (currentReq: Request, externalUrl: string): Promise<Response> => {
+    // External origins cannot provide framework-owned proof that the response
+    // is independent of request credentials or source-route context. Every
+    // external exit funnels through this helper, so fail prewarm admission
+    // closed without changing ordinary proxy behavior.
+    if (deps.prewarmSourceObservation) {
+      deps.prewarmSourceObservation.conditionalConfigPathMatched = true;
+    }
+    return deps.proxyExternal
       ? deps.proxyExternal(currentReq, externalUrl)
       : proxyExternalRequest(currentReq, externalUrl);
+  };
 
   const url = new URL(request.url);
   let pathname = url.pathname;

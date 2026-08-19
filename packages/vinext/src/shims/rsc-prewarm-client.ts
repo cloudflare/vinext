@@ -1,5 +1,4 @@
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
-import { createRscRequestUrl } from "../client/rsc-request-identity.js";
 
 export type RscPrewarmClientImplementation = {
   canonicalizeFullRscRequestHeaders(headers: Headers, cacheKeyMode?: RscCacheKeyMode): boolean;
@@ -58,6 +57,7 @@ export async function createRscClientRequestIdentity(
   requestCacheKeyMode: RscCacheKeyMode = "header-digest",
 ): Promise<{ cacheKeyUrl: string; requestUrl: string }> {
   if (!isResponseVaryRscCacheEnabled()) {
+    const { createRscRequestUrl } = await import("../client/rsc-request-identity.js");
     const requestUrl = await createRscRequestUrl(href, headers, "header-digest");
     return { cacheKeyUrl: requestUrl, requestUrl };
   }
@@ -65,6 +65,7 @@ export async function createRscClientRequestIdentity(
   if (implementation) {
     return implementation.createRscClientRequestIdentity(href, headers, requestCacheKeyMode);
   }
+  const { createRscRequestUrl } = await import("../client/rsc-request-identity.js");
   const requestUrl = await createRscRequestUrl(href, headers, "header-digest");
   return { cacheKeyUrl: requestUrl, requestUrl };
 }

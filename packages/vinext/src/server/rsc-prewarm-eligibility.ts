@@ -1,4 +1,4 @@
-import { normalizeRscPrewarmPath } from "./rsc-prewarm-path.js";
+import { normalizeRscPrewarmPath } from "../utils/rsc-prewarm-path.js";
 
 declare global {
   var __VINEXT_RSC_PREWARMABLE_PATHS: unknown;

@@ -854,14 +854,20 @@ export async function deployWithCdnWarmup(
         } catch (error) {
           throw withStagedVersionCleanupNote(error);
         }
-      } else if (failedProbe.reason === "binding-unavailable") {
-        if (options.warmCdnStrict) {
+      } else if (options.warmCdnStrict) {
+        if (failedProbe.reason === "binding-unavailable") {
           throw withStagedVersionCleanupNote(
             new Error(
               "CDN warmup failed: staged version could not be verified because VINEXT_VERSION_METADATA is unavailable. No cacheable requests were sent.",
             ),
           );
         }
+        throw withStagedVersionCleanupNote(
+          new Error(
+            "CDN warmup failed: staged version override did not become verifiable in time. No cacheable requests were sent.",
+          ),
+        );
+      } else if (failedProbe.reason === "binding-unavailable") {
         console.warn(
           "  CDN warmup: staged version could not be verified because VINEXT_VERSION_METADATA is unavailable; promoting before warming.",
         );
@@ -871,11 +877,23 @@ export async function deployWithCdnWarmup(
         );
       }
     } else {
+      if (options.warmCdnStrict) {
+        throw withStagedVersionCleanupNote(
+          new Error(
+            "CDN warmup failed: pre-traffic warmup needs a production URL and Worker name for version overrides.",
+          ),
+        );
+      }
       console.warn(
         "  CDN warmup: pre-traffic warmup needs a production URL and Worker name for version overrides; promoting before warming.",
       );
     }
   } else {
+    if (options.warmCdnStrict) {
+      throw new Error(
+        "CDN warmup failed: pre-traffic staging requires the current deployment to contain a single 100% version. The uploaded version was not promoted.",
+      );
+    }
     console.warn(
       "  CDN warmup: pre-traffic version override skipped because the current deployment is not a single 100% version.",
     );

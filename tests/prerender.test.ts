@@ -1955,6 +1955,132 @@ describe("prerenderPages — CDN prewarm eligibility", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("certifies the client-visible basePath and trailing-slash URL", async () => {
+    const root = tmpDir("vinext-prerender-pages-visible-url-");
+    const outDir = path.join(root, "out");
+    const pagesDir = path.join(root, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pagesDir, "cacheable.tsx"),
+      "export async function getStaticProps() { return { props: {} }; }\n" +
+        "export default function Page() { return null; }\n",
+    );
+    const requestedPaths: string[] = [];
+    const server = createServer((req, res) => {
+      requestedPaths.push(req.url ?? "");
+      if (req.url !== "/docs/cacheable/") {
+        res.statusCode = 404;
+        res.end("not found");
+        return;
+      }
+      res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+      res.setHeader("CDN-Cache-Control", "public, max-age=60");
+      res.setHeader(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER, "1");
+      res.setHeader("Content-Type", "text/html");
+      res.end("<html><body>cacheable</body></html>");
+    });
+
+    const port = await listen(server);
+    try {
+      const [{ prerenderPages }, { pagesRouter, apiRouter }, { resolveNextConfig }] =
+        await Promise.all([
+          import("../packages/vinext/src/build/prerender.js"),
+          import("../packages/vinext/src/routing/pages-router.js"),
+          import("../packages/vinext/src/config/next-config.js"),
+        ]);
+      const result = await prerenderPages({
+        mode: "default",
+        routes: await pagesRouter(pagesDir),
+        apiRoutes: await apiRouter(pagesDir),
+        pagesDir,
+        outDir,
+        config: await resolveNextConfig({ basePath: "/docs", trailingSlash: true }),
+        _prodServer: { server, port },
+      });
+
+      expect(requestedPaths).toContain("/docs/cacheable/");
+      expect(requestedPaths).not.toContain("/cacheable");
+      expect(findRoute(result.routes, "/cacheable")).toMatchObject({
+        status: "rendered",
+      });
+      expect(fs.existsSync(path.join(outDir, "cacheable", "index.html"))).toBe(true);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("prerenderApp — client-visible certification URL", () => {
+  it("uses basePath and trailingSlash for both HTML and canonical RSC probes", async () => {
+    const root = tmpDir("vinext-prerender-app-visible-url-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(path.join(appDir, "cacheable"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "cacheable", "page.tsx"),
+      "export default function Page() { return null; }\n",
+    );
+    const requestedUrls: string[] = [];
+    const server = createServer((req, res) => {
+      requestedUrls.push(req.url ?? "");
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/__vinext/prerender/metadata-routes") {
+        res.setHeader("Content-Type", "application/json");
+        res.end("[]");
+        return;
+      }
+      if (url.pathname !== "/docs/cacheable/") {
+        res.statusCode = 404;
+        res.end("not found");
+        return;
+      }
+      res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
+      res.setHeader("CDN-Cache-Control", "public, max-age=60");
+      res.setHeader(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER, "1");
+      if (req.headers.rsc === "1") {
+        res.setHeader("Content-Type", "text/x-component");
+        res.end('0:["$","div",null,{}]\n');
+      } else {
+        res.setHeader("Content-Type", "text/html");
+        res.end(
+          "<html><body>" +
+            runtimeRscChunkScript('0:["$","div",null,{}]\n') +
+            runtimeRscDoneScript() +
+            "</body></html>",
+        );
+      }
+    });
+
+    const port = await listen(server);
+    try {
+      const [{ prerenderApp }, { appRouter }, { resolveNextConfig }] = await Promise.all([
+        import("../packages/vinext/src/build/prerender.js"),
+        import("../packages/vinext/src/routing/app-router.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+      ]);
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: await appRouter(appDir),
+        outDir,
+        config: await resolveNextConfig({ basePath: "/docs", trailingSlash: true }),
+        probeRscCachePolicy: true,
+        _prodServer: { server, port },
+      });
+
+      expect(requestedUrls).toContain("/docs/cacheable/");
+      expect(requestedUrls).toContain("/docs/cacheable/?_rsc");
+      expect(requestedUrls).not.toContain("/cacheable");
+      expect(findRoute(result.routes, "/cacheable")).toMatchObject({ status: "rendered" });
+      expect(fs.existsSync(path.join(outDir, "cacheable", "index.html"))).toBe(true);
+      expect(fs.existsSync(path.join(outDir, "cacheable.rsc"))).toBe(true);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () => {

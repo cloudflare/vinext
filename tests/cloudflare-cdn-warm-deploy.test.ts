@@ -758,6 +758,58 @@ name = "my-worker-staging"
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("does not promote in strict mode when the staged version never becomes ready", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (
+        init?.method === "GET" &&
+        new URL(formatFetchUrl(url)).searchParams.has("__vinext_version_probe")
+      ) {
+        events.push("probe-not-ready");
+        return new Response(null, {
+          status: 204,
+          headers: { "X-Vinext-Worker-Version": "old-version" },
+        });
+      }
+      throw new Error("Strict warmup must not send cacheable requests without verification");
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        events.push("stage");
+        return "Staged version\nhttps://stable.example.workers.dev\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        warmCdnConcurrency: 1,
+        warmCdnStrict: true,
+        warmCdnTimeout: 5,
+      }),
+    ).rejects.toThrow("may remain staged at 0%");
+
+    expect(events.slice(0, 3)).toEqual(["upload", "status", "stage"]);
+    expect(events).toContain("probe-not-ready");
+    expect(events).not.toContain("promote");
+    expect(events).not.toContain("triggers");
+  });
+
   it("rejects strict cross-version warming before uploading", async () => {
     writeFile(
       "wrangler.jsonc",
@@ -1396,7 +1448,7 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("explains that the version is already live when strict fallback warming fails", async () => {
+  it("does not promote in strict mode when pre-traffic staging is unavailable", async () => {
     const events: string[] = [];
     writeFile(
       "wrangler.jsonc",
@@ -1406,12 +1458,6 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
         custom_domains: ["app.example.com"],
       }),
     );
-    vi.mocked(fetch).mockImplementation(async (url, init) => {
-      const probe = versionProbeResponse(url, init);
-      if (probe) return probe;
-      events.push(`fetch:${formatFetchUrl(url)}`);
-      return new Response("nope", { status: 500 });
-    });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
         events.push("upload");
@@ -1426,14 +1472,6 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
           ],
         });
       }
-      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
-        events.push("promote");
-        return "Deployed version\nhttps://stable.example.workers.dev\n";
-      }
-      if (args.includes("triggers")) {
-        events.push("triggers");
-        return "Triggers deployed\n";
-      }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -1444,19 +1482,12 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
         warmCdnRetries: 0,
         warmCdnStrict: true,
       }),
-    ).rejects.toThrow(
-      "Worker version 22222222-2222-4222-8222-222222222222 is already live at 100% and its triggers/routes have been updated",
-    );
-    expect(events).toEqual([
-      "upload",
-      "status",
-      "promote",
-      "triggers",
-      "fetch:https://app.example.com/",
-    ]);
+    ).rejects.toThrow("pre-traffic staging requires the current deployment");
+    expect(events).toEqual(["upload", "status"]);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("explains that the version is already live when no fallback warm URL is available", async () => {
+  it("does not promote in strict mode when a staged version has no warm target", async () => {
     writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -1464,16 +1495,12 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
       }
       if (args.includes("status")) {
         return JSON.stringify({
-          versions: [
-            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 50 },
-            { version_id: "33333333-3333-4333-8333-333333333333", percentage: 50 },
-          ],
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
         });
       }
-      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
-        return "Deployed version\n";
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        return "Staged version\n";
       }
-      if (args.includes("triggers")) return "Triggers deployed\n";
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -1483,9 +1510,7 @@ version_metadata = { binding = "VINEXT_VERSION_METADATA" }
         warmCdnConcurrency: 1,
         warmCdnStrict: true,
       }),
-    ).rejects.toThrow(
-      "Worker version 22222222-2222-4222-8222-222222222222 is already live at 100% and its triggers/routes have been updated",
-    );
+    ).rejects.toThrow("may remain staged at 0%");
     expect(fetch).not.toHaveBeenCalled();
   });
 

@@ -73,6 +73,7 @@ import {
 } from "../utils/prerender-output-paths.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { applyDeploymentIdHeader } from "../utils/deployment-id.js";
+import { addBasePathToPathname, removeTrailingSlash } from "../utils/base-path.js";
 import { createRscRequestUrl, VINEXT_RSC_CONTENT_TYPE } from "../server/app-rsc-cache-busting.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import type { PrerenderableMetadataRoute } from "../server/metadata-route-response.js";
@@ -86,6 +87,17 @@ import { isMetadataResponseCacheable } from "../server/metadata-route-cache-poli
 export { readPrerenderSecret } from "./server-manifest.js";
 
 const EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV = "__VINEXT_EXPERIMENTAL_PPR_FALLBACK_SHELLS";
+
+function prerenderRequestPath(urlPath: string, config: ResolvedNextConfig): string {
+  const url = new URL(urlPath, "http://vinext.local");
+  let pathname = addBasePathToPathname(url.pathname, config.basePath);
+  if (config.trailingSlash) {
+    if (!pathname.endsWith("/")) pathname += "/";
+  } else {
+    pathname = removeTrailingSlash(pathname);
+  }
+  return `${pathname}${url.search}`;
+}
 
 function isExperimentalPprFallbackShellGenerationEnabled(
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -735,7 +747,7 @@ export async function prerenderPages({
     let renderRoundRobin = 0;
     const renderPage = (urlPath: string) => {
       const port = renderPorts[renderRoundRobin++ % renderPorts.length];
-      return fetch(`http://127.0.0.1:${port}${urlPath}`, {
+      return fetch(`http://127.0.0.1:${port}${prerenderRequestPath(urlPath, config)}`, {
         headers: secretHeaders,
         redirect: "manual",
       });
@@ -1617,7 +1629,8 @@ export async function prerenderApp({
         if (isSpeculative) {
           htmlHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
         }
-        const htmlRequest = new Request(`http://localhost${urlPath}`, { headers: htmlHeaders });
+        const requestPath = prerenderRequestPath(urlPath, config);
+        const htmlRequest = new Request(`http://localhost${requestPath}`, { headers: htmlHeaders });
         const htmlRender = await runWithHeadersContext(
           headersContextFromRequest(htmlRequest),
           async () => {
@@ -1730,8 +1743,8 @@ export async function prerenderApp({
             rscHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
           }
           const rscRequestPath = options.probeRscCachePolicy
-            ? await createRscRequestUrl(urlPath, rscHeaders, "response-vary")
-            : urlPath;
+            ? await createRscRequestUrl(requestPath, rscHeaders, "response-vary")
+            : requestPath;
           const rscRequest = new Request(`http://localhost${rscRequestPath}`, {
             headers: rscHeaders,
           });

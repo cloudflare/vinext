@@ -1,4 +1,4 @@
-import { RSC_PREWARM_MANIFEST_META_NAME } from "./rsc-prewarm-path.js";
+import { RSC_PREWARM_MANIFEST_META_NAME } from "../utils/rsc-prewarm-path.js";
 import { escapeHtmlAttr } from "./html.js";
 
 declare global {
