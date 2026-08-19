@@ -52,6 +52,11 @@ import {
   registerRscPrewarmServerImplementation,
   resetRscPrewarmServerImplementationForTesting,
 } from "../packages/vinext/src/shims/rsc-prewarm-server.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 beforeEach(() => {
   registerRscPrewarmServerImplementation(rscPrewarmServerImplementation);
@@ -3788,6 +3793,35 @@ describe("createAppRscHandler", () => {
       }
     },
   );
+
+  it("routes cacheable middleware responses through the CDN adapter", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const handler = createHandler({
+        configHeaders: [],
+        middlewareModule: {
+          default: () =>
+            new Response("private middleware response", {
+              headers: { "Cache-Control": "public, max-age=60" },
+            }),
+        },
+      });
+      const response = await handler(
+        new Request("https://example.test/docs/about", {
+          headers: { Cookie: "session=private" },
+        }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("private middleware response");
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
 
   it("applies basePath false rewrites before rejecting outside-basePath requests", async () => {
     // Ported from Next.js: test/e2e/app-dir/app-basepath/index.test.ts

@@ -13,6 +13,15 @@ import {
   isPrewarmSourceIndependent,
 } from "../packages/vinext/src/server/prewarm-source-independence.js";
 import { executeMiddleware } from "../packages/vinext/src/server/middleware-runtime.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
+  headersContextFromRequest,
+  runWithHeadersContext,
+} from "../packages/vinext/src/shims/headers.js";
 
 // Helpers
 
@@ -144,6 +153,67 @@ describe("Pages prewarm source-independence observation", () => {
     expect(result.type).toBe("response");
     expect(proxyExternal).toHaveBeenCalledOnce();
     expect(isPrewarmSourceIndependent(observation)).toBe(false);
+  });
+
+  it("routes credential-bearing external rewrites through the CDN adapter", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = makeRequest("/proxy", { Cookie: "session=private" });
+    try {
+      const result = await runWithHeadersContext(headersContextFromRequest(request), () =>
+        runPagesRequest(
+          request,
+          baseDeps({
+            configRewrites: {
+              beforeFiles: [{ source: "/proxy", destination: "https://example.com/external" }],
+              afterFiles: [],
+              fallback: [],
+            },
+            proxyExternal: async () =>
+              new Response("external", {
+                headers: { "Cache-Control": "public, max-age=60" },
+              }),
+          }),
+        ),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("Cache-Control")).toBe("no-store");
+      expect(result.response.headers.get("CDN-Cache-Control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("routes cacheable middleware short-circuits through the CDN adapter", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = makeRequest("/middleware");
+    try {
+      const result = await runWithHeadersContext(headersContextFromRequest(request), () =>
+        runPagesRequest(
+          request,
+          baseDeps({
+            hasMiddleware: true,
+            runMiddleware: makeMiddleware({
+              continue: false,
+              response: new Response("middleware", {
+                headers: { "Cache-Control": "public, max-age=60" },
+              }),
+            }),
+          }),
+        ),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.get("CDN-Cache-Control")).toBe("public, max-age=60");
+      expect(result.response.headers.get("Vary")).toContain("Cookie");
+      expect(result.response.headers.get("Vary")).toContain("Authorization");
+      expect(result.response.headers.get("Vary")).toContain("Host");
+      expect(result.response.headers.get("Vary")).toContain("X-Forwarded-Proto");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("keeps query-only config conditions isolated by the URL cache key", async () => {

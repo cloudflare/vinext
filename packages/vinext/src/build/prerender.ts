@@ -73,7 +73,7 @@ import {
 } from "../utils/prerender-output-paths.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { applyDeploymentIdHeader } from "../utils/deployment-id.js";
-import { addBasePathToPathname, removeTrailingSlash } from "../utils/base-path.js";
+import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { createRscRequestUrl, VINEXT_RSC_CONTENT_TYPE } from "../server/app-rsc-cache-busting.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import type { PrerenderableMetadataRoute } from "../server/metadata-route-response.js";
@@ -90,13 +90,15 @@ const EXPERIMENTAL_PPR_FALLBACK_SHELLS_ENV = "__VINEXT_EXPERIMENTAL_PPR_FALLBACK
 
 function prerenderRequestPath(urlPath: string, config: ResolvedNextConfig): string {
   const url = new URL(urlPath, "http://vinext.local");
-  let pathname = addBasePathToPathname(url.pathname, config.basePath);
-  if (config.trailingSlash) {
-    if (!pathname.endsWith("/")) pathname += "/";
-  } else {
-    pathname = removeTrailingSlash(pathname);
-  }
-  return `${pathname}${url.search}`;
+  // `urlPath` is an internal route identity, so prefix the public basePath
+  // unconditionally. An internal `/docs/about` route under basePath `/docs`
+  // is publicly `/docs/docs/about`, not the already-prefixed `/docs/about`.
+  const pathname = config.basePath
+    ? url.pathname === "/"
+      ? config.basePath
+      : `${config.basePath}${url.pathname}`
+    : url.pathname;
+  return normalizePathTrailingSlash(`${pathname}${url.search}`, config.trailingSlash);
 }
 
 function isExperimentalPprFallbackShellGenerationEnabled(

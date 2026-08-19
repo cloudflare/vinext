@@ -24,6 +24,18 @@ const ROUTE_OWNED_CLIENT_SHIMS = new Set([
   "web-vitals",
 ]);
 
+// These App Router shims are reachable from shared Link/Router modules, but a
+// Pages-only app needs them only when it explicitly uses an App Router API.
+// Keeping any one of them in the manual `vinext` chunk lets Rolldown coalesce
+// their shared navigation dependency back into that eager chunk, so all four
+// must remain graph-owned in Pages client builds.
+const PAGES_LAZY_APP_ROUTER_SHIMS = new Set([
+  "error",
+  "form",
+  "internal/navigation-untracked",
+  "navigation",
+]);
+
 // Next.js emits CSS under `static/css/` and CSS url() dependencies (images,
 // fonts, …) under `static/media/`, both with an 8-char content hash. Mirror
 // that layout so migrated apps keep stable, Next-shaped asset URLs.
@@ -121,11 +133,14 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
     // id can carry native backslashes on Windows, so slash it before matching.
     const slashedId = toSlash(id);
     if (slashedId.startsWith(shimsDir)) {
-      if (preserveRouteBoundaries) {
-        const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
-        const extensionIndex = relativeId.lastIndexOf(".");
-        const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
-        if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
+      const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
+      const extensionIndex = relativeId.lastIndexOf(".");
+      const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
+      if (
+        (!preserveRouteBoundaries && PAGES_LAZY_APP_ROUTER_SHIMS.has(shimName)) ||
+        (preserveRouteBoundaries && ROUTE_OWNED_CLIENT_SHIMS.has(shimName))
+      ) {
+        return undefined;
       }
       return "vinext";
     }

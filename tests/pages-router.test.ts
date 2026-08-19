@@ -25,6 +25,10 @@ const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps 
 
 type ClientBuildManifestEntry = {
   file?: string;
+  name?: string;
+  src?: string;
+  imports?: string[];
+  dynamicImports?: string[];
   css?: string[];
   assets?: string[];
 };
@@ -679,6 +683,33 @@ function findBuildManifestEntries(
   return Object.entries(buildManifest).filter(
     ([key]) => key === moduleId || key.endsWith(`/${moduleId}`),
   );
+}
+
+function collectStaticManifestClosure(
+  buildManifest: Record<string, ClientBuildManifestEntry>,
+  entryKey: string,
+): Set<string> {
+  const visited = new Set<string>();
+  const pending = [entryKey];
+  while (pending.length > 0) {
+    const key = pending.pop()!;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    pending.push(...(buildManifest[key]?.imports ?? []));
+  }
+  return visited;
+}
+
+function findManifestEntryKey(
+  buildManifest: Record<string, ClientBuildManifestEntry>,
+  moduleName: string,
+): string | undefined {
+  return Object.entries(buildManifest).find(
+    ([key, entry]) =>
+      entry.name === moduleName ||
+      entry.src?.endsWith(`/${moduleName}.js`) ||
+      key.endsWith(`/${moduleName}.js`),
+  )?.[0];
 }
 
 describe("Pages Router integration", () => {
@@ -5429,6 +5460,44 @@ export const config = { matcher: ["/protected"] };
     expect(counterBuildManifestEntries.some(([, entry]) => typeof entry.file === "string")).toBe(
       true,
     );
+
+    // Pages Link/Router can dynamically reach the App Router navigation
+    // runtime for hybrid compatibility, but a pure Pages entry must not pay
+    // for that RSC machinery on initial load. A source-only import-graph test
+    // cannot catch manual chunk coalescing, so assert against the emitted
+    // production manifest's static import closure.
+    const eagerEntryKeys = collectStaticManifestClosure(
+      buildManifest,
+      "virtual:vinext-client-entry",
+    );
+    for (const moduleName of ["navigation", "rsc-request-identity"]) {
+      const moduleKey = findManifestEntryKey(buildManifest, moduleName);
+      expect(moduleKey, `expected a lazy ${moduleName} manifest entry`).toBeDefined();
+      expect(
+        eagerEntryKeys.has(moduleKey!),
+        `${moduleName} must stay outside the Pages entry closure`,
+      ).toBe(false);
+    }
+
+    // Depending on the fixture graph, Rolldown can give the cache-busting
+    // module its own chunk or coalesce it into the lazy navigation chunk. Find
+    // the emitted implementation by a stable protocol header rather than
+    // requiring a particular chunk boundary, then prove every containing
+    // chunk is outside the entry's static closure.
+    const cacheBustingEntryKeys = Object.entries(buildManifest)
+      .filter(([, entry]) => {
+        if (!entry.file) return false;
+        const contents = fs.readFileSync(path.join(outDir, "client", entry.file), "utf8");
+        return contents.includes("X-Vinext-RSC-Compatibility-Id");
+      })
+      .map(([key]) => key);
+    expect(cacheBustingEntryKeys.length).toBeGreaterThan(0);
+    for (const moduleKey of cacheBustingEntryKeys) {
+      expect(
+        eagerEntryKeys.has(moduleKey),
+        "app-rsc-cache-busting must stay outside the Pages entry closure",
+      ).toBe(false);
+    }
 
     // There should be JS files in the assets directory
     const assets = fs.readdirSync(assetsDir);

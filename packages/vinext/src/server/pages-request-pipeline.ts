@@ -51,6 +51,7 @@ import {
   observePrewarmMiddlewareMatcher,
   type PrewarmSourceObservation,
 } from "./prewarm-source-independence.js";
+import { applyCdnPolicyToBoundaryResponse } from "./cache-control.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -522,14 +523,19 @@ export async function runPagesRequest(
         }
         return {
           type: "response",
-          response: new Response(null, {
-            status: result.redirectStatus ?? 307,
-            headers,
-          }),
+          response: applyCdnPolicyToBoundaryResponse(
+            new Response(null, {
+              status: result.redirectStatus ?? 307,
+              headers,
+            }),
+          ),
         };
       }
       if (result.response) {
-        return { type: "response", response: result.response };
+        return {
+          type: "response",
+          response: applyCdnPolicyToBoundaryResponse(result.response),
+        };
       }
     }
 
@@ -661,7 +667,9 @@ export async function runPagesRequest(
     const proxyResponse = await proxyExternal(request, resolvedUrl);
     return {
       type: "response",
-      response: mergeHeaders(proxyResponse, middlewareHeaders, undefined),
+      response: applyCdnPolicyToBoundaryResponse(
+        mergeHeaders(proxyResponse, middlewareHeaders, undefined),
+      ),
     };
   }
 
@@ -680,7 +688,10 @@ export async function runPagesRequest(
     if (rewritten) {
       if (isExternalUrl(rewritten)) {
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-        return { type: "response", response: await proxyExternal(request, rewritten) };
+        return {
+          type: "response",
+          response: applyCdnPolicyToBoundaryResponse(await proxyExternal(request, rewritten)),
+        };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
@@ -781,7 +792,10 @@ export async function runPagesRequest(
       if (rewritten) {
         if (isExternalUrl(rewritten)) {
           // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-          return { type: "response", response: await proxyExternal(request, rewritten) };
+          return {
+            type: "response",
+            response: applyCdnPolicyToBoundaryResponse(await proxyExternal(request, rewritten)),
+          };
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
@@ -835,7 +849,9 @@ export async function runPagesRequest(
         if (isExternalUrl(fallbackRewrite)) {
           return {
             type: "response",
-            response: await proxyExternal(request, fallbackRewrite),
+            response: applyCdnPolicyToBoundaryResponse(
+              await proxyExternal(request, fallbackRewrite),
+            ),
           };
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
@@ -896,7 +912,9 @@ export async function runPagesRequest(
           // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
           return {
             type: "response",
-            response: await proxyExternal(request, fallbackRewrite),
+            response: applyCdnPolicyToBoundaryResponse(
+              await proxyExternal(request, fallbackRewrite),
+            ),
           };
         }
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
@@ -984,7 +1002,10 @@ export async function runPagesRequest(
       if (!fallbackRewrite) continue;
       if (isExternalUrl(fallbackRewrite)) {
         // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-        return { type: "response", response: await proxyExternal(request, fallbackRewrite) };
+        return {
+          type: "response",
+          response: applyCdnPolicyToBoundaryResponse(await proxyExternal(request, fallbackRewrite)),
+        };
       }
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);

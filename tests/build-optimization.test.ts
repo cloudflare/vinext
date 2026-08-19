@@ -166,8 +166,15 @@ describe("clientManualChunks", () => {
 
   it("keeps shared vinext shims in the runtime chunk", () => {
     expect(clientManualChunks("/vinext/shims/link.js")).toBe("vinext");
-    expect(clientManualChunks("/vinext/shims/navigation.js")).toBe("vinext");
+    expect(clientManualChunks("/vinext/shims/rsc-prewarm-client.js")).toBe("vinext");
     expect(appClientManualChunks("/vinext/shims/navigation.js")).toBe("vinext");
+  });
+
+  it("leaves App Router navigation shims graph-owned in Pages client builds", () => {
+    expect(clientManualChunks("/vinext/shims/error.js")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/form.js")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/internal/navigation-untracked.js")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/navigation.js")).toBeUndefined();
   });
 
   it("leaves App Router route-owned client shims behind their dynamic boundaries", () => {
@@ -207,6 +214,13 @@ describe("createClientManualChunks (installed layout)", () => {
       "vinext",
     );
     expect(chunks("/app/node_modules/vinext/dist/shims/slot.js?v=abc")).toBe("vinext");
+    expect(chunks("/app/node_modules/vinext/dist/shims/rsc-prewarm-client.js")).toBe("vinext");
+    expect(chunks("/app/node_modules/vinext/dist/shims/error.js")).toBeUndefined();
+    expect(chunks("/app/node_modules/vinext/dist/shims/form.js")).toBeUndefined();
+    expect(
+      chunks("/app/node_modules/vinext/dist/shims/internal/navigation-untracked.js"),
+    ).toBeUndefined();
+    expect(chunks("/app/node_modules/vinext/dist/shims/navigation.js")).toBeUndefined();
   });
 
   it("still excludes route-owned shims when preserving route boundaries", () => {

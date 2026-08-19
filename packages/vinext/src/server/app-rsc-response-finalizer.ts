@@ -44,7 +44,7 @@ const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const configHeadersAlreadyApplied = new WeakSet<Response>();
 const preserveAppliedNextUrlVary = new WeakSet<Response>();
 const userlandExplicitNextUrlVary = new WeakSet<Response>();
-const externalRewriteResponses = new WeakSet<Response>();
+const cdnAdapterBoundaryResponses = new WeakSet<Response>();
 
 function varyIncludesHeader(vary: string | null, headerName: string): boolean {
   if (vary === null) return false;
@@ -65,11 +65,14 @@ export function markAppUserlandResponseVaryProvenance(response: Response): Respo
   return response;
 }
 
-/** Mark an externally proxied response so its upstream policy crosses the active adapter boundary. */
-export function markAppExternalRewriteResponse(response: Response): Response {
-  externalRewriteResponses.add(response);
+/** Mark a middleware- or upstream-owned response so its policy crosses the active CDN adapter. */
+export function markAppCdnAdapterBoundaryResponse(response: Response): Response {
+  cdnAdapterBoundaryResponses.add(response);
   return response;
 }
+
+/** Backward-compatible name for external rewrite call sites. */
+export const markAppExternalRewriteResponse = markAppCdnAdapterBoundaryResponse;
 
 /** Mark a response whose final target pipeline has already applied config headers. */
 export function markAppRscResponseConfigHeadersApplied(response: Response): Response {
@@ -130,7 +133,7 @@ function reapplyNonCacheableCdnPolicy(
   }
 }
 
-function applyExternalRewriteCdnPolicy(headers: Headers): void {
+function applyBoundaryResponseCdnPolicy(headers: Headers): void {
   applyCdnResponseHeaders(headers, {
     cacheControl: headers.has("Set-Cookie") ? "no-store" : (headers.get("Cache-Control") ?? ""),
   });
@@ -204,8 +207,8 @@ export async function finalizeAppRscResponse(
     const isCacheBustingRedirect =
       response.headers.get(VINEXT_RSC_CACHE_BUSTING_REDIRECT_HEADER) === "1";
     const isRscRequest = request.headers.get(RSC_HEADER) === "1";
-    const isExternalRewriteResponse = externalRewriteResponses.has(response);
-    if (!isRscRequest && !isCacheBustingRedirect && !isExternalRewriteResponse) return response;
+    const crossesCdnAdapterBoundary = cdnAdapterBoundaryResponses.has(response);
+    if (!isRscRequest && !isCacheBustingRedirect && !crossesCdnAdapterBoundary) return response;
 
     const headers = new Headers(response.headers);
     if (isRscRequest || isCacheBustingRedirect) {
@@ -213,7 +216,7 @@ export async function finalizeAppRscResponse(
       applyAppRscVaryHeader(headers, varyOptions);
       applyCdnResponseHeaders(headers, { cacheControl: "no-store" });
     } else {
-      applyExternalRewriteCdnPolicy(headers);
+      applyBoundaryResponseCdnPolicy(headers);
     }
     return new Response(response.body, {
       headers,
@@ -233,8 +236,8 @@ export async function finalizeAppRscResponse(
   // origin-managed adapter leaves it absent (unchanged behavior). This runs only
   // when Cache-Control is absent, so it never clobbers a policy a renderer
   // already applied. Redirects are already skipped above.
-  if (externalRewriteResponses.has(response)) {
-    applyExternalRewriteCdnPolicy(response.headers);
+  if (cdnAdapterBoundaryResponses.has(response)) {
+    applyBoundaryResponseCdnPolicy(response.headers);
   } else if (!response.headers.has("Cache-Control")) {
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
   }

@@ -1966,10 +1966,23 @@ describe("prerenderPages — CDN prewarm eligibility", () => {
       "export async function getStaticProps() { return { props: {} }; }\n" +
         "export default function Page() { return null; }\n",
     );
+    fs.mkdirSync(path.join(pagesDir, "docs"), { recursive: true });
+    for (const pagePath of ["docs/about.tsx", "release.v1.tsx"]) {
+      fs.writeFileSync(
+        path.join(pagesDir, pagePath),
+        "export async function getStaticProps() { return { props: {} }; }\n" +
+          "export default function Page() { return null; }\n",
+      );
+    }
     const requestedPaths: string[] = [];
+    const expectedPublicPaths = new Set([
+      "/docs/cacheable/",
+      "/docs/docs/about/",
+      "/docs/release.v1",
+    ]);
     const server = createServer((req, res) => {
       requestedPaths.push(req.url ?? "");
-      if (req.url !== "/docs/cacheable/") {
+      if (!expectedPublicPaths.has(req.url ?? "")) {
         res.statusCode = 404;
         res.end("not found");
         return;
@@ -2000,10 +2013,16 @@ describe("prerenderPages — CDN prewarm eligibility", () => {
       });
 
       expect(requestedPaths).toContain("/docs/cacheable/");
+      expect(requestedPaths).toContain("/docs/docs/about/");
+      expect(requestedPaths).toContain("/docs/release.v1");
       expect(requestedPaths).not.toContain("/cacheable");
+      expect(requestedPaths).not.toContain("/docs/about/");
+      expect(requestedPaths).not.toContain("/docs/release.v1/");
       expect(findRoute(result.routes, "/cacheable")).toMatchObject({
         status: "rendered",
       });
+      expect(findRoute(result.routes, "/docs/about")).toMatchObject({ status: "rendered" });
+      expect(findRoute(result.routes, "/release.v1")).toMatchObject({ status: "rendered" });
       expect(fs.existsSync(path.join(outDir, "cacheable", "index.html"))).toBe(true);
     } finally {
       await closeServer(server);
@@ -2022,7 +2041,19 @@ describe("prerenderApp — client-visible certification URL", () => {
       path.join(appDir, "cacheable", "page.tsx"),
       "export default function Page() { return null; }\n",
     );
+    for (const routePath of ["docs/about", "release.v1"]) {
+      fs.mkdirSync(path.join(appDir, routePath), { recursive: true });
+      fs.writeFileSync(
+        path.join(appDir, routePath, "page.tsx"),
+        "export default function Page() { return null; }\n",
+      );
+    }
     const requestedUrls: string[] = [];
+    const expectedPublicPathnames = new Set([
+      "/docs/cacheable/",
+      "/docs/docs/about/",
+      "/docs/release.v1",
+    ]);
     const server = createServer((req, res) => {
       requestedUrls.push(req.url ?? "");
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -2031,7 +2062,7 @@ describe("prerenderApp — client-visible certification URL", () => {
         res.end("[]");
         return;
       }
-      if (url.pathname !== "/docs/cacheable/") {
+      if (!expectedPublicPathnames.has(url.pathname)) {
         res.statusCode = 404;
         res.end("not found");
         return;
@@ -2072,8 +2103,16 @@ describe("prerenderApp — client-visible certification URL", () => {
 
       expect(requestedUrls).toContain("/docs/cacheable/");
       expect(requestedUrls).toContain("/docs/cacheable/?_rsc");
+      expect(requestedUrls).toContain("/docs/docs/about/");
+      expect(requestedUrls).toContain("/docs/docs/about/?_rsc");
+      expect(requestedUrls).toContain("/docs/release.v1");
+      expect(requestedUrls).toContain("/docs/release.v1?_rsc");
       expect(requestedUrls).not.toContain("/cacheable");
+      expect(requestedUrls).not.toContain("/docs/about/");
+      expect(requestedUrls).not.toContain("/docs/release.v1/");
       expect(findRoute(result.routes, "/cacheable")).toMatchObject({ status: "rendered" });
+      expect(findRoute(result.routes, "/docs/about")).toMatchObject({ status: "rendered" });
+      expect(findRoute(result.routes, "/release.v1")).toMatchObject({ status: "rendered" });
       expect(fs.existsSync(path.join(outDir, "cacheable", "index.html"))).toBe(true);
       expect(fs.existsSync(path.join(outDir, "cacheable.rsc"))).toBe(true);
     } finally {

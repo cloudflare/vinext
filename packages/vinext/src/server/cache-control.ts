@@ -77,6 +77,38 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
 }
 
 /**
+ * Route a middleware- or upstream-owned response through the active CDN
+ * adapter after its final response headers have been assembled.
+ *
+ * These responses do not pass through the framework render cache, so their
+ * generic Cache-Control policy is the only cacheability signal available.
+ * Clone the response because redirect headers and some runtime responses are
+ * immutable, and never admit a Set-Cookie response to shared storage.
+ */
+export function applyCdnPolicyToBoundaryResponse(response: Response): Response {
+  const originalHeaders = [...response.headers];
+  const headers = new Headers(response.headers);
+  applyCdnResponseHeaders(headers, {
+    cacheControl: headers.has("Set-Cookie") ? "no-store" : (headers.get("Cache-Control") ?? ""),
+  });
+  const nextHeaders = [...headers];
+  if (
+    originalHeaders.length === nextHeaders.length &&
+    originalHeaders.every(
+      ([name, value], index) =>
+        nextHeaders[index]?.[0] === name && nextHeaders[index]?.[1] === value,
+    )
+  ) {
+    return response;
+  }
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+/**
  * Matches Next.js's `getCacheControlHeader` stale window semantics while
  * preserving vinext's legacy unbounded SWR header when no expire ceiling is
  * available yet.

@@ -64,6 +64,7 @@ import {
 import {
   applyAppRscConfigHeaders,
   finalizeAppRscResponse,
+  markAppCdnAdapterBoundaryResponse,
   markAppExternalRewriteResponse,
   markAppUserlandResponseVaryProvenance,
 } from "./app-rsc-response-finalizer.js";
@@ -928,7 +929,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         middlewareResponse.headers.get("Vary"),
         NEXT_URL_HEADER,
       );
-      return middlewareResponse;
+      return markAppCdnAdapterBoundaryResponse(middlewareResponse);
     }
 
     cleanPathname = middlewareResult.cleanPathname;
