@@ -2009,7 +2009,7 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("normalizes a same-origin absolute Link only for canonical prefetch identity", async () => {
+  it("does not rewrite or prefetch a noncanonical same-origin absolute Link", async () => {
     vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
@@ -2020,16 +2020,16 @@ describe("Link prefetch scheduling", () => {
 
     try {
       observer.dispatchIntersectingEntry(result.anchor);
-      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
 
-      expect(result.fetch.mock.calls[0]?.[0]).toBe("/about/?_rsc");
+      expect(result.fetch).not.toHaveBeenCalled();
       expect(result.capturedAnchorProps.href).toBe("https://example.com/about");
     } finally {
       result.restoreNodeEnv();
     }
   });
 
-  it("falls back to the contextual Link prefetch when the eligibility manifest stalls", async () => {
+  it("does not issue an alternate Link RSC request when eligibility is unknown", async () => {
     vi.useFakeTimers();
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
@@ -2042,16 +2042,9 @@ describe("Link prefetch scheduling", () => {
       observer.dispatchIntersectingEntry(result.anchor);
       await vi.advanceTimersByTimeAsync(5_000);
       vi.useRealTimers();
-      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
 
-      expectCanonicalRscFetchCall(
-        result.fetch.mock.calls[0],
-        "/blog/hello",
-        expect.objectContaining({ credentials: "include" }),
-      );
-      const headers = new Headers(result.fetch.mock.calls[0]?.[1]?.headers);
-      expect(headers.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
-      expect(headers.get("next-router-state-tree")).not.toBeNull();
+      expect(result.fetch).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
       result.restoreNodeEnv();
@@ -3191,6 +3184,34 @@ describe("Link prefetch scheduling", () => {
           href: "/pages-disabled-mouse-intent-prefetch-target",
           rel: "prefetch",
         },
+      ]);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("preserves same-origin absolute Pages prefetch spelling", async () => {
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
+    const result = await renderIsolatedLink({
+      appNavigation: false,
+      href: "https://example.com/about",
+      nodeEnv: "production",
+      props: { prefetch: false },
+      windowOverrides: {
+        __NEXT_DATA__: {
+          __vinext: {
+            pageModuleUrl: "/_next/static/chunks/pages/current.js",
+          },
+        },
+      },
+    });
+
+    try {
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(result.pagePrefetchLinks).toEqual([
+        { as: "document", href: "/about", rel: "prefetch" },
       ]);
     } finally {
       result.restoreNodeEnv();

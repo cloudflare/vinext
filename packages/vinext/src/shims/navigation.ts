@@ -34,7 +34,7 @@ import {
   canonicalizePrewarmableRscRequestHeaders,
   createRscRequestHeaders,
   createRscRequestUrl,
-  isRscPrewarmEligibleHref,
+  resolveRscPrewarmEligibility,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -2554,6 +2554,7 @@ export async function navigateClientSide(
   notifyAppNavigationStart(href);
 
   // Normalize same-origin absolute URLs to local paths for SPA navigation
+  const preserveAbsoluteSpelling = isExternalUrl(href);
   let normalizedHref = href;
   if (isExternalUrl(href)) {
     const localPath = toSameOriginAppPath(href, __basePath);
@@ -2573,6 +2574,13 @@ export async function navigateClientSide(
     normalizedHref = localPath;
   }
 
+  const fullHref = preserveAbsoluteSpelling
+    ? href
+    : normalizePathTrailingSlash(
+        toBrowserNavigationHref(normalizedHref, window.location.href, __basePath),
+        __trailingSlash,
+      );
+
   // Hybrid ownership: when both an App and a Pages route can match the
   // destination, defer to the shared `compareHybridRoutePatterns` decision
   // (the same logic the server uses for direct document loads). If Pages
@@ -2584,7 +2592,6 @@ export async function navigateClientSide(
   // `link.tsx`.
   const hybridOwner = resolveHybridClientRouteOwner(normalizedHref);
   if (hybridOwner === "pages" || hybridOwner === "document") {
-    const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
     notifyAppRouterTransitionStart(fullHref, mode);
     if (mode === "push") {
       saveScrollPosition();
@@ -2594,7 +2601,6 @@ export async function navigateClientSide(
     return;
   }
 
-  const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
   stageAppNavigationFailureTarget(fullHref);
   // Match Next.js: App Router reports navigation start before dispatching,
   // including hash-only navigations that short-circuit after URL update.
@@ -2883,12 +2889,15 @@ const _appRouter: AppRouterInstance = {
       // dependencies off the startup path of every next/navigation consumer.
       const { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch } =
         await import("./internal/app-route-prefetch-policy.js");
-      const isCanonicalPrewarmCandidate =
+      const canUseCanonicalPrewarm =
         interceptionContext === null &&
         mountedSlotsHeader === null &&
-        (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref) &&
-        (await isRscPrewarmEligibleHref(fullHref, { timeoutMs: 5_000 }));
-      if (setup.cancelled) return;
+        (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref);
+      const prewarmEligibility = canUseCanonicalPrewarm
+        ? await resolveRscPrewarmEligibility(fullHref, { timeoutMs: 5_000 })
+        : "ineligible";
+      if (setup.cancelled || prewarmEligibility === "unknown") return;
+      const isCanonicalPrewarmCandidate = prewarmEligibility === "eligible";
       const policy =
         isCanonicalPrewarmCandidate || kind === "full"
           ? resolveFullAppRoutePrefetch()
@@ -3041,11 +3050,9 @@ if (process.env.__NEXT_GESTURE_TRANSITION) {
     // navigateClientSide would normalize same-origin absolute URLs itself; this
     // inline check exists to *no-op* on external hrefs instead of falling
     // through to its hard window.location.assign.
-    let appHref = href;
     if (isExternalUrl(href)) {
       const localPath = toSameOriginAppPath(href, __basePath);
       if (localPath === null) return;
-      appHref = localPath;
     }
 
     // Track the scheduled navigation like push/replace so a `refresh()` issued
@@ -3058,7 +3065,7 @@ if (process.env.__NEXT_GESTURE_TRANSITION) {
     // startTransition throw): an RSC fetch rejection mid-gesture surfaces the
     // same way it would for those siblings.
     const releaseNavigation = trackScheduledAppRouterNavigation();
-    void navigateClientSide(appHref, "push", options?.scroll !== false, false, "synchronous");
+    void navigateClientSide(href, "push", options?.scroll !== false, false, "synchronous");
     releaseScheduledAppRouterNavigationAfterCurrentTask(releaseNavigation);
   };
 }

@@ -611,8 +611,10 @@ export async function deployWithCdnWarmup(
     triggersApplied = true;
   }
 
-  if (stagingTraffic && upload.previewUrl) {
-    staged = runWranglerVersionDeploy(root, stagingTraffic, options, "stage");
+  if (upload.previewUrl) {
+    if (stagingTraffic) {
+      staged = runWranglerVersionDeploy(root, stagingTraffic, options, "stage");
+    }
     try {
       await warmCdnCache({
         targetUrl: upload.previewUrl,
@@ -625,14 +627,13 @@ export async function deployWithCdnWarmup(
         strict: options.warmCdnStrict,
       });
     } catch (error) {
-      throw withStagedVersionCleanupNote(error);
+      if (staged) throw withStagedVersionCleanupNote(error);
+      throw error;
     }
     warmedBeforePromotion = true;
   } else {
     console.warn(
-      stagingTraffic
-        ? "  CDN warmup: immutable version preview URL unavailable; warming after promotion instead."
-        : "  CDN warmup: pre-traffic warming skipped because the current deployment is not a single 100% version.",
+      "  CDN warmup: immutable version preview URL unavailable; warming after promotion instead.",
     );
   }
 
@@ -697,7 +698,10 @@ export function resolveCdnWarmupTargetUrl(
 ): string | null {
   const config = parseWranglerConfig(root, options?.config);
   const env = getWranglerTargetEnv(options ?? {});
-  const customDomain = (env ? config?.env?.[env]?.customDomain : undefined) ?? config?.customDomain;
+  const envConfig = env ? config?.env?.[env] : undefined;
+  const customDomain = envConfig?.hasRouteConfig
+    ? envConfig.customDomain
+    : (envConfig?.customDomain ?? config?.customDomain);
   if (customDomain) {
     return `https://${customDomain}`;
   }

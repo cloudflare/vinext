@@ -74,14 +74,14 @@ describe("RSC prewarm browser eligibility", () => {
       "fetch",
       vi.fn(() => new Promise<Response>(() => {})),
     );
-    const { isRscPrewarmEligibleHref, RSC_PREWARM_NAVIGATION_TIMEOUT_MS } =
+    const { resolveRscPrewarmEligibility, RSC_PREWARM_NAVIGATION_TIMEOUT_MS } =
       await import("../packages/vinext/src/client/rsc-prewarm-eligibility.js");
 
     expect(RSC_PREWARM_NAVIGATION_TIMEOUT_MS).toBe(250);
     await expect(
-      isRscPrewarmEligibleHref("/cached/intro", {
+      resolveRscPrewarmEligibility("/cached/intro", {
         timeoutMs: RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
       }),
-    ).resolves.toBe(false);
+    ).resolves.toBe("unknown");
   });
 });

@@ -171,6 +171,18 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
     );
   });
 
+  await withFreshPage(async (page, targetDocumentRequests, targetRscRequests) => {
+    await page.route("**/vinext-rsc-prewarm.json", (route) => route.abort());
+    await page.goto("/prewarm/soft");
+    await page.getByTestId("soft-navigation").click();
+
+    await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
+    await expect(page.getByRole("heading", { name: "Post: intro" })).toBeVisible();
+    await expect(page.getByTestId("build-id")).toHaveText(expectedBuildId);
+    expect(targetRscRequests).toEqual([]);
+    expect(targetDocumentRequests).toHaveLength(1);
+  });
+
   const context = await browser.newContext();
   const page = await context.newPage();
   try {

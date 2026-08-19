@@ -229,7 +229,54 @@ describe("prefetch cache eviction", () => {
     expect(headers.get("next-router-state-tree")).toBeNull();
   });
 
-  it("router.prefetch falls back to contextual identity when the eligibility manifest stalls", async () => {
+  it.each([
+    {
+      basePath: "",
+      expected: "/dashboard/",
+      href: "/dashboard",
+      trailingSlash: "true",
+    },
+    {
+      basePath: "/docs",
+      expected: "/docs",
+      href: "/",
+      trailingSlash: "false",
+    },
+  ])(
+    "normalizes path-form navigation $href to the prefetch identity $expected",
+    async ({ basePath, expected, href, trailingSlash }) => {
+      vi.stubEnv("__NEXT_ROUTER_BASEPATH", basePath);
+      vi.stubEnv("__VINEXT_TRAILING_SLASH", trailingSlash);
+      vi.resetModules();
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      const navigate = vi.fn(async (_href: string, ..._args: unknown[]) => {});
+      (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+        bootstrap: { routeManifest: null, rsc: undefined },
+        functions: { navigate },
+      };
+
+      await navigation.navigateClientSide(href, "push", true);
+
+      expect(navigate.mock.calls[0]?.[0]).toBe(expected);
+    },
+  );
+
+  it("preserves same-origin absolute navigation spelling", async () => {
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const navigate = vi.fn(async (_href: string, ..._args: unknown[]) => {});
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate },
+    };
+
+    await navigation.navigateClientSide("http://localhost/dashboard", "push", true);
+
+    expect(navigate.mock.calls[0]?.[0]).toBe("http://localhost/dashboard");
+  });
+
+  it("router.prefetch does not issue an alternate RSC request when eligibility is unknown", async () => {
     vi.useFakeTimers();
     vi.stubEnv(
       "__VINEXT_RSC_PREWARM_MANIFEST_URL",
@@ -248,11 +295,10 @@ describe("prefetch cache eviction", () => {
       navigation.appRouterInstance.prefetch("/dashboard");
       await vi.advanceTimersByTimeAsync(5_000);
       vi.useRealTimers();
-      await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+      await settlePrefetchSetup();
 
-      expect(toRscUrlString(fetch.mock.calls[1]![0])).toMatch(/^\/dashboard\?_rsc=.+$/);
-      const headers = new Headers(fetch.mock.calls[1]![1]?.headers);
-      expect(headers.get("next-url")).toBe("/");
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(toRscUrlString(fetch.mock.calls[0]![0])).toContain("vinext-rsc-prewarm.json");
     } finally {
       vi.useRealTimers();
     }

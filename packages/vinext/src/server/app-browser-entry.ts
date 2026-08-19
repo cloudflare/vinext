@@ -187,8 +187,8 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   getVinextRscCompatibilityId,
-  isRscPrewarmEligibleHref,
   preloadRscPrewarmManifest,
+  resolveRscPrewarmEligibility,
   RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
@@ -2099,12 +2099,25 @@ function bootstrapHydration(
         // A settled prefetch must remain synchronously consumable in the click
         // task. Only wait for optional canonical eligibility when this
         // navigation actually needs to derive a network/cache request key.
-        const usesCanonicalPrewarmedRequest =
+        const prewarmEligibility =
+          navigationKind === "navigate" &&
           settledPrefetchedResponse === null &&
-          (rewrittenNavigationHref === null || rewrittenNavigationHref === currentHref) &&
-          (await isRscPrewarmEligibleHref(currentHref, {
-            timeoutMs: RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
-          })) &&
+          requestInterceptionContext === null &&
+          mountedSlotsHeader === null &&
+          (rewrittenNavigationHref === null || rewrittenNavigationHref === currentHref)
+            ? await resolveRscPrewarmEligibility(currentHref, {
+                timeoutMs: RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
+              })
+            : "ineligible";
+        if (prewarmEligibility === "unknown") {
+          performHardNavigationForScrollIntent(
+            currentHref,
+            currentHistoryMode === "replace" ? "replace" : undefined,
+          );
+          return;
+        }
+        const usesCanonicalPrewarmedRequest =
+          prewarmEligibility === "eligible" &&
           canonicalizePrewarmableRscRequestHeaders(requestHeaders);
         const rscUrl = settledPrefetchedResponse
           ? resolvePrefetchNavigationResponseUrl({

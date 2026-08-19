@@ -13,6 +13,7 @@ import {
   buildWranglerDeployArgs,
   getZeroPercentStagingTraffic,
   parseDeployArgs,
+  resolveCdnWarmupTargetUrl,
   resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
   runWranglerKVBulkPut,
@@ -3421,6 +3422,7 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.env?.staging).toEqual({
       name: "my-worker-staging",
       customDomain: "staging.example.com",
+      hasRouteConfig: true,
     });
   });
 
@@ -3500,6 +3502,69 @@ enabled = true
     expect(config?.customDomain).toBe("example.co.uk");
   });
 
+  it("extracts singular JSON routes and prefers a route object's pattern over its zone", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        route: "single.example.com/*",
+        env: {
+          staging: {
+            routes: [{ pattern: "app.example.com/*", zone_name: "example.com" }],
+          },
+        },
+      }),
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBe("single.example.com");
+    expect(config?.hasRouteConfig).toBe(true);
+    expect(config?.env?.staging).toEqual({
+      customDomain: "app.example.com",
+      hasRouteConfig: true,
+    });
+  });
+
+  it("parses commented TOML cache headers and keeps environment routes out of root config", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+[cache] # production cache
+cross_version_cache = true
+
+[env.staging] # staging target
+route = "staging.example.com/*"
+
+[env.staging.cache] # staging cache
+cross_version_cache = false
+`,
+    );
+
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.crossVersionCache).toBe(true);
+    expect(config?.customDomain).toBeUndefined();
+    expect(config?.env?.staging).toEqual({
+      crossVersionCache: false,
+      customDomain: "staging.example.com",
+      hasCacheConfig: true,
+      hasRouteConfig: true,
+    });
+  });
+
+  it("does not inherit a top-level warm target when an environment clears its routes", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        custom_domains: ["production.example.com"],
+        env: { staging: { routes: [] } },
+      }),
+    );
+
+    expect(resolveCdnWarmupTargetUrl(tmpDir, null, { env: "staging" })).toBeNull();
+  });
+
   it("extracts custom domain from custom_domains array", () => {
     writeFile(tmpDir, "wrangler.json", JSON.stringify({ custom_domains: ["shop.example.com.au"] }));
     const config = parseWranglerConfig(tmpDir);
@@ -3543,6 +3608,7 @@ enabled = true
     expect(config?.env?.staging).toEqual({
       name: "my-worker-staging-custom",
       customDomain: "staging.example.com",
+      hasRouteConfig: true,
     });
   });
 
@@ -3581,6 +3647,7 @@ pattern = "staging.example.com/*"
     expect(config?.env?.staging).toEqual({
       name: "my-worker-staging",
       customDomain: "staging.example.com",
+      hasRouteConfig: true,
     });
   });
 });

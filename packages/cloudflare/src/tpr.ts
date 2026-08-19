@@ -80,6 +80,7 @@ type WranglerConfig = {
   accountId?: string;
   crossVersionCache?: boolean;
   hasCacheConfig?: boolean;
+  hasRouteConfig?: boolean;
   kvNamespaceId?: string;
   customDomain?: string;
   name?: string;
@@ -90,6 +91,7 @@ type WranglerConfig = {
 export type WranglerEnvironmentConfig = {
   crossVersionCache?: boolean;
   hasCacheConfig?: boolean;
+  hasRouteConfig?: boolean;
   customDomain?: string;
   name?: string;
 };
@@ -285,8 +287,14 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     }
   }
 
-  // Custom domain — check routes[] and custom_domains[]
-  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
+  if (["route", "routes", "custom_domains"].some((key) => key in config)) {
+    result.hasRouteConfig = true;
+  }
+  // Custom domain — check route, routes[], and custom_domains[].
+  const domain =
+    extractDomainFromRoute(config.route) ??
+    extractDomainFromRoutes(config.routes) ??
+    extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
 
   const env = extractEnvConfigs(config.env);
@@ -302,7 +310,12 @@ function extractEnvConfigs(envs: unknown): Record<string, WranglerEnvironmentCon
   for (const [envName, rawConfig] of Object.entries(envs)) {
     if (!rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) continue;
     const envConfig = extractEnvironmentConfig(rawConfig as Record<string, unknown>);
-    if (envConfig.name || envConfig.customDomain || envConfig.hasCacheConfig) {
+    if (
+      envConfig.name ||
+      envConfig.customDomain ||
+      envConfig.hasCacheConfig ||
+      envConfig.hasRouteConfig
+    ) {
       result[envName] = envConfig;
     }
   }
@@ -321,9 +334,22 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
         .cross_version_cache as boolean;
     }
   }
-  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
+  if (["route", "routes", "custom_domains"].some((key) => key in config)) {
+    result.hasRouteConfig = true;
+  }
+  const domain =
+    extractDomainFromRoute(config.route) ??
+    extractDomainFromRoutes(config.routes) ??
+    extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
   return result;
+}
+
+function extractDomainFromRoute(route: unknown): string | null {
+  if (typeof route === "string") return cleanNonWorkersDevDomain(route);
+  if (!route || typeof route !== "object" || Array.isArray(route)) return null;
+  const pattern = (route as Record<string, unknown>).pattern;
+  return typeof pattern === "string" ? cleanNonWorkersDevDomain(pattern) : null;
 }
 
 function extractDomainFromRoutes(routes: unknown): string | null {
@@ -331,23 +357,23 @@ function extractDomainFromRoutes(routes: unknown): string | null {
 
   for (const route of routes) {
     if (typeof route === "string") {
-      const domain = cleanDomain(route);
-      if (domain && !domain.includes("workers.dev")) return domain;
+      const domain = cleanNonWorkersDevDomain(route);
+      if (domain) return domain;
     } else if (route && typeof route === "object") {
       const r = route as Record<string, unknown>;
-      const pattern =
-        typeof r.zone_name === "string"
-          ? r.zone_name
-          : typeof r.pattern === "string"
-            ? r.pattern
-            : null;
+      const pattern = typeof r.pattern === "string" ? r.pattern : null;
       if (pattern) {
-        const domain = cleanDomain(pattern);
-        if (domain && !domain.includes("workers.dev")) return domain;
+        const domain = cleanNonWorkersDevDomain(pattern);
+        if (domain) return domain;
       }
     }
   }
   return null;
+}
+
+function cleanNonWorkersDevDomain(raw: string): string | null {
+  const domain = cleanDomain(raw);
+  return domain && !domain.includes("workers.dev") ? domain : null;
 }
 
 function extractDomainFromCustomDomains(config: Record<string, unknown>): string | null {
@@ -378,14 +404,15 @@ function cleanDomain(raw: string): string | null {
  */
 function extractFromTOML(content: string): WranglerConfig {
   const result: WranglerConfig = {};
+  const rootBody = getTomlRootBody(content);
 
-  const nameMatch = content.match(/^name\s*=\s*"([^"]+)"/m);
+  const nameMatch = rootBody.match(/^name\s*=\s*"([^"]+)"/m);
   if (nameMatch) result.name = nameMatch[1];
 
-  const legacyEnvMatch = content.match(/^legacy_env\s*=\s*(true|false)\s*$/m);
+  const legacyEnvMatch = rootBody.match(/^legacy_env\s*=\s*(true|false)\s*$/m);
   if (legacyEnvMatch) result.legacyEnv = legacyEnvMatch[1] === "true";
 
-  const rootCache = extractNamedTomlCacheConfig(getTomlRootBody(content), "cache");
+  const rootCache = extractNamedTomlCacheConfig(rootBody, "cache");
   const cacheSection = getTomlSections(content).find((section) => section.header === "cache");
   const sectionCache = cacheSection ? extractDirectTomlCacheConfig(cacheSection.body) : null;
   const cacheConfig = sectionCache ?? rootCache;
@@ -397,7 +424,7 @@ function extractFromTOML(content: string): WranglerConfig {
   }
 
   // account_id = "..."
-  const accountMatch = content.match(/^account_id\s*=\s*"([^"]+)"/m);
+  const accountMatch = rootBody.match(/^account_id\s*=\s*"([^"]+)"/m);
   if (accountMatch) result.accountId = accountMatch[1];
 
   // KV namespace with binding = "VINEXT_KV_CACHE"
@@ -418,27 +445,24 @@ function extractFromTOML(content: string): WranglerConfig {
 
   // routes — both string and table forms
   // route = "example.com/*"
-  const routeMatch = content.match(/^route\s*=\s*"([^"]+)"/m);
+  const routeMatch = rootBody.match(/^route\s*=\s*"([^"]+)"/m);
   if (routeMatch) {
-    const domain = cleanDomain(routeMatch[1]);
-    if (domain && !domain.includes("workers.dev")) {
-      result.customDomain = domain;
-    }
+    result.hasRouteConfig = true;
+    result.customDomain = cleanNonWorkersDevDomain(routeMatch[1]) ?? undefined;
+  }
+  if (/^\s*(?:routes|custom_domains)\s*=/m.test(rootBody)) {
+    result.hasRouteConfig = true;
+    const configuredDomain =
+      extractTomlRoutesArrayDomain(rootBody) ?? extractTomlCustomDomainsArrayDomain(rootBody);
+    if (!result.customDomain && configuredDomain) result.customDomain = configuredDomain;
   }
 
   // [[routes]] blocks
-  if (!result.customDomain) {
-    const routeBlocks = content.split(/\[\[routes\]\]/);
-    for (let i = 1; i < routeBlocks.length; i++) {
-      const block = routeBlocks[i].split(/\[\[/)[0];
-      const patternMatch = block.match(/pattern\s*=\s*"([^"]+)"/);
-      if (patternMatch) {
-        const domain = cleanDomain(patternMatch[1]);
-        if (domain && !domain.includes("workers.dev")) {
-          result.customDomain = domain;
-          break;
-        }
-      }
+  for (const section of getTomlSections(content)) {
+    if (section.header !== "routes") continue;
+    result.hasRouteConfig = true;
+    if (!result.customDomain) {
+      result.customDomain = extractTomlRouteBlockDomain(section.body) ?? undefined;
     }
   }
 
@@ -460,14 +484,24 @@ function extractEnvConfigsFromTOML(
       const nameMatch = section.body.match(/^name\s*=\s*"([^"]+)"/m);
       if (nameMatch) envConfig.name = nameMatch[1];
       const domain =
-        extractTomlScalarRouteDomain(section.body) ?? extractTomlRoutesArrayDomain(section.body);
+        extractTomlScalarRouteDomain(section.body) ??
+        extractTomlRoutesArrayDomain(section.body) ??
+        extractTomlCustomDomainsArrayDomain(section.body);
       if (domain) envConfig.customDomain = domain;
+      if (/^\s*(?:route|routes|custom_domains)\s*=/m.test(section.body)) {
+        envConfig.hasRouteConfig = true;
+      }
       const cacheConfig = extractNamedTomlCacheConfig(section.body, "cache");
       if (cacheConfig) {
         envConfig.hasCacheConfig = true;
         envConfig.crossVersionCache = cacheConfig.crossVersionCache;
       }
-      if (envConfig.name || envConfig.customDomain || envConfig.hasCacheConfig) {
+      if (
+        envConfig.name ||
+        envConfig.customDomain ||
+        envConfig.hasCacheConfig ||
+        envConfig.hasRouteConfig
+      ) {
         result[envName] = envConfig;
       }
       continue;
@@ -476,11 +510,10 @@ function extractEnvConfigsFromTOML(
     const routesEnvName = section.header.match(/^env\.([^.]+)\.routes$/)?.[1];
     if (routesEnvName) {
       const envConfig = result[routesEnvName] ?? {};
+      envConfig.hasRouteConfig = true;
       const domain = extractTomlRouteBlockDomain(section.body);
       if (domain) envConfig.customDomain = domain;
-      if (envConfig.name || envConfig.customDomain) {
-        result[routesEnvName] = envConfig;
-      }
+      result[routesEnvName] = envConfig;
       continue;
     }
 
@@ -560,12 +593,13 @@ function getTomlSections(content: string): Array<{ header: string; body: string 
 }
 
 function parseTomlSectionHeader(line: string): string | null {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
-  const isArrayHeader = trimmed.startsWith("[[") && trimmed.endsWith("]]");
-  const start = isArrayHeader ? 2 : 1;
-  const end = isArrayHeader ? trimmed.length - 2 : trimmed.length - 1;
-  const header = trimmed.slice(start, end).trim();
+  const match = line.match(/^\s*(\[\[?)(.*?)(\]\]?)(?:\s+#.*)?\s*$/);
+  if (!match) return null;
+  const isArrayHeader = match[1] === "[[";
+  if ((isArrayHeader && match[3] !== "]]") || (!isArrayHeader && match[3] !== "]")) {
+    return null;
+  }
+  const header = match[2].trim();
   return header.length > 0 ? header : null;
 }
 
@@ -579,14 +613,22 @@ function extractTomlScalarRouteDomain(section: string): string | null {
 function extractTomlRoutesArrayDomain(section: string): string | null {
   const routesMatch = section.match(/^routes\s*=\s*\[([\s\S]*?)\]/m);
   if (!routesMatch) return null;
-  const patternMatch = (routesMatch[1] ?? "").match(/(?:pattern\s*=\s*)?"([^"]+)"/);
+  const routes = routesMatch[1] ?? "";
+  const patternMatch = routes.match(/\bpattern\s*=\s*"([^"]+)"/) ?? routes.match(/"([^"]+)"/);
   if (!patternMatch) return null;
   const domain = cleanDomain(patternMatch[1]);
   return domain && !domain.includes("workers.dev") ? domain : null;
 }
 
+function extractTomlCustomDomainsArrayDomain(section: string): string | null {
+  const domainsMatch = section.match(/^custom_domains\s*=\s*\[([\s\S]*?)\]/m);
+  if (!domainsMatch) return null;
+  const domainMatch = (domainsMatch[1] ?? "").match(/"([^"]+)"/);
+  return domainMatch ? cleanNonWorkersDevDomain(domainMatch[1]) : null;
+}
+
 function extractTomlRouteBlockDomain(section: string): string | null {
-  const patternMatch = section.match(/^(?:pattern|zone_name)\s*=\s*"([^"]+)"/m);
+  const patternMatch = section.match(/^pattern\s*=\s*"([^"]+)"/m);
   if (!patternMatch) return null;
   const domain = cleanDomain(patternMatch[1]);
   return domain && !domain.includes("workers.dev") ? domain : null;

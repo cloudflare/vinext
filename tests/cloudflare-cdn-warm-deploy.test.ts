@@ -43,7 +43,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("warms an immutable version URL before production promotion", async () => {
+  it("warms an immutable version URL before promotion regardless of the traffic split", async () => {
     const events: string[] = [];
     writeFile(
       "wrangler.jsonc",
@@ -78,16 +78,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       if (args.includes("status")) {
         events.push("status");
         return JSON.stringify({
-          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+          versions: [
+            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+            { version_id: "33333333-3333-4333-8333-333333333333", percentage: 50 },
+          ],
         });
-      }
-      if (
-        args.includes("deploy") &&
-        args.includes("11111111-1111-4111-8111-111111111111@100%") &&
-        args.includes("22222222-2222-4222-8222-222222222222@0%")
-      ) {
-        events.push("stage");
-        return "Staged version\nhttps://stable.example.workers.dev\n";
       }
       if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
         events.push("promote");
@@ -123,12 +118,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(execFileSyncMock).toHaveBeenNthCalledWith(
       3,
       process.execPath,
-      expect.arrayContaining([
-        "versions",
-        "deploy",
-        "11111111-1111-4111-8111-111111111111@100%",
-        "22222222-2222-4222-8222-222222222222@0%",
-      ]),
+      expect.arrayContaining(["versions", "deploy", "22222222-2222-4222-8222-222222222222@100%"]),
       expect.any(Object),
     );
     expect(fetch).toHaveBeenCalledTimes(3);
@@ -155,19 +145,12 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(execFileSyncMock).toHaveBeenNthCalledWith(
       4,
       process.execPath,
-      expect.arrayContaining(["versions", "deploy", "22222222-2222-4222-8222-222222222222@100%"]),
-      expect.any(Object),
-    );
-    expect(execFileSyncMock).toHaveBeenNthCalledWith(
-      5,
-      process.execPath,
       expect.arrayContaining(["triggers", "deploy"]),
       expect.any(Object),
     );
     expect(events).toEqual([
       "upload",
       "status",
-      "stage",
       "fetch:https://22222222-my-worker.example.workers.dev/",
       "fetch:https://22222222-my-worker.example.workers.dev/about",
       "fetch:https://22222222-my-worker.example.workers.dev/about?_rsc",
