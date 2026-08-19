@@ -171,7 +171,7 @@ function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
 
 /**
  * Resolve literal package `require()` calls while Vite still knows they are
- * CommonJS references. `vite-plugin-commonjs` subsequently hoists each call
+ * CommonJS references. The vinext CommonJS transform subsequently hoists each call
  * into a static import; without this pre-resolution, Vite sees an
  * `import-statement` and selects the package's `import` export condition. Use
  * Vite's explicit `isRequire` resolver because the dev plugin container does
@@ -227,7 +227,7 @@ export function createRequireConditionResolutionPlugin(
       async handler(code, id) {
         const cleanId = stripViteModuleQuery(id);
         const commonjsDisposition = commonjsTransformFilter?.(cleanId);
-        // Only pre-resolve calls that the following vite-plugin-commonjs pass
+        // Only pre-resolve calls that the following vinext CommonJS pass
         // will turn into static imports. Ordinary dependencies and project
         // .cjs/.cts files are left to Vite/Rolldown, which already preserves
         // require conditions. Synthetic targets return true from the shared

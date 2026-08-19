@@ -2,6 +2,7 @@ import type {
   Alias,
   CSSModulesOptions,
   DevEnvironment,
+  Environment,
   HotUpdateOptions,
   Logger,
   Plugin,
@@ -276,7 +277,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { getPagesPreviewModeId } from "./server/pages-preview.js";
-import commonjs from "vite-plugin-commonjs";
+import { createCommonJsPlugin } from "./plugins/commonjs.js";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
 import {
@@ -552,6 +553,32 @@ function commonjsTransformFilter(
     return transformProjectLocalCommonJs;
   }
   return undefined;
+}
+
+function shouldTransformCommonJs(
+  environment: Environment,
+  code: string,
+  id: string,
+  isBundledCommonJsDependency: (id: string) => boolean,
+): boolean {
+  if (
+    environment.mode === "dev" &&
+    (environment as DevEnvironment).depsOptimizer?.isOptimizedDepFile(id)
+  ) {
+    return false;
+  }
+  const cleanId = toSlash(stripViteModuleQuery(id));
+  if (isConditionalRequireScriptModuleId(cleanId)) return true;
+  const isDev = environment.mode === "dev";
+  const bundledDependency =
+    isDev &&
+    environment.config.consumer === "server" &&
+    (code.includes("__filename") || code.includes("__dirname")) &&
+    isBundledCommonJsDependency(cleanId);
+  if (bundledDependency) return true;
+  if (cleanId.includes("/node_modules/")) return false;
+  if (/\.c[jt]s$/i.test(cleanId)) return isDev;
+  return true;
 }
 
 function hasOnlyTypeSpecifiers(statement: AstStaticDependencyDeclaration): boolean {
@@ -1859,59 +1886,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     ReturnType<typeof replaceConsumerEnvironmentConditions>
   >();
 
-  // vite-plugin-commonjs calls its user filter synchronously, before its first
-  // async boundary, but the filter itself receives only an id. Bridge the
-  // current Vite environment into that call without creating per-environment
-  // plugin instances: environment plugins cannot run the configResolved hook
-  // that vite-plugin-commonjs requires to initialize its resolver.
-  let transformProjectLocalCommonJs = false;
-  let transformBundledCommonJsDependencies = false;
-  const commonJsPlugin = commonjs({
-    filter(id: string) {
-      return commonjsTransformFilter(
+  const commonJsPlugin = createCommonJsPlugin({
+    shouldTransform(environment, code, id) {
+      return shouldTransformCommonJs(
+        environment,
+        code,
         id,
-        transformProjectLocalCommonJs,
-        transformBundledCommonJsDependencies,
         importMetaUrlCapability.isBundledCommonJsDependencyId,
       );
     },
   });
-  const commonJsTransform = commonJsPlugin.transform;
-  if (typeof commonJsTransform === "function") {
-    commonJsPlugin.transform = function environmentAwareCommonJsTransform(code, id, ...args) {
-      // The independent optimizeDeps Rolldown build already converted these
-      // files to ESM. Running vite-plugin-commonjs over its output would append
-      // a second export facade (including a duplicate default export).
-      if (
-        this.environment.mode === "dev" &&
-        (this.environment as DevEnvironment).depsOptimizer?.isOptimizedDepFile(id)
-      ) {
-        return null;
-      }
-      const isDev = this.environment.mode === "dev";
-      const isServer = this.environment.config.consumer === "server";
-      const bundledDependency =
-        isDev &&
-        isServer &&
-        (code.includes("__filename") || code.includes("__dirname")) &&
-        importMetaUrlCapability.isBundledCommonJsDependencyId(id);
-      const projectLocal =
-        !bundledDependency && !id.includes("/node_modules/") && !id.includes("\\node_modules\\");
-      const previousProjectLocal = transformProjectLocalCommonJs;
-      const previous = transformBundledCommonJsDependencies;
-      transformProjectLocalCommonJs = projectLocal && isDev;
-      transformBundledCommonJsDependencies = bundledDependency;
-      try {
-        // Do not await here: the filter is consulted synchronously while this
-        // environment-scoped flag is set. The remaining async transform work
-        // does not read it, so concurrent module transforms cannot cross-talk.
-        return commonJsTransform.call(this, code, id, ...args);
-      } finally {
-        transformProjectLocalCommonJs = previousProjectLocal;
-        transformBundledCommonJsDependencies = previous;
-      }
-    };
-  }
 
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
@@ -1935,12 +1919,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Skip project-local `.cjs`/`.cts` files during builds. `vinext init` renames CJS config
     // files to `.cjs` (e.g. `tailwind.config.js` → `tailwind.config.cjs`) when
     // it adds `"type": "module"`, and app code imports them extensionlessly
-    // (`import cfg from "../tailwind.config"`). If `vite-plugin-commonjs`
+    // (`import cfg from "../tailwind.config"`). If the CommonJS transform
     // rewrites their `module.exports` to ESM `export {}`, rolldown still infers
     // `moduleType: "cjs"` from the `.cjs`/`.cts` extension and re-parses the
     // rewritten output as CommonJS, failing with "Cannot use export statement
-    // outside a module". Returning `false` during builds makes vite-plugin-commonjs
-    // skip these project-local files so Rolldown's own CJS interop bundles them
+    // outside a module". Skip these project-local files during builds so
+    // Rolldown's own CJS interop bundles them
     // instead. Dev has no later CJS lowering pass, so transform them here.
     // Conditional `require` targets use a synthetic `.js` identity so their
     // CJS source can be converted before plugin-rsc injects ESM proxy imports.

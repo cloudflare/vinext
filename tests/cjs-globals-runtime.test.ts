@@ -83,6 +83,7 @@ async function createHybridFixture(
       ? []
       : [fs.mkdir(path.join(root, "app"), { recursive: true })]),
     fs.mkdir(path.join(root, "pages"), { recursive: true }),
+    fs.mkdir(path.join(root, "locales"), { recursive: true }),
     fs.mkdir(path.join(root, "lib/node_modules"), { recursive: true }),
     fs.mkdir(cjsPackageDir, { recursive: true }),
     fs.mkdir(esmPackageDir, { recursive: true }),
@@ -97,6 +98,18 @@ async function createHybridFixture(
   );
   await Promise.all([
     fs.writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" })),
+    fs.writeFile(path.join(root, "locales/en.js"), 'module.exports = "en";\n'),
+    fs.writeFile(path.join(root, "locales/ru.js"), 'module.exports = "ru";\n'),
+    fs.writeFile(
+      path.join(root, "pages/dynamic-require.tsx"),
+      `const locale = "ru";
+const messages = require(\`../locales/${"${locale}"}\`).default;
+
+export default function Page() {
+  return <p id="dynamic-require-message">{messages}</p>;
+}
+`,
+    ),
     ...(options.includeApp === false
       ? []
       : [
@@ -856,6 +869,13 @@ function expectAppEsmIdentity(
   return { filename, readable: htmlValue(html, "app-esm-filename-readable") };
 }
 
+async function expectPatternedDynamicRequire(baseUrl: string): Promise<void> {
+  const response = await fetch(`${baseUrl}/dynamic-require`);
+  const html = await response.text();
+  expect(response.status, html).toBe(200);
+  expect(htmlValue(html, "dynamic-require-message")).toBe("ru");
+}
+
 describe("bundled module identity on the hybrid Node development runtime", () => {
   let root = "";
   let canonicalRoot = "";
@@ -909,6 +929,7 @@ export default function Page() {
   });
 
   it("uses optimizer output identity without losing unbundled project source identity", async () => {
+    await expectPatternedDynamicRequire(baseUrl);
     for (const environment of ["rsc", "ssr"] as const) {
       expect(
         server?.config.environments[environment]?.optimizeDeps?.rolldownOptions?.plugins,
@@ -960,7 +981,7 @@ export default function Page() {
     const clientModule = await server?.environments.client.transformRequest(
       "/lib/node_modules/linked-cjs-identity/client-safe.cjs",
     );
-    expect(clientModule?.code).toContain("[vite-plugin-commonjs] export-runtime-S");
+    expect(clientModule?.code).toContain("__vinext_cjs_default__ as default");
     const esmClientModule = await server?.environments.client.transformRequest(
       "/vendor/node_modules/esm-import-meta-identity/client.js",
     );
@@ -1032,6 +1053,7 @@ describe("bundled module identity on the hybrid Node production runtime", () => 
   });
 
   it("uses emitted chunk identity for dependency and project modules", async () => {
+    await expectPatternedDynamicRequire(baseUrl);
     const response = await fetch(`${baseUrl}/cjs-dependency-globals`);
     expect(response.status).toBe(200);
     const html = await response.text();
@@ -1156,6 +1178,7 @@ describe("bundled module identity on the Cloudflare development runtime", () => 
   });
 
   it("executes the real CJS and ESM graphs in workerd", async () => {
+    await expectPatternedDynamicRequire(baseUrl);
     const response = await fetch(`${baseUrl}/cjs-dependency-globals`);
     const html = await response.text();
     expect(response.status, html).toBe(200);
@@ -1274,6 +1297,7 @@ describe("bundled module identity on the Cloudflare Workers runtime", () => {
   });
 
   it("uses emitted workerd bundle identity without leaking host paths", async () => {
+    await expectPatternedDynamicRequire(baseUrl);
     const res = await fetch(`${baseUrl}/cjs-dependency-globals`);
     const html = await res.text();
     expect(res.status, html).toBe(200);
@@ -1434,6 +1458,7 @@ describe("bundled module identity on a Pages-only Cloudflare Workers runtime", (
   });
 
   it("uses top-level emitted identities for runtime and prerendered Pages routes", async () => {
+    await expectPatternedDynamicRequire(baseUrl);
     const response = await fetch(`${baseUrl}/cjs-dependency-globals`);
     const html = await response.text();
     expect(response.status, html).toBe(200);
@@ -1538,6 +1563,7 @@ describe("bundled module identity on the Nitro Node runtime", () => {
   });
 
   it("keeps chunk-relative identity through Nitro's final bundle", async () => {
+    await expectPatternedDynamicRequire(baseUrl);
     const res = await fetch(`${baseUrl}/cjs-dependency-globals`);
     expect(res.status).toBe(200);
     const html = await res.text();

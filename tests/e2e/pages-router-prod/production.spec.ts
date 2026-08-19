@@ -15,7 +15,7 @@ test.describe("Pages Router Production Build", () => {
     // https://github.com/vercel/next.js/blob/canary/test/integration/dynamic-require/test/index.test.ts
     const response = await page.goto(`${BASE}/cjs/dynamic-require`);
     expect(response?.status()).toBe(200);
-    await expect(page.getByTestId("dynamic-require-message")).toHaveText("loaded");
+    await expect(page.getByTestId("dynamic-require-message")).toHaveText("Привет|extra:true");
   });
 
   test("index page renders with correct content", async ({ page }) => {

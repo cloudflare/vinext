@@ -179,7 +179,6 @@
     "@vinext/types": "workspace:^",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
-    "vite-plugin-commonjs": "catalog:",
     "web-vitals": "catalog:"
   },
   "devDependencies": {

@@ -92,9 +92,12 @@ describe("CJS interop (Pages Router)", () => {
   it("renders a page with a patterned dynamic require", async () => {
     // Ported from Next.js: test/integration/dynamic-require/test/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/integration/dynamic-require/test/index.test.ts
+    // The `.default` access matches vite-plugin-commonjs's canonical patterned-require fixture:
+    // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/test/fixtures/src/dynamic.tsx
     const { res, html } = await fetchHtml(baseUrl, "/cjs/dynamic-require");
     expect(res.status).toBe(200);
-    expect(html).toContain("loaded");
+    expect(html).toContain("Привет");
+    expect(html).toContain("extra:<!-- -->true");
   });
 });
 
