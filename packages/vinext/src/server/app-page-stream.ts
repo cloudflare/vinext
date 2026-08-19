@@ -11,7 +11,7 @@ import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
 import {
   injectRscPrewarmManifestMeta,
   removeRscPrewarmManifestInvalidatedHeaders,
-} from "./app-rsc-prewarm-meta.js";
+} from "vinext/shims/rsc-prewarm-server";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 
 export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";

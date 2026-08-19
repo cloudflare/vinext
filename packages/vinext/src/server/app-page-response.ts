@@ -26,7 +26,7 @@ import {
 import {
   injectRscPrewarmManifestMeta,
   removeRscPrewarmManifestInvalidatedHeaders,
-} from "./app-rsc-prewarm-meta.js";
+} from "vinext/shims/rsc-prewarm-server";
 import { applyPrerenderCacheLifeHeader } from "./prerender-cache-life-header.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 

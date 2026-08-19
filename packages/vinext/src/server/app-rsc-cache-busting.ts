@@ -24,14 +24,11 @@ import {
 } from "./headers.js";
 import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
 import type { RscCacheKeyMode } from "../cache/cache-adapters-virtual.js";
-import { isServerRscPrewarmEligiblePathname } from "../client/rsc-prewarm-eligibility.js";
-export {
-  getLoadedRscPrewarmEligibility,
-  isLoadedRscPrewarmEligibleHref,
-  isRscPrewarmEligibleHref,
-  isRscPrewarmEligibleHrefForPrefetch,
-  preloadRscPrewarmManifest,
-} from "../client/rsc-prewarm-eligibility.js";
+import {
+  isCanonicalSharedRscRequestHeaders,
+  isServerRscPrewarmEligiblePathname,
+  resolveResponseVaryRscCacheBustingRequest,
+} from "vinext/shims/rsc-prewarm-server";
 
 /**
  * RSC cache-busting hashes cover the headers that make an RSC payload vary.
@@ -76,19 +73,6 @@ export const VINEXT_RSC_NON_CONTEXTUAL_VARY_HEADER = `${VINEXT_APP_NON_CONTEXTUA
 /** RSC response identity for requests whose interception context can affect the payload. */
 export const VINEXT_RSC_VARY_HEADER = `${VINEXT_APP_VARY_HEADER}, Accept`;
 
-const SHARED_RSC_VARIANT_HEADERS = [
-  NEXT_ROUTER_STATE_TREE_HEADER,
-  NEXT_ROUTER_PREFETCH_HEADER,
-  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
-  NEXT_URL_HEADER,
-  VINEXT_INTERCEPTION_CONTEXT_HEADER,
-  VINEXT_INTERCEPTION_ID_HEADER,
-  VINEXT_MOUNTED_SLOTS_HEADER,
-  VINEXT_RSC_RENDER_MODE_HEADER,
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
-  VINEXT_RSC_STATE_FINGERPRINT_HEADER,
-] as const;
-
 const CACHE_BUSTING_DIGEST_BYTES = 12;
 const textEncoder = new TextEncoder();
 
@@ -122,20 +106,6 @@ export function getRscCacheKeyMode(): RscCacheKeyMode {
   return process.env.__VINEXT_RSC_CACHE_KEY_MODE === "response-vary"
     ? "response-vary"
     : "header-digest";
-}
-
-function hasCanonicalSharedRscVariantHeaders(headers: Headers): boolean {
-  return (
-    headers.get(RSC_HEADER) === "1" &&
-    !SHARED_RSC_VARIANT_HEADERS.some((header) => headers.has(header))
-  );
-}
-
-export function isCanonicalSharedRscRequestHeaders(headers: Headers): boolean {
-  return (
-    headers.get("Accept") === VINEXT_RSC_CONTENT_TYPE &&
-    hasCanonicalSharedRscVariantHeaders(headers)
-  );
 }
 
 function encodeBase64Url(bytes: Uint8Array): string {
@@ -496,29 +466,6 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
  * mounted-slot state can change the rendered tree, while a non-navigation
  * render mode represents a partial payload rather than the full destination.
  */
-export function canonicalizeFullRscRequestHeaders(
-  headers: Headers,
-  cacheKeyMode: RscCacheKeyMode = getRscCacheKeyMode(),
-): boolean {
-  if (
-    cacheKeyMode !== "response-vary" ||
-    headers.has(VINEXT_RSC_RENDER_MODE_HEADER) ||
-    headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER) ||
-    headers.has(VINEXT_INTERCEPTION_ID_HEADER) ||
-    headers.has(VINEXT_MOUNTED_SLOTS_HEADER) ||
-    headers.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER)
-  ) {
-    return false;
-  }
-
-  headers.delete(NEXT_ROUTER_PREFETCH_HEADER);
-  headers.delete(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER);
-  headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
-  headers.delete(NEXT_URL_HEADER);
-  headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
-  return true;
-}
-
 function toRscRequestPath(href: string): string {
   const hashIndex = href.indexOf("#");
   const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
@@ -543,22 +490,6 @@ export async function createRscRequestUrl(
  * route-tree and loading-shell payloads from colliding with the complete RSC
  * response stored for navigation.
  */
-export async function createRscClientRequestIdentity(
-  href: string,
-  headers: Headers,
-  requestCacheKeyMode: RscCacheKeyMode = "header-digest",
-): Promise<{ cacheKeyUrl: string; requestUrl: string }> {
-  const configuredCacheKeyMode = getRscCacheKeyMode();
-  const requestUrl = await createRscRequestUrl(href, headers, requestCacheKeyMode);
-  return {
-    cacheKeyUrl:
-      configuredCacheKeyMode === "header-digest"
-        ? requestUrl
-        : await createRscRequestUrl(href, headers, "header-digest"),
-    requestUrl,
-  };
-}
-
 export function createServerActionRequestUrl(href: string): string {
   const hashIndex = href.indexOf("#");
   const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
@@ -624,48 +555,12 @@ export async function resolveInvalidRscCacheBustingRequest(
   }
 
   const cacheKeyMode = options.cacheKeyMode ?? getRscCacheKeyMode();
-  const unmarkedUrl = new URL(url);
-  stripRscCacheBustingSearchParam(unmarkedUrl);
-  const isPrewarmEligibleUrl =
-    unmarkedUrl.search === "" &&
-    (options.allowUnlistedPrewarmProbe === true ||
-      isServerRscPrewarmEligiblePathname(
-        stripRscSuffix(unmarkedUrl.pathname),
-        process.env.__NEXT_ROUTER_BASEPATH ?? "",
-      ));
-
-  if (
-    cacheKeyMode === "response-vary" &&
-    isPrewarmEligibleUrl &&
-    isCanonicalSharedRscRequestHeaders(options.request.headers)
-  ) {
-    const canonicalUrl = new URL(url);
-    const canonicalPathname = stripRscSuffix(canonicalUrl.pathname);
-    if (
-      canonicalPathname !== canonicalUrl.pathname &&
-      options.request.headers.get(RSC_HEADER) !== "1"
-    ) {
-      return null;
-    }
-    canonicalUrl.pathname = canonicalPathname;
-    setRscCacheBustingSearchParam(canonicalUrl, "");
-    if (url.pathname === canonicalUrl.pathname && url.search === canonicalUrl.search) {
-      return null;
-    }
-
-    return createRscCacheBustingRedirect(`${canonicalUrl.pathname}${canonicalUrl.search}`);
-  }
-
-  if (
-    cacheKeyMode === "response-vary" &&
-    hasCanonicalSharedRscVariantHeaders(options.request.headers) &&
-    (!isPrewarmEligibleUrl || !isCanonicalSharedRscRequestHeaders(options.request.headers)) &&
-    stripRscSuffix(url.pathname) === url.pathname
-  ) {
-    const compatibilityUrl = new URL(url);
-    compatibilityUrl.pathname += ".rsc";
-    setRscCacheBustingSearchParam(compatibilityUrl, "");
-    return createRscCacheBustingRedirect(`${compatibilityUrl.pathname}${compatibilityUrl.search}`);
+  if (cacheKeyMode === "response-vary") {
+    const responseVaryResult = resolveResponseVaryRscCacheBustingRequest({
+      allowUnlistedPrewarmProbe: options.allowUnlistedPrewarmProbe,
+      request: options.request,
+    });
+    if (responseVaryResult !== undefined) return responseVaryResult;
   }
 
   const actualHash = url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);

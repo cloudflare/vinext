@@ -22,6 +22,9 @@ import type { BasePathMatchState, RequestContext } from "../config/config-matche
 import {
   matchRedirect,
   matchRewrite,
+  matchesHeaderSource,
+  matchesRedirectSource,
+  matchesRewriteSource,
   preserveRedirectDestinationQuery,
   requestContextFromRequest,
   applyMiddlewareRequestHeaders,
@@ -43,6 +46,11 @@ import {
   methodNotAllowedResponse,
   sanitizeMethodNotAllowedHeaders,
 } from "./http-error-responses.js";
+import {
+  configRuleMayVaryAcrossPrewarmRequests,
+  observePrewarmMiddlewareMatcher,
+  type PrewarmSourceObservation,
+} from "./prewarm-source-independence.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -164,9 +172,17 @@ export type PagesPipelineDeps = {
     | ((
         request: Request,
         ctx: unknown,
-        opts: { isDataRequest: boolean },
+        opts: {
+          isDataRequest: boolean;
+          onMatcherEvaluation?: (observation: {
+            conditionalPathMatched: boolean;
+            matched: boolean;
+          }) => void;
+        },
       ) => Promise<MiddlewareResult>)
     | null;
+  /** Mutable proof state supplied only by an authenticated prerender request. */
+  prewarmSourceObservation?: PrewarmSourceObservation;
   /** Original URL presented to middleware when URL normalization is disabled. */
   middlewareRequest?: Request;
   /** Stale/malformed data response emitted only if middleware does not handle the request. */
@@ -337,8 +353,44 @@ export async function runPagesRequest(
       })
     : requestConfigPathname;
 
+  const prewarmConfigPathnames = (rawPathname: string, requestHostPathname: string): string[] => {
+    const pathnames = new Set([requestHostPathname]);
+    for (const domain of i18nConfig?.domains ?? []) {
+      pathnames.add(
+        normalizeDefaultLocalePathname(rawPathname, i18nConfig, {
+          hostname: domain.domain,
+        }),
+      );
+    }
+    return [...pathnames];
+  };
+  const observeConfigRule = (
+    rule: NextHeader | NextRedirect | NextRewrite,
+    rawPathname: string,
+    requestHostPathname: string,
+    matchesSource: (pathname: string) => boolean,
+  ): void => {
+    const observation = deps.prewarmSourceObservation;
+    if (!observation) return;
+    const pathnames = prewarmConfigPathnames(rawPathname, requestHostPathname);
+    if (
+      (configRuleMayVaryAcrossPrewarmRequests(rule, "document") && pathnames.some(matchesSource)) ||
+      (new Set(pathnames).size > 1 && pathnames.some(matchesSource))
+    ) {
+      observation.conditionalConfigPathMatched = true;
+    }
+  };
+
   // Step 4: Config redirects (before middleware)
   if (configRedirects.length) {
+    for (const redirectRule of configRedirects) {
+      observeConfigRule(
+        redirectRule,
+        requestConfigPathname,
+        requestConfigMatchPathname,
+        (candidate) => matchesRedirectSource(candidate, redirectRule, basePathState),
+      );
+    }
     const redirect = matchRedirect(
       requestConfigMatchPathname,
       configRedirects,
@@ -411,6 +463,15 @@ export async function runPagesRequest(
   if (!isOnDemandRevalidate && typeof deps.runMiddleware === "function") {
     const result = await deps.runMiddleware(deps.middlewareRequest ?? request, deps.ctx ?? null, {
       isDataRequest,
+      ...(deps.prewarmSourceObservation
+        ? {
+            onMatcherEvaluation: (matcherObservation: {
+              conditionalPathMatched: boolean;
+              matched: boolean;
+            }) =>
+              observePrewarmMiddlewareMatcher(deps.prewarmSourceObservation!, matcherObservation),
+          }
+        : {}),
     });
 
     // Bubble waitUntil promises
@@ -517,6 +578,14 @@ export async function runPagesRequest(
     resolvedPathnameIsRequestPathname
       ? requestConfigMatchPathname
       : matchResolvedPathname(resolvedPathname);
+  const rawConfigSourcePathname = (): string =>
+    resolvedPathnameIsRequestPathname ? requestConfigPathname : resolvedPathname;
+  const observeRewriteRule = (rewrite: NextRewrite): void => {
+    const matchPathname = configSourcePathname();
+    observeConfigRule(rewrite, rawConfigSourcePathname(), matchPathname, (candidate) =>
+      matchesRewriteSource(candidate, rewrite, basePathState),
+    );
+  };
   const matchedPathnameForRoute = (routePattern: string | undefined): string => {
     const matchedPathname = routePattern ? patternToNextFormat(routePattern) : resolvedPathname;
     if (!i18nConfig) return matchedPathname;
@@ -556,6 +625,14 @@ export async function runPagesRequest(
 
   // Step 7: Config headers staging
   if (configHeaders.length) {
+    for (const headerRule of configHeaders) {
+      observeConfigRule(
+        headerRule,
+        requestConfigPathname,
+        requestConfigMatchPathname,
+        (candidate) => matchesHeaderSource(candidate, headerRule, basePathState),
+      );
+    }
     applyConfigHeadersToHeaderRecord(middlewareHeaders, {
       configHeaders,
       pathname: requestConfigMatchPathname,
@@ -585,6 +662,7 @@ export async function runPagesRequest(
   // continues afterFiles/fallback rules until a destination resolves.
   let configRewriteFired = false;
   for (const rewrite of configRewrites.beforeFiles ?? []) {
+    observeRewriteRule(rewrite);
     const rewritten = matchRewrite(
       configSourcePathname(),
       [rewrite],
@@ -685,6 +763,7 @@ export async function runPagesRequest(
   let resolvedPathnameChanged = false;
   if (!pageMatch || pageMatch.route.isDynamic) {
     for (const rewrite of configRewrites.afterFiles ?? []) {
+      observeRewriteRule(rewrite);
       const rewritten = matchRewrite(
         configSourcePathname(),
         [rewrite],
@@ -737,6 +816,7 @@ export async function runPagesRequest(
       configRewrites.fallback?.length
     ) {
       for (const rewrite of configRewrites.fallback) {
+        observeRewriteRule(rewrite);
         const fallbackRewrite = matchRewrite(
           configSourcePathname(),
           [rewrite],
@@ -796,6 +876,7 @@ export async function runPagesRequest(
     let matchedFallbackRewrite = false;
     if (response.status === 404 && shouldDeferErrorPageOnMiss && configRewrites.fallback?.length) {
       for (const rewrite of configRewrites.fallback) {
+        observeRewriteRule(rewrite);
         const fallbackRewrite = matchRewrite(
           configSourcePathname(),
           [rewrite],
@@ -885,6 +966,7 @@ export async function runPagesRequest(
       : pageMatch;
   if (!devPageMatch && configRewrites.fallback?.length) {
     for (const rewrite of configRewrites.fallback) {
+      observeRewriteRule(rewrite);
       const fallbackRewrite = matchRewrite(
         configSourcePathname(),
         [rewrite],

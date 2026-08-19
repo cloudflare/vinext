@@ -4,13 +4,16 @@ import {
   isLoadedRscPrewarmEligibleHref,
   isRscPrewarmEligibleHref,
   isRscPrewarmEligibleHrefForPrefetch,
-  isServerRscPrewarmEligiblePathname,
   normalizeRscPrewarmPath,
   preloadRscPrewarmManifest,
   resetRscPrewarmManifestForTesting,
   RSC_PREWARM_MANIFEST_META_NAME,
   RSC_PREWARM_MANIFEST_WAIT_MS,
 } from "../packages/vinext/src/client/rsc-prewarm-eligibility.js";
+import {
+  isServerRscPrewarmEligiblePathname,
+  resetServerRscPrewarmEligibilityForTesting,
+} from "../packages/vinext/src/server/rsc-prewarm-eligibility.js";
 
 const ORIGIN = "https://example.com";
 
@@ -43,11 +46,13 @@ function installBrowserGlobals(
 
 beforeEach(() => {
   resetRscPrewarmManifestForTesting();
+  resetServerRscPrewarmEligibilityForTesting();
 });
 
 afterEach(() => {
   vi.useRealTimers();
   resetRscPrewarmManifestForTesting();
+  resetServerRscPrewarmEligibilityForTesting();
   vi.unstubAllGlobals();
 });
 

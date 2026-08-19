@@ -51,7 +51,7 @@ import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
-  VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
+  VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER,
 } from "../server/headers.js";
 import {
   encodePrerenderRouteParams,
@@ -937,6 +937,7 @@ export async function prerenderPages({
           const isRedirect = response.status >= 300 && response.status < 400;
           const prewarmable =
             !isRedirect &&
+            response.headers.get(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER) === "1" &&
             !hasNonCacheablePrewarmHeaders(response.headers, {
               controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
             });
@@ -1737,7 +1738,7 @@ export async function prerenderApp({
           if (options.probeRscCachePolicy) {
             prewarmable =
               rscRes.status === 200 &&
-              rscRes.headers.get(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER) === "1" &&
+              rscRes.headers.get(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER) === "1" &&
               Boolean(
                 rscRes.headers
                   .get("content-type")
@@ -1873,6 +1874,7 @@ export async function prerenderApp({
           const hasSetCookie = response.headers.has("set-cookie");
           const prewarmable =
             response.status === 200 &&
+            response.headers.get(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER) === "1" &&
             !hasNonCacheablePrewarmHeaders(response.headers, {
               controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
             });

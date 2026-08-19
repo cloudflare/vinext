@@ -340,6 +340,7 @@ import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } 
 }
 import { createAppRscHandler } from "vinext/server/app-rsc-handler";
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
+import "virtual:vinext-rsc-prewarm-server";
 import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 ${
   actionOwners === undefined

@@ -21,7 +21,10 @@ import {
   type PrerenderRouteResult,
   type StaticParamsMap,
 } from "../packages/vinext/src/build/prerender.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import { getAppRouteOutputPath } from "../packages/vinext/src/utils/prerender-output-paths.js";
@@ -630,7 +633,7 @@ describe("prerenderApp — RSC extraction", () => {
           : "text/html",
       );
       if ((pathname === "/rsc-flight" || pathname === "/vary-accept") && isRsc) {
-        res.setHeader("x-vinext-rsc-prewarm-source-independent", "1");
+        res.setHeader(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER, "1");
       }
       res.end(
         `<html><body>${runtimeRscChunkScript(rscPayload)}${runtimeRscDoneScript()}</body></html>`,
@@ -1011,6 +1014,17 @@ describe("prerenderPages — default mode (pages-basic)", () => {
     if (r?.status === "rendered") {
       expect(r.outputFiles).toContain("about.html");
     }
+  });
+
+  it("does not prewarm a static page when a conditional middleware matcher misses", () => {
+    // The fixture matcher covers this path only when x-mw-allow=1 and the
+    // mw-blocked cookie is absent. The build request misses the header, but a
+    // browser request can still execute middleware and produce different bytes.
+    expect(findRoute(results, "/mw-object-gated")).toMatchObject({
+      route: "/mw-object-gated",
+      status: "rendered",
+      prewarmable: false,
+    });
   });
 
   it("renders a static page backed by a bundled CommonJS dependency", () => {
@@ -1818,7 +1832,7 @@ describe("prerenderPages — CDN prewarm eligibility", () => {
     const pageSource =
       "export async function getStaticProps() { return { props: {} }; }\n" +
       "export default function Page() { return null; }\n";
-    for (const page of ["cacheable", "private", "redirect", "vary-accept"]) {
+    for (const page of ["cacheable", "private", "redirect", "unproven", "vary-accept"]) {
       fs.writeFileSync(path.join(pagesDir, `${page}.tsx`), pageSource);
     }
 
@@ -1834,6 +1848,9 @@ describe("prerenderPages — CDN prewarm eligibility", () => {
         res.setHeader("Cache-Control", "public, max-age=0, must-revalidate");
         res.setHeader("CDN-Cache-Control", "public, max-age=60");
         if (pathname === "/vary-accept") res.setHeader("Vary", "Accept");
+      }
+      if (pathname !== "/unproven") {
+        res.setHeader(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER, "1");
       }
       res.setHeader("Content-Type", "text/html");
       res.end("<html><body>page</body></html>");
@@ -1879,6 +1896,10 @@ describe("prerenderPages — CDN prewarm eligibility", () => {
       expect(findRoute(result.routes, "/vary-accept")).toMatchObject({
         status: "rendered",
         headers: { vary: "Accept" },
+      });
+      expect(findRoute(result.routes, "/unproven")).toMatchObject({
+        status: "rendered",
+        prewarmable: false,
       });
       expect(getPrewarmableConcretePaths({ routes: result.routes })).toEqual(["/cacheable"]);
     } finally {

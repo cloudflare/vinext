@@ -31,7 +31,8 @@ export function generateBrowserEntry(
   const prefetchRoutes = toLinkPrefetchRoutes(routes);
   const clientRewrites = toClientRewrites(rewrites);
 
-  return `import ${JSON.stringify(reactInstanceBootstrapPath)};
+  return `import "virtual:vinext-rsc-prewarm-client";
+import ${JSON.stringify(reactInstanceBootstrapPath)};
 import { registerNavigationRuntimeBootstrap } from ${JSON.stringify(navigationRuntimePath)};
 
 window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(prefetchRoutes)};

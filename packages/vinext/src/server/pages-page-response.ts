@@ -7,7 +7,7 @@ import {
   injectRscPrewarmManifestMeta,
   injectRscPrewarmManifestMetaHtml,
   removeRscPrewarmManifestInvalidatedHeaders,
-} from "./app-rsc-prewarm-meta.js";
+} from "vinext/shims/rsc-prewarm-server";
 import {
   applyCdnResponseHeaders,
   BROWSER_REVALIDATE_CACHE_CONTROL,

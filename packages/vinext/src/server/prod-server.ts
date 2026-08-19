@@ -77,6 +77,7 @@ import {
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER,
   VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
 import {
@@ -98,6 +99,10 @@ import {
 } from "./accept-encoding.js";
 import { ifRangeAllowsRange, parseByteRange, type ByteRange } from "./http-range.js";
 import { evaluateStaticPreconditions } from "./http-conditional.js";
+import {
+  createPrewarmSourceObservation,
+  isPrewarmSourceIndependent,
+} from "./prewarm-source-independence.js";
 import { parseHttpDate } from "./http-date.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { readTrustedRevalidationHostname } from "./revalidation-host.js";
@@ -511,6 +516,36 @@ function isVinextStreamedHtmlResponse(response: Response): boolean {
 // stream in memory.
 function isVinextStreamedApiResponse(response: Response): boolean {
   return (response as ResponseWithVinextStreamingMetadata).__vinextStreamedApiResponse === true;
+}
+
+function applyPrewarmSourceIndependentHeader(
+  response: Response,
+  sourceIndependent: boolean,
+): Response {
+  const apply = (headers: Headers): void => {
+    if (sourceIndependent) headers.set(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER, "1");
+    else headers.delete(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER);
+  };
+
+  try {
+    apply(response.headers);
+    return response;
+  } catch {
+    const headers = new Headers(response.headers);
+    apply(headers);
+    const rebuilt = new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+    if (isVinextStreamedHtmlResponse(response)) {
+      (rebuilt as { __vinextStreamedHtmlResponse?: boolean }).__vinextStreamedHtmlResponse = true;
+    }
+    if (isVinextStreamedApiResponse(response)) {
+      (rebuilt as { __vinextStreamedApiResponse?: boolean }).__vinextStreamedApiResponse = true;
+    }
+    return rebuilt;
+  }
 }
 
 function logProdServerStarted(host: string, port: number, purpose: ProdServerOptions["purpose"]) {
@@ -2148,6 +2183,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const protocol = resolveRequestProtocol(req);
       const hostHeader = resolveHost(req, `${host}:${port}`);
       const rawReqHeaders = nodeHeadersToWebHeaders(req.headers);
+      const isTrustedPrewarmProbe =
+        process.env.VINEXT_PRERENDER === "1" &&
+        Boolean(prerenderSecret) &&
+        rawReqHeaders.get(VINEXT_PRERENDER_SECRET_HEADER) === prerenderSecret;
+      const prewarmSourceObservation = isTrustedPrewarmProbe
+        ? createPrewarmSourceObservation(hasMiddleware)
+        : undefined;
       const revalidationHostname = readTrustedRevalidationHostname(
         rawReqHeaders,
         i18nConfig,
@@ -2187,6 +2229,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         isDataReq,
         isDataRequest,
         hasMiddleware,
+        prewarmSourceObservation,
         middlewareRequest,
         dataNotFoundResponse,
         ctx: undefined, // Node has no ExecutionContext
@@ -2313,7 +2356,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
 
       if (result.type === "response") {
-        const { response } = result;
+        let { response } = result;
+        response = applyPrewarmSourceIndependentHeader(
+          response,
+          prewarmSourceObservation !== undefined &&
+            isPrewarmSourceIndependent(prewarmSourceObservation),
+        );
         if (missingBuildAsset && response.status === 404) {
           await sendWebResponse(
             finalizeMissingStaticAssetResponse(response, true),

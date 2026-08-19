@@ -131,15 +131,18 @@ const minimalAppRoutes: AppRoute[] = [
 describe("App Router generated manifest construction", () => {
   it("registers the host React instance before the App Router browser runtime", () => {
     const code = generateBrowserEntry();
+    const prewarmBootstrapIndex = code.indexOf("virtual:vinext-rsc-prewarm-client");
     const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
     const navigationRuntimeIndex = code.indexOf("navigation-runtime");
     const browserRuntimeIndex = code.indexOf("app-browser-entry");
 
+    expect(prewarmBootstrapIndex).toBeGreaterThanOrEqual(0);
     expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
     expect(navigationRuntimeIndex).toBeGreaterThanOrEqual(0);
     expect(browserRuntimeIndex).toBeGreaterThanOrEqual(0);
     expect(reactBootstrapIndex).toBeLessThan(navigationRuntimeIndex);
     expect(reactBootstrapIndex).toBeLessThan(browserRuntimeIndex);
+    expect(prewarmBootstrapIndex).toBeLessThan(browserRuntimeIndex);
   });
 
   it("embeds only client-safe rewrite data in the App browser entry", () => {
@@ -1195,6 +1198,7 @@ describe("App Router entry templates", () => {
   it("generateRscEntry delegates App Router request handling to the typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
+    expect(code).toContain('import "virtual:vinext-rsc-prewarm-server";');
     expect(code).toContain('import { createAppRscHandler } from "vinext/server/app-rsc-handler";');
     expect(code).toContain("const __appRscHandler = createAppRscHandler({");
     expect(code).toContain("export default __appRscHandler;");

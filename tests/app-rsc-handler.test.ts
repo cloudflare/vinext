@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   VINEXT_APP_NON_CONTEXTUAL_VARY_HEADER,
   computeRscCacheBustingSearchParam,
@@ -11,6 +11,7 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
+import * as rscPrewarmServerImplementation from "../packages/vinext/src/server/rsc-prewarm-runtime.js";
 import {
   renderPagesFallback as renderHybridPagesFallback,
   type PagesEntry,
@@ -47,6 +48,18 @@ import {
   headers as requestHeaders,
 } from "../packages/vinext/src/shims/headers.js";
 import { withEnvVar } from "./env-test-helpers.js";
+import {
+  registerRscPrewarmServerImplementation,
+  resetRscPrewarmServerImplementationForTesting,
+} from "../packages/vinext/src/shims/rsc-prewarm-server.js";
+
+beforeEach(() => {
+  registerRscPrewarmServerImplementation(rscPrewarmServerImplementation);
+});
+
+afterEach(() => {
+  resetRscPrewarmServerImplementationForTesting();
+});
 
 type TestRoute = {
   __loadPage?: unknown;
@@ -198,11 +211,51 @@ async function runRscPrewarmProbe(handler: ReturnType<typeof createHandler>): Pr
   }
 }
 
+async function runDocumentPrewarmProbe(
+  handler: ReturnType<typeof createHandler>,
+): Promise<Response> {
+  const previousPrerender = process.env.VINEXT_PRERENDER;
+  process.env.VINEXT_PRERENDER = "1";
+  try {
+    return await handler(
+      new Request("https://example.test/docs/about", {
+        headers: { [VINEXT_PRERENDER_SECRET_HEADER]: "test-secret" },
+      }),
+      null,
+    );
+  } finally {
+    if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+    else process.env.VINEXT_PRERENDER = previousPrerender;
+  }
+}
+
 describe("createAppRscHandler", () => {
   it("certifies an unconditional cacheable RSC prerender as source-independent", async () => {
     const response = await runRscPrewarmProbe(createHandler({ configHeaders: [] }));
 
     expect(response.headers.get(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe("1");
+  });
+
+  it("certifies an unconditional document probe used by static metadata prewarming", async () => {
+    const response = await runDocumentPrewarmProbe(createHandler({ configHeaders: [] }));
+
+    expect(response.headers.get(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe("1");
+  });
+
+  it("does not certify document probes covered by arbitrary request headers", async () => {
+    const response = await runDocumentPrewarmProbe(
+      createHandler({
+        configHeaders: [
+          {
+            source: "/about",
+            has: [{ type: "header", key: "accept-language", value: "fr.*" }],
+            headers: [{ key: "x-market", value: "fr" }],
+          },
+        ],
+      }),
+    );
+
+    expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
   });
 
   it("keeps Accept-conditional prerenders shareable only for the canonical RSC media type", async () => {

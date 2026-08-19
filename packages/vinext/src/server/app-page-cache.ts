@@ -26,7 +26,7 @@ import { isAppPprDynamicFallbackShellHtml } from "./app-ppr-fallback-shell.js";
 import {
   injectRscPrewarmManifestMetaHtml,
   removeRscPrewarmManifestInvalidatedHeaders,
-} from "./app-rsc-prewarm-meta.js";
+} from "vinext/shims/rsc-prewarm-server";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 export {

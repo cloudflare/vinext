@@ -63,6 +63,11 @@ import {
 import { RouterContext } from "./internal/router-context.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 import {
+  canonicalizeFullRscRequestHeaders,
+  createRscClientRequestIdentity,
+  isRscPrewarmEligibleHrefForPrefetch,
+} from "./rsc-prewarm-client.js";
+import {
   clearLinkForCurrentNavigation,
   notifyLinkNavigationStart,
   setLinkForCurrentNavigation,
@@ -473,14 +478,8 @@ function prefetchUrl(
           DYNAMIC_NAVIGATION_CACHE_TTL,
           PREFETCH_CACHE_TTL,
         } = navigation;
-        const {
-          canonicalizeFullRscRequestHeaders,
-          createRscClientCacheVariantKey,
-          createRscClientRequestIdentity,
-          createRscRequestUrl,
-          getRscCacheKeyMode,
-          isRscPrewarmEligibleHrefForPrefetch,
-        } = rscCacheBusting;
+        const { createRscClientCacheVariantKey, createRscRequestUrl, getRscCacheKeyMode } =
+          rscCacheBusting;
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
           NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,

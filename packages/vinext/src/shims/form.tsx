@@ -39,10 +39,8 @@ import {
 } from "./navigation.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { normalizePathTrailingSlash, withBasePath } from "./url-utils.js";
-import {
-  createRscClientRequestIdentity,
-  createRscRequestHeaders,
-} from "../server/app-rsc-cache-busting.js";
+import { createRscRequestHeaders } from "../server/app-rsc-cache-busting.js";
+import { createRscClientRequestIdentity } from "./rsc-prewarm-client.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../server/app-rsc-render-mode.js";
 import { AppElementsWire } from "../server/app-elements.js";
 import { VINEXT_MOUNTED_SLOTS_HEADER } from "../server/headers.js";

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "pathslash";
 import { getPrewarmableAppPaths, readPrerenderManifest } from "../server/prerender-manifest.js";
-import { normalizeRscPrewarmPath } from "../client/rsc-prewarm-eligibility.js";
+import { normalizeRscPrewarmPath } from "../server/rsc-prewarm-path.js";
 import { isAbsoluteAssetPrefix, resolveAssetsDir } from "../utils/asset-prefix.js";
 import { renderVinextBuiltUrl } from "../utils/built-asset-url.js";
 import { escapeRegExp } from "../utils/regex.js";

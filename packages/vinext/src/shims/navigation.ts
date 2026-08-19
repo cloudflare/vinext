@@ -31,18 +31,20 @@ import {
   isAppOwnedHistoryState,
 } from "../server/app-history-state.js";
 import {
-  canonicalizeFullRscRequestHeaders,
   createRscClientCacheVariantKey,
-  createRscClientRequestIdentity,
   createRscRequestHeaders,
   createRscRequestUrl,
   getRscCacheKeyMode,
-  isRscPrewarmEligibleHrefForPrefetch,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "../server/app-rsc-cache-busting.js";
+import {
+  canonicalizeFullRscRequestHeaders,
+  createRscClientRequestIdentity,
+  isRscPrewarmEligibleHrefForPrefetch,
+} from "./rsc-prewarm-client.js";
 import { hasPendingAppRouterPageRedirect } from "../server/app-browser-mpa-navigation.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,

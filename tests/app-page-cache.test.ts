@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   type AppPageCacheOutcomeMetric,
   buildAppPageCacheTags,
@@ -29,6 +29,11 @@ import {
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { withEnvVar } from "./env-test-helpers.js";
+import * as rscPrewarmServerImplementation from "../packages/vinext/src/server/rsc-prewarm-runtime.js";
+import {
+  registerRscPrewarmServerImplementation,
+  resetRscPrewarmServerImplementationForTesting,
+} from "../packages/vinext/src/shims/rsc-prewarm-server.js";
 
 function createHeaderClearingCdnAdapter(): CdnCacheAdapter {
   return {
@@ -51,7 +56,14 @@ function createHeaderClearingCdnAdapter(): CdnCacheAdapter {
   };
 }
 
-afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
+beforeEach(() => {
+  registerRscPrewarmServerImplementation(rscPrewarmServerImplementation);
+});
+
+afterEach(() => {
+  setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+  resetRscPrewarmServerImplementationForTesting();
+});
 
 function buildISRCacheEntry(
   value: CachedAppPageValue,

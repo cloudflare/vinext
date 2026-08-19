@@ -8,6 +8,10 @@ import {
 } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
 import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
+import {
+  createPrewarmSourceObservation,
+  isPrewarmSourceIndependent,
+} from "../packages/vinext/src/server/prewarm-source-independence.js";
 
 // Helpers
 
@@ -86,6 +90,143 @@ describe("on-demand revalidation middleware bypass", () => {
     );
 
     expect(runMiddleware).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Pages prewarm source-independence observation", () => {
+  // Ported from Next.js's custom-routes and middleware matcher behavior:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/custom-routes/custom-routes.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers/test/index.test.ts
+  it("rejects a conditionally reachable config header even when the probe misses", async () => {
+    const observation = createPrewarmSourceObservation(false);
+    await runPagesRequest(
+      makeRequest("/pricing"),
+      baseDeps({
+        configHeaders: [
+          {
+            source: "/pricing",
+            has: [{ type: "header", key: "accept-language", value: "fr.*" }],
+            headers: [{ key: "x-market", value: "fr" }],
+          },
+        ],
+        prewarmSourceObservation: observation,
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(isPrewarmSourceIndependent(observation)).toBe(false);
+    expect(observation.conditionalConfigPathMatched).toBe(true);
+  });
+
+  it("keeps query-only config conditions isolated by the URL cache key", async () => {
+    const observation = createPrewarmSourceObservation(false);
+    await runPagesRequest(
+      makeRequest("/pricing"),
+      baseDeps({
+        configHeaders: [
+          {
+            source: "/pricing",
+            has: [{ type: "query", key: "market", value: "fr" }],
+            headers: [{ key: "x-market", value: "fr" }],
+          },
+        ],
+        prewarmSourceObservation: observation,
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(isPrewarmSourceIndependent(observation)).toBe(true);
+  });
+
+  it("observes conditional rules reached after an earlier rewrite", async () => {
+    const observation = createPrewarmSourceObservation(false);
+    await runPagesRequest(
+      makeRequest("/start"),
+      baseDeps({
+        configRewrites: {
+          beforeFiles: [{ source: "/start", destination: "/pricing" }],
+          afterFiles: [
+            {
+              source: "/pricing",
+              destination: "/fr-pricing",
+              has: [{ type: "header", key: "accept-language", value: "fr.*" }],
+            },
+          ],
+          fallback: [],
+        },
+        matchPageRoute: () => null,
+        prewarmSourceObservation: observation,
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(isPrewarmSourceIndependent(observation)).toBe(false);
+    expect(observation.conditionalConfigPathMatched).toBe(true);
+  });
+
+  it("rejects config sources that differ across domain default locales", async () => {
+    const observation = createPrewarmSourceObservation(false);
+    await runPagesRequest(
+      makeRequest("/about"),
+      baseDeps({
+        configHeaders: [
+          {
+            source: "/fr/about",
+            headers: [{ key: "x-locale", value: "fr" }],
+          },
+        ],
+        i18nConfig: {
+          defaultLocale: "en",
+          locales: ["en", "fr"],
+          domains: [
+            { defaultLocale: "en", domain: "example.com" },
+            { defaultLocale: "fr", domain: "example.fr" },
+          ],
+        },
+        prewarmSourceObservation: observation,
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(isPrewarmSourceIndependent(observation)).toBe(false);
+  });
+
+  it("records a conditional middleware matcher miss", async () => {
+    const observation = createPrewarmSourceObservation(true);
+    const runMiddleware: NonNullable<PagesPipelineDeps["runMiddleware"]> = vi.fn(
+      async (_request, _ctx, options) => {
+        options.onMatcherEvaluation?.({ matched: false, conditionalPathMatched: true });
+        return { continue: true };
+      },
+    );
+    await runPagesRequest(
+      makeRequest("/pricing"),
+      baseDeps({
+        hasMiddleware: true,
+        prewarmSourceObservation: observation,
+        renderPage: makeRenderPage(),
+        runMiddleware,
+      }),
+    );
+
+    expect(isPrewarmSourceIndependent(observation)).toBe(false);
+    expect(observation.conditionalMiddlewarePathMatched).toBe(true);
+  });
+
+  it("fails closed when a middleware adapter does not report matcher evaluation", async () => {
+    const observation = createPrewarmSourceObservation(true);
+    await runPagesRequest(
+      makeRequest("/pricing"),
+      baseDeps({
+        hasMiddleware: true,
+        prewarmSourceObservation: observation,
+        renderPage: makeRenderPage(),
+        runMiddleware: makeMiddleware({ continue: true }),
+      }),
+    );
+
+    expect(isPrewarmSourceIndependent(observation)).toBe(false);
+    expect(observation.middlewareEvaluationComplete).toBe(false);
   });
 });
 

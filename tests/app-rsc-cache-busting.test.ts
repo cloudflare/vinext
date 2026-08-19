@@ -1,13 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
-  canonicalizeFullRscRequestHeaders,
   computeRscCacheBustingSearchParam,
   createRscRequestHeaders,
   createRscRequestUrl,
   createServerActionRequestUrl,
-  isCanonicalSharedRscRequestHeaders,
   isRscCompatibilityIdCompatible,
   resolveInvalidRscCacheBustingRequest,
   setRscCacheBustingSearchParam,
@@ -22,8 +20,15 @@ import {
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { canonicalizeFullRscRequestHeaders } from "../packages/vinext/src/client/rsc-prewarm-runtime.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
-import { resetRscPrewarmManifestForTesting } from "../packages/vinext/src/client/rsc-prewarm-eligibility.js";
+import * as rscPrewarmServerImplementation from "../packages/vinext/src/server/rsc-prewarm-runtime.js";
+import { resetServerRscPrewarmEligibilityForTesting } from "../packages/vinext/src/server/rsc-prewarm-eligibility.js";
+import {
+  isCanonicalSharedRscRequestHeaders,
+  registerRscPrewarmServerImplementation,
+  resetRscPrewarmServerImplementationForTesting,
+} from "../packages/vinext/src/shims/rsc-prewarm-server.js";
 import {
   FLIGHT_HEADERS,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -35,9 +40,15 @@ import { withEnvVar } from "./env-test-helpers.js";
 
 const textEncoder = new TextEncoder();
 
+beforeEach(() => {
+  registerRscPrewarmServerImplementation(rscPrewarmServerImplementation);
+  resetServerRscPrewarmEligibilityForTesting();
+});
+
 afterEach(() => {
   delete globalThis.__VINEXT_RSC_PREWARMABLE_PATHS;
-  resetRscPrewarmManifestForTesting();
+  resetServerRscPrewarmEligibilityForTesting();
+  resetRscPrewarmServerImplementationForTesting();
 });
 
 function encodeBase64Url(bytes: Uint8Array): string {

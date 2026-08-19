@@ -56,11 +56,21 @@ import {
   type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
 import {
+  generateRscPrewarmClientModule,
+  generateRscPrewarmServerModule,
+  VIRTUAL_RSC_PREWARM_CLIENT,
+  VIRTUAL_RSC_PREWARM_SERVER,
+} from "./cache/rsc-prewarm-virtual.js";
+import {
   VIRTUAL_IMAGE_ADAPTERS,
   generateImageAdaptersModule,
   type VinextImageConfig,
 } from "./image/image-adapters-virtual.js";
 import { generateBrowserEntry, toLinkPrefetchRoutes } from "./entries/app-browser-entry.js";
+import {
+  resolveClientRuntimeModule,
+  resolveRuntimeEntryModule,
+} from "./entries/runtime-entry-module.js";
 import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
@@ -1103,6 +1113,8 @@ const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
 const RESOLVED_ROOT_PARAMS = VIRTUAL_PREFIX + VIRTUAL_ROOT_PARAMS;
 /** Virtual module that registers config-driven cache adapters (see VinextOptions.cache). */
 const RESOLVED_CACHE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_CACHE_ADAPTERS;
+const RESOLVED_RSC_PREWARM_CLIENT = VIRTUAL_PREFIX + VIRTUAL_RSC_PREWARM_CLIENT;
+const RESOLVED_RSC_PREWARM_SERVER = VIRTUAL_PREFIX + VIRTUAL_RSC_PREWARM_SERVER;
 /** Virtual module that registers the config-driven image optimizer (see VinextOptions.images). */
 const RESOLVED_IMAGE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_IMAGE_ADAPTERS;
 /** Virtual module for composed instrumentation-client bootstrap. */
@@ -1139,6 +1151,8 @@ const _appBrowserServerActionClientPath = resolveShimModulePath(
 );
 const _appRscHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-handler");
 const _pagesClientAssetsPath = resolveShimModulePath(_serverDir, "pages-client-assets");
+const _rscPrewarmClientImplementationPath = resolveClientRuntimeModule("rsc-prewarm-runtime");
+const _rscPrewarmServerImplementationPath = resolveRuntimeEntryModule("rsc-prewarm-runtime");
 // Source checkouts resolve to TypeScript and must stay in Vite's graph so tests
 // do not execute a stale dist build. Published packages resolve to emitted JS,
 // which Node can load natively outside the RSC transform graph.
@@ -3875,6 +3889,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return RESOLVED_CACHE_ADAPTERS;
           }
           if (
+            cleanId === VIRTUAL_RSC_PREWARM_CLIENT ||
+            cleanId.endsWith("/" + VIRTUAL_RSC_PREWARM_CLIENT)
+          ) {
+            return RESOLVED_RSC_PREWARM_CLIENT;
+          }
+          if (
+            cleanId === VIRTUAL_RSC_PREWARM_SERVER ||
+            cleanId.endsWith("/" + VIRTUAL_RSC_PREWARM_SERVER)
+          ) {
+            return RESOLVED_RSC_PREWARM_SERVER;
+          }
+          if (
             cleanId === VIRTUAL_IMAGE_ADAPTERS ||
             cleanId.endsWith("/" + VIRTUAL_IMAGE_ADAPTERS)
           ) {
@@ -4055,6 +4081,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (id === RESOLVED_CACHE_ADAPTERS) {
             return generateCacheAdaptersModule(options.cache);
+          }
+          if (id === RESOLVED_RSC_PREWARM_CLIENT) {
+            return generateRscPrewarmClientModule(
+              resolveRscCacheKeyMode(options.cache),
+              _rscPrewarmClientImplementationPath,
+            );
+          }
+          if (id === RESOLVED_RSC_PREWARM_SERVER) {
+            return generateRscPrewarmServerModule(
+              resolveRscCacheKeyMode(options.cache),
+              _rscPrewarmServerImplementationPath,
+            );
           }
           if (id === RESOLVED_IMAGE_ADAPTERS) {
             return generateImageAdaptersModule(options.images);
@@ -5632,6 +5670,7 @@ export const loadServerActionClient = ${
                         nextConfig?.trailingSlash,
                         opts.isDataRequest,
                         pathname,
+                        opts.onMatcherEvaluation,
                       );
 
                       // Forward middleware context to the RSC entry so it can

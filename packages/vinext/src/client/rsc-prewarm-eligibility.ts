@@ -1,8 +1,9 @@
-import { normalizePathnameForRouteMatch } from "../routing/utils.js";
-import { normalizePath } from "../server/normalize-path.js";
-import { removeTrailingSlash, stripBasePath } from "../utils/base-path.js";
+import {
+  normalizeRscPrewarmPath,
+  RSC_PREWARM_MANIFEST_META_NAME,
+} from "../server/rsc-prewarm-path.js";
 
-export const RSC_PREWARM_MANIFEST_META_NAME = "vinext-rsc-prewarm-manifest";
+export { normalizeRscPrewarmPath, RSC_PREWARM_MANIFEST_META_NAME };
 // Keep the optimization off the critical path: a very early click may briefly
 // wait for the already-started static asset, then falls back to the normal
 // contextual request if the asset is slow or unavailable.
@@ -13,20 +14,8 @@ type RscPrewarmManifest = {
   paths: string[];
 };
 
-declare global {
-  var __VINEXT_RSC_PREWARMABLE_PATHS: unknown;
-}
-
 let manifestPromise: Promise<ReadonlySet<string>> | null = null;
 let loadedManifestPaths: ReadonlySet<string> | null = null;
-let serverPathsSource: unknown;
-let serverPaths = new Set<string>();
-
-export function normalizeRscPrewarmPath(pathname: string, basePath = ""): string {
-  return removeTrailingSlash(
-    normalizePath(normalizePathnameForRouteMatch(stripBasePath(pathname, basePath))),
-  );
-}
 
 function parseRscPrewarmManifest(value: unknown): ReadonlySet<string> {
   if (!value || typeof value !== "object") return new Set();
@@ -131,29 +120,8 @@ export function isLoadedRscPrewarmEligibleHref(href: string, basePath = ""): boo
   return getLoadedRscPrewarmEligibility(href, basePath) === true;
 }
 
-/** Server-side enforcement for the browser eligibility manifest. */
-export function isServerRscPrewarmEligiblePathname(pathname: string, basePath = ""): boolean {
-  const source = globalThis.__VINEXT_RSC_PREWARMABLE_PATHS;
-  if (source !== serverPathsSource) {
-    serverPathsSource = source;
-    serverPaths = new Set();
-    if (Array.isArray(source)) {
-      for (const value of source) {
-        if (typeof value !== "string" || !value.startsWith("/")) {
-          serverPaths.clear();
-          break;
-        }
-        serverPaths.add(normalizeRscPrewarmPath(value));
-      }
-    }
-  }
-  return serverPaths.has(normalizeRscPrewarmPath(pathname, basePath));
-}
-
 /** Test-only reset for isolated browser-global fixtures. */
 export function resetRscPrewarmManifestForTesting(): void {
   manifestPromise = null;
   loadedManifestPaths = null;
-  serverPathsSource = undefined;
-  serverPaths = new Set();
 }

@@ -77,8 +77,12 @@ export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-An
 
 /** Prerender-only JSON side channel carrying request cacheLife metadata. */
 export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
+/** Prerender-only proof that the observed response is independent of request source context. */
+export const VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER = "x-vinext-prewarm-source-independent";
+
+/** @deprecated Internal compatibility alias; use VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER. */
 export const VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER =
-  "x-vinext-rsc-prewarm-source-independent";
+  VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER;
 
 /** Marks a local prerender-server 500 that originated from a thrown render error. */
 export const VINEXT_PRERENDER_RENDER_ERROR_HEADER = "x-vinext-prerender-render-error";
@@ -259,6 +263,6 @@ export const VINEXT_INTERNAL_HEADERS = [
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
-  VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
+  VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
 ];

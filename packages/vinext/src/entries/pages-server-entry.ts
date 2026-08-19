@@ -192,6 +192,7 @@ export async function runMiddleware(request, ctx, options) {
     isDataRequest: options?.isDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
+    onMatcherEvaluation: options?.onMatcherEvaluation,
     request,
     trailingSlash: vinextConfig.trailingSlash,
   });

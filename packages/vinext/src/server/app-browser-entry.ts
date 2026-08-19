@@ -184,18 +184,20 @@ import {
 } from "../client/app-nav-failure-handler.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
-  canonicalizeFullRscRequestHeaders,
   createRscClientCacheVariantKey,
   createRscRequestHeaders,
   createRscRequestUrl,
-  getLoadedRscPrewarmEligibility,
   getRscCacheKeyMode,
-  isRscPrewarmEligibleHref,
-  preloadRscPrewarmManifest,
   getVinextRscCompatibilityId,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
+import {
+  canonicalizeFullRscRequestHeaders,
+  getLoadedRscPrewarmEligibility,
+  isRscPrewarmEligibleHref,
+  preloadRscPrewarmManifest,
+} from "vinext/shims/rsc-prewarm-client";
 import { blockDangerousStreamedRscRedirect } from "./app-browser-rsc-redirect.js";
 import {
   peekSettledPrefetchResponseForNavigation,

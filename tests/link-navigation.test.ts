@@ -1479,6 +1479,13 @@ async function renderIsolatedLink(options: {
     ...options.windowOverrides,
   });
 
+  const [rscPrewarmClient, rscPrewarmClientImplementation] = await Promise.all([
+    import("../packages/vinext/src/shims/rsc-prewarm-client.js"),
+    import("../packages/vinext/src/client/rsc-prewarm-runtime.js"),
+  ]);
+  rscPrewarmClientImplementation.resetRscPrewarmManifestForTesting();
+  rscPrewarmClient.registerRscPrewarmClientImplementation(rscPrewarmClientImplementation);
+
   const { default: IsolatedLink } = await import("../packages/vinext/src/shims/link.js");
   const { RouterContext } = await import("../packages/vinext/src/shims/internal/router-context.js");
   const React = await vi.importActual<typeof import("react")>("react");

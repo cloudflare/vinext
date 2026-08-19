@@ -17,9 +17,6 @@ import {
   ACTION_REVALIDATED_HEADER,
   FLIGHT_HEADERS,
   NEXT_ACTION_HEADER,
-  NEXT_ROUTER_PREFETCH_HEADER,
-  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
-  NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_URL_HEADER,
   RSC_ACTION_HEADER,
   RSC_HEADER,
@@ -31,7 +28,6 @@ import {
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
   VINEXT_REVALIDATE_HOST_HEADER,
-  VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
@@ -115,6 +111,10 @@ import {
   type AppRouteTreePrefetchRoute,
   type PrefetchInliningConfig,
 } from "./app-route-tree-prefetch.js";
+import {
+  createAppRscPrewarmObservation,
+  type AppRscPrewarmObservation,
+} from "vinext/shims/rsc-prewarm-server";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -127,56 +127,13 @@ type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
 type AppRscMiddlewareContext = AppMiddlewareContext;
 type MiddlewareObservation = {
-  conditionalConfigPathMatched: boolean;
-  conditionalPathMatched: boolean;
   explicitNextUrlVary: boolean;
-  matched: boolean;
   resolvedPathCouldBeIntercepted: boolean;
 };
 
 function varyIncludesHeader(vary: string | null, headerName: string): boolean {
   if (vary === null) return false;
   return vary.split(",").some((token) => token.trim().toLowerCase() === headerName.toLowerCase());
-}
-
-// URL query conditions remain cache-keyed except for `_rsc`, whose bare and
-// hashed forms are the transport shapes this proof is trying to collapse.
-function configRuleMayVaryAcrossCanonicalRscRequests(
-  rule: NextHeader | NextRedirect | NextRewrite,
-): boolean {
-  return [...(rule.has ?? []), ...(rule.missing ?? [])].some((condition) => {
-    if (condition.type === "cookie" || condition.type === "host") return true;
-    if (condition.type === "header") {
-      const key = condition.key.toLowerCase();
-      return key !== RSC_HEADER.toLowerCase() && key !== "accept";
-    }
-    return condition.type === "query" && condition.key === VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM;
-  });
-}
-
-const CANONICALIZED_RSC_REQUEST_HEADERS = new Set(
-  [
-    NEXT_ROUTER_PREFETCH_HEADER,
-    NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
-    NEXT_ROUTER_STATE_TREE_HEADER,
-    NEXT_URL_HEADER,
-    "Host",
-  ].map((name) => name.toLowerCase()),
-);
-
-function configHeaderDeclaresCanonicalizedRscVary(rule: NextHeader): boolean {
-  return rule.headers.some(
-    ({ key, value }) => key.toLowerCase() === "vary" && varyDeclaresCanonicalizedRscHeader(value),
-  );
-}
-
-function varyDeclaresCanonicalizedRscHeader(vary: string | null): boolean {
-  return (
-    vary !== null &&
-    vary
-      .split(",")
-      .some((token) => CANONICALIZED_RSC_REQUEST_HEADERS.has(token.trim().toLowerCase()))
-  );
 }
 
 function haveSameRequestCookies(
@@ -262,34 +219,6 @@ function applyMiddlewareContextToResponse(
       headers,
     }),
   );
-}
-
-/** Apply a framework-owned header even when userland returned immutable headers. */
-function applyFrameworkResponseHeader(
-  response: Response,
-  name: string,
-  value: string | null,
-): Response {
-  const apply = (headers: Headers): void => {
-    if (value === null) headers.delete(name);
-    else headers.set(name, value);
-  };
-
-  try {
-    apply(response.headers);
-    return response;
-  } catch {
-    const headers = new Headers(response.headers);
-    apply(headers);
-    return preserveFullyBufferedBodyMetadata(
-      response,
-      new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers,
-      }),
-    );
-  }
 }
 
 type DispatchMatchedPageOptions<TRoute> = {
@@ -700,6 +629,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   dispatchInternalRequest: (request: Request) => Promise<Response>,
   allowInternalRscDocumentFallback: boolean,
   middlewareObservation: MiddlewareObservation,
+  prewarmObservation: AppRscPrewarmObservation | null,
   markInterceptionIdRejected: () => void,
 ): Promise<Response> {
   const handlerStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
@@ -764,8 +694,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // browsers will use after the eligibility manifest is emitted. The route is
   // not in that manifest yet, so only the authenticated, prerender-only server
   // may provisionally admit it while its response policy is being inspected.
-  const allowUnlistedPrewarmProbe =
-    process.env.VINEXT_PRERENDER === "1" && request.headers.has(VINEXT_PRERENDER_SECRET_HEADER);
+  const allowUnlistedPrewarmProbe = prewarmObservation?.allowUnlistedPrewarmProbe === true;
   let resolvedUrl = cleanPathname + url.search;
   const originalResolvedUrl = resolvedUrl;
   const getResolvedSearchParams = () => new URL(resolvedUrl, url).searchParams;
@@ -853,33 +782,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // request-scoped constants from this point on.
   const matchPathname = (p: string): string =>
     normalizeDefaultLocalePathname(p, options.i18nConfig, { hostname: url.hostname });
-  const domainLocaleMatchPathnames = (pathname: string): string[] => {
-    const pathnames = new Set([matchPathname(pathname)]);
-    for (const domain of options.i18nConfig?.domains ?? []) {
-      pathnames.add(
-        normalizeDefaultLocalePathname(pathname, options.i18nConfig, {
-          hostname: domain.domain,
-        }),
-      );
-    }
-    return [...pathnames];
-  };
-  const configSourceVariesAcrossDomainLocales = (
-    pathname: string,
-    matches: (matchPathname: string) => boolean,
-  ): boolean => {
-    const domainPathnames = domainLocaleMatchPathnames(pathname);
-    // Equal match booleans are not enough: locale captures can still produce
-    // different header values or rewrite/redirect destinations. If host-based
-    // locale normalization changes the pathname, fail closed for any rule that
-    // can reach at least one of those domain-specific paths.
-    return new Set(domainPathnames).size > 1 && domainPathnames.some(matches);
-  };
-
-  const observeConditionalConfig =
-    process.env.VINEXT_PRERENDER === "1" &&
-    request.headers.has(VINEXT_PRERENDER_SECRET_HEADER) &&
-    request.headers.get(RSC_HEADER) === "1";
 
   // Config sources match the request's raw encoded identity. Internal route
   // matching uses the normalized pathname separately, but decoding literal
@@ -887,58 +789,35 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // `/rewrite`, unlike Next.js. Dynamic captures must likewise retain their
   // original percent-encoding for Location substitution.
   const redirectPathname = matchPathname(requestCleanPathname);
-  const hasConfigRules =
-    options.configHeaders.length > 0 ||
-    options.configRedirects.length > 0 ||
-    options.configRewrites.beforeFiles.length > 0 ||
-    options.configRewrites.afterFiles.length > 0 ||
-    options.configRewrites.fallback.length > 0;
   const configMatchers =
     (HAS_CONFIG_REDIRECTS && options.configRedirects.length) ||
-    (observeConditionalConfig && hasConfigRules)
+    prewarmObservation?.shouldLoadConfigMatchers === true
       ? await import("../config/config-matchers.js")
       : null;
-  if (observeConditionalConfig && configMatchers) {
-    middlewareObservation.conditionalConfigPathMatched ||= options.configHeaders.some((rule) => {
-      const matches = (pathname: string) =>
-        configMatchers.matchesHeaderSource(pathname, rule, basePathState);
-      return (
-        ((configRuleMayVaryAcrossCanonicalRscRequests(rule) ||
-          configHeaderDeclaresCanonicalizedRscVary(rule)) &&
-          matches(redirectPathname)) ||
-        configSourceVariesAcrossDomainLocales(requestCleanPathname, matches)
-      );
-    });
-    middlewareObservation.conditionalConfigPathMatched ||= options.configRedirects.some((rule) => {
-      const matches = (pathname: string) =>
-        configMatchers.matchesRedirectSource(pathname, rule, basePathState);
-      return (
-        (configRuleMayVaryAcrossCanonicalRscRequests(rule) && matches(redirectPathname)) ||
-        configSourceVariesAcrossDomainLocales(requestCleanPathname, matches)
-      );
+  if (prewarmObservation && configMatchers) {
+    prewarmObservation.observeConfigRules({
+      basePathState,
+      configHeaders: options.configHeaders,
+      configMatchers,
+      configRedirects: options.configRedirects,
+      redirectPathname,
+      requestCleanPathname,
     });
   }
   const observeRewrite = (rewrite: NextRewrite, pathname: string): void => {
     const rewritePathname = matchPathname(pathname);
-    if (
-      observeConditionalConfig &&
-      configMatchers &&
-      ((configRuleMayVaryAcrossCanonicalRscRequests(rewrite) &&
-        configMatchers.matchesRewriteSource(rewritePathname, rewrite, basePathState)) ||
-        configSourceVariesAcrossDomainLocales(pathname, (candidate) =>
-          configMatchers.matchesRewriteSource(candidate, rewrite, basePathState),
-        ))
-    ) {
-      middlewareObservation.conditionalConfigPathMatched = true;
+    if (prewarmObservation && configMatchers) {
+      prewarmObservation.observeRewrite({
+        basePathState,
+        configMatchers,
+        pathname,
+        rewrite,
+        rewritePathname,
+      });
     }
   };
   const observeExternalResponse = (response: Response): void => {
-    if (
-      observeConditionalConfig &&
-      varyDeclaresCanonicalizedRscHeader(response.headers.get("Vary"))
-    ) {
-      middlewareObservation.conditionalConfigPathMatched = true;
-    }
+    prewarmObservation?.observeExternalResponse(response);
   };
   const redirect = configMatchers
     ? configMatchers.matchRedirect(
@@ -1027,9 +906,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       middlewareContext.headers?.get("Vary") ?? null,
       NEXT_URL_HEADER,
     );
-    middlewareObservation.matched ||= middlewareContext.matched === true;
-    middlewareObservation.conditionalPathMatched ||=
-      middlewareContext.conditionalPathMatched === true;
+    prewarmObservation?.observeMiddleware({
+      conditionalPathMatched: middlewareContext.conditionalPathMatched === true,
+      matched: middlewareContext.matched === true,
+    });
     if (middlewareResult.kind === "response") {
       if (request.body && !request.body.locked) {
         void request.body.cancel().catch(() => {});
@@ -2103,12 +1983,20 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
           };
           let response: Response;
           const middlewareObservation: MiddlewareObservation = {
-            conditionalConfigPathMatched: false,
-            conditionalPathMatched: false,
             explicitNextUrlVary: false,
-            matched: false,
             resolvedPathCouldBeIntercepted: false,
           };
+          const prewarmObservation = createAppRscPrewarmObservation({
+            hasConfigRules:
+              options.configHeaders.length > 0 ||
+              options.configRedirects.length > 0 ||
+              options.configRewrites.beforeFiles.length > 0 ||
+              options.configRewrites.afterFiles.length > 0 ||
+              options.configRewrites.fallback.length > 0,
+            i18nConfig: options.i18nConfig,
+            request,
+            requestKind: request.headers.get(RSC_HEADER) === "1" ? "rsc" : "document",
+          });
 
           try {
             response = await handleAppRscRequest(
@@ -2122,6 +2010,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
               (internalRequest) => appRscHandler(internalRequest, ctx, true),
               allowInternalRscDocumentFallback,
               middlewareObservation,
+              prewarmObservation,
               () => {
                 interceptionIdRejected = true;
               },
@@ -2142,28 +2031,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             preserveNextUrlVary: middlewareObservation.explicitNextUrlVary,
             requestContext: preMiddlewareRequestContext,
           });
-          // This marker is framework-owned proof, not a user-configurable
-          // response header. Remove any forged/userland copy before deciding
-          // whether the observed request was actually source-independent.
-          finalized = applyFrameworkResponseHeader(
-            finalized,
-            VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
-            null,
-          );
-          if (
-            process.env.VINEXT_PRERENDER === "1" &&
-            request.headers.has(VINEXT_PRERENDER_SECRET_HEADER) &&
-            request.headers.get(RSC_HEADER) === "1" &&
-            !middlewareObservation.conditionalConfigPathMatched &&
-            !middlewareObservation.matched &&
-            !middlewareObservation.conditionalPathMatched
-          ) {
-            finalized = applyFrameworkResponseHeader(
-              finalized,
-              VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER,
-              "1",
-            );
-          }
+          finalized = prewarmObservation?.applySourceIndependentProof(finalized) ?? finalized;
           return interceptionIdRejected
             ? markInvalidInterceptionIdResponseUncacheable(finalized)
             : finalized;
