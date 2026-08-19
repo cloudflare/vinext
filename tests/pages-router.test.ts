@@ -1278,6 +1278,19 @@ describe("Pages Router integration", () => {
     expect(await res.json()).toEqual({});
   });
 
+  it("skips middleware data prefetches for Pages edge-runtime routes in dev", async () => {
+    // Next.js disables Pages static generation when an edge runtime is set.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
+    const res = await fetch(`${baseUrl}/_next/data/test-build-id/edge-page.json`, {
+      headers: { "x-middleware-prefetch": "1" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-middleware-skip")).toBe("1");
+    expect(res.headers.get("x-matched-path")).toBe("/edge-page");
+    expect(await res.json()).toEqual({});
+  });
+
   it("skips auto-static middleware data prefetches before production prerendering", async () => {
     // Ported from Next.js: packages/next/src/server/base-server.ts
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
@@ -1326,6 +1339,41 @@ describe("Pages Router integration", () => {
 
     const restoredResponse = await waitForSkip("1");
     expect(restoredResponse.headers.get("x-middleware-skip")).toBe("1");
+  });
+
+  it("surfaces route compile errors before returning a middleware-prefetch skip", async () => {
+    const aboutPath = path.join(FIXTURE_DIR, "pages", "about.tsx");
+    const original = await fsp.readFile(aboutPath, "utf8");
+    const requestPrefetch = () =>
+      fetch(`${baseUrl}/_next/data/test-build-id/about.json`, {
+        headers: { "x-middleware-prefetch": "1" },
+      });
+
+    try {
+      await fsp.writeFile(aboutPath, "export default function Broken( {");
+      server.watcher.emit("change", aboutPath);
+
+      let brokenResponse: Response | undefined;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        brokenResponse = await requestPrefetch();
+        if (brokenResponse.status >= 500) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(brokenResponse?.status).toBeGreaterThanOrEqual(500);
+      expect(brokenResponse?.headers.get("x-middleware-skip")).toBeNull();
+    } finally {
+      await fsp.writeFile(aboutPath, original);
+      server.watcher.emit("change", aboutPath);
+    }
+
+    let restoredResponse: Response | undefined;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      restoredResponse = await requestPrefetch();
+      if (restoredResponse.headers.get("x-middleware-skip") === "1") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(restoredResponse?.status).toBe(200);
+    expect(restoredResponse?.headers.get("x-middleware-skip")).toBe("1");
   });
 
   it("does not collapse encoded slashes onto nested routes in dev", async () => {
@@ -8003,6 +8051,19 @@ describe("Production server middleware (Pages Router)", () => {
       expect(res.status).toBe(200);
       expect(res.headers.get("x-middleware-skip")).toBe("1");
       expect(res.headers.get("x-matched-path")).toBe("/nav-compat/[slug]");
+      expect(await res.json()).toEqual({});
+    });
+
+    it("skips middleware prefetch rendering for Pages edge-runtime routes", async () => {
+      // Next.js explicitly clears isStatic/hasStaticProps for Pages edge routes.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
+      const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/edge-page.json`, {
+        headers: { "x-middleware-prefetch": "1" },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-middleware-skip")).toBe("1");
+      expect(res.headers.get("x-matched-path")).toBe("/edge-page");
       expect(await res.json()).toEqual({});
     });
 

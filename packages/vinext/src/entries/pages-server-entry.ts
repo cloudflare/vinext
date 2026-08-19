@@ -328,11 +328,14 @@ export const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
 for (const route of pageRoutes) {
-  const resolvedDataKind = __resolvePagesRouteDataKind(
-    route.dataKind,
-    route.module.default ?? null,
-    AppComponent,
-  );
+  const pageRuntime = route.module.config?.runtime;
+  const resolvedDataKind = pageRuntime === "edge" || pageRuntime === "experimental-edge"
+    ? "runtime"
+    : __resolvePagesRouteDataKind(
+        route.dataKind,
+        route.module.default ?? null,
+        AppComponent,
+      );
   // Next promotes automatically static pages to SSG from the prerender
   // manifest only in production. Hybrid dev reaches this generated entry via
   // the App -> Pages bridge, so retain the dev-only non-SSG classification.

@@ -214,10 +214,16 @@ function denyCdnCacheOnResponse(response: Response): Response {
 
 /**
  * Deny shared-cache admission for a response whose route/result depended on
- * non-URL request state without discarding the framework's origin ISR policy.
- * Provider-specific behavior stays behind the cache-adapter boundary.
+ * non-URL request state. Origin ISR persistence stays internal; outward policy
+ * remains provider-specific behind the cache-adapter boundary.
  */
 export function denyCdnCacheOnSourceDependentResponse(response: Response): Response {
+  if (
+    response.headers.has("Set-Cookie") ||
+    hasExplicitNonCacheableResponsePolicy(response.headers)
+  ) {
+    return denyCdnCacheOnResponse(response);
+  }
   const headers = new Headers(response.headers);
   const input = { cacheControl: headers.get("Cache-Control") ?? "" };
   const adapter = getCdnCacheAdapter();

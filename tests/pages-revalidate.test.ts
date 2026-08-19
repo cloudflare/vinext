@@ -6,6 +6,11 @@ import {
 } from "../packages/vinext/src/server/isr-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { VINEXT_REVALIDATE_HOST_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 
 function stubFetch() {
   const fetchMock = vi.fn(
@@ -57,6 +62,7 @@ function fetchHeadersAt(
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  setCdnCacheAdapter(new DefaultCdnCacheAdapter());
 });
 
 describe("performOnDemandRevalidate", () => {
@@ -168,6 +174,41 @@ describe("performOnDemandRevalidate", () => {
     expect(request?.headers.get(PRERENDER_REVALIDATE_HEADER)).toMatch(/^[a-f0-9]{64}$/);
     expect(request?.headers.get(PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER)).toBe("1");
     expect(request?.headers.get(VINEXT_REVALIDATE_HOST_HEADER)).toBeNull();
+  });
+
+  it("purges the regenerated path after an edge-managed revalidation succeeds", async () => {
+    const revalidateTag = vi.fn(async () => {});
+    const edgeAdapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders({ cacheControl }) {
+        return { "Cache-Control": "no-store", "CDN-Cache-Control": cacheControl };
+      },
+      revalidateTag,
+    };
+    setCdnCacheAdapter(edgeAdapter);
+
+    await runWithExecutionContext(
+      {
+        waitUntil() {},
+        dispatchPagesRevalidate: async () =>
+          new Response(null, {
+            status: 200,
+            headers: { "x-nextjs-cache": "REVALIDATED" },
+          }),
+      },
+      () =>
+        performOnDemandRevalidate(
+          new Headers({ host: "public-origin.example" }),
+          "/nested/page/?query=ignored",
+        ),
+    );
+
+    expect(revalidateTag).toHaveBeenCalledOnce();
+    expect(revalidateTag).toHaveBeenCalledWith("_N_T_/nested/page");
   });
 
   it("rejects nested internal revalidation dispatch", async () => {

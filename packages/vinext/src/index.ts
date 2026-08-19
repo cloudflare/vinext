@@ -4082,7 +4082,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return generateRootParamsModule(routes.flatMap((route) => route.rootParamNames ?? []));
           }
           if (id === RESOLVED_CACHE_ADAPTERS) {
-            return generateCacheAdaptersModule(options.cache);
+            return generateCacheAdaptersModule(
+              options.cache,
+              this.environment.config.command === "serve",
+            );
           }
           if (id === RESOLVED_RSC_PREWARM_CLIENT) {
             return generateRscPrewarmClientModule(
@@ -5738,31 +5741,35 @@ export const loadServerActionClient = ${
               const classifyDevPageRoute = async (
                 route: (typeof devPageRoutes)[number],
               ): Promise<PagesRouteDataKind> => {
-                try {
-                  // Always classify through the current dev module graph.
-                  // Vite invalidates imported modules after edits; retaining
-                  // our own promise would pin stale exports (or a transient
-                  // rejected import) until the dev server restarted.
-                  const source = fs.readFileSync(route.filePath, "utf8");
-                  if (hasExportedName(source, "getStaticProps")) return "static";
-                  if (hasExportedName(source, "getServerSideProps")) return "server";
-                  const pageModule = (await getPagesRunner().import(route.filePath)) as {
-                    default?: { getInitialProps?: unknown };
-                  };
-                  const dataKind = resolvePagesRouteDataKind(
-                    "none",
-                    pageModule.default ?? null,
-                    await getDevAppComponent(),
-                  );
-                  // Next only promotes automatically static pages to SSG
-                  // from the prerender manifest in production. During dev,
-                  // middleware-prefetch requests therefore use the same
-                  // non-SSG skip protocol as GSSP/getInitialProps routes.
-                  return dataKind === "none" ? "development" : dataKind;
-                } catch {
-                  // Dev can race with an editor deleting/renaming a page file.
+                // Always classify through the current dev module graph.
+                // Vite invalidates imported modules after edits; retaining
+                // our own promise would pin stale exports (or a transient
+                // rejected import) until the dev server restarted. Import
+                // before deciding to skip a prefetch so syntax/compile errors
+                // surface instead of being hidden behind a successful `{}`.
+                const source = fs.readFileSync(route.filePath, "utf8");
+                const pageModule = (await getPagesRunner().import(route.filePath)) as {
+                  config?: { runtime?: unknown };
+                  default?: { getInitialProps?: unknown };
+                };
+                if (
+                  pageModule.config?.runtime === "edge" ||
+                  pageModule.config?.runtime === "experimental-edge"
+                ) {
+                  return "runtime";
                 }
-                return "none";
+                if (hasExportedName(source, "getStaticProps")) return "static";
+                if (hasExportedName(source, "getServerSideProps")) return "server";
+                const dataKind = resolvePagesRouteDataKind(
+                  "none",
+                  pageModule.default ?? null,
+                  await getDevAppComponent(),
+                );
+                // Next only promotes automatically static pages to SSG
+                // from the prerender manifest in production. During dev,
+                // middleware-prefetch requests therefore use the same
+                // non-SSG skip protocol as GSSP/getInitialProps routes.
+                return dataKind === "none" ? "development" : dataKind;
               };
 
               const pipelineDeps: PagesPipelineDeps = {

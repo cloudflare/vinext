@@ -827,13 +827,13 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
   });
 
-  it("denies provider storage without discarding the origin ISR policy", () => {
+  it("denies source-dependent storage in Cloudflare and downstream shared caches", () => {
     expect(
       adapter.buildSourceDependentResponseHeaders({
         cacheControl: "s-maxage=2, stale-while-revalidate=31535998",
       }),
     ).toEqual({
-      "Cache-Control": "s-maxage=2, stale-while-revalidate=31535998",
+      "Cache-Control": "no-store",
       "CDN-Cache-Control": null,
       "Cloudflare-CDN-Cache-Control": "no-store",
       "Cache-Tag": null,

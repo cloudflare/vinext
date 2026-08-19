@@ -1720,6 +1720,10 @@ describe("Pages Router entry template", () => {
         path.join(pagesDir, "legacy.tsx"),
         "function Page() { return null; } Page.getInitialProps = async () => ({ ok: true }); export default Page;",
       );
+      fs.writeFileSync(
+        path.join(pagesDir, "edge.tsx"),
+        'export const config = { runtime: "edge" }; export default function Page() { return null; }',
+      );
 
       const code = await generateServerEntry(
         pagesDir,
@@ -1736,7 +1740,9 @@ describe("Pages Router entry template", () => {
       expect(code).toContain('pattern: "/plain",');
       expect(code).toContain('dataKind: "none"');
       expect(code).toContain("resolvePagesRouteDataKind as __resolvePagesRouteDataKind");
-      expect(code).toContain("const resolvedDataKind = __resolvePagesRouteDataKind(");
+      expect(code).toContain('pageRuntime === "edge" || pageRuntime === "experimental-edge"');
+      expect(code).toContain('? "runtime"');
+      expect(code).toContain(": __resolvePagesRouteDataKind(");
       expect(code).toContain("route.module.default ?? null");
       expect(code).toContain('route.dataKind = import.meta.env.DEV && resolvedDataKind === "none"');
       expect(code).toContain('? "development"');

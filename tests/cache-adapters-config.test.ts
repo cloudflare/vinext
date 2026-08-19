@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect } from "vite-plus/test";
+import { afterEach, describe, it, expect, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
   findVinextCacheConfigInPlugins,
@@ -36,20 +36,101 @@ import createCloudflareCdnCacheAdapter, {
   CloudflareCdnCacheAdapter,
 } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import * as internalCacheAdapters from "../packages/vinext/src/cache-adapters.js";
+import {
+  configureMemoryCacheHandler,
+  getDataCacheHandler,
+  MemoryCacheHandler,
+  resetDataCacheHandler,
+  setDataCacheHandler,
+  type CacheHandler,
+} from "../packages/vinext/src/shims/cache-handler.js";
+import {
+  DefaultCdnCacheAdapter,
+  getCdnCacheAdapter,
+  resetCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+
+type EvaluatedCacheAdaptersModule = {
+  dispose(): void;
+  registerConfiguredCacheAdapters(env?: Record<string, unknown>): void;
+};
+
+function evaluateCacheAdaptersModule(
+  code: string,
+  factories: {
+    cdn?: (input: unknown) => CdnCacheAdapter;
+    data?: (input: unknown) => CacheHandler;
+  } = {},
+): EvaluatedCacheAdaptersModule {
+  let dispose = () => {};
+  const hot = {
+    accept() {},
+    dispose(callback: () => void) {
+      dispose = callback;
+    },
+  };
+  const executable = code
+    .replace(/^import .*;$/gm, "")
+    .replaceAll("import.meta.hot", "__vinextHot")
+    .replace(
+      "export function registerConfiguredCacheAdapters",
+      "function registerConfiguredCacheAdapters",
+    );
+  // oxlint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval -- executing the generated virtual module is the behavior under test
+  const evaluate = new Function(
+    "__vinextDataAdapterFactory",
+    "__vinextCdnAdapterFactory",
+    "resetDataCacheHandler",
+    "setDataCacheHandler",
+    "resetCdnCacheAdapter",
+    "setCdnCacheAdapter",
+    "__vinextHot",
+    `${executable}\nreturn registerConfiguredCacheAdapters;`,
+  ) as (...args: unknown[]) => EvaluatedCacheAdaptersModule["registerConfiguredCacheAdapters"];
+  const registerConfiguredCacheAdapters = evaluate(
+    factories.data,
+    factories.cdn,
+    resetDataCacheHandler,
+    setDataCacheHandler,
+    resetCdnCacheAdapter,
+    setCdnCacheAdapter,
+    hot,
+  );
+  return { dispose, registerConfiguredCacheAdapters };
+}
+
+const CACHE_ADAPTER_REGISTRATION_STATE_KEY = Symbol.for("vinext.cacheAdaptersRegistrationState");
+
+afterEach(() => {
+  delete (globalThis as Record<PropertyKey, unknown>)[CACHE_ADAPTER_REGISTRATION_STATE_KEY];
+  configureMemoryCacheHandler(undefined);
+  resetDataCacheHandler();
+  resetCdnCacheAdapter();
+  vi.restoreAllMocks();
+});
 
 describe("generateCacheAdaptersModule", () => {
   it("exposes the public virtual module id", () => {
     expect(VIRTUAL_CACHE_ADAPTERS).toBe("virtual:vinext-cache-adapters");
   });
 
-  it("emits a no-op registrar when no adapters are configured", () => {
+  it("keeps the unconfigured production registrar at its zero-cost shape", () => {
     for (const cache of [undefined, {}, { cdn: undefined, data: undefined }]) {
       const code = generateCacheAdaptersModule(cache);
       expect(code).toContain("export function registerConfiguredCacheAdapters() {}");
       expect(code).not.toContain("import");
-      expect(code).not.toContain("setDataCacheHandler");
-      expect(code).not.toContain("setCdnCacheAdapter");
     }
+  });
+
+  it("emits a dev registrar that clears adapters removed from config", () => {
+    const code = generateCacheAdaptersModule(undefined, true);
+    expect(code).toContain("export function registerConfiguredCacheAdapters(env)");
+    expect(code).toContain("resetDataCacheHandler");
+    expect(code).toContain("resetCdnCacheAdapter");
+    expect(code).not.toContain("setDataCacheHandler(__vinextDataAdapterFactory");
+    expect(code).not.toContain("setCdnCacheAdapter(__vinextCdnAdapterFactory");
   });
 
   it("wires only the data adapter when only data is configured", () => {
@@ -62,7 +143,7 @@ describe("generateCacheAdaptersModule", () => {
       "setDataCacheHandler(__vinextDataAdapterFactory({ env, options: undefined }));",
     );
     expect(code).not.toContain("__vinextCdnAdapterFactory");
-    expect(code).not.toContain("setCdnCacheAdapter");
+    expect(code).not.toContain("setCdnCacheAdapter(__vinextCdnAdapterFactory");
   });
 
   it("wires only the cdn adapter when only cdn is configured", () => {
@@ -75,7 +156,7 @@ describe("generateCacheAdaptersModule", () => {
       "setCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: undefined }));",
     );
     expect(code).not.toContain("__vinextDataAdapterFactory");
-    expect(code).not.toContain("setDataCacheHandler");
+    expect(code).not.toContain("setDataCacheHandler(__vinextDataAdapterFactory");
   });
 
   it("inlines descriptor options and forwards them to the factory", () => {
@@ -99,19 +180,129 @@ describe("generateCacheAdaptersModule", () => {
     expect(code).toContain(
       "if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
     );
-    expect(code).toContain('Symbol.for("vinext.cacheAdaptersRegistration")');
+    expect(code).toContain('Symbol.for("vinext.cacheAdaptersRegistrationState")');
+    expect(code).toContain("__vinextCacheAdaptersModuleEpoch !== __vinextCacheAdaptersState.epoch");
     expect(code).toContain(
-      "__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] === __vinextCacheAdaptersRegistrationId",
-    );
-    expect(code).toContain(
-      "__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] = __vinextCacheAdaptersRegistrationId;",
+      "__vinextCacheAdaptersState.registrationId === __vinextCacheAdaptersRegistrationId",
     );
     expect(code).toContain("import.meta.hot.dispose(() => {");
+    expect(code).toContain("__vinextCacheAdaptersState.epoch += 1;");
     expect(code.indexOf("setCdnCacheAdapter(")).toBeLessThan(
       code.indexOf(
-        "__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] = __vinextCacheAdaptersRegistrationId;",
+        "__vinextCacheAdaptersState.registrationId = __vinextCacheAdaptersRegistrationId;",
       ),
     );
+  });
+
+  it("tracks configured slots so later generations can clear removed adapters", () => {
+    const configured = generateCacheAdaptersModule({
+      cdn: { adapter: "my-cdn-adapter" },
+      data: { adapter: "my-data-adapter" },
+    });
+    const removed = generateCacheAdaptersModule(undefined, true);
+
+    expect(configured).toContain(
+      "__vinextCacheAdaptersState.dataConfigured = __vinextDataConfigured;",
+    );
+    expect(configured).toContain(
+      "__vinextCacheAdaptersState.cdnConfigured = __vinextCdnConfigured;",
+    );
+    expect(removed).toContain(
+      "if (__vinextCacheAdaptersState.dataConfigured && true) resetDataCacheHandler();",
+    );
+    expect(removed).toContain(
+      "if (__vinextCacheAdaptersState.cdnConfigured && true) resetCdnCacheAdapter();",
+    );
+  });
+
+  it("clears removed adapters and rejects registrations from disposed generations", () => {
+    const dataHandler: CacheHandler = {
+      async get() {
+        return null;
+      },
+      async set() {},
+      async revalidateTag() {},
+    };
+    const cdn = new DefaultCdnCacheAdapter();
+    const configured = evaluateCacheAdaptersModule(
+      generateCacheAdaptersModule({
+        cdn: { adapter: "my-cdn-adapter" },
+        data: { adapter: "my-data-adapter" },
+      }),
+      { cdn: () => cdn, data: () => dataHandler },
+    );
+    configured.registerConfiguredCacheAdapters();
+    expect(getDataCacheHandler()).toBe(dataHandler);
+    expect(getCdnCacheAdapter()).toBe(cdn);
+
+    configured.dispose();
+    const removed = evaluateCacheAdaptersModule(generateCacheAdaptersModule(undefined, true));
+    removed.registerConfiguredCacheAdapters();
+    expect(getDataCacheHandler()).toBeInstanceOf(MemoryCacheHandler);
+    expect(getCdnCacheAdapter()).toBeInstanceOf(DefaultCdnCacheAdapter);
+    expect(getCdnCacheAdapter()).not.toBe(cdn);
+
+    configured.registerConfiguredCacheAdapters();
+    expect(getDataCacheHandler()).toBeInstanceOf(MemoryCacheHandler);
+    expect(getCdnCacheAdapter()).toBeInstanceOf(DefaultCdnCacheAdapter);
+    expect(getCdnCacheAdapter()).not.toBe(cdn);
+  });
+
+  it("keeps only the newest adapter generation active across consecutive HMR updates", () => {
+    const makeHandler = (): CacheHandler => ({
+      async get() {
+        return null;
+      },
+      async set() {},
+      async revalidateTag() {},
+    });
+    const firstHandler = makeHandler();
+    const secondHandler = makeHandler();
+    const thirdHandler = makeHandler();
+    const createGeneration = (adapter: string, handler: CacheHandler) =>
+      evaluateCacheAdaptersModule(generateCacheAdaptersModule({ data: { adapter } }), {
+        data: () => handler,
+      });
+
+    const first = createGeneration("data-v1", firstHandler);
+    first.registerConfiguredCacheAdapters();
+    first.dispose();
+    const second = createGeneration("data-v2", secondHandler);
+    second.registerConfiguredCacheAdapters();
+    second.dispose();
+    const third = createGeneration("data-v3", thirdHandler);
+    third.registerConfiguredCacheAdapters();
+
+    expect(getDataCacheHandler()).toBe(thirdHandler);
+    first.registerConfiguredCacheAdapters();
+    second.registerConfiguredCacheAdapters();
+    expect(getDataCacheHandler()).toBe(thirdHandler);
+  });
+
+  it("restores the configured memory limit after data-adapter initialization fails", async () => {
+    configureMemoryCacheHandler({ cacheMaxMemorySize: 0 });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const generated = evaluateCacheAdaptersModule(
+      generateCacheAdaptersModule({ data: { adapter: "broken-data-adapter" } }),
+      {
+        data: () => {
+          throw new Error("missing binding");
+        },
+      },
+    );
+
+    generated.registerConfiguredCacheAdapters();
+
+    const fallback = getDataCacheHandler();
+    expect(fallback).toBeInstanceOf(MemoryCacheHandler);
+    await fallback.set("disabled", {
+      kind: "FETCH",
+      data: { body: "must-not-persist", headers: {}, url: "test" },
+      revalidate: 3600,
+      tags: [],
+    });
+    expect(await fallback.get("disabled")).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("missing binding"));
   });
 
   it("logs registration failures without printing raw Error stack traces", () => {
@@ -140,9 +331,7 @@ describe("generateCacheAdaptersModule", () => {
         cdn: { adapter: "capability-cdn-adapter", capabilities },
       });
 
-      expect(code).toContain(
-        "delete __vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey];",
-      );
+      expect(code).toContain("__vinextCacheAdaptersState.registrationId = null;");
       expect(code).toContain("resetCdnCacheAdapter();");
       expect(code).toContain("the declared cache capabilities require it");
       expect(code).toContain("{ cause: error }");

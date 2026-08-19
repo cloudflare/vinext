@@ -127,7 +127,7 @@ describe("on-demand revalidation middleware bypass", () => {
       expect(result.type).toBe("response");
       if (result.type !== "response") return;
       expect(isPrewarmSourceIndependent(observation)).toBe(false);
-      expect(result.response.headers.get("cache-control")).not.toContain("no-store");
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
       expect(result.response.headers.get("cdn-cache-control")).toBeNull();
       expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBe("no-store");
     } finally {
@@ -195,7 +195,7 @@ describe("Pages prewarm source-independence observation", () => {
 
       expect(result.type).toBe("response");
       if (result.type !== "response") return;
-      expect(result.response.headers.get("cache-control")).not.toContain("no-store");
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
       expect(result.response.headers.get("cdn-cache-control")).toBeNull();
       expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBe("no-store");
     } finally {
@@ -226,7 +226,7 @@ describe("Pages prewarm source-independence observation", () => {
       expect(result.type).toBe("response");
       if (result.type !== "response") return;
       expect(await result.response.json()).toEqual({});
-      expect(result.response.headers.get("cache-control")).not.toContain("no-store");
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
       expect(result.response.headers.get("cdn-cache-control")).toBeNull();
       expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBe("no-store");
     } finally {
@@ -262,7 +262,7 @@ describe("Pages prewarm source-independence observation", () => {
 
       expect(result.type).toBe("response");
       if (result.type !== "response") return;
-      expect(result.response.headers.get("cache-control")).not.toContain("no-store");
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
       expect(result.response.headers.get("cdn-cache-control")).toBeNull();
       expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBe("no-store");
     } finally {
@@ -305,6 +305,41 @@ describe("Pages prewarm source-independence observation", () => {
     }
   });
 
+  it("preserves Set-Cookie cache denial after matched middleware", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const observation = createPrewarmSourceObservation(true);
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/account"),
+        baseDeps({
+          hasMiddleware: true,
+          matchPageRoute: () => ({
+            route: { dataKind: "none", isDynamic: false, pattern: "/account" },
+          }),
+          prewarmSourceObservation: observation,
+          runMiddleware: async (_request, _ctx, options) => {
+            options.onMatcherEvaluation?.({ conditionalPathMatched: false, matched: true });
+            return { continue: true };
+          },
+          renderPage: async () => {
+            const response = makeCacheableResponse("account");
+            response.headers.append("Set-Cookie", "session=rotated; Path=/; HttpOnly");
+            return response;
+          },
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.headers.getSetCookie()).toEqual(["session=rotated; Path=/; HttpOnly"]);
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+      expect(result.response.headers.get("cache-tag")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   it("denies shared cache admission after a header-dependent config match", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const observation = createPrewarmSourceObservation(false);
@@ -336,7 +371,7 @@ describe("Pages prewarm source-independence observation", () => {
       expect(result.type).toBe("response");
       if (result.type !== "response") return;
       expect(result.response.headers.get("x-selected-tenant")).toBe("a");
-      expect(result.response.headers.get("cache-control")).not.toContain("no-store");
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
       expect(result.response.headers.get("cdn-cache-control")).toBeNull();
       expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBe("no-store");
     } finally {
@@ -372,7 +407,7 @@ describe("Pages prewarm source-independence observation", () => {
 
       expect(result.type).toBe("response");
       if (result.type !== "response") return;
-      expect(result.response.headers.get("cache-control")).not.toContain("no-store");
+      expect(result.response.headers.get("cache-control")).toContain("no-store");
       expect(result.response.headers.get("cdn-cache-control")).toBeNull();
       expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBe("no-store");
     } finally {

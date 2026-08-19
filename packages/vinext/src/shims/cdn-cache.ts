@@ -244,7 +244,12 @@ export function setCdnCacheAdapter(adapter: CdnCacheAdapter): void {
     typeof adapter.set !== "function" ||
     typeof adapter.buildResponseHeaders !== "function" ||
     typeof adapter.revalidateTag !== "function" ||
-    typeof adapter.ownsBackgroundRevalidation !== "boolean"
+    typeof adapter.ownsBackgroundRevalidation !== "boolean" ||
+    (adapter.handleRequest !== undefined && typeof adapter.handleRequest !== "function") ||
+    (adapter.buildSourceDependentResponseHeaders !== undefined &&
+      typeof adapter.buildSourceDependentResponseHeaders !== "function") ||
+    (adapter.hasExplicitNonCacheableResponsePolicy !== undefined &&
+      typeof adapter.hasExplicitNonCacheableResponsePolicy !== "function")
   ) {
     throw new TypeError("[vinext] CDN cache adapter factory returned an invalid adapter.");
   }

@@ -22,6 +22,8 @@ import {
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import {
   MemoryCacheHandler,
+  configureMemoryCacheHandler,
+  resetDataCacheHandler,
   setDataCacheHandler,
   setCacheHandler,
   getDataCacheHandler,
@@ -128,6 +130,40 @@ describe("getCdnCacheAdapter / setCdnCacheAdapter", () => {
       );
     }
     expect(getCdnCacheAdapter()).toBeInstanceOf(DefaultCdnCacheAdapter);
+  });
+
+  it.each([
+    "handleRequest",
+    "buildSourceDependentResponseHeaders",
+    "hasExplicitNonCacheableResponsePolicy",
+  ])("rejects a malformed optional %s hook", (hook) => {
+    const adapter = new DefaultCdnCacheAdapter() as CdnCacheAdapter & Record<string, unknown>;
+    adapter[hook] = true;
+    expect(() => setCdnCacheAdapter(adapter)).toThrow(/factory returned an invalid adapter/);
+    expect(getCdnCacheAdapter()).toBeInstanceOf(DefaultCdnCacheAdapter);
+  });
+});
+
+describe("memory data-cache fallback", () => {
+  it("retains cacheMaxMemorySize when a configured adapter is reset", async () => {
+    configureMemoryCacheHandler({ cacheMaxMemorySize: 0 });
+    try {
+      setDataCacheHandler({
+        async get() {
+          return null;
+        },
+        async set() {},
+        async revalidateTag() {},
+      });
+      resetDataCacheHandler();
+
+      const fallback = getDataCacheHandler();
+      expect(fallback).toBeInstanceOf(MemoryCacheHandler);
+      await fallback.set("disabled", buildPagesCacheValue("must-not-persist", {}));
+      expect(await fallback.get("disabled")).toBeNull();
+    } finally {
+      configureMemoryCacheHandler(undefined);
+    }
   });
 });
 

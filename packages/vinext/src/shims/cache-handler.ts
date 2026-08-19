@@ -373,6 +373,7 @@ export class MemoryCacheHandler implements CacheHandler {
 }
 
 const HANDLER_KEY = Symbol.for("vinext.cacheHandler");
+const MEMORY_HANDLER_OPTIONS_KEY = Symbol.for("vinext.memoryCacheHandlerOptions");
 const globalHandlers = globalThis as unknown as Record<PropertyKey, CacheHandler>;
 
 function getActiveHandler(): CacheHandler {
@@ -380,6 +381,9 @@ function getActiveHandler(): CacheHandler {
 }
 
 export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions): void {
+  (globalHandlers as unknown as Record<PropertyKey, MemoryCacheHandlerOptions | undefined>)[
+    MEMORY_HANDLER_OPTIONS_KEY
+  ] = options;
   const current = globalHandlers[HANDLER_KEY];
   if (current && !(current instanceof MemoryCacheHandler)) return;
   globalHandlers[HANDLER_KEY] = new MemoryCacheHandler(options);
@@ -398,9 +402,12 @@ export function setDataCacheHandler(handler: CacheHandler): void {
   globalHandlers[HANDLER_KEY] = handler;
 }
 
-/** Clear an explicitly configured handler and restore lazy memory-cache resolution. */
+/** Clear an explicitly configured handler and restore the configured memory cache. */
 export function resetDataCacheHandler(): void {
-  delete globalHandlers[HANDLER_KEY];
+  const options = (
+    globalHandlers as unknown as Record<PropertyKey, MemoryCacheHandlerOptions | undefined>
+  )[MEMORY_HANDLER_OPTIONS_KEY];
+  globalHandlers[HANDLER_KEY] = new MemoryCacheHandler(options);
 }
 
 export function getDataCacheHandler(): CacheHandler {

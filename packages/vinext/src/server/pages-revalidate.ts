@@ -25,7 +25,9 @@ import {
 } from "./isr-cache.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { normalizeDomainHostname } from "../utils/domain-locale.js";
+import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 
 export type RevalidateOptions = {
   /**
@@ -101,6 +103,17 @@ export async function performOnDemandRevalidate(
 
   if (!ok) {
     throw new Error(`Failed to revalidate ${urlPath}: ${res.status}`);
+  }
+
+  const cdnAdapter = getCdnCacheAdapter();
+  if (!cdnAdapter.ownsBackgroundRevalidation) {
+    // Edge-managed adapters do not persist the response produced by the
+    // in-process Worker revalidation dispatch. Purge the path family after a
+    // successful render so the next public request cannot keep serving the
+    // stale edge entry and will refill it with current output.
+    const pathname = target.pathname;
+    const stem = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+    await cdnAdapter.revalidateTag(encodeCacheTag(`_N_T_${stem || "/"}`));
   }
 }
 

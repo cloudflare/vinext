@@ -425,9 +425,45 @@ describe("renderPagesFallback", () => {
       },
     );
 
-    expect(response?.headers.get("cache-control")).not.toContain("no-store");
+    expect(response?.headers.get("cache-control")).toContain("no-store");
     expect(response?.headers.get("cdn-cache-control")).toBeNull();
     expect(response?.headers.get("cloudflare-cdn-cache-control")).toBe("no-store");
+  });
+
+  it("preserves Set-Cookie cache denial on a source-dependent hybrid Pages response", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/account");
+    const response = await renderPagesFallback(
+      {
+        hasMiddleware: true,
+        isDataRequest: false,
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request,
+        sourceIndependent: false,
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({
+          matchPageRoute: () => ({
+            route: { dataKind: "none", isDynamic: false, pattern: "/account" },
+          }),
+          renderPage: () =>
+            new Response("account", {
+              headers: {
+                "Cache-Control": "public, max-age=31536000",
+                "Set-Cookie": "session=rotated; Path=/; HttpOnly",
+              },
+            }),
+        }),
+      },
+    );
+
+    expect(response?.headers.getSetCookie()).toEqual(["session=rotated; Path=/; HttpOnly"]);
+    expect(response?.headers.get("cache-control")).toContain("no-store");
+    expect(response?.headers.get("cdn-cache-control")).toBeNull();
+    expect(response?.headers.get("cache-tag")).toBeNull();
   });
 
   it("routes raw hybrid Pages API cache policy through the adapter", async () => {

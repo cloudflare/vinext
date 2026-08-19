@@ -418,11 +418,13 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     return headers;
   }
 
-  buildSourceDependentResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
+  buildSourceDependentResponseHeaders(_input: CdnCacheableHeaderInput): CdnResponseHeaders {
     return {
-      // Preserve the framework's origin-facing ISR contract. Cloudflare's
-      // higher-priority provider policy below is what prevents edge storage.
-      "Cache-Control": input.cacheControl || NO_STORE,
+      // Cloudflare strips its scoped policy before forwarding downstream, so
+      // the outward generic policy must also prohibit shared storage. Origin
+      // ISR persistence is an adapter/store concern, not a response-header
+      // contract for downstream caches.
+      "Cache-Control": NO_STORE,
       "CDN-Cache-Control": null,
       "Cloudflare-CDN-Cache-Control": NO_STORE,
       "Cache-Tag": null,

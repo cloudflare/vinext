@@ -4,10 +4,11 @@
  *
  * The generated module exports `registerConfiguredCacheAdapters(env)`, which the
  * server entries call on each request. It self-guards (adapters instantiate once
- * per isolate) and is a no-op when nothing is configured. Registration is
- * resilient: a factory that throws (e.g. a KV adapter on the Node.js server,
- * where the binding can't exist) is logged and skipped rather than failing every
- * request, so the same config can be registered from every runtime/router entry.
+ * per isolate) and clears adapters from an earlier hot-reloaded config when a
+ * slot is no longer configured. Registration is resilient: a factory that throws
+ * (e.g. a KV adapter on the Node.js server, where the binding can't exist) is
+ * logged and skipped rather than failing every request, so the same config can be
+ * registered from every runtime/router entry.
  *
  * Descriptor `options` are inlined into the generated module and forwarded to the
  * factory at runtime, so a config-time builder like `kvDataAdapter({ binding })`
@@ -165,7 +166,7 @@ function inlineOptions(adapter: string, options: Record<string, unknown> | undef
  * Generate the source of the `virtual:vinext-cache-adapters` module for the
  * given config. Always exports `registerConfiguredCacheAdapters(env)`.
  */
-export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
+export function generateCacheAdaptersModule(cache?: VinextCacheConfig, hotReload = false): string {
   const data = cache?.data;
   const cdn = cache?.cdn;
   assertProtocolCapabilitiesHaveAdapter(cache);
@@ -173,9 +174,10 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     cdn?.capabilities?.responseVary === "verbatim" ||
     resolveControlledResponseVaryHeaders(cache).length > 0;
 
-  // Nothing configured → a no-op so the unconditional import in the server
-  // entries stays valid and tree-shakes to almost nothing.
-  if (!data?.adapter && !cdn?.adapter) {
+  // Keep the unconfigured production path at its historical zero-cost shape.
+  // Dev emits lifecycle state so removing an adapter from vite.config during
+  // HMR can clear the previously registered global instance.
+  if (!data?.adapter && !cdn?.adapter && !hotReload) {
     return [
       "// vinext: no cache.cdn/cache.data adapter configured — registration is a no-op.",
       "export function registerConfiguredCacheAdapters() {}",
@@ -197,16 +199,14 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
 
   if (data?.adapter) {
     lines.push(`import __vinextDataAdapterFactory from ${JSON.stringify(data.adapter)};`);
-    lines.push(
-      `import { resetDataCacheHandler, setDataCacheHandler } from "vinext/shims/cache-handler";`,
-    );
   }
   if (cdn?.adapter) {
     lines.push(`import __vinextCdnAdapterFactory from ${JSON.stringify(cdn.adapter)};`);
-    lines.push(
-      `import { resetCdnCacheAdapter, setCdnCacheAdapter } from "vinext/shims/cdn-cache";`,
-    );
   }
+  lines.push(
+    `import { resetDataCacheHandler${data?.adapter ? ", setDataCacheHandler" : ""} } from "vinext/shims/cache-handler";`,
+    `import { resetCdnCacheAdapter${cdn?.adapter ? ", setCdnCacheAdapter" : ""} } from "vinext/shims/cdn-cache";`,
+  );
 
   lines.push(
     "",
@@ -221,27 +221,41 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     "  }",
     "}",
     "",
-    "// The active adapters are global across Vite environments, so the guard must be global too.",
-    'const __vinextCacheAdaptersRegistrationKey = Symbol.for("vinext.cacheAdaptersRegistration");',
+    "// Adapter ownership and HMR generation are shared across Vite environments.",
+    'const __vinextCacheAdaptersRegistrationKey = Symbol.for("vinext.cacheAdaptersRegistrationState");',
     `const __vinextCacheAdaptersRegistrationId = ${JSON.stringify(registrationId)};`,
     "const __vinextCacheAdaptersGlobal = globalThis;",
+    "const __vinextExistingCacheAdaptersState = __vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey];",
+    "const __vinextCacheAdaptersState = __vinextExistingCacheAdaptersState?.version === 1",
+    "  ? __vinextExistingCacheAdaptersState",
+    "  : (__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] = {",
+    "      version: 1, epoch: 0, registrationId: null, dataConfigured: false, cdnConfigured: false,",
+    "    });",
+    "const __vinextCacheAdaptersModuleEpoch = __vinextCacheAdaptersState.epoch;",
     "if (import.meta.hot) {",
     "  import.meta.hot.accept();",
     "  import.meta.hot.dispose(() => {",
-    "    if (__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] === __vinextCacheAdaptersRegistrationId) {",
-    "      delete __vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey];",
+    "    if (__vinextCacheAdaptersState.epoch === __vinextCacheAdaptersModuleEpoch) {",
+    "      __vinextCacheAdaptersState.epoch += 1;",
+    "      __vinextCacheAdaptersState.registrationId = null;",
     "    }",
     "  });",
     "}",
     "",
     "export function registerConfiguredCacheAdapters(env) {",
     "  if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
-    "  if (__vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] === __vinextCacheAdaptersRegistrationId) return;",
+    "  if (__vinextCacheAdaptersModuleEpoch !== __vinextCacheAdaptersState.epoch) return;",
+    "  if (__vinextCacheAdaptersState.registrationId === __vinextCacheAdaptersRegistrationId) return;",
+    `  if (__vinextCacheAdaptersState.dataConfigured && ${data?.adapter ? "false" : "true"}) resetDataCacheHandler();`,
+    `  if (__vinextCacheAdaptersState.cdnConfigured && ${cdn?.adapter ? "false" : "true"}) resetCdnCacheAdapter();`,
+    "  let __vinextDataConfigured = false;",
+    "  let __vinextCdnConfigured = false;",
   );
   if (data?.adapter) {
     lines.push(
       "  try {",
       `    setDataCacheHandler(__vinextDataAdapterFactory({ env, options: ${dataOptions} }));`,
+      "    __vinextDataConfigured = true;",
       "  } catch (error) {",
       "    resetDataCacheHandler();",
       '    console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
@@ -253,6 +267,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     lines.push(
       "  try {",
       `    setCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: ${cdnOptions} }));`,
+      "    __vinextCdnConfigured = true;",
       "  } catch (error) {",
       "    resetCdnCacheAdapter();",
     );
@@ -260,7 +275,10 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
       lines.push(
         "    // Browser/server request identity was compiled against this adapter's",
         "    // declared capabilities. The generic adapter cannot safely replace it.",
-        ...(data?.adapter ? ["    resetDataCacheHandler();"] : []),
+        "    if (__vinextDataConfigured || __vinextCacheAdaptersState.dataConfigured) resetDataCacheHandler();",
+        "    __vinextCacheAdaptersState.registrationId = null;",
+        "    __vinextCacheAdaptersState.dataConfigured = false;",
+        "    __vinextCacheAdaptersState.cdnConfigured = false;",
         '    throw new Error("[vinext] failed to initialize the configured CDN cache adapter; ' +
           'the declared cache capabilities require it.\\n" + __vinextFormatAdapterError(error), { cause: error });',
       );
@@ -273,7 +291,9 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     lines.push("  }");
   }
   lines.push(
-    "  __vinextCacheAdaptersGlobal[__vinextCacheAdaptersRegistrationKey] = __vinextCacheAdaptersRegistrationId;",
+    "  __vinextCacheAdaptersState.dataConfigured = __vinextDataConfigured;",
+    "  __vinextCacheAdaptersState.cdnConfigured = __vinextCdnConfigured;",
+    "  __vinextCacheAdaptersState.registrationId = __vinextCacheAdaptersRegistrationId;",
     "}",
     "",
   );
