@@ -96,6 +96,8 @@ export async function startFixtureServer(
       holdUntilCrawlEnd: true,
     },
     server: {
+      // Avoid localhost resolving to ::1 when the test server is bound to IPv4.
+      host: "127.0.0.1",
       port: 0,
       cors: false,
       ...opts?.server,
@@ -108,7 +110,8 @@ export async function startFixtureServer(
     await server.listen();
     const addr = server.httpServer?.address();
     if (addr && typeof addr === "object") {
-      baseUrl = `http://localhost:${addr.port}`;
+      const host = addr.family === "IPv6" ? `[${addr.address}]` : addr.address;
+      baseUrl = `http://${host}:${addr.port}`;
     }
   }
 
