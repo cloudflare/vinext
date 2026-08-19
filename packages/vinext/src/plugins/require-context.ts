@@ -18,8 +18,6 @@
 //
 // Only literal forms with a static string directory are rewritten; anything
 // dynamic is left untouched so we never silently break unrelated code.
-import type { Dirent } from "node:fs";
-import { readdir, realpath, stat } from "node:fs/promises";
 import path, { toSlash } from "pathslash";
 import { parseAst, type Plugin } from "vite";
 import MagicString from "magic-string";
@@ -36,6 +34,7 @@ import {
   type AstRecord,
 } from "./ast-utils.js";
 import { stripViteModuleQuery } from "../utils/path.js";
+import { listFilesFollowingSymlinks } from "../utils/list-files.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 type ParsedCall = {
@@ -365,7 +364,7 @@ async function resolveContextModules(
   const regexp = call.pattern ? new RegExp(call.pattern, context.flags) : null;
   const accepted: Omit<ContextModule, "binding">[] = [];
 
-  for (const candidate of await listContextFiles(directory, call.recursive)) {
+  for (const candidate of await listFilesFollowingSymlinks(directory, call.recursive)) {
     const key = `./${candidate}`;
     if (regexp && !regexp.test(key)) continue;
     accepted.push({ key, specifier: `${stripTrailingSlash(call.dir)}/${candidate}` });
@@ -380,64 +379,6 @@ async function resolveContextModules(
     binding: `${bindingPrefix}_${callIndex}_${index}`,
   }));
   return { context, modules };
-}
-
-// Enumerates candidate files like webpack's context walk: dot-entries are
-// skipped (matching the prior glob semantics), symlinks resolve through stats —
-// including symlinked directories in recursive contexts, which `fs.glob` does
-// not descend into — and a missing context directory yields an empty context
-// rather than an error. Cycles are broken by tracking realpaths along the
-// current recursion path only, so distinct symlink aliases of the same target
-// still enumerate under their own keys.
-async function listContextFiles(directory: string, recursive: boolean): Promise<string[]> {
-  const files: string[] = [];
-  const ancestorRealPaths = new Set<string>();
-
-  async function walk(currentDirectory: string, prefix: string): Promise<void> {
-    let realDirectory: string;
-    let entries: Dirent[];
-    try {
-      realDirectory = await realpath(currentDirectory);
-      entries = await readdir(currentDirectory, { withFileTypes: true });
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT" || code === "ENOTDIR") return;
-      throw error;
-    }
-    if (ancestorRealPaths.has(realDirectory)) return;
-    ancestorRealPaths.add(realDirectory);
-
-    try {
-      for (const entry of entries) {
-        if (entry.name.startsWith(".")) continue;
-        const entryPath = path.join(currentDirectory, entry.name);
-        let isFile = entry.isFile();
-        let isDirectory = entry.isDirectory();
-        // Covers symlinks and filesystems without dirent type info (NFS, SMB,
-        // FUSE), where entries report neither file nor directory. Broken links
-        // (ENOENT) and self-referential link loops (ELOOP) are unresolvable,
-        // so they cannot become context entries.
-        if (!isFile && !isDirectory) {
-          try {
-            const stats = await stat(entryPath);
-            isFile = stats.isFile();
-            isDirectory = stats.isDirectory();
-          } catch (error) {
-            const code = (error as NodeJS.ErrnoException).code;
-            if (code === "ENOENT" || code === "ELOOP") continue;
-            throw error;
-          }
-        }
-        if (isFile) files.push(`${prefix}${entry.name}`);
-        else if (isDirectory && recursive) await walk(entryPath, `${prefix}${entry.name}/`);
-      }
-    } finally {
-      ancestorRealPaths.delete(realDirectory);
-    }
-  }
-
-  await walk(directory, "");
-  return files;
 }
 
 function matchesWatchedContext(file: string, context: WatchedContext): boolean {

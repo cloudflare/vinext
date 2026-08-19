@@ -161,6 +161,23 @@ if (typeof exports !== "undefined") {
     expect(module.default).toEqual({ cjs: "cjs" });
   });
 
+  it("preserves uninitialized top-level var redeclarations of CommonJS globals", async () => {
+    const moduleRedeclaration = await evaluateCommonJs(
+      `var module; module.exports = "var-module-ok";`,
+    );
+    expect(moduleRedeclaration.default).toBe("var-module-ok");
+
+    const exportsRedeclaration = await evaluateCommonJs(
+      `var exports; exports.value = "var-exports-ok";`,
+    );
+    expect(exportsRedeclaration.value).toBe("var-exports-ok");
+
+    const requireRedeclaration = await evaluateCommonJs(
+      `var require; module.exports = require("node:path").sep;`,
+    );
+    expect(requireRedeclaration.default).toBe(path.sep);
+  });
+
   // Ported from vite-plugin-commonjs v0.10.4 historical export fixtures:
   // https://github.com/vite-plugin/vite-plugin-commonjs/blob/v0.10.4/test/fixtures/v0.4.0/input.js
   it("evaluates repeated and nested named export assignments", async () => {
@@ -215,6 +232,9 @@ module.exports = "local";
 exports.value = "local";
 `;
     expect(transformCommonJs(source, "/app/value.js")).toBeNull();
+    expect(
+      transformCommonJs(`var require = (value) => value; require("local");`, "/app/value.js"),
+    ).toBeNull();
   });
 
   it("honors function and block scope shadowing", () => {
@@ -239,6 +259,23 @@ const external = require("external");
     );
     expect(result?.code).toContain('import * as __vinext_cjs_import___1 from "value";');
     expect(result?.code).toContain("(__vinext_cjs_import___1.default || __vinext_cjs_import___1)");
+  });
+
+  it("does not capture free references with generated helper bindings", async () => {
+    Object.assign(globalThis, { __vinext_cjs_import__: "global" });
+    try {
+      const result = transformCommonJs(
+        `export const value = __vinext_cjs_import__; require("node:path");`,
+        "/app/value.js",
+      );
+      if (!result) throw new Error("Expected transformed code");
+      expect(result.code).toContain('import * as __vinext_cjs_import___1 from "node:path";');
+      const url = `data:text/javascript;base64,${Buffer.from(result.code).toString("base64")}`;
+      const module = await import(url);
+      expect(module.value).toBe("global");
+    } finally {
+      delete (globalThis as Record<string, unknown>).__vinext_cjs_import__;
+    }
   });
 
   it("avoids generated bindings shadowed in descendant scopes", async () => {
@@ -308,6 +345,8 @@ export function loadDynamic() {
       `require(name);`,
       `require();`,
       `require(0);`,
+      `require(name + "./messages/en.js");`,
+      "require(`${name}/messages/en.js`);",
       `require(\`./messages/*/${"${name}"}.js\`);`,
     ]) {
       await expect(runPluginTransform(source, "/app/page.js")).rejects.toThrow(
@@ -317,6 +356,12 @@ export function loadDynamic() {
         /cannot be statically analyzed/,
       );
     }
+  });
+
+  it("rejects patterned requires for missing bare packages", async () => {
+    await expect(
+      runPluginTransform("require(`vinext-definitely-missing/${name}.js`);", "/app/page.js"),
+    ).rejects.toThrow(/package .* could not be resolved/);
   });
 
   it("preserves explicitly ignored unsupported require expressions", async () => {
@@ -388,7 +433,7 @@ export function loadDynamic() {
       throw new Error("Expected transformed code");
     }
     const transformed = String(result.code);
-    expect(transformed).toContain(JSON.stringify(path.join(replacement, "ru.js")));
+    expect(transformed).toContain(JSON.stringify(toSlash(path.join(replacement, "ru.js"))));
     expect(transformed).toContain('case "@messages/ru.js"');
   });
 
@@ -407,7 +452,7 @@ export function loadDynamic() {
       throw new Error("Expected transformed code");
     }
     const transformed = String(result.code);
-    expect(transformed).toContain(JSON.stringify(path.join(replacement, "ru.js")));
+    expect(transformed).toContain(JSON.stringify(toSlash(path.join(replacement, "ru.js"))));
     expect(transformed).toContain('case "@messages/ru.js"');
   });
 
@@ -469,6 +514,7 @@ export function loadDynamic() {
       await Promise.all([
         writeFile(path.join(root, "views/flat.js"), 'module.exports = "flat";\n'),
         writeFile(path.join(root, "views/nested/index.js"), 'module.exports = "nested";\n'),
+        writeFile(path.join(root, "views/nested/component.js"), 'module.exports = "component";\n'),
       ]);
       const result = await runPluginTransform(
         `const view = require(\`./views/${"${name}"}\`);`,
@@ -484,6 +530,22 @@ export function loadDynamic() {
       expect(transformed).toContain('case "./views/nested/index"');
       expect(transformed).toContain('case "./views/nested/index.js"');
       expect(transformed).not.toContain('from "./views/nested";');
+
+      const staticSuffixResult = await runPluginTransform(
+        `const view = require(\`./views/${"${name}"}/component\`);`,
+        path.join(root, "page.js"),
+      );
+      if (
+        !staticSuffixResult ||
+        typeof staticSuffixResult === "string" ||
+        !("code" in staticSuffixResult)
+      ) {
+        throw new Error("Expected transformed code");
+      }
+      const staticSuffix = String(staticSuffixResult.code);
+      expect(staticSuffix).toContain('from "./views/nested/component.js"');
+      expect(staticSuffix).toContain('case "./views/nested/component"');
+      expect(staticSuffix).toContain('case "./views/nested/component.js"');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -528,7 +590,7 @@ export function loadDynamic() {
       }
       const transformed = String(result.code);
       expect(transformed).toContain(
-        JSON.stringify(path.join(toSlash(await realpath(packageDirectory)), "ru.js")),
+        JSON.stringify(toSlash(path.join(await realpath(packageDirectory), "ru.js"))),
       );
       expect(transformed).toContain('case "messages/ru.js"');
     } finally {
@@ -598,6 +660,133 @@ export function loadDynamic() {
         await server.close();
       }
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // vite-plugin-dynamic-import v1.6.0 used fast-glob's default symlink traversal:
+  // https://github.com/vite-plugin/vite-plugin-dynamic-import/blob/v1.6.0/src/index.ts
+  it("follows symlinked directories matched by patterned requires", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-commonjs-symlink-directory-"));
+    try {
+      const realTheme = path.join(root, "real-theme");
+      const linkedTheme = path.join(root, "themes/linked");
+      await Promise.all([
+        mkdir(path.join(realTheme, "nested"), { recursive: true }),
+        mkdir(path.dirname(linkedTheme), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(path.join(realTheme, "nested/value.js"), 'export default "symlink-ok";\n'),
+        writeFile(
+          path.join(root, "entry.js"),
+          'const theme = "linked"; export default require(`./themes/${theme}/nested/value.js`).default;\n',
+        ),
+      ]);
+      await symlink(realTheme, linkedTheme, process.platform === "win32" ? "junction" : "dir");
+
+      const server = await createServer({
+        root,
+        logLevel: "silent",
+        plugins: [createCommonJsPlugin()],
+        server: { middlewareMode: true },
+      });
+      try {
+        const module = await server.ssrLoadModule("/entry.js");
+        expect(module.default).toBe("symlink-ok");
+      } finally {
+        await server.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // Ported from vite-plugin-dynamic-import v1.6.0's absolute-looking alias fixture:
+  // https://github.com/vite-plugin/vite-plugin-dynamic-import/blob/v1.6.0/test/fixtures/src/main.ts
+  it("resolves aliases before treating patterns as absolute filesystem paths", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-commonjs-absolute-alias-"));
+    try {
+      const sourceRoot = path.join(root, "src");
+      await mkdir(path.join(sourceRoot, "views"), { recursive: true });
+      await Promise.all([
+        writeFile(path.join(sourceRoot, "views/value.js"), 'export default "absolute-alias";\n'),
+        writeFile(
+          path.join(root, "entry.js"),
+          'const id = "value"; export default require(`/root/src/views/${id}.js`).default; export const relative = require(`./views/${id}.js`).default;\n',
+        ),
+      ]);
+      const server = await createServer({
+        root,
+        logLevel: "silent",
+        resolve: {
+          alias: [
+            { find: "/root/src", replacement: sourceRoot },
+            { find: ".", replacement: sourceRoot },
+          ],
+        },
+        plugins: [createCommonJsPlugin()],
+        server: { middlewareMode: true },
+      });
+      try {
+        const module = await server.ssrLoadModule("/entry.js");
+        expect(module.default).toBe("absolute-alias");
+        expect(module.relative).toBe("absolute-alias");
+      } finally {
+        await server.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves eager dynamic-before-static import evaluation order", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-commonjs-import-order-"));
+    const orderKey = "__vinext_commonjs_import_order__";
+    try {
+      await mkdir(path.join(root, "dynamic"), { recursive: true });
+      await mkdir(path.join(root, "dynamic/a"), { recursive: true });
+      await Promise.all([
+        writeFile(
+          path.join(root, "static.js"),
+          `globalThis.${orderKey}.push("static"); export default "static";\n`,
+        ),
+        ...["B", "a", "z", "á"].map((name) =>
+          writeFile(
+            path.join(root, `dynamic/${name}.js`),
+            `globalThis.${orderKey}.push(${JSON.stringify(name)}); export default ${JSON.stringify(name)};\n`,
+          ),
+        ),
+        writeFile(
+          path.join(root, "dynamic/a/nested.js"),
+          `globalThis.${orderKey}.push("nested"); export default "nested";\n`,
+        ),
+        writeFile(
+          path.join(root, "entry.js"),
+          'require("./static.js"); const name = "a"; require(`./dynamic/${name}.js`); export default true;\n',
+        ),
+      ]);
+      Object.assign(globalThis, { [orderKey]: [] });
+      const server = await createServer({
+        root,
+        logLevel: "silent",
+        plugins: [createCommonJsPlugin()],
+        server: { middlewareMode: true },
+      });
+      try {
+        await server.ssrLoadModule("/entry.js");
+        expect((globalThis as Record<string, unknown>)[orderKey]).toEqual([
+          "B",
+          "a",
+          "z",
+          "á",
+          "nested",
+          "static",
+        ]);
+      } finally {
+        await server.close();
+      }
+    } finally {
+      delete (globalThis as Record<string, unknown>)[orderKey];
       await rm(root, { recursive: true, force: true });
     }
   });

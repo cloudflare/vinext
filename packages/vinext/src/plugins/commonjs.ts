@@ -1,7 +1,14 @@
 import MagicString from "magic-string";
-import { glob, realpath, stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import path, { toSlash } from "pathslash";
-import { parseAst, parseAstAsync, type Alias, type Environment, type Plugin } from "vite";
+import {
+  createFilter,
+  parseAst,
+  parseAstAsync,
+  type Alias,
+  type Environment,
+  type Plugin,
+} from "vite";
 import {
   collectBindingNames,
   forEachAstChild,
@@ -29,6 +36,7 @@ import { magicStringTransformResult, type MagicStringTransformResult } from "./t
 import { hasDynamicRequestIgnoreDirective } from "./dynamic-request-utils.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 import { packageNameFromSpecifier } from "../utils/package-name.js";
+import { listFilesFollowingSymlinks } from "../utils/list-files.js";
 
 const COMMONJS_PRESCAN = /\b(?:require|module|exports)\b/;
 const IDENTIFIER_NAME_RE = /^[$_\p{ID_Start}][$\u200C\u200D\p{ID_Continue}]*$/u;
@@ -146,6 +154,25 @@ function analyzeCommonJsAst(
   const rootScope = createAstScope(null);
   collectDirectScopeBindings(root, rootScope);
   collectVarScopeBindings(root, rootScope);
+  // In Node's CommonJS wrapper, a top-level `var require`, `var module`, or
+  // `var exports` without an initializer redeclares the wrapper parameter and
+  // leaves its value intact. Treat that narrow form as the ambient CJS binding.
+  const noOpWrapperVars = new Set<string>();
+  const initializedWrapperVars = new Set<string>();
+  for (const statement of nodeArray(root.body)) {
+    if (!isAstRecord(statement) || statement.type !== "VariableDeclaration") continue;
+    if (statement.kind !== "var") continue;
+    for (const declarator of nodeArray(statement.declarations)) {
+      if (!isAstRecord(declarator)) continue;
+      const name = getAstName(declarator.id);
+      if (name === "require" || name === "module" || name === "exports") {
+        (declarator.init == null ? noOpWrapperVars : initializedWrapperVars).add(name);
+      }
+    }
+  }
+  for (const name of noOpWrapperVars) {
+    if (!initializedWrapperVars.has(name)) rootScope.bindings.delete(name);
+  }
   const bindings = new Set(rootScope.bindings);
   const requires: StaticRequire[] = [];
   const dynamicRequires: DynamicRequire[] = [];
@@ -154,6 +181,7 @@ function analyzeCommonJsAst(
   let hasExports = false;
 
   function visit(node: AstRecord, parentScope: AstScope): void {
+    if (node.type === "Identifier" && typeof node.name === "string") bindings.add(node.name);
     let scope = parentScope;
     if (isFunctionNode(node)) {
       const parameterScope = createAstScope(parentScope);
@@ -291,15 +319,12 @@ async function analyzeCommonJsAsync(code: string, id: string): Promise<CommonJsA
 
 type DynamicRequireCandidate = {
   cases: string[];
+  depth: number;
   specifier: string;
 };
 
 type ResolvedDynamicRequire = DynamicRequire & {
   candidates: DynamicRequireCandidate[];
-};
-
-type WatchContext = {
-  addWatchFile(id: string): void;
 };
 
 type DynamicPatternResolution = {
@@ -367,7 +392,7 @@ function assertSupportedDynamicRequires(code: string, analysis: CommonJsAnalysis
   const unsupportedDynamic = analysis.dynamicRequires.find((request) => {
     if (request.ignored) return false;
     const pattern = dynamicRequirePattern(request.argument);
-    return pattern === null || pattern.replaceAll("*", "") === "";
+    return pattern === null || pattern.startsWith("*") || pattern.replaceAll("*", "") === "";
   });
   const range = analysis.argumentlessRequires[0] ?? unsupportedDynamic?.node;
   if (!range) return;
@@ -430,16 +455,53 @@ function dynamicGlobPatterns(
   return [...results.values()];
 }
 
-function patternCaptures(pattern: string, value: string): string[] | null {
+function patternCaptureMatcher(pattern: string): (value: string) => string[] | null {
   const parts = pattern.split(/\*+/);
   const source = parts.map((part) => part.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")).join("(.*?)");
-  const match = new RegExp(`^${source}$`).exec(value);
-  return match ? match.slice(1) : null;
+  const regexp = new RegExp(`^${source}$`);
+  return (value) => {
+    const match = regexp.exec(value);
+    return match ? match.slice(1) : null;
+  };
 }
 
 function interpolatePattern(pattern: string, captures: readonly string[]): string {
   let index = 0;
   return pattern.replace(/\*+/g, () => captures[index++] ?? "");
+}
+
+function globTraversalRoot(absolutePattern: string): string {
+  const firstMagic = absolutePattern.search(/[?*[{]/);
+  if (firstMagic === -1) return path.dirname(absolutePattern);
+  const staticPrefix = absolutePattern.slice(0, firstMagic);
+  return staticPrefix.endsWith("/")
+    ? staticPrefix.slice(0, -1) || path.parse(absolutePattern).root
+    : path.dirname(staticPrefix);
+}
+
+function generatedGlobMatcher(pattern: string): (value: string) => boolean {
+  if (/[?[\]{}()!]/.test(pattern)) return createFilter(pattern);
+  let source = "^";
+  for (let index = 0; index < pattern.length; index++) {
+    const character = pattern[index];
+    if (character !== "*") {
+      source += character.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+      continue;
+    }
+    if (pattern[index + 1] !== "*") {
+      source += "[^/]*";
+      continue;
+    }
+    index++;
+    if (pattern[index + 1] === "/") {
+      source += "(?:.*/)?";
+      index++;
+    } else {
+      source += ".*";
+    }
+  }
+  const regexp = new RegExp(`${source}$`);
+  return (value) => regexp.test(value);
 }
 
 async function findPackageDirectory(
@@ -468,6 +530,22 @@ async function resolveDynamicPattern(
   root: string,
   preserveSymlinks: boolean,
 ): Promise<DynamicPatternResolution | null> {
+  for (const alias of aliases) {
+    const matches =
+      typeof alias.find === "string"
+        ? pattern === alias.find || pattern.startsWith(`${alias.find}/`)
+        : new RegExp(alias.find.source, alias.find.flags).test(pattern);
+    if (!matches) continue;
+    const replaced = pattern.replace(alias.find, toSlash(alias.replacement));
+    const resolvedPattern = path.isAbsolute(replaced) ? replaced : path.resolve(root, replaced);
+    return {
+      cwd: path.parse(resolvedPattern).root,
+      globPattern: resolvedPattern,
+      runtimePattern: pattern,
+      importSpecifier: toSlash,
+      resolvedMatch: toSlash,
+    };
+  }
   if (pattern.startsWith("./") || pattern.startsWith("../")) {
     return {
       cwd: importerDirectory,
@@ -492,30 +570,24 @@ async function resolveDynamicPattern(
       resolvedMatch: toSlash,
     };
   }
-  for (const alias of aliases) {
-    const matches =
-      typeof alias.find === "string"
-        ? pattern === alias.find || pattern.startsWith(`${alias.find}/`)
-        : new RegExp(alias.find.source, alias.find.flags).test(pattern);
-    if (!matches) continue;
-    const replaced = pattern.replace(alias.find, toSlash(alias.replacement));
-    const resolvedPattern = path.isAbsolute(replaced) ? replaced : path.resolve(root, replaced);
-    return {
-      cwd: path.parse(resolvedPattern).root,
-      globPattern: resolvedPattern,
-      runtimePattern: pattern,
-      importSpecifier: toSlash,
-      resolvedMatch: toSlash,
-    };
-  }
   const packageName = packageNameFromSpecifier(pattern);
-  if (!packageName) return null;
+  if (!packageName) {
+    throw new Error(
+      `invalid import ${JSON.stringify(pattern)}. It cannot be statically analyzed because ` +
+        "it is not a relative, absolute, aliased, or bare-package request.",
+    );
+  }
   const packageDirectory = await findPackageDirectory(
     importerDirectory,
     packageName,
     preserveSymlinks,
   );
-  if (!packageDirectory) return null;
+  if (!packageDirectory) {
+    throw new Error(
+      `invalid import ${JSON.stringify(pattern)}. It cannot be statically analyzed because ` +
+        `package ${JSON.stringify(packageName)} could not be resolved.`,
+    );
+  }
   const suffix = pattern.slice(packageName.length).replace(/^\/+/, "");
   return {
     cwd: path.parse(packageDirectory).root,
@@ -527,7 +599,6 @@ async function resolveDynamicPattern(
 }
 
 async function resolveDynamicRequire(
-  context: WatchContext,
   request: DynamicRequire,
   id: string,
   extensions: readonly string[],
@@ -535,6 +606,7 @@ async function resolveDynamicRequire(
   root: string,
   preserveSymlinks: boolean,
 ): Promise<ResolvedDynamicRequire | null> {
+  if (request.ignored) return null;
   const pattern = dynamicRequirePattern(request.argument);
   if (!pattern?.includes("*")) return null;
 
@@ -549,34 +621,51 @@ async function resolveDynamicRequire(
   );
   if (!resolvedPattern) return null;
   const candidates = new Map<string, DynamicRequireCandidate>();
-  for (const { globPattern, resolvedPattern: matchPattern, runtimePattern } of dynamicGlobPatterns(
+  const patterns = dynamicGlobPatterns(
     resolvedPattern.globPattern,
     resolvedPattern.runtimePattern,
     extensions,
-  )) {
-    for await (const match of glob(globPattern, { cwd: resolvedPattern.cwd })) {
-      const absolute = path.resolve(resolvedPattern.cwd, match);
-      if (absolute === cleanId) continue;
-      try {
-        if (!(await stat(absolute)).isFile()) continue;
-      } catch {
-        continue;
-      }
-      const captures = patternCaptures(matchPattern, resolvedPattern.resolvedMatch(absolute));
+  ).map((pattern) => {
+    const absoluteGlobPattern = path.isAbsolute(pattern.globPattern)
+      ? pattern.globPattern
+      : path.resolve(resolvedPattern.cwd, pattern.globPattern);
+    return {
+      ...pattern,
+      captures: patternCaptureMatcher(pattern.resolvedPattern),
+      matches: generatedGlobMatcher(absoluteGlobPattern),
+    };
+  });
+  const firstGlobPattern = patterns[0]?.globPattern;
+  if (!firstGlobPattern) return null;
+  const absoluteGlobPattern = path.isAbsolute(firstGlobPattern)
+    ? firstGlobPattern
+    : path.resolve(resolvedPattern.cwd, firstGlobPattern);
+  const traversalRoot = globTraversalRoot(absoluteGlobPattern);
+  for (const relative of await listFilesFollowingSymlinks(traversalRoot, true)) {
+    const absolute = path.join(traversalRoot, relative);
+    if (absolute === cleanId) continue;
+    const resolvedMatch = resolvedPattern.resolvedMatch(absolute);
+    for (const pattern of patterns) {
+      if (!pattern.matches(absolute)) continue;
+      const captures = pattern.captures(resolvedMatch);
       if (!captures) continue;
-      context.addWatchFile(absolute);
       const specifier = resolvedPattern.importSpecifier(absolute);
-      const cases = extensionlessCases(interpolatePattern(runtimePattern, captures));
-      const existing = candidates.get(absolute);
-      if (existing) existing.cases = [...new Set([...existing.cases, ...cases])];
-      else candidates.set(absolute, { cases, specifier });
+      const cases = extensionlessCases(interpolatePattern(pattern.runtimePattern, captures));
+      candidates.set(absolute, { cases, depth: specifier.split("/").length, specifier });
+      break;
     }
   }
   return candidates.size > 0
     ? {
         ...request,
         candidates: [...candidates.values()].sort((left, right) =>
-          left.specifier.localeCompare(right.specifier),
+          left.depth !== right.depth
+            ? left.depth - right.depth
+            : left.specifier < right.specifier
+              ? -1
+              : left.specifier > right.specifier
+                ? 1
+                : 0,
         ),
       }
     : null;
@@ -602,14 +691,21 @@ function renderCommonJs(
 
   const output = new MagicString(code);
   const bindings = new Set(analysis.bindings);
-  const imports: string[] = [];
-  const importBindings = new Map<string, string>();
-  function importBinding(specifier: string): string {
+  const imports: Array<{ code: string; dynamic: boolean }> = [];
+  const importBindings = new Map<string, { name: string; record: (typeof imports)[number] }>();
+  function importBinding(specifier: string, dynamic = false): string {
     const existing = importBindings.get(specifier);
-    if (existing) return existing;
+    if (existing) {
+      if (dynamic) existing.record.dynamic = true;
+      return existing.name;
+    }
     const importName = unusedBinding(bindings, "__vinext_cjs_import__");
-    imports.push(`import * as ${importName} from ${JSON.stringify(specifier)};`);
-    importBindings.set(specifier, importName);
+    const record = {
+      code: `import * as ${importName} from ${JSON.stringify(specifier)};`,
+      dynamic,
+    };
+    imports.push(record);
+    importBindings.set(specifier, { name: importName, record });
     return importName;
   }
 
@@ -622,7 +718,7 @@ function renderCommonJs(
   for (const dynamicRequire of dynamicRequires) {
     const runtimeName = unusedBinding(bindings, "__vinext_dynamic_require__");
     const cases = dynamicRequire.candidates.flatMap((candidate) => {
-      const importName = importBinding(candidate.specifier);
+      const importName = importBinding(candidate.specifier, true);
       return candidate.cases.map((value) => `case ${JSON.stringify(value)}: return ${importName};`);
     });
     preamble.push(
@@ -634,7 +730,10 @@ function renderCommonJs(
     preamble.push("var module = { exports: {} };", "var exports = module.exports;");
   }
   if (imports.length > 0 || preamble.length > 0) {
-    output.prepend(`${[...imports, ...preamble].join("\n")}\n`);
+    const importCode = [...imports]
+      .sort((left, right) => Number(right.dynamic) - Number(left.dynamic))
+      .map((record) => record.code);
+    output.prepend(`${[...importCode, ...preamble].join("\n")}\n`);
   }
 
   if (analysis.hasExports) {
@@ -701,7 +800,7 @@ export function createCommonJsPlugin(options: CommonJsPluginOptions = {}): Plugi
         const dynamicRequires = (
           await Promise.all(
             analysis.dynamicRequires.map((request) =>
-              resolveDynamicRequire(this, request, id, extensions, aliases, root, preserveSymlinks),
+              resolveDynamicRequire(request, id, extensions, aliases, root, preserveSymlinks),
             ),
           )
         ).filter((value): value is ResolvedDynamicRequire => value !== null);
