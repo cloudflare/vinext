@@ -388,14 +388,17 @@ function extractDomainFromCustomDomains(config: Record<string, unknown>): string
   return null;
 }
 
-/** Strip protocol and trailing wildcards from a route pattern to get a bare domain. */
+/** Extract a concrete HTTPS hostname from a route pattern. */
 function cleanDomain(raw: string): string | null {
-  const cleaned = raw
-    .replace(/^https?:\/\//, "")
+  const trimmed = raw.trim();
+  if (/^http:\/\//i.test(trimmed)) return null;
+  const cleaned = trimmed
+    .replace(/^https:\/\//i, "")
     .replace(/\/\*$/, "")
     .replace(/\/+$/, "")
     .split("/")[0]; // Take only the host part
-  return cleaned || null;
+  if (!cleaned || cleaned.includes("*")) return null;
+  return cleaned;
 }
 
 /**
@@ -539,6 +542,19 @@ function extractEnvConfigsFromTOML(
     result[envName] = envConfig;
   }
 
+  for (const match of getTomlRootBody(content).matchAll(
+    /^\s*env\.([^.\s=]+)\.cache\s*=\s*\{([^}]*)\}/gm,
+  )) {
+    const envName = match[1];
+    const envConfig = result[envName] ?? {};
+    const crossVersionCache = (match[2] ?? "").match(/\bcross_version_cache\s*=\s*(true|false)\b/);
+    envConfig.hasCacheConfig = true;
+    if (crossVersionCache) {
+      envConfig.crossVersionCache = crossVersionCache[1] === "true";
+    }
+    result[envName] = envConfig;
+  }
+
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
@@ -593,7 +609,7 @@ function getTomlSections(content: string): Array<{ header: string; body: string 
 }
 
 function parseTomlSectionHeader(line: string): string | null {
-  const match = line.match(/^\s*(\[\[?)(.*?)(\]\]?)(?:\s+#.*)?\s*$/);
+  const match = line.match(/^\s*(\[\[?)(.*?)(\]\]?)(?:\s*#.*)?\s*$/);
   if (!match) return null;
   const isArrayHeader = match[1] === "[[";
   if ((isArrayHeader && match[3] !== "]]") || (!isArrayHeader && match[3] !== "]")) {

@@ -423,51 +423,56 @@ describe("deploy prerender config wiring", () => {
   });
 
   it.each([
-    ["no prerender setting", undefined],
-    ["prerender enabled independently", "true"],
-  ])("emits RSC warm paths after warm-triggered classification with %s", async (_label, config) => {
-    writeProject(
-      config,
-      '{ cdn: { adapter: "test-cdn-adapter", capabilities: { responseVary: "verbatim" } } }',
-    );
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-    writeFile("dist/server/index.js", "export default {};\n");
-    runPrerenderMock.mockImplementationOnce(async () => {
-      writeFile(
-        "dist/server/vinext-prerender.json",
-        JSON.stringify({
-          buildId: "build-a",
-          routes: [
-            {
-              route: "/about",
-              status: "rendered",
-              revalidate: 60,
-              router: "app",
-              fallback: false,
-            },
-          ],
+    ["no prerender setting", undefined, undefined],
+    ["the prerender-all flag disabled", undefined, false],
+    ["the prerender-all flag enabled independently", undefined, true],
+    ["prerender config enabled independently", "true", undefined],
+  ])(
+    "emits RSC warm paths after warm-triggered classification with %s",
+    async (_label, config, prerenderAll) => {
+      writeProject(
+        config,
+        '{ cdn: { adapter: "test-cdn-adapter", capabilities: { responseVary: "verbatim" } } }',
+      );
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/index.js", "export default {};\n");
+      runPrerenderMock.mockImplementationOnce(async () => {
+        writeFile(
+          "dist/server/vinext-prerender.json",
+          JSON.stringify({
+            buildId: "build-a",
+            routes: [
+              {
+                route: "/about",
+                status: "rendered",
+                revalidate: 60,
+                router: "app",
+                fallback: false,
+              },
+            ],
+          }),
+        );
+        return { routes: [] };
+      });
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true, prerenderAll });
+
+      expect(runPrerenderMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          emitRscPrewarmManifest: true,
+          root: tmpDir,
         }),
       );
-      return { routes: [] };
-    });
-    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
-
-    await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
-
-    expect(runPrerenderMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        emitRscPrewarmManifest: true,
-        root: tmpDir,
-      }),
-    );
-    expect(
-      JSON.parse(
-        fs.readFileSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"), "utf-8"),
-      ),
-    ).toMatchObject({
-      buildId: "build-a",
-      responseVary: "verbatim",
-      rscPaths: ["/about"],
-    });
-  });
+      expect(
+        JSON.parse(
+          fs.readFileSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"), "utf-8"),
+        ),
+      ).toMatchObject({
+        buildId: "build-a",
+        responseVary: "verbatim",
+        rscPaths: ["/about"],
+      });
+    },
+  );
 });

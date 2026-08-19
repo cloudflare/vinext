@@ -55,12 +55,9 @@ import {
   workerEntryHasCacheHandler,
 } from "./deploy-config.js";
 import {
-  runWranglerDeploymentStatus,
   runWranglerTriggersDeploy,
   runWranglerVersionDeploy,
   runWranglerVersionUpload,
-  type WranglerDeploymentStatus,
-  type WranglerVersionTraffic,
 } from "./version-deploy.js";
 import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
@@ -598,9 +595,6 @@ export async function deployWithCdnWarmup(
     });
     return upload.previewAliasUrl ?? upload.previewUrl;
   }
-  const deploymentStatus = readWranglerDeploymentStatus(root, options);
-  const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
-  let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let triggersDeployedUrl: string | null = null;
   let warmedBeforePromotion = false;
   let triggersApplied = false;
@@ -612,9 +606,6 @@ export async function deployWithCdnWarmup(
   }
 
   if (upload.previewUrl) {
-    if (stagingTraffic) {
-      staged = runWranglerVersionDeploy(root, stagingTraffic, options, "stage");
-    }
     try {
       await warmCdnCache({
         targetUrl: upload.previewUrl,
@@ -627,13 +618,18 @@ export async function deployWithCdnWarmup(
         strict: options.warmCdnStrict,
       });
     } catch (error) {
-      if (staged) throw withStagedVersionCleanupNote(error);
-      throw error;
+      throw withUploadedVersionCleanupNote(error);
     }
     warmedBeforePromotion = true;
   } else {
+    if (options.warmCdnStrict) {
+      throw new Error(
+        "CDN warmup failed: Wrangler did not return an immutable version preview URL, so the uploaded version cannot be warmed exactly before promotion. " +
+          getUploadedVersionCleanupNote(),
+      );
+    }
     console.warn(
-      "  CDN warmup: immutable version preview URL unavailable; warming after promotion instead.",
+      "  CDN warmup: immutable version preview URL unavailable; promoting first and warming the stable URL best-effort.",
     );
   }
 
@@ -679,7 +675,6 @@ export async function deployWithCdnWarmup(
   return (
     deployed.deployedUrl ??
     triggersDeployedUrl ??
-    staged?.deployedUrl ??
     upload.previewUrl ??
     "(URL not detected in wrangler output)"
   );
@@ -706,31 +701,6 @@ export function resolveCdnWarmupTargetUrl(
     return `https://${customDomain}`;
   }
   return deployedUrl;
-}
-
-function readWranglerDeploymentStatus(
-  root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
-): WranglerDeploymentStatus | null {
-  try {
-    return runWranglerDeploymentStatus(root, options);
-  } catch {
-    return null;
-  }
-}
-
-export function getZeroPercentStagingTraffic(
-  deployment: WranglerDeploymentStatus | null,
-  versionId: string,
-): WranglerVersionTraffic[] | null {
-  const current = deployment?.versions ?? [];
-  if (current.length !== 1 || current[0].percentage !== 100) {
-    return null;
-  }
-  if (current[0].versionId === versionId) {
-    return null;
-  }
-  return [current[0], { versionId, percentage: 0 }];
 }
 
 function getWranglerTargetEnv(options: Pick<DeployOptions, "preview" | "env">): string | undefined {
@@ -773,17 +743,17 @@ export function buildVersionOverrideHeaders(
   };
 }
 
-function withStagedVersionCleanupNote(error: unknown): Error {
+function withUploadedVersionCleanupNote(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
-  return new Error(`${message} ${getStagedVersionCleanupNote()}`, {
+  return new Error(`${message} ${getUploadedVersionCleanupNote()}`, {
     cause: error,
   });
 }
 
-function getStagedVersionCleanupNote(): string {
+function getUploadedVersionCleanupNote(): string {
   return (
-    "The uploaded version may remain staged at 0% with the previous version still serving 100% traffic; " +
-    "rerun deploy to promote it or use `wrangler versions deploy` to choose the desired version split."
+    "The uploaded version remains unpromoted and production traffic is unchanged; " +
+    "enable Worker preview URLs and rerun deploy, or deploy without strict CDN warmup."
   );
 }
 

@@ -11,7 +11,6 @@ import {
   buildWranglerKVBulkPutArgs,
   buildWranglerInvocation,
   buildWranglerDeployArgs,
-  getZeroPercentStagingTraffic,
   parseDeployArgs,
   resolveCdnWarmupTargetUrl,
   resolveWorkerNameForVersionOverride,
@@ -3474,6 +3473,7 @@ cross_version_cache = true
       `
 cache = { cross_version_cache = true } # inline table
 env.preview.cache.cross_version_cache = false # dotted key
+env.rootdotted.cache = { enabled = true, cross_version_cache = true }
 
 [env.staging]
 cache = { enabled = true, cross_version_cache = true } # inline environment table
@@ -3487,6 +3487,10 @@ enabled = true
     expect(config?.crossVersionCache).toBe(true);
     expect(config?.env?.preview).toEqual({
       crossVersionCache: false,
+      hasCacheConfig: true,
+    });
+    expect(config?.env?.rootdotted).toEqual({
+      crossVersionCache: true,
       hasCacheConfig: true,
     });
     expect(config?.env?.staging).toEqual({
@@ -3530,7 +3534,7 @@ enabled = true
       tmpDir,
       "wrangler.toml",
       `
-[cache] # production cache
+[cache]#production cache
 cross_version_cache = true
 
 [env.staging] # staging target
@@ -3563,6 +3567,20 @@ cross_version_cache = false
     );
 
     expect(resolveCdnWarmupTargetUrl(tmpDir, null, { env: "staging" })).toBeNull();
+  });
+
+  it("falls back to the deployed URL for wildcard and HTTP-only routes", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        routes: ["*.example.com/*", "http://insecure.example.com/*"],
+      }),
+    );
+
+    expect(resolveCdnWarmupTargetUrl(tmpDir, "https://worker.example.workers.dev")).toBe(
+      "https://worker.example.workers.dev",
+    );
   });
 
   it("extracts custom domain from custom_domains array", () => {
@@ -3704,19 +3722,5 @@ describe("resolveWorkerNameForVersionOverride", () => {
     expect(
       resolveWorkerNameForVersionOverride(parseWranglerConfig(tmpDir), { env: "staging" }),
     ).toBe("my-worker");
-  });
-});
-
-describe("getZeroPercentStagingTraffic", () => {
-  it("does not stage the uploaded version when it is already the current deployment", () => {
-    expect(
-      getZeroPercentStagingTraffic(
-        {
-          versions: [{ versionId: "22222222-2222-4222-8222-222222222222", percentage: 100 }],
-          output: "{}",
-        },
-        "22222222-2222-4222-8222-222222222222",
-      ),
-    ).toBeNull();
   });
 });
