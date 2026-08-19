@@ -113,7 +113,7 @@ export type DeployOptions = {
   prerenderAll?: boolean;
   /** Maximum number of routes to prerender in parallel */
   prerenderConcurrency?: number;
-  /** Warm Cloudflare's CDN cache by requesting build-discovered paths for the uploaded version */
+  /** Warm Cloudflare's CDN cache by requesting prerender-certified paths for the uploaded version */
   warmCdnCache?: boolean;
   /** Maximum number of CDN warmup requests to issue in parallel */
   warmCdnConcurrency?: number;
@@ -1470,7 +1470,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
         warmCdnStrict: options.warmCdnStrict,
       });
     } else {
-      console.log("\n  CDN warmup skipped: no build-discovered paths found.");
+      console.log("\n  CDN warmup skipped: no prerender-certified paths found.");
       url = await runWranglerDeploy(
         root,
         resolveWranglerCommandConfig(root, wranglerOptions).commandOptions,

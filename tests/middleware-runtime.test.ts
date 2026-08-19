@@ -302,6 +302,38 @@ describe("middleware redirect protocol", () => {
     expect(middleware).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["conditional", [{ type: "header" as const, key: "x-market", value: "fr" }]],
+    ["unconditional", undefined],
+  ])("reports %s matcher reachability on alternate domain default locales", async (_name, has) => {
+    const middleware = vi.fn(() => undefined);
+    const onMatcherEvaluation = vi.fn();
+    const result = await executeMiddleware({
+      i18nConfig: {
+        defaultLocale: "en",
+        locales: ["en", "fr"],
+        domains: [{ defaultLocale: "fr", domain: "example.fr" }],
+      },
+      isProxy: false,
+      module: {
+        config: {
+          matcher: [{ source: "/fr/about", locale: false, ...(has ? { has } : {}) }],
+        },
+        default: middleware,
+      },
+      normalizedPathname: "/about",
+      onMatcherEvaluation,
+      request: new Request("https://example.test/about"),
+    });
+
+    expect(result).toEqual({ continue: true });
+    expect(onMatcherEvaluation).toHaveBeenCalledWith({
+      matched: false,
+      conditionalPathMatched: true,
+    });
+    expect(middleware).not.toHaveBeenCalled();
+  });
+
   it("releases an unread middleware body branch in development", async () => {
     vi.stubEnv("NODE_ENV", "development");
     let resolveCancelled!: () => void;

@@ -186,6 +186,7 @@ describe("app route handler response helpers", () => {
         "x-nextjs-cache": "MISS",
         "x-next-cache-tags": "private-tag",
         "x-vinext-metadata-route-cache": "forged",
+        "x-vinext-prewarm-source-independent": "1",
         "x-middleware-set-cookie": "internal=1; Path=/",
         "x-extra": "kept",
       },
@@ -248,6 +249,7 @@ describe("app route handler response helpers", () => {
     const cached = await buildAppRouteCacheValue(original);
     cached.headers["x-next-cache-tags"] = "private-tag";
     cached.headers["x-vinext-metadata-route-cache"] = "1";
+    cached.headers["x-vinext-prewarm-source-independent"] = "1";
     const restored = buildRouteHandlerCachedResponse(cached, {
       cacheState: "HIT",
       isHead: false,
@@ -257,6 +259,7 @@ describe("app route handler response helpers", () => {
     expect(restored.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
     expect(restored.headers.get("x-next-cache-tags")).toBeNull();
     expect(restored.headers.get("x-vinext-metadata-route-cache")).toBeNull();
+    expect(restored.headers.get("x-vinext-prewarm-source-independent")).toBeNull();
     await expect(restored.text()).resolves.toBe("round trip");
   });
 

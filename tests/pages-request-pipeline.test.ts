@@ -12,6 +12,7 @@ import {
   createPrewarmSourceObservation,
   isPrewarmSourceIndependent,
 } from "../packages/vinext/src/server/prewarm-source-independence.js";
+import { executeMiddleware } from "../packages/vinext/src/server/middleware-runtime.js";
 
 // Helpers
 
@@ -212,6 +213,47 @@ describe("Pages prewarm source-independence observation", () => {
     expect(isPrewarmSourceIndependent(observation)).toBe(false);
     expect(observation.conditionalMiddlewarePathMatched).toBe(true);
   });
+
+  it.each([
+    ["conditional", [{ type: "header" as const, key: "x-market", value: "fr" }]],
+    ["unconditional", undefined],
+  ])(
+    "rejects %s middleware reachable through another domain default locale",
+    async (_name, has) => {
+      const observation = createPrewarmSourceObservation(true);
+      const i18nConfig = {
+        defaultLocale: "en",
+        locales: ["en", "fr"],
+        domains: [{ defaultLocale: "fr", domain: "example.fr" }],
+      };
+      await runPagesRequest(
+        makeRequest("/about"),
+        baseDeps({
+          hasMiddleware: true,
+          i18nConfig,
+          prewarmSourceObservation: observation,
+          renderPage: makeRenderPage(),
+          runMiddleware: (request, _ctx, options) =>
+            executeMiddleware({
+              i18nConfig,
+              isProxy: false,
+              module: {
+                config: {
+                  matcher: [{ source: "/fr/about", locale: false, ...(has ? { has } : {}) }],
+                },
+                default: () => undefined,
+              },
+              normalizedPathname: "/about",
+              onMatcherEvaluation: options.onMatcherEvaluation,
+              request,
+            }),
+        }),
+      );
+
+      expect(isPrewarmSourceIndependent(observation)).toBe(false);
+      expect(observation.conditionalMiddlewarePathMatched).toBe(true);
+    },
+  );
 
   it("fails closed when a middleware adapter does not report matcher evaluation", async () => {
     const observation = createPrewarmSourceObservation(true);

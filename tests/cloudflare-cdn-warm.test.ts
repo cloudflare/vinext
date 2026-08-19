@@ -129,6 +129,10 @@ describe("Cloudflare CDN warmup", () => {
 
   it("reads warmable paths from the prerender manifest", () => {
     writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/", "/docs/intro"] }),
+    );
+    writeFile(
       "dist/server/vinext-prerender.json",
       JSON.stringify({
         buildId: "build-a",
@@ -244,6 +248,10 @@ describe("Cloudflare CDN warmup", () => {
 
   it("uses trailing-slash config from the full prerender manifest fallback", () => {
     writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/about"] }),
+    );
+    writeFile(
       "dist/server/vinext-prerender.json",
       JSON.stringify({
         buildId: "build-a",
@@ -268,7 +276,7 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
-  it("preserves non-App discovery paths and adds final-render paths", () => {
+  it("admits HTML paths only from the final prerender manifest", () => {
     writeFile(
       "dist/server/vinext-prerender-paths.json",
       JSON.stringify({
@@ -287,7 +295,7 @@ describe("Cloudflare CDN warmup", () => {
     );
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
-    expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/", "/cached/intro", "/old"]);
+    expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/old"]);
   });
 
   it("takes RSC warm paths only from exact cacheable final App prerenders", () => {
@@ -380,7 +388,7 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      paths: ["/static", "/posts/first", "/pages", "/late-discovery"],
+      paths: ["/static", "/posts/first", "/late-discovery", "/pages"],
       rscPaths: ["/static", "/posts/first", "/late-discovery"],
       rscCacheKeyMode: "response-vary",
     });
@@ -423,9 +431,9 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      paths: ["/static", "/dynamic"],
+      paths: [],
       rscPaths: [],
-      rscCacheKeyMode: "response-vary",
+      rscCacheKeyMode: "header-digest",
     });
   });
 
@@ -468,7 +476,7 @@ describe("Cloudflare CDN warmup", () => {
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
       deploymentId: "deploy-a",
-      paths: ["/base/", "/base/about/", "/base/feed.json"],
+      paths: ["/base/", "/base/about/"],
       rscPaths: ["/base/", "/base/about/"],
       rscCacheKeyMode: "response-vary",
     });
@@ -509,7 +517,8 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
-  it("uses the full prerender deployment ID when no path manifest exists", () => {
+  it("does not guess request identity from the final manifest when the path manifest is missing", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     writeFile(
       "dist/server/vinext-prerender.json",
       JSON.stringify({
@@ -529,11 +538,30 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      deploymentId: "full-manifest-id",
-      paths: ["/app"],
+      paths: [],
       rscPaths: [],
       rscCacheKeyMode: "header-digest",
     });
+    expect(warn).toHaveBeenCalledWith(
+      "[vinext] CDN warmup skipped: prerender path manifest not found or invalid.",
+    );
+  });
+
+  it("throws in strict mode when the final manifest has no path manifest", () => {
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          { route: "/app", status: "rendered", router: "app", revalidate: false, fallback: false },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(() => readPrerenderWarmPaths(tmpDir, { strict: true })).toThrow(
+      "prerender path manifest not found or invalid",
+    );
   });
 
   it("uses the full prerender manifest when fallback shell paths are requested", () => {
@@ -612,7 +640,7 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
-  it("warns when fallback shells are requested without a prerender manifest", () => {
+  it("skips discovery-only paths when the final prerender manifest is missing", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     writeFile(
       "dist/server/vinext-prerender-paths.json",
@@ -623,12 +651,19 @@ describe("Cloudflare CDN warmup", () => {
     );
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
-    expect(readPrerenderWarmPaths(tmpDir, { includeFallbackShells: true })).toEqual([
-      "/",
-      "/cached/intro",
-    ]);
-    expect(warn).toHaveBeenCalledWith(
-      "[vinext] CDN warmup fallback shells requested, but prerender manifest not found; warming build-discovered paths only.",
+    expect(readPrerenderWarmPaths(tmpDir, { includeFallbackShells: true })).toEqual([]);
+    expect(warn).toHaveBeenCalledWith("[vinext] CDN warmup skipped: prerender manifest not found.");
+  });
+
+  it("throws in strict mode when only the discovery manifest exists", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/"] }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(() => readPrerenderWarmPaths(tmpDir, { strict: true })).toThrow(
+      "prerender manifest not found",
     );
   });
 
@@ -643,6 +678,15 @@ describe("Cloudflare CDN warmup", () => {
         trailingSlash: "true",
       }),
     );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          { route: "/", status: "rendered", router: "app", revalidate: false, fallback: false },
+        ],
+      }),
+    );
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
@@ -650,6 +694,27 @@ describe("Cloudflare CDN warmup", () => {
       rscPaths: [],
       rscCacheKeyMode: "header-digest",
     });
+  });
+
+  it("throws in strict mode when the path manifest is malformed", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/"], rscCacheKeyMode: "invalid" }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          { route: "/", status: "rendered", router: "app", revalidate: false, fallback: false },
+        ],
+      }),
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+
+    expect(() => readPrerenderWarmPaths(tmpDir, { strict: true })).toThrow(
+      "prerender path manifest not found or invalid",
+    );
   });
 
   it("skips warm paths when the path manifest build ID does not match the built Worker", () => {
@@ -660,12 +725,25 @@ describe("Cloudflare CDN warmup", () => {
         paths: ["/"],
       }),
     );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "new-build",
+        routes: [
+          { route: "/", status: "rendered", router: "app", revalidate: false, fallback: false },
+        ],
+      }),
+    );
     writeFile("dist/server/BUILD_ID", "new-build\n");
 
     expect(readPrerenderWarmPaths(tmpDir)).toEqual([]);
   });
 
   it("skips warm paths when the manifest build ID does not match the built Worker", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "new-build", paths: ["/"] }),
+    );
     writeFile(
       "dist/server/vinext-prerender.json",
       JSON.stringify({
@@ -681,6 +759,10 @@ describe("Cloudflare CDN warmup", () => {
   });
 
   it("throws in strict mode when the manifest build ID does not match the built Worker", () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "new-build", paths: ["/"] }),
+    );
     writeFile(
       "dist/server/vinext-prerender.json",
       JSON.stringify({
@@ -1307,6 +1389,10 @@ describe("Cloudflare CDN warmup", () => {
   });
 
   it("reports warmup failures and throws in strict mode", async () => {
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/broken"] }),
+    );
     writeFile(
       "dist/server/vinext-prerender.json",
       JSON.stringify({

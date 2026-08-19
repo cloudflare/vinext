@@ -344,6 +344,32 @@ describe("createAppRscHandler", () => {
     expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
   });
 
+  it.each([
+    ["conditional", [{ type: "header" as const, key: "x-market", value: "fr" }]],
+    ["unconditional", undefined],
+  ])("does not certify %s middleware reachable on another domain locale", async (_name, has) => {
+    const middleware = vi.fn(() => undefined);
+    const response = await runRscPrewarmProbe(
+      createHandler({
+        configHeaders: [],
+        i18nConfig: {
+          defaultLocale: "en",
+          locales: ["en", "fr"],
+          domains: [{ defaultLocale: "fr", domain: "example.fr" }],
+        },
+        middlewareModule: {
+          config: {
+            matcher: [{ source: "/fr/about", locale: false, ...(has ? { has } : {}) }],
+          },
+          default: middleware,
+        },
+      }),
+    );
+
+    expect(middleware).not.toHaveBeenCalled();
+    expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
+  });
+
   it("removes a userland-forged source-independence proof header", async () => {
     const response = await runRscPrewarmProbe(
       createHandler({
@@ -536,6 +562,41 @@ describe("createAppRscHandler", () => {
       }),
     );
 
+    expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
+  });
+
+  it("does not certify destination-conditional metadata headers after a rewrite", async () => {
+    const response = await runDocumentPrewarmProbe(
+      createHandler({
+        configHeaders: [
+          {
+            source: "/manifest.webmanifest",
+            has: [{ type: "header", key: "accept-language", value: "fr.*" }],
+            headers: [{ key: "x-market", value: "fr" }],
+          },
+        ],
+        configRewrites: {
+          beforeFiles: [{ source: "/about", destination: "/manifest.webmanifest" }],
+          afterFiles: [],
+          fallback: [],
+        },
+        matchRoute: () => null,
+        metadataRoutes: [
+          {
+            type: "manifest",
+            isDynamic: false,
+            filePath: "/tmp/app/manifest.webmanifest",
+            routePrefix: "",
+            routeSegments: [],
+            servedUrl: "/manifest.webmanifest",
+            contentType: "application/manifest+json",
+            fileDataBase64: btoa('{"name":"test"}'),
+          },
+        ],
+      }),
+    );
+
+    expect(response.status).toBe(200);
     expect(response.headers.has(VINEXT_RSC_PREWARM_SOURCE_INDEPENDENT_HEADER)).toBe(false);
   });
 

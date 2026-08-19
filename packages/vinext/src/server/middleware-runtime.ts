@@ -16,7 +16,7 @@ import {
   MIDDLEWARE_REWRITE_HEADER,
 } from "./headers.js";
 import {
-  hasConditionalMiddlewarePathMatch,
+  hasMiddlewarePathMatch,
   matchesMiddleware,
   type MatcherConfig,
   type MiddlewareLocaleMatchContext,
@@ -107,6 +107,28 @@ type ExecuteMiddlewareOptions = {
 type RunGeneratedMiddlewareOptions = ExecuteMiddlewareOptions & {
   ctx?: ExecutionContextLike;
 };
+
+function resolveMiddlewareLocaleMatchContext(
+  pathname: string,
+  i18nConfig: NextI18nConfig,
+  hostname: string,
+): MiddlewareLocaleMatchContext {
+  const firstSegment = pathname.split("/", 3)[1];
+  const hasLiteralLocale = i18nConfig.locales.some(
+    (locale) => locale.toLowerCase() === firstSegment?.toLowerCase(),
+  );
+  if (hasLiteralLocale) return { kind: "literal" };
+
+  const localeDefaultedPathname = normalizeDefaultLocalePathname(pathname, i18nConfig, {
+    hostname,
+  });
+  return localeDefaultedPathname === pathname
+    ? { kind: "internal" }
+    : {
+        defaultLocale: normalizeDefaultLocalePathname("/", i18nConfig, { hostname }).slice(1),
+        kind: "defaulted",
+      };
+}
 
 function isMiddlewareHandler(value: unknown): value is MiddlewareHandler {
   return typeof value === "function";
@@ -404,30 +426,11 @@ export async function executeMiddleware(
   let localeContext: MiddlewareLocaleMatchContext | undefined;
   if (options.i18nConfig && encodedMatchPathname !== null) {
     const hostname = normalizeHost(options.request.headers.get("host"), requestUrl.hostname);
-    const firstSegment = encodedMatchPathname.split("/", 3)[1];
-    const hasLiteralLocale =
-      firstSegment !== undefined &&
-      options.i18nConfig.locales.some(
-        (locale) => locale.toLowerCase() === firstSegment.toLowerCase(),
-      );
-    if (hasLiteralLocale) {
-      localeContext = { kind: "literal" };
-    } else {
-      const localeDefaultedPathname = normalizeDefaultLocalePathname(
-        encodedMatchPathname,
-        options.i18nConfig,
-        { hostname },
-      );
-      localeContext =
-        localeDefaultedPathname === encodedMatchPathname
-          ? { kind: "internal" }
-          : {
-              defaultLocale: normalizeDefaultLocalePathname("/", options.i18nConfig, {
-                hostname,
-              }).slice(1),
-              kind: "defaulted",
-            };
-    }
+    localeContext = resolveMiddlewareLocaleMatchContext(
+      encodedMatchPathname,
+      options.i18nConfig,
+      hostname,
+    );
   }
   const encodedMatches =
     encodedMatchPathname !== null &&
@@ -451,11 +454,36 @@ export async function executeMiddleware(
     );
 
   if (!encodedMatches && !decodedMatches) {
+    const localeContexts: Array<MiddlewareLocaleMatchContext | undefined> = [localeContext];
+    const localeContextKeys = new Set([
+      localeContext?.kind === "defaulted"
+        ? `defaulted:${localeContext.defaultLocale.toLowerCase()}`
+        : (localeContext?.kind ?? "none"),
+    ]);
+    if (options.i18nConfig && encodedMatchPathname !== null) {
+      for (const domain of options.i18nConfig.domains ?? []) {
+        const candidate = resolveMiddlewareLocaleMatchContext(
+          encodedMatchPathname,
+          options.i18nConfig,
+          domain.domain,
+        );
+        const candidateKey =
+          candidate.kind === "defaulted"
+            ? `defaulted:${candidate.defaultLocale.toLowerCase()}`
+            : candidate.kind;
+        if (!localeContextKeys.has(candidateKey)) {
+          localeContextKeys.add(candidateKey);
+          localeContexts.push(candidate);
+        }
+      }
+    }
     const conditionalPathMatched = [matchPathname, encodedMatchPathname, decodedMatchPathname].some(
       (pathname, index, values) =>
         pathname !== null &&
         values.indexOf(pathname) === index &&
-        hasConditionalMiddlewarePathMatch(pathname, matcher, options.i18nConfig, localeContext),
+        localeContexts.some((candidateLocaleContext) =>
+          hasMiddlewarePathMatch(pathname, matcher, options.i18nConfig, candidateLocaleContext),
+        ),
     );
     options.onMatcherEvaluation?.({ matched: false, conditionalPathMatched });
     return { continue: true };

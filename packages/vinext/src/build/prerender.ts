@@ -1634,6 +1634,12 @@ export async function prerenderApp({
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
             const cacheTags = readPrerenderCacheTagsHeader(response.headers);
             const fatal = response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1";
+            const prewarmable =
+              response.status === 200 &&
+              response.headers.get(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER) === "1" &&
+              !hasNonCacheablePrewarmHeaders(response.headers, {
+                controlledResponseVaryHeaders: options.controlledResponseVaryHeaders,
+              });
             if (!response.ok || /\bno-store\b/i.test(cacheControl)) {
               await response.body?.cancel();
               return {
@@ -1642,6 +1648,7 @@ export async function prerenderApp({
                 persistedHeaders,
                 html: null,
                 ok: response.ok,
+                prewarmable,
                 requestCacheLife: null,
                 tags: [],
                 status: response.status,
@@ -1660,6 +1667,7 @@ export async function prerenderApp({
               persistedHeaders,
               html,
               ok: true,
+              prewarmable,
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
               tags: cacheTags,
@@ -1711,7 +1719,7 @@ export async function prerenderApp({
         // short-circuits the App Router pipeline with a custom 200 HTML
         // response that never went through createRscEmbedTransform.
         let rscData = extractRscPayloadFromPrerenderedHtml(html);
-        let prewarmable = true;
+        let prewarmable = htmlRender.prewarmable;
         if (rscData === null || options.probeRscCachePolicy) {
           const rscHeaders = new Headers({ Accept: "text/x-component", RSC: "1" });
           applyDeploymentIdHeader(rscHeaders, config.deploymentId);
@@ -1737,7 +1745,7 @@ export async function prerenderApp({
             );
           }
           if (options.probeRscCachePolicy) {
-            prewarmable =
+            prewarmable &&=
               rscRes.status === 200 &&
               rscRes.headers.get(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER) === "1" &&
               Boolean(

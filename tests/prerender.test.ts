@@ -599,6 +599,7 @@ describe("prerenderApp — RSC extraction", () => {
       "rsc-non-flight",
       "rsc-flight",
       "rsc-source-dependent",
+      "html-source-dependent",
     ]) {
       fs.mkdirSync(path.join(appDir, route));
       fs.writeFileSync(
@@ -649,7 +650,8 @@ describe("prerenderApp — RSC extraction", () => {
       } else if (
         pathname === "/rsc-non-flight" ||
         pathname === "/rsc-flight" ||
-        pathname === "/rsc-source-dependent"
+        pathname === "/rsc-source-dependent" ||
+        pathname === "/html-source-dependent"
       ) {
         res.setHeader("Cache-Control", "public, max-age=60");
       } else if (pathname === "/robots.txt") {
@@ -662,12 +664,19 @@ describe("prerenderApp — RSC extraction", () => {
         "content-type",
         (pathname === "/rsc-flight" ||
           pathname === "/rsc-source-dependent" ||
+          pathname === "/html-source-dependent" ||
           pathname === "/vary-accept") &&
           isRsc
           ? "text/x-component"
           : "text/html",
       );
-      if ((pathname === "/rsc-flight" || pathname === "/vary-accept") && isRsc) {
+      if (
+        ((pathname === "/rsc-flight" || pathname === "/vary-accept") && !isRsc) ||
+        ((pathname === "/rsc-flight" ||
+          pathname === "/html-source-dependent" ||
+          pathname === "/vary-accept") &&
+          isRsc)
+      ) {
         res.setHeader(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER, "1");
       }
       res.end(
@@ -739,7 +748,7 @@ describe("prerenderApp — RSC extraction", () => {
         headers: { vary: "Accept" },
       });
       if (varyAccept?.status === "rendered") {
-        expect(varyAccept.prewarmable).toBeUndefined();
+        expect(varyAccept.prewarmable).toBe(false);
         expect(getPrewarmableAppPaths({ routes: [varyAccept] })).toEqual([]);
       }
       const setsCookie = findRoute(prerenderResult.routes, "/sets-cookie");
@@ -759,6 +768,10 @@ describe("prerenderApp — RSC extraction", () => {
         expect(rscFlight.prewarmable).toBeUndefined();
       }
       expect(findRoute(prerenderResult.routes, "/rsc-source-dependent")).toMatchObject({
+        status: "rendered",
+        prewarmable: false,
+      });
+      expect(findRoute(prerenderResult.routes, "/html-source-dependent")).toMatchObject({
         status: "rendered",
         prewarmable: false,
       });

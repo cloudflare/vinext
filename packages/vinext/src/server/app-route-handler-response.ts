@@ -8,6 +8,7 @@ import {
   NEXT_CACHE_TAGS_HEADER,
   NEXTJS_CACHE_HEADER,
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
+  VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER,
   VINEXT_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
 } from "./headers.js";
@@ -102,6 +103,7 @@ export function buildRouteHandlerCachedResponse(
   }
   headers.delete(NEXT_CACHE_TAGS_HEADER);
   headers.delete(VINEXT_METADATA_ROUTE_CACHE_HEADER);
+  headers.delete(VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER);
   setCacheStateHeaders(headers, options.cacheState);
   // HIT/STALE served from the origin store: route the cache header through the
   // CDN adapter (default: identical single Cache-Control). Edge adapters never
@@ -243,6 +245,7 @@ export async function buildAppRouteCacheValue(response: Response): Promise<Cache
       key === "transfer-encoding" ||
       key === NEXT_CACHE_TAGS_HEADER ||
       key === VINEXT_METADATA_ROUTE_CACHE_HEADER ||
+      key === VINEXT_PREWARM_SOURCE_INDEPENDENT_HEADER ||
       key === VINEXT_PRERENDER_CACHE_LIFE_HEADER ||
       key === VINEXT_CACHE_HEADER.toLowerCase() ||
       key === NEXTJS_CACHE_HEADER.toLowerCase() ||

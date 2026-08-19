@@ -1083,19 +1083,30 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (filesystemRouteEligible && options.handleMetadataRouteRequest) {
     syncNextUrlHeaderVisibility(cleanPathname);
     const metadataRouteResponse = await options.handleMetadataRouteRequest(cleanPathname);
-    if (metadataRouteResponse && HAS_CONFIG_HEADERS && options.configHeaders.length) {
-      const { applyConfigHeadersToResponse } = await import("./config-headers.js");
-      applyConfigHeadersToResponse(metadataRouteResponse.headers, {
-        basePathState,
-        configHeaders: options.configHeaders,
-        overwriteExisting: STATIC_METADATA_CONFIG_HEADER_OVERRIDES,
-        pathname: matchPathname(
-          cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
-        ),
-        requestContext: preMiddlewareRequestContext,
-      });
-    }
     if (metadataRouteResponse) {
+      const configHeaderPathname = matchPathname(
+        cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
+      );
+      if (prewarmObservation && configMatchers && options.configHeaders.length) {
+        prewarmObservation.observeConfigRules({
+          basePathState,
+          configHeaders: options.configHeaders,
+          configMatchers,
+          configRedirects: [],
+          redirectPathname: configHeaderPathname,
+          requestCleanPathname: cleanPathname,
+        });
+      }
+      if (HAS_CONFIG_HEADERS && options.configHeaders.length) {
+        const { applyConfigHeadersToResponse } = await import("./config-headers.js");
+        applyConfigHeadersToResponse(metadataRouteResponse.headers, {
+          basePathState,
+          configHeaders: options.configHeaders,
+          overwriteExisting: STATIC_METADATA_CONFIG_HEADER_OVERRIDES,
+          pathname: configHeaderPathname,
+          requestContext: preMiddlewareRequestContext,
+        });
+      }
       return applyMiddlewareContextToResponse(metadataRouteResponse, middlewareContext);
     }
   }

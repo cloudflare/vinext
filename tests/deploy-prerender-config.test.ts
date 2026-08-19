@@ -456,7 +456,7 @@ describe("deploy prerender config wiring", () => {
     ]);
   });
 
-  it("preserves built warmup paths during skip-build CDN deploys", async () => {
+  it("does not warm discovery-only paths when skip-build prerender has no final manifest", async () => {
     writeApiOnlyProject();
     writeFile(
       "dist/server/vinext-prerender-paths.json",
@@ -492,7 +492,11 @@ describe("deploy prerender config wiring", () => {
         const wranglerArgs = args as string[];
         return wranglerArgs.includes("versions") && wranglerArgs.includes("upload");
       }),
-    ).toBe(true);
+    ).toBe(false);
+    expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
+      expect.stringContaining("wrangler"),
+      "deploy",
+    ]);
   });
 
   it("loads non-literal cache descriptors from plugin metadata", async () => {
