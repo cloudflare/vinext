@@ -118,6 +118,94 @@ type CommonJsAnalysis = {
   namedExports: string[];
 };
 
+type WrapperVarClassification = {
+  initialized: Set<string>;
+  noOp: Set<string>;
+};
+
+function wrapperVarName(value: unknown): "require" | "module" | "exports" | null {
+  const name = getAstName(value);
+  return name === "require" || name === "module" || name === "exports" ? name : null;
+}
+
+function isWrapperPreservingInitializer(
+  name: "require" | "module" | "exports",
+  value: unknown,
+): boolean {
+  const initializer = unwrapExpression(value);
+  if (!initializer) return true;
+  if (isIdentifierNamed(initializer, name)) return true;
+  if (
+    name === "exports" &&
+    initializer.type === "MemberExpression" &&
+    isIdentifierNamed(unwrapExpression(initializer.object), "module") &&
+    memberPropertyName(initializer) === "exports"
+  ) {
+    return true;
+  }
+  if (
+    (initializer.type === "LogicalExpression" || initializer.type === "BinaryExpression") &&
+    (initializer.operator === "||" || initializer.operator === "??") &&
+    isIdentifierNamed(unwrapExpression(initializer.left), name)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function classifyRootWrapperVars(root: AstRecord): WrapperVarClassification {
+  const classification: WrapperVarClassification = {
+    initialized: new Set(),
+    noOp: new Set(),
+  };
+
+  function visit(node: AstRecord, isRoot = false): void {
+    if (
+      !isRoot &&
+      (isFunctionNode(node) || node.type === "StaticBlock" || node.type === "TSModuleBlock")
+    ) {
+      return;
+    }
+    if (node.type === "VariableDeclaration" && node.kind === "var" && node.declare !== true) {
+      for (const declarator of nodeArray(node.declarations)) {
+        if (!isAstRecord(declarator)) continue;
+        const name = wrapperVarName(declarator.id);
+        if (!name) continue;
+        classification.noOp.add(name);
+      }
+    }
+    forEachAstChild(node, (child) => visit(child));
+  }
+
+  visit(root, true);
+  // Preserve the existing scope-aware improvement for direct, unconditional
+  // wrapper replacements. Nested initializers are control-flow dependent, so
+  // transforming them matches the original plugin and CommonJS wrapper model.
+  for (const statement of nodeArray(root.body)) {
+    if (!isAstRecord(statement) || statement.type !== "VariableDeclaration") continue;
+    if (statement.kind !== "var" || statement.declare === true) continue;
+    for (const declarator of nodeArray(statement.declarations)) {
+      if (!isAstRecord(declarator)) continue;
+      const name = wrapperVarName(declarator.id);
+      if (name && !isWrapperPreservingInitializer(name, declarator.init)) {
+        classification.initialized.add(name);
+      }
+    }
+  }
+  for (const name of classification.initialized) classification.noOp.delete(name);
+  return classification;
+}
+
+function removeNoOpDirectVarBindings(
+  scope: AstScope,
+  noOpWrapperVars: ReadonlySet<string>,
+  directVarBindings: ReadonlySet<string>,
+): void {
+  for (const name of noOpWrapperVars) {
+    if (directVarBindings.has(name)) scope.bindings.delete(name);
+  }
+}
+
 function memberPropertyName(node: AstRecord): string | null {
   const property = unwrapExpression(node.property);
   if (!property) return null;
@@ -157,22 +245,8 @@ function analyzeCommonJsAst(
   // In Node's CommonJS wrapper, a top-level `var require`, `var module`, or
   // `var exports` without an initializer redeclares the wrapper parameter and
   // leaves its value intact. Treat that narrow form as the ambient CJS binding.
-  const noOpWrapperVars = new Set<string>();
-  const initializedWrapperVars = new Set<string>();
-  for (const statement of nodeArray(root.body)) {
-    if (!isAstRecord(statement) || statement.type !== "VariableDeclaration") continue;
-    if (statement.kind !== "var") continue;
-    for (const declarator of nodeArray(statement.declarations)) {
-      if (!isAstRecord(declarator)) continue;
-      const name = getAstName(declarator.id);
-      if (name === "require" || name === "module" || name === "exports") {
-        (declarator.init == null ? noOpWrapperVars : initializedWrapperVars).add(name);
-      }
-    }
-  }
-  for (const name of noOpWrapperVars) {
-    if (!initializedWrapperVars.has(name)) rootScope.bindings.delete(name);
-  }
+  const { noOp: noOpWrapperVars } = classifyRootWrapperVars(root);
+  for (const name of noOpWrapperVars) rootScope.bindings.delete(name);
   const bindings = new Set(rootScope.bindings);
   const requires: StaticRequire[] = [];
   const dynamicRequires: DynamicRequire[] = [];
@@ -211,7 +285,11 @@ function analyzeCommonJsAst(
     if (node.type === "SwitchStatement") {
       if (isAstRecord(node.discriminant)) visit(node.discriminant, parentScope);
       const switchScope = createAstScope(parentScope);
-      collectSwitchScopeBindings(node, switchScope);
+      const directVarBindings = new Set<string>();
+      collectSwitchScopeBindings(node, switchScope, (declaration, declarator) => {
+        if (declaration.kind === "var") collectBindingNames(declarator.id, directVarBindings);
+      });
+      removeNoOpDirectVarBindings(switchScope, noOpWrapperVars, directVarBindings);
       for (const binding of switchScope.bindings) bindings.add(binding);
       for (const switchCase of nodeArray(node.cases)) {
         if (isAstRecord(switchCase)) visit(switchCase, switchScope);
@@ -224,7 +302,11 @@ function analyzeCommonJsAst(
       node.type === "TSModuleBlock"
     ) {
       scope = createAstScope(parentScope);
-      collectDirectScopeBindings(node, scope);
+      const directVarBindings = new Set<string>();
+      collectDirectScopeBindings(node, scope, (declaration, declarator) => {
+        if (declaration.kind === "var") collectBindingNames(declarator.id, directVarBindings);
+      });
+      removeNoOpDirectVarBindings(scope, noOpWrapperVars, directVarBindings);
       if (node.type === "StaticBlock" || node.type === "TSModuleBlock") {
         collectVarScopeBindings(node, scope);
       }
@@ -239,7 +321,11 @@ function analyzeCommonJsAst(
       node.type === "ForOfStatement"
     ) {
       scope = createAstScope(parentScope);
-      collectLoopScopeBindings(node, scope);
+      const directVarBindings = new Set<string>();
+      collectLoopScopeBindings(node, scope, (declaration, declarator) => {
+        if (declaration.kind === "var") collectBindingNames(declarator.id, directVarBindings);
+      });
+      removeNoOpDirectVarBindings(scope, noOpWrapperVars, directVarBindings);
       for (const binding of scope.bindings) bindings.add(binding);
     } else if (node.type === "ClassExpression" && node.id) {
       scope = createAstScope(parentScope);
@@ -388,10 +474,14 @@ function dynamicRequirePattern(value: unknown): string | null {
   return "*";
 }
 
+function normalizedDynamicRequirePattern(value: unknown): string | null {
+  return dynamicRequirePattern(value)?.replace(/\*+/g, "*") ?? null;
+}
+
 function assertSupportedDynamicRequires(code: string, analysis: CommonJsAnalysis): void {
   const unsupportedDynamic = analysis.dynamicRequires.find((request) => {
     if (request.ignored) return false;
-    const pattern = dynamicRequirePattern(request.argument);
+    const pattern = normalizedDynamicRequirePattern(request.argument);
     return pattern === null || pattern.startsWith("*") || pattern.replaceAll("*", "") === "";
   });
   const range = analysis.argumentlessRequires[0] ?? unsupportedDynamic?.node;
@@ -455,28 +545,26 @@ function dynamicGlobPatterns(
   return [...results.values()];
 }
 
-function patternCaptureMatcher(pattern: string): (value: string) => string[] | null {
-  const parts = pattern.split(/\*+/);
-  const source = parts.map((part) => part.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")).join("(.*?)");
-  const regexp = new RegExp(`^${source}$`);
-  return (value) => {
-    const match = regexp.exec(value);
-    return match ? match.slice(1) : null;
-  };
+function firstGlobMagicIndex(pattern: string): number {
+  const simpleMagic = pattern.search(/[?*[{]/);
+  const extglobMagic = pattern.search(/[+@!]\(/);
+  if (simpleMagic === -1) return extglobMagic;
+  if (extglobMagic === -1) return simpleMagic;
+  return Math.min(simpleMagic, extglobMagic);
 }
 
-function interpolatePattern(pattern: string, captures: readonly string[]): string {
-  let index = 0;
-  return pattern.replace(/\*+/g, () => captures[index++] ?? "");
+function globStaticPrefix(pattern: string): string {
+  const firstMagic = firstGlobMagicIndex(pattern);
+  return firstMagic === -1 ? pattern : pattern.slice(0, firstMagic);
 }
 
-function globTraversalRoot(absolutePattern: string): string {
-  const firstMagic = absolutePattern.search(/[?*[{]/);
+export function globTraversalRoot(absolutePattern: string): string {
+  const firstMagic = firstGlobMagicIndex(absolutePattern);
   if (firstMagic === -1) return path.dirname(absolutePattern);
   const staticPrefix = absolutePattern.slice(0, firstMagic);
-  return staticPrefix.endsWith("/")
-    ? staticPrefix.slice(0, -1) || path.parse(absolutePattern).root
-    : path.dirname(staticPrefix);
+  if (!staticPrefix.endsWith("/")) return path.dirname(staticPrefix);
+  const root = path.parse(absolutePattern).root;
+  return staticPrefix === root ? root : staticPrefix.slice(0, -1) || root;
 }
 
 function generatedGlobMatcher(pattern: string): (value: string) => boolean {
@@ -489,12 +577,12 @@ function generatedGlobMatcher(pattern: string): (value: string) => boolean {
       continue;
     }
     if (pattern[index + 1] !== "*") {
-      source += "[^/]*";
+      source += index === 0 || pattern[index - 1] === "/" ? "(?!\\.)[^/]*" : "[^/]*";
       continue;
     }
     index++;
     if (pattern[index + 1] === "/") {
-      source += "(?:.*/)?";
+      source += "(?:(?!\\.)[^/]+/)*";
       index++;
     } else {
       source += ".*";
@@ -502,6 +590,22 @@ function generatedGlobMatcher(pattern: string): (value: string) => boolean {
   }
   const regexp = new RegExp(`${source}$`);
   return (value) => regexp.test(value);
+}
+
+function runtimeMatchForPattern(
+  resolvedPattern: string,
+  runtimePattern: string,
+  resolvedMatch: string,
+): string {
+  const resolvedPrefix = globStaticPrefix(resolvedPattern);
+  const runtimePrefix = globStaticPrefix(runtimePattern);
+  return `${runtimePrefix}${resolvedMatch.slice(resolvedPrefix.length)}`;
+}
+
+function patternIncludesExplicitDotEntry(pattern: string): boolean {
+  return pattern
+    .split("/")
+    .some((segment) => segment.startsWith(".") && segment !== "." && segment !== "..");
 }
 
 async function findPackageDirectory(
@@ -521,6 +625,17 @@ async function findPackageDirectory(
     if (parent === directory) return null;
     directory = parent;
   }
+}
+
+function barePatternBase(pattern: string): string | null {
+  const packageName = packageNameFromSpecifier(pattern);
+  if (packageName) return packageName;
+  const wildcard = pattern.indexOf("*");
+  const separator = wildcard === -1 ? -1 : pattern.lastIndexOf("/", wildcard);
+  if (separator <= 0) return null;
+  const staticBase = pattern.slice(0, separator);
+  if (/^@[A-Za-z0-9._~-]+$/.test(staticBase)) return staticBase;
+  return packageNameFromSpecifier(`${staticBase}/placeholder`) ? staticBase : null;
 }
 
 async function resolveDynamicPattern(
@@ -570,8 +685,8 @@ async function resolveDynamicPattern(
       resolvedMatch: toSlash,
     };
   }
-  const packageName = packageNameFromSpecifier(pattern);
-  if (!packageName) {
+  const packageBase = barePatternBase(pattern);
+  if (!packageBase) {
     throw new Error(
       `invalid import ${JSON.stringify(pattern)}. It cannot be statically analyzed because ` +
         "it is not a relative, absolute, aliased, or bare-package request.",
@@ -579,16 +694,16 @@ async function resolveDynamicPattern(
   }
   const packageDirectory = await findPackageDirectory(
     importerDirectory,
-    packageName,
+    packageBase,
     preserveSymlinks,
   );
   if (!packageDirectory) {
     throw new Error(
       `invalid import ${JSON.stringify(pattern)}. It cannot be statically analyzed because ` +
-        `package ${JSON.stringify(packageName)} could not be resolved.`,
+        `package prefix ${JSON.stringify(packageBase)} could not be resolved.`,
     );
   }
-  const suffix = pattern.slice(packageName.length).replace(/^\/+/, "");
+  const suffix = pattern.slice(packageBase.length).replace(/^\/+/, "");
   return {
     cwd: path.parse(packageDirectory).root,
     globPattern: path.join(packageDirectory, suffix),
@@ -607,7 +722,7 @@ async function resolveDynamicRequire(
   preserveSymlinks: boolean,
 ): Promise<ResolvedDynamicRequire | null> {
   if (request.ignored) return null;
-  const pattern = dynamicRequirePattern(request.argument);
+  const pattern = normalizedDynamicRequirePattern(request.argument);
   if (!pattern?.includes("*")) return null;
 
   const cleanId = toSlash(stripViteModuleQuery(id));
@@ -631,7 +746,6 @@ async function resolveDynamicRequire(
       : path.resolve(resolvedPattern.cwd, pattern.globPattern);
     return {
       ...pattern,
-      captures: patternCaptureMatcher(pattern.resolvedPattern),
       matches: generatedGlobMatcher(absoluteGlobPattern),
     };
   });
@@ -641,16 +755,21 @@ async function resolveDynamicRequire(
     ? firstGlobPattern
     : path.resolve(resolvedPattern.cwd, firstGlobPattern);
   const traversalRoot = globTraversalRoot(absoluteGlobPattern);
-  for (const relative of await listFilesFollowingSymlinks(traversalRoot, true)) {
+  for (const relative of await listFilesFollowingSymlinks(traversalRoot, true, {
+    includeDotEntries: patternIncludesExplicitDotEntry(resolvedPattern.globPattern),
+  })) {
     const absolute = path.join(traversalRoot, relative);
     if (absolute === cleanId) continue;
     const resolvedMatch = resolvedPattern.resolvedMatch(absolute);
     for (const pattern of patterns) {
       if (!pattern.matches(absolute)) continue;
-      const captures = pattern.captures(resolvedMatch);
-      if (!captures) continue;
       const specifier = resolvedPattern.importSpecifier(absolute);
-      const cases = extensionlessCases(interpolatePattern(pattern.runtimePattern, captures));
+      const runtimeMatch = runtimeMatchForPattern(
+        resolvedPattern.globPattern,
+        resolvedPattern.runtimePattern,
+        resolvedMatch,
+      );
+      const cases = extensionlessCases(runtimeMatch);
       candidates.set(absolute, { cases, depth: specifier.split("/").length, specifier });
       break;
     }
@@ -691,18 +810,21 @@ function renderCommonJs(
 
   const output = new MagicString(code);
   const bindings = new Set(analysis.bindings);
-  const imports: Array<{ code: string; dynamic: boolean }> = [];
+  const imports: Array<{ code: string; dynamicOrder: number | null }> = [];
   const importBindings = new Map<string, { name: string; record: (typeof imports)[number] }>();
+  let nextDynamicImportOrder = 0;
   function importBinding(specifier: string, dynamic = false): string {
     const existing = importBindings.get(specifier);
     if (existing) {
-      if (dynamic) existing.record.dynamic = true;
+      if (dynamic && existing.record.dynamicOrder === null) {
+        existing.record.dynamicOrder = nextDynamicImportOrder++;
+      }
       return existing.name;
     }
     const importName = unusedBinding(bindings, "__vinext_cjs_import__");
     const record = {
       code: `import * as ${importName} from ${JSON.stringify(specifier)};`,
-      dynamic,
+      dynamicOrder: dynamic ? nextDynamicImportOrder++ : null,
     };
     imports.push(record);
     importBindings.set(specifier, { name: importName, record });
@@ -731,7 +853,14 @@ function renderCommonJs(
   }
   if (imports.length > 0 || preamble.length > 0) {
     const importCode = [...imports]
-      .sort((left, right) => Number(right.dynamic) - Number(left.dynamic))
+      .sort((left, right) => {
+        if (left.dynamicOrder !== null && right.dynamicOrder !== null) {
+          return left.dynamicOrder - right.dynamicOrder;
+        }
+        if (left.dynamicOrder !== null) return -1;
+        if (right.dynamicOrder !== null) return 1;
+        return 0;
+      })
       .map((record) => record.code);
     output.prepend(`${[...importCode, ...preamble].join("\n")}\n`);
   }

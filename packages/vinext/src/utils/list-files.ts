@@ -10,6 +10,7 @@ import path from "pathslash";
 export async function listFilesFollowingSymlinks(
   directory: string,
   recursive: boolean,
+  options: { includeDotEntries?: boolean } = {},
 ): Promise<string[]> {
   const files: string[] = [];
   const ancestorRealPaths = new Set<string>();
@@ -30,7 +31,7 @@ export async function listFilesFollowingSymlinks(
 
     try {
       for (const entry of entries) {
-        if (entry.name.startsWith(".")) continue;
+        if (!options.includeDotEntries && entry.name.startsWith(".")) continue;
         const entryPath = path.join(currentDirectory, entry.name);
         let isFile = entry.isFile();
         let isDirectory = entry.isDirectory();

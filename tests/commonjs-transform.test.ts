@@ -6,6 +6,7 @@ import { toSlash } from "pathslash";
 import { createBuilder, createServer, type Alias } from "vite";
 import {
   createCommonJsPlugin,
+  globTraversalRoot,
   transformCommonJs,
 } from "../packages/vinext/src/plugins/commonjs.js";
 
@@ -176,6 +177,41 @@ if (typeof exports !== "undefined") {
       `var require; module.exports = require("node:path").sep;`,
     );
     expect(requireRedeclaration.default).toBe(path.sep);
+
+    const nestedModuleRedeclaration = await evaluateCommonJs(
+      `if (false) { var module; } module.exports = "nested-var-module-ok";`,
+    );
+    expect(nestedModuleRedeclaration.default).toBe("nested-var-module-ok");
+
+    const loopExportsRedeclaration = await evaluateCommonJs(
+      `for (var exports; false;) {} exports.value = "loop-var-exports-ok";`,
+    );
+    expect(loopExportsRedeclaration.value).toBe("loop-var-exports-ok");
+
+    const blockRequireRedeclaration = await evaluateCommonJs(
+      `{ var require; module.exports = require("node:path").sep; }`,
+    );
+    expect(blockRequireRedeclaration.default).toBe(path.sep);
+
+    const selfRequireRedeclaration = await evaluateCommonJs(
+      `var require = require; module.exports = require("node:path").sep;`,
+    );
+    expect(selfRequireRedeclaration.default).toBe(path.sep);
+
+    const selfModuleRedeclaration = await evaluateCommonJs(
+      `var module = module || { exports: {} }; module.exports = "self-module-ok";`,
+    );
+    expect(selfModuleRedeclaration.default).toBe("self-module-ok");
+
+    const exportsAliasRedeclaration = await evaluateCommonJs(
+      `var exports = module.exports; exports.value = "exports-alias-ok";`,
+    );
+    expect(exportsAliasRedeclaration.value).toBe("exports-alias-ok");
+
+    const unreachableInitializer = await evaluateCommonJs(
+      `if (false) { var module = {}; } module.exports = "unreachable-init-ok";`,
+    );
+    expect(unreachableInitializer.default).toBe("unreachable-init-ok");
   });
 
   // Ported from vite-plugin-commonjs v0.10.4 historical export fixtures:
@@ -546,6 +582,28 @@ export function loadDynamic() {
       expect(staticSuffix).toContain('from "./views/nested/component.js"');
       expect(staticSuffix).toContain('case "./views/nested/component"');
       expect(staticSuffix).toContain('case "./views/nested/component.js"');
+
+      await mkdir(path.join(root, "views/one/component"), { recursive: true });
+      await writeFile(
+        path.join(root, "views/one/component/index.js"),
+        'export default "suffix-index";\n',
+      );
+      await writeFile(
+        path.join(root, "suffix-index.js"),
+        'const name = "one"; export default require(`./views/${name}/component`).default;\n',
+      );
+      const server = await createServer({
+        root,
+        logLevel: "silent",
+        plugins: [createCommonJsPlugin()],
+        server: { middlewareMode: true },
+      });
+      try {
+        const module = await server.ssrLoadModule("/suffix-index.js");
+        expect(module.default).toBe("suffix-index");
+      } finally {
+        await server.close();
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -701,6 +759,59 @@ export function loadDynamic() {
     }
   });
 
+  it("matches explicitly patterned dotfiles", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-commonjs-dotfile-pattern-"));
+    try {
+      await mkdir(path.join(root, "locales"), { recursive: true });
+      await Promise.all([
+        writeFile(path.join(root, "locales/.en.js"), 'export default "dotfile-ok";\n'),
+        writeFile(
+          path.join(root, "entry.js"),
+          'const locale = "en"; export default require("./locales/." + locale + ".js").default;\n',
+        ),
+      ]);
+      const server = await createServer({
+        root,
+        logLevel: "silent",
+        plugins: [createCommonJsPlugin()],
+        server: { middlewareMode: true },
+      });
+      try {
+        const module = await server.ssrLoadModule("/entry.js");
+        expect(module.default).toBe("dotfile-ok");
+      } finally {
+        await server.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("enumerates candidates selected by static extglob syntax", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-commonjs-extglob-pattern-"));
+    try {
+      await Promise.all([
+        mkdir(path.join(root, "views/foo"), { recursive: true }),
+        mkdir(path.join(root, "views/bar"), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(path.join(root, "views/foo/en.js"), 'export default "foo";\n'),
+        writeFile(path.join(root, "views/bar/en.js"), 'export default "bar";\n'),
+      ]);
+      const result = await runPluginTransform(
+        'const name = "en"; require(`./views/+(foo|bar)/${name}.js`);',
+        path.join(root, "entry.js"),
+      );
+      if (!result || typeof result === "string" || !("code" in result)) {
+        throw new Error("Expected transformed code");
+      }
+      expect(String(result.code)).toContain('from "./views/foo/en.js"');
+      expect(String(result.code)).toContain('from "./views/bar/en.js"');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   // Ported from vite-plugin-dynamic-import v1.6.0's absolute-looking alias fixture:
   // https://github.com/vite-plugin/vite-plugin-dynamic-import/blob/v1.6.0/test/fixtures/src/main.ts
   it("resolves aliases before treating patterns as absolute filesystem paths", async () => {
@@ -762,7 +873,7 @@ export function loadDynamic() {
         ),
         writeFile(
           path.join(root, "entry.js"),
-          'require("./static.js"); const name = "a"; require(`./dynamic/${name}.js`); export default true;\n',
+          'require("./dynamic/z.js"); require("./static.js"); const name = "a"; require(`./dynamic/${name}.js`); export default true;\n',
         ),
       ]);
       Object.assign(globalThis, { [orderKey]: [] });
@@ -815,5 +926,38 @@ export function loadDynamic() {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("expands patterns whose scoped package name is dynamic", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-commonjs-dynamic-package-"));
+    try {
+      const packageDirectory = path.join(root, "node_modules/@scope/pkg-a");
+      await mkdir(packageDirectory, { recursive: true });
+      await Promise.all([
+        writeFile(path.join(packageDirectory, "file.js"), 'export default "scoped-package";\n'),
+        writeFile(
+          path.join(root, "entry.js"),
+          'const variant = "a"; export default require(`@scope/pkg-${variant}/file.js`).default;\n',
+        ),
+      ]);
+      const server = await createServer({
+        root,
+        logLevel: "silent",
+        plugins: [createCommonJsPlugin()],
+        server: { middlewareMode: true },
+      });
+      try {
+        const module = await server.ssrLoadModule("/entry.js");
+        expect(module.default).toBe("scoped-package");
+      } finally {
+        await server.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "win32")("preserves Windows drive traversal roots", () => {
+    expect(globTraversalRoot("C:/*.js")).toBe("C:/");
   });
 });
