@@ -71,39 +71,51 @@ describe("RSC prewarm browser eligibility", () => {
     await expect(isRscPrewarmEligibleHref("/cached/intro")).resolves.toBe(false);
   });
 
-  it("fails closed within a bound when the optional manifest stalls", async () => {
+  it("does not downgrade an eligible route while the eager manifest is still loading", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            setTimeout(
+              () => resolve(Response.json({ version: 1, paths: ["/cached/intro"] })),
+              1_000,
+            );
+          }),
+      ),
+    );
+    const { resolveRscPrewarmEligibility } =
+      await import("../packages/vinext/src/client/rsc-prewarm-eligibility.js");
+
+    let settled = false;
+    const eligibility = resolveRscPrewarmEligibility("/cached/intro").finally(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(eligibility).resolves.toBe("eligible");
+  });
+
+  it("waits for the single bounded manifest load before failing closed", async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
       "fetch",
       vi.fn(() => new Promise<Response>(() => {})),
     );
-    const {
-      resolveRscPrewarmEligibility,
-      RSC_PREWARM_MANIFEST_FETCH_TIMEOUT_MS,
-      RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
-    } = await import("../packages/vinext/src/client/rsc-prewarm-eligibility.js");
+    const { resolveRscPrewarmEligibility, RSC_PREWARM_MANIFEST_FETCH_TIMEOUT_MS } =
+      await import("../packages/vinext/src/client/rsc-prewarm-eligibility.js");
 
-    expect(RSC_PREWARM_NAVIGATION_TIMEOUT_MS).toBe(250);
-    const first = resolveRscPrewarmEligibility("/cached/intro", {
-      timeoutMs: RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
+    let settled = false;
+    const first = resolveRscPrewarmEligibility("/cached/intro").finally(() => {
+      settled = true;
     });
-    await vi.advanceTimersByTimeAsync(RSC_PREWARM_NAVIGATION_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(RSC_PREWARM_MANIFEST_FETCH_TIMEOUT_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
     await expect(first).resolves.toBe("ineligible");
-
-    const second = resolveRscPrewarmEligibility("/cached/intro", {
-      timeoutMs: RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
-    });
-    await vi.advanceTimersByTimeAsync(RSC_PREWARM_NAVIGATION_TIMEOUT_MS);
-    await expect(second).resolves.toBe("ineligible");
-
-    await vi.advanceTimersByTimeAsync(
-      RSC_PREWARM_MANIFEST_FETCH_TIMEOUT_MS - RSC_PREWARM_NAVIGATION_TIMEOUT_MS * 2,
-    );
-    await expect(
-      resolveRscPrewarmEligibility("/cached/intro", {
-        timeoutMs: RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
-      }),
-    ).resolves.toBe("ineligible");
+    await expect(resolveRscPrewarmEligibility("/cached/intro")).resolves.toBe("ineligible");
     expect(fetch).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });

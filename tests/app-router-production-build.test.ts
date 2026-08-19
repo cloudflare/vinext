@@ -185,10 +185,19 @@ describe("App Router Production build", () => {
       await builder.buildApp();
 
       const buildId = fs.readFileSync(path.join(tmpDir, "dist/server/BUILD_ID"), "utf-8").trim();
+      const rscBuildId = fs
+        .readFileSync(path.join(tmpDir, "dist/server/RSC_BUILD_ID"), "utf-8")
+        .trim();
       expect(
         JSON.parse(
           fs.readFileSync(
-            path.join(tmpDir, "dist/client/_next/static", buildId, "vinext-rsc-prewarm.json"),
+            path.join(
+              tmpDir,
+              "dist/client/_next/static",
+              buildId,
+              rscBuildId,
+              "vinext-rsc-prewarm.json",
+            ),
             "utf-8",
           ),
         ),

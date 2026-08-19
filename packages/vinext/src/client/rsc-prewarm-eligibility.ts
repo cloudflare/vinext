@@ -15,8 +15,7 @@ const manifestUrl = process.env.__VINEXT_RSC_PREWARM_MANIFEST_URL ?? "";
 const trailingSlash = process.env.__VINEXT_TRAILING_SLASH === "true";
 let manifestPromise: Promise<RscPrewarmManifestState> | null = null;
 
-/** Keep an unavailable optional manifest from visibly stalling a user click. */
-export const RSC_PREWARM_NAVIGATION_TIMEOUT_MS = 250;
+/** Bound the single eager eligibility request before retaining contextual RSC behavior. */
 export const RSC_PREWARM_MANIFEST_FETCH_TIMEOUT_MS = 5_000;
 
 export function normalizeRscPrewarmHref(href: string): string {
@@ -77,21 +76,7 @@ export function preloadRscPrewarmManifest(): Promise<RscPrewarmManifestState> {
   return (manifestPromise ??= loadManifest());
 }
 
-function loadManifestWithin(timeoutMs: number): Promise<RscPrewarmManifestState | null> {
-  const manifest = preloadRscPrewarmManifest();
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => resolve(null), Math.max(0, timeoutMs));
-    void manifest.then((state) => {
-      clearTimeout(timeout);
-      resolve(state);
-    });
-  });
-}
-
-export async function resolveRscPrewarmEligibility(
-  href: string,
-  options?: { timeoutMs?: number },
-): Promise<RscPrewarmEligibility> {
+export async function resolveRscPrewarmEligibility(href: string): Promise<RscPrewarmEligibility> {
   if (!manifestUrl || typeof window === "undefined") return "ineligible";
 
   let url: URL;
@@ -101,18 +86,13 @@ export async function resolveRscPrewarmEligibility(
     return "ineligible";
   }
   if (url.origin !== window.location.origin || url.search !== "") return "ineligible";
-  const manifest = preloadRscPrewarmManifest();
-  const state =
-    options?.timeoutMs === undefined ? await manifest : await loadManifestWithin(options.timeoutMs);
+  const state = await preloadRscPrewarmManifest();
   // The manifest only opts proven routes into the shared canonical request.
-  // If it is unavailable or slow, preserve ordinary contextual RSC behavior.
-  if (state === null || state.kind === "unavailable") return "ineligible";
+  // If it is unavailable, preserve ordinary contextual RSC behavior.
+  if (state.kind === "unavailable") return "ineligible";
   return state.paths.has(url.pathname) ? "eligible" : "ineligible";
 }
 
-export async function isRscPrewarmEligibleHref(
-  href: string,
-  options?: { timeoutMs?: number },
-): Promise<boolean> {
-  return (await resolveRscPrewarmEligibility(href, options)) === "eligible";
+export async function isRscPrewarmEligibleHref(href: string): Promise<boolean> {
+  return (await resolveRscPrewarmEligibility(href)) === "eligible";
 }

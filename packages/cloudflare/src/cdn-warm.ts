@@ -473,14 +473,15 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
   const hasVersionOverride = new Headers(options.headers).has(WORKER_VERSION_OVERRIDE_HEADER);
   const propagatingTarget = options.propagatingTarget ?? hasVersionOverride;
-  // Immediately after a 0% staging deployment, concurrent edge requests can
-  // observe version-override propagation at different times. Serialize this
-  // short phase so one target converges before the remaining cache keys fill.
-  const concurrency = Math.max(1, options.concurrency ?? (propagatingTarget ? 1 : 10));
+  // Immediately after a 0% staging deployment, first prove one RSC request has
+  // reached the uploaded build. Once it has, fill the remaining independent
+  // cache keys with normal concurrency; a propagation deadline must not cap a
+  // large warm plan that has already passed the identity gate.
+  const concurrency = Math.max(1, options.concurrency ?? 10);
   const retries = Math.max(0, options.retries ?? (propagatingTarget ? 30 : 1));
   const retryDelayMs = Math.max(0, options.retryDelayMs ?? (propagatingTarget ? 1_000 : 0));
   const fetchImpl = options.fetchImpl ?? fetch;
-  const retryDeadlineAt =
+  const propagationDeadlineAt =
     propagatingTarget && options.retries === undefined ? Date.now() + 30_000 : undefined;
 
   if (requests.length === 0) {
@@ -489,7 +490,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
 
   console.log(`\n  Warming CDN cache with ${requests.length} prerendered request(s)...`);
 
-  const warmTarget = (target: WarmTarget) =>
+  const warmTarget = (target: WarmTarget, retryDeadlineAt?: number) =>
     warmOnePath(target, {
       targetUrl: options.targetUrl,
       timeoutMs,
@@ -506,10 +507,13 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const gateIndex = propagatingTarget ? requests.findIndex((target) => target.kind === "rsc") : -1;
   let results: Awaited<ReturnType<typeof warmOnePath>>[];
   if (gateIndex >= 0) {
-    const gateResult = await warmTarget(requests[gateIndex]);
+    const gateResult = await warmTarget(requests[gateIndex], propagationDeadlineAt);
     const remaining = requests.filter((_target, index) => index !== gateIndex);
     if (gateResult.ok) {
-      results = [gateResult, ...(await runWithConcurrency(remaining, concurrency, warmTarget))];
+      results = [
+        gateResult,
+        ...(await runWithConcurrency(remaining, concurrency, (target) => warmTarget(target))),
+      ];
     } else {
       results = [
         gateResult,
@@ -521,7 +525,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       ];
     }
   } else {
-    results = await runWithConcurrency(requests, concurrency, warmTarget);
+    results = await runWithConcurrency(requests, concurrency, (target) => warmTarget(target));
   }
 
   const failures = results

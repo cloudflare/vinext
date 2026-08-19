@@ -2884,7 +2884,7 @@ const _appRouter: AppRouterInstance = {
         (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref);
       const canonicalPrewarmHref = normalizeRscPrewarmHref(fullHref);
       const prewarmEligibility = canUseCanonicalPrewarm
-        ? await resolveRscPrewarmEligibility(canonicalPrewarmHref, { timeoutMs: 5_000 })
+        ? await resolveRscPrewarmEligibility(canonicalPrewarmHref)
         : "ineligible";
       if (setup.cancelled) return;
       const isCanonicalPrewarmCandidate = prewarmEligibility === "eligible";

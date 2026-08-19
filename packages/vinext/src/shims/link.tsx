@@ -490,7 +490,7 @@ function prefetchUrl(
           (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref);
         const canonicalPrewarmHref = normalizeRscPrewarmHref(fullHref);
         const prewarmEligibility = canUseCanonicalPrewarm
-          ? await resolveRscPrewarmEligibility(canonicalPrewarmHref, { timeoutMs: 5_000 })
+          ? await resolveRscPrewarmEligibility(canonicalPrewarmHref)
           : "ineligible";
         const isCanonicalPrewarmCandidate = prewarmEligibility === "eligible";
         if (navigationEpoch !== linkPrefetchNavigationEpoch) return;

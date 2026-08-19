@@ -536,7 +536,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("serializes propagating warm requests by default", async () => {
+  it("keeps HTML-only warmup at normal concurrency", async () => {
     let releaseFirst!: () => void;
     const firstResponse = new Promise<Response>((resolve) => {
       releaseFirst = () => resolve(new Response("first", { status: 200 }));
@@ -555,7 +555,7 @@ describe("Cloudflare CDN warmup", () => {
       targetUrl: "https://app.example.com",
     });
 
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     releaseFirst();
     await expect(warming).resolves.toMatchObject({ total: 2, warmed: 2, failed: 0 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -669,34 +669,37 @@ describe("Cloudflare CDN warmup", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it("shares one propagation deadline across the entire serialized warmup", async () => {
+  it("limits the propagation deadline to the RSC identity gate", async () => {
     let now = 0;
     vi.spyOn(Date, "now").mockImplementation(() => now);
-    const fetchMock = vi.fn(async () => {
-      now = 31_000;
-      return new Response("old flight", {
-        headers: {
-          "cache-control": "public, max-age=0, must-revalidate",
-          "cf-cache-status": "MISS",
-          "content-type": "text/x-component",
-          [VINEXT_RSC_BUILD_ID_HEADER]: "old-build",
-          vary: VINEXT_RSC_VARY_HEADER,
-        },
-      });
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (new Headers(init?.headers).get("rsc") === "1") {
+        now = 31_000;
+        return new Response("new flight", {
+          headers: {
+            "cache-control": "public, max-age=0, must-revalidate",
+            "cf-cache-status": "MISS",
+            "content-type": "text/x-component",
+            [VINEXT_RSC_BUILD_ID_HEADER]: "new-build",
+            vary: VINEXT_RSC_VARY_HEADER,
+          },
+        });
+      }
+      return new Response("html", { status: 200 });
     });
 
     const result = await warmCdnCache({
       expectedRscBuildId: "new-build",
       fetchImpl: fetchMock as typeof fetch,
-      paths: ["/cached/intro"],
+      paths: ["/cached/intro", "/cached/second"],
       propagatingTarget: true,
       retryDelayMs: 0,
       rscPaths: ["/cached/intro"],
       targetUrl: "https://app.example.com",
     });
 
-    expect(result).toMatchObject({ total: 2, warmed: 0, failed: 2 });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ total: 3, warmed: 3, failed: 0 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("issues exactly one HTML and one canonical RSC request for an eligible path", async () => {

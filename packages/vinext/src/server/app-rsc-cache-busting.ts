@@ -28,7 +28,6 @@ export {
   normalizeRscPrewarmHref,
   preloadRscPrewarmManifest,
   resolveRscPrewarmEligibility,
-  RSC_PREWARM_NAVIGATION_TIMEOUT_MS,
 } from "../client/rsc-prewarm-eligibility.js";
 
 /**

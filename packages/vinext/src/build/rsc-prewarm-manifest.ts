@@ -23,28 +23,42 @@ function toDeploymentPath(pathname: string, config: RscPrewarmBuildConfig): stri
   return new URL(normalized, "http://vinext.local").pathname;
 }
 
-export function getRscPrewarmManifestUrl(config: RscPrewarmBuildConfig): string {
-  const fileName = `${resolveAssetsDir(config.assetPrefix)}/${config.buildId}/${RSC_PREWARM_MANIFEST_FILENAME}`;
+function getRscPrewarmManifestFileName(
+  config: RscPrewarmBuildConfig,
+  rscBuildIdentity: string,
+): string {
+  return `${resolveAssetsDir(config.assetPrefix)}/${config.buildId}/${rscBuildIdentity}/${RSC_PREWARM_MANIFEST_FILENAME}`;
+}
+
+export function getRscPrewarmManifestUrl(
+  config: RscPrewarmBuildConfig,
+  rscBuildIdentity: string,
+): string {
+  const fileName = getRscPrewarmManifestFileName(config, rscBuildIdentity);
   return renderVinextBuiltUrl(fileName, config.assetPrefix, config.deploymentId, "html");
 }
 
 export function writeRscPrewarmManifest(
   clientDir: string,
   config: RscPrewarmBuildConfig,
+  rscBuildIdentity: string,
   paths: readonly string[],
 ): void {
-  const outputPath = path.join(
-    clientDir,
-    resolveAssetsDir(config.assetPrefix),
-    config.buildId,
-    RSC_PREWARM_MANIFEST_FILENAME,
-  );
+  const outputPath = path.join(clientDir, getRscPrewarmManifestFileName(config, rscBuildIdentity));
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify({ version: 1, paths }) + "\n", "utf-8");
 }
 
 /** Emit the exact production URL paths whose completed prerender is ISR-cacheable. */
 export function emitRscPrewarmManifest(root: string, config: RscPrewarmBuildConfig): void {
+  let rscBuildIdentity: string;
+  try {
+    rscBuildIdentity = fs.readFileSync(path.join(root, "dist/server/RSC_BUILD_ID"), "utf-8").trim();
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return;
+    throw error;
+  }
+  if (!rscBuildIdentity) return;
   const manifest = readPrerenderManifest(
     path.join(root, "dist", "server", "vinext-prerender.json"),
   );
@@ -52,5 +66,5 @@ export function emitRscPrewarmManifest(root: string, config: RscPrewarmBuildConf
     manifest?.buildId === config.buildId
       ? getPrewarmableAppPaths(manifest).map((pathname) => toDeploymentPath(pathname, config))
       : [];
-  writeRscPrewarmManifest(path.join(root, "dist", "client"), config, paths);
+  writeRscPrewarmManifest(path.join(root, "dist", "client"), config, rscBuildIdentity, paths);
 }

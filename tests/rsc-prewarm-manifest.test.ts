@@ -13,6 +13,7 @@ let root: string;
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-rsc-prewarm-manifest-"));
   fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
+  fs.writeFileSync(path.join(root, "dist/server/RSC_BUILD_ID"), "rsc-build-a\n");
 });
 
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -60,13 +61,27 @@ describe("RSC prewarm build manifest", () => {
     expect(
       JSON.parse(
         fs.readFileSync(
-          path.join(root, "dist/client/_next/static/build-a/vinext-rsc-prewarm.json"),
+          path.join(root, "dist/client/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json"),
           "utf-8",
         ),
       ),
     ).toEqual({ version: 1, paths: ["/docs/", "/docs/cached/intro/"] });
-    expect(getRscPrewarmManifestUrl(config)).toBe(
-      "/_next/static/build-a/vinext-rsc-prewarm.json?dpl=deployment-a",
+    expect(getRscPrewarmManifestUrl(config, "rsc-build-a")).toBe(
+      "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json?dpl=deployment-a",
+    );
+  });
+
+  it("changes the manifest URL when the opaque RSC identity changes", () => {
+    const config = {
+      assetPrefix: "",
+      basePath: "",
+      buildId: "stable-user-build-id",
+      deploymentId: undefined,
+      trailingSlash: false,
+    };
+
+    expect(getRscPrewarmManifestUrl(config, "rsc-build-a")).not.toBe(
+      getRscPrewarmManifestUrl(config, "rsc-build-b"),
     );
   });
 
@@ -80,12 +95,12 @@ describe("RSC prewarm build manifest", () => {
     };
     const clientDir = path.join(root, "custom-client");
 
-    writeRscPrewarmManifest(clientDir, config, []);
+    writeRscPrewarmManifest(clientDir, config, "rsc-build-a", []);
 
     expect(
       JSON.parse(
         fs.readFileSync(
-          path.join(clientDir, "_next/static/build-a/vinext-rsc-prewarm.json"),
+          path.join(clientDir, "_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json"),
           "utf-8",
         ),
       ),
@@ -121,7 +136,7 @@ describe("RSC prewarm build manifest", () => {
     expect(
       JSON.parse(
         fs.readFileSync(
-          path.join(root, "dist/client/_next/static/build-a/vinext-rsc-prewarm.json"),
+          path.join(root, "dist/client/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json"),
           "utf-8",
         ),
       ),
@@ -157,7 +172,7 @@ describe("RSC prewarm build manifest", () => {
     expect(
       JSON.parse(
         fs.readFileSync(
-          path.join(root, "dist/client/_next/static/build-a/vinext-rsc-prewarm.json"),
+          path.join(root, "dist/client/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json"),
           "utf-8",
         ),
       ),

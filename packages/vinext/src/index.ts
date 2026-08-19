@@ -2446,8 +2446,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // cacheability. The file is emitted after prerendering, but its
         // build-scoped URL is known while the browser bundle is compiled.
         defines["process.env.__VINEXT_RSC_PREWARM_MANIFEST_URL"] = JSON.stringify(
-          env?.command === "build" && hasVerbatimResponseVary(options.cache)
-            ? getRscPrewarmManifestUrl(nextConfig)
+          env?.command === "build" && hasVerbatimResponseVary(options.cache) && rscBuildIdentity
+            ? getRscPrewarmManifestUrl(nextConfig, rscBuildIdentity)
             : "",
         );
         // Public browser-facing identity for App Router RSC compatibility
@@ -6830,7 +6830,9 @@ export const loadServerActionClient = ${
           // Still publish an empty, fail-closed manifest so the production
           // browser never probes a missing asset. `runPrerender()` overwrites
           // this with the final ISR-eligible paths when prerendering runs.
-          writeRscPrewarmManifest(clientDir, nextConfig, []);
+          if (rscBuildIdentity) {
+            writeRscPrewarmManifest(clientDir, nextConfig, rscBuildIdentity, []);
+          }
         },
       },
     },
