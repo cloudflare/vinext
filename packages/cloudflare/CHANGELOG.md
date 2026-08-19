@@ -1,5 +1,26 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.6
+
+### Bug Fixes
+
+- **Prerender:** cache use-cache metadata routes (#2848)
+- **Cache:** delegate CDN header cleanup to adapters (#2797)
+
+### Contributors
+
+- @james-elicx
+
+## 1.0.0-beta.5
+
+### Bug Fixes
+
+- **App Router:** honor cacheLife stale on the client router (#2708)
+
+### Contributors
+
+- @NathanDrake2406
+
 ## 1.0.0-beta.4
 
 ### Bug Fixes

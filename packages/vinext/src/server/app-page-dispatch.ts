@@ -30,6 +30,7 @@ import {
   peekDynamicFetchObservations,
   runWithFetchDedupe,
   setCurrentFetchCacheMode,
+  setCurrentFetchRevalidate,
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
@@ -82,7 +83,7 @@ import {
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
+import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
@@ -114,6 +115,7 @@ type AppPageBackgroundRegenerator = (
 ) => void;
 
 type AppPageDispatchIntercept<TPage = unknown> = {
+  interceptionId?: string | null;
   interceptionGraphId?: string | null;
   // Lazy-loaded layout modules: typed `unknown` because they arrive as
   // dynamically-imported modules (read sites cast to AppPageModule). Matches the
@@ -139,6 +141,7 @@ type AppPageDispatchIntercept<TPage = unknown> = {
 };
 
 type AppPageDispatchInterceptOptions<TPage = unknown> = {
+  interceptionId?: string | null;
   interceptGraphId?: string | null;
   interceptionContext: string | null;
   interceptLayouts?: readonly unknown[] | null;
@@ -340,6 +343,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
     interceptionContext?: string | null,
+    interceptionId?: string | null,
   ) => string;
   isrSet: AppPageCacheSetter;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
@@ -393,6 +397,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   revalidateSeconds: number | null;
   renderedPathAndSearch?: string | null;
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
+  resolveRouteRevalidateSeconds?: (route: TRoute) => number | null;
   resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
   rootForbiddenModule?: AppPageModule | null;
   rootNotFoundModule?: AppPageModule | null;
@@ -538,6 +543,7 @@ async function runAppPageRevalidationContext<
     cleanPathname: string;
     displayPathname?: string;
     currentFetchCacheMode?: FetchCacheMode | null;
+    currentFetchRevalidate?: number | null;
     draftModeSecret: string;
     dynamicConfig?: string;
     params: AppPageParams;
@@ -558,6 +564,7 @@ async function runAppPageRevalidationContext<
   const requestContext = createRequestContext({
     headersContext,
     currentFetchCacheMode: options.currentFetchCacheMode ?? null,
+    currentFetchRevalidate: options.currentFetchRevalidate ?? null,
     currentForceDynamicFetchDefault: options.dynamicConfig === "force-dynamic",
     executionContext: getRequestExecutionContext(),
     unstableCacheRevalidation: "foreground",
@@ -586,6 +593,7 @@ function toInterceptOptions(
   intercept: AppPageDispatchIntercept,
 ): AppPageDispatchInterceptOptions {
   return {
+    interceptionId: intercept.interceptionId ?? null,
     interceptGraphId: intercept.interceptionGraphId ?? null,
     interceptionContext,
     interceptLayouts: intercept.interceptLayouts,
@@ -624,6 +632,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const route = options.route;
   const dynamicConfig = options.dynamicConfig;
   const currentRevalidateSeconds = options.revalidateSeconds;
+  const interceptionId = options.isRscRequest
+    ? options.request.headers.get(VINEXT_INTERCEPTION_ID_HEADER)
+    : null;
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
@@ -652,6 +663,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
+  setCurrentFetchRevalidate(currentRevalidateSeconds);
   setCurrentForceDynamicFetchDefault(isForceDynamic);
 
   if (options.hasPageModule && !options.hasPageDefaultExport) {
@@ -720,6 +732,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
+      interceptionId,
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
@@ -773,6 +786,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             currentFetchCacheMode:
               options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
               (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
+            currentFetchRevalidate:
+              options.resolveRouteRevalidateSeconds?.(revalidationTarget.route) ??
+              (revalidationTarget.route === route ? currentRevalidateSeconds : null),
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: revalidationDynamicConfig,
             params: revalidationTarget.navigationParams,
@@ -821,6 +837,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               rootParams: options.rootParams,
               route: revalidationTarget.route,
               waitForAllReady: true,
+              isForceStatic: revalidationDynamicConfig === "force-static",
             });
             options.clearRequestContext();
             return {
@@ -929,6 +946,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         setHeadersContext(requestHeadersContext);
       }
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
+      setCurrentFetchRevalidate(options.resolveRouteRevalidateSeconds?.(interceptRoute) ?? null);
       setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
       return options.buildPageElement(
         interceptRoute,
@@ -1133,6 +1151,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isrRscKey: options.isrRscKey,
     isrSet: options.isrSet,
     interceptionContext: options.interceptionContext,
+    interceptionId,
     expireSeconds: options.expireSeconds,
     // A loading convention at tree position N wraps descendants, but not a
     // layout co-located at N. Probing any deeper async layout before creating

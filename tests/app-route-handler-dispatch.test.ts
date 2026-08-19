@@ -403,6 +403,7 @@ describe("app route handler dispatch", () => {
   it("applies the force-dynamic fetch default before invoking the route handler", async () => {
     const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
     const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
     const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
 
     let forceDynamicDefaultAtHandlerTime: boolean | undefined;
@@ -449,14 +450,17 @@ describe("app route handler dispatch", () => {
     expect(response.status).toBe(200);
     expect(forceDynamicDefaultAtHandlerTime).toBe(true);
     expect(fetchCacheModeAtHandlerTime).toBeNull();
+    expect(revalidateSpy).toHaveBeenCalledWith(null);
 
     modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
   });
 
   it("applies the handler's explicit fetchCache export without the force-dynamic default", async () => {
     const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
     const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
     const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
 
     let forceDynamicDefaultAtHandlerTime: boolean | undefined;
@@ -501,14 +505,17 @@ describe("app route handler dispatch", () => {
     expect(response.status).toBe(200);
     expect(forceDynamicDefaultAtHandlerTime).toBe(false);
     expect(fetchCacheModeAtHandlerTime).toBe("force-cache");
+    expect(revalidateSpy).toHaveBeenCalledWith(null);
 
     modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
   });
 
   it("re-applies the handler's fetch cache mode inside the background regeneration context", async () => {
     const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
     const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
     const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
 
     let scheduledRender: (() => Promise<void>) | undefined;
@@ -566,9 +573,11 @@ describe("app route handler dispatch", () => {
 
     expect(forceDynamicDefaultAtRegenTime).toBe(false);
     expect(fetchCacheModeAtRegenTime).toBe("force-cache");
+    expect(revalidateSpy).toHaveBeenLastCalledWith(60);
     expect(afterRan).toBe(true);
 
     modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
   });
 

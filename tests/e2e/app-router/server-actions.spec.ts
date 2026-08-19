@@ -455,16 +455,13 @@ test.describe("Server action forwarding loop guard", () => {
     await expect(page.locator("h1")).toHaveText("Action Forward Loop Test");
     await waitForAppRouterHydration(page);
 
-    // Click the action button. Middleware rewrites POST to rewrite-target page,
-    // but vinext's single-worker bundle still finds the action locally.
-    // The action should succeed without any infinite loop / timeout.
+    // Click the action button. Middleware rewrites POST to a page that does not
+    // own the action, so the forwarded request must settle without executing it
+    // or entering another forwarding cycle.
     await page.click("#run-action");
 
-    // Wait for action result to appear (or the boundary text if the action fails)
-    await expect(async () => {
-      const text = await page.locator("#action-result").textContent();
-      expect(text).toContain("action-ok");
-    }).toPass({ timeout: 10_000 });
+    await expect(page.locator("#action-result")).not.toContainText("action-ok");
+    await expect(page.locator("h1")).toHaveText("Action Forward Loop Test");
   });
 
   // This tests the pre-existing "unknown action ID" path, not the new
@@ -492,5 +489,44 @@ test.describe("Server action forwarding loop guard", () => {
 
     expect(response.status).toBe(404);
     expect(response.hasNotFoundHeader).toBe(true);
+  });
+});
+
+test.describe("Data-returning server actions", () => {
+  // Regression contract for the Payload getFormState pattern: a data-returning
+  // server action with no revalidation must resolve its value without applying
+  // the RSC tree (Next.js' bail-out in server-action-reducer.ts). The server
+  // render counter is the discriminator: re-applying the tree would re-render
+  // the page server-side and advance it. The input assertion guards the
+  // user-visible contract (pending edits survive the roundtrip) but is not
+  // itself proof of no tree update, since React can reconcile an uncontrolled
+  // input in place.
+  test("preserves form edits without re-rendering the page", async ({ page }) => {
+    await page.goto(`${BASE}/action-form-preserved`);
+    await expect(page.locator("h1")).toHaveText("Action Form Preserved Test");
+    await waitForAppRouterHydration(page);
+
+    const renderCount = async () =>
+      parseInt(
+        (await page.locator('[data-testid="server-render-count"]').textContent())!.split(": ")[1],
+        10,
+      );
+    const renderCountBefore = await renderCount();
+
+    // Type an edit, then move focus away to trigger the blur action.
+    await page.fill("#edit-input", "pending-edit");
+    await page.click("#blur-target");
+
+    // The action's return value surfaces through client state...
+    await expect(page.locator('[data-testid="action-result"]')).toHaveText(
+      "action returned 3 fields",
+      { timeout: 10_000 },
+    );
+
+    // ...and the pending edit survives because the server tree was not re-applied.
+    await expect(page.locator("#edit-input")).toHaveValue("pending-edit");
+
+    // The page did not re-render on the server.
+    expect(await renderCount()).toBe(renderCountBefore);
   });
 });

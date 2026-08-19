@@ -2,7 +2,7 @@
  * Cache-tag canonicalisation.
  *
  * Tags can flow into HTTP headers (e.g. `x-next-cache-tags` on ISR responses,
- * Cloudflare cache-tag headers, downstream Worker code) where Node's
+ * adapter-owned invalidation headers, downstream Worker code) where Node's
  * `validateHeaderValue` rejects any byte outside `\t\x20-\x7e` and crashes
  * the response with `ERR_INVALID_CHAR`. Even on platforms with permissive
  * header setters, divergence between storage form and wire form silently

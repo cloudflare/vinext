@@ -50,7 +50,7 @@ import {
   type PagesPipelineDeps,
   type PagesRenderOptions,
 } from "./pages-request-pipeline.js";
-import { mergeHeaders } from "./worker-utils.js";
+import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
 import {
   normalizeNextDataPagePathname,
   isNextDataPathname,
@@ -75,6 +75,7 @@ import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_STATIC_FILE_HEADER,
@@ -1129,13 +1130,12 @@ function nodeToWebRequest(
   const origin = `${proto}://${host}`;
   const url = new URL(urlOverride ?? req.url ?? "/", origin);
 
-  const prerenderRouteParamsPayload = readTrustedPrerenderRouteParamsFromHeaders(
-    rawHeaders,
-    prerenderSecret,
-  );
+  const prerenderRouteParamsPayload = prerenderSecret
+    ? readTrustedPrerenderRouteParamsFromHeaders(rawHeaders, prerenderSecret)
+    : null;
   const isTrustedSpeculativePrerender =
     process.env.VINEXT_PRERENDER === "1" &&
-    prerenderSecret !== undefined &&
+    Boolean(prerenderSecret) &&
     rawHeaders.get(VINEXT_PRERENDER_SECRET_HEADER) === prerenderSecret &&
     rawHeaders.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
   // Strip internal headers that should not be honored from external requests.
@@ -1669,7 +1669,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // is not preserved in the bundle output format.
     if (
       pathname === "/__vinext/prerender/static-params" ||
-      pathname === "/__vinext/prerender/pages-static-paths"
+      pathname === "/__vinext/prerender/pages-static-paths" ||
+      pathname === "/__vinext/prerender/metadata-routes"
     ) {
       const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {
@@ -1778,9 +1779,12 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // identifies the request as a public/static-file lookup. Middleware may
       // still handle or rewrite the request by returning a non-404 response.
       if (missingBuildAsset && response.status === 404) {
-        cancelResponseBody(response);
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Not Found");
+        await sendWebResponse(
+          finalizeMissingStaticAssetResponse(response, true),
+          req,
+          res,
+          compress,
+        );
         return;
       }
 
@@ -1826,6 +1830,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     } catch (e) {
       console.error("[vinext] Server error:", e);
       if (!res.headersSent) {
+        if (purpose === "prerender") {
+          res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+        }
         res.writeHead(500);
         res.end("Internal Server Error");
       }
@@ -1919,6 +1926,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   }
   const matchPageRoute =
     typeof serverEntry.matchPageRoute === "function" ? serverEntry.matchPageRoute : undefined;
+  const matchApiRoute =
+    typeof serverEntry.matchApiRoute === "function" ? serverEntry.matchApiRoute : undefined;
   const hasMiddleware = serverEntry.hasMiddleware === true;
   const pageRoutes = readPagesServerEntryPageRoutes(serverEntry.pageRoutes);
 
@@ -2199,6 +2208,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             : undefined,
         configMatchPathname,
         matchPageRoute: matchPageRoute ?? null,
+        matchApiRoute: matchApiRoute ?? null,
         // Pass the original (pre-basePath-stripping) URL to middleware so that
         // request.nextUrl.basePath reflects whether the URL actually had the
         // basePath prefix (see wrapMiddlewareWithBasePath).
@@ -2316,9 +2326,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (result.type === "response") {
         const { response } = result;
         if (missingBuildAsset && response.status === 404) {
-          cancelResponseBody(response);
-          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-          res.end("Not Found");
+          await sendWebResponse(
+            finalizeMissingStaticAssetResponse(response, true),
+            req,
+            res,
+            compress,
+          );
           return;
         }
         const streamedApi = isVinextStreamedApiResponse(response);
@@ -2374,6 +2387,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     } catch (e) {
       console.error("[vinext] Server error:", e);
       if (!res.headersSent) {
+        if (purpose === "prerender") {
+          res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+        }
         res.writeHead(500);
         res.end("Internal Server Error");
       }

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   createAppRscRouteMatcher,
-  matchAppRscRoutePattern,
   SIBLING_PAGE_INTERCEPT_SLOT_KEY,
 } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 
@@ -41,13 +40,6 @@ describe("App RSC route matching", () => {
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/shop/:path*");
     expect(result!.params).toEqual({});
-  });
-
-  it("omits optional catch-all params from standalone route pattern matches", () => {
-    expect(matchAppRscRoutePattern(["shop"], ["shop", ":path*"])).toEqual({});
-    expect(matchAppRscRoutePattern(["shop", "a", "b"], ["shop", ":path*"])).toEqual({
-      path: ["a", "b"],
-    });
   });
 
   // Ported from Next.js: route-matcher.ts decodeURIComponent behaviour.
@@ -176,24 +168,6 @@ describe("App RSC route matching", () => {
     });
   });
 
-  it("matches standalone route patterns for dynamic metadata routes", () => {
-    expect(
-      matchAppRscRoutePattern(["blog", "hello", "sitemap.xml"], ["blog", ":slug", "sitemap.xml"]),
-    ).toMatchObject({
-      slug: "hello",
-    });
-  });
-
-  it("treats static segments ending in plus or star as literals", () => {
-    expect(matchAppRscRoutePattern(["c++", "intro"], ["c++", ":slug"])).toMatchObject({
-      slug: "intro",
-    });
-
-    const starResult = matchAppRscRoutePattern(["file*"], ["file*"]);
-    expect(starResult).not.toBeNull();
-    expect(Object.keys(starResult ?? {})).toEqual([]);
-  });
-
   it("finds intercepting routes and merges source and target params", () => {
     const matcher = createAppRscRouteMatcher([
       route("/feed/:id", ["feed", ":id"], {
@@ -217,6 +191,38 @@ describe("App RSC route matching", () => {
       page: "photo-page",
       matchedParams: { id: "target-id" },
     });
+  });
+
+  it("accepts only the graph-owned interception id for an exact source and target", () => {
+    const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
+    const matcher = createAppRscRouteMatcher([
+      route("/feed", ["feed"], {
+        modal: {
+          id: "slot:modal:/feed",
+          intercepts: [
+            {
+              sourceMatchPattern: "/feed",
+              targetPattern: "/photos/:id",
+              interceptLayouts: ["modal-layout"],
+              page: "photo-page",
+              params: ["id"],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    expect(matcher.findIntercept("/photos/42", "/feed", interceptionId)).toMatchObject({
+      interceptionId,
+      slotId: "slot:modal:/feed",
+    });
+    expect(matcher.hasInterceptionId(interceptionId)).toBe(true);
+    expect(matcher.hasInterceptionId("interception:attacker-selected")).toBe(false);
+    expect(
+      matcher.findIntercept("/photos/42", "/feed", "interception:attacker-selected"),
+    ).toBeNull();
+    expect(matcher.findIntercept("/other/42", "/feed", interceptionId)).toBeNull();
+    expect(matcher.findIntercept("/photos/42", "/other", interceptionId)).toBeNull();
   });
 
   it("prefers static interception targets over dynamic targets", () => {
@@ -1017,7 +1023,7 @@ describe("App RSC route matching", () => {
 function route(
   pattern: string,
   patternParts: string[],
-  slots?: Record<string, { intercepts?: TestIntercept[] }>,
+  slots?: Record<string, { id?: string; intercepts?: TestIntercept[] }>,
 ): TestRoute {
   return {
     pattern,
@@ -1044,7 +1050,7 @@ type TestRoute = {
   pattern: string;
   patternParts: string[];
   routeHandler?: unknown;
-  slots?: Record<string, { intercepts?: TestIntercept[] }>;
+  slots?: Record<string, { id?: string; intercepts?: TestIntercept[] }>;
   siblingIntercepts?: TestSiblingIntercept[];
 };
 

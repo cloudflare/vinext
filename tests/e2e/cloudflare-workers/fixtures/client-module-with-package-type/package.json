@@ -1,0 +1,5 @@
+{
+  "name": "@vinext/e2e-client-module-with-package-type-cloudflare",
+  "private": true,
+  "type": "module"
+}

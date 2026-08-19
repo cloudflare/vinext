@@ -24,7 +24,6 @@ import path from "pathslash";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { ValidFileMatcher } from "../routing/file-matcher.js";
 import {
-  resolveMiddlewareModuleHandler,
   runGeneratedMiddleware,
   type MiddlewareModule,
   type MiddlewareResult,
@@ -48,24 +47,6 @@ export {
 export function isProxyFile(filePath: string): boolean {
   const base = path.basename(filePath);
   return base === "proxy" || base.startsWith("proxy.");
-}
-
-/**
- * Resolve the middleware/proxy handler function from a module's exports.
- * Matches Next.js behavior: for proxy files, check `proxy` then `default`;
- * for middleware files, check `middleware` then `default`.
- *
- * Throws if the file exists but doesn't export a valid function, matching
- * Next.js's ProxyMissingExportError behavior.
- *
- * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/middleware.ts
- * @see https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
- */
-export function resolveMiddlewareHandler(mod: MiddlewareModule, filePath: string) {
-  return resolveMiddlewareModuleHandler(mod, {
-    filePath,
-    isProxy: isProxyFile(filePath),
-  });
 }
 
 /**

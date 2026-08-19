@@ -67,6 +67,7 @@ const {
   authorizeOnDemandRevalidate,
   handleApiRoute,
   hasMiddleware,
+  matchApiRoute,
   matchPageRoute,
   middlewarePathMatches,
   normalizeDataRequest,
@@ -200,6 +201,7 @@ async function handleRequest(
         typeof middlewarePathMatches === "function"
           ? wrapMiddlewarePathMatcherWithBasePath(middlewarePathMatches, basePath, hadBasePath)
           : undefined,
+      matchApiRoute: typeof matchApiRoute === "function" ? matchApiRoute : null,
       matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
       runMiddleware:
         typeof runMiddleware === "function"

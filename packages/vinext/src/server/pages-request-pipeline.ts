@@ -164,6 +164,15 @@ export type PagesPipelineDeps = {
 
   // Route + render/api callbacks (optional — if absent, emit intent instead of Response)
   matchPageRoute?: ((pathname: string, request: Request) => PageRouteMatch | null) | null;
+  /**
+   * Return the matching Pages (or hybrid App) API route, if one exists.
+   *
+   * When supplied, an `/api/*` filesystem miss continues through afterFiles and
+   * fallback rewrites instead of being committed to the API 404 response.
+   */
+  matchApiRoute?:
+    | ((url: string, request: Request) => PageRouteMatch | null | Promise<PageRouteMatch | null>)
+    | null;
   runMiddleware?:
     | ((
         request: Request,
@@ -278,6 +287,8 @@ export type PagesPipelineResult =
   | {
       type: "api";
       apiUrl: string;
+      /** True only when next.config rewrites changed API resolution. */
+      configRewriteFired: boolean;
       stagedHeaders: HeaderRecord;
       /** Post-middleware request headers — dev adapters apply these to req.headers before API handler. */
       requestHeaders: Headers;
@@ -710,6 +721,10 @@ export async function runPagesRequest(
     const apiLookupUrl = stripI18nLocaleForApiRoute(resolvedUrl, i18nConfig);
     const apiLookupPathname = apiLookupUrl.split("?")[0];
     if (!apiLookupPathname.startsWith("/api/") && apiLookupPathname !== "/api") return null;
+    // Next.js performs the API filesystem check before afterFiles/fallback
+    // rewrites. Only a real API match owns the request at this point; a miss
+    // must continue through the remaining custom-route phases.
+    if (deps.matchApiRoute && !(await deps.matchApiRoute(apiLookupUrl, request))) return null;
     if (typeof deps.handleApi === "function") {
       let apiRequest = request;
       // Prod re-adds basePath only when the original request carried it.
@@ -741,6 +756,7 @@ export async function runPagesRequest(
     return {
       type: "api",
       apiUrl: apiLookupUrl,
+      configRewriteFired,
       stagedHeaders: middlewareHeaders,
       requestHeaders: request.headers,
       middlewareStatus,
