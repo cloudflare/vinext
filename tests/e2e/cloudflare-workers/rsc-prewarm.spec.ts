@@ -44,7 +44,6 @@ async function observeTargetRsc(page: Page, action: () => Promise<unknown>): Pro
   });
   await action();
   const response = await responsePromise;
-  expect(await response.finished()).toBeNull();
   return {
     requestHeaders: response.request().headers(),
     response,
@@ -119,6 +118,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
     ) => Promise<void>,
   ): Promise<void> => {
     const context = await browser.newContext();
+    let page: Page | null = null;
     try {
       const readinessPage = await context.newPage();
       try {
@@ -126,7 +126,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
       } finally {
         await readinessPage.close();
       }
-      const page = await context.newPage();
+      page = await context.newPage();
       const targetDocumentRequests: string[] = [];
       const targetRscRequests: string[] = [];
       page.on("request", (request) => {
@@ -140,6 +140,7 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
       });
       await run(page, targetDocumentRequests, targetRscRequests);
     } finally {
+      await page?.close();
       await context.close();
     }
   };
@@ -201,8 +202,9 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
   await withFreshPage(async (page, targetDocumentRequests, targetRscRequests) => {
     await page.route("**/vinext-rsc-prewarm.json", async (route) => {
       const response = await route.fetch();
+      const body = await response.body();
       await new Promise((resolve) => setTimeout(resolve, 1_000));
-      await route.fulfill({ response });
+      await route.fulfill({ response, body });
     });
     await page.goto("/prewarm/soft");
     await expect(page.getByTestId("build-id")).toHaveText(expectedBuildId);

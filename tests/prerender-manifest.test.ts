@@ -5,7 +5,7 @@ import {
 } from "../packages/vinext/src/server/prerender-manifest.js";
 
 describe("getPrewarmableAppPaths", () => {
-  it("selects exact App paths using only the completed ISR lifetime", () => {
+  it("selects exact App paths using the completed ISR lifetime and safe Vary fields", () => {
     const manifest: PrerenderManifest = {
       routes: [
         {
@@ -30,6 +30,14 @@ describe("getPrewarmableAppPaths", () => {
           revalidate: 30,
           fallback: false,
           headers: { "cache-control": "private" },
+        },
+        {
+          route: "/custom-vary",
+          status: "rendered",
+          router: "app",
+          revalidate: 30,
+          fallback: false,
+          headers: { vary: "RSC, User-Agent" },
         },
         {
           route: "/static",

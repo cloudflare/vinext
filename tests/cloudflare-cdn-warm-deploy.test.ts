@@ -188,6 +188,74 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ]);
   });
 
+  it("falls back to post-promotion warming after a non-strict staged failure", async () => {
+    const events: string[] = [];
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
+    );
+    vi.mocked(fetch).mockImplementation(async (_url, init) => {
+      const headers = new Headers(init?.headers);
+      const isRsc = headers.get("rsc") === "1";
+      const staged = headers.has("Cloudflare-Workers-Version-Overrides");
+      events.push(`fetch:${staged ? "staged" : "promoted"}:${isRsc ? "rsc" : "html"}`);
+      return new Response(isRsc ? "flight" : "html", {
+        headers: isRsc
+          ? {
+              "cache-control": "public, max-age=0, must-revalidate",
+              "cf-cache-status": "MISS",
+              "content-type": "text/x-component",
+              [VINEXT_RSC_BUILD_ID_HEADER]: staged ? "old-build" : "new-build",
+              vary: VINEXT_RSC_VARY_HEADER,
+            }
+          : { "content-type": "text/html" },
+      });
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("11111111-1111-4111-8111-111111111111@100%")) {
+        events.push("stage");
+        return "Staged version\nhttps://app.example.com\n";
+      }
+      if (args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote");
+        return "Deployed version\nhttps://app.example.com\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, ["/about"], {
+      expectedRscBuildId: "new-build",
+      rscPaths: ["/about"],
+      warmCdnRetries: 0,
+    });
+
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "stage",
+      "triggers",
+      "fetch:staged:rsc",
+      "promote",
+      "fetch:promoted:rsc",
+      "fetch:promoted:html",
+    ]);
+  });
+
   it("uses the shared HTML and RSC warm flow against a preview alias", async () => {
     let rscAttempt = 0;
     vi.mocked(fetch).mockImplementation(async (_url, init) => {

@@ -24,6 +24,11 @@ function writeFile(relativePath: string, content: string): void {
   fs.writeFileSync(fullPath, content, "utf-8");
 }
 
+function toRequestUrl(input: RequestInfo | URL): URL {
+  if (input instanceof URL) return input;
+  return new URL(typeof input === "string" ? input : input.url);
+}
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-warm-test-"));
 });
@@ -111,6 +116,7 @@ describe("Cloudflare CDN warmup", () => {
       JSON.stringify({
         basePath: "/docs",
         buildId: "build-a",
+        buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
         deploymentId: "dpl_123",
         paths: ["/cached/intro", "/dynamic", "/pages"],
         responseVary: "verbatim",
@@ -153,6 +159,7 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
       deploymentId: "dpl_123",
       paths: ["/docs/cached/intro/", "/docs/pages/"],
       rscBuildId: "rsc-build-a",
@@ -604,6 +611,36 @@ describe("Cloudflare CDN warmup", () => {
     expect(events).toEqual(["start:rsc", "end:rsc", "start:html"]);
   });
 
+  it("gates HTML-only warmup on an immutable uploaded-build asset", async () => {
+    let identityAttempt = 0;
+    const events: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = toRequestUrl(input);
+      if (url.pathname.endsWith("/vinext-rsc-prewarm.json")) {
+        identityAttempt++;
+        events.push(`identity:${identityAttempt}`);
+        return new Response(identityAttempt === 1 ? "missing" : "{}", {
+          status: identityAttempt === 1 ? 404 : 200,
+        });
+      }
+      events.push(`html:${url.pathname}`);
+      return new Response("html", { status: 200 });
+    });
+
+    const result = await warmCdnCache({
+      buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
+      fetchImpl: fetchMock as typeof fetch,
+      paths: ["/pages-a", "/pages-b"],
+      propagatingTarget: true,
+      retryDelayMs: 0,
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
+    expect(events.slice(0, 2)).toEqual(["identity:1", "identity:2"]);
+    expect(new Set(events.slice(2))).toEqual(new Set(["html:/pages-a", "html:/pages-b"]));
+  });
+
   it("retries transient RSC validation failures for a propagating target", async () => {
     const fetchMock = vi
       .fn()
@@ -700,6 +737,39 @@ describe("Cloudflare CDN warmup", () => {
 
     expect(result).toMatchObject({ total: 3, warmed: 3, failed: 0 });
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("uses ordinary retry policy after the identity gate succeeds", async () => {
+    const rscResponse = (buildId: string) =>
+      new Response("flight", {
+        headers: {
+          "cache-control": "public, max-age=0, must-revalidate",
+          "cf-cache-status": "MISS",
+          "content-type": "text/x-component",
+          [VINEXT_RSC_BUILD_ID_HEADER]: buildId,
+          vary: VINEXT_RSC_VARY_HEADER,
+        },
+      });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = toRequestUrl(input);
+      if (new Headers(init?.headers).get("rsc") !== "1") {
+        return new Response("html", { status: 200 });
+      }
+      return rscResponse(url.pathname === "/first" ? "new-build" : "old-build");
+    });
+
+    const result = await warmCdnCache({
+      expectedRscBuildId: "new-build",
+      fetchImpl: fetchMock as typeof fetch,
+      paths: ["/first", "/second"],
+      propagatingTarget: true,
+      retryDelayMs: 0,
+      rscPaths: ["/first", "/second"],
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(result).toMatchObject({ total: 4, warmed: 3, failed: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("issues exactly one HTML and one canonical RSC request for an eligible path", async () => {

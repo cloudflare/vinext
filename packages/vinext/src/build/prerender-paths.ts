@@ -25,6 +25,7 @@ import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
 import { getPrewarmableAppPaths, readPrerenderManifest } from "../server/prerender-manifest.js";
+import { getRscPrewarmManifestAssetPath } from "./rsc-prewarm-manifest.js";
 
 export type PrerenderPathManifest = {
   basePath?: string;
@@ -32,6 +33,8 @@ export type PrerenderPathManifest = {
   deploymentId?: string;
   /** Opaque per-build identity emitted by RSC responses. */
   rscBuildId?: string;
+  /** Same-origin immutable asset that exists only in this uploaded build. */
+  buildIdentityPath?: string;
   responseVary?: CdnCacheAdapterCapabilities["responseVary"];
   /** App Router paths whose completed prerender produced a cacheable full RSC variant. */
   rscPaths?: string[];
@@ -482,6 +485,9 @@ export async function emitPrerenderPathManifest(
     ...(config.deploymentId ? { deploymentId: config.deploymentId } : {}),
     ...(pagesDir ? { pagesPaths: discoveredPagesPaths } : {}),
     ...(rscBuildId ? { rscBuildId } : {}),
+    ...(rscBuildId
+      ? { buildIdentityPath: getRscPrewarmManifestAssetPath(config, rscBuildId) }
+      : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
     ...(options.responseVary ? { rscPaths } : {}),
     trailingSlash: config.trailingSlash,

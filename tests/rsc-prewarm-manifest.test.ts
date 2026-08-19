@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   emitRscPrewarmManifest,
+  getRscPrewarmManifestAssetPath,
   getRscPrewarmManifestUrl,
   writeRscPrewarmManifest,
 } from "../packages/vinext/src/build/rsc-prewarm-manifest.js";
@@ -68,6 +69,9 @@ describe("RSC prewarm build manifest", () => {
     ).toEqual({ version: 1, paths: ["/docs/", "/docs/cached/intro/"] });
     expect(getRscPrewarmManifestUrl(config, "rsc-build-a")).toBe(
       "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json?dpl=deployment-a",
+    );
+    expect(getRscPrewarmManifestAssetPath(config, "rsc-build-a")).toBe(
+      "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
     );
   });
 

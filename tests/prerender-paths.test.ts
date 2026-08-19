@@ -75,6 +75,7 @@ describe("prerender path manifest", () => {
 
     expect(manifest).toEqual({
       buildId: "build-a",
+      buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
       rscBuildId: "rsc-build-a",
       trailingSlash: false,
       paths: ["/", "/cached/intro", "/cached/featured"],

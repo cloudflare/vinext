@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { VINEXT_RSC_VARY_HEADER } from "./headers.js";
 
 export type PrerenderManifestRoute = {
   route: string;
@@ -179,6 +180,9 @@ export function getPrewarmableAppPaths(manifest: PrerenderManifest): string[] {
 
   const paths: string[] = [];
   const seen = new Set<string>();
+  const supportedVary = new Set(
+    VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
+  );
   for (const route of routes) {
     const hasCacheableLifetime =
       route.revalidate === false ||
@@ -188,6 +192,19 @@ export function getPrewarmableAppPaths(manifest: PrerenderManifest): string[] {
     if (route.status !== "rendered" || route.router !== "app" || !hasCacheableLifetime) {
       continue;
     }
+
+    const vary = Object.entries(route.headers ?? {}).find(
+      ([name]) => name.toLowerCase() === "vary",
+    )?.[1];
+    const varyValues = Array.isArray(vary) ? vary : vary === undefined ? [] : [vary];
+    const hasUnsupportedVary = varyValues.some((value) =>
+      value
+        .split(",")
+        .map((name) => name.trim().toLowerCase())
+        .filter(Boolean)
+        .some((name) => !supportedVary.has(name)),
+    );
+    if (hasUnsupportedVary) continue;
 
     const pathname = route.path ?? route.route;
     if (

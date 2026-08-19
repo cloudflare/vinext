@@ -30,6 +30,14 @@ function getRscPrewarmManifestFileName(
   return `${resolveAssetsDir(config.assetPrefix)}/${config.buildId}/${rscBuildIdentity}/${RSC_PREWARM_MANIFEST_FILENAME}`;
 }
 
+/** Same-origin static-asset path used to prove which uploaded build is serving. */
+export function getRscPrewarmManifestAssetPath(
+  config: RscPrewarmBuildConfig,
+  rscBuildIdentity: string,
+): string {
+  return `/${getRscPrewarmManifestFileName(config, rscBuildIdentity)}`;
+}
+
 export function getRscPrewarmManifestUrl(
   config: RscPrewarmBuildConfig,
   rscBuildIdentity: string,

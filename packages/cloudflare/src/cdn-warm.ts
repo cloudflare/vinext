@@ -27,6 +27,8 @@ export type CdnWarmOptions = {
   rscPaths?: readonly string[];
   /** Build identity that the warmed RSC response must have been rendered by. */
   expectedRscBuildId?: string;
+  /** Immutable same-origin asset that proves the uploaded build is serving. */
+  buildIdentityPath?: string;
   deploymentId?: string;
   headers?: HeadersInit;
   concurrency?: number;
@@ -54,6 +56,7 @@ export type CdnWarmResult = {
 };
 
 export type PrerenderWarmPlan = {
+  buildIdentityPath?: string;
   deploymentId?: string;
   paths: string[];
   rscBuildId?: string;
@@ -101,6 +104,8 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
         (!Array.isArray(manifest.rscPaths) ||
           !manifest.rscPaths.every((pathname) => typeof pathname === "string"))) ||
       (manifest.basePath !== undefined && typeof manifest.basePath !== "string") ||
+      (manifest.buildIdentityPath !== undefined &&
+        typeof manifest.buildIdentityPath !== "string") ||
       (manifest.deploymentId !== undefined && typeof manifest.deploymentId !== "string") ||
       (manifest.rscBuildId !== undefined && typeof manifest.rscBuildId !== "string") ||
       (manifest.trailingSlash !== undefined && typeof manifest.trailingSlash !== "boolean") ||
@@ -158,6 +163,9 @@ export function readPrerenderWarmPlan(
         "[vinext] CDN warmup has no completed prerender manifest; RSC warmup is disabled.",
       );
       return {
+        ...(pathPlan.manifest.buildIdentityPath
+          ? { buildIdentityPath: pathPlan.manifest.buildIdentityPath }
+          : {}),
         ...(pathPlan.manifest.deploymentId ? { deploymentId: pathPlan.manifest.deploymentId } : {}),
         paths: pathPlan.paths,
         rscPaths: [],
@@ -205,6 +213,9 @@ export function readPrerenderWarmPlan(
     ]),
   );
   return {
+    ...(pathPlan?.manifest.buildIdentityPath
+      ? { buildIdentityPath: pathPlan.manifest.buildIdentityPath }
+      : {}),
     ...(pathPlan?.manifest.deploymentId ? { deploymentId: pathPlan.manifest.deploymentId } : {}),
     ...(hasFinalRscEligibility ? { rscBuildId: pathPlan.manifest.rscBuildId } : {}),
     paths: completedHtmlPaths,
@@ -290,7 +301,7 @@ async function fetchWithTimeout(
 
 type WarmTarget = {
   headers?: HeadersInit;
-  kind: "html" | "rsc";
+  kind: "html" | "identity" | "rsc";
   label: string;
   pathname: string;
 };
@@ -386,7 +397,7 @@ async function warmOnePath(
         url,
         timeoutMs,
         target.headers ?? options.headers,
-        target.kind === "rsc" ? "manual" : "follow",
+        target.kind === "html" ? "follow" : "manual",
       );
 
       if (target.kind === "rsc") {
@@ -403,12 +414,18 @@ async function warmOnePath(
         continue;
       }
 
-      if (response.status < 400) {
+      if (target.kind === "identity") {
+        if (!response.redirected && response.status >= 200 && response.status < 300) {
+          return { path: target.label, ok: true };
+        }
+        lastError = response.redirected ? "redirected response" : `HTTP ${response.status}`;
+        if (!isRetryableStatus(response.status, options.retryNotFound)) break;
+      } else if (response.status < 400) {
         return { path: target.label, ok: true };
+      } else {
+        lastError = `HTTP ${response.status}`;
+        if (!isRetryableStatus(response.status, options.retryNotFound)) break;
       }
-
-      lastError = `HTTP ${response.status}`;
-      if (!isRetryableStatus(response.status, options.retryNotFound)) break;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         lastError = `timed out after ${options.timeoutMs}ms`;
@@ -478,8 +495,10 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   // cache keys with normal concurrency; a propagation deadline must not cap a
   // large warm plan that has already passed the identity gate.
   const concurrency = Math.max(1, options.concurrency ?? 10);
-  const retries = Math.max(0, options.retries ?? (propagatingTarget ? 30 : 1));
-  const retryDelayMs = Math.max(0, options.retryDelayMs ?? (propagatingTarget ? 1_000 : 0));
+  const normalRetries = Math.max(0, options.retries ?? 1);
+  const propagationRetries = Math.max(0, options.retries ?? 30);
+  const normalRetryDelayMs = Math.max(0, options.retryDelayMs ?? 0);
+  const propagationRetryDelayMs = Math.max(0, options.retryDelayMs ?? 1_000);
   const fetchImpl = options.fetchImpl ?? fetch;
   const propagationDeadlineAt =
     propagatingTarget && options.retries === undefined ? Date.now() + 30_000 : undefined;
@@ -490,24 +509,32 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
 
   console.log(`\n  Warming CDN cache with ${requests.length} prerendered request(s)...`);
 
-  const warmTarget = (target: WarmTarget, retryDeadlineAt?: number) =>
+  const warmTarget = (target: WarmTarget, propagationGate = false) =>
     warmOnePath(target, {
       targetUrl: options.targetUrl,
       timeoutMs,
-      retries,
+      retries: propagationGate ? propagationRetries : normalRetries,
       fetchImpl,
       headers: options.headers,
       expectedRscBuildId: options.expectedRscBuildId,
-      retryAllValidationErrors: propagatingTarget,
-      retryDeadlineAt,
-      retryDelayMs,
-      retryNotFound: propagatingTarget,
+      retryAllValidationErrors: propagationGate,
+      retryDeadlineAt: propagationGate ? propagationDeadlineAt : undefined,
+      retryDelayMs: propagationGate ? propagationRetryDelayMs : normalRetryDelayMs,
+      retryNotFound: propagationGate,
     });
 
   const gateIndex = propagatingTarget ? requests.findIndex((target) => target.kind === "rsc") : -1;
+  const buildIdentityGate =
+    propagatingTarget && gateIndex < 0 && options.buildIdentityPath
+      ? ({
+          kind: "identity",
+          label: "uploaded build identity",
+          pathname: options.buildIdentityPath,
+        } satisfies WarmTarget)
+      : null;
   let results: Awaited<ReturnType<typeof warmOnePath>>[];
   if (gateIndex >= 0) {
-    const gateResult = await warmTarget(requests[gateIndex], propagationDeadlineAt);
+    const gateResult = await warmTarget(requests[gateIndex], true);
     const remaining = requests.filter((_target, index) => index !== gateIndex);
     if (gateResult.ok) {
       results = [
@@ -524,8 +551,21 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
         })),
       ];
     }
+  } else if (buildIdentityGate) {
+    const gateResult = await warmTarget(buildIdentityGate, true);
+    results = gateResult.ok
+      ? await runWithConcurrency(requests, concurrency, (target) => warmTarget(target))
+      : requests.map((target) => ({
+          path: target.label,
+          ok: false as const,
+          error: `skipped because the uploaded build identity was not confirmed: ${gateResult.error}`,
+        }));
   } else {
-    results = await runWithConcurrency(requests, concurrency, (target) => warmTarget(target));
+    // Legacy callers/manifests have no build-identity asset. Preserve their
+    // propagation retry behavior; current build output always supplies a gate.
+    results = await runWithConcurrency(requests, concurrency, (target) =>
+      warmTarget(target, propagatingTarget),
+    );
   }
 
   const failures = results

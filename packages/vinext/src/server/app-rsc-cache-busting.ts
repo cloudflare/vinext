@@ -42,20 +42,7 @@ export const VINEXT_RSC_COMPATIBILITY_ID_HEADER = "X-Vinext-RSC-Compatibility-Id
 export const VINEXT_RSC_CONTENT_TYPE = "text/x-component";
 
 // Re-export so existing consumers that import from this module keep working.
-export { VINEXT_RSC_RENDER_MODE_HEADER } from "./headers.js";
-
-export const VINEXT_RSC_VARY_HEADER = [
-  RSC_HEADER,
-  NEXT_ROUTER_STATE_TREE_HEADER,
-  NEXT_ROUTER_PREFETCH_HEADER,
-  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
-  NEXT_URL_HEADER,
-  VINEXT_INTERCEPTION_CONTEXT_HEADER,
-  VINEXT_INTERCEPTION_ID_HEADER,
-  VINEXT_MOUNTED_SLOTS_HEADER,
-  VINEXT_RSC_RENDER_MODE_HEADER,
-  VINEXT_RSC_STATE_FINGERPRINT_HEADER,
-].join(", ");
+export { VINEXT_RSC_RENDER_MODE_HEADER, VINEXT_RSC_VARY_HEADER } from "./headers.js";
 
 const CACHE_BUSTING_DIGEST_BYTES = 12;
 const textEncoder = new TextEncoder();

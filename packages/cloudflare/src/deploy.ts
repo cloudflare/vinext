@@ -556,7 +556,7 @@ export async function deployWithCdnWarmup(
     | "warmCdnRetries"
     | "warmCdnStrict"
   > &
-    Pick<CdnWarmOptions, "deploymentId" | "expectedRscBuildId" | "rscPaths">,
+    Pick<CdnWarmOptions, "buildIdentityPath" | "deploymentId" | "expectedRscBuildId" | "rscPaths">,
 ): Promise<string> {
   const upload = runWranglerVersionUpload(root, options);
   const warmUploadedVersion = (
@@ -567,6 +567,7 @@ export async function deployWithCdnWarmup(
     warmCdnCache({
       targetUrl,
       paths,
+      buildIdentityPath: options.buildIdentityPath,
       headers,
       propagatingTarget,
       deploymentId: options.deploymentId,
@@ -624,11 +625,11 @@ export async function deployWithCdnWarmup(
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
     if (targetUrl && headers) {
       try {
-        await warmUploadedVersion(targetUrl, headers, true);
+        const warmResult = await warmUploadedVersion(targetUrl, headers, true);
+        warmedBeforePromotion = warmResult.failed === 0;
       } catch (error) {
         throw withStagedVersionCleanupNote(error);
       }
-      warmedBeforePromotion = true;
     } else if (options.warmCdnStrict) {
       throw new Error(
         "CDN warmup failed: pre-traffic warmup needs a production URL and Worker name for version overrides. " +
@@ -988,6 +989,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     if (warmPlan.paths.length > 0 || options.previewAlias) {
       url = await deployWithCdnWarmup(root, warmPlan.paths, {
         ...wranglerOptions,
+        buildIdentityPath: warmPlan.buildIdentityPath,
         deploymentId: warmPlan.deploymentId,
         expectedRscBuildId: warmPlan.rscBuildId,
         rscPaths: warmPlan.rscPaths,

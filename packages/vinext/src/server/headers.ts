@@ -204,6 +204,20 @@ export const NEXT_ROUTER_STATE_TREE_HEADER = "Next-Router-State-Tree";
 export const NEXT_ROUTER_PREFETCH_HEADER = "Next-Router-Prefetch";
 export const NEXT_ROUTER_SEGMENT_PREFETCH_HEADER = "Next-Router-Segment-Prefetch";
 export const NEXT_URL_HEADER = "Next-Url";
+
+/** Request selectors that define a reusable full-route RSC response variant. */
+export const VINEXT_RSC_VARY_HEADER = [
+  RSC_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_URL_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
+  VINEXT_RSC_STATE_FINGERPRINT_HEADER,
+].join(", ");
 export const NEXT_REQUEST_ID_HEADER = "x-nextjs-request-id";
 export const NEXT_HTML_REQUEST_ID_HEADER = "x-nextjs-html-request-id";
 
