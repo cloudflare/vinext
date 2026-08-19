@@ -188,7 +188,7 @@ describe("prefetch cache eviction", () => {
 
   it("router.prefetch normalizes same-origin absolute URLs before caching", async () => {
     let fetchedUrl: unknown;
-    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       fetchedUrl = input;
       return new Response("flight", { headers: { "content-type": "text/x-component" } });
     });
@@ -202,6 +202,31 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().has(AppElementsWire.encodeCacheKey(String(fetchedUrl), null))).toBe(
       true,
     );
+  });
+
+  it("router.prefetch uses the canonical warmed path with trailingSlash enabled", async () => {
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
+    vi.stubEnv(
+      "__VINEXT_RSC_PREWARM_MANIFEST_URL",
+      "/_next/static/build-a/vinext-rsc-prewarm.json",
+    );
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = toRscUrlString(input);
+      return url.endsWith("vinext-rsc-prewarm.json")
+        ? Response.json({ version: 1, paths: ["/dashboard/"] })
+        : new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    navigation.appRouterInstance.prefetch("/dashboard");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+
+    expect(toRscUrlString(fetch.mock.calls[1]![0])).toBe("/dashboard/?_rsc");
+    const headers = new Headers(fetch.mock.calls[1]![1]?.headers);
+    expect(headers.get("rsc")).toBe("1");
+    expect(headers.get("next-router-state-tree")).toBeNull();
   });
 
   it("router.prefetch calls onInvalidate once when the prefetched response is invalidated", async () => {

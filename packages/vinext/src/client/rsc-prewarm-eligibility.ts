@@ -39,7 +39,21 @@ export function preloadRscPrewarmManifest(): Promise<ReadonlySet<string>> {
   return (manifestPromise ??= loadManifest());
 }
 
-export async function isRscPrewarmEligibleHref(href: string): Promise<boolean> {
+function loadManifestWithin(timeoutMs: number): Promise<ReadonlySet<string>> {
+  const manifest = preloadRscPrewarmManifest();
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve(new Set()), Math.max(0, timeoutMs));
+    void manifest.then((paths) => {
+      clearTimeout(timeout);
+      resolve(paths);
+    });
+  });
+}
+
+export async function isRscPrewarmEligibleHref(
+  href: string,
+  options?: { timeoutMs?: number },
+): Promise<boolean> {
   if (!manifestUrl || typeof window === "undefined") return false;
 
   let url: URL;
@@ -49,5 +63,8 @@ export async function isRscPrewarmEligibleHref(href: string): Promise<boolean> {
     return false;
   }
   if (url.origin !== window.location.origin || url.search !== "") return false;
-  return (await preloadRscPrewarmManifest()).has(url.pathname);
+  const manifest = preloadRscPrewarmManifest();
+  const paths =
+    options?.timeoutMs === undefined ? await manifest : await loadManifestWithin(options.timeoutMs);
+  return paths.has(url.pathname);
 }

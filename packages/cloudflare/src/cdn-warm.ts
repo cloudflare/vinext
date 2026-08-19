@@ -5,7 +5,6 @@ import {
   type PrerenderPathManifest,
 } from "vinext/internal/build/prerender-paths";
 import {
-  getPrewarmableAppPaths,
   getPrerenderedConcretePaths,
   readPrerenderManifest,
   type PrerenderManifest,
@@ -86,6 +85,9 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
     if (
       !Array.isArray(manifest.paths) ||
       !manifest.paths.every((pathname) => typeof pathname === "string") ||
+      (manifest.rscPaths !== undefined &&
+        (!Array.isArray(manifest.rscPaths) ||
+          !manifest.rscPaths.every((pathname) => typeof pathname === "string"))) ||
       (manifest.basePath !== undefined && typeof manifest.basePath !== "string") ||
       (manifest.deploymentId !== undefined && typeof manifest.deploymentId !== "string") ||
       (manifest.trailingSlash !== undefined && typeof manifest.trailingSlash !== "boolean") ||
@@ -160,10 +162,16 @@ export function readPrerenderWarmPlan(
   }
 
   const pathConfig = pathPlan?.manifest ?? {};
-  const appPaths = getPrewarmableAppPaths(manifest);
-  const appHtmlPaths = options?.includeFallbackShells
-    ? getPrerenderedConcretePaths(manifest, { ...options, router: "app" })
-    : appPaths;
+  const appPaths = pathPlan?.manifest.rscPaths ?? [];
+  const hasFinalRscEligibility =
+    pathPlan?.manifest.responseVary === "verbatim" && pathPlan.manifest.rscPaths !== undefined;
+  const appHtmlPaths =
+    hasFinalRscEligibility && !options?.includeFallbackShells
+      ? appPaths
+      : getPrerenderedConcretePaths(manifest, {
+          ...options,
+          router: "app",
+        });
   const pagePaths = getPrerenderedConcretePaths(manifest, {
     ...options,
     router: "pages",
@@ -221,18 +229,38 @@ async function fetchWithTimeout(
   redirect: RequestRedirect,
 ): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const requestHeaders = new Headers(headers);
   requestHeaders.set("User-Agent", "vinext-cloudflare-cdn-warm");
   try {
-    return await fetchImpl(url, {
-      method: "GET",
-      redirect,
-      headers: requestHeaders,
-      signal: controller.signal,
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new DOMException(`Timed out after ${timeoutMs}ms`, "AbortError"));
+      }, timeoutMs);
     });
+    return await Promise.race([
+      (async () => {
+        response = await fetchImpl(url, {
+          method: "GET",
+          redirect,
+          headers: requestHeaders,
+          signal: controller.signal,
+        });
+        // A cache fill is not complete until the entire response body has
+        // arrived. Keep that inside the request deadline so a Worker that
+        // sends headers and then stalls cannot hang deployment indefinitely.
+        await response.arrayBuffer();
+        return response;
+      })(),
+      timedOut,
+    ]);
   } finally {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
+    if (controller.signal.aborted && response?.body) {
+      void response.body.cancel().catch(() => {});
+    }
   }
 }
 
@@ -246,6 +274,14 @@ type WarmTarget = {
 const REQUIRED_RSC_VARY_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =>
   name.trim().toLowerCase(),
 );
+const ADMITTED_CF_CACHE_STATUSES = new Set([
+  "HIT",
+  "MISS",
+  "EXPIRED",
+  "REVALIDATED",
+  "UPDATING",
+  "STALE",
+]);
 
 function validateRscWarmResponse(response: Response): string | null {
   if (response.redirected || response.status < 200 || response.status >= 300) {
@@ -263,6 +299,8 @@ function validateRscWarmResponse(response: Response): string | null {
   );
   const missingVary = REQUIRED_RSC_VARY_HEADERS.find((name) => !vary.has(name));
   if (missingVary) return `response Vary is missing ${missingVary}`;
+  const extraVary = Array.from(vary).find((name) => !REQUIRED_RSC_VARY_HEADERS.includes(name));
+  if (extraVary) return `response Vary has unsupported field ${extraVary}`;
 
   for (const name of ["Cache-Control", "CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"]) {
     const value = response.headers.get(name);
@@ -271,7 +309,8 @@ function validateRscWarmResponse(response: Response): string | null {
     }
   }
   const cacheStatus = response.headers.get("CF-Cache-Status")?.toUpperCase();
-  if (cacheStatus === "BYPASS" || cacheStatus === "DYNAMIC" || cacheStatus === "ERROR") {
+  if (!cacheStatus) return "response is missing CF-Cache-Status";
+  if (!ADMITTED_CF_CACHE_STATUSES.has(cacheStatus)) {
     return `CF-Cache-Status is ${cacheStatus}`;
   }
   return null;
@@ -296,7 +335,6 @@ async function warmOnePath(
         target.headers ?? options.headers,
         target.kind === "rsc" ? "manual" : "follow",
       );
-      await response.arrayBuffer();
 
       if (target.kind === "rsc") {
         const validationError = validateRscWarmResponse(response);

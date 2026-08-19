@@ -2080,7 +2080,7 @@ function bootstrapHydration(
             : null;
         const usesCanonicalPrewarmedRequest =
           (rewrittenNavigationHref === null || rewrittenNavigationHref === currentHref) &&
-          (await isRscPrewarmEligibleHref(currentHref)) &&
+          (await isRscPrewarmEligibleHref(currentHref, { timeoutMs: 100 })) &&
           canonicalizePrewarmableRscRequestHeaders(requestHeaders);
         const targetPathAndSearch = url.pathname + url.search;
         const additionalPrefetchPathAndSearch =

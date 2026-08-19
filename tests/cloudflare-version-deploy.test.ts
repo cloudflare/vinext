@@ -187,6 +187,19 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     });
   });
 
+  it("prefers Wrangler's named preview alias URL over the hashed version URL", () => {
+    const output = `
+      Worker Version ID: 095f00a7-23a7-43b7-a227-e4c97cab5f22
+      Version Preview URL: https://095f00a7-workers-cache.example.workers.dev
+      Version Preview Alias URL: https://pr-123-workers-cache.example.workers.dev
+    `;
+
+    expect(parseWranglerVersionUploadOutput(output)).toMatchObject({
+      versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+      previewUrl: "https://pr-123-workers-cache.example.workers.dev",
+    });
+  });
+
   it("parses workers.dev URLs without depending on a broad URL regex", () => {
     expect(parseWorkersDevUrl("Preview: <https://app.example.workers.dev/path?x=1>.")).toBe(
       "https://app.example.workers.dev/path?x=1",

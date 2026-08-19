@@ -64,4 +64,15 @@ describe("RSC prewarm browser eligibility", () => {
       await import("../packages/vinext/src/client/rsc-prewarm-eligibility.js");
     await expect(isRscPrewarmEligibleHref("/cached/intro")).resolves.toBe(false);
   });
+
+  it("fails closed within a bound when the optional manifest stalls", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => {})),
+    );
+    const { isRscPrewarmEligibleHref } =
+      await import("../packages/vinext/src/client/rsc-prewarm-eligibility.js");
+
+    await expect(isRscPrewarmEligibleHref("/cached/intro", { timeoutMs: 1 })).resolves.toBe(false);
+  });
 });

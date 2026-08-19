@@ -157,7 +157,7 @@ import {
   assertNoPublicNextRequestConflict,
 } from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
-import { getRscPrewarmManifestUrl } from "./build/rsc-prewarm-manifest.js";
+import { getRscPrewarmManifestUrl, writeRscPrewarmManifest } from "./build/rsc-prewarm-manifest.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
@@ -6798,6 +6798,27 @@ export const loadServerActionClient = ${
             buildId: nextConfig.buildId,
             rewrites: nextConfig.rewrites,
           });
+        },
+      },
+    },
+    {
+      name: "vinext:rsc-prewarm-manifest-placeholder",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(outputOptions: { dir?: string }) {
+          if (this.environment?.name !== "client") return;
+          if (!hasVerbatimResponseVary(options.cache)) return;
+          const clientDir = outputOptions.dir;
+          if (!clientDir) return;
+
+          // A plain Vite build does not run vinext's post-build prerender pass.
+          // Still publish an empty, fail-closed manifest so the production
+          // browser never probes a missing asset. `runPrerender()` overwrites
+          // this with the final ISR-eligible paths when prerendering runs.
+          writeRscPrewarmManifest(clientDir, nextConfig, []);
         },
       },
     },

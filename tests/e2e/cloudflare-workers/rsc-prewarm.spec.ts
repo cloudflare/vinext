@@ -107,7 +107,6 @@ test("deploy-warmed ISR RSC is reused by every full browser navigation shape", a
     const dynamicResponse = await dynamicResponsePromise;
     const dynamicUrl = new URL(dynamicResponse.url());
     expect(dynamicUrl.searchParams.get("_rsc")).toMatch(/^[A-Za-z0-9_-]+$/);
-    expect(dynamicResponse.request().headers()["next-router-prefetch"]).toBe("1");
     expect(dynamicResponse.headers()["cache-control"]).toContain("no-store");
     expect(dynamicResponse.headers()["cf-cache-status"]).toBe("BYPASS");
   } finally {

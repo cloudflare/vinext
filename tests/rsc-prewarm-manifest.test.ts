@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   emitRscPrewarmManifest,
   getRscPrewarmManifestUrl,
+  writeRscPrewarmManifest,
 } from "../packages/vinext/src/build/rsc-prewarm-manifest.js";
 
 let root: string;
@@ -66,5 +67,27 @@ describe("RSC prewarm build manifest", () => {
     expect(getRscPrewarmManifestUrl(config)).toBe(
       "/_next/static/build-a/vinext-rsc-prewarm.json?dpl=deployment-a",
     );
+  });
+
+  it("writes an empty fail-closed manifest for builds without a prerender pass", () => {
+    const config = {
+      assetPrefix: "",
+      basePath: "",
+      buildId: "build-a",
+      deploymentId: undefined,
+      trailingSlash: false,
+    };
+    const clientDir = path.join(root, "custom-client");
+
+    writeRscPrewarmManifest(clientDir, config, []);
+
+    expect(
+      JSON.parse(
+        fs.readFileSync(
+          path.join(clientDir, "_next/static/build-a/vinext-rsc-prewarm.json"),
+          "utf-8",
+        ),
+      ),
+    ).toEqual({ version: 1, paths: [] });
   });
 });

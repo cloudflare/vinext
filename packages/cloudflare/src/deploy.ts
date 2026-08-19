@@ -913,19 +913,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
-  if (shouldEmitPrerenderPathManifest) {
-    await emitPrerenderPathManifest({
-      root: info.root,
-      nextConfig,
-      responseVary: hasStrictResponseVary ? "verbatim" : undefined,
-      routeRootConfig: viteConfigMetadata.routeRootConfig,
-    });
-  }
-
   // Step 6a: prerender — render every discovered route into dist.
-  // Triggered by --prerender-all, vinext({ prerender: true }), or automatically
-  // when next.config.js sets `output: 'export'` (every route must be statically
-  // exportable). The CLI flag wins when more than one trigger is present.
+  // Triggered by CDN warmup independently of the prerender setting, or by
+  // --prerender-all, vinext({ prerender: true }), and output: 'export'. The CLI
+  // flag wins when more than one prerender setting is present.
   let ranPrerender = false;
   if (prerenderDecision || options.warmCdnCache) {
     console.log(
@@ -946,6 +937,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
       nextConfig,
     });
     ranPrerender = true;
+  }
+
+  if (shouldEmitPrerenderPathManifest) {
+    await emitPrerenderPathManifest({
+      root: info.root,
+      nextConfig,
+      responseVary: hasStrictResponseVary ? "verbatim" : undefined,
+      routeRootConfig: viteConfigMetadata.routeRootConfig,
+    });
   }
 
   if (ranPrerender) {

@@ -73,10 +73,18 @@ function findVersionIdInUploadJson(parsed: JsonRecord | unknown[] | null): strin
 function findPreviewUrlInUploadJson(parsed: JsonRecord | unknown[] | null): string | null {
   if (!isRecord(parsed)) return null;
   return (
+    findStringInRecord(parsed, ["preview_alias_url", "previewAliasUrl"]) ??
+    findStringInRecord(parsed.version, ["preview_alias_url", "previewAliasUrl"]) ??
+    findStringInRecord(parsed.result, ["preview_alias_url", "previewAliasUrl"]) ??
     findStringInRecord(parsed, ["preview_url", "previewUrl", "url"]) ??
     findStringInRecord(parsed.version, ["preview_url", "previewUrl", "url"]) ??
     findStringInRecord(parsed.result, ["preview_url", "previewUrl", "url"])
   );
+}
+
+function parseVersionPreviewAliasUrl(output: string): string | null {
+  const match = output.match(/Version Preview Alias URL:\s*(https:\/\/\S+)/i);
+  return match?.[1] ? parseWorkersDevUrl(match[1]) : null;
 }
 
 export function parseVersionId(output: string): string | null {
@@ -90,7 +98,10 @@ export function parseVersionId(output: string): string | null {
 export function parseWranglerVersionUploadOutput(output: string): WranglerVersionUploadResult {
   const parsed = parseJsonObject(output);
   const versionId = findVersionIdInUploadJson(parsed) ?? parseVersionId(output);
-  const previewUrl = findPreviewUrlInUploadJson(parsed) ?? parseWorkersDevUrl(output);
+  const previewUrl =
+    findPreviewUrlInUploadJson(parsed) ??
+    parseVersionPreviewAliasUrl(output) ??
+    parseWorkersDevUrl(output);
 
   if (!versionId) {
     throw new Error("Could not detect Worker version ID from `wrangler versions upload` output.");

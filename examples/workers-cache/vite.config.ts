@@ -7,7 +7,6 @@ import { cloudflare } from "@cloudflare/vite-plugin";
 export default defineConfig({
   plugins: [
     vinext({
-      prerender: true,
       cache: {
         cdn: cdnAdapter(),
         data: kvDataAdapter(),

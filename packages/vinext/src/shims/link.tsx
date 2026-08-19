@@ -544,6 +544,7 @@ function prefetchUrl(
           rewrittenPrefetchHref && rewrittenPrefetchHref !== fullHref
             ? [await createRscRequestUrl(rewrittenPrefetchHref, headers)]
             : [];
+        if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
         if (autoPrefetch.cacheForNavigation) {

@@ -27,6 +27,21 @@ export function getRscPrewarmManifestUrl(config: RscPrewarmBuildConfig): string 
   return renderVinextBuiltUrl(fileName, config.assetPrefix, config.deploymentId, "html");
 }
 
+export function writeRscPrewarmManifest(
+  clientDir: string,
+  config: RscPrewarmBuildConfig,
+  paths: readonly string[],
+): void {
+  const outputPath = path.join(
+    clientDir,
+    resolveAssetsDir(config.assetPrefix),
+    config.buildId,
+    RSC_PREWARM_MANIFEST_FILENAME,
+  );
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, JSON.stringify({ version: 1, paths }) + "\n", "utf-8");
+}
+
 /** Emit the exact production URL paths whose completed prerender is ISR-cacheable. */
 export function emitRscPrewarmManifest(root: string, config: RscPrewarmBuildConfig): void {
   const manifest = readPrerenderManifest(
@@ -35,14 +50,5 @@ export function emitRscPrewarmManifest(root: string, config: RscPrewarmBuildConf
   const paths = manifest
     ? getPrewarmableAppPaths(manifest).map((pathname) => toDeploymentPath(pathname, config))
     : [];
-  const outputPath = path.join(
-    root,
-    "dist",
-    "client",
-    resolveAssetsDir(config.assetPrefix),
-    config.buildId,
-    RSC_PREWARM_MANIFEST_FILENAME,
-  );
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  fs.writeFileSync(outputPath, JSON.stringify({ version: 1, paths }) + "\n", "utf-8");
+  writeRscPrewarmManifest(path.join(root, "dist", "client"), config, paths);
 }

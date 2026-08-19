@@ -111,6 +111,7 @@ describe("Cloudflare CDN warmup", () => {
         deploymentId: "dpl_123",
         paths: ["/cached/intro", "/dynamic", "/pages"],
         responseVary: "verbatim",
+        rscPaths: ["/cached/intro"],
         trailingSlash: true,
       }),
     );
@@ -425,6 +426,78 @@ describe("Cloudflare CDN warmup", () => {
         targetUrl: "https://app.example.com",
       }),
     ).rejects.toThrow("Cache-Control is not cacheable");
+  });
+
+  it.each([
+    {
+      label: "an unsupported Vary field",
+      headers: {
+        "cf-cache-status": "MISS",
+        vary: `${VINEXT_RSC_VARY_HEADER}, User-Agent`,
+      },
+      error: "response Vary has unsupported field user-agent",
+    },
+    {
+      label: "no Cloudflare cache admission evidence",
+      headers: { vary: VINEXT_RSC_VARY_HEADER },
+      error: "response is missing CF-Cache-Status",
+    },
+  ])("rejects an RSC response with $label", async ({ headers, error }) => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const isRsc = new Headers(init?.headers).get("rsc") === "1";
+      const responseHeaders = new Headers(
+        isRsc
+          ? {
+              "cache-control": "public, max-age=0, must-revalidate",
+              "content-type": "text/x-component",
+            }
+          : { "content-type": "text/html" },
+      );
+      if (isRsc) {
+        for (const [name, value] of Object.entries(headers)) {
+          responseHeaders.set(name, value);
+        }
+      }
+      return new Response(isRsc ? "flight" : "html", {
+        headers: responseHeaders,
+      });
+    });
+
+    await expect(
+      warmCdnCache({
+        fetchImpl: fetchMock as typeof fetch,
+        paths: ["/cached/intro"],
+        rscPaths: ["/cached/intro"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow(error);
+  });
+
+  it("times out when response headers arrive but the body never completes", async () => {
+    const fetchMock = vi.fn(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("partial"));
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+
+    const result = await warmCdnCache({
+      fetchImpl: fetchMock as typeof fetch,
+      paths: ["/stalled"],
+      retries: 0,
+      targetUrl: "https://app.example.com",
+      timeoutMs: 5,
+    });
+
+    expect(result).toEqual({
+      total: 1,
+      warmed: 0,
+      failed: 1,
+      failures: [{ path: "/stalled", error: "timed out after 5ms" }],
+    });
   });
 
   it("reports warmup failures and throws in strict mode", async () => {

@@ -76,9 +76,9 @@ jobs:
         run: vp build
         working-directory: ${{ matrix.example.working_directory }}
 
-      - name: Build and prerender workers-cache example
+      - name: Build workers-cache example
         if: matrix.example.name == 'workers-cache'
-        run: vp exec vinext build
+        run: vp build
         working-directory: ${{ matrix.example.working_directory }}
 
       - name: Apply D1 migrations (benchmarks only)
