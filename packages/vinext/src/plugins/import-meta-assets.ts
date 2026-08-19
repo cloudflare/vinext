@@ -908,6 +908,11 @@ export class ImportMetaAssetTransformer {
     }
   }
 
+  clearImporterAssets(context: TransformPluginContext, id: string): void {
+    const importerKey = `${context.environment?.name ?? "server"}\0${id}`;
+    this.#replaceImporterState(importerKey, id, new Set());
+  }
+
   async collectRewrites(
     context: TransformPluginContext,
     code: string,

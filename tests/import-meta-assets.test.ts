@@ -6,7 +6,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build, type Plugin } from "vite";
 import { _transformVeryDynamicRequests } from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
-import { createImportMetaUrlPlugin } from "../packages/vinext/src/plugins/import-meta-url.js";
+import {
+  _mayContainFetchIdentifier,
+  createImportMetaUrlPlugin,
+} from "../packages/vinext/src/plugins/import-meta-url.js";
 import { OgAssetOwnership } from "../packages/vinext/src/plugins/og-asset-ownership.js";
 import {
   MAX_INLINE_FETCH_ASSET_BYTES,
@@ -101,6 +104,16 @@ describe("import-meta asset phase", () => {
       },
     };
   }
+
+  it("prescans only standalone fetch identifiers", () => {
+    expect(_mayContainFetchIdentifier("fetch(url)")).toBe(true);
+    expect(_mayContainFetchIdentifier(String.raw`f\u0065tch(url)`)).toBe(true);
+    expect(_mayContainFetchIdentifier(String.raw`\u0066etch(url)`)).toBe(true);
+    expect(_mayContainFetchIdentifier("prefetch(url); fetcher(url); $fetch(url)")).toBe(false);
+    expect(_mayContainFetchIdentifier(String.raw`pre\u0066etch(url); fetch\u0065r(url)`)).toBe(
+      false,
+    );
+  });
 
   it("makes the import-meta plugin the explicit ownership tracker", async () => {
     const ownership = new OgAssetOwnership();
@@ -233,6 +246,14 @@ describe("import-meta asset phase", () => {
     expect(result.code).toContain(`const path = url.pathname;`);
     expect(result.code).toContain(`const file = fileURLToPath(url);`);
     expect(result.code).toContain(`fetch(__vinext_asset_url)`);
+  });
+
+  it("keeps escaped fetch identifiers eligible for asset rewriting", async () => {
+    const plugin = await createPlugin();
+    const source = String.raw`export const response = f\u0065tch(new URL("../../src/text-file.txt", import.meta.url));`;
+    const result = await transformHandler(plugin).call(context(), source, routePath);
+
+    expect(result.code).toContain(String.raw`f\u0065tch(new URL(__vinext_asset_data))`);
   });
 
   it("finalizes observable asset aliases with portable emitted-module identity", async () => {

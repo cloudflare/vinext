@@ -115,6 +115,11 @@ const MAX_ASSET_AST_CACHE_SOURCE_UNITS = 2 * 1024 * 1024;
 const BLOCK_COMMENT_PATTERN = String.raw`\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/`;
 const JAVASCRIPT_TRIVIA_PATTERN = String.raw`(?:\s|${BLOCK_COMMENT_PATTERN}|\/\/[^\r\n\u2028\u2029]*)*`;
 const UNICODE_IDENTIFIER_ESCAPE_PATTERN = String.raw`\\u(?:[\dA-Fa-f]{4}|\{[\dA-Fa-f]+\})`;
+const JAVASCRIPT_IDENTIFIER_CONTINUE_PATTERN = String.raw`[\p{ID_Continue}$\u200C\u200D\\]`;
+const FETCH_IDENTIFIER_CANDIDATE_RE = new RegExp(
+  String.raw`(?<!${JAVASCRIPT_IDENTIFIER_CONTINUE_PATTERN})(?:f|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:e|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:t|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:c|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:h|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?!${JAVASCRIPT_IDENTIFIER_CONTINUE_PATTERN})`,
+  "u",
+);
 const IMPORT_META_URL_CANDIDATE_PATTERN = String.raw`\bimport${JAVASCRIPT_TRIVIA_PATTERN}\.${JAVASCRIPT_TRIVIA_PATTERN}meta${JAVASCRIPT_TRIVIA_PATTERN}\??\.${JAVASCRIPT_TRIVIA_PATTERN}(?:u|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:r|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:l|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})`;
 const IMPORT_META_URL_CANDIDATE_RE = new RegExp(IMPORT_META_URL_CANDIDATE_PATTERN, "u");
 const SOURCE_IDENTITY_FILTER_RE = new RegExp(
@@ -348,7 +353,14 @@ export function createImportMetaUrlPlugin(options: {
         };
 
         let reusableAst: AstRecord | null = null;
-        if (isServer && assetTransformer) {
+        if (isServer && assetTransformer && !_mayContainFetchIdentifier(code)) {
+          assetTransformer.clearImporterAssets(this, id);
+          const previous = assetAstCache.get(id);
+          if (previous) {
+            assetAstCache.delete(id);
+            assetAstCacheSourceUnits -= previous.source.length;
+          }
+        } else if (isServer && assetTransformer) {
           const cachedAst = assetAstCache.get(id);
           if (cachedAst?.source === code) {
             reusableAst = cachedAst.value;
@@ -966,6 +978,11 @@ function transformableModuleCanonicalId(id: string, rootPaths: RootPaths): strin
 
 function mayContainImportMetaUrl(code: string): boolean {
   return IMPORT_META_URL_CANDIDATE_RE.test(code);
+}
+
+export function _mayContainFetchIdentifier(code: string): boolean {
+  if (!code.includes("fetch") && !code.includes(String.raw`\u`)) return false;
+  return FETCH_IDENTIFIER_CANDIDATE_RE.test(code);
 }
 
 function mayContainSourceIdentityToken(code: string): boolean {
