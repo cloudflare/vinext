@@ -1,0 +1,24 @@
+---
+"vinext": patch
+---
+
+- fix(app-router): route server actions through their owning pages (#2520)
+- fix(app-router): restore shallow history tree snapshots (#2885)
+- fix(cache): inherit route revalidate for tagged fetches (#2985)
+- fix(security): validate supplemental interception selectors (#2976)
+- fix(build): preserve bundled ESM module identity (#2942)
+- fix(build): preserve portable CommonJS module identity (#2826)
+- fix(router): refresh retained parallel routes (#2880)
+- fix(pages-router): emit dev build ID in next data (#2962)
+- fix(cache): reject unserializable use cache results (#2954)
+- fix(app-router): preserve static hydration search params (#2944)
+- fix(app-router): settle optimistic search navigations (#2952)
+- fix(build): preserve require export conditions (#2881)
+- fix(app-router): retain shared layouts across loading shells (#2940)
+- fix(app-router): match current navigation identity (#2876)
+- fix(app-router): retain loading shell prefetches (#2938)
+- fix(pages): align GSSP client transitions (#2240)
+- fix(build): support deployed web worker graphs (#2314)
+- fix(fonts): normalize self-hosted URLs on Windows (#2934)
+- fix(build): make vinext shim chunk rule reachable for installed copies (#2795)
+- fix(rsc): web crypto subtle api is unavailable in non-secure contexts (#2929)
