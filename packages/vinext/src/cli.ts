@@ -20,7 +20,7 @@ import path, { toSlash } from "pathslash";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   detectPackageManager,
@@ -32,6 +32,7 @@ import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { resolveInitOptions } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
+import { findEmittedWranglerConfig } from "./utils/emitted-wrangler-config.js";
 import {
   createRscCompatibilityId,
   findVinextNextConfigInPlugins,
@@ -747,6 +748,14 @@ async function start() {
 
   const port = parsed.port ?? parseInt(process.env.PORT ?? "3000", 10);
   const host = parsed.hostname ?? "0.0.0.0";
+  const cwd = process.cwd();
+  const wranglerConfig = findEmittedWranglerConfig(cwd);
+
+  if (wranglerConfig) {
+    console.log(`\n  vinext start  (wrangler ${wranglerConfig}, port ${port})\n`);
+    await startCloudflareWorker({ config: wranglerConfig, port, host, cwd });
+    return;
+  }
 
   console.log(`\n  vinext start  (port ${port})\n`);
 
@@ -757,7 +766,34 @@ async function start() {
   await startProdServer({
     port,
     host,
-    outDir: path.resolve(process.cwd(), "dist"),
+    outDir: path.resolve(cwd, "dist"),
+  });
+}
+
+function startCloudflareWorker(opts: {
+  config: string;
+  port: number;
+  host: string;
+  cwd: string;
+}): Promise<void> {
+  const wranglerJs = path.join(opts.cwd, "node_modules", "wrangler", "bin", "wrangler.js");
+  const args = ["dev", "--config", opts.config, "--port", String(opts.port), "--ip", opts.host];
+  const child = fs.existsSync(wranglerJs)
+    ? spawn(process.execPath, [wranglerJs, ...args], {
+        stdio: "inherit",
+        cwd: opts.cwd,
+      })
+    : spawn(process.platform === "win32" ? "npx.cmd" : "npx", ["wrangler", ...args], {
+        stdio: "inherit",
+        cwd: opts.cwd,
+        shell: process.platform === "win32",
+      });
+  return new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0 || code === null) resolve();
+      else reject(new Error(`wrangler exited ${code}`));
+    });
   });
 }
 
