@@ -497,6 +497,29 @@ describe("prefetch cache eviction", () => {
     expect(new TextDecoder().decode(entry?.snapshot?.buffer)).toBe("full");
   });
 
+  it("attaches a later loading-shell onInvalidate callback to the retained canonical full entry", async () => {
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    const rscUrl = "/dashboard?_rsc";
+    const onInvalidate = vi.fn();
+    prefetchRscResponse(rscUrl, Promise.resolve(new Response("full")), null, null, undefined, {
+      cacheForNavigation: true,
+    });
+    await waitForPrefetchSetup(() => getPrefetchCache().get(rscUrl)?.outcome === "cache-seeded");
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(new Response("shell")),
+      null,
+      null,
+      { onInvalidate },
+      { cacheForNavigation: false, optimisticRouteShell: true },
+    );
+    await settlePrefetchSetup();
+    invalidatePrefetchCache();
+
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
+  });
+
   it("replaces an expired canonical full response with a fresh loading shell", async () => {
     vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
     const rscUrl = "/dashboard?_rsc";
@@ -525,10 +548,15 @@ describe("prefetch cache eviction", () => {
   it("replaces a canonical loading shell when a full response arrives later", async () => {
     vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
     const rscUrl = "/dashboard?_rsc";
-    prefetchRscResponse(rscUrl, Promise.resolve(new Response("shell")), null, null, undefined, {
-      cacheForNavigation: false,
-      optimisticRouteShell: true,
-    });
+    const onInvalidate = vi.fn();
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(new Response("shell")),
+      null,
+      null,
+      { onInvalidate },
+      { cacheForNavigation: false, optimisticRouteShell: true },
+    );
     await waitForPrefetchSetup(() => getPrefetchCache().get(rscUrl)?.outcome === "cache-seeded");
 
     prefetchRscResponse(rscUrl, Promise.resolve(new Response("full")), null, null, undefined, {
@@ -541,6 +569,7 @@ describe("prefetch cache eviction", () => {
 
     const entry = getPrefetchCache().get(rscUrl);
     expect(new TextDecoder().decode(entry?.snapshot?.buffer)).toBe("full");
+    expect(onInvalidate).toHaveBeenCalledTimes(1);
   });
 
   it("matches equivalent RSC cache variants by server-declared mounted slots", () => {

@@ -1507,12 +1507,16 @@ export function prefetchRscResponse(
     // A definitive full-route entry is strictly more useful than a loading
     // shell for the same strict-Vary URL. Keep it in the browser cache; the
     // CDN may still hold both response variants under their Vary selectors.
+    attachPrefetchInvalidationToEntry(cacheKey, existing, options?.onInvalidate);
     void fetchPromise.catch(() => {});
     cancelAppPrefetchFetch(fetchPromise);
     return;
   }
   if (existing) {
-    deletePrefetchCacheEntry(cache, prefetched, cacheKey, existing, false);
+    // Canonical full/loading entries are separate server variants sharing one
+    // browser key. Replacing either invalidates the prior prefetch task, so its
+    // onInvalidate subscribers must not be silently discarded.
+    deletePrefetchCacheEntry(cache, prefetched, cacheKey, existing, isCanonicalSharedRscUrl);
   }
 
   const entry: PrefetchCacheEntry = {
