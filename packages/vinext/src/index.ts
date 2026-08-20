@@ -150,6 +150,7 @@ import {
 } from "./utils/project.js";
 import {
   hasReactCompilerPlugin,
+  isReactCompilerPlugin,
   isReactCompilerRequested,
   reactCompilerUnsupportedMessage,
 } from "./utils/react-compiler-support.js";
@@ -1714,6 +1715,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const reactOptions = configuredReactOptions;
 
   let reactPluginPromise: Promise<PluginOption[]> | null = null;
+  let reactCompilerPluginPromise: Promise<PluginOption[]> | null = null;
   if (options.react !== false) {
     if (!resolvedReactPath) {
       throw new Error(
@@ -1723,13 +1725,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           " @vitejs/plugin-react",
       );
     }
-    // Wrap only the dynamic import: errors raised while building the plugin
-    // list (such as the compiler version check below) carry actionable
-    // instructions of their own and must not be relabeled as an import failure.
+    // Wrap only the dynamic import: errors raised while assembling the plugin
+    // list (such as the compiler support check below) carry their own
+    // actionable instructions and must not be relabeled as an import failure.
     const reactImport = import(pathToFileURL(resolvedReactPath).href).catch((cause) => {
       throw new Error("vinext: Failed to load @vitejs/plugin-react.", { cause });
     });
-    reactPluginPromise = reactImport.then((mod) => {
+    const allReactPlugins = reactImport.then((mod) => {
       const react = (mod as VitePluginReactModule).default;
       const limitToCommand = (plugin: Plugin, command: "serve" | "build"): Plugin => {
         const originalApply = plugin.apply;
@@ -1766,6 +1768,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       );
       return [...buildPlugins, ...servePlugins];
     });
+    // The React Compiler plugin is registered separately, after
+    // `vinext:jsx-in-js`. Every other plugin in the group keeps its original
+    // position so user-configured transforms still see the untouched source.
+    reactPluginPromise = allReactPlugins.then((plugins) =>
+      plugins.filter((plugin) => !isReactCompilerPlugin(plugin)),
+    );
+    reactCompilerPluginPromise = allReactPlugins.then((plugins) =>
+      plugins.filter(isReactCompilerPlugin),
+    );
   }
 
   const imageImportDimCache = new Map<string, { width: number; height: number }>();
@@ -1938,11 +1949,54 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Compile MDX to JSX before @vitejs/plugin-react handles the generated
     // component and injects Fast Refresh registration in dev.
     mdxProxyPlugin,
-    // Registered before @vitejs/plugin-react. Both this plugin and
-    // `vite:react-compiler` (enabled by `react: { compiler: true }`) run at
-    // `enforce: "pre"`, so array order decides which one sees the module first.
-    // The compiler infers the language from the file extension, so a `.js` file
-    // holding JSX fails to parse unless this plugin compiles it first.
+    // React Fast Refresh + JSX transform for client components.
+    reactPluginPromise,
+    // Next.js ignores requests without any statically known path component
+    // during graph analysis and leaves a deterministic runtime failure.
+    createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
+    // Preserve the `require` package-export condition before the CommonJS
+    // transform below turns literal require() calls into static imports.
+    createRequireConditionResolutionPlugin(createIdResolver, commonjsTransformFilter),
+    // Transform CJS require()/module.exports to ESM before other plugins
+    // analyze imports (RSC directive scanning, shim resolution, etc.)
+    //
+    // Skip project-local `.cjs`/`.cts` files during builds. `vinext init` renames CJS config
+    // files to `.cjs` (e.g. `tailwind.config.js` → `tailwind.config.cjs`) when
+    // it adds `"type": "module"`, and app code imports them extensionlessly
+    // (`import cfg from "../tailwind.config"`). If `vite-plugin-commonjs`
+    // rewrites their `module.exports` to ESM `export {}`, rolldown still infers
+    // `moduleType: "cjs"` from the `.cjs`/`.cts` extension and re-parses the
+    // rewritten output as CommonJS, failing with "Cannot use export statement
+    // outside a module". Returning `false` during builds makes vite-plugin-commonjs
+    // skip these project-local files so Rolldown's own CJS interop bundles them
+    // instead. Dev has no later CJS lowering pass, so transform them here.
+    // Conditional `require` targets use a synthetic `.js` identity so their
+    // CJS source can be converted before plugin-rsc injects ESM proxy imports.
+    // For dependencies that Node identifies as CommonJS, return true so the
+    // files actually loaded through a bundled SSR graph are converted on
+    // demand instead of requiring Vite's environment-wide dependency crawl.
+    commonJsPlugin,
+    {
+      name: "vinext:global-not-found-css-isolation",
+      apply: "build",
+      enforce: "pre",
+      transform: {
+        filter: {
+          id: /(?:^|[/\\])global-not-found(?:\.[^./?\\]+)+(?:\?.*)?$/,
+          code: /\.(?:css|scss|sass)['"]/,
+        },
+        handler(code: string, id: string) {
+          const cleanId = toSlash(stripViteModuleQuery(id));
+          if (
+            !globalNotFoundCssIsolationPath ||
+            canonicalize(cleanId) !== canonicalize(globalNotFoundCssIsolationPath)
+          ) {
+            return null;
+          }
+          return isolateGlobalNotFoundStylesheetImports(code, cleanId);
+        },
+      },
+    },
     // Enable JSX in plain .js files. Next.js allows JSX in .js files
     // (Babel/SWC handle it transparently), but Vite 8's built-in `vite:oxc`
     // plugin excludes .js files by default (`exclude: /\.js$/`) AND infers
@@ -2015,54 +2069,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     } satisfies Plugin,
-    // React Fast Refresh + JSX transform for client components.
-    reactPluginPromise,
-    // Next.js ignores requests without any statically known path component
-    // during graph analysis and leaves a deterministic runtime failure.
-    createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
-    // Preserve the `require` package-export condition before the CommonJS
-    // transform below turns literal require() calls into static imports.
-    createRequireConditionResolutionPlugin(createIdResolver, commonjsTransformFilter),
-    // Transform CJS require()/module.exports to ESM before other plugins
-    // analyze imports (RSC directive scanning, shim resolution, etc.)
-    //
-    // Skip project-local `.cjs`/`.cts` files during builds. `vinext init` renames CJS config
-    // files to `.cjs` (e.g. `tailwind.config.js` → `tailwind.config.cjs`) when
-    // it adds `"type": "module"`, and app code imports them extensionlessly
-    // (`import cfg from "../tailwind.config"`). If `vite-plugin-commonjs`
-    // rewrites their `module.exports` to ESM `export {}`, rolldown still infers
-    // `moduleType: "cjs"` from the `.cjs`/`.cts` extension and re-parses the
-    // rewritten output as CommonJS, failing with "Cannot use export statement
-    // outside a module". Returning `false` during builds makes vite-plugin-commonjs
-    // skip these project-local files so Rolldown's own CJS interop bundles them
-    // instead. Dev has no later CJS lowering pass, so transform them here.
-    // Conditional `require` targets use a synthetic `.js` identity so their
-    // CJS source can be converted before plugin-rsc injects ESM proxy imports.
-    // For dependencies that Node identifies as CommonJS, return true so the
-    // files actually loaded through a bundled SSR graph are converted on
-    // demand instead of requiring Vite's environment-wide dependency crawl.
-    commonJsPlugin,
-    {
-      name: "vinext:global-not-found-css-isolation",
-      apply: "build",
-      enforce: "pre",
-      transform: {
-        filter: {
-          id: /(?:^|[/\\])global-not-found(?:\.[^./?\\]+)+(?:\?.*)?$/,
-          code: /\.(?:css|scss|sass)['"]/,
-        },
-        handler(code: string, id: string) {
-          const cleanId = toSlash(stripViteModuleQuery(id));
-          if (
-            !globalNotFoundCssIsolationPath ||
-            canonicalize(cleanId) !== canonicalize(globalNotFoundCssIsolationPath)
-          ) {
-            return null;
-          }
-          return isolateGlobalNotFoundStylesheetImports(code, cleanId);
-        },
-      },
-    },
+    // Runs after `vinext:jsx-in-js` so JSX in plain `.js` files has already
+    // been compiled: `vite:react-compiler` infers the source language from the
+    // file extension and cannot parse JSX inside a `.js` file.
+    reactCompilerPluginPromise,
     // Allow `import 'server-only'` from middleware (and any module reachable
     // from it) in non-RSC environments. Registered before `vinext:config` so
     // its `enforce: "pre"` resolveId runs ahead of @vitejs/plugin-rsc's

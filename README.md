@@ -629,7 +629,10 @@ npm install -D oxc-transform-react
 
 This requires `@vitejs/plugin-react` 6.1.0 or newer. Older versions accept the option and drop it, so vinext fails with an actionable error instead of leaving the compiler silently disabled. The compiler runs on the client environment only.
 
-One caveat: JSX written in plain `.js` files is compiled to JavaScript before the compiler sees it, so those modules build correctly but are not memoized. Rename them to `.jsx` or `.tsx` to get memoization.
+One caveat: modules whose JSX is lowered earlier in the pipeline are not memoized. Those build and behave correctly, they just miss auto memoization:
+
+- JSX in plain `.js` files, which `vinext:jsx-in-js` compiles first so the compiler can parse them at all. Rename to `.jsx` or `.tsx` to get memoization.
+- Components using `<style jsx>`, which `vinext:styled-jsx` compiles through the Next.js SWC transform before the compiler runs.
 
 ### Environment variable loading (`.env*`)
 

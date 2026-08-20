@@ -14,17 +14,21 @@ export function isReactCompilerRequested(reactOptions: unknown): boolean {
   return Boolean((reactOptions as { compiler?: unknown }).compiler);
 }
 
-/** Whether the resolved @vitejs/plugin-react actually registered the compiler. */
-export function hasReactCompilerPlugin(plugins: readonly unknown[]): boolean {
-  return plugins.some(
-    (plugin) =>
-      typeof plugin === "object" &&
-      plugin !== null &&
-      (plugin as { name?: unknown }).name === REACT_COMPILER_PLUGIN_NAME,
+/** Whether a plugin entry is the React Compiler plugin. */
+export function isReactCompilerPlugin(plugin: unknown): boolean {
+  return (
+    typeof plugin === "object" &&
+    plugin !== null &&
+    (plugin as { name?: unknown }).name === REACT_COMPILER_PLUGIN_NAME
   );
 }
 
-/** Error thrown when `react: { compiler: true }` cannot be honored. */
+/** Whether the resolved @vitejs/plugin-react actually registered the compiler. */
+export function hasReactCompilerPlugin(plugins: readonly unknown[]): boolean {
+  return plugins.some(isReactCompilerPlugin);
+}
+
+/** Message for when `react: { compiler: true }` cannot be honored. */
 export function reactCompilerUnsupportedMessage(installCommand: string): string {
   return (
     "vinext: `react: { compiler: true }` requires @vitejs/plugin-react 6.1 or newer.\n" +
