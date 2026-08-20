@@ -148,6 +148,11 @@ import {
   formatMissingCloudflarePluginError,
   hasWranglerConfig,
 } from "./utils/project.js";
+import {
+  hasReactCompilerPlugin,
+  isReactCompilerRequested,
+  reactCompilerUnsupportedMessage,
+} from "./utils/react-compiler-support.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
 import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
@@ -1736,7 +1741,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             },
           };
         };
-        const buildPlugins = react(reactOptions).map((plugin) =>
+        const resolvedBuildPlugins = react(reactOptions);
+        if (
+          isReactCompilerRequested(configuredReactOptions) &&
+          !hasReactCompilerPlugin(resolvedBuildPlugins)
+        ) {
+          throw new Error(reactCompilerUnsupportedMessage(detectPackageManager(process.cwd())));
+        }
+        const buildPlugins = resolvedBuildPlugins.map((plugin) =>
           limitToCommand(plugin as Plugin, "build"),
         );
         const hasConfiguredReactInclude =

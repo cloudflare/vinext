@@ -12,6 +12,11 @@ import path from "node:path";
 import { createBuilder } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import {
+  hasReactCompilerPlugin,
+  isReactCompilerRequested,
+  REACT_COMPILER_PLUGIN_NAME,
+} from "../packages/vinext/src/utils/react-compiler-support.js";
 import { APP_FIXTURE_DIR } from "./helpers.js";
 
 /**
@@ -87,4 +92,23 @@ describe("React Compiler", () => {
 
     await expect(buildFixture({ compiler: true })).resolves.toBeDefined();
   }, 240_000);
+});
+
+describe("React Compiler support detection", () => {
+  it("only treats a truthy compiler option as a request", () => {
+    expect(isReactCompilerRequested({ compiler: true })).toBe(true);
+    expect(isReactCompilerRequested({ compiler: { target: "19" } })).toBe(true);
+    expect(isReactCompilerRequested({ compiler: false })).toBe(false);
+    expect(isReactCompilerRequested({})).toBe(false);
+    expect(isReactCompilerRequested(undefined)).toBe(false);
+  });
+
+  it("detects whether the resolved plugin registered the compiler", () => {
+    // @vitejs/plugin-react 6.1+ adds this plugin; 6.0 drops the unknown option.
+    expect(hasReactCompilerPlugin([{ name: "vite:react-babel" }])).toBe(false);
+    expect(
+      hasReactCompilerPlugin([{ name: "vite:react-babel" }, { name: REACT_COMPILER_PLUGIN_NAME }]),
+    ).toBe(true);
+    expect(hasReactCompilerPlugin([null, undefined, false])).toBe(false);
+  });
 });
