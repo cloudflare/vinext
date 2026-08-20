@@ -3,6 +3,9 @@ import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { parseAst, type Plugin } from "vite";
 import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
+import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
+import { staticStringValue, walkAst } from "./ast-utils.js";
+import { magicStringTransformResult } from "./transform-result.js";
 
 const WORKER_IMAGE_METADATA_PREFIX = "\0vinext-worker-image-meta:";
 // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
@@ -11,7 +14,6 @@ const WORKER_SCRIPT_RE = /\.(?:[cm]?[jt]sx?)$/;
 const WORKER_IMAGE_DYNAMIC_IMPORT_RE =
   /import\(\s*["'][^"']+\.(?:png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?)["']\s*\)/;
 const WORKER_IMAGE_EXTENSION_RE = /\.(?:png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?)$/;
-const NODE_MODULES_PATH_RE = /[\\/]node_modules[\\/]/;
 
 type AstNode = {
   type?: string;
@@ -22,21 +24,6 @@ type AstNode = {
   source?: AstNode;
   value?: unknown;
 };
-
-function staticStringNodeValue(value: unknown): string | null {
-  if (!value || typeof value !== "object") return null;
-  const node = value as AstNode;
-  if (node.type === "Literal" && typeof node.value === "string") return node.value;
-  if (
-    node.type === "TemplateLiteral" &&
-    node.expressions?.length === 0 &&
-    node.quasis?.length === 1 &&
-    typeof node.quasis[0]?.value?.cooked === "string"
-  ) {
-    return node.quasis[0].value.cooked;
-  }
-  return null;
-}
 
 function workerChunkSpecifier(hostFileName: string, targetFileName: string): string {
   const relative = path.relative(path.dirname(hostFileName), targetFileName);
@@ -94,7 +81,7 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
         code: WORKER_IMAGE_DYNAMIC_IMPORT_RE,
       },
       async handler(code, id) {
-        const sourceId = toSlash(id.split("?", 1)[0] ?? id);
+        const sourceId = toSlash(stripViteModuleQuery(id));
         let ast: ReturnType<typeof parseAst>;
         try {
           ast = parseAst(code, { lang: /\.(?:[cm]?ts)$/.test(sourceId) ? "ts" : "tsx" });
@@ -109,8 +96,7 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
           start: number;
         }> = [];
 
-        const visit = (value: unknown): void => {
-          if (!value || typeof value !== "object") return;
+        walkAst(ast, (value) => {
           const node = value as AstNode;
           if (
             node.type === "ImportExpression" &&
@@ -125,23 +111,13 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
               importPath: node.source.value,
               start: node.start,
             });
-            return;
+            return false;
           }
-
-          for (const child of Object.values(value)) {
-            if (Array.isArray(child)) {
-              for (const item of child) visit(item);
-            } else {
-              visit(child);
-            }
-          }
-        };
-
-        visit(ast);
+        });
         let changed = false;
         for (const imageImport of imageImports) {
           const resolved = await this.resolve(imageImport.importPath, sourceId, { skipSelf: true });
-          const resolvedId = resolved?.id.split("?", 1)[0];
+          const resolvedId = resolved ? stripViteModuleQuery(resolved.id) : undefined;
           const imagePath = resolvedId
             ? toSlash(resolvedId)
             : imageImport.importPath.startsWith(".")
@@ -159,7 +135,7 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
           changed = true;
         }
         if (!changed) return null;
-        return { code: output.toString(), map: output.generateMap({ hires: "boundary" }) };
+        return magicStringTransformResult(output);
       },
     },
 
@@ -183,8 +159,7 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
 
         const output = new MagicString(code);
         let changed = false;
-        const visit = (value: unknown): void => {
-          if (!value || typeof value !== "object") return;
+        walkAst(ast, (value) => {
           const node = value as AstNode;
           const source =
             node.type === "ImportExpression" ||
@@ -193,7 +168,7 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
             node.type === "ExportAllDeclaration"
               ? node.source
               : null;
-          const specifier = staticStringNodeValue(source);
+          const specifier = staticStringValue(source);
           if (
             specifier !== null &&
             chunkSpecifiers.has(specifier) &&
@@ -206,21 +181,11 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
               JSON.stringify(appendDeploymentIdQuery(specifier, options.deploymentId)),
             );
             changed = true;
-            return;
+            return false;
           }
-
-          for (const child of Object.values(value)) {
-            if (Array.isArray(child)) {
-              for (const item of child) visit(item);
-            } else {
-              visit(child);
-            }
-          }
-        };
-
-        visit(ast);
+        });
         if (!changed) return null;
-        return { code: output.toString(), map: output.generateMap({ hires: "boundary" }) };
+        return magicStringTransformResult(output);
       },
     },
   };

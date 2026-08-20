@@ -1,7 +1,28 @@
+import type { Metadata } from "next";
 import { Dashboard } from "./components/dashboard";
 import { getPerformanceRuns } from "@/app/lib/benchmarks/server";
 
 export const revalidate = 300;
+
+const title = "Performance benchmarks — vinext";
+const description =
+  "Compare vinext and Next.js production build time, dev server startup, and bundle size.";
+
+export const metadata: Metadata = {
+  title,
+  description,
+  alternates: {
+    canonical: "/benchmarks",
+  },
+  openGraph: {
+    type: "website",
+    locale: "en_US",
+    siteName: "vinext",
+    title,
+    description,
+    url: "/benchmarks",
+  },
+};
 
 /**
  * Homepage — server component shell.

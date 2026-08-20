@@ -1082,8 +1082,12 @@ describe("App Router entry templates", () => {
   it("promotes interception-only RSC targets before not-found dispatch", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain("matchInterceptRoute(pathname, sourcePathname)");
-    expect(code).toContain("const intercept = findIntercept(pathname, sourcePathname)");
+    expect(code).toContain("matchInterceptRoute(pathname, sourcePathname, interceptionId)");
+    expect(code).toContain("hasInterceptionId(interceptionId)");
+    expect(code).toContain("return __routeMatcher.hasInterceptionId(interceptionId)");
+    expect(code).toContain(
+      "const intercept = findIntercept(pathname, sourcePathname, interceptionId)",
+    );
     expect(code).toContain("const route = routes[intercept.sourceRouteIndex]");
     expect(code).toContain("intercept.sourceMatchedParams");
     expect(code).toContain("return { route, params }");
@@ -1190,7 +1194,8 @@ describe("App Router entry templates", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
     expect(code).toContain('import { createAppRscHandler } from "vinext/server/app-rsc-handler";');
-    expect(code).toContain("export default createAppRscHandler({");
+    expect(code).toContain("const __appRscHandler = createAppRscHandler({");
+    expect(code).toContain("export default __appRscHandler;");
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 
@@ -1327,12 +1332,39 @@ describe("App Router entry templates", () => {
     );
     expect(code).toContain('const __loadAppRouteHandlerDispatch = () => import("');
     expect(code).toContain('const __loadAppServerActionExecution = () => import("');
+    expect(code).toContain("/server/app-server-action-execution.js");
+    expect(code).toContain("/server/app-action-forwarding.js");
+    expect(code).not.toContain('import("vinext/internal/server/');
     expect(code).toContain("await __loadAppRouteHandlerDispatch()");
     expect(code).toContain("await __loadAppServerActionExecution()");
     expect(code).not.toMatch(/import \{\s*dispatchAppRouteHandler as __dispatchAppRouteHandler,/);
     expect(code).not.toMatch(
       /import \{\s*handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,/,
     );
+  });
+
+  it("generateRscEntry delegates action forwarding to the typed runtime", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain("const __loadAppActionForwarding = () => import(");
+    expect(code).toContain("forwardServerActionIfNeeded: __forwardServerActionIfNeeded");
+    expect(code).toContain("await __forwardServerActionIfNeeded({");
+    expect(code).toContain(
+      'import __vinextActionOwners from "virtual:vinext-action-owner-manifest";',
+    );
+    expect(code).toContain("function __VINEXT_ACTION_OWNERS() { return __vinextActionOwners; }");
+    expect(code).not.toContain("next/dist/server/web/spec-extension/cookies");
+    expect(code).not.toContain("function __mergeActionForwardCookies");
+    expect(code).not.toContain("const __ACTION_FORWARD_FORBIDDEN_HEADERS");
+  });
+
+  it("generateRscEntry disables action forwarding when ownership is unavailable", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      actionOwners: null,
+    });
+
+    expect(code).toContain("function __VINEXT_ACTION_OWNERS() { return null; }");
+    expect(code).not.toContain("virtual:vinext-action-owner-manifest");
   });
 
   it("generateRscEntry omits server action imports when no server references were found", () => {
@@ -1349,6 +1381,7 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("createTemporaryReferenceSet,");
     expect(code).not.toContain("handleProgressiveActionRequest({");
     expect(code).not.toContain("handleServerActionRequest({");
+    expect(code).not.toContain("app-action-forwarding.js");
   });
 
   it("generateRscEntry passes parallel route segment config into App page dispatch", () => {

@@ -3,17 +3,17 @@ import { NavInfo } from "../nav-info";
 /**
  * Dynamic-segment page for the nav-context-hydration regression fixture.
  *
- * The [id] segment exercises the params-carrying side of __VINEXT_RSC_NAV__:
- * both __VINEXT_RSC_PARAMS__ and the params field passed to setNavigationContext
- * must reflect the matched segment value so that useParams() returns the right
- * thing during hydration.
+ * The [id] segment exercises the params-carrying side of the navigation runtime
+ * RSC bootstrap. Its params field and the value passed to setNavigationContext
+ * must reflect the matched segment so useParams() returns the right value during
+ * hydration.
  *
  * The test verifies:
  *  1. The SSR HTML renders the correct pathname (e.g. "/nextjs-compat/nav-context-hydration/hello")
- *  2. __VINEXT_RSC_NAV__ in the HTML payload carries that same pathname
- *  3. __VINEXT_RSC_PARAMS__ carries { id: "hello" }
+ *  2. The HTML bootstrap carries that same pathname
+ *  3. The bootstrap params carry { id: "hello" }
  *
- * Without the __VINEXT_RSC_NAV__ fix, getServerSnapshot returns "/" during
+ * Without the navigation bootstrap, getServerSnapshot returns "/" during
  * hydration even though SSR rendered the real pathname, triggering React
  * hydration mismatch error #418.
  */

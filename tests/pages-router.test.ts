@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
-import { createServer, build, type ViteDevServer } from "vite-plus";
+import { createBuilder, createServer, build, type ViteDevServer } from "vite-plus";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import path from "node:path";
 import fs from "node:fs";
@@ -732,6 +732,37 @@ describe("Pages Router integration", () => {
     expect(glob).toContain("instrumentation-client.ts");
   });
 
+  it("handles bundled Pages SSR CommonJS without enabling dependency discovery", () => {
+    const optimizeDeps = server.config.environments.ssr?.optimizeDeps;
+    const exclude = optimizeDeps?.exclude ?? [];
+
+    expect(optimizeDeps?.noDiscovery).not.toBe(false);
+    expect(exclude).toEqual(
+      expect.arrayContaining(["ipaddr.js", "vinext", "vinext/shims/link", "next/link"]),
+    );
+    for (const reactEntry of ["react", "react-dom", "react-dom/server"]) {
+      expect(exclude).not.toContain(reactEntry);
+    }
+    expect(server.config.environments.ssr?.resolve?.external).toEqual(
+      expect.arrayContaining(["react", "react-dom", "react-dom/server"]),
+    );
+    expect(optimizeDeps?.rolldownOptions?.plugins).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "vinext:import-meta-url:optimize-deps" }),
+      ]),
+    );
+    expect(server.config.plugins).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "vinext:import-meta-url" })]),
+    );
+    expect(
+      server.config.plugins.filter((plugin) =>
+        ["vinext:serve-dependency-cjs-globals", "vinext:build-chunk-cjs-globals"].includes(
+          plugin.name,
+        ),
+      ),
+    ).toEqual([]);
+  });
+
   it("resolves tsconfig path aliases (@/ imports)", async () => {
     const res = await fetch(`${baseUrl}/alias-test`);
     expect(res.status).toBe(200);
@@ -749,6 +780,22 @@ describe("Pages Router integration", () => {
     const html = await res.text();
     expect(html).toContain("About");
     expect(html).toContain("This is the about page.");
+  });
+
+  // Next.js supports bundling Pages Router dependencies. The upstream test
+  // verifies bundle inclusion, while this fixture separately exercises an
+  // actual CJS dependency whose export is computed from __dirname at load.
+  // Related Next.js coverage:
+  // test/e2e/externals-pages-bundle/externals-pages-bundle.test.ts
+  // https://github.com/vercel/next.js/blob/d470d18941a46a6bdd655ec63179eb60e6b44577/test/e2e/externals-pages-bundle/externals-pages-bundle.test.ts
+  it("loads a bundled CommonJS dependency that reads its module directory", async () => {
+    const res = await fetch(`${baseUrl}/cjs-dependency-globals`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toMatch(
+      /<p id="runtime-path">.*next\/dist\/compiled\/regenerator-runtime\/runtime\.js<\/p>/,
+    );
   });
 
   // Refs #1463: Pages Router should reject non-GET/HEAD methods to static
@@ -1207,6 +1254,11 @@ describe("Pages Router integration", () => {
     // Should render the custom 404 page
     expect(html).toContain("404 - Page Not Found");
     expect(html).toContain("does not exist");
+    const nextDataMatch = html.match(
+      /<script id="__NEXT_DATA__" type="application\/json"(?: nonce="[^"]+")?>([\s\S]*?)<\/script>/,
+    );
+    expect(nextDataMatch).toBeTruthy();
+    expect(JSON.parse(nextDataMatch![1]).buildId).toBe("test-build-id");
   });
 
   // Ported from Next.js: test/e2e/not-found-revalidate/not-found-revalidate.test.ts
@@ -1503,6 +1555,59 @@ export default function Page({ marker }: { marker: string }) {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();
     expect(html).toContain("__NEXT_DATA__");
+  });
+
+  it("emits the resolved dev build ID so Pages Router data requests are addressable", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-dev-build-id-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    let started: Awaited<ReturnType<typeof startFixtureServer>> | undefined;
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        `export default function Home() { return <h1>Home</h1>; }\n`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "about.tsx"),
+        `export function getServerSideProps() {
+  return { props: { source: "about-data" } };
+}
+export default function About({ source }) { return <h1>{source}</h1>; }
+`,
+      );
+      started = await startFixtureServer(tmpRoot);
+      const response = await fetch(`${started.baseUrl}/`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      const nextDataMatch = html.match(
+        /<script id="__NEXT_DATA__" type="application\/json"(?: nonce="[^"]+")?>([\s\S]*?)<\/script>/,
+      );
+      expect(nextDataMatch).toBeTruthy();
+      const nextData = JSON.parse(nextDataMatch![1]) as { buildId?: string };
+
+      // Next.js' dev server returns "development" from getBuildId(), and its
+      // renderer always serializes that value into __NEXT_DATA__. Vinext may
+      // resolve an opaque ID instead, but the emitted value must be present and
+      // accepted by the dev data-route parser.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/dev/next-dev-server.ts
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+      expect(nextData.buildId).toEqual(expect.any(String));
+      expect(nextData.buildId).not.toHaveLength(0);
+
+      const dataResponse = await fetch(
+        `${started.baseUrl}/_next/data/${nextData.buildId}/about.json`,
+      );
+      expect(dataResponse.status).toBe(200);
+      await expect(dataResponse.json()).resolves.toMatchObject({
+        pageProps: { source: "about-data" },
+      });
+    } finally {
+      await started?.server.close();
+      await fsp.rm(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   // Dev/prod parity: the production client entry exposes
@@ -5345,10 +5450,12 @@ export const config = { matcher: ["/protected"] };
 
     // The entry chunk should stay small: it contains the hydration bootstrap
     // and this fixture's generated route table, but not the React framework.
-    // Before code-splitting this was ~200KB+.
+    // Before code-splitting this was ~200KB+. This shared fixture grows with
+    // parity routes, so allow their generated route-table entries while
+    // retaining a tight guard against framework code entering the bootstrap.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(27 * 1024); // < 27 KB
+      expect(entrySize).toBeLessThan(28 * 1024); // < 28 KB
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
@@ -6762,6 +6869,110 @@ export default function CounterPage() {
     expect(result.continue).toBe(false);
     expect(result.response).toBeInstanceOf(Response);
     expect(result.response.status).toBe(500);
+  });
+});
+
+describe("Pages bundled CommonJS dependency in a relocated production build", () => {
+  let tmpDir: string;
+  let deployOutDir: string;
+  let canonicalDeployOutDir: string;
+  let prodServer: import("node:http").Server | undefined;
+  let prodUrl: string;
+
+  beforeAll(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-cjs-dependency-prod-"));
+    const sourceRoot = path.join(tmpDir, "source");
+    const buildOutDir = path.join(sourceRoot, "dist");
+    deployOutDir = path.join(tmpDir, "deployed-output");
+    await fsp.mkdir(path.join(sourceRoot, "pages"), { recursive: true });
+    await fsp.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(sourceRoot, "node_modules"),
+      "junction",
+    );
+    await fsp.writeFile(path.join(sourceRoot, "package.json"), JSON.stringify({ type: "module" }));
+    await fsp.writeFile(
+      path.join(sourceRoot, "pages", "_app.tsx"),
+      `export default function App({ Component, pageProps }) {
+  return <Component {...pageProps} />;
+}
+`,
+    );
+    await fsp.writeFile(
+      path.join(sourceRoot, "pages", "async-module.tsx"),
+      `const value = await Promise.resolve(42);
+export default function AsyncPage() {
+  return <p>{value}</p>;
+}
+`,
+    );
+    await fsp.writeFile(
+      path.join(sourceRoot, "pages", "cjs-dependency-globals.jsx"),
+      `import regeneratorRuntimePath from "next/dist/compiled/regenerator-runtime/path";
+export function getServerSideProps() {
+  return { props: { runtimePath: regeneratorRuntimePath.path } };
+}
+export default function Page({ runtimePath }) {
+  return <p id="runtime-path">{runtimePath}</p>;
+}
+`,
+    );
+
+    const builder = await createBuilder({
+      root: sourceRoot,
+      configFile: false,
+      plugins: [
+        vinext({ disableAppRouter: true }),
+        {
+          name: "test:pages-server-top-level-await",
+          apply: "build",
+          renderChunk(code) {
+            if (this.environment?.config.consumer !== "server") return null;
+            return `${code}\nawait Promise.resolve();\n`;
+          },
+        },
+      ],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+    await fsp.cp(buildOutDir, deployOutDir, { recursive: true });
+    canonicalDeployOutDir = toSlash(await fsp.realpath(deployOutDir));
+
+    const serverEntry = await fsp.readFile(path.join(deployOutDir, "server", "entry.js"), "utf8");
+    expect(serverEntry).toContain("await ");
+    expect(serverEntry).toContain("import.meta.dirname");
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    prodServer = unwrapStartedProdServer(
+      await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir: deployOutDir,
+      }),
+    );
+    const addr = prodServer.address() as { port: number };
+    prodUrl = `http://127.0.0.1:${addr.port}`;
+  }, 120000);
+
+  afterAll(async () => {
+    if (prodServer) {
+      await new Promise<void>((resolve) => prodServer!.close(() => resolve()));
+    }
+    if (tmpDir) {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Next's Node-target webpack bundle leaves __dirname relative to the emitted
+  // chunk, so relocating the output also relocates the computed path. Do not
+  // bake the build machine's node_modules path into a deployable bundle.
+  it("keeps CommonJS globals relative to the deployed server chunk", async () => {
+    const res = await fetch(`${prodUrl}/cjs-dependency-globals`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain(`<p id="runtime-path">${canonicalDeployOutDir}/server/runtime.js</p>`);
+    expect(html).not.toContain("/node_modules/");
   });
 });
 

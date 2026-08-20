@@ -78,10 +78,6 @@ export function getEncodingQuality(parsed: ParsedAcceptEncoding, encoding: strin
   return 0;
 }
 
-export function isEncodingAccepted(parsed: ParsedAcceptEncoding, encoding: string): boolean {
-  return getEncodingQuality(parsed, encoding) > 0;
-}
-
 /** Choose the highest-quality available coding, using array order as the tie-breaker. */
 export function selectAcceptedEncoding<T extends string>(
   parsed: ParsedAcceptEncoding,

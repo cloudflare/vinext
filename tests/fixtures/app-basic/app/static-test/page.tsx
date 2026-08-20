@@ -10,6 +10,8 @@ export default function StaticTestPage() {
       <p>
         Rendered at: <span data-testid="timestamp">{timestamp}</span>
       </p>
+      <ForceStaticSearchParams />
     </div>
   );
 }
+import ForceStaticSearchParams from "./search-params";

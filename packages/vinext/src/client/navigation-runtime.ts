@@ -2,7 +2,7 @@ import type { RouteManifest, RouteManifestInterception } from "../routing/app-ro
 import { isUnknownRecord } from "../utils/record.js";
 import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
 
-export type NavigationRuntimeSnapshot = {
+type NavigationRuntimeSnapshot = {
   pathname: string;
   searchParams: [string, string][];
 };
@@ -13,6 +13,7 @@ export type NavigationRuntimeRscBootstrap = {
   done?: boolean;
   dynamicStaleTimeSeconds?: number;
   initialCacheKind?: "dynamic" | "static";
+  searchParamsFromBrowser?: boolean;
   nav?: NavigationRuntimeSnapshot;
   params?: Record<string, string | string[]>;
   rsc: NavigationRuntimeRscChunk[];
@@ -77,6 +78,14 @@ export type NavigationRuntimeFunctions = {
   notifyLinkNavigationStart?: () => void;
   pingVisibleLinks?: () => void;
   preparePrefetchResponse?: (response: Response) => Promise<unknown>;
+  claimCurrentHistoryTreeSnapshot?: (
+    historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
+    previousHistoryState: unknown,
+  ) => void;
+  commitAppOwnedHistoryStateWrite?: (
+    historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
+    previousHistoryState: unknown,
+  ) => void;
 };
 
 export type NavigationRuntimeBootstrap = {
@@ -132,7 +141,9 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "getPrefetchRouterState")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
-    isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse"))
+    isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "claimCurrentHistoryTreeSnapshot")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "commitAppOwnedHistoryStateWrite"))
   );
 }
 
@@ -174,6 +185,7 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
   const done = Reflect.get(value, "done");
   const dynamicStaleTimeSeconds = Reflect.get(value, "dynamicStaleTimeSeconds");
   const initialCacheKind = Reflect.get(value, "initialCacheKind");
+  const searchParamsFromBrowser = Reflect.get(value, "searchParamsFromBrowser");
   const nav = Reflect.get(value, "nav");
   const params = Reflect.get(value, "params");
   const rsc = Reflect.get(value, "rsc");
@@ -187,6 +199,7 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
     (initialCacheKind === undefined ||
       initialCacheKind === "dynamic" ||
       initialCacheKind === "static") &&
+    (searchParamsFromBrowser === undefined || typeof searchParamsFromBrowser === "boolean") &&
     (nav === undefined || isNavigationRuntimeSnapshot(nav)) &&
     (params === undefined || isNavigationRuntimeParams(params)) &&
     Array.isArray(rsc) &&
@@ -340,14 +353,6 @@ function ensureNavigationRuntimeRscBootstrapForRuntime(
   }
 
   return rscBootstrap;
-}
-
-export function subscribeNavigationRuntimeRscChunk(
-  chunk: NavigationRuntimeRscChunk,
-): NavigationRuntime {
-  const runtime = ensureNavigationRuntime();
-  ensureNavigationRuntimeRscBootstrapForRuntime(runtime).rsc.push(chunk);
-  return runtime;
 }
 
 export function hasAppNavigationRuntime(): boolean {

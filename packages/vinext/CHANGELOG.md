@@ -1,5 +1,44 @@
 # vinext
 
+## 1.0.0-beta.7
+
+### Bug Fixes
+
+#### App Router
+
+- route server actions through their owning pages (#2520)
+- restore shallow history tree snapshots (#2885)
+- preserve static hydration search params (#2944)
+- settle optimistic search navigations (#2952)
+- retain shared layouts across loading shells (#2940)
+- match current navigation identity (#2876)
+- retain loading shell prefetches (#2938)
+
+#### Build
+
+- preserve bundled ESM module identity (#2942)
+- preserve portable CommonJS module identity (#2826)
+- preserve require export conditions (#2881)
+- support deployed web worker graphs (#2314)
+- make vinext shim chunk rule reachable for installed copies (#2795)
+
+#### Misc
+
+- **Cache:** inherit route revalidate for tagged fetches (#2985)
+- **Security:** validate supplemental interception selectors (#2976)
+- **Router:** refresh retained parallel routes (#2880)
+- **Pages Router:** emit dev build ID in next data (#2962)
+- **Cache:** reject unserializable use cache results (#2954)
+- **Pages:** align GSSP client transitions (#2240)
+- **Fonts:** normalize self-hosted URLs on Windows (#2934)
+- **RSC:** web crypto subtle api is unavailable in non-secure contexts (#2929)
+
+### Contributors
+
+- @james-elicx
+- @Jbithell
+- @NriotHrreion
+
 ## 1.0.0-beta.6
 
 ### Features

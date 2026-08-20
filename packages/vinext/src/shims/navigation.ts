@@ -28,6 +28,7 @@ import { resolveManifestNavigationInterceptionContext } from "../server/app-brow
 import {
   createExternalHistoryStatePreservingMetadata,
   createHashOnlyHistoryStatePreservingNavigationMetadata,
+  isAppOwnedHistoryState,
 } from "../server/app-history-state.js";
 import {
   createRscRequestHeaders,
@@ -3223,11 +3224,29 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
+      // Match Next.js' `data?.__NA` escape hatch. Reusing a captured internal
+      // history entry must remain a real traversal target so back/forward can
+      // fetch it (and follow redirects) instead of treating it as a copied
+      // shallow tree.
+      if (isAppOwnedHistoryState(data)) {
+        const previousHistoryState = window.history.state;
+        state.originalPushState.call(window.history, data, unused, url);
+        getNavigationRuntime()?.functions.commitAppOwnedHistoryStateWrite?.(
+          "push",
+          previousHistoryState,
+        );
+        return;
+      }
+      const previousHistoryState = window.history.state;
       state.originalPushState.call(
         window.history,
         createExternalHistoryStatePreservingMetadata(data, window.history.state),
         unused,
         url,
+      );
+      getNavigationRuntime()?.functions.claimCurrentHistoryTreeSnapshot?.(
+        "push",
+        previousHistoryState,
       );
       if (state.suppressUrlNotifyCount === 0) {
         // A raw history.pushState (shallow routing) supersedes a pending link,
@@ -3243,11 +3262,25 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
+      if (isAppOwnedHistoryState(data)) {
+        const previousHistoryState = window.history.state;
+        state.originalReplaceState.call(window.history, data, unused, url);
+        getNavigationRuntime()?.functions.commitAppOwnedHistoryStateWrite?.(
+          "replace",
+          previousHistoryState,
+        );
+        return;
+      }
+      const previousHistoryState = window.history.state;
       state.originalReplaceState.call(
         window.history,
         createExternalHistoryStatePreservingMetadata(data, window.history.state),
         unused,
         url,
+      );
+      getNavigationRuntime()?.functions.claimCurrentHistoryTreeSnapshot?.(
+        "replace",
+        previousHistoryState,
       );
       if (state.suppressUrlNotifyCount === 0) {
         resetStaleLinkStatus();

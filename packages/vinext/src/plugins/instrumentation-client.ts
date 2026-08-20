@@ -1,6 +1,8 @@
 import type { Plugin } from "vite";
 import { normalizePath, parseAst } from "vite";
 import MagicString from "magic-string";
+import { stripViteModuleQuery } from "../utils/path.js";
+import { magicStringTransformResult } from "./transform-result.js";
 
 export function createInstrumentationClientTransformPlugin(
   getInstrumentationClientPath: () => string | null,
@@ -14,7 +16,7 @@ export function createInstrumentationClientTransformPlugin(
 
       // findInstrumentationClientFile already returns a POSIX path, so only the
       // incoming id needs normalizing before the comparison.
-      const normalizedId = normalizePath(id.split("?", 1)[0]);
+      const normalizedId = normalizePath(stripViteModuleQuery(id));
       if (normalizedId !== instrumentationClientPath) return null;
       if (code.includes("__vinextInstrumentationClientStart")) return null;
 
@@ -40,10 +42,7 @@ export function createInstrumentationClientTransformPlugin(
           "}\n",
       );
 
-      return {
-        code: s.toString(),
-        map: s.generateMap({ hires: true }),
-      };
+      return magicStringTransformResult(s, { hires: true });
     },
   };
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -23,6 +23,15 @@ import { toSlash } from "pathslash";
 function canonical(base: string, relativePath = ""): string {
   return toSlash(relativePath ? path.join(base, relativePath) : base);
 }
+
+// Each case rebuilds the App Router graph from a real fixture directory, and
+// the graph cache holds a single appDir at a time, so cases that interleave the
+// shared fixture with per-test temp dirs rebuild from scratch dozens of times.
+// On Windows the filesystem scan is far slower than on Linux, and under the
+// unit project's parallelism a single rebuild can exceed the 5s default. Give
+// only Windows the integration project's headroom so these fs-bound cases don't
+// time out; Linux keeps the default.
+if (process.platform === "win32") vi.setConfig({ testTimeout: 30000 });
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
 const EMPTY_PAGE = "export default function Page() { return null; }\n";

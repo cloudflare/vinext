@@ -150,13 +150,16 @@ class UrlNode {
 export function patternToNextFormat(pattern: string): string {
   if (pattern === "/") return "/";
 
-  // Match any non-/ param name. Non-greedy with lookahead ensures the
-  // +/* suffix is consumed as a modifier, not swallowed into the param name
-  // when the name itself contains + or * internally (e.g. :c++lang → [c++lang]).
   return pattern
-    .replace(/:([^/]+?)\+(?=\/|$)/g, "[...$1]")
-    .replace(/:([^/]+?)\*(?=\/|$)/g, "[[...$1]]")
-    .replace(/:([^/]+?)(?=\/|$)/g, "[$1]");
+    .split("/")
+    .map((segment) => {
+      if (!segment.startsWith(":")) return segment;
+      const parameter = segment.slice(1);
+      if (parameter.endsWith("+")) return `[...${parameter.slice(0, -1)}]`;
+      if (parameter.endsWith("*")) return `[[...${parameter.slice(0, -1)}]]`;
+      return `[${parameter}]`;
+    })
+    .join("/");
 }
 
 function normalizeRoutePattern(pattern: string): string {

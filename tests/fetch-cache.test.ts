@@ -45,6 +45,7 @@ const {
   runWithFetchCache,
   getCollectedFetchTags,
   setCurrentFetchCacheMode,
+  setCurrentFetchRevalidate,
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
@@ -56,7 +57,8 @@ const {
 } = await import("../packages/vinext/src/shims/fetch-cache.js");
 const { getCacheHandler, revalidatePath, revalidateTag, MemoryCacheHandler, setCacheHandler } =
   await import("../packages/vinext/src/shims/cache.js");
-const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
+const { consumeDynamicUsage, setHeadersContext } =
+  await import("../packages/vinext/src/shims/headers.js");
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
 const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
@@ -799,6 +801,181 @@ describe("fetch cache shim", () => {
   });
 
   // ── Tag-based invalidation ──────────────────────────────────────────
+
+  it("tags-only fetch inherits the active route revalidate", async () => {
+    setCurrentFetchRevalidate(60);
+
+    await fetch("https://api.example.com/route-revalidate", {
+      next: { tags: ["route-revalidate"] },
+    });
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    const entries = [...store.values()];
+    expect(entries).toHaveLength(1);
+    expect(entries[0].value).toMatchObject({
+      kind: "FETCH",
+      revalidate: 60,
+      tags: ["route-revalidate"],
+    });
+  });
+
+  it("explicit fetch revalidate overrides the active route revalidate", async () => {
+    setCurrentFetchRevalidate(60);
+
+    await fetch("https://api.example.com/explicit-fetch-revalidate", {
+      next: { revalidate: 5, tags: ["explicit-fetch-revalidate"] },
+    });
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    expect([...store.values()][0].value.revalidate).toBe(5);
+  });
+
+  it("tags-only fetch inherits an earlier shorter explicit fetch revalidate", async () => {
+    setCurrentFetchRevalidate(60);
+
+    await fetch("https://api.example.com/shorter-explicit-revalidate", {
+      next: { revalidate: 5 },
+    });
+    await fetch("https://api.example.com/inherit-shorter-revalidate", {
+      next: { tags: ["inherit-shorter-revalidate"] },
+    });
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    const revalidateByUrl = new Map(
+      [...store.values()].map((entry) => [entry.value.data.url, entry.value.revalidate]),
+    );
+    expect(revalidateByUrl).toEqual(
+      new Map([
+        ["https://api.example.com/shorter-explicit-revalidate", 5],
+        ["https://api.example.com/inherit-shorter-revalidate", 5],
+      ]),
+    );
+  });
+
+  it("tags-only fetch is uncached after an earlier zero revalidate fetch", async () => {
+    setCurrentFetchRevalidate(60);
+
+    await fetch("https://api.example.com/zero-explicit-revalidate", {
+      next: { revalidate: 0 },
+    });
+    await fetch("https://api.example.com/inherit-zero-revalidate", {
+      next: { tags: ["inherit-zero-revalidate"] },
+    });
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    expect(store).toHaveLength(0);
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  it("force-static preserves the route revalidate after a zero revalidate fetch", async () => {
+    setHeadersContext({
+      cookies: new Map(),
+      forceStatic: true,
+      headers: new Headers(),
+    });
+    try {
+      setCurrentFetchRevalidate(60);
+
+      await fetch("https://api.example.com/force-static-zero-revalidate", {
+        next: { revalidate: 0 },
+      });
+      await fetch("https://api.example.com/force-static-route-revalidate", {
+        next: { tags: ["force-static-route-revalidate"] },
+      });
+
+      const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+      const store = (handler as any).store as Map<string, any>;
+      expect([...store.values()][0].value.revalidate).toBe(60);
+      expect(consumeDynamicUsage()).toBe(false);
+    } finally {
+      setHeadersContext(null);
+    }
+  });
+
+  it("explicit indefinite fetch caching overrides the active route revalidate", async () => {
+    setCurrentFetchRevalidate(60);
+
+    await fetch("https://api.example.com/revalidate-false", {
+      next: { revalidate: false, tags: ["revalidate-false"] },
+    });
+    await fetch("https://api.example.com/force-cache", {
+      cache: "force-cache",
+      next: { tags: ["force-cache"] },
+    });
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    expect([...store.values()].map((entry) => entry.value.revalidate)).toEqual([
+      31_536_000, 31_536_000,
+    ]);
+  });
+
+  it("resets the active route revalidate between fetch-cache scopes", async () => {
+    setCurrentFetchRevalidate(60);
+    cleanup?.();
+    cleanup = withFetchCache();
+
+    await fetch("https://api.example.com/no-route-revalidate", {
+      next: { tags: ["no-route-revalidate"] },
+    });
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    expect([...store.values()][0].value.revalidate).toBe(31_536_000);
+  });
+
+  it("tags-only fetch is uncached when the active route revalidate is zero", async () => {
+    setCurrentFetchRevalidate(0);
+
+    await fetch("https://api.example.com/zero-route-revalidate", {
+      next: { tags: ["zero-route-revalidate"] },
+    });
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    expect(store).toHaveLength(0);
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  it("isolates active route revalidate across concurrent fetch-cache scopes", async () => {
+    cleanup?.();
+    cleanup = null;
+
+    await Promise.all([
+      runWithFetchCache(async () => {
+        setCurrentFetchRevalidate(10);
+        await Promise.resolve();
+        await fetch("https://api.example.com/concurrent-route-a", {
+          next: { tags: ["concurrent-route-a"] },
+        });
+      }),
+      runWithFetchCache(async () => {
+        setCurrentFetchRevalidate(20);
+        await Promise.resolve();
+        await fetch("https://api.example.com/concurrent-route-b", {
+          next: { tags: ["concurrent-route-b"] },
+        });
+      }),
+    ]);
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    const revalidateByUrl = new Map(
+      [...store.values()].map((entry) => [entry.value.data.url, entry.value.revalidate]),
+    );
+    expect(revalidateByUrl).toEqual(
+      new Map([
+        ["https://api.example.com/concurrent-route-a", 10],
+        ["https://api.example.com/concurrent-route-b", 20],
+      ]),
+    );
+
+    cleanup = withFetchCache();
+  });
 
   it("next.tags caches and revalidateTag invalidates", async () => {
     const res1 = await fetch("https://api.example.com/posts", {

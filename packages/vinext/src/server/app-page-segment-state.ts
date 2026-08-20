@@ -18,6 +18,23 @@ type AppPageSegmentParam = {
   type: AppPageSegmentParamType;
 };
 
+function canonicalizeAppPageParam(value: string): string {
+  try {
+    return encodeURIComponent(decodeURIComponent(value));
+  } catch {
+    return value;
+  }
+}
+
+export function canonicalizeAppPageParams(params: AppPageParams): void {
+  for (const key of Object.keys(params)) {
+    const value = params[key];
+    params[key] = Array.isArray(value)
+      ? value.map(canonicalizeAppPageParam)
+      : canonicalizeAppPageParam(value);
+  }
+}
+
 function formatParamSegmentValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) {
     return value.join("/");
@@ -182,19 +199,6 @@ export function resolveAppPagePatternStateKey(
     }),
     params,
   );
-}
-
-export function resolveAppPageLeafSegmentStateKey(
-  routeSegments: readonly string[],
-  params: AppPageParams,
-): string {
-  for (let treePosition = routeSegments.length - 1; treePosition >= 0; treePosition--) {
-    const segmentStateKey = resolveAppPageSegmentStateKey(routeSegments, treePosition, params);
-    if (segmentStateKey) {
-      return segmentStateKey;
-    }
-  }
-  return "";
 }
 
 export function resolveAppPageTemplateStateKey(

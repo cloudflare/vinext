@@ -24,24 +24,19 @@ import path, { toSlash } from "pathslash";
 import { parseAst, type Plugin } from "vite";
 import MagicString from "magic-string";
 import {
-  forEachAstChild,
+  booleanLiteralValue,
   hasRange,
   isAstRecord,
   nodeArray,
+  SCRIPT_MODULE_ID_RE,
+  scriptParserLanguage,
+  stringLiteralValue,
+  walkAst,
   type AstRange,
   type AstRecord,
 } from "./ast-utils.js";
-
-const TRANSFORMABLE_EXTENSIONS = new Set([
-  ".js",
-  ".jsx",
-  ".ts",
-  ".tsx",
-  ".mjs",
-  ".cjs",
-  ".mts",
-  ".cts",
-]);
+import { stripViteModuleQuery } from "../utils/path.js";
+import { magicStringTransformResult } from "./transform-result.js";
 
 type ParsedCall = {
   range: AstRange;
@@ -77,7 +72,7 @@ export function createRequireContextPlugin(): Plugin {
     enforce: "pre",
     transform: {
       filter: {
-        id: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/i,
+        id: SCRIPT_MODULE_ID_RE,
         code: /\brequire\b[\s\S]*\.context/,
       },
       async handler(code, id) {
@@ -140,7 +135,7 @@ type TransformResult = {
 };
 
 async function transformRequireContext(code: string, id: string): Promise<TransformResult | null> {
-  const lang = langForId(id)!;
+  const lang = scriptParserLanguage(id)!;
 
   let ast: unknown;
   try {
@@ -174,49 +169,23 @@ async function transformRequireContext(code: string, id: string): Promise<Transf
   }
 
   return {
-    code: output.toString(),
-    map: output.generateMap({ hires: "boundary" }),
+    ...magicStringTransformResult(output),
     contexts,
   };
-}
-
-function langForId(id: string): "js" | "jsx" | "ts" | "tsx" | null {
-  const clean = id.split("?", 1)[0];
-  const dot = clean.lastIndexOf(".");
-  if (dot < 0) return null;
-  const ext = clean.slice(dot).toLowerCase();
-  if (!TRANSFORMABLE_EXTENSIONS.has(ext)) return null;
-  switch (ext) {
-    case ".ts":
-    case ".cts":
-    case ".mts":
-      return "ts";
-    case ".tsx":
-      return "tsx";
-    case ".jsx":
-      return "jsx";
-    default:
-      // .js / .jsx / .mjs / .cjs — parse as jsx so JSX in .js still works.
-      return "jsx";
-  }
 }
 
 function collectRequireContextCalls(ast: unknown): ParsedCall[] {
   const calls: ParsedCall[] = [];
 
-  function visit(value: unknown): void {
-    if (!isAstRecord(value)) return;
-    const parsed = parseRequireContextCall(value);
+  walkAst(ast, (node) => {
+    const parsed = parseRequireContextCall(node);
     if (parsed) {
       calls.push(parsed);
       // A matched call's arguments are all literals (string/boolean/regexp), so
       // there is nothing further to find inside it — stop descending here.
-      return;
+      return false;
     }
-    forEachAstChild(value, visit);
-  }
-
-  visit(ast);
+  });
   return calls;
 }
 
@@ -333,20 +302,6 @@ function isPropertyNamed(value: unknown, name: string): boolean {
   return isAstRecord(value) && value.type === "Identifier" && value.name === name;
 }
 
-function stringLiteralValue(value: unknown): string | null {
-  if (isAstRecord(value) && value.type === "Literal" && typeof value.value === "string") {
-    return value.value;
-  }
-  return null;
-}
-
-function booleanLiteralValue(value: unknown): boolean | null {
-  if (isAstRecord(value) && value.type === "Literal" && typeof value.value === "boolean") {
-    return value.value;
-  }
-  return null;
-}
-
 function regexLiteralValue(value: unknown): { pattern: string; flags: string } | null {
   if (!isAstRecord(value) || value.type !== "Literal") return null;
   // OXC attaches the regex source as a plain `{ pattern, flags }` object on the
@@ -399,7 +354,7 @@ async function resolveContextModules(
   bindingPrefix: string,
   callIndex: number,
 ): Promise<{ context: WatchedContext; modules: ContextModule[] }> {
-  const importer = toSlash(id.split("?", 1)[0]);
+  const importer = toSlash(stripViteModuleQuery(id));
   const directory = path.resolve(path.dirname(importer), call.dir);
   const context: WatchedContext = {
     directory,
