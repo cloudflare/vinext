@@ -142,7 +142,7 @@ export default { plugins: [vinext(), cloudflare({
     ).toBe(input);
   });
 
-  it("leaves an existing cloudflare() call alone for the Pages Router", () => {
+  it("pins an existing Pages Router Worker output directory without renaming its environment", () => {
     const input = `import { defineConfig } from "vite";
 import vinext from "vinext";
 import { cloudflare } from "@cloudflare/vite-plugin";
@@ -155,9 +155,258 @@ export default defineConfig({
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
       nativeModulesToStub: [],
+      pagesRouterEnvironmentName: "test_project",
     });
 
+    expectValidConfig(output);
+    expect(output).toContain("cloudflare()");
     expect(output).not.toContain("viteEnvironment");
+    expect(output).toContain('"test_project": {');
+    expect(output).toContain('build: { outDir: "dist/server" }');
+    expect(output.match(/cloudflare\(/g)).toHaveLength(1);
+    expect(
+      updateViteConfigForCloudflare("vite.config.ts", output, {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+        pagesRouterEnvironmentName: "test_project",
+      }),
+    ).toBe(output);
+  });
+
+  it("preserves existing Pages Router cloudflare options while pinning the output directory", () => {
+    const input = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+export default { plugins: [vinext(), cloudflare({ configPath: "./examples/pages-router-cloudflare/wrangler.jsonc" })] };
+`;
+
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      root: process.cwd(),
+    });
+
+    expectValidConfig(output);
+    expect(output).toContain('configPath: "./examples/pages-router-cloudflare/wrangler.jsonc"');
+    expect(output).not.toContain("viteEnvironment");
+    expect(output).toContain('"pages_router_cloudflare": {');
+    expect(output).toContain('build: { outDir: "dist/server" }');
+  });
+
+  it("overrides a custom root outDir only for the Pages Router Worker environment", () => {
+    const input = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+export default {
+  plugins: [vinext(), cloudflare()],
+  build: { outDir: "build" },
+};
+`;
+
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+    });
+
+    expectValidConfig(output);
+    expect(output).toContain('build: { outDir: "build" }');
+    expect(output).toContain('build: { outDir: "dist/server" }');
+  });
+
+  it("uses an explicitly configured Pages Router environment name for the output directory", () => {
+    const pluginInput = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+export default { plugins: [vinext(), cloudflare({
+  viteEnvironment: { name: "custom" },
+})] };
+`;
+    const output = updateViteConfigForCloudflare("vite.config.ts", pluginInput, {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      pagesRouterEnvironmentName: "worker_default",
+    });
+    expectValidConfig(output);
+    expect(output).toContain('viteEnvironment: { name: "custom" }');
+    expect(output).toContain('"custom": {');
+    expect(output).toContain('build: { outDir: "dist/server" }');
+  });
+
+  it("rejects an inline Worker config without an explicit environment name", () => {
+    const input = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+export default { plugins: [vinext(), cloudflare({ config: { name: "other-worker" } })] };
+`;
+
+    expect(() =>
+      updateViteConfigForCloudflare("vite.config.ts", input, {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+      }),
+    ).toThrow("inline config can change the Worker identity");
+  });
+
+  it("rejects incompatible Pages Router output configuration", () => {
+    const outDirInput = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+export default {
+  plugins: [vinext(), cloudflare()],
+  environments: { server: { build: { outDir: "build/worker" } } },
+};
+`;
+    expect(() =>
+      updateViteConfigForCloudflare("vite.config.ts", outDirInput, {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+      }),
+    ).toThrow('environments.server.build.outDir must be "dist/server"');
+
+    const customEnvironmentInput = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+export default {
+  plugins: [vinext(), cloudflare()],
+  environments: { custom: {} },
+};
+`;
+    const customEnvironmentOutput = updateViteConfigForCloudflare(
+      "vite.config.ts",
+      customEnvironmentInput,
+      {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+      },
+    );
+    expect(customEnvironmentOutput).toContain("custom: {}");
+    expect(customEnvironmentOutput).toContain('"server": {');
+
+    const duplicateOutputConfigs = [
+      `environments: { server: { build: { outDir: "dist/server" } } },
+  environments: { server: { build: { outDir: "build/worker" } } }`,
+      `environments: {
+    server: { build: { outDir: "dist/server" } },
+    server: { build: { outDir: "build/worker" } },
+  }`,
+      `environments: { server: {
+    build: { outDir: "dist/server" },
+    build: { outDir: "build/worker" },
+  } }`,
+      `environments: { server: { build: {
+    outDir: "dist/server",
+    outDir: "build/worker",
+  } } }`,
+    ];
+    for (const duplicateOutputConfig of duplicateOutputConfigs) {
+      const input = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+export default {
+  plugins: [vinext(), cloudflare()],
+  ${duplicateOutputConfig},
+};
+`;
+      expect(() =>
+        updateViteConfigForCloudflare("vite.config.ts", input, {
+          isAppRouter: false,
+          nativeModulesToStub: [],
+        }),
+      ).toThrow("must not be duplicated");
+    }
+
+    const spreadInput = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+const custom = {};
+export default {
+  plugins: [vinext(), cloudflare()],
+  environments: { ...custom, server: { build: { outDir: "dist/server" } } },
+};
+`;
+    const spreadOutput = updateViteConfigForCloudflare("vite.config.ts", spreadInput, {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+    });
+    expectValidConfig(spreadOutput);
+    expect(spreadOutput).toContain("environments: { ...custom, server:");
+
+    const ambiguousNestedInputs = [
+      `environments: { ...custom }`,
+      `environments: { server: { ...custom } }`,
+    ];
+    for (const environmentsConfig of ambiguousNestedInputs) {
+      const input = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+const custom = {};
+export default {
+  plugins: [vinext(), cloudflare()],
+  ${environmentsConfig},
+};
+`;
+      expect(() =>
+        updateViteConfigForCloudflare("vite.config.ts", input, {
+          isAppRouter: false,
+          nativeModulesToStub: [],
+        }),
+      ).toThrow("spreads or computed properties");
+    }
+
+    const ambiguousTopLevelInputs = [
+      `const base = { environments: { client: {} } };
+export default { ...base, plugins: [vinext(), cloudflare()] };`,
+      `const environmentKey = "environments";
+export default { [environmentKey]: { client: {} }, plugins: [vinext(), cloudflare()] };`,
+    ];
+    for (const configBody of ambiguousTopLevelInputs) {
+      const input = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+${configBody}
+`;
+      expect(() =>
+        updateViteConfigForCloudflare("vite.config.ts", input, {
+          isAppRouter: false,
+          nativeModulesToStub: [],
+        }),
+      ).toThrow("top-level spreads or computed properties");
+    }
+
+    const computedOverrideInputs = [
+      `const key = "environments";
+export default {
+  plugins: [vinext(), cloudflare()],
+  environments: { server: { build: { outDir: "dist/server" } } },
+  [key]: { server: { build: { outDir: "build/worker" } } },
+};`,
+      `const key = "server";
+export default {
+  plugins: [vinext(), cloudflare()],
+  environments: {
+    server: { build: { outDir: "dist/server" } },
+    [key]: { build: { outDir: "build/worker" } },
+  },
+};`,
+      `const key = "build";
+export default {
+  plugins: [vinext(), cloudflare()],
+  environments: { server: {
+    build: { outDir: "dist/server" },
+    [key]: { outDir: "build/worker" },
+  } },
+};`,
+      `const key = "outDir";
+export default {
+  plugins: [vinext(), cloudflare()],
+  environments: { server: { build: {
+    outDir: "dist/server",
+    [key]: "build/worker",
+  } } },
+};`,
+    ];
+    for (const configBody of computedOverrideInputs) {
+      const input = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+${configBody}
+`;
+      expect(() =>
+        updateViteConfigForCloudflare("vite.config.ts", input, {
+          isAppRouter: false,
+          nativeModulesToStub: [],
+        }),
+      ).toThrow();
+    }
   });
 
   it("updates a CommonJS Pages Router config", () => {
@@ -692,6 +941,14 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(generatePagesRouterViteConfig(undefined, options, "IMAGES", true)).toContain(
       'prerender: { routes: "*" }',
     );
+  });
+
+  it("pins generated Pages Router worker output to dist/server", () => {
+    const output = generatePagesRouterViteConfig();
+
+    expect(output).toContain("cloudflare()");
+    expect(output).not.toContain("viteEnvironment");
+    expect(output).toContain('build: { outDir: "dist/server" }');
   });
 
   it("repairs an unusable Wrangler Images binding", () => {
