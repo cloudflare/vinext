@@ -670,6 +670,15 @@ describe("runWranglerKVBulkPut", () => {
 // ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
 
 describe("parseDeployArgs", () => {
+  it("forwards the parsed Wrangler config through the deploy CLI", () => {
+    const cliSource = fs.readFileSync(
+      path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
+      "utf-8",
+    );
+
+    expect(cliSource).toMatch(/config:\s*parsed\.config/);
+  });
+
   it("defaults to production deploy with no flags", () => {
     const parsed = parseDeployArgs([]);
     expect(parsed.preview).toBe(false);
