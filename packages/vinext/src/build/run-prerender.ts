@@ -31,14 +31,12 @@ import {
 import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
 import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
-import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { scanMetadataFiles } from "../server/metadata-routes.js";
 import { findDir } from "../utils/project.js";
 import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js";
 import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
-import { emitRscPrewarmManifest } from "./rsc-prewarm-manifest.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -88,34 +86,6 @@ function readBuiltBuildId(serverDir: string): string | null {
   }
 }
 
-function hasAppRequestMiddleware(appDir: string, pageExtensions: readonly string[]): boolean {
-  const conventionDir = path.dirname(appDir);
-  const matcher = createValidFileMatcher(pageExtensions);
-  return matcher.dottedExtensions.some(
-    (extension) =>
-      fs.existsSync(path.join(conventionDir, `middleware${extension}`)) ||
-      fs.existsSync(path.join(conventionDir, `proxy${extension}`)),
-  );
-}
-
-function hasRequestDependentConfig(config: import("../config/next-config.js").ResolvedNextConfig) {
-  const hasHeaderOrCookieCondition = (rule: {
-    has?: readonly { type: string }[];
-    missing?: readonly { type: string }[];
-  }): boolean =>
-    [...(rule.has ?? []), ...(rule.missing ?? [])].some(
-      (condition) =>
-        condition.type === "header" || condition.type === "cookie" || condition.type === "host",
-    );
-  return [
-    ...config.redirects,
-    ...config.rewrites.beforeFiles,
-    ...config.rewrites.afterFiles,
-    ...config.rewrites.fallback,
-    ...config.headers,
-  ].some(hasHeaderOrCookieCondition);
-}
-
 // ─── Shared runner ────────────────────────────────────────────────────────────
 
 type RunPrerenderOptions = {
@@ -135,10 +105,6 @@ type RunPrerenderOptions = {
    * Intended for tests that build to a custom outDir.
    */
   rscBundlePath?: string;
-  /** Emit browser eligibility metadata for a strict response-Vary CDN adapter. */
-  emitRscPrewarmManifest?: boolean;
-  /** Limit rendering to one router. Defaults to both routers. */
-  router?: "app" | "pages" | "both";
   /**
    * Maximum number of routes rendered in parallel.
    * Defaults to prerenderApp/prerenderPages internal defaults when omitted.
@@ -194,10 +160,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // Detect directories
   const appDir = findDir(root, "app", "src/app");
   const pagesDir = findDir(root, "pages", "src/pages");
-  const runApp = options.router !== "pages";
-  const runPages = options.router !== "app";
 
-  if ((!appDir || !runApp) && (!pagesDir || !runPages)) return null;
+  if (!appDir && !pagesDir) return null;
 
   // The manifest lands in dist/server/ alongside the server bundle so it's
   // cleaned with the rest of vinext's build output on rebuild and co-located
@@ -236,15 +200,6 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   let totalUrls = 0;
   let completedUrls = 0;
   const progress = new PrerenderProgress();
-  const canCaptureReusableRsc =
-    options.emitRscPrewarmManifest === true &&
-    (!appDir || !hasAppRequestMiddleware(appDir, config.pageExtensions)) &&
-    !hasRequestDependentConfig(config);
-  if (options.emitRscPrewarmManifest && !canCaptureReusableRsc) {
-    console.warn(
-      "[vinext] RSC CDN prewarming is disabled for apps with request-dependent middleware, proxy, or config rules; contextual navigation requests are preserved.",
-    );
-  }
 
   // Non-export builds write to dist/server/prerendered-routes/ so they are
   // co-located with server artifacts. On Cloudflare Workers the assets binding
@@ -272,7 +227,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   const restorePrerenderPhase = enterPrerenderPhase();
 
   try {
-    if (appDir && pagesDir && runApp && runPages) {
+    if (appDir && pagesDir) {
       // Hybrid build: start a single shared prod server.
       // The App Router bundle (dist/server/index.js) handles both App Router and
       // Pages Router routes in a hybrid build, so we only need one server.
@@ -290,7 +245,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     }
 
     // ── App Router phase ──────────────────────────────────────────────────────
-    if (appDir && runApp) {
+    if (appDir) {
       const routes = await appRouter(appDir, config.pageExtensions);
       const metadataRoutes = scanMetadataFiles(appDir);
 
@@ -306,7 +261,6 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         skipManifest: true,
         config,
         concurrency: options.concurrency,
-        captureRscVary: canCaptureReusableRsc,
         rscBundlePath,
         // For hybrid builds pass the shared prod server via internal field.
         // prerenderApp will use it instead of starting its own.
@@ -326,7 +280,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     }
 
     // ── Pages Router phase ────────────────────────────────────────────────────
-    if (pagesDir && runPages) {
+    if (pagesDir) {
       const [pageRoutes, apiRoutes] = await Promise.all([
         pagesRouter(pagesDir, config.pageExtensions),
         apiRouter(pagesDir, config.pageExtensions),
@@ -417,10 +371,6 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         `Remove server-side data fetching (getServerSideProps, force-dynamic, revalidate) from these routes, ` +
         `or remove \`output: "export"\` from next.config.js.`,
     );
-  }
-
-  if (options.emitRscPrewarmManifest && runApp) {
-    emitRscPrewarmManifest(root, config);
   }
 
   injectPregeneratedConcretePaths(root);

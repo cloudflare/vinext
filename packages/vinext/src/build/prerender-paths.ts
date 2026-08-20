@@ -24,8 +24,6 @@ import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
-import { getPrewarmableAppPaths, readPrerenderManifest } from "../server/prerender-manifest.js";
-import { getRscPrewarmManifestAssetPath } from "./rsc-prewarm-manifest.js";
 
 export type PrerenderPathManifest = {
   basePath?: string;
@@ -33,11 +31,11 @@ export type PrerenderPathManifest = {
   deploymentId?: string;
   /** Opaque per-build identity emitted by RSC responses. */
   rscBuildId?: string;
-  /** Same-origin immutable asset that exists only in this uploaded build. */
-  buildIdentityPath?: string;
   responseVary?: CdnCacheAdapterCapabilities["responseVary"];
-  /** App Router paths whose completed prerender produced a cacheable full RSC variant. */
+  /** App Router paths discovered without rendering their page responses. */
   rscPaths?: string[];
+  /** App Router paths with an ordinary main-tree loading boundary. */
+  loadingShellPaths?: string[];
   /** Pages Router paths selected by the existing HTML warm discovery pass. */
   pagesPaths?: string[];
   trailingSlash?: boolean;
@@ -273,10 +271,12 @@ async function collectAppPaths(options: {
   baseUrl: string | null;
   pageExtensions: readonly string[];
   secretHeaders: Record<string, string>;
-}): Promise<string[]> {
+}): Promise<{ loadingShellPaths: string[]; paths: string[] }> {
   const routes = await appRouter(options.appDir, options.pageExtensions);
   const paths: string[] = [];
   const seen = new Set<string>();
+  const loadingShellPaths: string[] = [];
+  const seenLoadingShellPaths = new Set<string>();
   const staticParamsCache = new Map<string, Promise<Record<string, string | string[]>[] | null>>();
   const staticParamsMap = new Proxy({} as StaticParamsMap, {
     get(_target, pattern: string) {
@@ -314,11 +314,21 @@ async function collectAppPaths(options: {
     const { type } = classifyAppRoute(renderEntryPath, route.routePath, route.isDynamic);
     if (type === "api") continue;
 
-    const isConfiguredDynamic = type === "ssr" && !route.isDynamic;
-    if (isConfiguredDynamic) continue;
+    const hasMainTreeLoadingBoundary =
+      route.loadingPath != null ||
+      (route.loadingPaths?.some(
+        (_loadingPath, index) => (route.loadingTreePositions?.[index] ?? 0) > 0,
+      ) ??
+        false);
+    const addDiscoveredPath = (pathname: string): void => {
+      addPath(paths, seen, pathname);
+      if (hasMainTreeLoadingBoundary) {
+        addPath(loadingShellPaths, seenLoadingShellPaths, pathname);
+      }
+    };
 
     if (!route.isDynamic) {
-      addPath(paths, seen, route.pattern);
+      addDiscoveredPath(route.pattern);
       continue;
     }
 
@@ -353,14 +363,14 @@ async function collectAppPaths(options: {
 
       for (const params of paramSets) {
         if (params === null || params === undefined) continue;
-        addPath(paths, seen, buildUrlFromParams(route.pattern, params));
+        addDiscoveredPath(buildUrlFromParams(route.pattern, params));
       }
     } catch (error) {
       warnDiscoveryFailure(route.pattern, error);
     }
   }
 
-  return paths;
+  return { loadingShellPaths, paths };
 }
 
 async function startPathDiscoveryServer(options: {
@@ -413,6 +423,10 @@ export async function emitPrerenderPathManifest(
   const seen = new Set<string>();
   const discoveredPagesPaths: string[] = [];
   const seenPagesPaths = new Set<string>();
+  const discoveredAppPaths: string[] = [];
+  const seenAppPaths = new Set<string>();
+  const discoveredLoadingShellPaths: string[] = [];
+  const seenLoadingShellPaths = new Set<string>();
   await withPrerenderEndpoints(async () => {
     let prodServer: { server: HttpServer; port: number } | null = null;
     const needsServer = await shouldStartPathDiscoveryServer({
@@ -444,13 +458,18 @@ export async function emitPrerenderPathManifest(
 
     try {
       if (appDir) {
-        for (const pathname of await collectAppPaths({
+        const appPathResult = await collectAppPaths({
           appDir,
           baseUrl,
           pageExtensions: config.pageExtensions,
           secretHeaders,
-        })) {
+        });
+        for (const pathname of appPathResult.paths) {
           addPath(paths, seen, pathname);
+          addPath(discoveredAppPaths, seenAppPaths, pathname);
+        }
+        for (const pathname of appPathResult.loadingShellPaths) {
+          addPath(discoveredLoadingShellPaths, seenLoadingShellPaths, pathname);
         }
       }
 
@@ -472,24 +491,15 @@ export async function emitPrerenderPathManifest(
     }
   });
 
-  const completedPrerenderManifest = options.responseVary
-    ? readPrerenderManifest(path.join(root, "dist", "server", "vinext-prerender.json"))
-    : null;
-  const rscPaths =
-    completedPrerenderManifest?.buildId === config.buildId
-      ? getPrewarmableAppPaths(completedPrerenderManifest)
-      : [];
   const manifest: PrerenderPathManifest = {
     ...(config.basePath ? { basePath: config.basePath } : {}),
     buildId: config.buildId,
     ...(config.deploymentId ? { deploymentId: config.deploymentId } : {}),
     ...(pagesDir ? { pagesPaths: discoveredPagesPaths } : {}),
     ...(rscBuildId ? { rscBuildId } : {}),
-    ...(options.responseVary && rscBuildId
-      ? { buildIdentityPath: getRscPrewarmManifestAssetPath(config, rscBuildId) }
-      : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
-    ...(options.responseVary ? { rscPaths } : {}),
+    ...(options.responseVary ? { rscPaths: discoveredAppPaths } : {}),
+    ...(options.responseVary ? { loadingShellPaths: discoveredLoadingShellPaths } : {}),
     trailingSlash: config.trailingSlash,
     paths,
   };

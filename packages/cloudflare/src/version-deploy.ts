@@ -11,10 +11,7 @@ export { parseWorkersDevUrl } from "./workers-dev-url.js";
 
 export type WranglerVersionUploadResult = {
   versionId: string;
-  /** Immutable URL that invokes the uploaded version directly. */
   previewUrl: string | null;
-  /** Optional propagating alias requested with --preview-alias. */
-  previewAliasUrl: string | null;
   output: string;
 };
 
@@ -82,53 +79,24 @@ function findPreviewUrlInUploadJson(parsed: JsonRecord | unknown[] | null): stri
   );
 }
 
-function findPreviewAliasUrlInUploadJson(parsed: JsonRecord | unknown[] | null): string | null {
-  if (!isRecord(parsed)) return null;
-  return (
-    findStringInRecord(parsed, ["preview_alias_url", "previewAliasUrl"]) ??
-    findStringInRecord(parsed.version, ["preview_alias_url", "previewAliasUrl"]) ??
-    findStringInRecord(parsed.result, ["preview_alias_url", "previewAliasUrl"])
-  );
-}
-
-function parseVersionPreviewUrl(output: string): string | null {
-  const match = output.match(/Version Preview URL:\s*(https:\/\/\S+)/i);
-  return match?.[1] ? parseWorkersDevUrl(match[1]) : null;
-}
-
-function parseVersionPreviewAliasUrl(output: string): string | null {
-  const match = output.match(/Version Preview Alias URL:\s*(https:\/\/\S+)/i);
-  return match?.[1] ? parseWorkersDevUrl(match[1]) : null;
-}
-
 export function parseVersionId(output: string): string | null {
-  const versionIdPattern =
-    "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
-  const labeledVersionId = output.match(
-    new RegExp(`(?:Worker Version ID:\\s*|Uploaded[^\\n]*?\\s)(${versionIdPattern})\\b`, "i"),
-  )?.[1];
-  if (labeledVersionId) return labeledVersionId;
-  return output.match(new RegExp(`\\b${versionIdPattern}\\b`))?.[0] ?? null;
+  return (
+    output.match(
+      /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/,
+    )?.[0] ?? null
+  );
 }
 
 export function parseWranglerVersionUploadOutput(output: string): WranglerVersionUploadResult {
   const parsed = parseJsonObject(output);
   const versionId = findVersionIdInUploadJson(parsed) ?? parseVersionId(output);
-  const previewAliasUrl =
-    findPreviewAliasUrlInUploadJson(parsed) ?? parseVersionPreviewAliasUrl(output);
-  const previewUrl =
-    findPreviewUrlInUploadJson(parsed) ??
-    parseVersionPreviewUrl(output) ??
-    // Legacy Wrangler output may contain one unlabeled URL. Once Wrangler has
-    // explicitly identified an alias, never misclassify that propagating URL
-    // as the immutable version target.
-    (previewAliasUrl === null ? parseWorkersDevUrl(output) : null);
+  const previewUrl = findPreviewUrlInUploadJson(parsed) ?? parseWorkersDevUrl(output);
 
   if (!versionId) {
     throw new Error("Could not detect Worker version ID from `wrangler versions upload` output.");
   }
 
-  return { versionId, previewUrl, previewAliasUrl, output };
+  return { versionId, previewUrl, output };
 }
 
 export function buildWranglerVersionUploadArgs(

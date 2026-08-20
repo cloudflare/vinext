@@ -2,9 +2,12 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
+  canonicalizeLoadingShellRscRequestHeaders,
   canonicalizePrewarmableRscRequestHeaders,
   computeRscCacheBustingSearchParam,
+  createCanonicalLoadingShellRscRequestHeaders,
   createCanonicalRscRequestHeaders,
+  createCanonicalRscRequestUrl,
   createRscRequestHeaders,
   createRscRequestUrl,
   createServerActionRequestUrl,
@@ -60,7 +63,7 @@ describe("App Router RSC cache-busting", () => {
     );
   });
 
-  it("builds the exact canonical deploy-warmer request headers", async () => {
+  it("builds the exact canonical full deploy-warmer request", () => {
     const headers = createCanonicalRscRequestHeaders("dpl_123");
 
     expect(Object.fromEntries(headers)).toEqual({
@@ -68,7 +71,31 @@ describe("App Router RSC cache-busting", () => {
       rsc: "1",
       "x-deployment-id": "dpl_123",
     });
-    await expect(createRscRequestUrl("/cached/intro", headers)).resolves.toBe("/cached/intro?_rsc");
+    expect(createCanonicalRscRequestUrl("/cached/intro?tab=latest")).toBe(
+      "/cached/intro?tab=latest&_rsc",
+    );
+  });
+
+  it("builds and normalizes the exact canonical loading-shell request", () => {
+    const headers = createCanonicalLoadingShellRscRequestHeaders("dpl_123");
+    expect(Object.fromEntries(headers)).toEqual({
+      accept: "text/x-component",
+      "next-router-prefetch": "1",
+      "next-router-segment-prefetch": "1",
+      rsc: "1",
+      "x-deployment-id": "dpl_123",
+      "x-vinext-rsc-render-mode": "prefetch-loading-shell",
+    });
+
+    const contextual = createRscRequestHeaders({
+      deploymentId: "dpl_123",
+      nextUrl: "/source",
+      prefetchRouterState: { pathAndSearch: "/source", routeId: "route:/source" },
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+    contextual.set("next-router-segment-prefetch", "1");
+    expect(canonicalizeLoadingShellRscRequestHeaders(contextual)).toBe(true);
+    expect(Object.fromEntries(contextual)).toEqual(Object.fromEntries(headers));
   });
 
   it("normalizes full prefetch and navigation headers to the warmer shape", async () => {
@@ -356,6 +383,41 @@ describe("App Router RSC cache-busting", () => {
     await expect(
       resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request }),
     ).resolves.toBeNull();
+  });
+
+  it("accepts only the two bare canonical variants for strict-Vary adapters", async () => {
+    await withEnvVar("__VINEXT_CANONICAL_RSC_REQUESTS", "1", async () => {
+      for (const headers of [
+        createCanonicalRscRequestHeaders(),
+        createCanonicalLoadingShellRscRequestHeaders(),
+      ]) {
+        const request = new Request("https://example.com/photos/42?_rsc", { headers });
+        await expect(
+          resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request }),
+        ).resolves.toBeNull();
+      }
+
+      const contextual = createCanonicalLoadingShellRscRequestHeaders();
+      contextual.set("next-url", "/source");
+      const response = await resolveInvalidRscCacheBustingRequest({
+        isRscRequest: true,
+        request: new Request("https://example.com/photos/42?_rsc", { headers: contextual }),
+      });
+      expect(response?.status).toBe(307);
+      expect(response?.headers.get("location")).toMatch(/_rsc=.+/);
+    });
+  });
+
+  it("redirects bare loading-shell requests for adapters without strict Vary", async () => {
+    await withEnvVar("__VINEXT_CANONICAL_RSC_REQUESTS", undefined, async () => {
+      const headers = createCanonicalLoadingShellRscRequestHeaders();
+      const response = await resolveInvalidRscCacheBustingRequest({
+        isRscRequest: true,
+        request: new Request("https://example.com/photos/42?_rsc", { headers }),
+      });
+      expect(response?.status).toBe(307);
+      expect(response?.headers.get("location")).toMatch(/_rsc=.+/);
+    });
   });
 
   it("accepts legacy FNV cache-busting params during rolling upgrades", async () => {

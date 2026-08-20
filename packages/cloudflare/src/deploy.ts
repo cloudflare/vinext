@@ -73,8 +73,6 @@ export type DeployOptions = {
   root: string;
   /** Deploy to preview environment (default: production) */
   preview?: boolean;
-  /** Upload and warm a version preview alias without changing production traffic. */
-  previewAlias?: string;
   /** Wrangler environment name from wrangler.jsonc env.<name> */
   env?: string;
   /** Custom project name for the Worker */
@@ -153,7 +151,6 @@ function formatUnknownError(error: unknown): string {
 const deployArgOptions = {
   help: { type: "boolean", short: "h", default: false },
   preview: { type: "boolean", default: false },
-  "preview-alias": { type: "string" },
   env: { type: "string" },
   name: { type: "string" },
   config: { type: "string" },
@@ -189,7 +186,6 @@ export function parseDeployArgs(args: string[]) {
   return {
     help: values.help,
     preview: values.preview,
-    previewAlias: values["preview-alias"]?.trim() || undefined,
     env: values.env?.trim() || undefined,
     name: values.name?.trim() || undefined,
     config: values.config?.trim() || undefined,
@@ -547,7 +543,6 @@ export async function deployWithCdnWarmup(
   options: Pick<
     DeployOptions,
     | "preview"
-    | "previewAlias"
     | "env"
     | "name"
     | "config"
@@ -556,7 +551,7 @@ export async function deployWithCdnWarmup(
     | "warmCdnRetries"
     | "warmCdnStrict"
   > &
-    Pick<CdnWarmOptions, "buildIdentityPath" | "deploymentId" | "expectedRscBuildId" | "rscPaths">,
+    Pick<CdnWarmOptions, "deploymentId" | "expectedRscBuildId" | "loadingShellPaths" | "rscPaths">,
 ): Promise<string> {
   const upload = runWranglerVersionUpload(root, options);
   const warmUploadedVersion = (
@@ -567,33 +562,17 @@ export async function deployWithCdnWarmup(
     warmCdnCache({
       targetUrl,
       paths,
-      buildIdentityPath: options.buildIdentityPath,
       headers,
       propagatingTarget,
       deploymentId: options.deploymentId,
       expectedRscBuildId: options.expectedRscBuildId,
+      loadingShellPaths: options.loadingShellPaths,
       rscPaths: options.rscPaths,
       concurrency: options.warmCdnConcurrency,
       timeoutMs: options.warmCdnTimeout,
       retries: options.warmCdnRetries,
       strict: options.warmCdnStrict,
     });
-
-  if (options.previewAlias) {
-    if (!upload.previewAliasUrl) {
-      if (options.warmCdnStrict) {
-        throw new Error(
-          `CDN warmup failed: Wrangler did not return a URL for preview alias ${options.previewAlias}.`,
-        );
-      }
-      console.warn(
-        `  CDN warmup skipped: Wrangler did not return a URL for preview alias ${options.previewAlias}.`,
-      );
-      return upload.previewUrl ?? "(URL not detected in wrangler output)";
-    }
-    await warmUploadedVersion(upload.previewAliasUrl, undefined, true);
-    return upload.previewAliasUrl;
-  }
 
   const wranglerConfig = parseWranglerConfig(root, options.config);
   const deploymentStatus = readWranglerDeploymentStatus(root, options);
@@ -817,9 +796,6 @@ function withPromotedVersionWarmupNote(error: unknown): Error {
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
 export async function deploy(options: DeployOptions): Promise<void> {
-  if (options.previewAlias && !options.warmCdnCache) {
-    throw new Error("--preview-alias requires --experimental-warm-cdn-cache.");
-  }
   const deployEnv = validateWranglerEnvName(
     options.env || (options.preview ? "preview" : "production"),
   );
@@ -928,33 +904,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
-  // Step 6a: prerender — render every discovered route into dist.
-  // Triggered by CDN warmup independently of the prerender setting, or by
-  // --prerender-all, vinext({ prerender: true }), and output: 'export'. The CLI
-  // flag wins when more than one prerender setting is present.
-  let ranPrerender = false;
-  if (prerenderDecision || options.warmCdnCache) {
-    console.log(
-      `\n  ${
-        prerenderDecision
-          ? formatVinextPrerenderLabel(prerenderDecision)
-          : "Pre-rendering cacheable routes for CDN warmup..."
-      }`,
-    );
-    if (nextConfig.enablePrerenderSourceMaps) {
-      process.setSourceMapsEnabled(true);
-      Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
-    }
-    await runPrerender({
-      root: info.root,
-      concurrency: options.prerenderConcurrency,
-      emitRscPrewarmManifest: hasStrictResponseVary,
-      nextConfig,
-      router: prerenderDecision ? "both" : "app",
-    });
-    ranPrerender = !!prerenderDecision;
-  }
-
   if (shouldEmitPrerenderPathManifest) {
     await emitPrerenderPathManifest({
       root: info.root,
@@ -962,6 +911,25 @@ export async function deploy(options: DeployOptions): Promise<void> {
       responseVary: hasStrictResponseVary ? "verbatim" : undefined,
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
+  }
+
+  // Step 6a: prerender — render every discovered route into dist.
+  // Triggered only by --prerender-all, vinext({ prerender: true }), or
+  // output: 'export'. CDN warmup performs path discovery above, but relies on
+  // the deployed Worker to render and classify each response.
+  let ranPrerender = false;
+  if (prerenderDecision) {
+    console.log(`\n  ${formatVinextPrerenderLabel(prerenderDecision)}`);
+    if (nextConfig.enablePrerenderSourceMaps) {
+      process.setSourceMapsEnabled(true);
+      Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
+    }
+    await runPrerender({
+      root: info.root,
+      concurrency: options.prerenderConcurrency,
+      nextConfig,
+    });
+    ranPrerender = true;
   }
 
   if (ranPrerender) {
@@ -999,7 +967,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
     env: deployEnv === "production" && !options.env ? undefined : deployEnv,
     name: options.name,
     config: options.config,
-    previewAlias: options.previewAlias,
   };
   let url: string;
 
@@ -1008,12 +975,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
       includeFallbackShells: options.warmCdnIncludeFallbacks,
       strict: options.warmCdnStrict,
     });
-    if (warmPlan.paths.length > 0 || options.previewAlias) {
+    if (warmPlan.paths.length > 0) {
       url = await deployWithCdnWarmup(root, warmPlan.paths, {
         ...wranglerOptions,
-        buildIdentityPath: warmPlan.buildIdentityPath,
         deploymentId: warmPlan.deploymentId,
         expectedRscBuildId: warmPlan.rscBuildId,
+        loadingShellPaths: warmPlan.loadingShellPaths,
         rscPaths: warmPlan.rscPaths,
         warmCdnConcurrency: options.warmCdnConcurrency,
         warmCdnTimeout: options.warmCdnTimeout,

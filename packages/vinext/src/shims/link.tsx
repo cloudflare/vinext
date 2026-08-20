@@ -455,10 +455,10 @@ function prefetchUrl(
           PREFETCH_CACHE_TTL,
         } = navigation;
         const {
+          canonicalizeLoadingShellRscRequestHeaders,
           canonicalizePrewarmableRscRequestHeaders,
+          createCanonicalRscRequestUrl,
           createRscRequestUrl,
-          normalizeRscPrewarmHref,
-          resolveRscPrewarmEligibility,
         } = rscCacheBusting;
         const {
           NEXT_ROUTER_PREFETCH_HEADER,
@@ -484,19 +484,8 @@ function prefetchUrl(
         const prefetchPolicyHref = rewrittenPrefetchHref ?? prefetchHref;
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
-        const canUseCanonicalPrewarm =
-          interceptionContext === null &&
-          mountedSlotsHeader === null &&
-          (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref);
-        const canonicalPrewarmHref = normalizeRscPrewarmHref(fullHref);
-        const prewarmEligibility = canUseCanonicalPrewarm
-          ? await resolveRscPrewarmEligibility(canonicalPrewarmHref)
-          : "ineligible";
-        const isCanonicalPrewarmCandidate = prewarmEligibility === "eligible";
-        if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
-        const autoPrefetch = isCanonicalPrewarmCandidate
-          ? resolveFullAppRoutePrefetch()
-          : mode === "auto"
+        const autoPrefetch =
+          mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchPolicyHref)
             : resolveFullAppRoutePrefetch();
         if (!autoPrefetch.shouldPrefetch) return;
@@ -540,12 +529,27 @@ function prefetchUrl(
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
         }
-        const usesCanonicalPrewarmedRequest =
-          isCanonicalPrewarmCandidate && canonicalizePrewarmableRscRequestHeaders(headers);
-        const requestHref = usesCanonicalPrewarmedRequest ? canonicalPrewarmHref : fullHref;
+        const canUseCanonicalSharedRequest =
+          process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
+          interceptionContext === null &&
+          mountedSlotsHeader === null &&
+          (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref) &&
+          !requiresRouteTreePrefetch &&
+          !__prefetchInlining;
+        const usesCanonicalLoadingShell =
+          canUseCanonicalSharedRequest &&
+          isOptimisticRouteShellPrefetch &&
+          canonicalizeLoadingShellRscRequestHeaders(headers);
+        const usesCanonicalFullRoute =
+          canUseCanonicalSharedRequest &&
+          !isOptimisticRouteShellPrefetch &&
+          canonicalizePrewarmableRscRequestHeaders(headers);
+        const usesCanonicalPrewarmedRequest = usesCanonicalLoadingShell || usesCanonicalFullRoute;
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
-        const rscUrl = await createRscRequestUrl(requestHref, headers);
+        const rscUrl = usesCanonicalPrewarmedRequest
+          ? createCanonicalRscRequestUrl(fullHref)
+          : await createRscRequestUrl(fullHref, headers);
         const additionalRscUrls =
           rewrittenPrefetchHref && rewrittenPrefetchHref !== fullHref
             ? [await createRscRequestUrl(rewrittenPrefetchHref, headers)]

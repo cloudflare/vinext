@@ -6,19 +6,18 @@ import {
 } from "vinext/internal/build/prerender-paths";
 import {
   getPrerenderedConcretePaths,
-  getCacheableAppPaths,
-  getPrewarmableAppPaths,
-  readPrerenderManifest,
   type PrerenderManifest,
   type PrerenderedPathSelectionOptions,
 } from "vinext/internal/server/prerender-manifest";
 import {
+  createCanonicalLoadingShellRscRequestHeaders,
   createCanonicalRscRequestHeaders,
-  createRscRequestUrl,
+  createCanonicalRscRequestUrl,
   VINEXT_RSC_BUILD_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
 } from "vinext/internal/server/app-rsc-cache-busting";
+import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 
 export type CdnWarmOptions = {
@@ -26,10 +25,10 @@ export type CdnWarmOptions = {
   paths: readonly string[];
   /** App Router ISR paths whose definitive client-navigation payload is warmed. */
   rscPaths?: readonly string[];
+  /** App Router paths whose deterministic loading-boundary payload is warmed. */
+  loadingShellPaths?: readonly string[];
   /** Build identity that the warmed RSC response must have been rendered by. */
   expectedRscBuildId?: string;
-  /** Immutable same-origin asset that proves the uploaded build is serving. */
-  buildIdentityPath?: string;
   deploymentId?: string;
   headers?: HeadersInit;
   concurrency?: number;
@@ -52,13 +51,14 @@ export type PrerenderCdnWarmOptions = Omit<CdnWarmOptions, "paths"> & {
 export type CdnWarmResult = {
   total: number;
   warmed: number;
+  skipped: number;
   failed: number;
   failures: Array<{ path: string; error: string }>;
 };
 
 export type PrerenderWarmPlan = {
-  buildIdentityPath?: string;
   deploymentId?: string;
+  loadingShellPaths: string[];
   paths: string[];
   rscBuildId?: string;
   rscPaths: string[];
@@ -104,9 +104,10 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
       (manifest.rscPaths !== undefined &&
         (!Array.isArray(manifest.rscPaths) ||
           !manifest.rscPaths.every((pathname) => typeof pathname === "string"))) ||
+      (manifest.loadingShellPaths !== undefined &&
+        (!Array.isArray(manifest.loadingShellPaths) ||
+          !manifest.loadingShellPaths.every((pathname) => typeof pathname === "string"))) ||
       (manifest.basePath !== undefined && typeof manifest.basePath !== "string") ||
-      (manifest.buildIdentityPath !== undefined &&
-        typeof manifest.buildIdentityPath !== "string") ||
       (manifest.deploymentId !== undefined && typeof manifest.deploymentId !== "string") ||
       (manifest.rscBuildId !== undefined && typeof manifest.rscBuildId !== "string") ||
       (manifest.trailingSlash !== undefined && typeof manifest.trailingSlash !== "boolean") ||
@@ -155,70 +156,26 @@ export function readPrerenderWarmPlan(
   options?: { includeFallbackShells?: boolean; strict?: boolean },
 ): PrerenderWarmPlan {
   const pathPlan = readPrerenderPathWarmPaths(root, options);
-  const manifest = readPrerenderManifest(
-    path.join(root, "dist", "server", "vinext-prerender.json"),
-  );
-  if (!manifest) {
-    if (pathPlan) {
-      console.warn(
-        "[vinext] CDN warmup has no completed prerender manifest; RSC warmup is disabled.",
-      );
-      return {
-        ...(pathPlan.manifest.buildIdentityPath
-          ? { buildIdentityPath: pathPlan.manifest.buildIdentityPath }
-          : {}),
-        ...(pathPlan.manifest.deploymentId ? { deploymentId: pathPlan.manifest.deploymentId } : {}),
-        paths: pathPlan.paths,
-        rscPaths: [],
-      };
-    }
-    const message = "[vinext] CDN warmup skipped: prerender manifest not found.";
+  if (!pathPlan) {
+    const message = "[vinext] CDN warmup skipped: prerender path manifest not found.";
     if (options?.strict) throw new Error(message);
-    return { paths: [], rscPaths: [] };
+    return { loadingShellPaths: [], paths: [], rscPaths: [] };
   }
 
-  const builtBuildId = readBuiltBuildId(root);
-  if (!manifest.buildId || !builtBuildId || manifest.buildId !== builtBuildId) {
-    const message =
-      "[vinext] CDN warmup skipped: prerender manifest buildId does not match dist/server/BUILD_ID.";
-    if (options?.strict) throw new Error(message);
-    console.warn(message);
-    return { paths: [], rscPaths: [] };
-  }
-
-  const pathConfig = pathPlan?.manifest ?? {};
-  const appPaths = getPrewarmableAppPaths(manifest);
-  const hasFinalRscEligibility =
-    pathPlan?.manifest.responseVary === "verbatim" &&
-    pathPlan.manifest.rscPaths !== undefined &&
-    !!pathPlan.manifest.rscBuildId;
-  const appHtmlPaths = options?.includeFallbackShells
-    ? getPrerenderedConcretePaths(manifest, { ...options, router: "app" })
-    : getCacheableAppPaths(manifest);
-  const pagePaths = getPrerenderedConcretePaths(manifest, {
-    ...options,
-    router: "pages",
-  });
-  const pagesHtmlPaths =
-    pathPlan?.manifest.pagesPaths !== undefined
-      ? pathPlan.pagesPaths
-      : pagePaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig));
-  const completedHtmlPaths = Array.from(
-    new Set([
-      ...appHtmlPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig)),
-      ...pagesHtmlPaths,
-    ]),
-  );
+  const { manifest } = pathPlan;
+  const supportsCanonicalRsc =
+    manifest.responseVary === "verbatim" &&
+    manifest.rscPaths !== undefined &&
+    manifest.rscBuildId !== undefined;
+  const applyConfig = (pathname: string) => applyWarmPathConfig(pathname, manifest);
   return {
-    ...(pathPlan?.manifest.buildIdentityPath
-      ? { buildIdentityPath: pathPlan.manifest.buildIdentityPath }
-      : {}),
-    ...(pathPlan?.manifest.deploymentId ? { deploymentId: pathPlan.manifest.deploymentId } : {}),
-    ...(hasFinalRscEligibility ? { rscBuildId: pathPlan.manifest.rscBuildId } : {}),
-    paths: completedHtmlPaths,
-    rscPaths: hasFinalRscEligibility
-      ? appPaths.map((pathname) => applyWarmPathConfig(pathname, pathConfig))
+    ...(manifest.deploymentId ? { deploymentId: manifest.deploymentId } : {}),
+    loadingShellPaths: supportsCanonicalRsc
+      ? (manifest.loadingShellPaths ?? []).map(applyConfig)
       : [],
+    paths: pathPlan.paths,
+    ...(supportsCanonicalRsc ? { rscBuildId: manifest.rscBuildId } : {}),
+    rscPaths: supportsCanonicalRsc ? manifest.rscPaths!.map(applyConfig) : [],
   };
 }
 
@@ -296,50 +253,9 @@ async function fetchWithTimeout(
   }
 }
 
-function validateBuildIdentityResponse(
-  response: Response,
-  body: ArrayBuffer,
-  expectedRscBuildId?: string,
-): string | null {
-  if (response.redirected || response.status < 200 || response.status >= 300) {
-    return response.redirected ? "redirected response" : `HTTP ${response.status}`;
-  }
-  const contentType =
-    response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() ?? "";
-  if (contentType !== "application/json") {
-    return "expected application/json build identity response";
-  }
-
-  let value: unknown;
-  try {
-    value = JSON.parse(new TextDecoder().decode(body));
-  } catch {
-    return "build identity response is not valid JSON";
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return "build identity response has an invalid payload";
-  }
-  const identity = value as Record<string, unknown>;
-  if (
-    identity.version !== 1 ||
-    typeof identity.buildId !== "string" ||
-    identity.buildId.length === 0 ||
-    typeof identity.rscBuildId !== "string" ||
-    identity.rscBuildId.length === 0 ||
-    !Array.isArray(identity.paths) ||
-    !identity.paths.every((pathname) => typeof pathname === "string" && pathname.startsWith("/"))
-  ) {
-    return "build identity response has an invalid payload";
-  }
-  if (expectedRscBuildId !== undefined && identity.rscBuildId !== expectedRscBuildId) {
-    return `build identity response does not match RSC build ${expectedRscBuildId}`;
-  }
-  return null;
-}
-
 type WarmTarget = {
   headers?: HeadersInit;
-  kind: "html" | "identity" | "rsc";
+  kind: "html" | "rsc";
   label: string;
   pathname: string;
 };
@@ -378,19 +294,68 @@ const ADMITTED_CF_CACHE_STATUSES = new Set([
   "UPDATING",
   "STALE",
 ]);
+const NON_CACHEABLE_CF_CACHE_STATUSES = new Set(["BYPASS", "DYNAMIC"]);
 
-function validateRscWarmResponse(response: Response, expectedRscBuildId?: string): string | null {
+type WarmValidation =
+  | { outcome: "warmed" }
+  | { outcome: "skipped"; reason: string }
+  | { outcome: "failed"; error: string };
+
+function validateCachePolicy(response: Response, requireCacheStatus: boolean): WarmValidation {
+  const nonCacheableHeaders = [
+    "Cache-Control",
+    "CDN-Cache-Control",
+    "Cloudflare-CDN-Cache-Control",
+  ].filter((name) => {
+    const value = response.headers.get(name);
+    return value !== null && isNonCacheableCacheControl(value);
+  });
+  const hasSetCookie = response.headers.has("Set-Cookie");
+  const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
+
+  if (nonCacheableHeaders.length > 0 || hasSetCookie) {
+    const reason =
+      nonCacheableHeaders.length > 0
+        ? `${nonCacheableHeaders.join(", ")} opts out of caching`
+        : "response sets a cookie";
+    if (cacheStatus && NON_CACHEABLE_CF_CACHE_STATUSES.has(cacheStatus)) {
+      return { outcome: "skipped", reason };
+    }
+    return {
+      outcome: "failed",
+      error: `${reason}, but CF-Cache-Status is ${cacheStatus ?? "missing"}`,
+    };
+  }
+
+  if (!cacheStatus) {
+    return requireCacheStatus
+      ? { outcome: "failed", error: "response is missing CF-Cache-Status" }
+      : { outcome: "warmed" };
+  }
+  if (!ADMITTED_CF_CACHE_STATUSES.has(cacheStatus)) {
+    return { outcome: "failed", error: `CF-Cache-Status is ${cacheStatus}` };
+  }
+  return { outcome: "warmed" };
+}
+
+function validateRscWarmResponse(response: Response, expectedRscBuildId?: string): WarmValidation {
   if (response.redirected || response.status < 200 || response.status >= 300) {
-    return response.redirected ? "redirected response" : `HTTP ${response.status}`;
+    return {
+      outcome: "failed",
+      error: response.redirected ? "redirected response" : `HTTP ${response.status}`,
+    };
   }
   if (!response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)) {
-    return `expected ${VINEXT_RSC_CONTENT_TYPE} response`;
+    return { outcome: "failed", error: `expected ${VINEXT_RSC_CONTENT_TYPE} response` };
   }
   if (
     expectedRscBuildId !== undefined &&
     response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) !== expectedRscBuildId
   ) {
-    return `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build ${expectedRscBuildId}`;
+    return {
+      outcome: "failed",
+      error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build ${expectedRscBuildId}`,
+    };
   }
 
   const vary = new Set(
@@ -400,23 +365,24 @@ function validateRscWarmResponse(response: Response, expectedRscBuildId?: string
       .filter(Boolean),
   );
   const missingVary = REQUIRED_RSC_VARY_HEADERS.find((name) => !vary.has(name));
-  if (missingVary) return `response Vary is missing ${missingVary}`;
+  if (missingVary) {
+    return { outcome: "failed", error: `response Vary is missing ${missingVary}` };
+  }
   const extraVary = Array.from(vary).find((name) => !REQUIRED_RSC_VARY_HEADERS.includes(name));
-  if (extraVary) return `response Vary has unsupported field ${extraVary}`;
+  if (extraVary) {
+    return { outcome: "failed", error: `response Vary has unsupported field ${extraVary}` };
+  }
+  return validateCachePolicy(response, true);
+}
 
-  for (const name of ["Cache-Control", "CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"]) {
-    const value = response.headers.get(name);
-    if (value && /\b(?:private|no-store|no-cache)\b/i.test(value)) {
-      return `${name} is not cacheable`;
-    }
+function validateHtmlWarmResponse(response: Response): WarmValidation {
+  if (response.redirected || response.status < 200 || response.status >= 300) {
+    return {
+      outcome: "failed",
+      error: response.redirected ? "redirected response" : `HTTP ${response.status}`,
+    };
   }
-  if (response.headers.has("Set-Cookie")) return "response sets a cookie";
-  const cacheStatus = response.headers.get("CF-Cache-Status")?.toUpperCase();
-  if (!cacheStatus) return "response is missing CF-Cache-Status";
-  if (!ADMITTED_CF_CACHE_STATUSES.has(cacheStatus)) {
-    return `CF-Cache-Status is ${cacheStatus}`;
-  }
-  return null;
+  return validateCachePolicy(response, false);
 }
 
 async function warmOnePath(
@@ -430,7 +396,11 @@ async function warmOnePath(
     retryDelayMs: number;
     retryNotFound: boolean;
   },
-): Promise<{ path: string; ok: true } | { path: string; ok: false; error: string }> {
+): Promise<
+  | { path: string; ok: true; skipped: false }
+  | { path: string; ok: true; skipped: true; reason: string }
+  | { path: string; ok: false; error: string }
+> {
   const url = buildWarmupUrl(options.targetUrl, target.pathname);
   let lastError = "propagation deadline expired before request";
   const retryDeadline = options.retryDeadlineAt;
@@ -454,18 +424,23 @@ async function warmOnePath(
         retryDeadline === undefined
           ? options.timeoutMs
           : Math.min(options.timeoutMs, Math.max(1, retryDeadline - Date.now()));
-      const { body, response } = await fetchWithTimeout(
+      const { response } = await fetchWithTimeout(
         options.fetchImpl,
         url,
         timeoutMs,
         target.headers ?? options.headers,
-        target.kind === "html" ? "follow" : "manual",
+        "manual",
       );
 
       if (target.kind === "rsc") {
-        const validationError = validateRscWarmResponse(response, options.expectedRscBuildId);
-        if (validationError === null) return { path: target.label, ok: true };
-        lastError = validationError;
+        const validation = validateRscWarmResponse(response, options.expectedRscBuildId);
+        if (validation.outcome === "warmed") {
+          return { path: target.label, ok: true, skipped: false };
+        }
+        if (validation.outcome === "skipped") {
+          return { path: target.label, ok: true, skipped: true, reason: validation.reason };
+        }
+        lastError = validation.error;
         if (
           !options.retryAllValidationErrors &&
           !isRetryableStatus(response.status, options.retryNotFound)
@@ -476,27 +451,19 @@ async function warmOnePath(
         continue;
       }
 
-      if (target.kind === "identity") {
-        const validationError = validateBuildIdentityResponse(
-          response,
-          body,
-          options.expectedRscBuildId,
-        );
-        if (validationError === null) {
-          return { path: target.label, ok: true };
-        }
-        lastError = validationError;
-        if (
-          !options.retryAllValidationErrors &&
-          !isRetryableStatus(response.status, options.retryNotFound)
-        )
-          break;
-      } else if (response.status < 400) {
-        return { path: target.label, ok: true };
-      } else {
-        lastError = `HTTP ${response.status}`;
-        if (!isRetryableStatus(response.status, options.retryNotFound)) break;
+      const validation = validateHtmlWarmResponse(response);
+      if (validation.outcome === "warmed") {
+        return { path: target.label, ok: true, skipped: false };
       }
+      if (validation.outcome === "skipped") {
+        return { path: target.label, ok: true, skipped: true, reason: validation.reason };
+      }
+      lastError = validation.error;
+      if (
+        !options.retryAllValidationErrors &&
+        !isRetryableStatus(response.status, options.retryNotFound)
+      )
+        break;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         lastError = `timed out after ${options.timeoutMs}ms`;
@@ -535,22 +502,37 @@ async function runWithConcurrency<T, R>(
 export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResult> {
   const requests: WarmTarget[] = [];
   const htmlRequests: WarmTarget[] = [];
-  const rscPaths = new Set(options.rscPaths ?? []);
+  const loadingShellPaths = new Set(options.loadingShellPaths ?? []);
   const commonHeaders = new Headers(options.headers);
-  for (const pathname of options.paths) {
-    if (rscPaths.has(pathname)) {
-      const rscHeaders = new Headers(commonHeaders);
-      for (const [name, value] of createCanonicalRscRequestHeaders(options.deploymentId)) {
-        rscHeaders.set(name, value);
+  for (const pathname of options.rscPaths ?? []) {
+    const rscHeaders = new Headers(commonHeaders);
+    for (const [name, value] of createCanonicalRscRequestHeaders(options.deploymentId)) {
+      rscHeaders.set(name, value);
+    }
+    requests.push({
+      headers: rscHeaders,
+      kind: "rsc",
+      label: `${pathname} (RSC full)`,
+      pathname: createCanonicalRscRequestUrl(pathname),
+    });
+
+    if (loadingShellPaths.has(pathname)) {
+      const loadingHeaders = new Headers(commonHeaders);
+      for (const [name, value] of createCanonicalLoadingShellRscRequestHeaders(
+        options.deploymentId,
+      )) {
+        loadingHeaders.set(name, value);
       }
       requests.push({
-        headers: rscHeaders,
+        headers: loadingHeaders,
         kind: "rsc",
-        label: `${pathname} (RSC)`,
-        pathname: await createRscRequestUrl(pathname, rscHeaders),
+        label: `${pathname} (RSC loading shell)`,
+        pathname: createCanonicalRscRequestUrl(pathname),
       });
     }
+  }
 
+  for (const pathname of options.paths) {
     const htmlHeaders = new Headers(commonHeaders);
     htmlHeaders.set("Accept", "text/html");
     htmlRequests.push({ headers: htmlHeaders, kind: "html", label: pathname, pathname });
@@ -575,10 +557,10 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     propagatingTarget && options.retries === undefined ? Date.now() + 30_000 : undefined;
 
   if (requests.length === 0) {
-    return { total: 0, warmed: 0, failed: 0, failures: [] };
+    return { total: 0, warmed: 0, skipped: 0, failed: 0, failures: [] };
   }
 
-  console.log(`\n  Warming CDN cache with ${requests.length} prerendered request(s)...`);
+  console.log(`\n  Warming CDN cache with ${requests.length} discovered request(s)...`);
 
   const progress = new CdnWarmProgress();
   let completedRequests = 0;
@@ -653,48 +635,26 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   };
 
   const gateIndex = propagatingTarget ? requests.findIndex((target) => target.kind === "rsc") : -1;
-  const buildIdentityGate =
-    propagatingTarget && options.buildIdentityPath
-      ? ({
-          kind: "identity",
-          label: "uploaded build identity",
-          pathname: options.buildIdentityPath,
-        } satisfies WarmTarget)
-      : null;
   let results: Awaited<ReturnType<typeof warmOnePath>>[];
   if (gateIndex >= 0) {
     const propagationDeadlineAt = createPropagationDeadline();
-    const [gateResult, identityResult] = await Promise.all([
-      warmRequest(requests[gateIndex], true, propagationDeadlineAt),
-      buildIdentityGate
-        ? warmTarget(buildIdentityGate, true, propagationDeadlineAt)
-        : Promise.resolve(null),
-    ]);
+    const gateResult = await warmRequest(requests[gateIndex], true, propagationDeadlineAt);
     const remaining = requests.filter((_target, index) => index !== gateIndex);
-    if (gateResult.ok && (identityResult === null || identityResult.ok)) {
+    if (gateResult.ok) {
       results = await warmAfterHtmlGate([gateResult], remaining);
     } else {
-      const gateError = gateResult.ok
-        ? `the uploaded build asset was not confirmed: ${identityResult?.ok === false ? identityResult.error : "unknown error"}`
-        : "the uploaded RSC build identity was not confirmed";
-      results = [gateResult, ...skipRequests(remaining, `skipped because ${gateError}`)];
+      results = [
+        gateResult,
+        ...skipRequests(
+          remaining,
+          "skipped because the uploaded RSC build identity was not confirmed",
+        ),
+      ];
     }
-  } else if (buildIdentityGate) {
-    const gateResult = await warmTarget(buildIdentityGate, true);
-    if (gateResult.ok) {
-      results = await warmAfterHtmlGate([], requests);
-    } else {
-      results = skipRequests(
-        requests,
-        `skipped because the uploaded build identity was not confirmed: ${gateResult.error}`,
-      );
-    }
+  } else if (propagatingTarget) {
+    results = await warmAfterHtmlGate([], requests);
   } else {
-    // Legacy callers/manifests have no build-identity asset. Preserve their
-    // propagation retry behavior; current build output always supplies a gate.
-    results = await runWithConcurrency(requests, concurrency, (target) =>
-      warmRequest(target, propagatingTarget),
-    );
+    results = await runWithConcurrency(requests, concurrency, (target) => warmRequest(target));
   }
 
   progress.finish();
@@ -702,9 +662,15 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const failures = results
     .filter((result): result is { path: string; ok: false; error: string } => !result.ok)
     .map(({ path, error }) => ({ path, error }));
-  const warmed = results.length - failures.length;
+  const skippedResults = results.filter((result) => result.ok && result.skipped);
+  const warmed = results.length - failures.length - skippedResults.length;
 
-  console.log(`  CDN warmup: ${warmed}/${requests.length} request(s) warmed.`);
+  console.log(
+    `  CDN warmup: ${warmed} warmed, ${skippedResults.length} skipped, ${failures.length} failed.`,
+  );
+  for (const skipped of skippedResults.slice(0, 5)) {
+    console.log(`  CDN warmup skipped ${skipped.path}: ${skipped.reason}`);
+  }
   if (failures.length > 0) {
     for (const failure of failures.slice(0, 5)) {
       console.warn(`  CDN warmup failed for ${failure.path}: ${failure.error}`);
@@ -717,6 +683,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const result = {
     total: requests.length,
     warmed,
+    skipped: skippedResults.length,
     failed: failures.length,
     failures,
   };

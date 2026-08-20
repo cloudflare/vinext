@@ -4,7 +4,6 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
 
@@ -73,7 +72,7 @@ function createMockChildProcess(output: string, code: number): ChildProcess {
   return child;
 }
 
-function writeProject(prerenderConfig?: string, cacheConfig?: string): void {
+function writeProject(prerenderConfig: string, cacheConfig?: string): void {
   writeFile("package.json", JSON.stringify({ name: "prerender-config-app", type: "module" }));
   writeFile("app/page.tsx", "export default function Page() { return <div>home</div>; }\n");
   writeFile(
@@ -99,10 +98,7 @@ function writeProject(prerenderConfig?: string, cacheConfig?: string): void {
         : []),
       "",
       "export default defineConfig({",
-      `  plugins: [vinext({ ${[
-        ...(prerenderConfig === undefined ? [] : [`prerender: ${prerenderConfig}`]),
-        ...(cacheConfig ? [`cache: ${cacheConfig}`] : []),
-      ].join(", ")} }), cloudflare()],`,
+      `  plugins: [vinext({ prerender: ${prerenderConfig}${cacheConfig ? `, cache: ${cacheConfig}` : ""} }), cloudflare()],`,
       "});",
       "",
     ].join("\n"),
@@ -402,13 +398,8 @@ describe("deploy prerender config wiring", () => {
 
     await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
 
-    expect(runPrerenderMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        emitRscPrewarmManifest: false,
-        root: tmpDir,
-        router: "app",
-      }),
-    );
+    expect(runPrerenderMock).not.toHaveBeenCalled();
+
     expect(
       JSON.parse(
         fs.readFileSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"), "utf-8"),
@@ -423,63 +414,4 @@ describe("deploy prerender config wiring", () => {
       "deploy",
     ]);
   });
-
-  it.each([
-    ["no prerender setting", undefined, undefined, "app"],
-    ["the prerender-all flag disabled", undefined, false, "app"],
-    ["the prerender-all flag enabled independently", undefined, true, "both"],
-    ["prerender config enabled independently", "true", undefined, "both"],
-  ])(
-    "emits RSC warm paths after warm-triggered classification with %s",
-    async (_label, config, prerenderAll, expectedRouter) => {
-      writeProject(
-        config,
-        '{ cdn: { adapter: "test-cdn-adapter", capabilities: { responseVary: "verbatim" } } }',
-      );
-      writeFile("dist/server/BUILD_ID", "build-a\n");
-      writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
-      writeFile("dist/server/index.js", "export default {};\n");
-      runPrerenderMock.mockImplementationOnce(async () => {
-        writeFile(
-          "dist/server/vinext-prerender.json",
-          JSON.stringify({
-            buildId: "build-a",
-            routes: [
-              {
-                route: "/about",
-                status: "rendered",
-                revalidate: 60,
-                router: "app",
-                fallback: false,
-                rscVary: VINEXT_RSC_VARY_HEADER,
-                rscPrewarmable: true,
-              },
-            ],
-          }),
-        );
-        return { routes: [] };
-      });
-      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
-
-      await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true, prerenderAll });
-
-      expect(runPrerenderMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          emitRscPrewarmManifest: true,
-          root: tmpDir,
-          router: expectedRouter,
-        }),
-      );
-      expect(
-        JSON.parse(
-          fs.readFileSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"), "utf-8"),
-        ),
-      ).toMatchObject({
-        buildId: "build-a",
-        responseVary: "verbatim",
-        rscBuildId: "rsc-build-a",
-        rscPaths: ["/about"],
-      });
-    },
-  );
 });

@@ -724,7 +724,6 @@ async function buildApp() {
     prerenderResult = await runPrerender({
       root,
       concurrency: parsed.prerenderConcurrency,
-      emitRscPrewarmManifest: hasVerbatimResponseVary(buildConfigMetadata.cacheConfig),
       nextConfig: resolvedNextConfig,
     });
     await emitPrerenderPathManifest({

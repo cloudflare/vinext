@@ -372,6 +372,9 @@ declare global {
        */
       __VINEXT_RSC_BUILD_IDENTITY?: string;
 
+      /** Enable stable bare-`_rsc` variants for a strict response-Vary cache. */
+      __VINEXT_CANONICAL_RSC_REQUESTS?: string;
+
       /**
        * Build-only coordination variable set by the `vinext build` CLI so that
        * every vinext() plugin instance in a single build resolves the same RSC

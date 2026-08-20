@@ -204,58 +204,49 @@ describe("prefetch cache eviction", () => {
     );
   });
 
-  it("router.prefetch uses the canonical warmed path with trailingSlash enabled", async () => {
+  it("full router.prefetch uses the canonical warmed path with trailingSlash enabled", async () => {
     vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
-    vi.stubEnv(
-      "__VINEXT_RSC_PREWARM_MANIFEST_URL",
-      "/_next/static/build-a/vinext-rsc-prewarm.json",
-    );
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
     vi.resetModules();
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
-    const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-      const url = toRscUrlString(input);
-      return url.endsWith("vinext-rsc-prewarm.json")
-        ? Response.json({ version: 1, paths: ["/dashboard/"] })
-        : new Response("flight", { headers: { "content-type": "text/x-component" } });
-    });
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
     (globalThis as any).fetch = fetch;
 
-    navigation.appRouterInstance.prefetch("/dashboard");
-    await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+    navigation.appRouterInstance.prefetch("/dashboard", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
 
-    expect(toRscUrlString(fetch.mock.calls[1]![0])).toBe("/dashboard/?_rsc");
-    const headers = new Headers(fetch.mock.calls[1]![1]?.headers);
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/dashboard?_rsc");
+    const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
     expect(headers.get("rsc")).toBe("1");
     expect(headers.get("next-router-state-tree")).toBeNull();
+    expect(headers.get("next-router-prefetch")).toBeNull();
   });
 
-  it("router.prefetch preserves contextual RSC behavior when eligibility is unavailable", async () => {
-    vi.useFakeTimers();
-    vi.stubEnv(
-      "__VINEXT_RSC_PREWARM_MANIFEST_URL",
-      "/_next/static/build-a/vinext-rsc-prewarm.json",
-    );
+  it("automatic router.prefetch uses the canonical loading-shell variant", async () => {
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
     vi.resetModules();
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
-    const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
-      const url = toRscUrlString(input);
-      if (url.endsWith("vinext-rsc-prewarm.json")) return new Promise<Response>(() => {});
-      return new Response("flight", { headers: { "content-type": "text/x-component" } });
-    });
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
     (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate: vi.fn() },
+    };
 
-    try {
-      navigation.appRouterInstance.prefetch("/dashboard");
-      await vi.advanceTimersByTimeAsync(5_000);
-      vi.useRealTimers();
-      await settlePrefetchSetup();
+    navigation.appRouterInstance.prefetch("/dashboard");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
 
-      expect(fetch).toHaveBeenCalledTimes(2);
-      expect(toRscUrlString(fetch.mock.calls[0]![0])).toContain("vinext-rsc-prewarm.json");
-      expect(toRscUrlString(fetch.mock.calls[1]![0])).toContain("/dashboard?_rsc=");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/dashboard?_rsc");
+    const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
+    expect(headers.get("next-router-prefetch")).toBe("1");
+    expect(headers.get("next-router-segment-prefetch")).toBe("1");
+    expect(headers.get("x-vinext-rsc-render-mode")).toBe("prefetch-loading-shell");
   });
 
   it("router.prefetch calls onInvalidate once when the prefetched response is invalidated", async () => {
@@ -451,6 +442,46 @@ describe("prefetch cache eviction", () => {
 
     const consumed = consumePrefetchResponse(rscUrl, null, null);
     expect(consumed?.mountedSlotsHeader).toBe(responseMountedSlotsHeader);
+  });
+
+  it("keeps a canonical full response when a loading-shell prefetch arrives later", async () => {
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    const rscUrl = "/dashboard?_rsc";
+    prefetchRscResponse(rscUrl, Promise.resolve(new Response("full")), null, null, undefined, {
+      cacheForNavigation: true,
+    });
+    await waitForPrefetchSetup(() => getPrefetchCache().get(rscUrl)?.outcome === "cache-seeded");
+
+    prefetchRscResponse(rscUrl, Promise.resolve(new Response("shell")), null, null, undefined, {
+      cacheForNavigation: false,
+      optimisticRouteShell: true,
+    });
+    await settlePrefetchSetup();
+
+    const entry = getPrefetchCache().get(rscUrl);
+    expect(entry?.cacheForNavigation).toBe(true);
+    expect(new TextDecoder().decode(entry?.snapshot?.buffer)).toBe("full");
+  });
+
+  it("replaces a canonical loading shell when a full response arrives later", async () => {
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    const rscUrl = "/dashboard?_rsc";
+    prefetchRscResponse(rscUrl, Promise.resolve(new Response("shell")), null, null, undefined, {
+      cacheForNavigation: false,
+      optimisticRouteShell: true,
+    });
+    await waitForPrefetchSetup(() => getPrefetchCache().get(rscUrl)?.outcome === "cache-seeded");
+
+    prefetchRscResponse(rscUrl, Promise.resolve(new Response("full")), null, null, undefined, {
+      cacheForNavigation: true,
+    });
+    await waitForPrefetchSetup(() => {
+      const entry = getPrefetchCache().get(rscUrl);
+      return entry?.outcome === "cache-seeded" && entry.cacheForNavigation === true;
+    });
+
+    const entry = getPrefetchCache().get(rscUrl);
+    expect(new TextDecoder().decode(entry?.snapshot?.buffer)).toBe("full");
   });
 
   it("matches equivalent RSC cache variants by server-declared mounted slots", () => {

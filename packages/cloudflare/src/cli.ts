@@ -43,9 +43,7 @@ async function deployCommand(): Promise<void> {
   await deploy({
     root: process.cwd(),
     preview: parsed.preview,
-    previewAlias: parsed.previewAlias,
     env: parsed.env,
-    config: parsed.config,
     skipBuild: parsed.skipBuild,
     dryRun: parsed.dryRun,
     name: parsed.name,

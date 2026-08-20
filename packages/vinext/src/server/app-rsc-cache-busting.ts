@@ -5,6 +5,7 @@ import {
 } from "./app-rsc-state-fingerprint.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   parseAppRscRenderMode,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
@@ -23,13 +24,6 @@ import {
   VINEXT_RSC_STATE_FINGERPRINT_HEADER,
 } from "./headers.js";
 import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id.js";
-export {
-  isRscPrewarmEligibleHref,
-  normalizeRscPrewarmHref,
-  preloadRscPrewarmManifest,
-  resolveLoadedRscPrewarmEligibility,
-  resolveRscPrewarmEligibility,
-} from "../client/rsc-prewarm-eligibility.js";
 
 /**
  * RSC cache-busting hashes cover the headers that make an RSC payload vary.
@@ -320,6 +314,17 @@ export function createCanonicalRscRequestHeaders(
   return headers;
 }
 
+/** Headers for the deterministic loading-boundary prefetch representation. */
+export function createCanonicalLoadingShellRscRequestHeaders(
+  deploymentId: string | null | undefined = getDeploymentId(),
+): Headers {
+  const headers = createCanonicalRscRequestHeaders(deploymentId);
+  headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+  headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+  headers.set(VINEXT_RSC_RENDER_MODE_HEADER, APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+  return headers;
+}
+
 export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions = {}): Headers {
   const headers = createCanonicalRscRequestHeaders(options.deploymentId);
 
@@ -396,6 +401,55 @@ export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): bool
   return true;
 }
 
+/**
+ * Convert an ordinary loading-boundary prefetch to the shared loading-shell
+ * variant. The payload is selected by the three retained mode headers; visible
+ * router state is transport context and must not fragment the shared response.
+ */
+export function canonicalizeLoadingShellRscRequestHeaders(headers: Headers): boolean {
+  if (
+    headers.get(VINEXT_RSC_RENDER_MODE_HEADER) !== APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL ||
+    headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER) ||
+    headers.has(VINEXT_INTERCEPTION_ID_HEADER) ||
+    headers.has(VINEXT_MOUNTED_SLOTS_HEADER)
+  ) {
+    return false;
+  }
+
+  headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+  headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+  headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
+  headers.delete(NEXT_URL_HEADER);
+  headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
+  headers.delete(VINEXT_CLIENT_REUSE_MANIFEST_HEADER);
+  return true;
+}
+
+function isCanonicalSharedRscRequestHeaders(headers: Headers): boolean {
+  const renderMode = headers.get(VINEXT_RSC_RENDER_MODE_HEADER);
+  const hasContext =
+    headers.has(NEXT_ROUTER_STATE_TREE_HEADER) ||
+    headers.has(NEXT_URL_HEADER) ||
+    headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER) ||
+    headers.has(VINEXT_INTERCEPTION_ID_HEADER) ||
+    headers.has(VINEXT_MOUNTED_SLOTS_HEADER) ||
+    headers.has(VINEXT_RSC_STATE_FINGERPRINT_HEADER) ||
+    headers.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER);
+  if (hasContext) return false;
+
+  if (renderMode === null) {
+    return (
+      !headers.has(NEXT_ROUTER_PREFETCH_HEADER) && !headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)
+    );
+  }
+
+  return (
+    renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL &&
+    headers.get(NEXT_ROUTER_PREFETCH_HEADER) === "1" &&
+    headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER) === "1"
+  );
+}
+
 function toRscRequestPath(href: string): string {
   const hashIndex = href.indexOf("#");
   const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
@@ -406,6 +460,13 @@ export async function createRscRequestUrl(href: string, headers: Headers): Promi
   const url = new URL(toRscRequestPath(href), "http://vinext.local");
   const hash = await computeRscCacheBustingSearchParam(headers);
   setRscCacheBustingSearchParam(url, hash);
+  return `${url.pathname}${url.search}`;
+}
+
+/** Build the strict-Vary shared RSC URL. All canonical variants use bare `?_rsc`. */
+export function createCanonicalRscRequestUrl(href: string): string {
+  const url = new URL(toRscRequestPath(href), "http://vinext.local");
+  setRscCacheBustingSearchParam(url, "");
   return `${url.pathname}${url.search}`;
 }
 
@@ -425,6 +486,16 @@ export async function createRscRedirectLocation(
 
   if (destinationUrl.origin !== requestUrl.origin) {
     return destinationUrl.toString();
+  }
+
+  if (
+    process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
+    requestUrl.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM) === "" &&
+    isCanonicalSharedRscRequestHeaders(request.headers)
+  ) {
+    return `${destinationUrl.origin}${createCanonicalRscRequestUrl(
+      `${destinationUrl.pathname}${destinationUrl.search}`,
+    )}`;
   }
 
   const rscPath = await createRscRequestUrl(
@@ -447,6 +518,14 @@ export async function resolveInvalidRscCacheBustingRequest(
   const url = new URL(options.request.url);
   const actualHash = url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
   const expectedHash = await computeRscCacheBustingSearchParam(options.request.headers);
+
+  if (
+    process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
+    actualHash === "" &&
+    isCanonicalSharedRscRequestHeaders(options.request.headers)
+  ) {
+    return null;
+  }
 
   if (actualHash === null && expectedHash === "" && url.pathname.endsWith(".rsc")) {
     return null;

@@ -12,8 +12,6 @@ export function formatDeployHelp(): string {
 
   Options:
     --preview                Deploy to preview environment (same as --env preview)
-    --preview-alias <name>   Upload and warm a version preview alias without
-                             changing production traffic
     --env <name>             Deploy using wrangler env.<name>
     --name <name>            Custom Worker name (default: from package.json)
     --config <path>          Wrangler config path (default: wrangler.jsonc/json/toml)
@@ -55,8 +53,6 @@ export function formatDeployHelp(): string {
     vpx @vinext/cloudflare deploy                                      Build and deploy with Vite+
     vp exec vinext-cloudflare deploy                                   Run the locally installed Vite+ bin
     vinext-cloudflare deploy --preview                                 Deploy to a preview URL
-    vinext-cloudflare deploy --preview-alias pr-123 --experimental-warm-cdn-cache
-                                                                       Warm a version preview alias
     vinext-cloudflare deploy --env staging                             Deploy using wrangler env.staging
     vinext-cloudflare deploy --config dist/server/wrangler.json        Deploy using a generated Wrangler config
     vinext-cloudflare deploy --dry-run                                 Validate setup without building or deploying

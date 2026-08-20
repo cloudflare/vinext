@@ -5,10 +5,8 @@ import path from "node:path";
 import {
   buildWarmupUrl,
   DEFAULT_CDN_WARM_TIMEOUT_MS,
-  warmCdnCache,
-  getWarmPathsFromPrerenderManifest,
   readPrerenderWarmPlan,
-  readPrerenderWarmPaths,
+  warmCdnCache,
   warmCdnCacheFromPrerender,
 } from "../packages/cloudflare/src/cdn-warm.js";
 import {
@@ -24,9 +22,23 @@ function writeFile(relativePath: string, content: string): void {
   fs.writeFileSync(fullPath, content, "utf-8");
 }
 
-function toRequestUrl(input: RequestInfo | URL): URL {
-  if (input instanceof URL) return input;
-  return new URL(typeof input === "string" ? input : input.url);
+function cacheableRsc(body = "flight"): Response {
+  return new Response(body, {
+    headers: {
+      "cache-control": "public, max-age=0, must-revalidate",
+      "cdn-cache-control": "public, max-age=60",
+      "cf-cache-status": "MISS",
+      "content-type": "text/x-component",
+      [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-a",
+      vary: VINEXT_RSC_VARY_HEADER,
+    },
+  });
+}
+
+function requestHref(input: RequestInfo | URL | undefined): string | undefined {
+  if (input instanceof URL) return input.href;
+  if (typeof input === "string") return input;
+  return input?.url;
 }
 
 beforeEach(() => {
@@ -39,1002 +51,188 @@ afterEach(() => {
 });
 
 describe("Cloudflare CDN warmup", () => {
-  it("uses a 5 second default request timeout", () => {
+  it("uses a 5 second default timeout and preserves query strings", () => {
     expect(DEFAULT_CDN_WARM_TIMEOUT_MS).toBe(5_000);
-  });
-
-  it("renders self-replacing progress in interactive terminals", async () => {
-    const originalIsTty = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
-    Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: true });
-    const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    try {
-      await warmCdnCache({
-        fetchImpl: vi.fn(async () => new Response("html")) as typeof fetch,
-        paths: ["/first", "/second"],
-        targetUrl: "https://app.example.com",
-      });
-
-      const output = write.mock.calls.map(([chunk]) => String(chunk));
-      expect(output.some((line) => line.includes("\rWarming CDN cache..."))).toBe(true);
-      expect(output.at(-1)).toMatch(/^\r +\r$/);
-    } finally {
-      if (originalIsTty) Object.defineProperty(process.stderr, "isTTY", originalIsTty);
-      else delete (process.stderr as { isTTY?: boolean }).isTTY;
-    }
-  });
-
-  it("reads warmable paths from the prerender manifest", () => {
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "build-a",
-        routes: [
-          { route: "/", status: "rendered", router: "app", revalidate: false, fallback: false },
-          {
-            route: "/docs/:slug",
-            path: "/docs/intro",
-            status: "rendered",
-            router: "pages",
-            revalidate: false,
-            fallback: false,
-          },
-          {
-            route: "/blog/:slug",
-            path: "/blog/[slug]",
-            status: "rendered",
-            router: "app",
-            revalidate: 60,
-            fallback: true,
-          },
-          {
-            route: "/500",
-            status: "rendered",
-            router: "pages",
-            revalidate: false,
-            fallback: false,
-          },
-          {
-            route: "/_error",
-            status: "rendered",
-            router: "pages",
-            revalidate: false,
-            fallback: false,
-          },
-        ],
-      }),
+    expect(buildWarmupUrl("https://app.example.com", "/search?q=x").href).toBe(
+      "https://app.example.com/search?q=x",
     );
+  });
+
+  it("reads only build-discovered paths and does not require local prerender output", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
-
-    expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/", "/docs/intro"]);
-  });
-
-  it("prefers completed prerender results over discovery-only paths", () => {
-    writeFile(
-      "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({
-        buildId: "build-a",
-        paths: ["/", "/cached/intro", "not-a-path"],
-      }),
-    );
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "build-a",
-        routes: [
-          { route: "/old", status: "rendered", router: "app", revalidate: false, fallback: false },
-        ],
-      }),
-    );
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-
-    expect(readPrerenderWarmPaths(tmpDir)).toEqual(["/old"]);
-  });
-
-  it("selects RSC warm paths only from final cacheable App prerenders", () => {
     writeFile(
       "dist/server/vinext-prerender-paths.json",
       JSON.stringify({
         basePath: "/docs",
         buildId: "build-a",
-        buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
         deploymentId: "dpl_123",
-        paths: ["/cached/intro", "/dynamic", "/pages"],
+        loadingShellPaths: ["/dashboard"],
+        paths: ["/dashboard", "/dynamic", "/pages"],
         responseVary: "verbatim",
         rscBuildId: "rsc-build-a",
-        rscPaths: ["/cached/intro"],
+        rscPaths: ["/dashboard", "/dynamic"],
         trailingSlash: true,
       }),
     );
     writeFile(
       "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "build-a",
-        routes: [
-          {
-            route: "/cached/:slug",
-            path: "/cached/intro",
-            status: "rendered",
-            router: "app",
-            revalidate: 60,
-            fallback: false,
-            rscVary: VINEXT_RSC_VARY_HEADER,
-            rscPrewarmable: true,
-          },
-          { route: "/dynamic", status: "skipped", router: "app" },
-          {
-            route: "/pages",
-            status: "rendered",
-            router: "pages",
-            revalidate: false,
-            fallback: false,
-          },
-          {
-            route: "/zero",
-            status: "rendered",
-            router: "app",
-            revalidate: 0,
-            fallback: false,
-          },
-          {
-            route: "/html-only",
-            status: "rendered",
-            router: "app",
-            revalidate: 60,
-            fallback: false,
-            rscVary: `${VINEXT_RSC_VARY_HEADER}, User-Agent`,
-            rscPrewarmable: true,
-          },
-        ],
-      }),
+      JSON.stringify({ buildId: "old", routes: [{ route: "/wrong", status: "rendered" }] }),
     );
-    writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
       deploymentId: "dpl_123",
-      paths: ["/docs/cached/intro/", "/docs/html-only/", "/docs/pages/"],
+      loadingShellPaths: ["/docs/dashboard/"],
+      paths: ["/docs/dashboard/", "/docs/dynamic/", "/docs/pages/"],
       rscBuildId: "rsc-build-a",
-      rscPaths: ["/docs/cached/intro/"],
+      rscPaths: ["/docs/dashboard/", "/docs/dynamic/"],
     });
   });
 
-  it("preserves discovered Pages HTML paths without prerendering Pages for RSC eligibility", () => {
+  it("disables RSC variants for adapters without strict response Vary", () => {
+    writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(
       "dist/server/vinext-prerender-paths.json",
       JSON.stringify({
         buildId: "build-a",
-        pagesPaths: ["/pages"],
-        paths: ["/cached/intro", "/pages"],
-        responseVary: "verbatim",
+        loadingShellPaths: ["/dashboard"],
+        paths: ["/dashboard"],
         rscBuildId: "rsc-build-a",
-        rscPaths: ["/cached/intro"],
+        rscPaths: ["/dashboard"],
       }),
     );
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "build-a",
-        routes: [
-          {
-            route: "/cached/intro",
-            status: "rendered",
-            router: "app",
-            revalidate: 60,
-            fallback: false,
-            rscVary: VINEXT_RSC_VARY_HEADER,
-            rscPrewarmable: true,
-          },
-        ],
-      }),
-    );
-    writeFile("dist/server/BUILD_ID", "build-a\n");
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      paths: ["/cached/intro", "/pages"],
-      rscBuildId: "rsc-build-a",
-      rscPaths: ["/cached/intro"],
-    });
-  });
-
-  it("uses the full prerender manifest when fallback shell paths are requested", () => {
-    writeFile(
-      "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({
-        buildId: "build-a",
-        paths: ["/", "/cached/intro"],
-      }),
-    );
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "build-a",
-        routes: [
-          { route: "/", status: "rendered", router: "app", revalidate: false, fallback: false },
-          {
-            route: "/blog/:slug",
-            path: "/blog/[slug]",
-            status: "rendered",
-            router: "app",
-            revalidate: 60,
-            fallback: true,
-          },
-        ],
-      }),
-    );
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-
-    expect(readPrerenderWarmPaths(tmpDir, { includeFallbackShells: true })).toEqual([
-      "/",
-      "/blog/[slug]",
-    ]);
-  });
-
-  it("warns when fallback shells are requested without a prerender manifest", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    writeFile(
-      "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({
-        buildId: "build-a",
-        paths: ["/", "/cached/intro"],
-      }),
-    );
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-
-    expect(readPrerenderWarmPaths(tmpDir, { includeFallbackShells: true })).toEqual([
-      "/",
-      "/cached/intro",
-    ]);
-    expect(warn).toHaveBeenCalledWith(
-      "[vinext] CDN warmup has no completed prerender manifest; RSC warmup is disabled.",
-    );
-  });
-
-  it("skips warm paths when the path manifest build ID does not match the built Worker", () => {
-    writeFile(
-      "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({
-        buildId: "old-build",
-        paths: ["/"],
-      }),
-    );
-    writeFile("dist/server/BUILD_ID", "new-build\n");
-
-    expect(readPrerenderWarmPaths(tmpDir)).toEqual([]);
-  });
-
-  it("does not consume stale path-manifest configuration when final prerender data is current", () => {
-    writeFile(
-      "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({
-        basePath: "/stale",
-        buildId: "old-build",
-        deploymentId: "old-deployment",
-        paths: ["/old"],
-        responseVary: "verbatim",
-        rscBuildId: "old-rsc-build",
-        rscPaths: ["/old"],
-        trailingSlash: true,
-      }),
-    );
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "new-build",
-        routes: [
-          {
-            route: "/current",
-            status: "rendered",
-            router: "app",
-            revalidate: 60,
-            fallback: false,
-            rscVary: VINEXT_RSC_VARY_HEADER,
-            rscPrewarmable: true,
-          },
-        ],
-      }),
-    );
-    writeFile("dist/server/BUILD_ID", "new-build\n");
-
-    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      paths: ["/current"],
+      loadingShellPaths: [],
+      paths: ["/dashboard"],
       rscPaths: [],
     });
   });
 
-  it("derives RSC eligibility from completed prerender data when path metadata is stale", () => {
+  it("rejects a stale discovery manifest in strict mode", () => {
+    writeFile("dist/server/BUILD_ID", "build-b\n");
     writeFile(
       "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({
-        basePath: "/docs",
-        buildId: "fixed-build-id",
-        paths: ["/old"],
-        responseVary: "verbatim",
-        rscBuildId: "rsc-build-a",
-        rscPaths: ["/old"],
-        trailingSlash: true,
-      }),
+      JSON.stringify({ buildId: "build-a", paths: ["/"] }),
     );
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "fixed-build-id",
-        routes: [
-          {
-            route: "/current",
-            status: "rendered",
-            router: "app",
-            revalidate: 60,
-            fallback: false,
-            rscVary: VINEXT_RSC_VARY_HEADER,
-            rscPrewarmable: true,
-          },
-          {
-            route: "/old",
-            status: "skipped",
-            router: "app",
-          },
-        ],
-      }),
-    );
-    writeFile("dist/server/BUILD_ID", "fixed-build-id\n");
 
-    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      paths: ["/docs/current/"],
-      rscBuildId: "rsc-build-a",
-      rscPaths: ["/docs/current/"],
-    });
-  });
-
-  it("skips warm paths when the manifest build ID does not match the built Worker", () => {
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "old-build",
-        routes: [
-          { route: "/", status: "rendered", router: "app", revalidate: false, fallback: false },
-        ],
-      }),
-    );
-    writeFile("dist/server/BUILD_ID", "new-build\n");
-
-    expect(readPrerenderWarmPaths(tmpDir)).toEqual([]);
-  });
-
-  it("throws in strict mode when the manifest build ID does not match the built Worker", () => {
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "old-build",
-        routes: [
-          { route: "/", status: "rendered", router: "app", revalidate: false, fallback: false },
-        ],
-      }),
-    );
-    writeFile("dist/server/BUILD_ID", "new-build\n");
-
-    expect(() => readPrerenderWarmPaths(tmpDir, { strict: true })).toThrow(
-      "prerender manifest buildId does not match",
+    expect(() => readPrerenderWarmPlan(tmpDir, { strict: true })).toThrow(
+      "prerender path manifest buildId does not match",
     );
   });
 
-  it("can select fallback-shell placeholder paths when requested", () => {
-    expect(
-      getWarmPathsFromPrerenderManifest(
-        {
-          routes: [
-            {
-              route: "/blog/:slug",
-              path: "/blog/[slug]",
-              status: "rendered",
-              router: "app",
-              revalidate: 60,
-              fallback: true,
-            },
-          ],
-        },
-        { includeFallbackShells: true },
-      ),
-    ).toEqual(["/blog/[slug]"]);
-  });
-
-  it("can select error documents when requested", () => {
-    expect(
-      getWarmPathsFromPrerenderManifest(
-        {
-          routes: [
-            {
-              route: "/500",
-              status: "rendered",
-              router: "pages",
-              revalidate: false,
-              fallback: false,
-            },
-            {
-              route: "/_error",
-              status: "rendered",
-              router: "pages",
-              revalidate: false,
-              fallback: false,
-            },
-          ],
-        },
-        { includeErrorDocuments: true },
-      ),
-    ).toEqual(["/500", "/_error"]);
-  });
-
-  it("builds target URLs from root and nested paths", () => {
-    expect(buildWarmupUrl("https://worker.example.workers.dev", "/docs/intro").toString()).toBe(
-      "https://worker.example.workers.dev/docs/intro",
-    );
-  });
-
-  it("encodes Unicode and spaces in deployment warm paths", () => {
-    writeFile(
-      "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({
-        buildId: "build-a",
-        paths: ["/café au lait"],
-        responseVary: "verbatim",
-        rscBuildId: "rsc-build-a",
-        rscPaths: ["/café au lait"],
-      }),
-    );
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "build-a",
-        routes: [
-          {
-            route: "/café au lait",
-            status: "rendered",
-            router: "app",
-            revalidate: 60,
-            fallback: false,
-            rscVary: VINEXT_RSC_VARY_HEADER,
-            rscPrewarmable: true,
-          },
-        ],
-      }),
-    );
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-
-    expect(readPrerenderWarmPlan(tmpDir)).toEqual({
-      paths: ["/caf%C3%A9%20au%20lait"],
-      rscBuildId: "rsc-build-a",
-      rscPaths: ["/caf%C3%A9%20au%20lait"],
-    });
-  });
-
-  it("requests every warmable path through the target URL", async () => {
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "build-a",
-        routes: [
-          { route: "/", status: "rendered", router: "app", revalidate: false, fallback: false },
-          {
-            route: "/about",
-            status: "rendered",
-            router: "pages",
-            revalidate: false,
-            fallback: false,
-          },
-        ],
-      }),
-    );
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("ok", { status: 200 }),
-    );
-
-    const result = await warmCdnCacheFromPrerender({
-      root: tmpDir,
-      targetUrl: "https://app.example.com",
-      concurrency: 1,
-      fetchImpl: fetchMock as typeof fetch,
-    });
-
-    expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const firstInput = fetchMock.mock.calls[0]![0];
-    const secondInput = fetchMock.mock.calls[1]![0];
-    expect(firstInput).toBeInstanceOf(URL);
-    expect(secondInput).toBeInstanceOf(URL);
-    expect((firstInput as URL).href).toBe("https://app.example.com/");
-    expect((secondInput as URL).href).toBe("https://app.example.com/about");
-    expect(fetchMock.mock.calls[0]![1]).toMatchObject({ redirect: "follow" });
-  });
-
-  it("warms an already resolved path list without rereading the manifest", async () => {
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit) => new Response("ok", { status: 200 }),
-    );
-
-    const result = await warmCdnCache({
-      targetUrl: "https://app.example.com",
-      paths: ["/", "/about"],
-      concurrency: 1,
-      fetchImpl: fetchMock as typeof fetch,
-    });
-
-    expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("retries a staged-version 404 while the Worker version override propagates", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response("old version", { status: 404 }))
-      .mockResolvedValueOnce(new Response("new version", { status: 200 }));
-
-    const result = await warmCdnCache({
-      fetchImpl: fetchMock as typeof fetch,
-      headers: {
-        "Cloudflare-Workers-Version-Overrides": 'my-worker="22222222-2222-4222-8222-222222222222"',
-      },
-      paths: ["/new-route"],
-      retryDelayMs: 0,
-      targetUrl: "https://app.example.com",
-    });
-
-    expect(result).toMatchObject({ total: 1, warmed: 1, failed: 0 });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps HTML-only warmup at normal concurrency", async () => {
-    let releaseFirst!: () => void;
-    const firstResponse = new Promise<Response>((resolve) => {
-      releaseFirst = () => resolve(new Response("first", { status: 200 }));
-    });
-    const fetchMock = vi
-      .fn()
-      .mockImplementationOnce(() => firstResponse)
-      .mockResolvedValueOnce(new Response("second", { status: 200 }));
-
-    const warming = warmCdnCache({
-      fetchImpl: fetchMock as typeof fetch,
-      headers: {
-        "Cloudflare-Workers-Version-Overrides": 'my-worker="22222222-2222-4222-8222-222222222222"',
-      },
-      paths: ["/first", "/second"],
-      targetUrl: "https://app.example.com",
-    });
-
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    releaseFirst();
-    await expect(warming).resolves.toMatchObject({ total: 2, warmed: 2, failed: 0 });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("gates explicit warmup concurrency on the uploaded RSC build identity", async () => {
-    let releaseRsc!: () => void;
-    const rscGate = new Promise<void>((resolve) => {
-      releaseRsc = resolve;
-    });
-    const events: string[] = [];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = toRequestUrl(input);
-      if (url.pathname.endsWith("/vinext-rsc-prewarm.json")) {
-        events.push("identity");
-        return Response.json({
-          version: 1,
-          buildId: "build-a",
-          rscBuildId: "build-a",
-          paths: ["/cached/intro"],
-        });
-      }
-      if (new Headers(init?.headers).get("rsc") === "1") {
-        events.push("start:rsc");
-        await rscGate;
-        events.push("end:rsc");
-        return new Response("flight", {
-          headers: {
-            "cache-control": "public, max-age=0, must-revalidate",
-            "cf-cache-status": "MISS",
-            "content-type": "text/x-component",
-            [VINEXT_RSC_BUILD_ID_HEADER]: "build-a",
-            vary: VINEXT_RSC_VARY_HEADER,
-          },
-        });
-      }
-      events.push("start:html");
-      return new Response("html", { status: 200 });
-    });
-
-    const warming = warmCdnCache({
-      buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
-      concurrency: 2,
-      expectedRscBuildId: "build-a",
-      fetchImpl: fetchMock as typeof fetch,
-      paths: ["/cached/intro"],
-      propagatingTarget: true,
-      retryDelayMs: 0,
-      rscPaths: ["/cached/intro"],
-      targetUrl: "https://app.example.com",
-    });
-
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(events).toEqual(["start:rsc", "identity"]);
-    releaseRsc();
-    await expect(warming).resolves.toMatchObject({ total: 2, warmed: 2, failed: 0 });
-    expect(events).toEqual(["start:rsc", "identity", "end:rsc", "start:html"]);
-  });
-
-  it("gates HTML-only warmup on an immutable uploaded-build asset", async () => {
-    let identityAttempt = 0;
-    let firstHtmlAttempt = 0;
-    const events: string[] = [];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = toRequestUrl(input);
-      if (url.pathname.endsWith("/vinext-rsc-prewarm.json")) {
-        identityAttempt++;
-        events.push(`identity:${identityAttempt}`);
-        const body =
-          identityAttempt === 1
-            ? "missing"
-            : identityAttempt === 2
-              ? "{}"
-              : JSON.stringify({
-                  version: 1,
-                  buildId: "build-a",
-                  rscBuildId: "rsc-build-a",
-                  paths: [],
-                });
-        return new Response(body, {
-          status: identityAttempt === 1 ? 404 : 200,
-          headers: identityAttempt === 1 ? undefined : { "content-type": "application/json" },
-        });
-      }
-      events.push(`html:${url.pathname}`);
-      if (url.pathname === "/pages-a" && ++firstHtmlAttempt === 1) {
-        return new Response("not propagated", { status: 404 });
-      }
-      return new Response("html", { status: 200 });
-    });
-
-    const result = await warmCdnCache({
-      buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
-      fetchImpl: fetchMock as typeof fetch,
-      paths: ["/pages-a", "/pages-b"],
-      propagatingTarget: true,
-      retryDelayMs: 0,
-      targetUrl: "https://app.example.com",
-    });
-
-    expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
-    expect(events.slice(0, 3)).toEqual(["identity:1", "identity:2", "identity:3"]);
-    expect(events.slice(3)).toEqual(["html:/pages-a", "html:/pages-a", "html:/pages-b"]);
-  });
-
-  it("retries transient RSC validation failures for a propagating target", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        new Response("old html response", {
-          headers: { "content-type": "text/html" },
-          status: 200,
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response("flight", {
-          headers: {
-            "cache-control": "public, max-age=0, must-revalidate",
-            "cf-cache-status": "MISS",
-            "content-type": "text/x-component",
-            vary: VINEXT_RSC_VARY_HEADER,
-          },
-        }),
-      )
-      .mockResolvedValueOnce(new Response("html", { status: 200 }));
-
-    const result = await warmCdnCache({
-      fetchImpl: fetchMock as typeof fetch,
-      paths: ["/cached/intro"],
-      propagatingTarget: true,
-      retryDelayMs: 0,
-      rscPaths: ["/cached/intro"],
-      targetUrl: "https://app.example.com",
-    });
-
-    expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-  });
-
-  it("retries an otherwise valid RSC response rendered by the previous build", async () => {
-    const rscResponse = (buildId: string) =>
-      new Response("flight", {
-        headers: {
-          "cache-control": "public, max-age=0, must-revalidate",
-          "cf-cache-status": "MISS",
-          "content-type": "text/x-component",
-          [VINEXT_RSC_BUILD_ID_HEADER]: buildId,
-          vary: VINEXT_RSC_VARY_HEADER,
-        },
-      });
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(rscResponse("old-build"))
-      .mockResolvedValueOnce(rscResponse("new-build"))
-      .mockResolvedValueOnce(new Response("html", { status: 200 }));
-
-    const result = await warmCdnCache({
-      expectedRscBuildId: "new-build",
-      fetchImpl: fetchMock as typeof fetch,
-      paths: ["/cached/intro"],
-      propagatingTarget: true,
-      retryDelayMs: 0,
-      rscPaths: ["/cached/intro"],
-      targetUrl: "https://app.example.com",
-    });
-
-    expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-  });
-
-  it("shares the first propagation deadline between the RSC and asset identity gates", async () => {
-    let now = 0;
-    let releaseRsc!: () => void;
-    const rscGate = new Promise<void>((resolve) => {
-      releaseRsc = resolve;
-    });
-    vi.spyOn(Date, "now").mockImplementation(() => now);
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = toRequestUrl(input);
-      if (url.pathname.endsWith("/vinext-rsc-prewarm.json")) {
-        return Response.json({
-          version: 1,
-          buildId: "build-a",
-          rscBuildId: "new-build",
-          paths: ["/cached/intro"],
-        });
-      }
-      if (new Headers(init?.headers).get("rsc") === "1") {
-        await rscGate;
-        return new Response("new flight", {
-          headers: {
-            "cache-control": "public, max-age=0, must-revalidate",
-            "cf-cache-status": "MISS",
-            "content-type": "text/x-component",
-            [VINEXT_RSC_BUILD_ID_HEADER]: "new-build",
-            vary: VINEXT_RSC_VARY_HEADER,
-          },
-        });
-      }
-      return new Response("html", { status: 200 });
-    });
-
-    const warming = warmCdnCache({
-      buildIdentityPath: "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
-      expectedRscBuildId: "new-build",
-      fetchImpl: fetchMock as typeof fetch,
-      paths: ["/cached/intro", "/cached/second"],
-      propagatingTarget: true,
-      retryDelayMs: 0,
-      rscPaths: ["/cached/intro"],
-      targetUrl: "https://app.example.com",
-    });
-
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    now = 31_000;
-    releaseRsc();
-    const result = await warming;
-
-    expect(result).toMatchObject({ total: 3, warmed: 3, failed: 0 });
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-  });
-
-  it("uses ordinary retry policy after the identity gate succeeds", async () => {
-    const rscResponse = (buildId: string) =>
-      new Response("flight", {
-        headers: {
-          "cache-control": "public, max-age=0, must-revalidate",
-          "cf-cache-status": "MISS",
-          "content-type": "text/x-component",
-          [VINEXT_RSC_BUILD_ID_HEADER]: buildId,
-          vary: VINEXT_RSC_VARY_HEADER,
-        },
-      });
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = toRequestUrl(input);
-      if (new Headers(init?.headers).get("rsc") !== "1") {
-        return new Response("html", { status: 200 });
-      }
-      return rscResponse(url.pathname === "/first" ? "new-build" : "old-build");
-    });
-
-    const result = await warmCdnCache({
-      expectedRscBuildId: "new-build",
-      fetchImpl: fetchMock as typeof fetch,
-      paths: ["/first", "/second"],
-      propagatingTarget: true,
-      retryDelayMs: 0,
-      rscPaths: ["/first", "/second"],
-      targetUrl: "https://app.example.com",
-    });
-
-    expect(result).toMatchObject({ total: 4, warmed: 3, failed: 1 });
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-  });
-
-  it("issues exactly one HTML and one canonical RSC request for an eligible path", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+  it("warms canonical full RSC, loading shell, and HTML with browser-identical requests", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
-      if (headers.get("rsc") === "1") {
-        return new Response("flight", {
-          headers: {
-            "cache-control": "public, max-age=0, must-revalidate",
-            "cf-cache-status": "MISS",
-            "content-type": "text/x-component",
-            vary: VINEXT_RSC_VARY_HEADER,
-          },
-        });
-      }
-      return new Response("html", { headers: { "content-type": "text/html" } });
+      return headers.get("rsc") === "1" ? cacheableRsc() : new Response("html");
     });
 
     const result = await warmCdnCache({
       deploymentId: "dpl_123",
-      fetchImpl: fetchMock as typeof fetch,
-      paths: ["/cached/intro"],
-      rscPaths: ["/cached/intro"],
+      expectedRscBuildId: "rsc-build-a",
+      fetchImpl: fetchImpl as typeof fetch,
+      loadingShellPaths: ["/search?q=x"],
+      paths: ["/search?q=x"],
+      rscPaths: ["/search?q=x"],
       targetUrl: "https://app.example.com",
     });
 
-    expect(result).toMatchObject({ total: 2, warmed: 2, failed: 0 });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect((fetchMock.mock.calls[0]![0] as URL).href).toBe(
-      "https://app.example.com/cached/intro?_rsc",
+    expect(result).toEqual({ total: 3, warmed: 3, skipped: 0, failed: 0, failures: [] });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(requestHref(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://app.example.com/search?q=x&_rsc",
     );
-    const rscInit = fetchMock.mock.calls[0]![1]!;
-    expect(rscInit.redirect).toBe("manual");
-    const headers = new Headers(rscInit.headers);
-    expect(headers.get("accept")).toBe("text/x-component");
-    expect(headers.get("rsc")).toBe("1");
-    expect(headers.get("x-deployment-id")).toBe("dpl_123");
-    expect(headers.get("next-router-prefetch")).toBeNull();
-    expect(headers.get("next-router-state-tree")).toBeNull();
-    expect(headers.get("next-url")).toBeNull();
-    expect((fetchMock.mock.calls[1]![0] as URL).href).toBe("https://app.example.com/cached/intro");
-    expect(new Headers(fetchMock.mock.calls[1]![1]?.headers).get("accept")).toBe("text/html");
+    expect(requestHref(fetchImpl.mock.calls[1]?.[0])).toBe(
+      "https://app.example.com/search?q=x&_rsc",
+    );
+    expect(requestHref(fetchImpl.mock.calls[2]?.[0])).toBe("https://app.example.com/search?q=x");
+
+    const full = new Headers(fetchImpl.mock.calls[0]?.[1]?.headers);
+    expect(Object.fromEntries(full)).toMatchObject({
+      accept: "text/x-component",
+      rsc: "1",
+      "x-deployment-id": "dpl_123",
+    });
+    expect(full.get("next-router-prefetch")).toBeNull();
+    expect(full.get("next-router-state-tree")).toBeNull();
+    expect(full.get("next-url")).toBeNull();
+
+    const shell = new Headers(fetchImpl.mock.calls[1]?.[1]?.headers);
+    expect(shell.get("next-router-prefetch")).toBe("1");
+    expect(shell.get("next-router-segment-prefetch")).toBe("1");
+    expect(shell.get("x-vinext-rsc-render-mode")).toBe("prefetch-loading-shell");
+    expect(shell.get("next-router-state-tree")).toBeNull();
+    expect(shell.get("next-url")).toBeNull();
+
+    const html = new Headers(fetchImpl.mock.calls[2]?.[1]?.headers);
+    expect(html.get("accept")).toBe("text/html");
+    for (const call of fetchImpl.mock.calls) {
+      expect(new Headers(call[1]?.headers).get("user-agent")).toBe("vinext-cloudflare-cdn-warm");
+    }
   });
 
-  it("rejects an RSC response that Cloudflare bypassed", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+  it("counts coherent no-store/BYPASS responses as skipped, including in strict mode", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const isRsc = new Headers(init?.headers).get("rsc") === "1";
       return new Response(isRsc ? "flight" : "html", {
-        headers: isRsc
-          ? {
-              "cache-control": "no-store",
-              "cf-cache-status": "BYPASS",
-              "content-type": "text/x-component",
-              vary: VINEXT_RSC_VARY_HEADER,
-            }
-          : { "content-type": "text/html" },
-      });
-    });
-
-    await expect(
-      warmCdnCache({
-        fetchImpl: fetchMock as typeof fetch,
-        paths: ["/cached/intro"],
-        rscPaths: ["/cached/intro"],
-        strict: true,
-        targetUrl: "https://app.example.com",
-      }),
-    ).rejects.toThrow("Cache-Control is not cacheable");
-  });
-
-  it.each([
-    {
-      label: "an unsupported Vary field",
-      headers: {
-        "cf-cache-status": "MISS",
-        vary: `${VINEXT_RSC_VARY_HEADER}, User-Agent`,
-      },
-      error: "response Vary has unsupported field user-agent",
-    },
-    {
-      label: "no Cloudflare cache admission evidence",
-      headers: { vary: VINEXT_RSC_VARY_HEADER },
-      error: "response is missing CF-Cache-Status",
-    },
-    {
-      label: "a Set-Cookie header",
-      headers: {
-        "cf-cache-status": "MISS",
-        "set-cookie": "session=private; Path=/",
-        vary: VINEXT_RSC_VARY_HEADER,
-      },
-      error: "response sets a cookie",
-    },
-  ])("rejects an RSC response with $label", async ({ headers, error }) => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const isRsc = new Headers(init?.headers).get("rsc") === "1";
-      const responseHeaders = new Headers(
-        isRsc
-          ? {
-              "cache-control": "public, max-age=0, must-revalidate",
-              "content-type": "text/x-component",
-            }
-          : { "content-type": "text/html" },
-      );
-      if (isRsc) {
-        for (const [name, value] of Object.entries(headers)) {
-          responseHeaders.set(name, value);
-        }
-      }
-      return new Response(isRsc ? "flight" : "html", {
-        headers: responseHeaders,
-      });
-    });
-
-    await expect(
-      warmCdnCache({
-        fetchImpl: fetchMock as typeof fetch,
-        paths: ["/cached/intro"],
-        rscPaths: ["/cached/intro"],
-        strict: true,
-        targetUrl: "https://app.example.com",
-      }),
-    ).rejects.toThrow(error);
-  });
-
-  it("times out when response headers arrive but the body never completes", async () => {
-    const fetchMock = vi.fn(async () => {
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode("partial"));
+        headers: {
+          "cache-control": "no-store",
+          "cf-cache-status": "BYPASS",
+          ...(isRsc
+            ? {
+                "content-type": "text/x-component",
+                [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-a",
+                vary: VINEXT_RSC_VARY_HEADER,
+              }
+            : { "content-type": "text/html" }),
         },
       });
-      return new Response(body, { status: 200 });
     });
 
-    const result = await warmCdnCache({
-      fetchImpl: fetchMock as typeof fetch,
-      paths: ["/stalled"],
-      retries: 0,
-      targetUrl: "https://app.example.com",
-      timeoutMs: 5,
-    });
-
-    expect(result).toEqual({
-      total: 1,
-      warmed: 0,
-      failed: 1,
-      failures: [{ path: "/stalled", error: "timed out after 5ms" }],
-    });
+    await expect(
+      warmCdnCache({
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/dynamic"],
+        rscPaths: ["/dynamic"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toEqual({ total: 2, warmed: 0, skipped: 2, failed: 0, failures: [] });
   });
 
-  it("reports warmup failures and throws in strict mode", async () => {
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "build-a",
-        routes: [
-          {
-            route: "/broken",
-            status: "rendered",
-            router: "app",
-            revalidate: false,
-            fallback: false,
-          },
-        ],
+  it("fails contradictory cache policy instead of claiming a warm", async () => {
+    const fetchImpl = vi.fn(async () => {
+      const response = cacheableRsc();
+      response.headers.set("cache-control", "no-store");
+      return response;
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: [],
+        rscPaths: ["/broken"],
+        strict: true,
+        targetUrl: "https://app.example.com",
       }),
-    );
+    ).rejects.toThrow("opts out of caching, but CF-Cache-Status is MISS");
+  });
+
+  it("warms directly from the discovery manifest", async () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response("nope", { status: 404 }),
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/about"] }),
     );
+    const fetchImpl = vi.fn(async () => new Response("html"));
 
     await expect(
       warmCdnCacheFromPrerender({
+        fetchImpl: fetchImpl as typeof fetch,
         root: tmpDir,
         targetUrl: "https://app.example.com",
-        strict: true,
-        fetchImpl: fetchMock as typeof fetch,
       }),
-    ).rejects.toThrow("CDN warmup failed for 1/1 request");
+    ).resolves.toMatchObject({ total: 1, warmed: 1, skipped: 0, failed: 0 });
   });
 });

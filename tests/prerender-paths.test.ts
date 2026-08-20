@@ -63,6 +63,7 @@ describe("prerender path manifest", () => {
         "export default function Page() { return null; }",
       ].join("\n"),
     );
+    writeFile("app/cached/loading.tsx", "export default function Loading() { return null; }\n");
     writeFile(
       "app/dynamic/page.tsx",
       "export const dynamic = 'force-dynamic'; export default function Page() { return null; }\n",
@@ -71,13 +72,16 @@ describe("prerender path manifest", () => {
     const { emitPrerenderPathManifest } =
       await import("../packages/vinext/src/build/prerender-paths.js");
 
-    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" });
 
     expect(manifest).toEqual({
       buildId: "build-a",
+      loadingShellPaths: ["/cached/intro", "/cached/featured"],
       rscBuildId: "rsc-build-a",
+      responseVary: "verbatim",
+      rscPaths: ["/", "/dynamic", "/cached/intro", "/cached/featured"],
       trailingSlash: false,
-      paths: ["/", "/cached/intro", "/cached/featured"],
+      paths: ["/", "/dynamic", "/cached/intro", "/cached/featured"],
     });
     expect(fs.existsSync(path.join(tmpDir, "dist/server/prerendered-routes"))).toBe(false);
     expect(
@@ -98,7 +102,7 @@ describe("prerender path manifest", () => {
     expect(closeMock).toHaveBeenCalledOnce();
   });
 
-  it("does not stamp stale completed prerender eligibility into a new build", async () => {
+  it("discovers strict-Vary RSC paths without consulting completed prerender output", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
@@ -127,10 +131,8 @@ describe("prerender path manifest", () => {
       responseVary: "verbatim",
     });
 
-    expect(manifest?.rscPaths).toEqual([]);
-    expect(manifest?.buildIdentityPath).toBe(
-      "/_next/static/build-a/rsc-build-a/vinext-rsc-prewarm.json",
-    );
+    expect(manifest?.rscPaths).toEqual(["/"]);
+    expect(manifest?.rscBuildId).toBe("rsc-build-a");
   });
 
   it("skips dynamic warmup paths when static params discovery aborts", async () => {

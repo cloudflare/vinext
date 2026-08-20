@@ -184,12 +184,10 @@ import {
 import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
   canonicalizePrewarmableRscRequestHeaders,
+  createCanonicalRscRequestUrl,
   createRscRequestHeaders,
   createRscRequestUrl,
   getVinextRscCompatibilityId,
-  normalizeRscPrewarmHref,
-  preloadRscPrewarmManifest,
-  resolveLoadedRscPrewarmEligibility,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
@@ -1714,7 +1712,6 @@ function registerServerActionCallback(): void {
 }
 
 async function main(): Promise<void> {
-  void preloadRscPrewarmManifest();
   if (!claimInitialAppRouterBootstrap()) return;
 
   if (hasServerActions) registerServerActionCallback();
@@ -2096,24 +2093,15 @@ function bootstrapHydration(
           navigationKind,
           targetPathAndSearch,
         });
-        // A settled prefetch must remain synchronously consumable in the click
-        // task. Only wait for optional canonical eligibility when this
-        // navigation actually needs to derive a network/cache request key.
-        const canonicalPrewarmHref = normalizeRscPrewarmHref(targetPathAndSearch);
-        const prewarmEligibility =
+        const canUseCanonicalSharedRequest =
+          process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
           navigationKind === "navigate" &&
           settledPrefetchedResponse === null &&
           requestInterceptionContext === null &&
           mountedSlotsHeader === null &&
-          (rewrittenNavigationHref === null || rewrittenNavigationHref === currentHref)
-            ? resolveLoadedRscPrewarmEligibility(canonicalPrewarmHref)
-            : "ineligible";
+          (rewrittenNavigationHref === null || rewrittenNavigationHref === currentHref);
         const usesCanonicalPrewarmedRequest =
-          prewarmEligibility === "eligible" &&
-          canonicalizePrewarmableRscRequestHeaders(requestHeaders);
-        const requestPathAndSearch = usesCanonicalPrewarmedRequest
-          ? canonicalPrewarmHref
-          : targetPathAndSearch;
+          canUseCanonicalSharedRequest && canonicalizePrewarmableRscRequestHeaders(requestHeaders);
         const rscUrl = settledPrefetchedResponse
           ? resolvePrefetchNavigationResponseUrl({
               additionalRscUrls: additionalPrefetchPathAndSearch,
@@ -2121,7 +2109,9 @@ function bootstrapHydration(
               responseUrl: settledPrefetchedResponse.url,
               visibleRscUrl: targetPathAndSearch,
             })
-          : await createRscRequestUrl(requestPathAndSearch, requestHeaders);
+          : usesCanonicalPrewarmedRequest
+            ? createCanonicalRscRequestUrl(targetPathAndSearch)
+            : await createRscRequestUrl(targetPathAndSearch, requestHeaders);
         const additionalPrefetchRscUrls = settledPrefetchedResponse
           ? additionalPrefetchPathAndSearch
           : await Promise.all(

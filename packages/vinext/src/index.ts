@@ -157,7 +157,6 @@ import {
   assertNoPublicNextRequestConflict,
 } from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
-import { getRscPrewarmManifestUrl, writeRscPrewarmManifest } from "./build/rsc-prewarm-manifest.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
@@ -2441,14 +2440,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Also used to namespace ISR cache keys so old cached entries from a
         // previous deploy are never served by the new one.
         defines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
-        // A strict response-Vary CDN adapter may share one deploy-warmed full
-        // RSC response for routes whose completed prerender proves ISR
-        // cacheability. The file is emitted after prerendering, but its
-        // build-scoped URL is known while the browser bundle is compiled.
-        defines["process.env.__VINEXT_RSC_PREWARM_MANIFEST_URL"] = JSON.stringify(
-          env?.command === "build" && hasVerbatimResponseVary(options.cache) && rscBuildIdentity
-            ? getRscPrewarmManifestUrl(nextConfig, rscBuildIdentity)
-            : "",
+        // Strict-Vary shared caches can use one stable public URL for the
+        // definitive RSC and loading-shell representations. Other adapters
+        // retain Next-compatible contextual `_rsc` digests.
+        defines["process.env.__VINEXT_CANONICAL_RSC_REQUESTS"] = JSON.stringify(
+          env?.command === "build" && hasVerbatimResponseVary(options.cache) ? "1" : "",
         );
         // Public browser-facing identity for App Router RSC compatibility
         // checks. Prefer Next.js-style deploymentId when configured; otherwise
@@ -6810,29 +6806,6 @@ export const loadServerActionClient = ${
             buildId: nextConfig.buildId,
             rewrites: nextConfig.rewrites,
           });
-        },
-      },
-    },
-    {
-      name: "vinext:rsc-prewarm-manifest-placeholder",
-      apply: "build",
-      enforce: "post",
-      writeBundle: {
-        sequential: true,
-        order: "post",
-        handler(outputOptions: { dir?: string }) {
-          if (this.environment?.name !== "client") return;
-          if (!hasVerbatimResponseVary(options.cache)) return;
-          const clientDir = outputOptions.dir;
-          if (!clientDir) return;
-
-          // A plain Vite build does not run vinext's post-build prerender pass.
-          // Still publish an empty, fail-closed manifest so the production
-          // browser never probes a missing asset. `runPrerender()` overwrites
-          // this with the final ISR-eligible paths when prerendering runs.
-          if (rscBuildIdentity) {
-            writeRscPrewarmManifest(clientDir, nextConfig, rscBuildIdentity, []);
-          }
         },
       },
     },

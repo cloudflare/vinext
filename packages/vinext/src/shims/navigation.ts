@@ -31,11 +31,11 @@ import {
   isAppOwnedHistoryState,
 } from "../server/app-history-state.js";
 import {
+  canonicalizeLoadingShellRscRequestHeaders,
   canonicalizePrewarmableRscRequestHeaders,
+  createCanonicalRscRequestUrl,
   createRscRequestHeaders,
   createRscRequestUrl,
-  normalizeRscPrewarmHref,
-  resolveRscPrewarmEligibility,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -50,6 +50,7 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../server/headers.js";
@@ -71,7 +72,11 @@ import {
   markPprFallbackShellDynamicBoundary,
 } from "./ppr-fallback-shell.js";
 import { BailoutToCSRError as NavigationBailoutToCSRError } from "./navigation-errors.js";
-import type { AppRscRenderMode } from "../server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  type AppRscRenderMode,
+} from "../server/app-rsc-render-mode.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
 import {
@@ -1479,12 +1484,31 @@ export function prefetchRscResponse(
   const prefetched = getPrefetchedUrls();
   const now = Date.now();
   const existing = cache.get(cacheKey);
+  const cacheForNavigation = behavior.cacheForNavigation ?? true;
+  const requestUrl = new URL(rscUrl, "http://vinext.local");
+  const isCanonicalSharedRscUrl =
+    process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
+    requestUrl.searchParams.has("_rsc") &&
+    requestUrl.searchParams.get("_rsc") === "";
+  if (
+    isCanonicalSharedRscUrl &&
+    existing !== undefined &&
+    existing.cacheForNavigation !== false &&
+    !cacheForNavigation
+  ) {
+    // A definitive full-route entry is strictly more useful than a loading
+    // shell for the same strict-Vary URL. Keep it in the browser cache; the
+    // CDN may still hold both response variants under their Vary selectors.
+    void fetchPromise.catch(() => {});
+    cancelAppPrefetchFetch(fetchPromise);
+    return;
+  }
   if (existing) {
     deletePrefetchCacheEntry(cache, prefetched, cacheKey, existing, false);
   }
 
   const entry: PrefetchCacheEntry = {
-    cacheForNavigation: behavior.cacheForNavigation ?? true,
+    cacheForNavigation,
     cacheKeys: new Set([cacheKey]),
     mountedSlotsHeader,
     optimisticRouteShell: behavior.optimisticRouteShell === true,
@@ -2878,18 +2902,9 @@ const _appRouter: AppRouterInstance = {
       // dependencies off the startup path of every next/navigation consumer.
       const { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch } =
         await import("./internal/app-route-prefetch-policy.js");
-      const canUseCanonicalPrewarm =
-        interceptionContext === null &&
-        mountedSlotsHeader === null &&
-        (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref);
-      const canonicalPrewarmHref = normalizeRscPrewarmHref(fullHref);
-      const prewarmEligibility = canUseCanonicalPrewarm
-        ? await resolveRscPrewarmEligibility(canonicalPrewarmHref)
-        : "ineligible";
       if (setup.cancelled) return;
-      const isCanonicalPrewarmCandidate = prewarmEligibility === "eligible";
       const policy =
-        isCanonicalPrewarmCandidate || kind === "full"
+        kind === "full"
           ? resolveFullAppRoutePrefetch()
           : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
       const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
@@ -2906,13 +2921,40 @@ const _appRouter: AppRouterInstance = {
           __prefetchInlining || requiresRouteTreePrefetch ? "/__PAGE__" : "1",
         );
       }
-      const usesCanonicalPrewarmedRequest =
-        isCanonicalPrewarmCandidate && canonicalizePrewarmableRscRequestHeaders(headers);
-      const requestHref = usesCanonicalPrewarmedRequest ? canonicalPrewarmHref : fullHref;
+      const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
+      if (!reusable && kind === "auto") {
+        headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+        headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+        headers.set(
+          VINEXT_RSC_RENDER_MODE_HEADER,
+          hasSearchParams
+            ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
+            : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        );
+      }
+      const canUseCanonicalSharedRequest =
+        process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
+        interceptionContext === null &&
+        mountedSlotsHeader === null &&
+        (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref) &&
+        !requiresRouteTreePrefetch &&
+        !__prefetchInlining;
+      const usesCanonicalLoadingShell =
+        canUseCanonicalSharedRequest &&
+        !reusable &&
+        !hasSearchParams &&
+        canonicalizeLoadingShellRscRequestHeaders(headers);
+      const usesCanonicalFullRoute =
+        canUseCanonicalSharedRequest &&
+        reusable &&
+        canonicalizePrewarmableRscRequestHeaders(headers);
+      const usesCanonicalPrewarmedRequest = usesCanonicalLoadingShell || usesCanonicalFullRoute;
       // Both derive from the same headers and neither feeds the other, so the
       // rewrite variant is generated alongside rather than after.
       const [rscUrl, ...additionalRscUrls] = await Promise.all([
-        createRscRequestUrl(requestHref, headers),
+        usesCanonicalPrewarmedRequest
+          ? createCanonicalRscRequestUrl(fullHref)
+          : createRscRequestUrl(fullHref, headers),
         ...(rewrittenPrefetchHref !== null && rewrittenPrefetchHref !== fullHref
           ? [createRscRequestUrl(rewrittenPrefetchHref, headers)]
           : []),

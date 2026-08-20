@@ -753,8 +753,6 @@ describe("parseDeployArgs", () => {
   it("parses CDN warmup flags", () => {
     const parsed = parseDeployArgs([
       "--experimental-warm-cdn-cache",
-      "--preview-alias",
-      "pr-123",
       "--warm-cdn-concurrency",
       "6",
       "--warm-cdn-timeout=1500",
@@ -765,7 +763,6 @@ describe("parseDeployArgs", () => {
     ]);
 
     expect(parsed.warmCdnCache).toBe(true);
-    expect(parsed.previewAlias).toBe("pr-123");
     expect(parsed.warmCdnConcurrency).toBe(6);
     expect(parsed.warmCdnTimeout).toBe(1500);
     expect(parsed.warmCdnRetries).toBe(0);
