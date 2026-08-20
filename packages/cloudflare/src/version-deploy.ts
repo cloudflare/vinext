@@ -80,11 +80,13 @@ function findPreviewUrlInUploadJson(parsed: JsonRecord | unknown[] | null): stri
 }
 
 export function parseVersionId(output: string): string | null {
-  return (
-    output.match(
-      /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/,
-    )?.[0] ?? null
-  );
+  const versionIdPattern =
+    "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+  const labeledVersionId = output.match(
+    new RegExp(`Worker\\s+Version\\s+ID\\s*:\\s*(${versionIdPattern})\\b`, "i"),
+  )?.[1];
+  if (labeledVersionId) return labeledVersionId;
+  return output.match(new RegExp(`\\b${versionIdPattern}\\b`))?.[0] ?? null;
 }
 
 export function parseWranglerVersionUploadOutput(output: string): WranglerVersionUploadResult {
