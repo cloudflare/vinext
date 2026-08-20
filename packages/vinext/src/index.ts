@@ -1723,50 +1723,49 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           " @vitejs/plugin-react",
       );
     }
-    const reactImport = import(pathToFileURL(resolvedReactPath).href);
-    reactPluginPromise = reactImport
-      .then((mod) => {
-        const react = (mod as VitePluginReactModule).default;
-        const limitToCommand = (plugin: Plugin, command: "serve" | "build"): Plugin => {
-          const originalApply = plugin.apply;
-          return {
-            ...plugin,
-            apply(config, env) {
-              if (env.command !== command) return false;
-              if (!originalApply) return true;
-              if (typeof originalApply === "function") {
-                return originalApply(config, env);
-              }
-              return originalApply === env.command;
-            },
-          };
+    // Wrap only the dynamic import: errors raised while building the plugin
+    // list (such as the compiler version check below) carry actionable
+    // instructions of their own and must not be relabeled as an import failure.
+    const reactImport = import(pathToFileURL(resolvedReactPath).href).catch((cause) => {
+      throw new Error("vinext: Failed to load @vitejs/plugin-react.", { cause });
+    });
+    reactPluginPromise = reactImport.then((mod) => {
+      const react = (mod as VitePluginReactModule).default;
+      const limitToCommand = (plugin: Plugin, command: "serve" | "build"): Plugin => {
+        const originalApply = plugin.apply;
+        return {
+          ...plugin,
+          apply(config, env) {
+            if (env.command !== command) return false;
+            if (!originalApply) return true;
+            if (typeof originalApply === "function") {
+              return originalApply(config, env);
+            }
+            return originalApply === env.command;
+          },
         };
-        const resolvedBuildPlugins = react(reactOptions);
-        if (
-          isReactCompilerRequested(configuredReactOptions) &&
-          !hasReactCompilerPlugin(resolvedBuildPlugins)
-        ) {
-          throw new Error(reactCompilerUnsupportedMessage(detectPackageManager(process.cwd())));
-        }
-        const buildPlugins = resolvedBuildPlugins.map((plugin) =>
-          limitToCommand(plugin as Plugin, "build"),
-        );
-        const hasConfiguredReactInclude =
-          configuredReactOptions !== undefined &&
-          Object.prototype.hasOwnProperty.call(configuredReactOptions, "include");
-        const serveOptions = hasConfiguredReactInclude
-          ? reactOptions
-          : { ...reactOptions, include: /\.(?:[tj]sx?|mdx)$/i };
-        const servePlugins = react(serveOptions).map((plugin) =>
-          limitToCommand(plugin as Plugin, "serve"),
-        );
-        return [...buildPlugins, ...servePlugins];
-      })
-      .catch((cause) => {
-        throw new Error("vinext: Failed to load @vitejs/plugin-react.", {
-          cause,
-        });
-      });
+      };
+      const resolvedBuildPlugins = react(reactOptions);
+      if (
+        isReactCompilerRequested(configuredReactOptions) &&
+        !hasReactCompilerPlugin(resolvedBuildPlugins)
+      ) {
+        throw new Error(reactCompilerUnsupportedMessage(detectPackageManager(process.cwd())));
+      }
+      const buildPlugins = resolvedBuildPlugins.map((plugin) =>
+        limitToCommand(plugin as Plugin, "build"),
+      );
+      const hasConfiguredReactInclude =
+        configuredReactOptions !== undefined &&
+        Object.prototype.hasOwnProperty.call(configuredReactOptions, "include");
+      const serveOptions = hasConfiguredReactInclude
+        ? reactOptions
+        : { ...reactOptions, include: /\.(?:[tj]sx?|mdx)$/i };
+      const servePlugins = react(serveOptions).map((plugin) =>
+        limitToCommand(plugin as Plugin, "serve"),
+      );
+      return [...buildPlugins, ...servePlugins];
+    });
   }
 
   const imageImportDimCache = new Map<string, { width: number; height: number }>();
