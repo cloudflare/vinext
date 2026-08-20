@@ -5,6 +5,10 @@ tests/e2e/cloudflare-workers/fixtures/client-module-with-package-type/node_modul
 !tests/e2e/cloudflare-workers/fixtures/client-module-with-package-type/node_modules/lib-cjs/**
 !tests/e2e/cloudflare-workers/fixtures/client-module-with-package-type/node_modules/lib-esm/
 !tests/e2e/cloudflare-workers/fixtures/client-module-with-package-type/node_modules/lib-esm/**
+!tests/fixtures/cf-app-basic/node_modules/
+tests/fixtures/cf-app-basic/node_modules/*
+!tests/fixtures/cf-app-basic/node_modules/module-identity-dependency/
+!tests/fixtures/cf-app-basic/node_modules/module-identity-dependency/**
 dist/
 !packages/types/next/upstream/dist/
 !packages/types/next/upstream/dist/**
