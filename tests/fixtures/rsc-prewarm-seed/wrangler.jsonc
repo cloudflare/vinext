@@ -1,0 +1,7 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "vinext-rsc-prewarm-seed",
+  "main": "worker.ts",
+  "compatibility_date": "2026-04-08",
+  "workers_dev": true,
+}

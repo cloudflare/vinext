@@ -35,7 +35,7 @@ import {
 import {
   isAbsoluteOrProtocolRelativeUrl,
   normalizePathTrailingSlash,
-  toBrowserNavigationHref,
+  toCanonicalBrowserNavigationHref,
   toSameOriginAppPath,
   withBasePath,
 } from "./url-utils.js";
@@ -375,7 +375,12 @@ function prefetchUrl(
   });
   if (prefetchHref == null) return;
 
-  const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
+  const fullHref = toCanonicalBrowserNavigationHref(
+    prefetchHref,
+    window.location.href,
+    __basePath,
+    __trailingSlash,
+  );
   const routePrefetchHref =
     pagesRouteHref === undefined
       ? prefetchHref
@@ -384,10 +389,11 @@ function prefetchUrl(
           basePath: __basePath,
           currentOrigin: window.location.origin,
         }) ?? prefetchHref);
-  const fullRouteHref = toBrowserNavigationHref(
+  const fullRouteHref = toCanonicalBrowserNavigationHref(
     routePrefetchHref,
     window.location.href,
     __basePath,
+    __trailingSlash,
   );
   const target = new URL(fullHref, window.location.href);
   if (
@@ -812,7 +818,7 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
   let target: URL;
   try {
     target = new URL(
-      toBrowserNavigationHref(href, window.location.href, __basePath),
+      toCanonicalBrowserNavigationHref(href, window.location.href, __basePath, __trailingSlash),
       window.location.href,
     );
   } catch {
@@ -1427,10 +1433,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // Resolve relative hrefs (#hash, ?query) for onNavigate and the navigation fallback.
     // Pages query-only links must use the rewrite-aware target resolved above,
     // so callbacks and router-error fallback agree with the actual navigation.
-    const absoluteFullHref = toBrowserNavigationHref(
+    const absoluteFullHref = toCanonicalBrowserNavigationHref(
       hasAppNavigationRuntime ? navigateHref : pagesNavigateHref,
       window.location.href,
       __basePath,
+      __trailingSlash,
     );
 
     // Call onNavigate callback if provided (Next.js 16 View Transitions support)

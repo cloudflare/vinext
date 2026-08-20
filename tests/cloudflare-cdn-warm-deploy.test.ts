@@ -31,13 +31,19 @@ function formatFetchUrl(url: Parameters<typeof fetch>[0]): string {
   return url.url;
 }
 
+function cacheableHtml(body = "ok"): Response {
+  return new Response(body, {
+    headers: { "cf-cache-status": "MISS", "content-type": "text/html" },
+  });
+}
+
 describe("Cloudflare CDN warmup deploy flow", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-warm-deploy-test-"));
     execFileSyncMock.mockReset();
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response("ok", { status: 200 })),
+      vi.fn(async () => cacheableHtml()),
     );
   });
 
@@ -68,7 +74,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
               [VINEXT_RSC_BUILD_ID_HEADER]: "build-a",
               vary: VINEXT_RSC_VARY_HEADER,
             }
-          : { "content-type": "text/html" },
+          : { "cf-cache-status": "MISS", "content-type": "text/html" },
       });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
@@ -225,7 +231,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
                 staged || promotedRscAttempts === 1 ? "old-build" : "new-build",
               vary: VINEXT_RSC_VARY_HEADER,
             }
-          : { "content-type": "text/html" },
+          : { "cf-cache-status": "MISS", "content-type": "text/html" },
       });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
@@ -337,7 +343,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     vi.mocked(fetch).mockImplementation(async (url) => {
       events.push(`fetch:${formatFetchUrl(url)}`);
-      return new Response("ok", { status: 200 });
+      return cacheableHtml();
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -388,7 +394,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     vi.mocked(fetch).mockImplementation(async (url) => {
       events.push(`fetch:${formatFetchUrl(url)}`);
-      return new Response("ok", { status: 200 });
+      return cacheableHtml();
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {

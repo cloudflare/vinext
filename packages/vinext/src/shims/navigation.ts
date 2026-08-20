@@ -57,7 +57,7 @@ import {
 import { extractRscCompletionMetadata } from "../server/rsc-completion-metadata.js";
 import {
   isHashOnlyBrowserUrlChange,
-  toBrowserNavigationHref,
+  toCanonicalBrowserNavigationHref,
   toSameOriginAppPath,
   withBasePath,
 } from "./url-utils.js";
@@ -253,6 +253,8 @@ const isServer = typeof window === "undefined";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 export const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+/** trailingSlash from next.config.js, injected by the plugin at build time */
+const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
 /** prefetch inlining (Segment Cache wire mode), injected by the plugin at build time */
 const __prefetchInlining: boolean = process.env.__VINEXT_PREFETCH_INLINING === "true";
 
@@ -902,7 +904,12 @@ function toAppPrefetchDestination(href: string): string | null {
     if (localPath == null) return null;
     localHref = localPath;
   }
-  const browserHref = toBrowserNavigationHref(localHref, window.location.href, __basePath);
+  const browserHref = toCanonicalBrowserNavigationHref(
+    localHref,
+    window.location.href,
+    __basePath,
+    __trailingSlash,
+  );
   try {
     const url = new URL(browserHref, window.location.href);
     return `${url.pathname}${url.search}`;
@@ -1494,6 +1501,7 @@ export function prefetchRscResponse(
     isCanonicalSharedRscUrl &&
     existing !== undefined &&
     existing.cacheForNavigation !== false &&
+    (existing.pending !== undefined || resolvePrefetchCacheEntryExpiresAt(existing) > now) &&
     !cacheForNavigation
   ) {
     // A definitive full-route entry is strictly more useful than a loading
@@ -2603,7 +2611,12 @@ export async function navigateClientSide(
   // `link.tsx`.
   const hybridOwner = resolveHybridClientRouteOwner(normalizedHref);
   if (hybridOwner === "pages" || hybridOwner === "document") {
-    const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
+    const fullHref = toCanonicalBrowserNavigationHref(
+      normalizedHref,
+      window.location.href,
+      __basePath,
+      __trailingSlash,
+    );
     notifyAppRouterTransitionStart(fullHref, mode);
     if (mode === "push") {
       saveScrollPosition();
@@ -2613,7 +2626,12 @@ export async function navigateClientSide(
     return;
   }
 
-  const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
+  const fullHref = toCanonicalBrowserNavigationHref(
+    normalizedHref,
+    window.location.href,
+    __basePath,
+    __trailingSlash,
+  );
   stageAppNavigationFailureTarget(fullHref);
   // Match Next.js: App Router reports navigation start before dispatching,
   // including hash-only navigations that short-circuit after URL update.

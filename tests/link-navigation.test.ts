@@ -1990,7 +1990,7 @@ describe("Link prefetch scheduling", () => {
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
 
-      expect(result.fetch.mock.calls[0]?.[0]).toBe("/docs/?_rsc");
+      expect(result.fetch.mock.calls[0]?.[0]).toBe("/docs?_rsc");
     } finally {
       result.restoreNodeEnv();
     }

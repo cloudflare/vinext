@@ -70,14 +70,29 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     "next-router-segment-prefetch": "1",
     "x-vinext-rsc-render-mode": "prefetch-loading-shell",
   };
-  for (const headers of [fullHeaders, shellHeaders]) {
-    const response = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, { headers });
-    expect(response.ok()).toBe(true);
-    expect(response.headers()["content-type"]).toContain("text/x-component");
-    expect(response.headers()["cf-cache-status"]).toBe("HIT");
-    expect(response.headers()["x-vinext-rsc-build-id"]).toBe(rscBuildId);
-    expect(await response.text()).toContain(buildId);
-  }
+  const fullResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
+    headers: fullHeaders,
+  });
+  expect(fullResponse.ok()).toBe(true);
+  expect(fullResponse.headers()["content-type"]).toContain("text/x-component");
+  expect(fullResponse.headers()["cf-cache-status"]).toBe("HIT");
+  expect(fullResponse.headers()["x-vinext-rsc-build-id"]).toBe(rscBuildId);
+  const fullBody = await fullResponse.text();
+  expect(fullBody).toContain(buildId);
+  expect(fullBody).toContain("Post: intro");
+
+  const shellResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
+    headers: shellHeaders,
+  });
+  expect(shellResponse.ok()).toBe(true);
+  expect(shellResponse.headers()["content-type"]).toContain("text/x-component");
+  expect(shellResponse.headers()["cf-cache-status"]).toBe("HIT");
+  expect(shellResponse.headers()["x-vinext-rsc-build-id"]).toBe(rscBuildId);
+  const shellBody = await shellResponse.text();
+  expect(shellBody).toContain(buildId);
+  expect(shellBody).toContain("cached-loading-shell");
+  expect(shellBody).not.toContain("Post: intro");
+  expect(shellBody).not.toBe(fullBody);
 
   const runFresh = async (source: string, run: (page: Page) => Promise<void>) => {
     const context = await browser.newContext();
@@ -112,10 +127,20 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     const context = await browser.newContext();
     const page = await context.newPage();
     try {
+      let targetRscRequests = 0;
+      page.on("request", (request) => {
+        const url = new URL(request.url());
+        if (url.pathname === TARGET_PATH && request.headers().rsc === "1") {
+          targetRscRequests++;
+        }
+      });
       const full = await observeRsc(page, () => page.goto("/prewarm/full"));
       expectFull(full);
+      expect(targetRscRequests).toBe(1);
       await page.getByTestId("link-prefetch").click();
       await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
+      await expect(page.getByRole("heading", { name: "Post: intro" })).toBeVisible();
+      expect(targetRscRequests).toBe(1);
     } finally {
       await context.close();
     }

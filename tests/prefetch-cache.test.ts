@@ -213,16 +213,50 @@ describe("prefetch cache eviction", () => {
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
         new Response("flight", { headers: { "content-type": "text/x-component" } }),
     );
+    const navigate = vi.fn(async (_href: string) => {});
     (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate },
+    };
 
     navigation.appRouterInstance.prefetch("/dashboard", { kind: "full" });
     await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    navigation.appRouterInstance.push("/dashboard");
+    await waitForPrefetchSetup(() => navigate.mock.calls.length === 1);
 
-    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/dashboard?_rsc");
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/dashboard/?_rsc");
+    expect(navigate.mock.calls[0]?.[0]).toBe("/dashboard/");
     const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
     expect(headers.get("rsc")).toBe("1");
     expect(headers.get("next-router-state-tree")).toBeNull();
     expect(headers.get("next-router-prefetch")).toBeNull();
+  });
+
+  it("uses the same canonical basePath root for router.prefetch and router.push", async () => {
+    vi.stubEnv("__NEXT_ROUTER_BASEPATH", "/docs");
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "false");
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    const navigate = vi.fn(async (_href: string) => {});
+    (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate },
+    };
+
+    navigation.appRouterInstance.prefetch("/", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    navigation.appRouterInstance.push("/");
+    await waitForPrefetchSetup(() => navigate.mock.calls.length === 1);
+
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/docs?_rsc");
+    expect(navigate.mock.calls[0]?.[0]).toBe("/docs");
   });
 
   it("automatic router.prefetch uses the canonical loading-shell variant", async () => {
@@ -461,6 +495,31 @@ describe("prefetch cache eviction", () => {
     const entry = getPrefetchCache().get(rscUrl);
     expect(entry?.cacheForNavigation).toBe(true);
     expect(new TextDecoder().decode(entry?.snapshot?.buffer)).toBe("full");
+  });
+
+  it("replaces an expired canonical full response with a fresh loading shell", async () => {
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    const rscUrl = "/dashboard?_rsc";
+    prefetchRscResponse(rscUrl, Promise.resolve(new Response("full")), null, null, undefined, {
+      cacheForNavigation: true,
+      fallbackTtlMs: 1,
+    });
+    await waitForPrefetchSetup(() => getPrefetchCache().get(rscUrl)?.outcome === "cache-seeded");
+    const fullEntry = getPrefetchCache().get(rscUrl)!;
+    fullEntry.expiresAt = Date.now() - 1;
+
+    prefetchRscResponse(rscUrl, Promise.resolve(new Response("shell")), null, null, undefined, {
+      cacheForNavigation: false,
+      optimisticRouteShell: true,
+    });
+    await waitForPrefetchSetup(() => {
+      const entry = getPrefetchCache().get(rscUrl);
+      return entry !== fullEntry && entry?.outcome === "cache-seeded";
+    });
+
+    const entry = getPrefetchCache().get(rscUrl);
+    expect(entry?.cacheForNavigation).toBe(false);
+    expect(new TextDecoder().decode(entry?.snapshot?.buffer)).toBe("shell");
   });
 
   it("replaces a canonical loading shell when a full response arrives later", async () => {

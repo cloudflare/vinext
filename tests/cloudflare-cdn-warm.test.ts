@@ -35,6 +35,17 @@ function cacheableRsc(body = "flight"): Response {
   });
 }
 
+function cacheableHtml(body = "html"): Response {
+  return new Response(body, {
+    headers: {
+      "cache-control": "public, max-age=0, must-revalidate",
+      "cdn-cache-control": "public, max-age=60",
+      "cf-cache-status": "MISS",
+      "content-type": "text/html",
+    },
+  });
+}
+
 function requestHref(input: RequestInfo | URL | undefined): string | undefined {
   if (input instanceof URL) return input.href;
   if (typeof input === "string") return input;
@@ -108,6 +119,52 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
+  it("preserves opt-in prerender fallback-shell warming", () => {
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/", "/cached/intro"] }),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          { route: "/", status: "rendered", router: "app", fallback: false },
+          {
+            route: "/blog/:slug",
+            path: "/blog/[slug]",
+            status: "rendered",
+            router: "app",
+            fallback: true,
+          },
+        ],
+      }),
+    );
+
+    expect(readPrerenderWarmPlan(tmpDir, { includeFallbackShells: true }).paths).toEqual([
+      "/",
+      "/blog/[slug]",
+    ]);
+  });
+
+  it("falls back to discovered paths when fallback shells were not locally rendered", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({ buildId: "build-a", paths: ["/", "/cached/intro"] }),
+    );
+
+    expect(readPrerenderWarmPlan(tmpDir, { includeFallbackShells: true }).paths).toEqual([
+      "/",
+      "/cached/intro",
+    ]);
+    expect(warn).toHaveBeenCalledWith(
+      "[vinext] CDN warmup fallback shells requested, but prerender manifest not found; warming build-discovered paths only.",
+    );
+  });
+
   it("rejects a stale discovery manifest in strict mode", () => {
     writeFile("dist/server/BUILD_ID", "build-b\n");
     writeFile(
@@ -123,7 +180,7 @@ describe("Cloudflare CDN warmup", () => {
   it("warms canonical full RSC, loading shell, and HTML with browser-identical requests", async () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
-      return headers.get("rsc") === "1" ? cacheableRsc() : new Response("html");
+      return headers.get("rsc") === "1" ? cacheableRsc() : cacheableHtml();
     });
 
     const result = await warmCdnCache({
@@ -219,13 +276,57 @@ describe("Cloudflare CDN warmup", () => {
     ).rejects.toThrow("opts out of caching, but CF-Cache-Status is MISS");
   });
 
+  it("requires CDN admission evidence for HTML responses", async () => {
+    const fetchImpl = vi.fn(async () => new Response("html"));
+
+    await expect(
+      warmCdnCache({
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/about"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow("response is missing CF-Cache-Status");
+  });
+
+  it("retries every staged-target request until its cache key reaches the uploaded build", async () => {
+    const attempts = new Map<string, number>();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(requestHref(input)!);
+      const isRsc = new Headers(init?.headers).get("rsc") === "1";
+      const key = `${url.pathname}:${isRsc ? "rsc" : "html"}`;
+      const attempt = (attempts.get(key) ?? 0) + 1;
+      attempts.set(key, attempt);
+      if (url.pathname === "/later" && attempt === 1) {
+        return new Response("not propagated", { status: isRsc ? 404 : 500 });
+      }
+      return isRsc ? cacheableRsc() : cacheableHtml();
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/first", "/later"],
+        propagatingTarget: true,
+        retries: 2,
+        retryDelayMs: 0,
+        rscPaths: ["/first", "/later"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ total: 4, warmed: 4, failed: 0 });
+    expect(attempts.get("/later:rsc")).toBe(2);
+    expect(attempts.get("/later:html")).toBe(2);
+  });
+
   it("warms directly from the discovery manifest", async () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(
       "dist/server/vinext-prerender-paths.json",
       JSON.stringify({ buildId: "build-a", paths: ["/about"] }),
     );
-    const fetchImpl = vi.fn(async () => new Response("html"));
+    const fetchImpl = vi.fn(async () => cacheableHtml());
 
     await expect(
       warmCdnCacheFromPrerender({

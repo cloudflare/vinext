@@ -6,6 +6,7 @@ import {
 } from "vinext/internal/build/prerender-paths";
 import {
   getPrerenderedConcretePaths,
+  readPrerenderManifest,
   type PrerenderManifest,
   type PrerenderedPathSelectionOptions,
 } from "vinext/internal/server/prerender-manifest";
@@ -168,12 +169,35 @@ export function readPrerenderWarmPlan(
     manifest.rscPaths !== undefined &&
     manifest.rscBuildId !== undefined;
   const applyConfig = (pathname: string) => applyWarmPathConfig(pathname, manifest);
+  let htmlPaths = pathPlan.paths;
+  if (options?.includeFallbackShells === true) {
+    const prerenderManifest = readPrerenderManifest(
+      path.join(root, "dist", "server", "vinext-prerender.json"),
+    );
+    if (!prerenderManifest) {
+      console.warn(
+        "[vinext] CDN warmup fallback shells requested, but prerender manifest not found; warming build-discovered paths only.",
+      );
+    } else if (!prerenderManifest.buildId || prerenderManifest.buildId !== manifest.buildId) {
+      const message =
+        "[vinext] CDN warmup skipped: prerender manifest buildId does not match dist/server/BUILD_ID.";
+      if (options.strict) throw new Error(message);
+      console.warn(message);
+      htmlPaths = [];
+    } else {
+      htmlPaths = getPrerenderedConcretePaths(prerenderManifest, {
+        includeFallbackShells: true,
+      })
+        .filter((pathname) => pathname.startsWith("/"))
+        .map(applyConfig);
+    }
+  }
   return {
     ...(manifest.deploymentId ? { deploymentId: manifest.deploymentId } : {}),
     loadingShellPaths: supportsCanonicalRsc
       ? (manifest.loadingShellPaths ?? []).map(applyConfig)
       : [],
-    paths: pathPlan.paths,
+    paths: htmlPaths,
     ...(supportsCanonicalRsc ? { rscBuildId: manifest.rscBuildId } : {}),
     rscPaths: supportsCanonicalRsc ? manifest.rscPaths!.map(applyConfig) : [],
   };
@@ -382,7 +406,7 @@ function validateHtmlWarmResponse(response: Response): WarmValidation {
       error: response.redirected ? "redirected response" : `HTTP ${response.status}`,
     };
   }
-  return validateCachePolicy(response, false);
+  return validateCachePolicy(response, true);
 }
 
 async function warmOnePath(
@@ -546,7 +570,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   // Immediately after upload, prove the RSC handler and immutable assets have
   // reached the new build, then give the first real HTML fill the same bounded
   // propagation policy. Once those gates pass, fill the remaining independent
-  // cache keys with normal concurrency.
+  // cache keys concurrently under the same bounded propagation deadline.
   const concurrency = Math.max(1, options.concurrency ?? 10);
   const normalRetries = Math.max(0, options.retries ?? 1);
   const propagationRetries = Math.max(0, options.retries ?? 30);
@@ -606,16 +630,19 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const warmAfterHtmlGate = async (
     confirmed: Awaited<ReturnType<typeof warmOnePath>>[],
     remaining: readonly WarmTarget[],
+    propagationDeadlineAt?: number,
   ): Promise<Awaited<ReturnType<typeof warmOnePath>>[]> => {
     const htmlGateIndex = remaining.findIndex((target) => target.kind === "html");
     if (htmlGateIndex < 0) {
       return [
         ...confirmed,
-        ...(await runWithConcurrency(remaining, concurrency, (target) => warmRequest(target))),
+        ...(await runWithConcurrency(remaining, concurrency, (target) =>
+          warmRequest(target, true, propagationDeadlineAt),
+        )),
       ];
     }
 
-    const htmlGateResult = await warmRequest(remaining[htmlGateIndex], true);
+    const htmlGateResult = await warmRequest(remaining[htmlGateIndex], true, propagationDeadlineAt);
     const afterHtmlGate = remaining.filter((_target, index) => index !== htmlGateIndex);
     if (!htmlGateResult.ok) {
       return [
@@ -630,7 +657,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     return [
       ...confirmed,
       htmlGateResult,
-      ...(await runWithConcurrency(afterHtmlGate, concurrency, (target) => warmRequest(target))),
+      ...(await runWithConcurrency(afterHtmlGate, concurrency, (target) =>
+        warmRequest(target, true, propagationDeadlineAt),
+      )),
     ];
   };
 
@@ -641,7 +670,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     const gateResult = await warmRequest(requests[gateIndex], true, propagationDeadlineAt);
     const remaining = requests.filter((_target, index) => index !== gateIndex);
     if (gateResult.ok) {
-      results = await warmAfterHtmlGate([gateResult], remaining);
+      results = await warmAfterHtmlGate([gateResult], remaining, propagationDeadlineAt);
     } else {
       results = [
         gateResult,
@@ -652,7 +681,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       ];
     }
   } else if (propagatingTarget) {
-    results = await warmAfterHtmlGate([], requests);
+    results = await warmAfterHtmlGate([], requests, createPropagationDeadline());
   } else {
     results = await runWithConcurrency(requests, concurrency, (target) => warmRequest(target));
   }

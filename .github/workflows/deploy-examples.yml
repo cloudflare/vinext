@@ -127,8 +127,12 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: >-
           vp exec wrangler deploy
-          --config ${{ matrix.example.wrangler_config }}
+          --config ../../tests/fixtures/rsc-prewarm-seed/wrangler.jsonc
           --name rsc-prewarm-${{ github.run_id }}
+
+      - name: Install Chromium for RSC prewarm verification
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
+        run: vp exec playwright install chromium
 
       - name: Deploy and prewarm RSC test Worker
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
@@ -149,9 +153,7 @@ jobs:
         env:
           PLAYWRIGHT_PROJECT: cloudflare-workers
           VINEXT_E2E_BASE_URL: https://rsc-prewarm-${{ github.run_id }}.vinext.workers.dev
-        run: |
-          vp exec playwright install chromium
-          vp exec playwright test tests/e2e/cloudflare-workers/rsc-prewarm.spec.ts
+        run: vp exec playwright test tests/e2e/cloudflare-workers/rsc-prewarm.spec.ts
 
       - name: Delete RSC prewarm test Worker
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
