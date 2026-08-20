@@ -521,6 +521,10 @@ jobs:
             label: cloudflare-workers
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-encoded-paths
+            label: cloudflare-encoded-paths
+            shardIndex: 1
+            shardTotal: 1
           - project: cloudflare-sentry-app
             label: cloudflare-sentry-app
             shardIndex: 1
