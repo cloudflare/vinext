@@ -6,8 +6,8 @@ import {
   resolveNextConfig,
   type ResolvedNextConfig,
 } from "../config/next-config.js";
-import { appRouter } from "../routing/app-router.js";
-import { apiRouter, pagesRouter } from "../routing/pages-router.js";
+import { appRouter, matchAppRoute } from "../routing/app-router.js";
+import { apiRouter, matchRoute, pagesRouter } from "../routing/pages-router.js";
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import {
   getAppRouteRenderEntryPath,
@@ -24,6 +24,7 @@ import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
+import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 
 export type PrerenderPathManifest = {
   basePath?: string;
@@ -166,6 +167,18 @@ function resolveConfiguredRouteDirs(
 function appRouteMayHaveGenerateStaticParams(route: Awaited<ReturnType<typeof appRouter>>[number]) {
   if (fileHasNamedExport(route.pagePath, "generateStaticParams")) return true;
   return route.layouts.some((layoutPath) => fileHasNamedExport(layoutPath, "generateStaticParams"));
+}
+
+function appRouteHasMainTreeLoadingBoundary(
+  route: Awaited<ReturnType<typeof appRouter>>[number],
+): boolean {
+  return (
+    route.loadingPath != null ||
+    (route.loadingPaths?.some(
+      (_loadingPath, index) => (route.loadingTreePositions?.[index] ?? 0) > 0,
+    ) ??
+      false)
+  );
 }
 
 async function shouldStartPathDiscoveryServer(options: {
@@ -314,12 +327,7 @@ async function collectAppPaths(options: {
     const { type } = classifyAppRoute(renderEntryPath, route.routePath, route.isDynamic);
     if (type === "api") continue;
 
-    const hasMainTreeLoadingBoundary =
-      route.loadingPath != null ||
-      (route.loadingPaths?.some(
-        (_loadingPath, index) => (route.loadingTreePositions?.[index] ?? 0) > 0,
-      ) ??
-        false);
+    const hasMainTreeLoadingBoundary = appRouteHasMainTreeLoadingBoundary(route);
     const addDiscoveredPath = (pathname: string): void => {
       addPath(paths, seen, pathname);
       if (hasMainTreeLoadingBoundary) {
@@ -371,6 +379,49 @@ async function collectAppPaths(options: {
   }
 
   return { loadingShellPaths, paths };
+}
+
+async function resolveAppRscWarmPaths(options: {
+  appDir: string;
+  pagesDir: string | null;
+  pageExtensions: readonly string[];
+  paths: readonly string[];
+}): Promise<{ loadingShellPaths: string[]; rscPaths: string[] }> {
+  const appRoutes = await appRouter(options.appDir, options.pageExtensions);
+  const [pageRoutes, apiRoutes] = options.pagesDir
+    ? await Promise.all([
+        pagesRouter(options.pagesDir, options.pageExtensions),
+        apiRouter(options.pagesDir, options.pageExtensions),
+      ])
+    : [[], []];
+
+  const rscPaths: string[] = [];
+  const loadingShellPaths: string[] = [];
+  for (const pathname of options.paths) {
+    const appMatch = matchAppRoute(pathname, appRoutes);
+    if (!appMatch) continue;
+    // The trie returns the exact object from appRoutes. Its public matcher type
+    // exposes the shared AppRoute fields, so recover the graph-owned metadata
+    // here without rescanning the route table for every concrete path.
+    const matchedAppRoute = appMatch.route as (typeof appRoutes)[number];
+
+    const appRenderEntryPath = getAppRouteRenderEntryPath(matchedAppRoute);
+    if (!appRenderEntryPath) continue;
+
+    const pagesMatch = matchRoute(
+      pathname,
+      pathname === "/api" || pathname.startsWith("/api/") ? apiRoutes : pageRoutes,
+    );
+    if (pagesMatch && pagesRouteHasPriorityOverAppRoute(pagesMatch.route, matchedAppRoute)) {
+      continue;
+    }
+
+    rscPaths.push(pathname);
+    if (appRouteHasMainTreeLoadingBoundary(matchedAppRoute)) {
+      loadingShellPaths.push(pathname);
+    }
+  }
+  return { loadingShellPaths, rscPaths };
 }
 
 async function startPathDiscoveryServer(options: {
@@ -491,6 +542,19 @@ export async function emitPrerenderPathManifest(
     }
   });
 
+  const appOwnedWarmPaths =
+    options.responseVary && appDir
+      ? await resolveAppRscWarmPaths({
+          appDir,
+          pagesDir,
+          pageExtensions: config.pageExtensions,
+          paths: discoveredAppPaths,
+        })
+      : {
+          loadingShellPaths: discoveredLoadingShellPaths,
+          rscPaths: discoveredAppPaths,
+        };
+
   const manifest: PrerenderPathManifest = {
     ...(config.basePath ? { basePath: config.basePath } : {}),
     buildId: config.buildId,
@@ -498,8 +562,8 @@ export async function emitPrerenderPathManifest(
     ...(pagesDir ? { pagesPaths: discoveredPagesPaths } : {}),
     ...(rscBuildId ? { rscBuildId } : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
-    ...(options.responseVary ? { rscPaths: discoveredAppPaths } : {}),
-    ...(options.responseVary ? { loadingShellPaths: discoveredLoadingShellPaths } : {}),
+    ...(options.responseVary ? { rscPaths: appOwnedWarmPaths.rscPaths } : {}),
+    ...(options.responseVary ? { loadingShellPaths: appOwnedWarmPaths.loadingShellPaths } : {}),
     trailingSlash: config.trailingSlash,
     paths,
   };

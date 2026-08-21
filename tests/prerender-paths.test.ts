@@ -38,6 +38,17 @@ describe("prerender path manifest", () => {
         ) {
           return Response.json([{ slug: "intro" }, { slug: "featured" }]);
         }
+        if (
+          url.pathname === "/__vinext/prerender/static-params" &&
+          url.searchParams.get("pattern") === "/:path+"
+        ) {
+          return Response.json([
+            { path: ["pages-dir", "foobar"] },
+            { path: ["pages-dir", "static"] },
+            { path: ["api", "status"] },
+            { path: ["specific", "value"] },
+          ]);
+        }
         return new Response("null", { headers: { "content-type": "application/json" } });
       }),
     );
@@ -133,6 +144,88 @@ describe("prerender path manifest", () => {
 
     expect(manifest?.rscPaths).toEqual(["/"]);
     expect(manifest?.rscBuildId).toBe("rsc-build-a");
+  });
+
+  it("excludes Pages-owned hybrid paths from App RSC warm discovery", async () => {
+    // Next.js resolves matching Pages and App routes by cross-router specificity:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-params/use-params.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/pages-to-app-routing/pages-to-app-routing.test.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[...path]/page.tsx",
+      [
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile("app/[...path]/loading.tsx", "export default function Loading() { return null; }\n");
+    writeFile("app/pages-dir/static/page.tsx", "export default function Page() { return null; }\n");
+    writeFile("app/specific/[id]/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "app/specific/[id]/loading.tsx",
+      "export default function Loading() { return null; }\n",
+    );
+    writeFile("pages/pages-dir/[dynamic].tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "pages/api/[slug].ts",
+      "export default function handler(_request, response) { response.end('ok'); }\n",
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual([
+      "/pages-dir/static",
+      "/pages-dir/foobar",
+      "/api/status",
+      "/specific/value",
+    ]);
+    expect(manifest?.rscPaths).toEqual(["/pages-dir/static", "/specific/value"]);
+    expect(manifest?.loadingShellPaths).toEqual(["/specific/value"]);
+    expect(manifest?.pagesPaths).toEqual([]);
+  });
+
+  it("uses the runtime-best App route for App-only loading-shell discovery", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[...path]/page.tsx",
+      [
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile("app/pages-dir/static/page.tsx", "export default function Page() { return null; }\n");
+    writeFile("app/specific/[id]/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "app/specific/[id]/loading.tsx",
+      "export default function Loading() { return null; }\n",
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.rscPaths).toEqual([
+      "/pages-dir/static",
+      "/pages-dir/foobar",
+      "/api/status",
+      "/specific/value",
+    ]);
+    expect(manifest?.loadingShellPaths).toEqual(["/specific/value"]);
   });
 
   it("skips dynamic warmup paths when static params discovery aborts", async () => {
