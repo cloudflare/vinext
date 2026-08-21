@@ -320,6 +320,44 @@ describe("Cloudflare CDN warmup", () => {
     expect(attempts.get("/later:html")).toBe(2);
   });
 
+  it("starts propagation deadlines when queued requests actually begin", async () => {
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const attempts = new Map<string, number>();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(requestHref(input)!);
+      const isRsc = new Headers(init?.headers).get("rsc") === "1";
+      const key = `${url.pathname}:${isRsc ? "rsc" : "html"}`;
+      const attempt = (attempts.get(key) ?? 0) + 1;
+      attempts.set(key, attempt);
+
+      // Move beyond the first request's 30-second propagation deadline before
+      // the concurrency-1 worker can dequeue any of the remaining requests.
+      if (key === "/first:rsc") {
+        now = 31_000;
+      } else if (url.pathname === "/later" && attempt === 1) {
+        return new Response("not propagated", { status: isRsc ? 404 : 500 });
+      }
+      return isRsc ? cacheableRsc() : cacheableHtml();
+    });
+
+    await expect(
+      warmCdnCache({
+        concurrency: 1,
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/first", "/later"],
+        propagatingTarget: true,
+        retryDelayMs: 0,
+        rscPaths: ["/first", "/later"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ total: 4, warmed: 4, failed: 0 });
+    expect(attempts.get("/later:rsc")).toBe(2);
+    expect(attempts.get("/later:html")).toBe(2);
+  });
+
   it("warms directly from the discovery manifest", async () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(

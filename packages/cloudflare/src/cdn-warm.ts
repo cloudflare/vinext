@@ -570,7 +570,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   // Immediately after upload, prove the RSC handler and immutable assets have
   // reached the new build, then give the first real HTML fill the same bounded
   // propagation policy. Once those gates pass, fill the remaining independent
-  // cache keys concurrently under the same bounded propagation deadline.
+  // cache keys concurrently. Each request receives its own propagation window
+  // when a concurrency worker dequeues it; time spent waiting behind a large
+  // queue must not consume that request's retry budget.
   const concurrency = Math.max(1, options.concurrency ?? 10);
   const normalRetries = Math.max(0, options.retries ?? 1);
   const propagationRetries = Math.max(0, options.retries ?? 30);
@@ -590,11 +592,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   let completedRequests = 0;
   progress.update(0, requests.length, "waiting for uploaded build");
 
-  const warmTarget = (
-    target: WarmTarget,
-    propagationGate = false,
-    retryDeadlineAt = propagationGate ? createPropagationDeadline() : undefined,
-  ) =>
+  const warmTarget = (target: WarmTarget, propagationGate = false) =>
     warmOnePath(target, {
       targetUrl: options.targetUrl,
       timeoutMs,
@@ -603,7 +601,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       headers: options.headers,
       expectedRscBuildId: options.expectedRscBuildId,
       retryAllValidationErrors: propagationGate,
-      retryDeadlineAt,
+      retryDeadlineAt: propagationGate ? createPropagationDeadline() : undefined,
       retryDelayMs: propagationGate ? propagationRetryDelayMs : normalRetryDelayMs,
       retryNotFound: propagationGate,
     });
@@ -611,9 +609,8 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const warmRequest = async (
     target: WarmTarget,
     propagationGate = false,
-    retryDeadlineAt?: number,
   ): Promise<Awaited<ReturnType<typeof warmOnePath>>> => {
-    const result = await warmTarget(target, propagationGate, retryDeadlineAt);
+    const result = await warmTarget(target, propagationGate);
     progress.update(++completedRequests, requests.length, target.label);
     return result;
   };
@@ -630,19 +627,18 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const warmAfterHtmlGate = async (
     confirmed: Awaited<ReturnType<typeof warmOnePath>>[],
     remaining: readonly WarmTarget[],
-    propagationDeadlineAt?: number,
   ): Promise<Awaited<ReturnType<typeof warmOnePath>>[]> => {
     const htmlGateIndex = remaining.findIndex((target) => target.kind === "html");
     if (htmlGateIndex < 0) {
       return [
         ...confirmed,
         ...(await runWithConcurrency(remaining, concurrency, (target) =>
-          warmRequest(target, true, propagationDeadlineAt),
+          warmRequest(target, true),
         )),
       ];
     }
 
-    const htmlGateResult = await warmRequest(remaining[htmlGateIndex], true, propagationDeadlineAt);
+    const htmlGateResult = await warmRequest(remaining[htmlGateIndex], true);
     const afterHtmlGate = remaining.filter((_target, index) => index !== htmlGateIndex);
     if (!htmlGateResult.ok) {
       return [
@@ -658,7 +654,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       ...confirmed,
       htmlGateResult,
       ...(await runWithConcurrency(afterHtmlGate, concurrency, (target) =>
-        warmRequest(target, true, propagationDeadlineAt),
+        warmRequest(target, true),
       )),
     ];
   };
@@ -666,11 +662,10 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const gateIndex = propagatingTarget ? requests.findIndex((target) => target.kind === "rsc") : -1;
   let results: Awaited<ReturnType<typeof warmOnePath>>[];
   if (gateIndex >= 0) {
-    const propagationDeadlineAt = createPropagationDeadline();
-    const gateResult = await warmRequest(requests[gateIndex], true, propagationDeadlineAt);
+    const gateResult = await warmRequest(requests[gateIndex], true);
     const remaining = requests.filter((_target, index) => index !== gateIndex);
     if (gateResult.ok) {
-      results = await warmAfterHtmlGate([gateResult], remaining, propagationDeadlineAt);
+      results = await warmAfterHtmlGate([gateResult], remaining);
     } else {
       results = [
         gateResult,
@@ -681,7 +676,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       ];
     }
   } else if (propagatingTarget) {
-    results = await warmAfterHtmlGate([], requests, createPropagationDeadline());
+    results = await warmAfterHtmlGate([], requests);
   } else {
     results = await runWithConcurrency(requests, concurrency, (target) => warmRequest(target));
   }
