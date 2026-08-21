@@ -43,14 +43,6 @@ export function PrewarmControls({ mode }: { mode: string }) {
     );
   }
 
-  if (mode === "full") {
-    return (
-      <Link data-testid="link-prefetch" href="/prewarm-target" prefetch>
-        Full-prefetch /prewarm-target
-      </Link>
-    );
-  }
-
   return (
     <Link data-testid="link-prefetch" href="/prewarm-target">
       Prefetch /prewarm-target from {mode}

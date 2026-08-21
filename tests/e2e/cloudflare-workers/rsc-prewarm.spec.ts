@@ -16,10 +16,13 @@ type ObservedRsc = {
 test.describe.configure({ retries: 0 });
 
 async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<ObservedRsc> {
-  const responsePromise = page.waitForResponse((response) => {
-    const request = response.request();
-    return new URL(response.url()).pathname === TARGET_PATH && request.headers().rsc === "1";
-  });
+  const responsePromise = page.waitForResponse(
+    (response) => {
+      const request = response.request();
+      return new URL(response.url()).pathname === TARGET_PATH && request.headers().rsc === "1";
+    },
+    { timeout: 15_000 },
+  );
   await action();
   const response = await responsePromise;
   return {
@@ -236,10 +239,12 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
           targetRscRequests++;
         }
       });
-      const full = await observeRsc(page, () => page.goto("/prewarm/full"));
+      await page.goto("/prewarm/router");
+      await expect(page.getByTestId("build-id")).toHaveText(buildId);
+      const full = await observeRsc(page, () => page.getByTestId("router-prefetch").click());
       expectFull(full);
       expect(targetRscRequests).toBe(1);
-      await page.getByTestId("link-prefetch").click();
+      await page.getByTestId("router-navigate").click();
       await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
       await expect(page.getByRole("heading", { name: "Prewarm target" })).toBeVisible();
       expect(targetRscRequests).toBe(1);
