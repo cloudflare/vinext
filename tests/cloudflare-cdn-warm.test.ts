@@ -320,7 +320,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(attempts.get("/later:html")).toBe(2);
   });
 
-  it("starts propagation deadlines when queued requests actually begin", async () => {
+  it("does not expire propagation retries while requests wait in the queue", async () => {
     let now = 0;
     vi.spyOn(Date, "now").mockImplementation(() => now);
     const attempts = new Map<string, number>();
@@ -331,8 +331,8 @@ describe("Cloudflare CDN warmup", () => {
       const attempt = (attempts.get(key) ?? 0) + 1;
       attempts.set(key, attempt);
 
-      // Move beyond the first request's 30-second propagation deadline before
-      // the concurrency-1 worker can dequeue any of the remaining requests.
+      // Move beyond the former 30-second wall-clock deadline before the
+      // concurrency-1 worker can dequeue any of the remaining requests.
       if (key === "/first:rsc") {
         now = 31_000;
       } else if (url.pathname === "/later" && attempt === 1) {

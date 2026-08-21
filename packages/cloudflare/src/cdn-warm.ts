@@ -416,7 +416,6 @@ async function warmOnePath(
     headers?: HeadersInit;
     expectedRscBuildId?: string;
     retryAllValidationErrors: boolean;
-    retryDeadlineAt?: number;
     retryDelayMs: number;
     retryNotFound: boolean;
   },
@@ -426,32 +425,21 @@ async function warmOnePath(
   | { path: string; ok: false; error: string }
 > {
   const url = buildWarmupUrl(options.targetUrl, target.pathname);
-  let lastError = "propagation deadline expired before request";
-  const retryDeadline = options.retryDeadlineAt;
+  let lastError = "request failed before the first attempt";
 
-  const canRetry = (attempt: number): boolean =>
-    attempt < options.retries && (retryDeadline === undefined || Date.now() < retryDeadline);
+  const canRetry = (attempt: number): boolean => attempt < options.retries;
 
   const waitBeforeRetry = async (): Promise<void> => {
     if (options.retryDelayMs <= 0) return;
-    const delay =
-      retryDeadline === undefined
-        ? options.retryDelayMs
-        : Math.min(options.retryDelayMs, Math.max(0, retryDeadline - Date.now()));
-    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    await new Promise((resolve) => setTimeout(resolve, options.retryDelayMs));
   };
 
   for (let attempt = 0; attempt <= options.retries; attempt++) {
-    if (retryDeadline !== undefined && Date.now() >= retryDeadline) break;
     try {
-      const timeoutMs =
-        retryDeadline === undefined
-          ? options.timeoutMs
-          : Math.min(options.timeoutMs, Math.max(1, retryDeadline - Date.now()));
       const { response } = await fetchWithTimeout(
         options.fetchImpl,
         url,
-        timeoutMs,
+        options.timeoutMs,
         target.headers ?? options.headers,
         "manual",
       );
@@ -568,19 +556,16 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const hasVersionOverride = new Headers(options.headers).has(WORKER_VERSION_OVERRIDE_HEADER);
   const propagatingTarget = options.propagatingTarget ?? hasVersionOverride;
   // Immediately after upload, prove the RSC handler and immutable assets have
-  // reached the new build, then give the first real HTML fill the same bounded
-  // propagation policy. Once those gates pass, fill the remaining independent
-  // cache keys concurrently. Each request receives its own propagation window
-  // when a concurrency worker dequeues it; time spent waiting behind a large
-  // queue must not consume that request's retry budget.
+  // reached the new build, then give the first real HTML fill the same retry
+  // policy. Once those gates pass, fill the remaining independent cache keys
+  // concurrently. Propagation is bounded by the retry count, never by a
+  // queue-wide wall-clock deadline that can expire before work starts.
   const concurrency = Math.max(1, options.concurrency ?? 10);
   const normalRetries = Math.max(0, options.retries ?? 1);
   const propagationRetries = Math.max(0, options.retries ?? 30);
   const normalRetryDelayMs = Math.max(0, options.retryDelayMs ?? 0);
   const propagationRetryDelayMs = Math.max(0, options.retryDelayMs ?? 1_000);
   const fetchImpl = options.fetchImpl ?? fetch;
-  const createPropagationDeadline = (): number | undefined =>
-    propagatingTarget && options.retries === undefined ? Date.now() + 30_000 : undefined;
 
   if (requests.length === 0) {
     return { total: 0, warmed: 0, skipped: 0, failed: 0, failures: [] };
@@ -601,7 +586,6 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       headers: options.headers,
       expectedRscBuildId: options.expectedRscBuildId,
       retryAllValidationErrors: propagationGate,
-      retryDeadlineAt: propagationGate ? createPropagationDeadline() : undefined,
       retryDelayMs: propagationGate ? propagationRetryDelayMs : normalRetryDelayMs,
       retryNotFound: propagationGate,
     });
