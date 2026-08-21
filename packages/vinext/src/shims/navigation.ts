@@ -31,9 +31,6 @@ import {
   isAppOwnedHistoryState,
 } from "../server/app-history-state.js";
 import {
-  canonicalizeLoadingShellRscRequestHeaders,
-  canonicalizePrewarmableRscRequestHeaders,
-  createCanonicalRscRequestUrl,
   createRscRequestHeaders,
   createRscRequestUrl,
   stripRscCacheBustingSearchParam,
@@ -2899,8 +2896,13 @@ const _appRouter: AppRouterInstance = {
       const kind = options?.kind === "full" ? "full" : "auto";
       // Dynamic import keeps the policy module and its route-trie
       // dependencies off the startup path of every next/navigation consumer.
-      const { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch } =
-        await import("./internal/app-route-prefetch-policy.js");
+      const [
+        { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch },
+        { resolveAppPrefetchRscRequest },
+      ] = await Promise.all([
+        import("./internal/app-route-prefetch-policy.js"),
+        import("./internal/app-prefetch-rsc-request.js"),
+      ]);
       if (setup.cancelled) return;
       const policy =
         kind === "full"
@@ -2931,33 +2933,16 @@ const _appRouter: AppRouterInstance = {
             : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
         );
       }
-      const canUseCanonicalSharedRequest =
-        process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
-        interceptionContext === null &&
-        mountedSlotsHeader === null &&
-        (rewrittenPrefetchHref === null || rewrittenPrefetchHref === fullHref) &&
-        !requiresRouteTreePrefetch &&
-        !__prefetchInlining;
-      const usesCanonicalLoadingShell =
-        canUseCanonicalSharedRequest &&
-        !reusable &&
-        !hasSearchParams &&
-        canonicalizeLoadingShellRscRequestHeaders(headers);
-      const usesCanonicalFullRoute =
-        canUseCanonicalSharedRequest &&
-        reusable &&
-        canonicalizePrewarmableRscRequestHeaders(headers);
-      const usesCanonicalPrewarmedRequest = usesCanonicalLoadingShell || usesCanonicalFullRoute;
-      // Both derive from the same headers and neither feeds the other, so the
-      // rewrite variant is generated alongside rather than after.
-      const [rscUrl, ...additionalRscUrls] = await Promise.all([
-        usesCanonicalFullRoute
-          ? createCanonicalRscRequestUrl(fullHref)
-          : createRscRequestUrl(fullHref, headers),
-        ...(rewrittenPrefetchHref !== null && rewrittenPrefetchHref !== fullHref
-          ? [createRscRequestUrl(rewrittenPrefetchHref, headers)]
-          : []),
-      ]);
+      const { additionalRscUrls, rscUrl, usesCanonicalPrewarmedRequest } =
+        await resolveAppPrefetchRscRequest({
+          fullHref,
+          headers,
+          interceptionContext,
+          mountedSlotsHeader,
+          prefetchInlining: __prefetchInlining,
+          requiresRouteTreePrefetch,
+          rewrittenPrefetchHref,
+        });
       // A navigation to this same href can start in the same task as this call
       // and win the race above (hybrid-route module load, policy import, RSC
       // URL generation). Nothing was registered in the cache during that
