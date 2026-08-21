@@ -33,7 +33,10 @@ function expectBareCanonical(observed: ObservedRsc): void {
   expect(observed.headers["next-router-state-tree"]).toBeUndefined();
   expect(observed.headers["next-url"]).toBeUndefined();
   expect(observed.headers["x-vinext-rsc-state-fingerprint"]).toBeUndefined();
-  expect(observed.response.headers()["cf-cache-status"]).toBe("HIT");
+  expect(
+    observed.response.headers()["cf-cache-status"],
+    JSON.stringify({ request: observed.headers, response: observed.response.headers() }),
+  ).toBe("HIT");
 }
 
 function expectFull(observed: ObservedRsc): void {
