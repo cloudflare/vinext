@@ -1,7 +1,7 @@
 import { expect, test, type APIRequest, type Page, type Response } from "@playwright/test";
 import fs from "node:fs";
 
-const TARGET_PATH = "/cached/intro";
+const TARGET_PATH = "/prewarm-target";
 const PROMOTION_STABILITY_WINDOW_MS = 15_000;
 const PROMOTION_READINESS_TIMEOUT_MS = 60_000;
 const PROMOTION_PROBE_INTERVAL_MS = 1_000;
@@ -158,7 +158,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   ).toBe("HIT");
   const fullBody = await fullResponse.text();
   expect(fullBody).toContain(buildId);
-  expect(fullBody).toContain("Post: intro");
+  expect(fullBody).toContain("Prewarm target");
 
   const shellResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
     headers: shellHeaders,
@@ -173,8 +173,8 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   ).toBe("HIT");
   const shellBody = await shellResponse.text();
   expect(shellBody).toContain(buildId);
-  expect(shellBody).toContain("cached-loading-shell");
-  expect(shellBody).not.toContain("Post: intro");
+  expect(shellBody).toContain("prewarm-loading-shell");
+  expect(shellBody).not.toContain("Prewarm target");
   expect(shellBody).not.toBe(fullBody);
 
   const waitForBrowserCurrentBuild = async (page: Page) => {
@@ -210,7 +210,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
       const full = await observeRsc(page, () => page.getByTestId("link-prefetch").click());
       expectFull(full);
       await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
-      await expect(page.getByRole("heading", { name: "Post: intro" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Prewarm target" })).toBeVisible();
     } finally {
       await context.close();
     }
@@ -233,7 +233,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
       expect(targetRscRequests).toBe(1);
       await page.getByTestId("link-prefetch").click();
       await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
-      await expect(page.getByRole("heading", { name: "Post: intro" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Prewarm target" })).toBeVisible();
       expect(targetRscRequests).toBe(1);
     } finally {
       await context.close();

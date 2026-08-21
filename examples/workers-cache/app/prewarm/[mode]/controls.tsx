@@ -12,16 +12,16 @@ export function PrewarmControls({ mode }: { mode: string }) {
         <button
           data-testid="router-prefetch"
           type="button"
-          onClick={() => router.prefetch("/cached/intro")}
+          onClick={() => router.prefetch("/prewarm-target")}
         >
-          Prefetch /cached/intro
+          Prefetch /prewarm-target
         </button>
         <button
           data-testid="router-navigate"
           type="button"
-          onClick={() => router.push("/cached/intro")}
+          onClick={() => router.push("/prewarm-target")}
         >
-          Navigate to /cached/intro
+          Navigate to /prewarm-target
         </button>
       </>
     );
@@ -29,7 +29,7 @@ export function PrewarmControls({ mode }: { mode: string }) {
 
   if (mode === "soft") {
     return (
-      <Link data-testid="soft-navigation" href="/cached/intro" prefetch={false}>
+      <Link data-testid="soft-navigation" href="/prewarm-target" prefetch={false}>
         Navigate without prefetch
       </Link>
     );
@@ -45,15 +45,15 @@ export function PrewarmControls({ mode }: { mode: string }) {
 
   if (mode === "full") {
     return (
-      <Link data-testid="link-prefetch" href="/cached/intro" prefetch>
-        Full-prefetch /cached/intro
+      <Link data-testid="link-prefetch" href="/prewarm-target" prefetch>
+        Full-prefetch /prewarm-target
       </Link>
     );
   }
 
   return (
-    <Link data-testid="link-prefetch" href="/cached/intro">
-      Prefetch /cached/intro from {mode}
+    <Link data-testid="link-prefetch" href="/prewarm-target">
+      Prefetch /prewarm-target from {mode}
     </Link>
   );
 }
