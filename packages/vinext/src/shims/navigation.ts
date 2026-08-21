@@ -2963,11 +2963,13 @@ const _appRouter: AppRouterInstance = {
         !__prefetchInlining;
       const usesCanonicalLoadingShell =
         canUseCanonicalSharedRequest &&
+        policy.canonicalLoadingShell &&
         !reusable &&
         !hasSearchParams &&
         canonicalizeLoadingShellRscRequestHeaders(headers);
       const usesCanonicalFullRoute =
         canUseCanonicalSharedRequest &&
+        !hasSearchParams &&
         reusable &&
         canonicalizePrewarmableRscRequestHeaders(headers);
       const usesCanonicalPrewarmedRequest = usesCanonicalLoadingShell || usesCanonicalFullRoute;

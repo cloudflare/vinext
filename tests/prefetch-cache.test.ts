@@ -233,6 +233,24 @@ describe("prefetch cache eviction", () => {
     expect(headers.get("next-router-prefetch")).toBeNull();
   });
 
+  it("keeps query-specific full router.prefetch requests hashed", async () => {
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+
+    navigation.appRouterInstance.prefetch("/dashboard?tab=latest", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+
+    const fetchedUrl = new URL(toRscUrlString(fetch.mock.calls[0]![0]), "http://localhost");
+    expect(fetchedUrl.searchParams.get("tab")).toBe("latest");
+    expect(fetchedUrl.searchParams.get("_rsc")).not.toBe("");
+  });
+
   it("uses the same canonical basePath root for router.prefetch and router.push", async () => {
     vi.stubEnv("__NEXT_ROUTER_BASEPATH", "/docs");
     vi.stubEnv("__VINEXT_TRAILING_SLASH", "false");
@@ -262,6 +280,13 @@ describe("prefetch cache eviction", () => {
   it("automatic router.prefetch uses the canonical loading-shell variant", async () => {
     vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
     vi.resetModules();
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: true,
+        patternParts: ["dashboard"],
+        isDynamic: false,
+      },
+    ];
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
@@ -277,6 +302,35 @@ describe("prefetch cache eviction", () => {
     await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
 
     expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/dashboard?_rsc");
+    const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
+    expect(headers.get("next-router-prefetch")).toBe("1");
+    expect(headers.get("next-router-segment-prefetch")).toBe("1");
+    expect(headers.get("x-vinext-rsc-render-mode")).toBe("prefetch-loading-shell");
+  });
+
+  it("keeps contextual automatic router.prefetch shells hashed", async () => {
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    vi.resetModules();
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        patternParts: ["teams", ":team", "dashboard"],
+        isDynamic: true,
+        requiresDynamicNavigationRequest: true,
+      },
+    ];
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+
+    navigation.appRouterInstance.prefetch("/teams/cloudflare/dashboard");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+
+    const fetchedUrl = new URL(toRscUrlString(fetch.mock.calls[0]![0]), "http://localhost");
+    expect(fetchedUrl.searchParams.get("_rsc")).not.toBe("");
     const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
     expect(headers.get("next-router-prefetch")).toBe("1");
     expect(headers.get("next-router-segment-prefetch")).toBe("1");

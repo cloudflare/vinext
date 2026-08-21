@@ -544,10 +544,12 @@ function prefetchUrl(
           !__prefetchInlining;
         const usesCanonicalLoadingShell =
           canUseCanonicalSharedRequest &&
+          autoPrefetch.canonicalLoadingShell &&
           isOptimisticRouteShellPrefetch &&
           canonicalizeLoadingShellRscRequestHeaders(headers);
         const usesCanonicalFullRoute =
           canUseCanonicalSharedRequest &&
+          !hasSearchParams &&
           !isOptimisticRouteShellPrefetch &&
           canonicalizePrewarmableRscRequestHeaders(headers);
         const usesCanonicalPrewarmedRequest = usesCanonicalLoadingShell || usesCanonicalFullRoute;

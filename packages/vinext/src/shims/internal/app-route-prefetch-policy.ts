@@ -35,6 +35,8 @@ const ENCODED_PATH_DELIMITER_RE = /%(?:2f|5c)/i;
  */
 export type AppRoutePrefetchPolicy = {
   cacheForNavigation: boolean;
+  /** This is an ordinary main-tree loading shell that deploy warmup can reproduce. */
+  canonicalLoadingShell: boolean;
   /**
    * How the dynamic stale-time signal affects this prefetch. Navigation data
    * takes it verbatim, explicit full prefetches fall back to the static window
@@ -67,6 +69,7 @@ function toSameOriginRouteHref(href: string): string | null {
 /** Href the manifest does not cover: no request, nothing reusable. */
 const NO_APP_ROUTE_PREFETCH: AppRoutePrefetchPolicy = {
   cacheForNavigation: false,
+  canonicalLoadingShell: false,
   dynamicStaleTime: "verbatim",
   fallbackTtl: "static",
   prefetchShellFirst: false,
@@ -118,6 +121,12 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     !hasCacheComponentsLearningOnlyDynamicPath &&
     (requiresRouteTreePrefetch ||
       (!route.canPrefetchLoadingShell && route.requiresDynamicNavigationRequest !== true));
+  const canonicalLoadingShell =
+    route.canPrefetchLoadingShell === true &&
+    !hasSearchParams &&
+    !hasCacheComponentsLearningOnlyDynamicPath &&
+    !requiresRouteTreePrefetch &&
+    route.requiresDynamicNavigationRequest !== true;
   return {
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
     // Routes with loading boundaries prefetch a shell first so navigation can
@@ -125,6 +134,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     // fallbacks can be cached for navigation unless their active parallel
     // branches must be derived from the click-time target tree.
     cacheForNavigation,
+    canonicalLoadingShell,
     dynamicStaleTime: cacheForNavigation ? "verbatim" : "ignore",
     fallbackTtl: "static",
     prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,
@@ -136,6 +146,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
 export function resolveFullAppRoutePrefetch(): AppRoutePrefetchPolicy {
   return {
     cacheForNavigation: true,
+    canonicalLoadingShell: false,
     dynamicStaleTime: "full-prefetch",
     fallbackTtl: "static",
     prefetchShellFirst: true,
