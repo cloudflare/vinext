@@ -66,7 +66,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   // The deploy command returns as soon as version promotion succeeds. Leave a
   // deliberate interval for tiered-cache propagation before deciding whether
   // the ordinary request reuses the version-override warmup entry.
-  await new Promise((resolve) => setTimeout(resolve, 5_000));
+  await new Promise((resolve) => setTimeout(resolve, 10_000));
 
   const fullHeaders = { accept: "text/x-component", rsc: "1" };
   const shellHeaders = {
@@ -90,7 +90,6 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   expect(fullBody).toContain(buildId);
   expect(fullBody).toContain("Post: intro");
 
-  await new Promise((resolve) => setTimeout(resolve, 5_000));
   const shellResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
     headers: shellHeaders,
   });
@@ -108,10 +107,19 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   expect(shellBody).not.toContain("Post: intro");
   expect(shellBody).not.toBe(fullBody);
 
+  const waitForBrowserCurrentBuild = async (page: Page) => {
+    await expect(async () => {
+      const response = await page.goto("/prewarm/soft");
+      expect(response?.ok()).toBe(true);
+      await expect(page.getByTestId("build-id")).toHaveText(buildId, { timeout: 2_000 });
+    }).toPass({ timeout: 30_000 });
+  };
+
   const runFresh = async (source: string, run: (page: Page) => Promise<void>) => {
     const context = await browser.newContext();
     const page = await context.newPage();
     try {
+      await waitForBrowserCurrentBuild(page);
       await page.goto(source);
       await expect(page.getByTestId("build-id")).toHaveText(buildId);
       await run(page);
@@ -124,6 +132,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     const context = await browser.newContext();
     const page = await context.newPage();
     try {
+      await waitForBrowserCurrentBuild(page);
       const shell = await observeRsc(page, () => page.goto(source));
       expectLoadingShell(shell);
       await expect(page.getByTestId("build-id")).toHaveText(buildId);
@@ -141,6 +150,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     const context = await browser.newContext();
     const page = await context.newPage();
     try {
+      await waitForBrowserCurrentBuild(page);
       let targetRscRequests = 0;
       page.on("request", (request) => {
         const url = new URL(request.url());
