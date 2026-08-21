@@ -46,6 +46,11 @@ function cacheableHtml(body = "html"): Response {
   });
 }
 
+function cacheHit(response: Response): Response {
+  response.headers.set("cf-cache-status", "HIT");
+  return response;
+}
+
 function requestHref(input: RequestInfo | URL | undefined): string | undefined {
   if (input instanceof URL) return input.href;
   if (typeof input === "string") return input;
@@ -62,7 +67,7 @@ afterEach(() => {
 });
 
 describe("Cloudflare CDN warmup", () => {
-  it("uses a 5 second default timeout and preserves query strings", () => {
+  it("uses a 10 second default timeout and preserves query strings", () => {
     expect(DEFAULT_CDN_WARM_TIMEOUT_MS).toBe(10_000);
     expect(buildWarmupUrl("https://app.example.com", "/search?q=x").href).toBe(
       "https://app.example.com/search?q=x",
@@ -289,6 +294,38 @@ describe("Cloudflare CDN warmup", () => {
     ).rejects.toThrow("response is missing CF-Cache-Status");
   });
 
+  it("does not report staged RSC or HTML cache keys warm until they return HIT", async () => {
+    const attempts = new Map<"html" | "rsc", number>();
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const kind = new Headers(init?.headers).get("rsc") === "1" ? "rsc" : "html";
+      const attempt = (attempts.get(kind) ?? 0) + 1;
+      attempts.set(kind, attempt);
+      const response = kind === "rsc" ? cacheableRsc() : cacheableHtml();
+      return attempt === 1 ? response : cacheHit(response);
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/cached"],
+        propagatingTarget: true,
+        retries: 1,
+        retryDelayMs: 0,
+        rscPaths: ["/cached"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toEqual({ total: 2, warmed: 2, skipped: 0, failed: 0, failures: [] });
+    expect(attempts).toEqual(
+      new Map([
+        ["rsc", 2],
+        ["html", 2],
+      ]),
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
   it("retries every staged-target request until its cache key reaches the uploaded build", async () => {
     const attempts = new Map<string, number>();
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -300,7 +337,7 @@ describe("Cloudflare CDN warmup", () => {
       if (url.pathname === "/later" && attempt === 1) {
         return new Response("not propagated", { status: isRsc ? 404 : 500 });
       }
-      return isRsc ? cacheableRsc() : cacheableHtml();
+      return cacheHit(isRsc ? cacheableRsc() : cacheableHtml());
     });
 
     await expect(
@@ -338,7 +375,7 @@ describe("Cloudflare CDN warmup", () => {
       } else if (url.pathname === "/later" && attempt === 1) {
         return new Response("not propagated", { status: isRsc ? 404 : 500 });
       }
-      return isRsc ? cacheableRsc() : cacheableHtml();
+      return cacheHit(isRsc ? cacheableRsc() : cacheableHtml());
     });
 
     await expect(

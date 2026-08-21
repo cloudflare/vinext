@@ -36,7 +36,7 @@ export type CdnWarmOptions = {
   timeoutMs?: number;
   retries?: number;
   retryDelayMs?: number;
-  /** Retry a newly staged version or preview alias until its routing has propagated. */
+  /** Retry a newly staged version or preview alias until routing and cache reuse are confirmed. */
   propagatingTarget?: boolean;
   strict?: boolean;
   fetchImpl?: typeof fetch;
@@ -325,7 +325,11 @@ type WarmValidation =
   | { outcome: "skipped"; reason: string }
   | { outcome: "failed"; error: string };
 
-function validateCachePolicy(response: Response, requireCacheStatus: boolean): WarmValidation {
+function validateCachePolicy(
+  response: Response,
+  requireCacheStatus: boolean,
+  requireCacheHit = false,
+): WarmValidation {
   const nonCacheableHeaders = [
     "Cache-Control",
     "CDN-Cache-Control",
@@ -359,10 +363,17 @@ function validateCachePolicy(response: Response, requireCacheStatus: boolean): W
   if (!ADMITTED_CF_CACHE_STATUSES.has(cacheStatus)) {
     return { outcome: "failed", error: `CF-Cache-Status is ${cacheStatus}` };
   }
+  if (requireCacheHit && cacheStatus !== "HIT") {
+    return { outcome: "failed", error: `CF-Cache-Status is ${cacheStatus}; waiting for HIT` };
+  }
   return { outcome: "warmed" };
 }
 
-function validateRscWarmResponse(response: Response, expectedRscBuildId?: string): WarmValidation {
+function validateRscWarmResponse(
+  response: Response,
+  expectedRscBuildId?: string,
+  requireCacheHit = false,
+): WarmValidation {
   if (response.redirected || response.status < 200 || response.status >= 300) {
     return {
       outcome: "failed",
@@ -396,17 +407,17 @@ function validateRscWarmResponse(response: Response, expectedRscBuildId?: string
   if (extraVary) {
     return { outcome: "failed", error: `response Vary has unsupported field ${extraVary}` };
   }
-  return validateCachePolicy(response, true);
+  return validateCachePolicy(response, true, requireCacheHit);
 }
 
-function validateHtmlWarmResponse(response: Response): WarmValidation {
+function validateHtmlWarmResponse(response: Response, requireCacheHit = false): WarmValidation {
   if (response.redirected || response.status < 200 || response.status >= 300) {
     return {
       outcome: "failed",
       error: response.redirected ? "redirected response" : `HTTP ${response.status}`,
     };
   }
-  return validateCachePolicy(response, true);
+  return validateCachePolicy(response, true, requireCacheHit);
 }
 
 async function warmOnePath(
@@ -415,6 +426,7 @@ async function warmOnePath(
     fetchImpl: typeof fetch;
     headers?: HeadersInit;
     expectedRscBuildId?: string;
+    requireCacheHit: boolean;
     retryAllValidationErrors: boolean;
     retryDelayMs: number;
     retryNotFound: boolean;
@@ -445,7 +457,11 @@ async function warmOnePath(
       );
 
       if (target.kind === "rsc") {
-        const validation = validateRscWarmResponse(response, options.expectedRscBuildId);
+        const validation = validateRscWarmResponse(
+          response,
+          options.expectedRscBuildId,
+          options.requireCacheHit,
+        );
         if (validation.outcome === "warmed") {
           return { path: target.label, ok: true, skipped: false };
         }
@@ -463,7 +479,7 @@ async function warmOnePath(
         continue;
       }
 
-      const validation = validateHtmlWarmResponse(response);
+      const validation = validateHtmlWarmResponse(response, options.requireCacheHit);
       if (validation.outcome === "warmed") {
         return { path: target.label, ok: true, skipped: false };
       }
@@ -557,7 +573,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const propagatingTarget = options.propagatingTarget ?? hasVersionOverride;
   // Immediately after upload, prove the RSC handler and immutable assets have
   // reached the new build, then give the first real HTML fill the same retry
-  // policy. Once those gates pass, fill the remaining independent cache keys
+  // policy. A staged request is complete only after the same cache key returns
+  // HIT: MISS shows that a fill started, but not that the entry is reusable.
+  // Once those gates pass, fill the remaining independent cache keys
   // concurrently. Propagation is bounded by the retry count, never by a
   // queue-wide wall-clock deadline that can expire before work starts.
   const concurrency = Math.max(1, options.concurrency ?? 10);
@@ -585,6 +603,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       fetchImpl,
       headers: options.headers,
       expectedRscBuildId: options.expectedRscBuildId,
+      requireCacheHit: propagationGate,
       retryAllValidationErrors: propagationGate,
       retryDelayMs: propagationGate ? propagationRetryDelayMs : normalRetryDelayMs,
       retryNotFound: propagationGate,
