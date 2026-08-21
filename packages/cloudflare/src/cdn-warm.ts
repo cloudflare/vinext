@@ -650,7 +650,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   // an old Worker response from being mistaken for a successful fill.
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CDN_WARM_CONCURRENCY);
   const normalRetries = Math.max(0, options.retries ?? 1);
-  const propagationRetries = Math.max(0, options.retries ?? 30);
+  const propagationRetries = Math.max(0, options.retries ?? 60);
   const normalRetryDelayMs = Math.max(0, options.retryDelayMs ?? 0);
   const propagationRetryDelayMs = Math.max(0, options.retryDelayMs ?? 1_000);
   const fetchImpl = options.fetchImpl ?? fetch;

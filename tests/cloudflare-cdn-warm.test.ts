@@ -483,6 +483,34 @@ describe("Cloudflare CDN warmup", () => {
     expect(attempts.get("/later:html")).toBe(2);
   });
 
+  it("keeps the staged propagation budget independent for each failed key", async () => {
+    const attempts = new Map<string, number>();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(requestHref(input)!).pathname;
+      const attempt = (attempts.get(pathname) ?? 0) + 1;
+      attempts.set(pathname, attempt);
+      if (pathname === "/slow" && attempt <= 30) {
+        return new Response("not propagated", { status: 404 });
+      }
+      return cacheableRsc();
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: [],
+        propagatingTarget: true,
+        retryDelayMs: 0,
+        rscPaths: ["/ready", "/slow"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ total: 2, warmed: 2, failed: 0 });
+    expect(attempts.get("/ready")).toBe(1);
+    expect(attempts.get("/slow")).toBe(31);
+  });
+
   it("warms directly from the discovery manifest", async () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(
