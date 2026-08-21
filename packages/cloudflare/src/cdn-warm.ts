@@ -36,7 +36,7 @@ export type CdnWarmOptions = {
   timeoutMs?: number;
   retries?: number;
   retryDelayMs?: number;
-  /** Retry a newly staged version or preview alias until routing and cache reuse are confirmed. */
+  /** Retry a newly staged version or preview alias until its routing has propagated. */
   propagatingTarget?: boolean;
   strict?: boolean;
   fetchImpl?: typeof fetch;
@@ -323,13 +323,9 @@ const NON_CACHEABLE_CF_CACHE_STATUSES = new Set(["BYPASS", "DYNAMIC"]);
 type WarmValidation =
   | { outcome: "warmed" }
   | { outcome: "skipped"; reason: string }
-  | { outcome: "failed"; error: string; retryImmediately?: boolean };
+  | { outcome: "failed"; error: string };
 
-function validateCachePolicy(
-  response: Response,
-  requireCacheStatus: boolean,
-  requireCacheHit = false,
-): WarmValidation {
+function validateCachePolicy(response: Response, requireCacheStatus: boolean): WarmValidation {
   const nonCacheableHeaders = [
     "Cache-Control",
     "CDN-Cache-Control",
@@ -363,21 +359,10 @@ function validateCachePolicy(
   if (!ADMITTED_CF_CACHE_STATUSES.has(cacheStatus)) {
     return { outcome: "failed", error: `CF-Cache-Status is ${cacheStatus}` };
   }
-  if (requireCacheHit && cacheStatus !== "HIT") {
-    return {
-      outcome: "failed",
-      error: `CF-Cache-Status is ${cacheStatus}; waiting for HIT`,
-      retryImmediately: true,
-    };
-  }
   return { outcome: "warmed" };
 }
 
-function validateRscWarmResponse(
-  response: Response,
-  expectedRscBuildId?: string,
-  requireCacheHit = false,
-): WarmValidation {
+function validateRscWarmResponse(response: Response, expectedRscBuildId?: string): WarmValidation {
   if (response.redirected || response.status < 200 || response.status >= 300) {
     return {
       outcome: "failed",
@@ -411,17 +396,17 @@ function validateRscWarmResponse(
   if (extraVary) {
     return { outcome: "failed", error: `response Vary has unsupported field ${extraVary}` };
   }
-  return validateCachePolicy(response, true, requireCacheHit);
+  return validateCachePolicy(response, true);
 }
 
-function validateHtmlWarmResponse(response: Response, requireCacheHit = false): WarmValidation {
+function validateHtmlWarmResponse(response: Response): WarmValidation {
   if (response.redirected || response.status < 200 || response.status >= 300) {
     return {
       outcome: "failed",
       error: response.redirected ? "redirected response" : `HTTP ${response.status}`,
     };
   }
-  return validateCachePolicy(response, true, requireCacheHit);
+  return validateCachePolicy(response, true);
 }
 
 async function warmOnePath(
@@ -430,7 +415,6 @@ async function warmOnePath(
     fetchImpl: typeof fetch;
     headers?: HeadersInit;
     expectedRscBuildId?: string;
-    requireCacheHit: boolean;
     retryAllValidationErrors: boolean;
     retryDelayMs: number;
     retryNotFound: boolean;
@@ -461,11 +445,7 @@ async function warmOnePath(
       );
 
       if (target.kind === "rsc") {
-        const validation = validateRscWarmResponse(
-          response,
-          options.expectedRscBuildId,
-          options.requireCacheHit,
-        );
+        const validation = validateRscWarmResponse(response, options.expectedRscBuildId);
         if (validation.outcome === "warmed") {
           return { path: target.label, ok: true, skipped: false };
         }
@@ -479,11 +459,11 @@ async function warmOnePath(
         )
           break;
         if (!canRetry(attempt)) break;
-        if (!validation.retryImmediately) await waitBeforeRetry();
+        await waitBeforeRetry();
         continue;
       }
 
-      const validation = validateHtmlWarmResponse(response, options.requireCacheHit);
+      const validation = validateHtmlWarmResponse(response);
       if (validation.outcome === "warmed") {
         return { path: target.label, ok: true, skipped: false };
       }
@@ -496,9 +476,6 @@ async function warmOnePath(
         !isRetryableStatus(response.status, options.retryNotFound)
       )
         break;
-      if (!canRetry(attempt)) break;
-      if (!validation.retryImmediately) await waitBeforeRetry();
-      continue;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         lastError = `timed out after ${options.timeoutMs}ms`;
@@ -580,9 +557,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const propagatingTarget = options.propagatingTarget ?? hasVersionOverride;
   // Immediately after upload, prove the RSC handler and immutable assets have
   // reached the new build, then give the first real HTML fill the same retry
-  // policy. A staged request is complete only after the same cache key returns
-  // HIT: MISS shows that a fill started, but not that the entry is reusable.
-  // Once those gates pass, fill the remaining independent cache keys
+  // policy. Once those gates pass, fill the remaining independent cache keys
   // concurrently. Propagation is bounded by the retry count, never by a
   // queue-wide wall-clock deadline that can expire before work starts.
   const concurrency = Math.max(1, options.concurrency ?? 10);
@@ -610,7 +585,6 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       fetchImpl,
       headers: options.headers,
       expectedRscBuildId: options.expectedRscBuildId,
-      requireCacheHit: propagationGate,
       retryAllValidationErrors: propagationGate,
       retryDelayMs: propagationGate ? propagationRetryDelayMs : normalRetryDelayMs,
       retryNotFound: propagationGate,
