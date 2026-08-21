@@ -335,35 +335,48 @@ describe("Cloudflare CDN warmup", () => {
     ).rejects.toThrow("response is missing CF-Cache-Status");
   });
 
-  it("retries every staged-target request until its cache key reaches the uploaded build", async () => {
+  it("retries staged-target failures after the initial queue has completed", async () => {
     const attempts = new Map<string, number>();
+    const calls: string[] = [];
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(requestHref(input)!);
       const isRsc = new Headers(init?.headers).get("rsc") === "1";
       const key = `${url.pathname}:${isRsc ? "rsc" : "html"}`;
+      calls.push(key);
       const attempt = (attempts.get(key) ?? 0) + 1;
       attempts.set(key, attempt);
       if (url.pathname === "/later" && attempt === 1) {
-        return new Response("not propagated", { status: isRsc ? 404 : 500 });
+        if (!isRsc) return new Response("not propagated", { status: 500 });
+        const stale = cacheableRsc();
+        stale.headers.set(VINEXT_RSC_BUILD_ID_HEADER, "stale-rsc-build");
+        return stale;
       }
       return isRsc ? cacheableRsc() : cacheableHtml();
     });
 
     await expect(
       warmCdnCache({
+        concurrency: 1,
         expectedRscBuildId: "rsc-build-a",
         fetchImpl: fetchImpl as typeof fetch,
-        paths: ["/first", "/later"],
+        paths: ["/first", "/later", "/tail"],
         propagatingTarget: true,
         retries: 2,
         retryDelayMs: 0,
-        rscPaths: ["/first", "/later"],
+        rscPaths: ["/first", "/later", "/tail"],
         strict: true,
         targetUrl: "https://app.example.com",
       }),
-    ).resolves.toMatchObject({ total: 4, warmed: 4, failed: 0 });
+    ).resolves.toMatchObject({ total: 6, warmed: 6, failed: 0 });
+    expect(attempts.get("/first:rsc")).toBe(1);
+    expect(attempts.get("/first:html")).toBe(1);
     expect(attempts.get("/later:rsc")).toBe(2);
     expect(attempts.get("/later:html")).toBe(2);
+    expect(attempts.get("/tail:rsc")).toBe(1);
+    expect(attempts.get("/tail:html")).toBe(1);
+    const lastInitialRequest = Math.max(calls.indexOf("/tail:rsc"), calls.indexOf("/tail:html"));
+    expect(calls.lastIndexOf("/later:rsc")).toBeGreaterThan(lastInitialRequest);
+    expect(calls.lastIndexOf("/later:html")).toBeGreaterThan(lastInitialRequest);
   });
 
   it("does not expire propagation retries while requests wait in the queue", async () => {

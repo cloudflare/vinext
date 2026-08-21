@@ -603,27 +603,82 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   let completedRequests = 0;
   progress.update(0, requests.length, "waiting for uploaded build");
 
-  const warmTarget = (target: WarmTarget, propagationGate = false) =>
-    warmOnePath(target, {
+  type WarmRetryMode = "normal" | "propagation-gate" | "propagation-pass" | "propagation-retry";
+  const warmTarget = (target: WarmTarget, retryMode: WarmRetryMode = "normal") => {
+    const isPropagationRequest = retryMode !== "normal";
+    const retries =
+      retryMode === "propagation-gate"
+        ? propagationRetries
+        : retryMode === "propagation-retry"
+          ? Math.max(0, propagationRetries - 1)
+          : retryMode === "propagation-pass"
+            ? 0
+            : normalRetries;
+    return warmOnePath(target, {
       targetUrl: options.targetUrl,
       timeoutMs,
-      retries: propagationGate ? propagationRetries : normalRetries,
+      retries,
       fetchImpl,
       headers: options.headers,
       expectedRscBuildId: options.expectedRscBuildId,
-      retryAllValidationErrors: propagationGate,
-      retryDelayMs: propagationGate ? propagationRetryDelayMs : normalRetryDelayMs,
-      retryNotFound: propagationGate,
+      retryAllValidationErrors: isPropagationRequest,
+      retryDelayMs: isPropagationRequest ? propagationRetryDelayMs : normalRetryDelayMs,
+      retryNotFound: isPropagationRequest,
     });
+  };
 
   const warmRequest = async (
     target: WarmTarget,
-    propagationGate = false,
+    retryMode: WarmRetryMode = "normal",
+    countCompletion = true,
   ): Promise<Awaited<ReturnType<typeof warmOnePath>>> => {
-    const result = await warmTarget(target, propagationGate);
-    progress.update(++completedRequests, requests.length, target.label);
+    const result = await warmTarget(target, retryMode);
+    if (countCompletion) completedRequests++;
+    progress.update(
+      completedRequests,
+      requests.length,
+      countCompletion ? target.label : `retrying ${target.label}`,
+    );
     return result;
   };
+
+  const warmPropagatingPass = async (
+    targets: readonly WarmTarget[],
+  ): Promise<Awaited<ReturnType<typeof warmOnePath>>[]> => {
+    const results = await runWithConcurrencyByKey(
+      targets,
+      concurrency,
+      (target) => target.pathname,
+      (target) => warmRequest(target, "propagation-pass"),
+    );
+    const failed = targets
+      .map((target, index) => ({ index, result: results[index], target }))
+      .filter(({ result }) => !result.ok);
+    if (failed.length === 0 || propagationRetries === 0) return results;
+
+    progress.finish();
+    console.log(
+      `  CDN warmup: retrying ${failed.length} failed request(s) after completing the initial pass...`,
+    );
+    const retried = await runWithConcurrencyByKey(
+      failed.map(({ target }) => target),
+      concurrency,
+      (target) => target.pathname,
+      (target) => warmRequest(target, "propagation-retry", false),
+    );
+    for (const [retryIndex, { index }] of failed.entries()) {
+      results[index] = retried[retryIndex];
+    }
+    return results;
+  };
+
+  /*
+   * The two gates below establish that the uploaded RSC and HTML handlers are
+   * reachable before the large concurrent pass starts. Remaining requests get
+   * one attempt first, then only failures consume their retry budget after the
+   * queue has completed. This lets a large successful queue provide additional
+   * propagation time without fetching successful cache keys twice.
+   */
 
   const skipRequests = (
     targets: readonly WarmTarget[],
@@ -640,18 +695,10 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   ): Promise<Awaited<ReturnType<typeof warmOnePath>>[]> => {
     const htmlGateIndex = remaining.findIndex((target) => target.kind === "html");
     if (htmlGateIndex < 0) {
-      return [
-        ...confirmed,
-        ...(await runWithConcurrencyByKey(
-          remaining,
-          concurrency,
-          (target) => target.pathname,
-          (target) => warmRequest(target, true),
-        )),
-      ];
+      return [...confirmed, ...(await warmPropagatingPass(remaining))];
     }
 
-    const htmlGateResult = await warmRequest(remaining[htmlGateIndex], true);
+    const htmlGateResult = await warmRequest(remaining[htmlGateIndex], "propagation-gate");
     const afterHtmlGate = remaining.filter((_target, index) => index !== htmlGateIndex);
     if (!htmlGateResult.ok) {
       return [
@@ -663,22 +710,13 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
         ),
       ];
     }
-    return [
-      ...confirmed,
-      htmlGateResult,
-      ...(await runWithConcurrencyByKey(
-        afterHtmlGate,
-        concurrency,
-        (target) => target.pathname,
-        (target) => warmRequest(target, true),
-      )),
-    ];
+    return [...confirmed, htmlGateResult, ...(await warmPropagatingPass(afterHtmlGate))];
   };
 
   const gateIndex = propagatingTarget ? requests.findIndex((target) => target.kind === "rsc") : -1;
   let results: Awaited<ReturnType<typeof warmOnePath>>[];
   if (gateIndex >= 0) {
-    const gateResult = await warmRequest(requests[gateIndex], true);
+    const gateResult = await warmRequest(requests[gateIndex], "propagation-gate");
     const remaining = requests.filter((_target, index) => index !== gateIndex);
     if (gateResult.ok) {
       results = await warmAfterHtmlGate([gateResult], remaining);
