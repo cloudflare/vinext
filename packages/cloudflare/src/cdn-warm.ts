@@ -323,7 +323,7 @@ const NON_CACHEABLE_CF_CACHE_STATUSES = new Set(["BYPASS", "DYNAMIC"]);
 type WarmValidation =
   | { outcome: "warmed" }
   | { outcome: "skipped"; reason: string }
-  | { outcome: "failed"; error: string };
+  | { outcome: "failed"; error: string; retryImmediately?: boolean };
 
 function validateCachePolicy(
   response: Response,
@@ -364,7 +364,11 @@ function validateCachePolicy(
     return { outcome: "failed", error: `CF-Cache-Status is ${cacheStatus}` };
   }
   if (requireCacheHit && cacheStatus !== "HIT") {
-    return { outcome: "failed", error: `CF-Cache-Status is ${cacheStatus}; waiting for HIT` };
+    return {
+      outcome: "failed",
+      error: `CF-Cache-Status is ${cacheStatus}; waiting for HIT`,
+      retryImmediately: true,
+    };
   }
   return { outcome: "warmed" };
 }
@@ -475,7 +479,7 @@ async function warmOnePath(
         )
           break;
         if (!canRetry(attempt)) break;
-        await waitBeforeRetry();
+        if (!validation.retryImmediately) await waitBeforeRetry();
         continue;
       }
 
@@ -492,6 +496,9 @@ async function warmOnePath(
         !isRetryableStatus(response.status, options.retryNotFound)
       )
         break;
+      if (!canRetry(attempt)) break;
+      if (!validation.retryImmediately) await waitBeforeRetry();
+      continue;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         lastError = `timed out after ${options.timeoutMs}ms`;

@@ -295,12 +295,14 @@ describe("Cloudflare CDN warmup", () => {
   });
 
   it("does not report staged RSC or HTML cache keys warm until they return HIT", async () => {
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const attempts = new Map<"html" | "rsc", number>();
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const kind = new Headers(init?.headers).get("rsc") === "1" ? "rsc" : "html";
       const attempt = (attempts.get(kind) ?? 0) + 1;
       attempts.set(kind, attempt);
       const response = kind === "rsc" ? cacheableRsc() : cacheableHtml();
+      response.headers.set("cdn-cache-control", "public, max-age=1");
       return attempt === 1 ? response : cacheHit(response);
     });
 
@@ -311,7 +313,6 @@ describe("Cloudflare CDN warmup", () => {
         paths: ["/cached"],
         propagatingTarget: true,
         retries: 1,
-        retryDelayMs: 0,
         rscPaths: ["/cached"],
         strict: true,
         targetUrl: "https://app.example.com",
@@ -324,6 +325,7 @@ describe("Cloudflare CDN warmup", () => {
       ]),
     );
     expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(setTimeoutSpy).not.toHaveBeenCalledWith(expect.any(Function), 1_000);
   });
 
   it("retries every staged-target request until its cache key reaches the uploaded build", async () => {
