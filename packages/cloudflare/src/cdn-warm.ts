@@ -323,7 +323,7 @@ const NON_CACHEABLE_CF_CACHE_STATUSES = new Set(["BYPASS", "DYNAMIC"]);
 type WarmValidation =
   | { outcome: "warmed" }
   | { outcome: "skipped"; reason: string }
-  | { outcome: "failed"; error: string; retryable?: boolean };
+  | { outcome: "failed"; error: string };
 
 function validateCachePolicy(response: Response, requireCacheStatus: boolean): WarmValidation {
   const nonCacheableHeaders = [
@@ -369,15 +369,8 @@ function validateRscWarmResponse(response: Response, expectedRscBuildId?: string
       error: response.redirected ? "redirected response" : `HTTP ${response.status}`,
     };
   }
-  const confirmedExpectedBuild =
-    expectedRscBuildId !== undefined &&
-    response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) === expectedRscBuildId;
   if (!response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)) {
-    return {
-      outcome: "failed",
-      error: `expected ${VINEXT_RSC_CONTENT_TYPE} response`,
-      retryable: !confirmedExpectedBuild,
-    };
+    return { outcome: "failed", error: `expected ${VINEXT_RSC_CONTENT_TYPE} response` };
   }
   if (
     expectedRscBuildId !== undefined &&
@@ -386,7 +379,6 @@ function validateRscWarmResponse(response: Response, expectedRscBuildId?: string
     return {
       outcome: "failed",
       error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build ${expectedRscBuildId}`,
-      retryable: true,
     };
   }
 
@@ -398,24 +390,13 @@ function validateRscWarmResponse(response: Response, expectedRscBuildId?: string
   );
   const missingVary = REQUIRED_RSC_VARY_HEADERS.find((name) => !vary.has(name));
   if (missingVary) {
-    return {
-      outcome: "failed",
-      error: `response Vary is missing ${missingVary}`,
-      retryable: !confirmedExpectedBuild,
-    };
+    return { outcome: "failed", error: `response Vary is missing ${missingVary}` };
   }
   const extraVary = Array.from(vary).find((name) => !REQUIRED_RSC_VARY_HEADERS.includes(name));
   if (extraVary) {
-    return {
-      outcome: "failed",
-      error: `response Vary has unsupported field ${extraVary}`,
-      retryable: !confirmedExpectedBuild,
-    };
+    return { outcome: "failed", error: `response Vary has unsupported field ${extraVary}` };
   }
-  const cachePolicy = validateCachePolicy(response, true);
-  return cachePolicy.outcome === "failed" && confirmedExpectedBuild
-    ? { ...cachePolicy, retryable: false }
-    : cachePolicy;
+  return validateCachePolicy(response, true);
 }
 
 function validateHtmlWarmResponse(response: Response): WarmValidation {
@@ -484,10 +465,11 @@ async function warmOnePath(
           return { path: target.label, ok: true, skipped: true, reason: validation.reason };
         }
         lastError = validation.error;
-        const retryValidation = options.retryAllValidationErrors
-          ? validation.retryable !== false
-          : validation.retryable === true;
-        if (!retryValidation && !isRetryableStatus(response.status, options.retryNotFound)) break;
+        if (
+          !options.retryAllValidationErrors &&
+          !isRetryableStatus(response.status, options.retryNotFound)
+        )
+          break;
         if (!canRetry(attempt)) break;
         await waitBeforeRetry();
         continue;
@@ -610,11 +592,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   let completedRequests = 0;
   progress.update(0, requests.length, "waiting for uploaded build");
 
-  const warmTarget = (
-    target: WarmTarget,
-    propagationGate = false,
-    retryAllValidationErrors = propagationGate,
-  ) =>
+  const warmTarget = (target: WarmTarget, propagationGate = false) =>
     warmOnePath(target, {
       targetUrl: options.targetUrl,
       timeoutMs,
@@ -622,7 +600,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       fetchImpl,
       headers: options.headers,
       expectedRscBuildId: options.expectedRscBuildId,
-      retryAllValidationErrors,
+      retryAllValidationErrors: propagationGate,
       retryDeadlineAt: propagationGate ? createPropagationDeadline() : undefined,
       retryDelayMs: propagationGate ? propagationRetryDelayMs : normalRetryDelayMs,
       retryNotFound: propagationGate,
@@ -631,9 +609,8 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const warmRequest = async (
     target: WarmTarget,
     propagationGate = false,
-    retryAllValidationErrors = propagationGate,
   ): Promise<Awaited<ReturnType<typeof warmOnePath>>> => {
-    const result = await warmTarget(target, propagationGate, retryAllValidationErrors);
+    const result = await warmTarget(target, propagationGate);
     progress.update(++completedRequests, requests.length, target.label);
     return result;
   };
@@ -656,7 +633,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       return [
         ...confirmed,
         ...(await runWithConcurrency(remaining, concurrency, (target) =>
-          warmRequest(target, true, false),
+          warmRequest(target, true),
         )),
       ];
     }
@@ -677,7 +654,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       ...confirmed,
       htmlGateResult,
       ...(await runWithConcurrency(afterHtmlGate, concurrency, (target) =>
-        warmRequest(target, true, false),
+        warmRequest(target, true),
       )),
     ];
   };

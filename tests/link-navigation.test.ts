@@ -1975,46 +1975,6 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("keeps contextual automatic Link prefetch shells hashed", async () => {
-    const observer = stubIntersectionObserver();
-    const result = await renderIsolatedLink({
-      href: "/teams/cloudflare/dashboard",
-      nodeEnv: "production",
-      canonicalRsc: true,
-      windowOverrides: {
-        __VINEXT_LINK_PREFETCH_ROUTES__: [
-          {
-            canPrefetchLoadingShell: false,
-            patternParts: ["teams", ":team", "dashboard"],
-            isDynamic: true,
-            requiresDynamicNavigationRequest: true,
-          },
-        ],
-      },
-    });
-
-    try {
-      observer.dispatchIntersectingEntry(result.anchor);
-      await waitForFetchCalls(result.fetch, 1);
-
-      const input = result.fetch.mock.calls[0]?.[0];
-      expect(typeof input).toBe("string");
-      if (typeof input === "string") {
-        expect(new URL(input, "https://example.com").searchParams.get("_rsc")).not.toBe("");
-      }
-      const headers = new Headers(
-        (result.fetch.mock.calls[0]?.[1] as RequestInit | undefined)?.headers,
-      );
-      expect(headers.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
-      expect(headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("1");
-      expect(headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
-        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-      );
-    } finally {
-      result.restoreNodeEnv();
-    }
-  });
-
   it("uses the canonical basePath root for an explicit full Link prefetch", async () => {
     vi.stubEnv("__NEXT_ROUTER_BASEPATH", "/docs");
     vi.stubEnv("__VINEXT_TRAILING_SLASH", "false");
@@ -2031,31 +1991,6 @@ describe("Link prefetch scheduling", () => {
       await waitForFetchCalls(result.fetch, 1);
 
       expect(result.fetch.mock.calls[0]?.[0]).toBe("/docs?_rsc");
-    } finally {
-      result.restoreNodeEnv();
-    }
-  });
-
-  it("keeps query-specific full Link prefetch requests hashed", async () => {
-    const observer = stubIntersectionObserver();
-    const result = await renderIsolatedLink({
-      href: "/dashboard?tab=latest",
-      nodeEnv: "production",
-      canonicalRsc: true,
-      props: { prefetch: true },
-    });
-
-    try {
-      observer.dispatchIntersectingEntry(result.anchor);
-      await waitForFetchCalls(result.fetch, 1);
-
-      const input = result.fetch.mock.calls[0]?.[0];
-      expect(typeof input).toBe("string");
-      if (typeof input === "string") {
-        const url = new URL(input, "https://example.com");
-        expect(url.searchParams.get("tab")).toBe("latest");
-        expect(url.searchParams.get("_rsc")).not.toBe("");
-      }
     } finally {
       result.restoreNodeEnv();
     }

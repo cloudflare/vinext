@@ -345,7 +345,6 @@ describe("Link App Router prefetch mode", () => {
     try {
       expect(resolveAutoAppRoutePrefetch("/about")).toEqual({
         cacheForNavigation: true,
-        canonicalLoadingShell: false,
         dynamicStaleTime: "verbatim",
         fallbackTtl: "static",
         prefetchShellFirst: true,
@@ -353,7 +352,6 @@ describe("Link App Router prefetch mode", () => {
       });
       expect(resolveAutoAppRoutePrefetch("/blog/hello-world")).toEqual({
         cacheForNavigation: false,
-        canonicalLoadingShell: true,
         dynamicStaleTime: "ignore",
         fallbackTtl: "static",
         prefetchShellFirst: false,
@@ -361,7 +359,6 @@ describe("Link App Router prefetch mode", () => {
       });
       expect(resolveAutoAppRoutePrefetch("/settings")).toEqual({
         cacheForNavigation: false,
-        canonicalLoadingShell: true,
         dynamicStaleTime: "ignore",
         fallbackTtl: "static",
         prefetchShellFirst: true,
@@ -369,7 +366,6 @@ describe("Link App Router prefetch mode", () => {
       });
       expect(resolveAutoAppRoutePrefetch("/products/1")).toEqual({
         cacheForNavigation: true,
-        canonicalLoadingShell: false,
         dynamicStaleTime: "verbatim",
         fallbackTtl: "static",
         prefetchShellFirst: false,
@@ -380,7 +376,6 @@ describe("Link App Router prefetch mode", () => {
       // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/segment-cache/client-params/client-params.test.ts
       expect(resolveAutoAppRoutePrefetch("/clothing/1")).toEqual({
         cacheForNavigation: true,
-        canonicalLoadingShell: false,
         dynamicStaleTime: "verbatim",
         fallbackTtl: "static",
         prefetchShellFirst: false,
@@ -388,7 +383,6 @@ describe("Link App Router prefetch mode", () => {
       });
       expect(resolveAutoAppRoutePrefetch("/root-param/aaa")).toEqual({
         cacheForNavigation: true,
-        canonicalLoadingShell: false,
         dynamicStaleTime: "verbatim",
         fallbackTtl: "static",
         prefetchShellFirst: true,
@@ -397,7 +391,6 @@ describe("Link App Router prefetch mode", () => {
       });
       expect(resolveAutoAppRoutePrefetch("/root-param/aaa?q=1")).toEqual({
         cacheForNavigation: false,
-        canonicalLoadingShell: false,
         dynamicStaleTime: "ignore",
         fallbackTtl: "static",
         prefetchShellFirst: true,
@@ -406,7 +399,6 @@ describe("Link App Router prefetch mode", () => {
       });
       expect(resolveAutoAppRoutePrefetch("/teams/vercel/dashboard")).toEqual({
         cacheForNavigation: false,
-        canonicalLoadingShell: false,
         dynamicStaleTime: "ignore",
         fallbackTtl: "static",
         prefetchShellFirst: false,
@@ -414,7 +406,6 @@ describe("Link App Router prefetch mode", () => {
       });
       expect(resolveAutoAppRoutePrefetch("/missing")).toEqual({
         cacheForNavigation: false,
-        canonicalLoadingShell: false,
         dynamicStaleTime: "verbatim",
         fallbackTtl: "static",
         prefetchShellFirst: false,
@@ -451,7 +442,6 @@ describe("Link App Router prefetch mode", () => {
     try {
       expect(resolveAutoAppRoutePrefetch("/root-param/aaa")).toEqual({
         cacheForNavigation: false,
-        canonicalLoadingShell: true,
         dynamicStaleTime: "ignore",
         fallbackTtl: "static",
         prefetchShellFirst: false,

@@ -358,35 +358,6 @@ describe("Cloudflare CDN warmup", () => {
     expect(attempts.get("/later:html")).toBe(2);
   });
 
-  it("does not spend a propagation window retrying a permanent current-build error", async () => {
-    let brokenAttempts = 0;
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = new URL(requestHref(input)!);
-      const isRsc = new Headers(init?.headers).get("rsc") === "1";
-      if (url.pathname === "/broken" && isRsc) {
-        brokenAttempts++;
-        const response = cacheableRsc();
-        response.headers.delete("vary");
-        return response;
-      }
-      return isRsc ? cacheableRsc() : cacheableHtml();
-    });
-
-    await expect(
-      warmCdnCache({
-        expectedRscBuildId: "rsc-build-a",
-        fetchImpl: fetchImpl as typeof fetch,
-        paths: ["/first", "/broken"],
-        propagatingTarget: true,
-        retryDelayMs: 0,
-        rscPaths: ["/first", "/broken"],
-        strict: true,
-        targetUrl: "https://app.example.com",
-      }),
-    ).rejects.toThrow("response Vary is missing rsc");
-    expect(brokenAttempts).toBe(1);
-  });
-
   it("warms directly from the discovery manifest", async () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(

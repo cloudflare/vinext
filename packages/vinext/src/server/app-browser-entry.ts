@@ -2096,7 +2096,6 @@ function bootstrapHydration(
         const canUseCanonicalSharedRequest =
           process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
           navigationKind === "navigate" &&
-          url.search === "" &&
           settledPrefetchedResponse === null &&
           requestInterceptionContext === null &&
           mountedSlotsHeader === null &&
