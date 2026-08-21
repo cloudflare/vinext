@@ -43,6 +43,7 @@ export type CdnWarmOptions = {
   fetchImpl?: typeof fetch;
 };
 
+export const DEFAULT_CDN_WARM_CONCURRENCY = 25;
 export const DEFAULT_CDN_WARM_TIMEOUT_MS = 10_000;
 
 export type PrerenderCdnWarmOptions = Omit<CdnWarmOptions, "paths"> & {
@@ -571,7 +572,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   // policy. Once those gates pass, fill the remaining independent cache keys
   // concurrently. Propagation is bounded by the retry count, never by a
   // queue-wide wall-clock deadline that can expire before work starts.
-  const concurrency = Math.max(1, options.concurrency ?? 10);
+  const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CDN_WARM_CONCURRENCY);
   const normalRetries = Math.max(0, options.retries ?? 1);
   const propagationRetries = Math.max(0, options.retries ?? 30);
   const normalRetryDelayMs = Math.max(0, options.retryDelayMs ?? 0);

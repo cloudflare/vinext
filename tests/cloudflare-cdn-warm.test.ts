@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   buildWarmupUrl,
+  DEFAULT_CDN_WARM_CONCURRENCY,
   DEFAULT_CDN_WARM_TIMEOUT_MS,
   readPrerenderWarmPlan,
   warmCdnCache,
@@ -62,7 +63,8 @@ afterEach(() => {
 });
 
 describe("Cloudflare CDN warmup", () => {
-  it("uses a 10 second default timeout and preserves query strings", () => {
+  it("uses the documented warmup defaults and preserves query strings", () => {
+    expect(DEFAULT_CDN_WARM_CONCURRENCY).toBe(25);
     expect(DEFAULT_CDN_WARM_TIMEOUT_MS).toBe(10_000);
     expect(buildWarmupUrl("https://app.example.com", "/search?q=x").href).toBe(
       "https://app.example.com/search?q=x",
