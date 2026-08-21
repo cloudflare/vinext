@@ -312,15 +312,17 @@ class CdnWarmProgress {
 const REQUIRED_RSC_VARY_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =>
   name.trim().toLowerCase(),
 );
-const ADMITTED_CF_CACHE_STATUSES = new Set([
-  "HIT",
-  "MISS",
-  "EXPIRED",
-  "REVALIDATED",
-  "UPDATING",
-  "STALE",
-]);
+const ADMITTED_CF_CACHE_STATUSES = new Set(["HIT", "MISS", "EXPIRED", "REVALIDATED", "UPDATING"]);
 const NON_CACHEABLE_CF_CACHE_STATUSES = new Set(["BYPASS", "DYNAMIC"]);
+const CDN_CACHE_POLICY_HEADERS = [
+  "Cloudflare-CDN-Cache-Control",
+  "CDN-Cache-Control",
+  "Cache-Control",
+] as const;
+const SHARED_CACHE_FRESHNESS_RES = [
+  /(?:^|,)\s*s-maxage\s*=\s*"?(-?\d+)"?/i,
+  /(?:^|,)\s*max-age\s*=\s*"?(-?\d+)"?/i,
+] as const;
 
 type WarmValidation =
   | { outcome: "warmed" }
@@ -328,14 +330,17 @@ type WarmValidation =
   | { outcome: "failed"; error: string };
 
 function validateCachePolicy(response: Response, requireCacheStatus: boolean): WarmValidation {
-  const nonCacheableHeaders = [
-    "Cache-Control",
-    "CDN-Cache-Control",
-    "Cloudflare-CDN-Cache-Control",
-  ].filter((name) => {
-    const value = response.headers.get(name);
-    return value !== null && isNonCacheableCacheControl(value);
-  });
+  const effectivePolicy = CDN_CACHE_POLICY_HEADERS.map((name) => ({
+    name,
+    value: response.headers.get(name),
+  })).find(
+    (entry): entry is { name: (typeof CDN_CACHE_POLICY_HEADERS)[number]; value: string } =>
+      entry.value !== null,
+  );
+  const nonCacheableHeaders =
+    effectivePolicy && isNonCacheableCacheControl(effectivePolicy.value)
+      ? [effectivePolicy.name]
+      : [];
   const hasSetCookie = response.headers.has("Set-Cookie");
   const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
 
@@ -344,6 +349,20 @@ function validateCachePolicy(response: Response, requireCacheStatus: boolean): W
       nonCacheableHeaders.length > 0
         ? `${nonCacheableHeaders.join(", ")} opts out of caching`
         : "response sets a cookie";
+    if (cacheStatus && NON_CACHEABLE_CF_CACHE_STATUSES.has(cacheStatus)) {
+      return { outcome: "skipped", reason };
+    }
+    return {
+      outcome: "failed",
+      error: `${reason}, but CF-Cache-Status is ${cacheStatus ?? "missing"}`,
+    };
+  }
+
+  const sharedFreshness = effectivePolicy
+    ? getSharedCacheFreshnessSeconds(effectivePolicy.value)
+    : null;
+  if (sharedFreshness !== null && sharedFreshness <= 0) {
+    const reason = `${effectivePolicy!.name} has no positive shared-cache freshness`;
     if (cacheStatus && NON_CACHEABLE_CF_CACHE_STATUSES.has(cacheStatus)) {
       return { outcome: "skipped", reason };
     }
@@ -362,6 +381,14 @@ function validateCachePolicy(response: Response, requireCacheStatus: boolean): W
     return { outcome: "failed", error: `CF-Cache-Status is ${cacheStatus}` };
   }
   return { outcome: "warmed" };
+}
+
+function getSharedCacheFreshnessSeconds(cacheControl: string): number | null {
+  for (const pattern of SHARED_CACHE_FRESHNESS_RES) {
+    const match = pattern.exec(cacheControl);
+    if (match) return Number(match[1]);
+  }
+  return null;
 }
 
 function validateRscWarmResponse(response: Response, expectedRscBuildId?: string): WarmValidation {

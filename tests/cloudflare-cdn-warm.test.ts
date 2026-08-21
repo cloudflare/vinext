@@ -268,7 +268,7 @@ describe("Cloudflare CDN warmup", () => {
     ).resolves.toEqual({ total: 2, warmed: 0, skipped: 2, failed: 0, failures: [] });
   });
 
-  it("fails contradictory cache policy instead of claiming a warm", async () => {
+  it("uses Cloudflare cache-control precedence when validating admission", async () => {
     const fetchImpl = vi.fn(async () => {
       const response = cacheableRsc();
       response.headers.set("cache-control", "no-store");
@@ -284,7 +284,62 @@ describe("Cloudflare CDN warmup", () => {
         strict: true,
         targetUrl: "https://app.example.com",
       }),
-    ).rejects.toThrow("opts out of caching, but CF-Cache-Status is MISS");
+    ).resolves.toMatchObject({ warmed: 1, failed: 0 });
+  });
+
+  it("fails contradictory effective cache policy instead of claiming a warm", async () => {
+    const fetchImpl = vi.fn(async () => {
+      const response = cacheableRsc();
+      response.headers.set("cdn-cache-control", "no-store");
+      return response;
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: [],
+        rscPaths: ["/broken"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow("CDN-Cache-Control opts out of caching, but CF-Cache-Status is MISS");
+  });
+
+  it("rejects stale cache objects and zero-freshness responses", async () => {
+    const staleFetch = vi.fn(async () => {
+      const response = cacheableRsc();
+      response.headers.set("cf-cache-status", "STALE");
+      return response;
+    });
+    await expect(
+      warmCdnCache({
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: staleFetch as typeof fetch,
+        paths: [],
+        rscPaths: ["/stale"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow("CF-Cache-Status is STALE");
+
+    const zeroFreshnessFetch = vi.fn(async () => {
+      const response = cacheableRsc();
+      response.headers.set("cdn-cache-control", "public, max-age=0");
+      return response;
+    });
+    await expect(
+      warmCdnCache({
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: zeroFreshnessFetch as typeof fetch,
+        paths: [],
+        rscPaths: ["/immediately-stale"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow(
+      "CDN-Cache-Control has no positive shared-cache freshness, but CF-Cache-Status is MISS",
+    );
   });
 
   it("requires CDN admission evidence for HTML responses", async () => {

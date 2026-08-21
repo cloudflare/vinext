@@ -83,6 +83,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         headers: isRsc
           ? {
               "cache-control": "public, max-age=0, must-revalidate",
+              "cdn-cache-control": "public, max-age=60",
               "cf-cache-status": "MISS",
               "content-type": "text/x-component",
               [VINEXT_RSC_BUILD_ID_HEADER]: "build-a",
@@ -242,6 +243,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         headers: isRsc
           ? {
               "cache-control": "public, max-age=0, must-revalidate",
+              "cdn-cache-control": "public, max-age=60",
               "cf-cache-status": "MISS",
               "content-type": "text/x-component",
               [VINEXT_RSC_BUILD_ID_HEADER]:
@@ -350,6 +352,24 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     for (const [, args] of execFileSyncMock.mock.calls as Array<[string, string[]]>) {
       expect(args).toEqual(expect.arrayContaining(["--env", "staging"]));
     }
+  });
+
+  it("does not inherit the production custom domain for a named environment", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        custom_domains: ["app.example.com"],
+        env: { staging: { name: "my-worker-staging" } },
+      }),
+    );
+    const { resolveCdnWarmupTargetUrl } = await import("../packages/cloudflare/src/deploy.js");
+
+    expect(
+      resolveCdnWarmupTargetUrl(tmpDir, "https://my-worker-staging.example.workers.dev", {
+        env: "staging",
+      }),
+    ).toBe("https://my-worker-staging.example.workers.dev");
   });
 
   it("applies triggers before post-promotion fallback warmup", async () => {

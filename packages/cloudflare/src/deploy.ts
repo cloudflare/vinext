@@ -731,7 +731,7 @@ export function resolveCdnWarmupTargetUrl(
 ): string | null {
   const config = parseWranglerConfig(root, options?.config);
   const env = getWranglerTargetEnv(options ?? {});
-  const customDomain = (env ? config?.env?.[env]?.customDomain : undefined) ?? config?.customDomain;
+  const customDomain = env ? config?.env?.[env]?.customDomain : config?.customDomain;
   if (customDomain) {
     return `https://${customDomain}`;
   }
