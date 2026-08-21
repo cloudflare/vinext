@@ -402,6 +402,59 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ]);
   });
 
+  it("leaves the warmed Worker version staged when promotion is disabled", async () => {
+    const events: string[] = [];
+    delayMock.mockImplementation(async (milliseconds: number) => {
+      events.push(`delay:${milliseconds}`);
+    });
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      events.push(`fetch:${formatFetchUrl(url)}`);
+      return cacheableHtml();
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload");
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\nhttps://preview.example.workers.dev\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        events.push("stage");
+        return "Staged version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/about"], {
+        warmCdnConcurrency: 1,
+        warmCdnPromote: false,
+      }),
+    ).resolves.toBe("https://stable.example.workers.dev");
+
+    expect(events).toEqual([
+      "upload",
+      "status",
+      "stage",
+      "triggers",
+      "fetch:https://app.example.com/about",
+    ]);
+    expect(delayMock).not.toHaveBeenCalled();
+  });
+
   it("replaces a stale 0% version and uses the triggers URL for pre-promotion warmup", async () => {
     const events: string[] = [];
     writeFile(

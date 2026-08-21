@@ -55,6 +55,7 @@ async function deployCommand(): Promise<void> {
     warmCdnTimeout: parsed.warmCdnTimeout,
     warmCdnRetries: parsed.warmCdnRetries,
     warmCdnStrict: parsed.warmCdnStrict,
+    warmCdnPromote: parsed.warmCdnPromote,
     warmCdnIncludeFallbacks: parsed.warmCdnIncludeFallbacks,
     experimentalTPR: parsed.experimentalTPR,
     tprCoverage: parsed.tprCoverage,

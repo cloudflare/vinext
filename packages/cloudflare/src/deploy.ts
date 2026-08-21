@@ -100,6 +100,8 @@ export type DeployOptions = {
   warmCdnRetries?: number;
   /** Fail deployment if any CDN warmup request fails */
   warmCdnStrict?: boolean;
+  /** Promote the warmed Worker version to 100% traffic (default: true) */
+  warmCdnPromote?: boolean;
   /** Include PPR fallback-shell placeholder paths during CDN warmup */
   warmCdnIncludeFallbacks?: boolean;
   /** Enable experimental TPR (Traffic-aware Pre-Rendering) */
@@ -166,6 +168,7 @@ const deployArgOptions = {
   "warm-cdn-timeout": { type: "string" },
   "warm-cdn-retries": { type: "string" },
   "warm-cdn-strict": { type: "boolean", default: false },
+  "warm-cdn-no-promote": { type: "boolean", default: false },
   "warm-cdn-include-fallbacks": { type: "boolean", default: false },
   "experimental-tpr": { type: "boolean", default: false },
   "tpr-coverage": { type: "string" },
@@ -213,6 +216,7 @@ export function parseDeployArgs(args: string[]) {
         ? undefined
         : parseNonNegativeIntegerArg(values["warm-cdn-retries"], "--warm-cdn-retries"),
     warmCdnStrict: values["warm-cdn-strict"],
+    warmCdnPromote: !values["warm-cdn-no-promote"],
     warmCdnIncludeFallbacks: values["warm-cdn-include-fallbacks"],
     experimentalTPR: values["experimental-tpr"],
     tprCoverage: parseIntArg("tpr-coverage", values["tpr-coverage"]),
@@ -553,6 +557,7 @@ export async function deployWithCdnWarmup(
     | "warmCdnTimeout"
     | "warmCdnRetries"
     | "warmCdnStrict"
+    | "warmCdnPromote"
   > &
     Pick<CdnWarmOptions, "deploymentId" | "expectedRscBuildId" | "loadingShellPaths" | "rscPaths">,
 ): Promise<string> {
@@ -622,6 +627,24 @@ export async function deployWithCdnWarmup(
   } else {
     console.warn(
       "  CDN warmup: pre-traffic version override skipped because the current deployment is not one version serving 100% traffic.",
+    );
+  }
+
+  if (options.warmCdnPromote === false) {
+    if (!staged) {
+      throw new Error(
+        "CDN warmup cannot skip promotion because the uploaded Worker version could not be staged at 0% traffic. " +
+          "The current deployment must have exactly one version serving 100% traffic.",
+      );
+    }
+    console.log(
+      "  CDN warmup: promotion disabled; uploaded Worker version remains staged at 0% traffic.",
+    );
+    return (
+      staged.deployedUrl ??
+      triggersDeployedUrl ??
+      upload.previewUrl ??
+      "(URL not detected in wrangler output)"
     );
   }
 
@@ -993,6 +1016,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
         warmCdnTimeout: options.warmCdnTimeout,
         warmCdnRetries: options.warmCdnRetries,
         warmCdnStrict: options.warmCdnStrict,
+        warmCdnPromote: options.warmCdnPromote,
       });
     } else {
       console.log("\n  CDN warmup skipped: no build-discovered paths found.");

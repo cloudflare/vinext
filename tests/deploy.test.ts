@@ -768,6 +768,7 @@ describe("parseDeployArgs", () => {
       "--warm-cdn-retries",
       "0",
       "--warm-cdn-strict",
+      "--warm-cdn-no-promote",
       "--warm-cdn-include-fallbacks",
     ]);
 
@@ -776,7 +777,12 @@ describe("parseDeployArgs", () => {
     expect(parsed.warmCdnTimeout).toBe(1500);
     expect(parsed.warmCdnRetries).toBe(0);
     expect(parsed.warmCdnStrict).toBe(true);
+    expect(parsed.warmCdnPromote).toBe(false);
     expect(parsed.warmCdnIncludeFallbacks).toBe(true);
+  });
+
+  it("promotes warmed Worker versions by default", () => {
+    expect(parseDeployArgs([]).warmCdnPromote).toBe(true);
   });
 
   it("throws for invalid CDN warmup numeric flags", () => {
