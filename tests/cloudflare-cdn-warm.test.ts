@@ -195,15 +195,22 @@ describe("Cloudflare CDN warmup", () => {
 
     expect(result).toEqual({ total: 3, warmed: 3, skipped: 0, failed: 0, failures: [] });
     expect(fetchImpl).toHaveBeenCalledTimes(3);
-    expect(requestHref(fetchImpl.mock.calls[0]?.[0])).toBe(
-      "https://app.example.com/search?q=x&_rsc",
+    const fullCall = fetchImpl.mock.calls.find((call) => {
+      const headers = new Headers(call[1]?.headers);
+      return headers.get("rsc") === "1" && !headers.has("next-router-prefetch");
+    });
+    const shellCall = fetchImpl.mock.calls.find((call) => {
+      const headers = new Headers(call[1]?.headers);
+      return headers.get("rsc") === "1" && headers.get("next-router-prefetch") === "1";
+    });
+    const htmlCall = fetchImpl.mock.calls.find(
+      (call) => new Headers(call[1]?.headers).get("rsc") !== "1",
     );
-    expect(requestHref(fetchImpl.mock.calls[1]?.[0])).toBe(
-      "https://app.example.com/search?q=x&_rsc",
-    );
-    expect(requestHref(fetchImpl.mock.calls[2]?.[0])).toBe("https://app.example.com/search?q=x");
+    expect(requestHref(fullCall?.[0])).toBe("https://app.example.com/search?q=x&_rsc");
+    expect(requestHref(shellCall?.[0])).toBe("https://app.example.com/search?q=x&_rsc");
+    expect(requestHref(htmlCall?.[0])).toBe("https://app.example.com/search?q=x");
 
-    const full = new Headers(fetchImpl.mock.calls[0]?.[1]?.headers);
+    const full = new Headers(fullCall?.[1]?.headers);
     expect(Object.fromEntries(full)).toMatchObject({
       accept: "text/x-component",
       rsc: "1",
@@ -213,18 +220,57 @@ describe("Cloudflare CDN warmup", () => {
     expect(full.get("next-router-state-tree")).toBeNull();
     expect(full.get("next-url")).toBeNull();
 
-    const shell = new Headers(fetchImpl.mock.calls[1]?.[1]?.headers);
+    const shell = new Headers(shellCall?.[1]?.headers);
     expect(shell.get("next-router-prefetch")).toBe("1");
     expect(shell.get("next-router-segment-prefetch")).toBe("1");
     expect(shell.get("x-vinext-rsc-render-mode")).toBe("prefetch-loading-shell");
     expect(shell.get("next-router-state-tree")).toBeNull();
     expect(shell.get("next-url")).toBeNull();
 
-    const html = new Headers(fetchImpl.mock.calls[2]?.[1]?.headers);
+    const html = new Headers(htmlCall?.[1]?.headers);
     expect(html.get("accept")).toBe("text/html");
     for (const call of fetchImpl.mock.calls) {
       expect(new Headers(call[1]?.headers).get("user-agent")).toBe("vinext-cloudflare-cdn-warm");
     }
+  });
+
+  it("serializes cold Vary variants of the same URL while warming different URLs concurrently", async () => {
+    const activeUrls = new Set<string>();
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+    let sameUrlOverlap = false;
+    let startedRequests = 0;
+    let releaseFirstWave!: () => void;
+    const firstWaveStarted = new Promise<void>((resolve) => {
+      releaseFirstWave = resolve;
+    });
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const href = requestHref(input)!;
+      if (activeUrls.has(href)) sameUrlOverlap = true;
+      activeUrls.add(href);
+      activeRequests++;
+      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+      if (++startedRequests === 2) releaseFirstWave();
+      await firstWaveStarted;
+      activeRequests--;
+      activeUrls.delete(href);
+      return cacheableRsc();
+    });
+
+    await expect(
+      warmCdnCache({
+        concurrency: 4,
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        loadingShellPaths: ["/a", "/b"],
+        paths: [],
+        rscPaths: ["/a", "/b"],
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ total: 4, warmed: 4, failed: 0 });
+
+    expect(sameUrlOverlap).toBe(false);
+    expect(maxActiveRequests).toBe(2);
   });
 
   it("counts coherent no-store/BYPASS responses as skipped, including in strict mode", async () => {

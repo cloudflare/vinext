@@ -444,16 +444,6 @@ async function warmOnePath(
         "manual",
       );
 
-      if (process.env.VINEXT_CDN_WARM_DEBUG === "1") {
-        console.log(
-          `  CDN warm debug ${target.label} attempt ${attempt + 1}: ` +
-            `${url.pathname}${url.search} HTTP ${response.status} ` +
-            `cache=${response.headers.get("CF-Cache-Status") ?? "missing"} ` +
-            `ray=${response.headers.get("CF-Ray") ?? "missing"} ` +
-            `rscBuild=${response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) ?? "missing"}`,
-        );
-      }
-
       if (target.kind === "rsc") {
         const validation = validateRscWarmResponse(response, options.expectedRscBuildId);
         if (validation.outcome === "warmed") {
@@ -518,6 +508,32 @@ async function runWithConcurrency<T, R>(
   if (items.length === 0) return results;
   const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
   await Promise.all(workers);
+  return results;
+}
+
+async function runWithConcurrencyByKey<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  key: (item: T) => string,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const groups = new Map<string, Array<{ index: number; item: T }>>();
+  for (const [index, item] of items.entries()) {
+    const itemKey = key(item);
+    const group = groups.get(itemKey);
+    if (group) group.push({ index, item });
+    else groups.set(itemKey, [{ index, item }]);
+  }
+
+  const results = Array.from<R>({ length: items.length });
+  await runWithConcurrency(Array.from(groups.values()), concurrency, async (group) => {
+    // A cold cache has not established its response Vary dimensions yet. Fill
+    // variants of the same public URL serially so cache admission/request
+    // collapsing cannot race the full and loading-shell RSC representations.
+    for (const { index, item } of group) {
+      results[index] = await fn(item);
+    }
+  });
   return results;
 }
 
@@ -626,8 +642,11 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     if (htmlGateIndex < 0) {
       return [
         ...confirmed,
-        ...(await runWithConcurrency(remaining, concurrency, (target) =>
-          warmRequest(target, true),
+        ...(await runWithConcurrencyByKey(
+          remaining,
+          concurrency,
+          (target) => target.pathname,
+          (target) => warmRequest(target, true),
         )),
       ];
     }
@@ -647,8 +666,11 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     return [
       ...confirmed,
       htmlGateResult,
-      ...(await runWithConcurrency(afterHtmlGate, concurrency, (target) =>
-        warmRequest(target, true),
+      ...(await runWithConcurrencyByKey(
+        afterHtmlGate,
+        concurrency,
+        (target) => target.pathname,
+        (target) => warmRequest(target, true),
       )),
     ];
   };
@@ -672,7 +694,12 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   } else if (propagatingTarget) {
     results = await warmAfterHtmlGate([], requests);
   } else {
-    results = await runWithConcurrency(requests, concurrency, (target) => warmRequest(target));
+    results = await runWithConcurrencyByKey(
+      requests,
+      concurrency,
+      (target) => target.pathname,
+      (target) => warmRequest(target),
+    );
   }
 
   progress.finish();
