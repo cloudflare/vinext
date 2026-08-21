@@ -84,11 +84,26 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     expect(await response.json()).toEqual({ buildId });
   }).toPass({ timeout: 30_000 });
 
+  // Promotion reaches different request-routing shards independently. Probe
+  // the target RSC route with a unique, noncanonical key so a stale deployment
+  // cannot make the canonical cache assertion race, and the probe itself
+  // cannot populate the bare `?_rsc` entry under test.
+  let targetProbeAttempt = 0;
+  await expect(async () => {
+    const probeUrl = new URL(TARGET_PATH, baseURL);
+    probeUrl.search = `?_rsc=readiness-${targetProbeAttempt++}`;
+    const response = await request.get(probeUrl.href, { headers: fullHeaders });
+    expect(response.ok()).toBe(true);
+    expect(response.headers()["content-type"]).toContain("text/x-component");
+    expect(response.headers()["x-vinext-rsc-build-id"]).toBe(rscBuildId);
+    expect(await response.text()).toContain(buildId);
+  }).toPass({ timeout: 30_000 });
+
   const fullResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
     headers: fullHeaders,
   });
   const fullResponseHeaders = fullResponse.headers();
-  expect(fullResponse.ok()).toBe(true);
+  expect(fullResponse.ok(), JSON.stringify(fullResponseHeaders)).toBe(true);
   expect(fullResponseHeaders["content-type"]).toContain("text/x-component");
   expect(fullResponseHeaders["x-vinext-rsc-build-id"]).toBe(rscBuildId);
   expect(
