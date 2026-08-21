@@ -1214,12 +1214,18 @@ describe("bundled module identity on the Cloudflare Workers runtime", () => {
       nextDependencySpecifier: NEXT_CJS_PATH_FILE,
     }));
     await fs.writeFile(
+      path.join(root, "worker.ts"),
+      `import handler from "vinext/server/fetch-handler";
+export default handler;
+`,
+    );
+    await fs.writeFile(
       path.join(root, "wrangler.jsonc"),
       JSON.stringify({
         name: "vinext-cjs-globals-worker",
         compatibility_date: "2026-04-01",
         compatibility_flags: ["nodejs_compat"],
-        main: "vinext/server/fetch-handler",
+        main: "worker.ts",
         assets: { not_found_handling: "none", binding: "ASSETS" },
       }),
     );

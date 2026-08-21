@@ -43,6 +43,11 @@ export default {
         "tests/e2e/nextjs-worker/fixture/**/*.{js,ts,tsx}",
       ],
       project: ["tests/**/*.{js,ts}", "!tests/fixtures/**"],
+      ignoreDependencies: [
+        // Loaded dynamically by @vitejs/plugin-react when the React Compiler
+        // integration test enables `react: { compiler: true }`.
+        "oxc-transform-react",
+      ],
     },
     "packages/vinext": {
       entry: [

@@ -1,5 +1,20 @@
 # vinext
 
+## 1.0.0-beta.8
+
+### Features
+
+- experimental support for React Compiler via react: { compiler: true } (#3005)
+
+### Bug Fixes
+
+- **Build:** avoid workerd cwd in module identity (#3007)
+
+### Contributors
+
+- @james-elicx
+- @jlucaso1
+
 ## 1.0.0-beta.7
 
 ### Bug Fixes
