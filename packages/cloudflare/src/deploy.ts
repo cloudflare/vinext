@@ -67,7 +67,7 @@ import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
 
-const CDN_WARM_PROPAGATION_DELAY_MS = 15_000;
+export const DEFAULT_CDN_WARM_PROMOTION_DELAY_MS = 15_000;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -102,6 +102,8 @@ export type DeployOptions = {
   warmCdnStrict?: boolean;
   /** Promote the warmed Worker version to 100% traffic (default: true) */
   warmCdnPromote?: boolean;
+  /** Delay between successful warmup and promotion in milliseconds */
+  warmCdnPromotionDelay?: number;
   /** Include PPR fallback-shell placeholder paths during CDN warmup */
   warmCdnIncludeFallbacks?: boolean;
   /** Enable experimental TPR (Traffic-aware Pre-Rendering) */
@@ -169,6 +171,7 @@ const deployArgOptions = {
   "warm-cdn-retries": { type: "string" },
   "warm-cdn-strict": { type: "boolean", default: false },
   "warm-cdn-no-promote": { type: "boolean", default: false },
+  "warm-cdn-promotion-delay": { type: "string" },
   "warm-cdn-include-fallbacks": { type: "boolean", default: false },
   "experimental-tpr": { type: "boolean", default: false },
   "tpr-coverage": { type: "string" },
@@ -217,6 +220,13 @@ export function parseDeployArgs(args: string[]) {
         : parseNonNegativeIntegerArg(values["warm-cdn-retries"], "--warm-cdn-retries"),
     warmCdnStrict: values["warm-cdn-strict"],
     warmCdnPromote: !values["warm-cdn-no-promote"],
+    warmCdnPromotionDelay:
+      values["warm-cdn-promotion-delay"] === undefined
+        ? undefined
+        : parseNonNegativeIntegerArg(
+            values["warm-cdn-promotion-delay"],
+            "--warm-cdn-promotion-delay",
+          ),
     warmCdnIncludeFallbacks: values["warm-cdn-include-fallbacks"],
     experimentalTPR: values["experimental-tpr"],
     tprCoverage: parseIntArg("tpr-coverage", values["tpr-coverage"]),
@@ -558,6 +568,7 @@ export async function deployWithCdnWarmup(
     | "warmCdnRetries"
     | "warmCdnStrict"
     | "warmCdnPromote"
+    | "warmCdnPromotionDelay"
   > &
     Pick<CdnWarmOptions, "deploymentId" | "expectedRscBuildId" | "loadingShellPaths" | "rscPaths">,
 ): Promise<string> {
@@ -651,8 +662,13 @@ export async function deployWithCdnWarmup(
   let deployed: ReturnType<typeof runWranglerVersionDeploy>;
   try {
     if (warmedBeforePromotion) {
-      console.log("  CDN warmup: waiting 15 seconds for cache propagation before promotion...");
-      await delay(CDN_WARM_PROPAGATION_DELAY_MS);
+      const promotionDelay = options.warmCdnPromotionDelay ?? DEFAULT_CDN_WARM_PROMOTION_DELAY_MS;
+      if (promotionDelay > 0) {
+        console.log(
+          `  CDN warmup: waiting ${promotionDelay / 1_000} seconds for cache propagation before promotion...`,
+        );
+        await delay(promotionDelay);
+      }
     }
     deployed = runWranglerVersionDeploy(
       root,
@@ -1017,6 +1033,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
         warmCdnRetries: options.warmCdnRetries,
         warmCdnStrict: options.warmCdnStrict,
         warmCdnPromote: options.warmCdnPromote,
+        warmCdnPromotionDelay: options.warmCdnPromotionDelay,
       });
     } else {
       console.log("\n  CDN warmup skipped: no build-discovered paths found.");

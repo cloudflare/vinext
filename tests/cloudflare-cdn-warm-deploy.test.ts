@@ -338,6 +338,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     await deployWithCdnWarmup(tmpDir, ["/"], {
       env: "staging",
       warmCdnConcurrency: 1,
+      warmCdnPromotionDelay: 2_500,
     });
 
     expect(fetch).toHaveBeenCalledWith(new URL("https://staging.example.com/"), expect.any(Object));
@@ -345,6 +346,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(new Headers(firstInit.headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
       'my-worker-staging-custom="22222222-2222-4222-8222-222222222222"',
     );
+    expect(delayMock).toHaveBeenCalledWith(2_500);
     for (const [, args] of execFileSyncMock.mock.calls as Array<[string, string[]]>) {
       expect(args).toEqual(expect.arrayContaining(["--env", "staging"]));
     }

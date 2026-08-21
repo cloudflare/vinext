@@ -30,6 +30,8 @@ export function formatDeployHelp(): string {
     --warm-cdn-retries <n>   Retries for transient CDN warmup failures (default: 1)
     --warm-cdn-strict        Fail deploy when any CDN warmup request fails
     --warm-cdn-no-promote    Leave the warmed Worker version staged at 0% traffic
+    --warm-cdn-promotion-delay <ms>
+                             Delay before promotion after warmup (default: 15000)
     --warm-cdn-include-fallbacks
                              Also warm PPR fallback-shell placeholder paths
     -h, --help               Show this help
