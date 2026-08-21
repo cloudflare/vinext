@@ -63,6 +63,11 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     .readFileSync("examples/workers-cache/dist/server/RSC_BUILD_ID", "utf-8")
     .trim();
 
+  // The deploy command returns as soon as version promotion succeeds. Leave a
+  // deliberate interval for tiered-cache propagation before deciding whether
+  // the ordinary request reuses the version-override warmup entry.
+  await new Promise((resolve) => setTimeout(resolve, 5_000));
+
   const fullHeaders = { accept: "text/x-component", rsc: "1" };
   const shellHeaders = {
     ...fullHeaders,
@@ -73,10 +78,14 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   const fullResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
     headers: fullHeaders,
   });
+  const fullResponseHeaders = fullResponse.headers();
   expect(fullResponse.ok()).toBe(true);
-  expect(fullResponse.headers()["content-type"]).toContain("text/x-component");
-  expect(fullResponse.headers()["cf-cache-status"]).toBe("HIT");
-  expect(fullResponse.headers()["x-vinext-rsc-build-id"]).toBe(rscBuildId);
+  expect(fullResponseHeaders["content-type"]).toContain("text/x-component");
+  expect(fullResponseHeaders["x-vinext-rsc-build-id"]).toBe(rscBuildId);
+  expect(
+    fullResponseHeaders["cf-cache-status"],
+    `full RSC response headers: ${JSON.stringify(fullResponseHeaders)}`,
+  ).toBe("HIT");
   const fullBody = await fullResponse.text();
   expect(fullBody).toContain(buildId);
   expect(fullBody).toContain("Post: intro");
