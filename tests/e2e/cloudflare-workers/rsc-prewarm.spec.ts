@@ -1,4 +1,12 @@
-import { expect, test, type APIRequest, type Page, type Response } from "@playwright/test";
+import {
+  expect,
+  test,
+  type APIRequest,
+  type APIRequestContext,
+  type APIResponse,
+  type Page,
+  type Response,
+} from "@playwright/test";
 import fs from "node:fs";
 
 const TARGET_PATH = "/prewarm-target";
@@ -22,6 +30,29 @@ function rejectStaleSeedWorker(response: Response | null): void {
   if (response?.headers()["x-vinext-seed-worker"] === "1") {
     throw new StaleSeedWorkerError("request reached the stale seed Worker after promotion");
   }
+}
+
+async function getCanonicalRscAfterPromotion(
+  request: APIRequestContext,
+  url: string,
+  headers: Record<string, string>,
+): Promise<APIResponse> {
+  const deadline = Date.now() + STALE_SEED_RETRY_TIMEOUT_MS;
+  let lastSeedStatus: number | undefined;
+
+  do {
+    const response = await request.get(url, { headers });
+    if (response.headers()["x-vinext-seed-worker"] !== "1") {
+      return response;
+    }
+    lastSeedStatus = response.status();
+    await response.dispose();
+    await new Promise((resolve) => setTimeout(resolve, PROMOTION_PROBE_INTERVAL_MS));
+  } while (Date.now() < deadline);
+
+  throw new Error(
+    `stale seed Worker remained reachable for canonical RSC request: ${lastSeedStatus ?? "unknown status"}`,
+  );
 }
 
 async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<ObservedRsc> {
@@ -85,13 +116,11 @@ function expectLoadingShell(observed: ObservedRsc): void {
 async function waitForStablePromotion({
   baseURL,
   buildId,
-  fullHeaders,
   playwright,
   rscBuildId,
 }: {
   baseURL: string;
   buildId: string;
-  fullHeaders: Record<string, string>;
   playwright: { request: APIRequest };
   rscBuildId: string;
 }): Promise<void> {
@@ -109,18 +138,7 @@ async function waitForStablePromotion({
       const versionResponse = await probeRequest.get(versionUrl.href, { timeout: 5_000 });
       expect(versionResponse.ok()).toBe(true);
       expect(versionResponse.headers()["cache-control"]).toContain("no-store");
-      expect(await versionResponse.json()).toEqual({ buildId });
-
-      const rscUrl = new URL(TARGET_PATH, baseURL);
-      rscUrl.search = `?_rsc=readiness-${probeId}`;
-      const rscResponse = await probeRequest.get(rscUrl.href, {
-        headers: fullHeaders,
-        timeout: 5_000,
-      });
-      expect(rscResponse.ok()).toBe(true);
-      expect(rscResponse.headers()["content-type"]).toContain("text/x-component");
-      expect(rscResponse.headers()["x-vinext-rsc-build-id"]).toBe(rscBuildId);
-      expect(await rscResponse.text()).toContain(buildId);
+      expect(await versionResponse.json()).toEqual({ buildId, rscBuildId });
 
       stableSince ??= Date.now();
       if (Date.now() - stableSince >= PROMOTION_STABILITY_WINDOW_MS) {
@@ -149,7 +167,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
 }) => {
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
   if (!baseURL) throw new Error("deployed test requires a base URL");
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
 
   const buildId = fs.readFileSync("examples/workers-cache/dist/server/BUILD_ID", "utf-8").trim();
   const rscBuildId = fs
@@ -166,14 +184,16 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
 
   // Worker promotion is not globally atomic: one request can reach the new
   // version while a subsequent request still reaches the old one. Require a
-  // sustained readiness window using fresh clients and unique, noncanonical
-  // URLs. This proves the promoted build is stable without touching either
-  // canonical cache entry before its single HIT assertion below.
-  await waitForStablePromotion({ baseURL, buildId, fullHeaders, playwright, rscBuildId });
+  // sustained readiness window using fresh clients and unique requests to the
+  // no-store version endpoint. This proves the promoted build is stable
+  // without touching either canonical cache entry before its HIT assertion.
+  await waitForStablePromotion({ baseURL, buildId, playwright, rscBuildId });
 
-  const fullResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
-    headers: fullHeaders,
-  });
+  const fullResponse = await getCanonicalRscAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}?_rsc`,
+    fullHeaders,
+  );
   const fullResponseHeaders = fullResponse.headers();
   expect(fullResponse.ok(), JSON.stringify(fullResponseHeaders)).toBe(true);
   expect(fullResponseHeaders["content-type"]).toContain("text/x-component");
@@ -186,9 +206,11 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   expect(fullBody).toContain(buildId);
   expect(fullBody).toContain("Prewarm target");
 
-  const shellResponse = await request.get(`${baseURL}${TARGET_PATH}${LOADING_SHELL_RSC_SEARCH}`, {
-    headers: shellHeaders,
-  });
+  const shellResponse = await getCanonicalRscAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}${LOADING_SHELL_RSC_SEARCH}`,
+    shellHeaders,
+  );
   const shellResponseHeaders = shellResponse.headers();
   expect(shellResponse.ok()).toBe(true);
   expect(shellResponseHeaders["content-type"]).toContain("text/x-component");
