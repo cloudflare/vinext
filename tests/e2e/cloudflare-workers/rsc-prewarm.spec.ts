@@ -1,7 +1,10 @@
-import { expect, test, type Page, type Response } from "@playwright/test";
+import { expect, test, type APIRequest, type Page, type Response } from "@playwright/test";
 import fs from "node:fs";
 
 const TARGET_PATH = "/cached/intro";
+const PROMOTION_STABILITY_WINDOW_MS = 15_000;
+const PROMOTION_READINESS_TIMEOUT_MS = 60_000;
+const PROMOTION_PROBE_INTERVAL_MS = 1_000;
 
 type ObservedRsc = {
   headers: Record<string, string>;
@@ -53,12 +56,73 @@ function expectLoadingShell(observed: ObservedRsc): void {
   expect(observed.headers["x-vinext-rsc-render-mode"]).toBe("prefetch-loading-shell");
 }
 
+async function waitForStablePromotion({
+  baseURL,
+  buildId,
+  fullHeaders,
+  playwright,
+  rscBuildId,
+}: {
+  baseURL: string;
+  buildId: string;
+  fullHeaders: Record<string, string>;
+  playwright: { request: APIRequest };
+  rscBuildId: string;
+}): Promise<void> {
+  const deadline = Date.now() + PROMOTION_READINESS_TIMEOUT_MS;
+  let attempt = 0;
+  let lastFailure: unknown;
+  let stableSince: number | undefined;
+
+  while (Date.now() < deadline) {
+    const probeId = `${Date.now()}-${attempt++}`;
+    const probeRequest = await playwright.request.newContext();
+    try {
+      const versionUrl = new URL("/api/prewarm-version", baseURL);
+      versionUrl.searchParams.set("readiness", probeId);
+      const versionResponse = await probeRequest.get(versionUrl.href, { timeout: 5_000 });
+      expect(versionResponse.ok()).toBe(true);
+      expect(versionResponse.headers()["cache-control"]).toContain("no-store");
+      expect(await versionResponse.json()).toEqual({ buildId });
+
+      const rscUrl = new URL(TARGET_PATH, baseURL);
+      rscUrl.search = `?_rsc=readiness-${probeId}`;
+      const rscResponse = await probeRequest.get(rscUrl.href, {
+        headers: fullHeaders,
+        timeout: 5_000,
+      });
+      expect(rscResponse.ok()).toBe(true);
+      expect(rscResponse.headers()["content-type"]).toContain("text/x-component");
+      expect(rscResponse.headers()["x-vinext-rsc-build-id"]).toBe(rscBuildId);
+      expect(await rscResponse.text()).toContain(buildId);
+
+      stableSince ??= Date.now();
+      if (Date.now() - stableSince >= PROMOTION_STABILITY_WINDOW_MS) {
+        return;
+      }
+    } catch (error) {
+      lastFailure = error;
+      stableSince = undefined;
+    } finally {
+      await probeRequest.dispose();
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, PROMOTION_PROBE_INTERVAL_MS));
+  }
+
+  throw new Error(
+    `Worker promotion did not remain stable for ${PROMOTION_STABILITY_WINDOW_MS}ms: ${String(lastFailure)}`,
+  );
+}
+
 test("deploy-prewarmed full and loading RSC variants are reused by browser navigation", async ({
   baseURL,
   browser,
+  playwright,
   request,
 }) => {
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
   test.setTimeout(120_000);
 
   const buildId = fs.readFileSync("examples/workers-cache/dist/server/BUILD_ID", "utf-8").trim();
@@ -74,30 +138,12 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     "x-vinext-rsc-render-mode": "prefetch-loading-shell",
   };
 
-  // Promotion can take a moment to route ordinary requests to the new Worker.
-  // Poll a dedicated no-store API route so this cannot fill either target RSC
-  // cache entry before asserting that the deploy warmup is reused.
-  await expect(async () => {
-    const response = await request.get(`${baseURL}/api/prewarm-version`);
-    expect(response.ok()).toBe(true);
-    expect(response.headers()["cache-control"]).toContain("no-store");
-    expect(await response.json()).toEqual({ buildId });
-  }).toPass({ timeout: 30_000 });
-
-  // Promotion reaches different request-routing shards independently. Probe
-  // the target RSC route with a unique, noncanonical key so a stale deployment
-  // cannot make the canonical cache assertion race, and the probe itself
-  // cannot populate the bare `?_rsc` entry under test.
-  let targetProbeAttempt = 0;
-  await expect(async () => {
-    const probeUrl = new URL(TARGET_PATH, baseURL);
-    probeUrl.search = `?_rsc=readiness-${targetProbeAttempt++}`;
-    const response = await request.get(probeUrl.href, { headers: fullHeaders });
-    expect(response.ok()).toBe(true);
-    expect(response.headers()["content-type"]).toContain("text/x-component");
-    expect(response.headers()["x-vinext-rsc-build-id"]).toBe(rscBuildId);
-    expect(await response.text()).toContain(buildId);
-  }).toPass({ timeout: 30_000 });
+  // Worker promotion is not globally atomic: one request can reach the new
+  // version while a subsequent request still reaches the old one. Require a
+  // sustained readiness window using fresh clients and unique, noncanonical
+  // URLs. This proves the promoted build is stable without touching either
+  // bare `?_rsc` cache entry before its single HIT assertion below.
+  await waitForStablePromotion({ baseURL, buildId, fullHeaders, playwright, rscBuildId });
 
   const fullResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
     headers: fullHeaders,
