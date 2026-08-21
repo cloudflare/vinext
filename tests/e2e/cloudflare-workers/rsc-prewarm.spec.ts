@@ -12,10 +12,13 @@ type ObservedRsc = {
 test.describe.configure({ retries: 0 });
 
 async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<ObservedRsc> {
-  const responsePromise = page.waitForResponse((response) => {
-    const request = response.request();
-    return new URL(response.url()).pathname === TARGET_PATH && request.headers().rsc === "1";
-  });
+  const responsePromise = page.waitForResponse(
+    (response) => {
+      const request = response.request();
+      return new URL(response.url()).pathname === TARGET_PATH && request.headers().rsc === "1";
+    },
+    { timeout: 30_000 },
+  );
   await action();
   const response = await responsePromise;
   return {
@@ -79,6 +82,14 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     )
     .toBe(true);
 
+  const waitForBrowserCurrentBuild = async (page: Page) => {
+    await expect(async () => {
+      const response = await page.goto("/prewarm/soft");
+      expect(response?.ok()).toBe(true);
+      await expect(page.getByTestId("build-id")).toHaveText(buildId, { timeout: 2_000 });
+    }).toPass({ timeout: 30_000 });
+  };
+
   const fullHeaders = { accept: "text/x-component", rsc: "1" };
   const shellHeaders = {
     ...fullHeaders,
@@ -114,6 +125,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     const context = await browser.newContext();
     const page = await context.newPage();
     try {
+      await waitForBrowserCurrentBuild(page);
       await page.goto(source);
       await expect(page.getByTestId("build-id")).toHaveText(buildId);
       await run(page);
@@ -126,6 +138,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     const context = await browser.newContext();
     const page = await context.newPage();
     try {
+      await waitForBrowserCurrentBuild(page);
       const shell = await observeRsc(page, () => page.goto(source));
       expectLoadingShell(shell);
       await expect(page.getByTestId("build-id")).toHaveText(buildId);
@@ -143,6 +156,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     const context = await browser.newContext();
     const page = await context.newPage();
     try {
+      await waitForBrowserCurrentBuild(page);
       let targetRscRequests = 0;
       page.on("request", (request) => {
         const url = new URL(request.url());
