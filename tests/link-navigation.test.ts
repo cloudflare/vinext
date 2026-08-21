@@ -1958,7 +1958,7 @@ describe("Link prefetch scheduling", () => {
       expect(result.fetch).toHaveBeenCalledTimes(1);
 
       const [input, init] = result.fetch.mock.calls[0]!;
-      expect(input).toBe("/blog/hello?_rsc");
+      expect(input).toBe("/blog/hello?_rsc=9qLBDIU2NgN178cB");
       const headers = new Headers((init as RequestInit).headers);
       expect(headers.get("accept")).toBe("text/x-component");
       expect(headers.get("rsc")).toBe("1");

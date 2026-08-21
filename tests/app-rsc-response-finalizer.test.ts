@@ -1,8 +1,5 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import {
-  VINEXT_RSC_RENDER_MODE_HEADER,
-  VINEXT_RSC_VARY_HEADER,
-} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import {
   finalizeAppRscResponse,
   markAppRscResponseConfigHeadersApplied,
@@ -18,7 +15,6 @@ import {
   type CdnCacheAdapter,
   type CdnResponseHeaders,
 } from "../packages/vinext/src/shims/cdn-cache.js";
-import { withEnvVar } from "./env-test-helpers.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -375,55 +371,6 @@ describe("finalizeAppRscResponse — config header application", () => {
 // ── App Router RSC vary header ──────────────────────────────────────────
 
 describe("finalizeAppRscResponse — App Router RSC vary header", () => {
-  it.each([
-    { requestMode: undefined, responseMode: "navigation" },
-    { requestMode: "prefetch-loading-shell", responseMode: "prefetch-loading-shell" },
-  ])(
-    "stamps the selected canonical RSC variant as $responseMode",
-    async ({ requestMode, responseMode }) => {
-      const response = new Response("flight", {
-        headers: {
-          "Content-Type": "text/x-component",
-          [VINEXT_RSC_RENDER_MODE_HEADER]: "spoofed-by-config",
-        },
-      });
-      const headers = new Headers({ RSC: "1" });
-      if (requestMode) headers.set(VINEXT_RSC_RENDER_MODE_HEADER, requestMode);
-      const request = new Request("http://example.com/page?_rsc", { headers });
-
-      await withEnvVar("__VINEXT_CANONICAL_RSC_REQUESTS", "1", () =>
-        finalizeAppRscResponse(response, request, {
-          basePath: "",
-          configHeaders: [],
-          i18nConfig: null,
-          requestContext: makeRequestContext(),
-        }),
-      );
-
-      expect(response.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(responseMode);
-    },
-  );
-
-  it("does not expose render-mode identity when canonical RSC requests are disabled", async () => {
-    const response = new Response("flight", {
-      headers: { "Content-Type": "text/x-component" },
-    });
-    const request = new Request("http://example.com/page?_rsc=hashed", {
-      headers: { RSC: "1" },
-    });
-
-    await withEnvVar("__VINEXT_CANONICAL_RSC_REQUESTS", undefined, () =>
-      finalizeAppRscResponse(response, request, {
-        basePath: "",
-        configHeaders: [],
-        i18nConfig: null,
-        requestContext: makeRequestContext(),
-      }),
-    );
-
-    expect(response.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
-  });
-
   it("preserves custom Vary values while appending the internal RSC vary key", async () => {
     const response = new Response("body", { status: 200, headers: { Vary: "User-Agent" } });
     const request = new Request("http://example.com/normal");

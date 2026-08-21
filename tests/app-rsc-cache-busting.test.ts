@@ -76,7 +76,7 @@ describe("App Router RSC cache-busting", () => {
     );
   });
 
-  it("builds and normalizes the exact canonical loading-shell request", () => {
+  it("builds the deterministic loading-shell request identity", async () => {
     const headers = createCanonicalLoadingShellRscRequestHeaders("dpl_123");
     expect(Object.fromEntries(headers)).toEqual({
       accept: "text/x-component",
@@ -86,6 +86,9 @@ describe("App Router RSC cache-busting", () => {
       "x-deployment-id": "dpl_123",
       "x-vinext-rsc-render-mode": "prefetch-loading-shell",
     });
+    await expect(createRscRequestUrl("/cached/intro", headers)).resolves.toBe(
+      "/cached/intro?_rsc=9qLBDIU2NgN178cB",
+    );
 
     const contextual = createRscRequestHeaders({
       deploymentId: "dpl_123",

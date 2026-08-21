@@ -372,7 +372,7 @@ declare global {
        */
       __VINEXT_RSC_BUILD_IDENTITY?: string;
 
-      /** Enable stable bare-`_rsc` variants for a strict response-Vary cache. */
+      /** Enable stable deploy-warmed RSC request identities for a shared cache. */
       __VINEXT_CANONICAL_RSC_REQUESTS?: string;
 
       /**

@@ -553,7 +553,7 @@ function prefetchUrl(
         const usesCanonicalPrewarmedRequest = usesCanonicalLoadingShell || usesCanonicalFullRoute;
         // Distinguish the same visible URL when it is prefetched from different
         // request contexts such as /feed vs /gallery or different mounted slots.
-        const rscUrl = usesCanonicalPrewarmedRequest
+        const rscUrl = usesCanonicalFullRoute
           ? createCanonicalRscRequestUrl(fullHref)
           : await createRscRequestUrl(fullHref, headers);
         const additionalRscUrls =

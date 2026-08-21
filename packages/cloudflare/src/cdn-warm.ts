@@ -14,9 +14,9 @@ import {
   createCanonicalLoadingShellRscRequestHeaders,
   createCanonicalRscRequestHeaders,
   createCanonicalRscRequestUrl,
+  createRscRequestUrl,
   VINEXT_RSC_BUILD_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
-  VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "vinext/internal/server/app-rsc-cache-busting";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
@@ -283,7 +283,6 @@ type WarmTarget = {
   kind: "html" | "rsc";
   label: string;
   pathname: string;
-  rscRenderMode?: "navigation" | "prefetch-loading-shell";
 };
 
 class CdnWarmProgress {
@@ -364,11 +363,7 @@ function validateCachePolicy(response: Response, requireCacheStatus: boolean): W
   return { outcome: "warmed" };
 }
 
-function validateRscWarmResponse(
-  response: Response,
-  expectedRscBuildId?: string,
-  expectedRenderMode?: WarmTarget["rscRenderMode"],
-): WarmValidation {
+function validateRscWarmResponse(response: Response, expectedRscBuildId?: string): WarmValidation {
   if (response.redirected || response.status < 200 || response.status >= 300) {
     return {
       outcome: "failed",
@@ -387,16 +382,6 @@ function validateRscWarmResponse(
       error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build ${expectedRscBuildId}`,
     };
   }
-  if (
-    expectedRenderMode !== undefined &&
-    response.headers.get(VINEXT_RSC_RENDER_MODE_HEADER) !== expectedRenderMode
-  ) {
-    return {
-      outcome: "failed",
-      error: `response ${VINEXT_RSC_RENDER_MODE_HEADER} does not match ${expectedRenderMode} variant`,
-    };
-  }
-
   const vary = new Set(
     (response.headers.get("Vary") ?? "")
       .split(",")
@@ -466,17 +451,12 @@ async function warmOnePath(
             `cache=${response.headers.get("CF-Cache-Status") ?? "missing"} ` +
             `ray=${response.headers.get("CF-Ray") ?? "missing"} ` +
             `encoding=${response.headers.get("Content-Encoding") ?? "identity"} ` +
-            `renderMode=${response.headers.get(VINEXT_RSC_RENDER_MODE_HEADER) ?? "missing"} ` +
             `rscBuild=${response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) ?? "missing"}`,
         );
       }
 
       if (target.kind === "rsc") {
-        const validation = validateRscWarmResponse(
-          response,
-          options.expectedRscBuildId,
-          target.rscRenderMode,
-        );
+        const validation = validateRscWarmResponse(response, options.expectedRscBuildId);
         if (validation.outcome === "warmed") {
           return { path: target.label, ok: true, skipped: false };
         }
@@ -542,32 +522,6 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
-async function runWithConcurrencyByKey<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  key: (item: T) => string,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const groups = new Map<string, Array<{ index: number; item: T }>>();
-  for (const [index, item] of items.entries()) {
-    const itemKey = key(item);
-    const group = groups.get(itemKey);
-    if (group) group.push({ index, item });
-    else groups.set(itemKey, [{ index, item }]);
-  }
-
-  const results = Array.from<R>({ length: items.length });
-  await runWithConcurrency(Array.from(groups.values()), concurrency, async (group) => {
-    // A cold cache has not established its response Vary dimensions yet. Fill
-    // variants of the same public URL serially so cache admission/request
-    // collapsing cannot race the full and loading-shell RSC representations.
-    for (const { index, item } of group) {
-      results[index] = await fn(item);
-    }
-  });
-  return results;
-}
-
 export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResult> {
   const requests: WarmTarget[] = [];
   const htmlRequests: WarmTarget[] = [];
@@ -583,7 +537,6 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       kind: "rsc",
       label: `${pathname} (RSC full)`,
       pathname: createCanonicalRscRequestUrl(pathname),
-      rscRenderMode: "navigation",
     });
 
     if (loadingShellPaths.has(pathname)) {
@@ -597,8 +550,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
         headers: loadingHeaders,
         kind: "rsc",
         label: `${pathname} (RSC loading shell)`,
-        pathname: createCanonicalRscRequestUrl(pathname),
-        rscRenderMode: "prefetch-loading-shell",
+        pathname: await createRscRequestUrl(pathname, loadingHeaders),
       });
     }
   }
@@ -678,11 +630,8 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const warmPropagatingPass = async (
     targets: readonly WarmTarget[],
   ): Promise<Awaited<ReturnType<typeof warmOnePath>>[]> => {
-    const results = await runWithConcurrencyByKey(
-      targets,
-      concurrency,
-      (target) => target.pathname,
-      (target) => warmRequest(target, "propagation-pass"),
+    const results = await runWithConcurrency(targets, concurrency, (target) =>
+      warmRequest(target, "propagation-pass"),
     );
     const failed = targets
       .map((target, index) => ({ index, result: results[index], target }))
@@ -693,10 +642,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     console.log(
       `  CDN warmup: retrying ${failed.length} failed request(s) after completing the initial pass...`,
     );
-    const retried = await runWithConcurrencyByKey(
+    const retried = await runWithConcurrency(
       failed.map(({ target }) => target),
       concurrency,
-      (target) => target.pathname,
       (target) => warmRequest(target, "propagation-retry", false),
     );
     for (const [retryIndex, { index }] of failed.entries()) {
@@ -765,12 +713,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   } else if (propagatingTarget) {
     results = await warmAfterHtmlGate([], requests);
   } else {
-    results = await runWithConcurrencyByKey(
-      requests,
-      concurrency,
-      (target) => target.pathname,
-      (target) => warmRequest(target),
-    );
+    results = await runWithConcurrency(requests, concurrency, (target) => warmRequest(target));
   }
 
   progress.finish();

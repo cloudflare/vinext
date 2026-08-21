@@ -1492,31 +1492,8 @@ export function prefetchRscResponse(
   const now = Date.now();
   const existing = cache.get(cacheKey);
   const cacheForNavigation = behavior.cacheForNavigation ?? true;
-  const requestUrl = new URL(rscUrl, "http://vinext.local");
-  const isCanonicalSharedRscUrl =
-    process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
-    requestUrl.searchParams.has("_rsc") &&
-    requestUrl.searchParams.get("_rsc") === "";
-  if (
-    isCanonicalSharedRscUrl &&
-    existing !== undefined &&
-    existing.cacheForNavigation !== false &&
-    (existing.pending !== undefined || resolvePrefetchCacheEntryExpiresAt(existing) > now) &&
-    !cacheForNavigation
-  ) {
-    // A definitive full-route entry is strictly more useful than a loading
-    // shell for the same strict-Vary URL. Keep it in the browser cache; the
-    // CDN may still hold both response variants under their Vary selectors.
-    attachPrefetchInvalidationToEntry(cacheKey, existing, options?.onInvalidate);
-    void fetchPromise.catch(() => {});
-    cancelAppPrefetchFetch(fetchPromise);
-    return;
-  }
   if (existing) {
-    // Canonical full/loading entries are separate server variants sharing one
-    // browser key. Replacing either invalidates the prior prefetch task, so its
-    // onInvalidate subscribers must not be silently discarded.
-    deletePrefetchCacheEntry(cache, prefetched, cacheKey, existing, isCanonicalSharedRscUrl);
+    deletePrefetchCacheEntry(cache, prefetched, cacheKey, existing, false);
   }
 
   const entry: PrefetchCacheEntry = {
@@ -2974,7 +2951,7 @@ const _appRouter: AppRouterInstance = {
       // Both derive from the same headers and neither feeds the other, so the
       // rewrite variant is generated alongside rather than after.
       const [rscUrl, ...additionalRscUrls] = await Promise.all([
-        usesCanonicalPrewarmedRequest
+        usesCanonicalFullRoute
           ? createCanonicalRscRequestUrl(fullHref)
           : createRscRequestUrl(fullHref, headers),
         ...(rewrittenPrefetchHref !== null && rewrittenPrefetchHref !== fullHref

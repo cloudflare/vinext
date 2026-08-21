@@ -2,6 +2,7 @@ import { expect, test, type APIRequest, type Page, type Response } from "@playwr
 import fs from "node:fs";
 
 const TARGET_PATH = "/prewarm-target";
+const LOADING_SHELL_RSC_SEARCH = "?_rsc=9qLBDIU2NgN178cB";
 const PROMOTION_STABILITY_WINDOW_MS = 15_000;
 const PROMOTION_READINESS_TIMEOUT_MS = 60_000;
 const PROMOTION_PROBE_INTERVAL_MS = 1_000;
@@ -28,15 +29,14 @@ async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<O
   };
 }
 
-function expectBareCanonical(observed: ObservedRsc): void {
+function expectCanonical(observed: ObservedRsc): void {
   console.log(
-    `RSC cache trace: cache=${observed.response.headers()["cf-cache-status"] ?? "missing"} ` +
+    `RSC cache trace: url=${observed.url.pathname}${observed.url.search} ` +
+      `cache=${observed.response.headers()["cf-cache-status"] ?? "missing"} ` +
       `ray=${observed.response.headers()["cf-ray"] ?? "missing"} ` +
-      `encoding=${observed.response.headers()["content-encoding"] ?? "identity"} ` +
-      `renderMode=${observed.response.headers()["x-vinext-rsc-render-mode"] ?? "missing"}`,
+      `encoding=${observed.response.headers()["content-encoding"] ?? "identity"}`,
   );
   expect(observed.url.pathname).toBe(TARGET_PATH);
-  expect(observed.url.search).toBe("?_rsc");
   expect(observed.headers.accept).toBe("text/x-component");
   expect(observed.headers.rsc).toBe("1");
   expect(observed.headers["next-router-state-tree"]).toBeUndefined();
@@ -49,19 +49,19 @@ function expectBareCanonical(observed: ObservedRsc): void {
 }
 
 function expectFull(observed: ObservedRsc): void {
-  expectBareCanonical(observed);
+  expectCanonical(observed);
+  expect(observed.url.search).toBe("?_rsc");
   expect(observed.headers["next-router-prefetch"]).toBeUndefined();
   expect(observed.headers["next-router-segment-prefetch"]).toBeUndefined();
   expect(observed.headers["x-vinext-rsc-render-mode"]).toBeUndefined();
-  expect(observed.response.headers()["x-vinext-rsc-render-mode"]).toBe("navigation");
 }
 
 function expectLoadingShell(observed: ObservedRsc): void {
-  expectBareCanonical(observed);
+  expectCanonical(observed);
+  expect(observed.url.search).toBe(LOADING_SHELL_RSC_SEARCH);
   expect(observed.headers["next-router-prefetch"]).toBe("1");
   expect(observed.headers["next-router-segment-prefetch"]).toBe("1");
   expect(observed.headers["x-vinext-rsc-render-mode"]).toBe("prefetch-loading-shell");
-  expect(observed.response.headers()["x-vinext-rsc-render-mode"]).toBe("prefetch-loading-shell");
 }
 
 async function waitForStablePromotion({
@@ -150,7 +150,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   // version while a subsequent request still reaches the old one. Require a
   // sustained readiness window using fresh clients and unique, noncanonical
   // URLs. This proves the promoted build is stable without touching either
-  // bare `?_rsc` cache entry before its single HIT assertion below.
+  // canonical cache entry before its single HIT assertion below.
   await waitForStablePromotion({ baseURL, buildId, fullHeaders, playwright, rscBuildId });
 
   const fullResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
@@ -160,7 +160,6 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   expect(fullResponse.ok(), JSON.stringify(fullResponseHeaders)).toBe(true);
   expect(fullResponseHeaders["content-type"]).toContain("text/x-component");
   expect(fullResponseHeaders["x-vinext-rsc-build-id"]).toBe(rscBuildId);
-  expect(fullResponseHeaders["x-vinext-rsc-render-mode"]).toBe("navigation");
   expect(
     fullResponseHeaders["cf-cache-status"],
     `full RSC response headers: ${JSON.stringify(fullResponseHeaders)}`,
@@ -169,14 +168,13 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   expect(fullBody).toContain(buildId);
   expect(fullBody).toContain("Prewarm target");
 
-  const shellResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
+  const shellResponse = await request.get(`${baseURL}${TARGET_PATH}${LOADING_SHELL_RSC_SEARCH}`, {
     headers: shellHeaders,
   });
   const shellResponseHeaders = shellResponse.headers();
   expect(shellResponse.ok()).toBe(true);
   expect(shellResponseHeaders["content-type"]).toContain("text/x-component");
   expect(shellResponseHeaders["x-vinext-rsc-build-id"]).toBe(rscBuildId);
-  expect(shellResponseHeaders["x-vinext-rsc-render-mode"]).toBe("prefetch-loading-shell");
   expect(
     shellResponseHeaders["cf-cache-status"],
     `loading-shell RSC response headers: ${JSON.stringify(shellResponseHeaders)}`,

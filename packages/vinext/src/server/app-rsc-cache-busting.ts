@@ -463,7 +463,7 @@ export async function createRscRequestUrl(href: string, headers: Headers): Promi
   return `${url.pathname}${url.search}`;
 }
 
-/** Build the strict-Vary shared RSC URL. All canonical variants use bare `?_rsc`. */
+/** Build the definitive full-route RSC URL shared by prefetch and navigation. */
 export function createCanonicalRscRequestUrl(href: string): string {
   const url = new URL(toRscRequestPath(href), "http://vinext.local");
   setRscCacheBustingSearchParam(url, "");

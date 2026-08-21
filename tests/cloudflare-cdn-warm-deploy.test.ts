@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import {
   VINEXT_RSC_BUILD_ID_HEADER,
-  VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
@@ -87,9 +86,6 @@ describe("Cloudflare CDN warmup deploy flow", () => {
               "cf-cache-status": "MISS",
               "content-type": "text/x-component",
               [VINEXT_RSC_BUILD_ID_HEADER]: "build-a",
-              [VINEXT_RSC_RENDER_MODE_HEADER]: headers.has("next-router-prefetch")
-                ? "prefetch-loading-shell"
-                : "navigation",
               vary: VINEXT_RSC_VARY_HEADER,
             }
           : { "cf-cache-status": "MISS", "content-type": "text/html" },
@@ -171,7 +167,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     expect(fetch).toHaveBeenNthCalledWith(
       3,
-      new URL("https://app.example.com/about?_rsc"),
+      new URL("https://app.example.com/about?_rsc=9qLBDIU2NgN178cB"),
       expect.any(Object),
     );
     expect(fetch).toHaveBeenNthCalledWith(
@@ -220,7 +216,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "triggers",
       "fetch:https://app.example.com/about?_rsc",
       "fetch:https://app.example.com/",
-      "fetch:https://app.example.com/about?_rsc",
+      "fetch:https://app.example.com/about?_rsc=9qLBDIU2NgN178cB",
       "fetch:https://app.example.com/about",
       "delay:15000",
       "promote",
@@ -250,7 +246,6 @@ describe("Cloudflare CDN warmup deploy flow", () => {
               "content-type": "text/x-component",
               [VINEXT_RSC_BUILD_ID_HEADER]:
                 staged || promotedRscAttempts === 1 ? "old-build" : "new-build",
-              [VINEXT_RSC_RENDER_MODE_HEADER]: "navigation",
               vary: VINEXT_RSC_VARY_HEADER,
             }
           : { "cf-cache-status": "MISS", "content-type": "text/html" },
