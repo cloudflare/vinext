@@ -103,29 +103,44 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   const clientDiagnostics = [
     [
       "node full featured",
+      nodeFullFeatured.status,
       nodeFullFeatured.headers.get("cf-cache-status"),
       nodeFullFeatured.headers.get("cf-ray"),
+      nodeFullFeatured.headers.get("x-vinext-rsc-build-id"),
     ],
     [
       "playwright full intro",
+      playwrightFullIntro.status(),
       playwrightFullIntro.headers()["cf-cache-status"],
       playwrightFullIntro.headers()["cf-ray"],
+      playwrightFullIntro.headers()["x-vinext-rsc-build-id"],
     ],
     [
       "node shell intro",
+      nodeShellIntro.status,
       nodeShellIntro.headers.get("cf-cache-status"),
       nodeShellIntro.headers.get("cf-ray"),
+      nodeShellIntro.headers.get("x-vinext-rsc-build-id"),
     ],
     [
       "playwright shell featured",
+      playwrightShellFeatured.status(),
       playwrightShellFeatured.headers()["cf-cache-status"],
       playwrightShellFeatured.headers()["cf-ray"],
+      playwrightShellFeatured.headers()["x-vinext-rsc-build-id"],
     ],
   ] as const;
-  for (const [label, status, ray] of clientDiagnostics) {
-    console.log(`${label}: cache=${status ?? "missing"} ray=${ray ?? "missing"}`);
+  for (const [label, httpStatus, cacheStatus, ray, responseRscBuildId] of clientDiagnostics) {
+    console.log(
+      `${label}: http=${httpStatus} cache=${cacheStatus ?? "missing"} ray=${ray ?? "missing"} rscBuild=${responseRscBuildId ?? "missing"}`,
+    );
   }
-  expect(clientDiagnostics.map(([, status]) => status)).toEqual(["HIT", "HIT", "HIT", "HIT"]);
+  expect(clientDiagnostics.map(([, , cacheStatus]) => cacheStatus)).toEqual([
+    "HIT",
+    "HIT",
+    "HIT",
+    "HIT",
+  ]);
 
   const fullResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
     headers: fullHeaders,
