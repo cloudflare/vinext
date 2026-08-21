@@ -42,7 +42,7 @@ export type CdnWarmOptions = {
   fetchImpl?: typeof fetch;
 };
 
-export const DEFAULT_CDN_WARM_TIMEOUT_MS = 5_000;
+export const DEFAULT_CDN_WARM_TIMEOUT_MS = 10_000;
 
 export type PrerenderCdnWarmOptions = Omit<CdnWarmOptions, "paths"> & {
   root: string;

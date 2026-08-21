@@ -63,7 +63,7 @@ afterEach(() => {
 
 describe("Cloudflare CDN warmup", () => {
   it("uses a 5 second default timeout and preserves query strings", () => {
-    expect(DEFAULT_CDN_WARM_TIMEOUT_MS).toBe(5_000);
+    expect(DEFAULT_CDN_WARM_TIMEOUT_MS).toBe(10_000);
     expect(buildWarmupUrl("https://app.example.com", "/search?q=x").href).toBe(
       "https://app.example.com/search?q=x",
     );

@@ -26,7 +26,7 @@ export function formatDeployHelp(): string {
                              through the production URL, then promote it (experimental)
     --warm-cdn-concurrency <count>
                              Maximum number of CDN warmup requests in parallel
-    --warm-cdn-timeout <ms>  Per-request CDN warmup timeout (default: 5000)
+    --warm-cdn-timeout <ms>  Per-request CDN warmup timeout (default: 10000)
     --warm-cdn-retries <n>   Retries for transient CDN warmup failures (default: 1)
     --warm-cdn-strict        Fail deploy when any CDN warmup request fails
     --warm-cdn-include-fallbacks
