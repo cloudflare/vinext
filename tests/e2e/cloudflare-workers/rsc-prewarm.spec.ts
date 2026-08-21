@@ -79,12 +79,18 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     expect(response.ok()).toBe(true);
     expect(response.headers()["cache-control"]).toContain("no-store");
     expect(await response.json()).toEqual({ buildId });
+    console.log(
+      `version probe: cache=${response.headers()["cf-cache-status"] ?? "missing"} ray=${response.headers()["cf-ray"] ?? "missing"}`,
+    );
   }).toPass({ timeout: 30_000 });
 
   const fullResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
     headers: fullHeaders,
   });
   const fullResponseHeaders = fullResponse.headers();
+  console.log(
+    `full RSC verify: cache=${fullResponseHeaders["cf-cache-status"] ?? "missing"} ray=${fullResponseHeaders["cf-ray"] ?? "missing"}`,
+  );
   expect(fullResponse.ok()).toBe(true);
   expect(fullResponseHeaders["content-type"]).toContain("text/x-component");
   expect(fullResponseHeaders["x-vinext-rsc-build-id"]).toBe(rscBuildId);
@@ -100,6 +106,9 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     headers: shellHeaders,
   });
   const shellResponseHeaders = shellResponse.headers();
+  console.log(
+    `loading RSC verify: cache=${shellResponseHeaders["cf-cache-status"] ?? "missing"} ray=${shellResponseHeaders["cf-ray"] ?? "missing"}`,
+  );
   expect(shellResponse.ok()).toBe(true);
   expect(shellResponseHeaders["content-type"]).toContain("text/x-component");
   expect(shellResponseHeaders["x-vinext-rsc-build-id"]).toBe(rscBuildId);
