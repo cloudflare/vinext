@@ -444,6 +444,16 @@ async function warmOnePath(
         "manual",
       );
 
+      if (process.env.VINEXT_CDN_WARM_DEBUG === "1") {
+        console.log(
+          `  CDN warm debug ${target.label} attempt ${attempt + 1}: ` +
+            `${url.pathname}${url.search} HTTP ${response.status} ` +
+            `cache=${response.headers.get("CF-Cache-Status") ?? "missing"} ` +
+            `ray=${response.headers.get("CF-Ray") ?? "missing"} ` +
+            `rscBuild=${response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) ?? "missing"}`,
+        );
+      }
+
       if (target.kind === "rsc") {
         const validation = validateRscWarmResponse(response, options.expectedRscBuildId);
         if (validation.outcome === "warmed") {
