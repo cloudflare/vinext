@@ -22,6 +22,7 @@ import {
 } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
+import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 
 const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
 
@@ -68,7 +69,10 @@ function finalizePendingDynamicRscResponse(): Response {
 }
 
 beforeEach(resetActiveAdapter);
-afterEach(resetActiveAdapter);
+afterEach(() => {
+  resetActiveAdapter();
+  vi.unstubAllEnvs();
+});
 
 // ─── Adapter behavior ────────────────────────────────────────────────────
 
@@ -77,6 +81,17 @@ describe("CloudflareCdnCacheAdapter", () => {
 
   it("does not own background revalidation (the edge re-requests origin)", () => {
     expect(adapter.ownsBackgroundRevalidation).toBe(false);
+  });
+
+  it("stamps the application build identity on cacheable and no-store responses", () => {
+    vi.stubEnv("__VINEXT_BUILD_ID", "build-a");
+
+    expect(adapter.buildResponseHeaders({ cacheControl: "s-maxage=60" })).toMatchObject({
+      [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+    });
+    expect(adapter.buildResponseHeaders({ cacheControl: "no-store" })).toMatchObject({
+      [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+    });
   });
 
   it("get returns null so the origin always renders fresh", async () => {

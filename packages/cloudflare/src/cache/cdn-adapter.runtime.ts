@@ -42,13 +42,20 @@ import {
 } from "vinext/shims/cdn-cache";
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
 
 const CACHEABLE_EDGE_DIRECTIVE_RE = /(?:^|,)\s*(?:s-maxage|max-age)\s*=/i;
 const EDGE_POLICY_HEADERS = ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"] as const;
 
+function getBuildIdentityResponseHeader(): CdnResponseHeaders {
+  const buildId = process.env.__VINEXT_BUILD_ID;
+  return buildId ? { [VINEXT_CDN_BUILD_ID_HEADER]: buildId } : {};
+}
+
 /** Remove every response header whose cache semantics are owned by Cloudflare. */
 function clearCloudflareCdnResponseHeaders(cacheControl: string): CdnResponseHeaders {
   return {
+    ...getBuildIdentityResponseHeader(),
     "Cache-Control": cacheControl,
     "CDN-Cache-Control": null,
     "Cloudflare-CDN-Cache-Control": null,
@@ -188,6 +195,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     // SWR policy on CDN-Cache-Control (edge caches + revalidates); the browser
     // is told to revalidate every reuse so it never serves a stale stored copy.
     const headers: CdnResponseHeaders = {
+      ...getBuildIdentityResponseHeader(),
       "Cache-Control": BROWSER_REVALIDATE,
       "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
       "Cloudflare-CDN-Cache-Control": null,

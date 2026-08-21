@@ -45,7 +45,12 @@ import {
   type ProjectInfo,
 } from "vinext/internal/utils/project";
 import { parseWranglerConfig, runTPR } from "./tpr.js";
-import { readPrerenderWarmPlan, warmCdnCache, type CdnWarmOptions } from "./cdn-warm.js";
+import {
+  readPrerenderWarmPlan,
+  warmCdnCache,
+  type CdnWarmOptions,
+  type CdnWarmRequestPlan,
+} from "./cdn-warm.js";
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
@@ -570,23 +575,32 @@ export async function deployWithCdnWarmup(
     | "warmCdnPromote"
     | "warmCdnPromotionDelay"
   > &
-    Pick<CdnWarmOptions, "deploymentId" | "expectedRscBuildId" | "loadingShellPaths" | "rscPaths">,
+    Pick<
+      CdnWarmOptions,
+      "deploymentId" | "expectedBuildId" | "expectedRscBuildId" | "loadingShellPaths" | "rscPaths"
+    >,
 ): Promise<string> {
   const upload = runWranglerVersionUpload(root, options);
   const warmUploadedVersion = (
     targetUrl: string,
     headers?: HeadersInit,
     propagatingTarget = false,
+    plan: CdnWarmRequestPlan = {
+      loadingShellPaths: [...(options.loadingShellPaths ?? [])],
+      paths: [...paths],
+      rscPaths: [...(options.rscPaths ?? [])],
+    },
   ) =>
     warmCdnCache({
       targetUrl,
-      paths,
+      paths: plan.paths,
       headers,
       propagatingTarget,
       deploymentId: options.deploymentId,
+      expectedBuildId: options.expectedBuildId,
       expectedRscBuildId: options.expectedRscBuildId,
-      loadingShellPaths: options.loadingShellPaths,
-      rscPaths: options.rscPaths,
+      loadingShellPaths: plan.loadingShellPaths,
+      rscPaths: plan.rscPaths,
       concurrency: options.warmCdnConcurrency,
       timeoutMs: options.warmCdnTimeout,
       retries: options.warmCdnRetries,
@@ -598,7 +612,12 @@ export async function deployWithCdnWarmup(
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let triggersDeployedUrl: string | null = null;
-  let warmedBeforePromotion = false;
+  let stagedCacheFilled = false;
+  let remainingWarmPlan: CdnWarmRequestPlan = {
+    loadingShellPaths: [...(options.loadingShellPaths ?? [])],
+    paths: [...paths],
+    rscPaths: [...(options.rscPaths ?? [])],
+  };
   let triggersApplied = false;
 
   function applyTriggers(): void {
@@ -624,7 +643,8 @@ export async function deployWithCdnWarmup(
     if (targetUrl && headers) {
       try {
         const warmResult = await warmUploadedVersion(targetUrl, headers, true);
-        warmedBeforePromotion = warmResult.failed === 0;
+        stagedCacheFilled = warmResult.warmed > 0;
+        remainingWarmPlan = warmResult.retryPlan;
       } catch (error) {
         throw withStagedVersionCleanupNote(error);
       }
@@ -661,7 +681,7 @@ export async function deployWithCdnWarmup(
 
   let deployed: ReturnType<typeof runWranglerVersionDeploy>;
   try {
-    if (warmedBeforePromotion) {
+    if (stagedCacheFilled) {
       const promotionDelay = options.warmCdnPromotionDelay ?? DEFAULT_CDN_WARM_PROMOTION_DELAY_MS;
       if (promotionDelay > 0) {
         console.log(
@@ -674,12 +694,16 @@ export async function deployWithCdnWarmup(
       root,
       [{ versionId: upload.versionId, percentage: 100 }],
       options,
-      warmedBeforePromotion ? "promote-warmed" : "promote-uploaded",
+      stagedCacheFilled ? "promote-warmed" : "promote-uploaded",
     );
   } catch (error) {
     throw staged ? withStagedVersionCleanupNote(error) : error;
   }
-  if (!warmedBeforePromotion) {
+  const remainingWarmRequests =
+    remainingWarmPlan.paths.length +
+    remainingWarmPlan.rscPaths.length +
+    remainingWarmPlan.loadingShellPaths.length;
+  if (remainingWarmRequests > 0) {
     try {
       applyTriggers();
     } catch (error) {
@@ -692,7 +716,7 @@ export async function deployWithCdnWarmup(
     );
     if (targetUrl) {
       try {
-        await warmUploadedVersion(targetUrl, undefined, true);
+        await warmUploadedVersion(targetUrl, undefined, true, remainingWarmPlan);
       } catch (error) {
         throw withPromotedVersionWarmupNote(error);
       }
@@ -1025,6 +1049,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       url = await deployWithCdnWarmup(root, warmPlan.paths, {
         ...wranglerOptions,
         deploymentId: warmPlan.deploymentId,
+        expectedBuildId: warmPlan.buildId,
         expectedRscBuildId: warmPlan.rscBuildId,
         loadingShellPaths: warmPlan.loadingShellPaths,
         rscPaths: warmPlan.rscPaths,

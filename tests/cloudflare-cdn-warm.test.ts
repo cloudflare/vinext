@@ -14,6 +14,7 @@ import {
   VINEXT_RSC_BUILD_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 
 let tmpDir: string;
 
@@ -30,6 +31,7 @@ function cacheableRsc(body = "flight"): Response {
       "cdn-cache-control": "public, max-age=60",
       "cf-cache-status": "MISS",
       "content-type": "text/x-component",
+      [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
       [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-a",
       vary: VINEXT_RSC_VARY_HEADER,
     },
@@ -43,6 +45,7 @@ function cacheableHtml(body = "html"): Response {
       "cdn-cache-control": "public, max-age=60",
       "cf-cache-status": "MISS",
       "content-type": "text/html",
+      [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
     },
   });
 }
@@ -93,6 +96,7 @@ describe("Cloudflare CDN warmup", () => {
     );
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      buildId: "build-a",
       deploymentId: "dpl_123",
       loadingShellPaths: ["/docs/dashboard/"],
       paths: ["/docs/dashboard/", "/docs/dynamic/", "/docs/pages/"],
@@ -115,6 +119,7 @@ describe("Cloudflare CDN warmup", () => {
     );
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
+      buildId: "build-a",
       loadingShellPaths: [],
       paths: ["/dashboard"],
       rscPaths: [],
@@ -187,6 +192,7 @@ describe("Cloudflare CDN warmup", () => {
 
     const result = await warmCdnCache({
       deploymentId: "dpl_123",
+      expectedBuildId: "build-a",
       expectedRscBuildId: "rsc-build-a",
       fetchImpl: fetchImpl as typeof fetch,
       loadingShellPaths: ["/search?q=x"],
@@ -195,7 +201,14 @@ describe("Cloudflare CDN warmup", () => {
       targetUrl: "https://app.example.com",
     });
 
-    expect(result).toEqual({ total: 3, warmed: 3, skipped: 0, failed: 0, failures: [] });
+    expect(result).toEqual({
+      total: 3,
+      warmed: 3,
+      skipped: 0,
+      failed: 0,
+      failures: [],
+      retryPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     const fullCall = fetchImpl.mock.calls.find((call) => {
       const headers = new Headers(call[1]?.headers);
@@ -265,7 +278,14 @@ describe("Cloudflare CDN warmup", () => {
         strict: true,
         targetUrl: "https://app.example.com",
       }),
-    ).resolves.toEqual({ total: 2, warmed: 0, skipped: 2, failed: 0, failures: [] });
+    ).resolves.toEqual({
+      total: 2,
+      warmed: 0,
+      skipped: 2,
+      failed: 0,
+      failures: [],
+      retryPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
+    });
   });
 
   it("uses Cloudflare cache-control precedence when validating admission", async () => {
@@ -355,7 +375,31 @@ describe("Cloudflare CDN warmup", () => {
     ).rejects.toThrow("response is missing CF-Cache-Status");
   });
 
-  it("retries staged-target failures after the initial queue has completed", async () => {
+  it("rejects responses rendered by a different application build", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const response =
+        new Headers(init?.headers).get("rsc") === "1" ? cacheableRsc() : cacheableHtml();
+      response.headers.set(VINEXT_CDN_BUILD_ID_HEADER, "old-build");
+      return response;
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/about"],
+        propagatingTarget: true,
+        retries: 0,
+        rscPaths: ["/about"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow(`response ${VINEXT_CDN_BUILD_ID_HEADER} does not match build build-a`);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries first and later staged-target failures only after the initial queue", async () => {
     const attempts = new Map<string, number>();
     const calls: string[] = [];
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -365,7 +409,7 @@ describe("Cloudflare CDN warmup", () => {
       calls.push(key);
       const attempt = (attempts.get(key) ?? 0) + 1;
       attempts.set(key, attempt);
-      if (url.pathname === "/later" && attempt === 1) {
+      if ((url.pathname === "/first" || url.pathname === "/later") && attempt === 1) {
         if (!isRsc) return new Response("not propagated", { status: 500 });
         const stale = cacheableRsc();
         stale.headers.set(VINEXT_RSC_BUILD_ID_HEADER, "stale-rsc-build");
@@ -388,13 +432,15 @@ describe("Cloudflare CDN warmup", () => {
         targetUrl: "https://app.example.com",
       }),
     ).resolves.toMatchObject({ total: 6, warmed: 6, failed: 0 });
-    expect(attempts.get("/first:rsc")).toBe(1);
-    expect(attempts.get("/first:html")).toBe(1);
+    expect(attempts.get("/first:rsc")).toBe(2);
+    expect(attempts.get("/first:html")).toBe(2);
     expect(attempts.get("/later:rsc")).toBe(2);
     expect(attempts.get("/later:html")).toBe(2);
     expect(attempts.get("/tail:rsc")).toBe(1);
     expect(attempts.get("/tail:html")).toBe(1);
     const lastInitialRequest = Math.max(calls.indexOf("/tail:rsc"), calls.indexOf("/tail:html"));
+    expect(calls.lastIndexOf("/first:rsc")).toBeGreaterThan(lastInitialRequest);
+    expect(calls.lastIndexOf("/first:html")).toBeGreaterThan(lastInitialRequest);
     expect(calls.lastIndexOf("/later:rsc")).toBeGreaterThan(lastInitialRequest);
     expect(calls.lastIndexOf("/later:html")).toBeGreaterThan(lastInitialRequest);
   });
