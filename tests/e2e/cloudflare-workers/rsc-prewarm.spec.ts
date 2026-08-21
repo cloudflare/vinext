@@ -6,6 +6,7 @@ const LOADING_SHELL_RSC_SEARCH = "?_rsc=9qLBDIU2NgN178cB";
 const PROMOTION_STABILITY_WINDOW_MS = 15_000;
 const PROMOTION_READINESS_TIMEOUT_MS = 60_000;
 const PROMOTION_PROBE_INTERVAL_MS = 1_000;
+const STALE_SEED_RETRY_TIMEOUT_MS = 45_000;
 
 type ObservedRsc = {
   headers: Record<string, string>;
@@ -15,6 +16,14 @@ type ObservedRsc = {
 
 test.describe.configure({ retries: 0 });
 
+class StaleSeedWorkerError extends Error {}
+
+function rejectStaleSeedWorker(response: Response | null): void {
+  if (response?.headers()["x-vinext-seed-worker"] === "1") {
+    throw new StaleSeedWorkerError("request reached the stale seed Worker after promotion");
+  }
+}
+
 async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<ObservedRsc> {
   const responsePromise = page.waitForResponse(
     (response) => {
@@ -23,7 +32,12 @@ async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<O
     },
     { timeout: 15_000 },
   );
-  await action();
+  try {
+    await action();
+  } catch (error) {
+    void responsePromise.catch(() => {});
+    throw error;
+  }
   const response = await responsePromise;
   return {
     headers: response.request().headers(),
@@ -33,6 +47,7 @@ async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<O
 }
 
 function expectCanonical(observed: ObservedRsc): void {
+  rejectStaleSeedWorker(observed.response);
   console.log(
     `RSC cache trace: url=${observed.url.pathname}${observed.url.search} ` +
       `cache=${observed.response.headers()["cf-cache-status"] ?? "missing"} ` +
@@ -188,72 +203,71 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   expect(shellBody).not.toContain("Prewarm target");
   expect(shellBody).not.toBe(fullBody);
 
-  const waitForBrowserCurrentBuild = async (page: Page) => {
-    await expect(async () => {
-      const response = await page.goto("/prewarm/soft");
-      expect(response?.ok()).toBe(true);
-      await expect(page.getByTestId("build-id")).toHaveText(buildId, { timeout: 2_000 });
-    }).toPass({ timeout: 30_000 });
+  const staleSeedDeadline = Date.now() + STALE_SEED_RETRY_TIMEOUT_MS;
+  const runFresh = async (run: (page: Page) => Promise<void>) => {
+    let staleSeedFailure: StaleSeedWorkerError | undefined;
+    do {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      try {
+        await run(page);
+        return;
+      } catch (error) {
+        if (!(error instanceof StaleSeedWorkerError)) throw error;
+        staleSeedFailure = error;
+      } finally {
+        await context.close();
+      }
+      await new Promise((resolve) => setTimeout(resolve, PROMOTION_PROBE_INTERVAL_MS));
+    } while (Date.now() < staleSeedDeadline);
+
+    throw new Error(
+      `stale seed Worker remained reachable after promotion: ${String(staleSeedFailure)}`,
+    );
   };
 
-  const runFresh = async (source: string, run: (page: Page) => Promise<void>) => {
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    try {
-      await waitForBrowserCurrentBuild(page);
-      await page.goto(source);
-      await expect(page.getByTestId("build-id")).toHaveText(buildId);
-      await run(page);
-    } finally {
-      await context.close();
-    }
+  const gotoCurrentBuild = async (page: Page, pathname: string) => {
+    const response = await page.goto(pathname);
+    rejectStaleSeedWorker(response);
+    expect(response?.ok()).toBe(true);
+    await expect(page.getByTestId("build-id")).toHaveText(buildId);
   };
 
   for (const source of ["/prewarm/link-a", "/prewarm/link-b"]) {
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    try {
-      await waitForBrowserCurrentBuild(page);
-      const shell = await observeRsc(page, () => page.goto(source));
+    await runFresh(async (page) => {
+      const shell = await observeRsc(page, async () => {
+        await gotoCurrentBuild(page, source);
+      });
       expectLoadingShell(shell);
-      await expect(page.getByTestId("build-id")).toHaveText(buildId);
 
       const full = await observeRsc(page, () => page.getByTestId("link-prefetch").click());
       expectFull(full);
       await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
       await expect(page.getByRole("heading", { name: "Prewarm target" })).toBeVisible();
-    } finally {
-      await context.close();
-    }
+    });
   }
 
-  {
-    const context = await browser.newContext();
-    const page = await context.newPage();
-    try {
-      await waitForBrowserCurrentBuild(page);
-      let targetRscRequests = 0;
-      page.on("request", (request) => {
-        const url = new URL(request.url());
-        if (url.pathname === TARGET_PATH && request.headers().rsc === "1") {
-          targetRscRequests++;
-        }
-      });
-      await page.goto("/prewarm/router");
-      await expect(page.getByTestId("build-id")).toHaveText(buildId);
-      const full = await observeRsc(page, () => page.getByTestId("router-prefetch").click());
-      expectFull(full);
-      expect(targetRscRequests).toBe(1);
-      await page.getByTestId("router-navigate").click();
-      await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
-      await expect(page.getByRole("heading", { name: "Prewarm target" })).toBeVisible();
-      expect(targetRscRequests).toBe(1);
-    } finally {
-      await context.close();
-    }
-  }
+  await runFresh(async (page) => {
+    let targetRscRequests = 0;
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === TARGET_PATH && request.headers().rsc === "1") {
+        targetRscRequests++;
+      }
+    });
+    const full = await observeRsc(page, async () => {
+      await gotoCurrentBuild(page, "/prewarm/full");
+    });
+    expectFull(full);
+    expect(targetRscRequests).toBe(1);
+    await page.getByTestId("link-prefetch").click();
+    await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
+    await expect(page.getByRole("heading", { name: "Prewarm target" })).toBeVisible();
+    expect(targetRscRequests).toBe(1);
+  });
 
-  await runFresh("/prewarm/soft", async (page) => {
+  await runFresh(async (page) => {
+    await gotoCurrentBuild(page, "/prewarm/soft");
     const full = await observeRsc(page, () => page.getByTestId("soft-navigation").click());
     expectFull(full);
     await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
