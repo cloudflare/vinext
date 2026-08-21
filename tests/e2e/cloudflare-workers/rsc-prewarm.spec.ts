@@ -84,6 +84,49 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     );
   }).toPass({ timeout: 30_000 });
 
+  const nodeFullFeatured = await fetch(`${baseURL}/cached/featured?_rsc`, {
+    headers: fullHeaders,
+  });
+  await nodeFullFeatured.arrayBuffer();
+  const playwrightFullIntro = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
+    headers: fullHeaders,
+  });
+  await playwrightFullIntro.body();
+  const nodeShellIntro = await fetch(`${baseURL}${TARGET_PATH}?_rsc`, {
+    headers: shellHeaders,
+  });
+  await nodeShellIntro.arrayBuffer();
+  const playwrightShellFeatured = await request.get(`${baseURL}/cached/featured?_rsc`, {
+    headers: shellHeaders,
+  });
+  await playwrightShellFeatured.body();
+  const clientDiagnostics = [
+    [
+      "node full featured",
+      nodeFullFeatured.headers.get("cf-cache-status"),
+      nodeFullFeatured.headers.get("cf-ray"),
+    ],
+    [
+      "playwright full intro",
+      playwrightFullIntro.headers()["cf-cache-status"],
+      playwrightFullIntro.headers()["cf-ray"],
+    ],
+    [
+      "node shell intro",
+      nodeShellIntro.headers.get("cf-cache-status"),
+      nodeShellIntro.headers.get("cf-ray"),
+    ],
+    [
+      "playwright shell featured",
+      playwrightShellFeatured.headers()["cf-cache-status"],
+      playwrightShellFeatured.headers()["cf-ray"],
+    ],
+  ] as const;
+  for (const [label, status, ray] of clientDiagnostics) {
+    console.log(`${label}: cache=${status ?? "missing"} ray=${ray ?? "missing"}`);
+  }
+  expect(clientDiagnostics.map(([, status]) => status)).toEqual(["HIT", "HIT", "HIT", "HIT"]);
+
   const fullResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
     headers: fullHeaders,
   });
