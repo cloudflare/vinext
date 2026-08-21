@@ -29,6 +29,12 @@ async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<O
 }
 
 function expectBareCanonical(observed: ObservedRsc): void {
+  console.log(
+    `RSC cache trace: cache=${observed.response.headers()["cf-cache-status"] ?? "missing"} ` +
+      `ray=${observed.response.headers()["cf-ray"] ?? "missing"} ` +
+      `encoding=${observed.response.headers()["content-encoding"] ?? "identity"} ` +
+      `renderMode=${observed.response.headers()["x-vinext-rsc-render-mode"] ?? "missing"}`,
+  );
   expect(observed.url.pathname).toBe(TARGET_PATH);
   expect(observed.url.search).toBe("?_rsc");
   expect(observed.headers.accept).toBe("text/x-component");
