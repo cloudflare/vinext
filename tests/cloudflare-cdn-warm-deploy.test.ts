@@ -8,12 +8,21 @@ import {
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
+const delayMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     execFileSync: execFileSyncMock,
+  };
+});
+
+vi.mock("node:timers/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:timers/promises")>();
+  return {
+    ...actual,
+    setTimeout: delayMock,
   };
 });
 
@@ -41,6 +50,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-warm-deploy-test-"));
     execFileSyncMock.mockReset();
+    delayMock.mockReset();
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => cacheableHtml()),
@@ -54,6 +64,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
   it("warms the production custom domain through a 0% staged version override", async () => {
     const events: string[] = [];
+    delayMock.mockImplementation(async (milliseconds: number) => {
+      events.push(`delay:${milliseconds}`);
+    });
     writeFile(
       "wrangler.jsonc",
       JSON.stringify({
@@ -204,8 +217,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "fetch:https://app.example.com/",
       "fetch:https://app.example.com/about?_rsc",
       "fetch:https://app.example.com/about",
+      "delay:15000",
       "promote",
     ]);
+    expect(delayMock).toHaveBeenCalledOnce();
+    expect(delayMock).toHaveBeenCalledWith(15_000);
   });
 
   it("falls back to post-promotion warming after a non-strict staged failure", async () => {
@@ -279,6 +295,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "fetch:promoted:rsc",
       "fetch:promoted:html",
     ]);
+    expect(delayMock).not.toHaveBeenCalled();
   });
 
   it("uses the env Worker name and env custom domain for version override warmup", async () => {

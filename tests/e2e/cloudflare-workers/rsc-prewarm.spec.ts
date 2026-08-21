@@ -63,11 +63,6 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     .readFileSync("examples/workers-cache/dist/server/RSC_BUILD_ID", "utf-8")
     .trim();
 
-  // The deploy command returns as soon as version promotion succeeds. Leave a
-  // deliberate interval for tiered-cache propagation before deciding whether
-  // the ordinary request reuses the version-override warmup entry.
-  await new Promise((resolve) => setTimeout(resolve, 10_000));
-
   const fullHeaders = { accept: "text/x-component", rsc: "1" };
   const shellHeaders = {
     ...fullHeaders,
@@ -75,6 +70,16 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     "next-router-segment-prefetch": "1",
     "x-vinext-rsc-render-mode": "prefetch-loading-shell",
   };
+
+  // Promotion can take a moment to route ordinary requests to the new Worker.
+  // Probe a force-dynamic, no-store route so this cannot fill either target
+  // RSC cache entry before asserting that the deploy warmup is reused.
+  await expect(async () => {
+    const response = await request.get(`${baseURL}/prewarm/soft`);
+    expect(response.ok()).toBe(true);
+    expect(await response.text()).toContain(buildId);
+  }).toPass({ timeout: 30_000 });
+
   const fullResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
     headers: fullHeaders,
   });

@@ -15,6 +15,7 @@ import { createRequire } from "node:module";
 import { spawn, type SpawnOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { emitPrerenderPathManifest } from "vinext/internal/build/prerender-paths";
 import { runPrerender } from "vinext/internal/build/run-prerender";
 import { loadDotenv } from "vinext/internal/config/dotenv";
@@ -65,6 +66,8 @@ import {
 import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
+
+const CDN_WARM_PROPAGATION_DELAY_MS = 15_000;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -624,6 +627,10 @@ export async function deployWithCdnWarmup(
 
   let deployed: ReturnType<typeof runWranglerVersionDeploy>;
   try {
+    if (warmedBeforePromotion) {
+      console.log("  CDN warmup: waiting 15 seconds for cache propagation before promotion...");
+      await delay(CDN_WARM_PROPAGATION_DELAY_MS);
+    }
     deployed = runWranglerVersionDeploy(
       root,
       [{ versionId: upload.versionId, percentage: 100 }],
