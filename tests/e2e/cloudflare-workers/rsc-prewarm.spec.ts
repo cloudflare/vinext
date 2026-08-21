@@ -90,13 +90,18 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   expect(fullBody).toContain(buildId);
   expect(fullBody).toContain("Post: intro");
 
+  await new Promise((resolve) => setTimeout(resolve, 5_000));
   const shellResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
     headers: shellHeaders,
   });
+  const shellResponseHeaders = shellResponse.headers();
   expect(shellResponse.ok()).toBe(true);
-  expect(shellResponse.headers()["content-type"]).toContain("text/x-component");
-  expect(shellResponse.headers()["cf-cache-status"]).toBe("HIT");
-  expect(shellResponse.headers()["x-vinext-rsc-build-id"]).toBe(rscBuildId);
+  expect(shellResponseHeaders["content-type"]).toContain("text/x-component");
+  expect(shellResponseHeaders["x-vinext-rsc-build-id"]).toBe(rscBuildId);
+  expect(
+    shellResponseHeaders["cf-cache-status"],
+    `loading-shell RSC response headers: ${JSON.stringify(shellResponseHeaders)}`,
+  ).toBe("HIT");
   const shellBody = await shellResponse.text();
   expect(shellBody).toContain(buildId);
   expect(shellBody).toContain("cached-loading-shell");
