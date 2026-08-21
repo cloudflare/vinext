@@ -1,6 +1,6 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
-import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
+import { RSC_HEADER, VINEXT_RSC_RENDER_MODE_HEADER, VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import {
   applyCdnResponseHeaders,
   hasExplicitNonCacheableResponsePolicy,
@@ -13,6 +13,7 @@ import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
 import { hasPostConfigLinkHeaders } from "./app-response-header-provenance.js";
+import { parseAppRscRenderMode } from "./app-rsc-render-mode.js";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -47,6 +48,27 @@ function normalizeExplicitNonCacheablePolicy(headers: Headers): void {
         ? cacheControl
         : NO_STORE_CACHE_CONTROL,
   });
+}
+
+/**
+ * Identify the representation selected for a canonical strict-Vary response.
+ * A cold shared cache can briefly collapse sibling requests before its Vary
+ * dimensions are established. Echoing the selected render mode lets deploy
+ * warmers reject that sibling response and retry only the affected variant.
+ */
+function stampCanonicalRscRenderMode(response: Response, request: Request): void {
+  if (
+    process.env.__VINEXT_CANONICAL_RSC_REQUESTS !== "1" ||
+    request.headers.get(RSC_HEADER) !== "1" ||
+    !response.headers.get("Content-Type")?.toLowerCase().startsWith("text/x-component")
+  ) {
+    return;
+  }
+
+  response.headers.set(
+    VINEXT_RSC_RENDER_MODE_HEADER,
+    parseAppRscRenderMode(request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)),
+  );
 }
 
 /** Mark a response whose final target pipeline has already applied config headers. */
@@ -127,6 +149,7 @@ export async function finalizeAppRscResponse(
 
   if (configHeadersAlreadyApplied.has(response)) {
     normalizeExplicitNonCacheablePolicy(response.headers);
+    stampCanonicalRscRenderMode(response, request);
     return response;
   }
   await applyAppRscConfigHeaders(response.headers, request, options);
@@ -138,6 +161,8 @@ export async function finalizeAppRscResponse(
   if (response.status === 405 && response.headers.get("Allow") === "GET, HEAD") {
     sanitizeMethodNotAllowedHeaders(response.headers, "GET, HEAD");
   }
+
+  stampCanonicalRscRenderMode(response, request);
 
   return response;
 }

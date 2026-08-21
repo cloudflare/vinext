@@ -11,6 +11,7 @@ import {
 } from "../packages/cloudflare/src/cdn-warm.js";
 import {
   VINEXT_RSC_BUILD_ID_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
@@ -22,7 +23,10 @@ function writeFile(relativePath: string, content: string): void {
   fs.writeFileSync(fullPath, content, "utf-8");
 }
 
-function cacheableRsc(body = "flight"): Response {
+function cacheableRsc(
+  body = "flight",
+  renderMode: "navigation" | "prefetch-loading-shell" = "navigation",
+): Response {
   return new Response(body, {
     headers: {
       "cache-control": "public, max-age=0, must-revalidate",
@@ -30,6 +34,7 @@ function cacheableRsc(body = "flight"): Response {
       "cf-cache-status": "MISS",
       "content-type": "text/x-component",
       [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-a",
+      [VINEXT_RSC_RENDER_MODE_HEADER]: renderMode,
       vary: VINEXT_RSC_VARY_HEADER,
     },
   });
@@ -180,7 +185,12 @@ describe("Cloudflare CDN warmup", () => {
   it("warms canonical full RSC, loading shell, and HTML with browser-identical requests", async () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
-      return headers.get("rsc") === "1" ? cacheableRsc() : cacheableHtml();
+      return headers.get("rsc") === "1"
+        ? cacheableRsc(
+            "flight",
+            headers.has("next-router-prefetch") ? "prefetch-loading-shell" : "navigation",
+          )
+        : cacheableHtml();
     });
 
     const result = await warmCdnCache({
@@ -234,6 +244,43 @@ describe("Cloudflare CDN warmup", () => {
     }
   });
 
+  it("defers a loading-shell retry when cold-key collapsing returns the full sibling", async () => {
+    const calls: string[] = [];
+    let shellAttempts = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const pathname = new URL(requestHref(input)!).pathname;
+      const isShell = new Headers(init?.headers).has("next-router-prefetch");
+      const label = `${pathname}:${isShell ? "shell" : "full"}`;
+      calls.push(label);
+      if (isShell && ++shellAttempts === 1) {
+        // The cold cache lock returned the full sibling. Its status, Vary,
+        // policy, and build ID all look valid; render-mode identity is what
+        // makes the warmer defer this one failed key until the pass completes.
+        return cacheableRsc("full sibling", "navigation");
+      }
+      return cacheableRsc("flight", isShell ? "prefetch-loading-shell" : "navigation");
+    });
+
+    await expect(
+      warmCdnCache({
+        concurrency: 1,
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        loadingShellPaths: ["/a"],
+        paths: [],
+        propagatingTarget: true,
+        retries: 2,
+        retryDelayMs: 0,
+        rscPaths: ["/a", "/tail"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ total: 3, warmed: 3, failed: 0 });
+
+    expect(shellAttempts).toBe(2);
+    expect(calls).toEqual(["/a:full", "/a:shell", "/tail:full", "/a:shell"]);
+  });
+
   it("serializes cold Vary variants of the same URL while warming different URLs concurrently", async () => {
     const activeUrls = new Set<string>();
     let activeRequests = 0;
@@ -244,8 +291,9 @@ describe("Cloudflare CDN warmup", () => {
     const firstWaveStarted = new Promise<void>((resolve) => {
       releaseFirstWave = resolve;
     });
-    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const href = requestHref(input)!;
+      const isShell = new Headers(init?.headers).has("next-router-prefetch");
       if (activeUrls.has(href)) sameUrlOverlap = true;
       activeUrls.add(href);
       activeRequests++;
@@ -254,7 +302,7 @@ describe("Cloudflare CDN warmup", () => {
       await firstWaveStarted;
       activeRequests--;
       activeUrls.delete(href);
-      return cacheableRsc();
+      return cacheableRsc("flight", isShell ? "prefetch-loading-shell" : "navigation");
     });
 
     await expect(
@@ -284,6 +332,7 @@ describe("Cloudflare CDN warmup", () => {
             ? {
                 "content-type": "text/x-component",
                 [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-a",
+                [VINEXT_RSC_RENDER_MODE_HEADER]: "navigation",
                 vary: VINEXT_RSC_VARY_HEADER,
               }
             : { "content-type": "text/html" }),

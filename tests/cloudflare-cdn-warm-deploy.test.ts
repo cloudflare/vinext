@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   VINEXT_RSC_BUILD_ID_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 
@@ -76,7 +77,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     vi.mocked(fetch).mockImplementation(async (url, init) => {
       events.push(`fetch:${formatFetchUrl(url)}`);
-      const isRsc = new Headers(init?.headers).get("rsc") === "1";
+      const headers = new Headers(init?.headers);
+      const isRsc = headers.get("rsc") === "1";
       return new Response(isRsc ? "flight" : "html", {
         status: 200,
         headers: isRsc
@@ -85,6 +87,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
               "cf-cache-status": "MISS",
               "content-type": "text/x-component",
               [VINEXT_RSC_BUILD_ID_HEADER]: "build-a",
+              [VINEXT_RSC_RENDER_MODE_HEADER]: headers.has("next-router-prefetch")
+                ? "prefetch-loading-shell"
+                : "navigation",
               vary: VINEXT_RSC_VARY_HEADER,
             }
           : { "cf-cache-status": "MISS", "content-type": "text/html" },
@@ -245,6 +250,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
               "content-type": "text/x-component",
               [VINEXT_RSC_BUILD_ID_HEADER]:
                 staged || promotedRscAttempts === 1 ? "old-build" : "new-build",
+              [VINEXT_RSC_RENDER_MODE_HEADER]: "navigation",
               vary: VINEXT_RSC_VARY_HEADER,
             }
           : { "cf-cache-status": "MISS", "content-type": "text/html" },

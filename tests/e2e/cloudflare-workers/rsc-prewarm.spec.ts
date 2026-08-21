@@ -47,6 +47,7 @@ function expectFull(observed: ObservedRsc): void {
   expect(observed.headers["next-router-prefetch"]).toBeUndefined();
   expect(observed.headers["next-router-segment-prefetch"]).toBeUndefined();
   expect(observed.headers["x-vinext-rsc-render-mode"]).toBeUndefined();
+  expect(observed.response.headers()["x-vinext-rsc-render-mode"]).toBe("navigation");
 }
 
 function expectLoadingShell(observed: ObservedRsc): void {
@@ -54,6 +55,7 @@ function expectLoadingShell(observed: ObservedRsc): void {
   expect(observed.headers["next-router-prefetch"]).toBe("1");
   expect(observed.headers["next-router-segment-prefetch"]).toBe("1");
   expect(observed.headers["x-vinext-rsc-render-mode"]).toBe("prefetch-loading-shell");
+  expect(observed.response.headers()["x-vinext-rsc-render-mode"]).toBe("prefetch-loading-shell");
 }
 
 async function waitForStablePromotion({
@@ -152,6 +154,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   expect(fullResponse.ok(), JSON.stringify(fullResponseHeaders)).toBe(true);
   expect(fullResponseHeaders["content-type"]).toContain("text/x-component");
   expect(fullResponseHeaders["x-vinext-rsc-build-id"]).toBe(rscBuildId);
+  expect(fullResponseHeaders["x-vinext-rsc-render-mode"]).toBe("navigation");
   expect(
     fullResponseHeaders["cf-cache-status"],
     `full RSC response headers: ${JSON.stringify(fullResponseHeaders)}`,
@@ -167,6 +170,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   expect(shellResponse.ok()).toBe(true);
   expect(shellResponseHeaders["content-type"]).toContain("text/x-component");
   expect(shellResponseHeaders["x-vinext-rsc-build-id"]).toBe(rscBuildId);
+  expect(shellResponseHeaders["x-vinext-rsc-render-mode"]).toBe("prefetch-loading-shell");
   expect(
     shellResponseHeaders["cf-cache-status"],
     `loading-shell RSC response headers: ${JSON.stringify(shellResponseHeaders)}`,

@@ -16,6 +16,7 @@ import {
   createCanonicalRscRequestUrl,
   VINEXT_RSC_BUILD_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
+  VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "vinext/internal/server/app-rsc-cache-busting";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
@@ -282,6 +283,7 @@ type WarmTarget = {
   kind: "html" | "rsc";
   label: string;
   pathname: string;
+  rscRenderMode?: "navigation" | "prefetch-loading-shell";
 };
 
 class CdnWarmProgress {
@@ -362,7 +364,11 @@ function validateCachePolicy(response: Response, requireCacheStatus: boolean): W
   return { outcome: "warmed" };
 }
 
-function validateRscWarmResponse(response: Response, expectedRscBuildId?: string): WarmValidation {
+function validateRscWarmResponse(
+  response: Response,
+  expectedRscBuildId?: string,
+  expectedRenderMode?: WarmTarget["rscRenderMode"],
+): WarmValidation {
   if (response.redirected || response.status < 200 || response.status >= 300) {
     return {
       outcome: "failed",
@@ -379,6 +385,15 @@ function validateRscWarmResponse(response: Response, expectedRscBuildId?: string
     return {
       outcome: "failed",
       error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build ${expectedRscBuildId}`,
+    };
+  }
+  if (
+    expectedRenderMode !== undefined &&
+    response.headers.get(VINEXT_RSC_RENDER_MODE_HEADER) !== expectedRenderMode
+  ) {
+    return {
+      outcome: "failed",
+      error: `response ${VINEXT_RSC_RENDER_MODE_HEADER} does not match ${expectedRenderMode} variant`,
     };
   }
 
@@ -445,7 +460,11 @@ async function warmOnePath(
       );
 
       if (target.kind === "rsc") {
-        const validation = validateRscWarmResponse(response, options.expectedRscBuildId);
+        const validation = validateRscWarmResponse(
+          response,
+          options.expectedRscBuildId,
+          target.rscRenderMode,
+        );
         if (validation.outcome === "warmed") {
           return { path: target.label, ok: true, skipped: false };
         }
@@ -552,6 +571,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       kind: "rsc",
       label: `${pathname} (RSC full)`,
       pathname: createCanonicalRscRequestUrl(pathname),
+      rscRenderMode: "navigation",
     });
 
     if (loadingShellPaths.has(pathname)) {
@@ -566,6 +586,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
         kind: "rsc",
         label: `${pathname} (RSC loading shell)`,
         pathname: createCanonicalRscRequestUrl(pathname),
+        rscRenderMode: "prefetch-loading-shell",
       });
     }
   }
