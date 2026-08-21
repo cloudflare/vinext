@@ -72,18 +72,14 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   };
 
   // Promotion can take a moment to route ordinary requests to the new Worker.
-  // Probe a force-dynamic, no-store route so this cannot fill either target
-  // RSC cache entry before asserting that the deploy warmup is reused.
+  // Poll a dedicated no-store API route so this cannot fill either target RSC
+  // cache entry before asserting that the deploy warmup is reused.
   await expect(async () => {
-    const response = await request.get(`${baseURL}/prewarm/soft`);
+    const response = await request.get(`${baseURL}/api/prewarm-version`);
     expect(response.ok()).toBe(true);
-    expect(await response.text()).toContain(buildId);
+    expect(response.headers()["cache-control"]).toContain("no-store");
+    expect(await response.json()).toEqual({ buildId });
   }).toPass({ timeout: 30_000 });
-
-  // The deploy flow waits before promotion so warmed cache entries can
-  // propagate. Once the promoted build is reachable, leave a separate interval
-  // for those entries to become visible to ordinary requests.
-  await new Promise((resolve) => setTimeout(resolve, 10_000));
 
   const fullResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
     headers: fullHeaders,
