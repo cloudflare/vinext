@@ -425,31 +425,6 @@ export function canonicalizeLoadingShellRscRequestHeaders(headers: Headers): boo
   return true;
 }
 
-function isCanonicalSharedRscRequestHeaders(headers: Headers): boolean {
-  const renderMode = headers.get(VINEXT_RSC_RENDER_MODE_HEADER);
-  const hasContext =
-    headers.has(NEXT_ROUTER_STATE_TREE_HEADER) ||
-    headers.has(NEXT_URL_HEADER) ||
-    headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER) ||
-    headers.has(VINEXT_INTERCEPTION_ID_HEADER) ||
-    headers.has(VINEXT_MOUNTED_SLOTS_HEADER) ||
-    headers.has(VINEXT_RSC_STATE_FINGERPRINT_HEADER) ||
-    headers.has(VINEXT_CLIENT_REUSE_MANIFEST_HEADER);
-  if (hasContext) return false;
-
-  if (renderMode === null) {
-    return (
-      !headers.has(NEXT_ROUTER_PREFETCH_HEADER) && !headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)
-    );
-  }
-
-  return (
-    renderMode === APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL &&
-    headers.get(NEXT_ROUTER_PREFETCH_HEADER) === "1" &&
-    headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER) === "1"
-  );
-}
-
 function toRscRequestPath(href: string): string {
   const hashIndex = href.indexOf("#");
   const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
@@ -488,16 +463,6 @@ export async function createRscRedirectLocation(
     return destinationUrl.toString();
   }
 
-  if (
-    process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
-    requestUrl.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM) === "" &&
-    isCanonicalSharedRscRequestHeaders(request.headers)
-  ) {
-    return `${destinationUrl.origin}${createCanonicalRscRequestUrl(
-      `${destinationUrl.pathname}${destinationUrl.search}`,
-    )}`;
-  }
-
   const rscPath = await createRscRequestUrl(
     `${destinationUrl.pathname}${destinationUrl.search}`,
     request.headers,
@@ -518,14 +483,6 @@ export async function resolveInvalidRscCacheBustingRequest(
   const url = new URL(options.request.url);
   const actualHash = url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
   const expectedHash = await computeRscCacheBustingSearchParam(options.request.headers);
-
-  if (
-    process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
-    actualHash === "" &&
-    isCanonicalSharedRscRequestHeaders(options.request.headers)
-  ) {
-    return null;
-  }
 
   if (actualHash === null && expectedHash === "" && url.pathname.endsWith(".rsc")) {
     return null;

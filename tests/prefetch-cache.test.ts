@@ -332,6 +332,46 @@ describe("prefetch cache eviction", () => {
     expect(secondInvalidate).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps canonical full and loading-shell entries independent", async () => {
+    const fullUrl = "/dashboard?_rsc";
+    const loadingUrl = "/dashboard?_rsc=9qLBDIU2NgN178cB";
+    const fullInvalidate = vi.fn();
+    const loadingInvalidate = vi.fn();
+
+    prefetchRscResponse(
+      fullUrl,
+      Promise.resolve(new Response("full")),
+      null,
+      null,
+      { onInvalidate: fullInvalidate },
+      { cacheForNavigation: true },
+    );
+    prefetchRscResponse(
+      loadingUrl,
+      Promise.resolve(new Response("loading")),
+      null,
+      null,
+      { onInvalidate: loadingInvalidate },
+      { cacheForNavigation: false, optimisticRouteShell: true },
+    );
+    await waitForPrefetchSetup(
+      () =>
+        getPrefetchCache().get(fullUrl)?.outcome === "cache-seeded" &&
+        getPrefetchCache().get(loadingUrl)?.outcome === "cache-seeded",
+    );
+
+    const full = getPrefetchCache().get(fullUrl);
+    const loading = getPrefetchCache().get(loadingUrl);
+    expect(new TextDecoder().decode(full?.snapshot?.buffer)).toBe("full");
+    expect(full?.cacheForNavigation).toBe(true);
+    expect(new TextDecoder().decode(loading?.snapshot?.buffer)).toBe("loading");
+    expect(loading?.cacheForNavigation).toBe(false);
+
+    invalidatePrefetchCache();
+    expect(fullInvalidate).toHaveBeenCalledTimes(1);
+    expect(loadingInvalidate).toHaveBeenCalledTimes(1);
+  });
+
   it("demotes completed navigation snapshots without discarding explicit prefetches", () => {
     const cache = getPrefetchCache();
     const prefetched = getPrefetchedUrls();
