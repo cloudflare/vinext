@@ -63,6 +63,22 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     .readFileSync("examples/workers-cache/dist/server/RSC_BUILD_ID", "utf-8")
     .trim();
 
+  // The version-override warmup can complete before promotion has propagated
+  // to ordinary requests on the stable hostname. Wait for a non-prewarmed,
+  // no-store source route to reach the current build before asking Chromium to
+  // prove that its subsequent RSC requests reuse the warmed entries.
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(`${baseURL}/prewarm/soft`, {
+          headers: { "cache-control": "no-cache", pragma: "no-cache" },
+        });
+        return response.ok() && (await response.text()).includes(buildId);
+      },
+      { message: "stable Worker hostname did not reach the promoted build", timeout: 30_000 },
+    )
+    .toBe(true);
+
   const fullHeaders = { accept: "text/x-component", rsc: "1" };
   const shellHeaders = {
     ...fullHeaders,
