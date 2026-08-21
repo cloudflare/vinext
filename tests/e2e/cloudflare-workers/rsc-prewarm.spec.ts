@@ -63,11 +63,6 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     .readFileSync("examples/workers-cache/dist/server/RSC_BUILD_ID", "utf-8")
     .trim();
 
-  // The deploy flow waits before promotion so warmed cache entries can
-  // propagate. Leave a separate post-promotion interval here for the promoted
-  // Worker version and those entries to become visible to ordinary requests.
-  await new Promise((resolve) => setTimeout(resolve, 10_000));
-
   const fullHeaders = { accept: "text/x-component", rsc: "1" };
   const shellHeaders = {
     ...fullHeaders,
@@ -84,6 +79,11 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     expect(response.ok()).toBe(true);
     expect(await response.text()).toContain(buildId);
   }).toPass({ timeout: 30_000 });
+
+  // The deploy flow waits before promotion so warmed cache entries can
+  // propagate. Once the promoted build is reachable, leave a separate interval
+  // for those entries to become visible to ordinary requests.
+  await new Promise((resolve) => setTimeout(resolve, 10_000));
 
   const fullResponse = await request.get(`${baseURL}${TARGET_PATH}?_rsc`, {
     headers: fullHeaders,
