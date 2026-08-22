@@ -73,6 +73,10 @@ describe("Cloudflare CDN warmup", () => {
     expect(buildWarmupUrl("https://app.example.com", "/search?q=x").href).toBe(
       "https://app.example.com/search?q=x",
     );
+    expect(buildWarmupUrl("https://app.example.com", "/posts/%7Euser").pathname).toBe(
+      "/posts/%7Euser",
+    );
+    expect(buildWarmupUrl("https://app.example.com", "/posts/a%2fb").pathname).toBe("/posts/a%2fb");
   });
 
   it("reads only build-discovered paths and does not require local prerender output", () => {
