@@ -516,15 +516,6 @@ function validateRscWarmResponse(
   expectedBuildId?: string,
   expectedRscBuildId?: string,
 ): WarmValidation {
-  if (response.redirected || response.status < 200 || response.status >= 300) {
-    return {
-      outcome: "failed",
-      error: response.redirected ? "redirected response" : `HTTP ${response.status}`,
-    };
-  }
-  if (!response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)) {
-    return { outcome: "failed", error: `expected ${VINEXT_RSC_CONTENT_TYPE} response` };
-  }
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
   if (
@@ -535,6 +526,19 @@ function validateRscWarmResponse(
       outcome: "failed",
       error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build ${expectedRscBuildId}`,
     };
+  }
+  if (response.redirected) {
+    return { outcome: "failed", error: "redirected response" };
+  }
+  if (response.status < 200 || response.status >= 300) {
+    if (expectedBuildId !== undefined || expectedRscBuildId !== undefined) {
+      const cachePolicyValidation = validateCachePolicy(response, true);
+      if (cachePolicyValidation.outcome === "skipped") return cachePolicyValidation;
+    }
+    return { outcome: "failed", error: `HTTP ${response.status}` };
+  }
+  if (!response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)) {
+    return { outcome: "failed", error: `expected ${VINEXT_RSC_CONTENT_TYPE} response` };
   }
   const cachePolicyValidation = validateCachePolicy(response, true);
   if (cachePolicyValidation.outcome !== "warmed") return cachePolicyValidation;
@@ -556,14 +560,18 @@ function validateRscWarmResponse(
 }
 
 function validateHtmlWarmResponse(response: Response, expectedBuildId?: string): WarmValidation {
-  if (response.redirected || response.status < 200 || response.status >= 300) {
-    return {
-      outcome: "failed",
-      error: response.redirected ? "redirected response" : `HTTP ${response.status}`,
-    };
-  }
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
+  if (response.redirected) {
+    return { outcome: "failed", error: "redirected response" };
+  }
+  if (response.status < 200 || response.status >= 300) {
+    if (expectedBuildId !== undefined) {
+      const cachePolicyValidation = validateCachePolicy(response, true);
+      if (cachePolicyValidation.outcome === "skipped") return cachePolicyValidation;
+    }
+    return { outcome: "failed", error: `HTTP ${response.status}` };
+  }
   const cachePolicyValidation = validateCachePolicy(response, true);
   if (cachePolicyValidation.outcome !== "warmed") return cachePolicyValidation;
   const extraVary = (response.headers.get("Vary") ?? "")

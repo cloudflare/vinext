@@ -106,6 +106,37 @@ function throwDiscoveryFailure(route: string, error: unknown): never {
   throw new Error(`Failed to discover warmup path(s) for ${route}: ${message}`, { cause: error });
 }
 
+function validatePagesStaticPathsResult(
+  value: unknown,
+  route: string,
+): { fallback: boolean | "blocking"; paths: StaticPathsEntry[] } {
+  const expected = "Expected { paths: [], fallback: boolean | 'blocking' }.";
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Invalid value returned from getStaticPaths for ${route}. ${expected}`);
+  }
+
+  const result = value as Record<string, unknown>;
+  const extraKeys = Object.keys(result).filter((key) => key !== "paths" && key !== "fallback");
+  if (extraKeys.length > 0) {
+    throw new Error(
+      `Extra key(s) returned from getStaticPaths for ${route}: ${extraKeys.join(", ")}. ${expected}`,
+    );
+  }
+  if (typeof result.fallback !== "boolean" && result.fallback !== "blocking") {
+    throw new Error(`Invalid fallback returned from getStaticPaths for ${route}. ${expected}`);
+  }
+  if (!Array.isArray(result.paths)) {
+    throw new Error(
+      `Invalid paths returned from getStaticPaths for ${route}; paths must be an array.`,
+    );
+  }
+
+  return {
+    fallback: result.fallback,
+    paths: result.paths as StaticPathsEntry[],
+  };
+}
+
 async function fetchDiscoveryEndpoint(
   url: string,
   headers: Record<string, string>,
@@ -269,13 +300,12 @@ async function collectPagesPaths(options: {
         `${options.baseUrl}/__vinext/prerender/pages-static-paths?${search}`,
         options.secretHeaders,
       );
-      if (text === null) continue;
+      if (text === null) {
+        throw new Error(`Invalid value returned from getStaticPaths for ${route.pattern}.`);
+      }
 
-      const pathsResult = JSON.parse(text) as {
-        paths?: Array<StaticPathsEntry>;
-        fallback?: unknown;
-      };
-      for (const item of pathsResult.paths ?? []) {
+      const pathsResult = validatePagesStaticPathsResult(JSON.parse(text), route.pattern);
+      for (const item of pathsResult.paths) {
         let itemToNormalize = item;
         let locale = options.i18n?.defaultLocale;
         if (options.i18n && typeof item === "string") {

@@ -520,6 +520,58 @@ describe("Cloudflare CDN warmup", () => {
     ).resolves.toMatchObject({ warmed: 0, skipped: 2, failed: 0 });
   });
 
+  it("skips same-build non-success responses that explicitly opt out of caching", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const isRsc = new Headers(init?.headers).get("rsc") === "1";
+      return new Response(isRsc ? "flight not found" : "redirect", {
+        status: isRsc ? 404 : 307,
+        headers: {
+          "cache-control": "no-store",
+          "cf-cache-status": "BYPASS",
+          "content-type": isRsc ? "text/x-component" : "text/html",
+          [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          ...(isRsc ? { [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-a" } : {}),
+        },
+      });
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/redirect"],
+        rscPaths: ["/not-found"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ warmed: 0, skipped: 2, failed: 0 });
+  });
+
+  it("does not skip a non-success response from a different build", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("redirect", {
+          status: 307,
+          headers: {
+            "cache-control": "no-store",
+            "cf-cache-status": "BYPASS",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "old-build",
+          },
+        }),
+    );
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/redirect"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow(`response ${VINEXT_CDN_BUILD_ID_HEADER} does not match build build-a`);
+  });
+
   it("requires CDN admission evidence for HTML responses", async () => {
     const fetchImpl = vi.fn(async () => new Response("html"));
 
