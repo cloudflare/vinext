@@ -104,9 +104,6 @@ function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): vo
     return;
   }
 
-  const handlerStart = Math.round(timing.handlerStart);
-  const compileMs =
-    timing.compileEnd !== undefined ? Math.round(timing.compileEnd - timing.handlerStart) : -1;
   const renderMs =
     timing.responseKind === "html" &&
     timing.renderEnd !== undefined &&
@@ -114,7 +111,7 @@ function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): vo
       ? Math.round(timing.renderEnd - timing.compileEnd)
       : -1;
 
-  headers.set(VINEXT_TIMING_HEADER, `${handlerStart},${compileMs},${renderMs}`);
+  headers.set(VINEXT_TIMING_HEADER, String(renderMs));
 }
 
 function applyDynamicStaleTimeHeader(headers: Headers, dynamicStaleTimeSeconds?: number): void {

@@ -106,7 +106,7 @@ import {
   VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_TIMING_HEADER,
 } from "./server/headers.js";
-import { logRequest, now } from "./server/request-log.js";
+import { logRequest, now, resolveAppPageDevRequestTiming } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
 import {
   canonicalizeRequestUrlPathname,
@@ -5142,50 +5142,21 @@ export const loadServerActionClient = ${
                 return next();
               }
               const _reqStart = now();
-              let _compileMs: number | undefined;
-              let _renderMs: number | undefined;
+              let _workerRenderMs: unknown;
 
               // Intercept setHeader and writeHead so we can strip X-Vinext-Timing
               // before it reaches the client and capture the compile/render split.
               // The RSC plugin may set headers either way depending on its version.
-              // Parse the three-part X-Vinext-Timing header:
-              //   "handlerStart,inHandlerCompileMs,renderMs"
-              //
-              // True compile time = time the RSC plugin spent loading/transforming
-              // modules before our handler code ran, plus any in-handler work before
-              // renderToReadableStream. Concretely:
-              //   compileMs = (handlerStart - _reqStart) + inHandlerCompileMs
-              //   renderMs  = renderMs from header, or -1 for RSC-only (soft-nav)
-              //               responses where rendering is not measured in the handler.
-              //               In that case the middleware computes render time as
-              //               totalMs - compileMs.
-              //
-              // handlerStart is performance.now() recorded at the very top of
-              // _handleRequest in the generated RSC entry. _reqStart is recorded
-              // here in the Node middleware, one stack frame before the RSC plugin
-              // loads the module. The gap between them is exactly the Vite
-              // compile/transform cost.
-              function _parseTiming(raw: unknown) {
-                const [handlerStart, inHandlerCompileMs, renderMs] = String(raw)
-                  .split(",")
-                  .map((v) => Number(v));
-                if (
-                  !Number.isNaN(handlerStart) &&
-                  !Number.isNaN(inHandlerCompileMs) &&
-                  inHandlerCompileMs !== -1
-                ) {
-                  _compileMs =
-                    Math.max(0, Math.round(handlerStart - _reqStart)) + inHandlerCompileMs;
-                }
-                if (!Number.isNaN(renderMs) && renderMs !== -1) {
-                  _renderMs = renderMs;
-                }
-              }
+              // The Worker sends only its render duration. The Node middleware
+              // owns the total request duration, so it derives the remaining
+              // compile/module-loading time after the response finishes. Absolute
+              // timestamps cannot cross this boundary because Node and workerd use
+              // different performance.now() time origins.
 
               const _origSetHeader = res.setHeader.bind(res);
               res.setHeader = function (name, value) {
                 if (name.toLowerCase() === VINEXT_TIMING_HEADER) {
-                  _parseTiming(value);
+                  _workerRenderMs = value;
                   return res; // drop the header — don't forward to client
                 }
                 return _origSetHeader(name, value);
@@ -5209,7 +5180,7 @@ export const loadServerActionClient = ${
                     (k) => k.toLowerCase() === VINEXT_TIMING_HEADER,
                   );
                   if (timingKey) {
-                    _parseTiming(headers[timingKey]);
+                    _workerRenderMs = headers[timingKey];
                     delete headers[timingKey];
                   }
                 }
@@ -5222,25 +5193,18 @@ export const loadServerActionClient = ${
                 // not part of the actual page path the user navigated to.
                 const logUrl = url.replace(/\.rsc(\?|$)/, "$1");
                 const totalMs = now() - _reqStart;
-
-                // For RSC-only responses (soft nav), renderMs is -1 (sentinel meaning
-                // "not measured in the handler"). Compute it as totalMs - compileMs,
-                // which is how long the RSC stream took to fully flush to the client —
-                // matching what Next.js shows for soft navigations.
-                const resolvedRenderMs =
-                  _renderMs !== undefined
-                    ? _renderMs
-                    : _compileMs !== undefined
-                      ? Math.max(0, Math.round(totalMs - _compileMs))
-                      : undefined;
+                const { compileMs, renderMs } = resolveAppPageDevRequestTiming(
+                  totalMs,
+                  _workerRenderMs,
+                );
 
                 logRequest({
                   method: req.method ?? "GET",
                   url: logUrl,
                   status: res.statusCode,
                   totalMs,
-                  compileMs: _compileMs,
-                  renderMs: resolvedRenderMs,
+                  compileMs,
+                  renderMs,
                 });
               });
 
