@@ -387,7 +387,7 @@ describe("prerender path manifest", () => {
       responseVary: "verbatim",
     });
 
-    expect(manifest?.paths).toEqual(["/pages-dir/static", "/specific/value"]);
+    expect(manifest?.paths).toEqual(["/pages-dir/static", "/pages-dir/foobar", "/specific/value"]);
     expect(manifest?.rscPaths).toEqual(["/pages-dir/static", "/specific/value"]);
     expect(manifest?.loadingShellPaths).toEqual(["/specific/value"]);
     expect(manifest?.pagesPaths).toEqual([]);
@@ -485,6 +485,43 @@ describe("prerender path manifest", () => {
     expect(manifest?.rscPaths).toEqual(["/fr/api/status"]);
     expect(manifest?.loadingShellPaths).toEqual(["/fr/api/status"]);
     expect(manifest?.pagesPaths).toEqual(["/about", "/fr/about"]);
+  });
+
+  it("resolves Pages-discovered warm paths to their runtime App owner", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/health/route.ts", "export function GET() { return new Response('ok'); }\n");
+    writeFile("app/specific/[id]/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "pages/[...path].tsx",
+      [
+        "export function getStaticPaths() { return { paths: [], fallback: false }; }",
+        "export function getStaticProps() { return { props: {}, revalidate: 60 }; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const rawUrl =
+        input instanceof URL ? input.href : typeof input === "string" ? input : input.url;
+      const url = new URL(rawUrl);
+      if (url.pathname === "/__vinext/prerender/pages-static-paths") {
+        return Response.json({ fallback: false, paths: ["/health", "/specific/value"] });
+      }
+      return new Response("null", { headers: { "content-type": "application/json" } });
+    });
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual(["/specific/value"]);
+    expect(manifest?.rscPaths).toEqual(["/specific/value"]);
+    expect(manifest?.pagesPaths).toEqual(["/health", "/specific/value"]);
   });
 
   it("fails path discovery when generateStaticParams discovery aborts", async () => {

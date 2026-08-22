@@ -579,21 +579,6 @@ async function resolveAppWarmPaths(options: {
   const loadingShellPaths: string[] = [];
   for (const pathname of options.paths) {
     const appMatch = matchAppRoute(pathname, appRoutes);
-    if (!appMatch) continue;
-    // The trie returns the exact object from appRoutes. Its public matcher type
-    // exposes the shared AppRoute fields, so recover the graph-owned metadata
-    // here without rescanning the route table for every concrete path.
-    const matchedAppRoute = appMatch.route as (typeof appRoutes)[number];
-
-    const appRenderEntryPath = getAppRouteRenderEntryPath(matchedAppRoute);
-    if (!appRenderEntryPath) continue;
-    if (
-      classifyAppRoute(appRenderEntryPath, matchedAppRoute.routePath, matchedAppRoute.isDynamic)
-        .type === "api"
-    ) {
-      continue;
-    }
-
     // Pages Router i18n prefixes are routing metadata rather than part of the
     // filesystem route. Production strips them before matching Pages/API
     // routes, while the App Router still matches the original pathname.
@@ -606,7 +591,25 @@ async function resolveAppWarmPaths(options: {
     // rather than becoming a Pages API request after normalization.
     const isPagesApiRequest = pathname === "/api" || pathname.startsWith("/api/");
     const pagesMatch = matchRoute(pagesPathname, isPagesApiRequest ? apiRoutes : pageRoutes);
-    if (pagesMatch && pagesRouteHasPriorityOverAppRoute(pagesMatch.route, matchedAppRoute)) {
+    if (
+      pagesMatch &&
+      (!appMatch || pagesRouteHasPriorityOverAppRoute(pagesMatch.route, appMatch.route))
+    ) {
+      if (!isPagesApiRequest) htmlPaths.push(pathname);
+      continue;
+    }
+    if (!appMatch) continue;
+
+    // The trie returns the exact object from appRoutes. Its public matcher type
+    // exposes the shared AppRoute fields, so recover the graph-owned metadata
+    // here without rescanning the route table for every concrete path.
+    const matchedAppRoute = appMatch.route as (typeof appRoutes)[number];
+    const appRenderEntryPath = getAppRouteRenderEntryPath(matchedAppRoute);
+    if (!appRenderEntryPath) continue;
+    if (
+      classifyAppRoute(appRenderEntryPath, matchedAppRoute.routePath, matchedAppRoute.isDynamic)
+        .type === "api"
+    ) {
       continue;
     }
 
@@ -775,23 +778,21 @@ export async function emitPrerenderPathManifest(
   const configuredPagesWarmPaths = discoveredPagesPaths.filter(
     (pathname) => !excludedWarmPathSet.has(pathname),
   );
+  const configuredCandidatePaths = paths.filter((pathname) => !excludedWarmPathSet.has(pathname));
   const appOwnedWarmPaths = appDir
     ? await resolveAppWarmPaths({
         appDir,
         i18n: config.i18n,
         pagesDir,
         pageExtensions: config.pageExtensions,
-        paths: discoveredAppPaths.filter((pathname) => !excludedWarmPathSet.has(pathname)),
+        paths: configuredCandidatePaths,
       })
     : {
         htmlPaths: discoveredAppPaths,
         loadingShellPaths: discoveredLoadingShellPaths,
         rscPaths: discoveredAppPaths,
       };
-  const warmPathSet = new Set([...appOwnedWarmPaths.htmlPaths, ...configuredPagesWarmPaths]);
-  const warmPaths = paths.filter(
-    (pathname) => !excludedWarmPathSet.has(pathname) && warmPathSet.has(pathname),
-  );
+  const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : configuredPagesWarmPaths;
 
   const manifest: PrerenderPathManifest = {
     ...(config.basePath ? { basePath: config.basePath } : {}),
