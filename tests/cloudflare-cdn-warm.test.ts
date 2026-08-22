@@ -7,6 +7,7 @@ import {
   DEFAULT_CDN_WARM_CONCURRENCY,
   DEFAULT_CDN_WARM_TIMEOUT_MS,
   readPrerenderWarmPlan,
+  waitForCdnWarmTargetReadiness,
   warmCdnCache,
   warmCdnCacheFromPrerender,
 } from "../packages/cloudflare/src/cdn-warm.js";
@@ -531,6 +532,7 @@ describe("Cloudflare CDN warmup", () => {
           "content-type": isRsc ? "text/x-component" : "text/html",
           [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
           ...(isRsc ? { [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-a" } : {}),
+          ...(isRsc ? { vary: VINEXT_RSC_VARY_HEADER } : {}),
         },
       });
     });
@@ -546,6 +548,106 @@ describe("Cloudflare CDN warmup", () => {
         targetUrl: "https://app.example.com",
       }),
     ).resolves.toMatchObject({ warmed: 0, skipped: 2, failed: 0 });
+  });
+
+  it("warms same-build cacheable redirect and not-found responses", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const isRsc = new Headers(init?.headers).get("rsc") === "1";
+      return new Response(isRsc ? "flight not found" : "redirect", {
+        status: isRsc ? 404 : 307,
+        headers: {
+          "cache-control": "public, max-age=0, must-revalidate",
+          "cdn-cache-control": "public, max-age=60",
+          "cf-cache-status": "MISS",
+          "content-type": isRsc ? "text/x-component" : "text/html",
+          [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          ...(isRsc ? { [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-a" } : {}),
+          ...(isRsc ? { vary: VINEXT_RSC_VARY_HEADER } : {}),
+        },
+      });
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/redirect"],
+        rscPaths: ["/not-found"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ warmed: 2, skipped: 0, failed: 0 });
+  });
+
+  it("requires browser-reusable variance for cacheable terminal responses", async () => {
+    const fetchImpl = vi.fn(async () => {
+      const response = cacheableRsc("flight not found");
+      response.headers.set("vary", `${VINEXT_RSC_VARY_HEADER}, User-Agent`);
+      return new Response(response.body, { headers: response.headers, status: 404 });
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: [],
+        rscPaths: ["/not-found"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow("response Vary has unsupported field user-agent");
+  });
+
+  it("does not treat same-build server errors as terminal route responses", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("error", {
+          status: 500,
+          headers: {
+            "cache-control": "no-store",
+            "cf-cache-status": "BYPASS",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          },
+        }),
+    );
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/error"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow("HTTP 500");
+  });
+
+  it("accepts an exact-build terminal response as staged-version readiness", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("not found", {
+          status: 404,
+          headers: {
+            [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+            [VINEXT_RSC_BUILD_ID_HEADER]: "rsc-build-a",
+          },
+        }),
+    );
+
+    await expect(
+      waitForCdnWarmTargetReadiness({
+        expectedBuildId: "build-a",
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        maxAttempts: 1,
+        plan: { loadingShellPaths: [], paths: [], rscPaths: ["/not-found"] },
+        probeIntervalMs: 0,
+        requiredConsecutiveSuccesses: 1,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toEqual({ ready: true });
   });
 
   it("does not skip a non-success response from a different build", async () => {
