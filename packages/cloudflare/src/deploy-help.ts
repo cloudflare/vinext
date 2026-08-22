@@ -49,8 +49,9 @@ export function formatDeployHelp(): string {
   a custom domain (zone analytics are unavailable on *.workers.dev) and the
   CLOUDFLARE_API_TOKEN environment variable with Zone.Analytics read permission.
 
-  CDN warmup requests populate the edge cache only in the Cloudflare data centers
-  reached by the warmup run; they do not globally prefill every edge location.
+  Workers Cache automatically uses tiered caching. Warmed entries can therefore
+  be reused outside the data center reached by the warmup request after cache
+  propagation, but the deploy does not wait for every edge location to fill.
 
   Examples:
     npx @vinext/cloudflare deploy                                      Build and deploy to production

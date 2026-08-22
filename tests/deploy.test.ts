@@ -64,7 +64,10 @@ import {
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
 import { domainCandidates, parseWranglerConfig, runTPR } from "../packages/cloudflare/src/tpr.js";
-import { parseWorkerDeploymentUrl } from "../packages/cloudflare/src/worker-deployment-url.js";
+import {
+  parseCdnWarmupDeploymentUrl,
+  parseWorkerDeploymentUrl,
+} from "../packages/cloudflare/src/worker-deployment-url.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -560,6 +563,21 @@ describe("parseWorkerDeploymentUrl", () => {
   it("does not report an ordinary route pattern as a canonical URL", () => {
     expect(parseWorkerDeploymentUrl("Deployed app triggers\n  app.example.com/*\n")).toBeNull();
   });
+
+  it.each([
+    ["app.example.com/*", "https://app.example.com"],
+    ["https://app.example.com/*", "https://app.example.com"],
+    ["http://app.example.com/*", "http://app.example.com"],
+  ])("uses a concrete catch-all Worker route for CDN warmup: %s", (route, expected) => {
+    expect(parseCdnWarmupDeploymentUrl(`Deployed app triggers\n  ${route}\n`)).toBe(expected);
+  });
+
+  it.each(["*.example.com/*", "app.example.com/api/*", "app.example.com/"])(
+    "rejects a non-canonical Worker route for CDN warmup: %s",
+    (route) => {
+      expect(parseCdnWarmupDeploymentUrl(`Deployed app triggers\n  ${route}\n`)).toBeNull();
+    },
+  );
 
   it("does not report a disabled custom domain", () => {
     expect(

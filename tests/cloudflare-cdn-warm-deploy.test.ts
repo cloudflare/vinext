@@ -152,7 +152,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }
       if (args.includes("triggers")) {
         events.push("triggers");
-        return "Triggers deployed\n";
+        return "Triggers deployed\n  app.example.com (custom domain)\n";
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
@@ -262,6 +262,57 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(delayMock).toHaveBeenCalledWith(15_000);
   });
 
+  it.each([
+    ["singular route", { name: "my-worker", workers_dev: false, route: "sub.example.com/*" }],
+    [
+      "routes object with a zone name",
+      {
+        name: "my-worker",
+        workers_dev: false,
+        routes: [{ pattern: "sub.example.com/*", zone_name: "example.com" }],
+      },
+    ],
+  ])("warms the concrete Worker host from a %s", async (_label, config) => {
+    writeFile("wrangler.jsonc", JSON.stringify(config));
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        return "Staged version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        return "Deployed version\nhttps://stable.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        return "Triggers deployed\n  sub.example.com/*\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, ["/about"], {
+      expectedBuildId: "app-build-a",
+      warmCdnConcurrency: 1,
+      warmCdnPromotionDelay: 0,
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("https://sub.example.com/about"),
+      expect.any(Object),
+    );
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.every(([url]) => formatFetchUrl(url).startsWith("https://sub.example.com/")),
+    ).toBe(true);
+  });
+
   it("does not replay successful staged fills after a non-strict partial failure", async () => {
     const events: string[] = [];
     writeFile(
@@ -314,7 +365,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }
       if (args.includes("triggers")) {
         events.push("triggers");
-        return "Triggers deployed\n";
+        return "Triggers deployed\n  app.example.com (custom domain)\n";
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
@@ -336,7 +387,6 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "fetch:staged:rsc",
       "fetch:staged:loading",
       "fetch:staged:html",
-      "fetch:staged:loading",
       "promote",
       "fetch:promoted:loading",
     ]);
@@ -383,7 +433,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }
       if (args.includes("triggers")) {
         events.push("triggers");
-        return "Triggers deployed\n";
+        return "Triggers deployed\n  app.example.com (custom domain)\n";
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
@@ -437,7 +487,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         return "Deployed version\nhttps://stable.example.workers.dev\n";
       }
       if (args.includes("triggers")) {
-        return "Triggers deployed\n";
+        return "Triggers deployed\n  staging.example.com (custom domain)\n";
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
@@ -479,6 +529,20 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toBe("https://my-worker-staging.example.workers.dev");
   });
 
+  it("does not infer a warmup target from zone-oriented Wrangler config", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({
+        name: "my-worker",
+        workers_dev: false,
+        routes: [{ pattern: "sub.example.com/*", zone_name: "example.com" }],
+      }),
+    );
+    const { resolveCdnWarmupTargetUrl } = await import("../packages/cloudflare/src/deploy.js");
+
+    expect(resolveCdnWarmupTargetUrl(tmpDir, null)).toBeNull();
+  });
+
   it("skips unverifiable HTML warmup for adapters without build identity", async () => {
     const events: string[] = [];
     writeFile(
@@ -510,7 +574,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }
       if (args.includes("triggers")) {
         events.push("triggers");
-        return "Triggers deployed\n";
+        return "Triggers deployed\n  app.example.com (custom domain)\n";
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
@@ -555,7 +619,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }
       if (args.includes("triggers")) {
         events.push("triggers");
-        return "Triggers deployed\n";
+        return "Triggers deployed\n  app.example.com (custom domain)\n";
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
@@ -606,7 +670,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }
       if (args.includes("triggers")) {
         events.push("triggers");
-        return "Triggers deployed\n";
+        return "Triggers deployed\n  app.example.com (custom domain)\n";
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });

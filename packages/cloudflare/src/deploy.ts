@@ -650,11 +650,8 @@ export async function deployWithCdnWarmup(
     } catch (error) {
       throw withStagedVersionCleanupNote(error);
     }
-    const targetUrl = resolveCdnWarmupTargetUrl(
-      root,
-      staged.deployedUrl ?? triggersDeployedUrl,
-      options,
-    );
+    const targetUrl =
+      resolveCdnWarmupTargetUrl(root, triggersDeployedUrl, options) ?? staged.deployedUrl;
     const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, options);
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
     if (targetUrl && headers) {
@@ -741,11 +738,8 @@ export async function deployWithCdnWarmup(
     remainingWarmPlan.rscPaths.length +
     remainingWarmPlan.loadingShellPaths.length;
   if (remainingWarmRequests > 0) {
-    const targetUrl = resolveCdnWarmupTargetUrl(
-      root,
-      deployed.deployedUrl ?? triggersDeployedUrl,
-      options,
-    );
+    const targetUrl =
+      resolveCdnWarmupTargetUrl(root, triggersDeployedUrl, options) ?? deployed.deployedUrl;
     if (targetUrl) {
       try {
         await warmUploadedVersion(targetUrl, undefined, true, remainingWarmPlan);
@@ -781,16 +775,10 @@ export function resolveCdnWarmupTargetUrl(
   options: Pick<DeployOptions, "preview" | "env" | "config">,
 ): string | null;
 export function resolveCdnWarmupTargetUrl(
-  root: string,
+  _root: string,
   deployedUrl: string | null,
-  options?: Pick<DeployOptions, "preview" | "env" | "config">,
+  _options?: Pick<DeployOptions, "preview" | "env" | "config">,
 ): string | null {
-  const config = parseWranglerConfig(root, options?.config);
-  const env = getWranglerTargetEnv(options ?? {});
-  const customDomain = env ? config?.env?.[env]?.customDomain : config?.customDomain;
-  if (customDomain) {
-    return `https://${customDomain}`;
-  }
   return deployedUrl;
 }
 

@@ -5,6 +5,7 @@ import {
   validateWranglerEnvName,
   type DeployOptions,
 } from "./deploy.js";
+import { parseCdnWarmupDeploymentUrl } from "./worker-deployment-url.js";
 import { parseWorkersDevUrl } from "./workers-dev-url.js";
 
 export { parseWorkersDevUrl } from "./workers-dev-url.js";
@@ -324,5 +325,5 @@ export function runWranglerTriggersDeploy(
     console.log("\n  Applying Worker triggers...");
   }
   const output = runWranglerCommand(root, args, execute);
-  return { deployedUrl: parseWorkersDevUrl(output), output };
+  return { deployedUrl: parseCdnWarmupDeploymentUrl(output), output };
 }
