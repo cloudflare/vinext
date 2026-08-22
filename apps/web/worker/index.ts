@@ -1,6 +1,6 @@
 /** Cloudflare Worker entry point for web-specific APIs and scheduled maintenance. */
 import handler from "vinext/server/fetch-handler";
-import { addPreviewRobotsHeader, getCanonicalRedirect } from "./seo";
+import { addNonCanonicalRobotsHeader, getCanonicalRedirect } from "./seo";
 
 type Env = {
   ASSETS: Fetcher;
@@ -166,7 +166,7 @@ export default {
     // ctx.waitUntil() is available to background cache writes and
     // other deferred work via getRequestExecutionContext().
     const response = await handler.fetch(request, env, ctx);
-    return addPreviewRobotsHeader(request, response);
+    return addNonCanonicalRobotsHeader(request, response);
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(sweepPerformanceProfiles(env));
