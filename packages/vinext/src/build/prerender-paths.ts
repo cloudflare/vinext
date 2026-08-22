@@ -137,6 +137,78 @@ function validatePagesStaticPathsResult(
   };
 }
 
+type DynamicPatternParam = { name: string; optional: boolean; repeat: boolean };
+
+function getDynamicPatternParams(pattern: string): DynamicPatternParam[] {
+  return pattern
+    .split("/")
+    .filter((segment) => segment.startsWith(":"))
+    .map((segment) => ({
+      name: segment.slice(1, segment.endsWith("+") || segment.endsWith("*") ? -1 : undefined),
+      optional: segment.endsWith("*"),
+      repeat: segment.endsWith("+") || segment.endsWith("*"),
+    }));
+}
+
+function validateDiscoveredParams(
+  value: unknown,
+  pattern: string,
+  source: "generateStaticParams" | "getStaticPaths",
+): Record<string, string | string[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${source} must return parameter objects for ${pattern}.`);
+  }
+
+  const params = { ...(value as Record<string, unknown>) };
+  for (const { name, optional, repeat } of getDynamicPatternParams(pattern)) {
+    const hasValue = Object.prototype.hasOwnProperty.call(params, name);
+    let paramValue = params[name];
+    if (
+      optional &&
+      hasValue &&
+      (paramValue === null || paramValue === undefined || paramValue === false)
+    ) {
+      paramValue = [];
+      params[name] = paramValue;
+    }
+    const valid = repeat
+      ? Array.isArray(paramValue) && paramValue.every((entry) => typeof entry === "string")
+      : typeof paramValue === "string";
+    if (!valid) {
+      throw new Error(
+        `Parameter ${name} from ${source} for ${pattern} must be ${repeat ? "an array of strings" : "a string"}.`,
+      );
+    }
+  }
+  return params as Record<string, string | string[]>;
+}
+
+function validatePagesStaticPathsEntry(entry: StaticPathsEntry, pattern: string): StaticPathsEntry {
+  if (typeof entry === "string") {
+    if (entry.includes("?") || entry.includes("#")) {
+      throw new Error(
+        `The provided path \`${entry}\` from getStaticPaths does not match the route pattern \`${pattern}\`.`,
+      );
+    }
+    return entry;
+  }
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+
+  const extraKeys = Object.keys(entry).filter((key) => key !== "params" && key !== "locale");
+  if (extraKeys.length > 0) {
+    throw new Error(
+      `Additional key(s) returned from getStaticPaths for ${pattern}: ${extraKeys.join(", ")}.`,
+    );
+  }
+  if (entry.locale !== undefined && typeof entry.locale !== "string") {
+    throw new Error(`Invalid locale returned from getStaticPaths for ${pattern}.`);
+  }
+  return {
+    ...entry,
+    params: validateDiscoveredParams(entry.params, pattern, "getStaticPaths"),
+  };
+}
+
 async function fetchDiscoveryEndpoint(
   url: string,
   headers: Record<string, string>,
@@ -306,19 +378,25 @@ async function collectPagesPaths(options: {
 
       const pathsResult = validatePagesStaticPathsResult(JSON.parse(text), route.pattern);
       for (const item of pathsResult.paths) {
-        let itemToNormalize = item;
+        const validatedItem = validatePagesStaticPathsEntry(item, route.pattern);
+        let itemToNormalize = validatedItem;
         let locale = options.i18n?.defaultLocale;
-        if (options.i18n && typeof item === "string") {
-          const localeInfo = extractPagesStaticPathLocale(item, options.i18n);
+        if (options.i18n && typeof validatedItem === "string") {
+          const localeInfo = extractPagesStaticPathLocale(validatedItem, options.i18n);
           itemToNormalize = localeInfo.url;
           locale = localeInfo.locale;
-        } else if (options.i18n && item && typeof item === "object" && item.locale) {
-          if (!options.i18n.locales.includes(item.locale)) {
+        } else if (
+          options.i18n &&
+          validatedItem &&
+          typeof validatedItem === "object" &&
+          validatedItem.locale
+        ) {
+          if (!options.i18n.locales.includes(validatedItem.locale)) {
             throw new Error(
-              `Invalid locale returned from getStaticPaths for ${route.pattern}: ${item.locale}`,
+              `Invalid locale returned from getStaticPaths for ${route.pattern}: ${validatedItem.locale}`,
             );
           }
-          locale = item.locale;
+          locale = validatedItem.locale;
         }
 
         const normalized = normalizeStaticPathsEntry(itemToNormalize, route.pattern);
@@ -391,7 +469,17 @@ async function collectAppPaths(options: {
             options.secretHeaders,
           );
           if (text === null) return null;
-          return JSON.parse(text) as Record<string, string | string[]>[];
+          const value = JSON.parse(text) as unknown;
+          if (!Array.isArray(value)) {
+            throw new Error(`generateStaticParams must return an array for ${pattern}.`);
+          }
+          return value.map((entry) =>
+            validateDiscoveredParams(
+              { ...params, ...(entry as Record<string, unknown>) },
+              pattern,
+              "generateStaticParams",
+            ),
+          );
         })();
         void request.catch(() => staticParamsCache.delete(cacheKey));
         staticParamsCache.set(cacheKey, request);

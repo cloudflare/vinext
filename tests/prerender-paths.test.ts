@@ -763,6 +763,59 @@ describe("prerender path manifest", () => {
     );
   });
 
+  it.each([
+    ["an extra entry key", "/posts/[slug].tsx", { extra: true, params: { slug: "x" } }],
+    ["a numeric dynamic param", "/posts/[slug].tsx", { params: { slug: 123 } }],
+    ["an array dynamic param", "/posts/[slug].tsx", { params: { slug: ["a", "b"] } }],
+    ["a scalar catch-all param", "/docs/[...parts].tsx", { params: { parts: "a" } }],
+    ["a query-bearing string path", "/posts/[slug].tsx", "/posts/query?x=1"],
+  ])("fails path discovery for getStaticPaths entry with %s", async (_name, file, entry) => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile(
+      `pages${file}`,
+      [
+        "export function getStaticPaths() { return { paths: [], fallback: false }; }",
+        "export function getStaticProps() { return { props: {}, revalidate: 60 }; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockResolvedValue(Response.json({ fallback: false, paths: [entry] }));
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    await expect(emitPrerenderPathManifest({ root: tmpDir })).rejects.toThrow(
+      "Failed to discover warmup path(s)",
+    );
+  });
+
+  it.each([
+    ["a numeric dynamic param", "app/posts/[slug]/page.tsx", [{ slug: 123 }]],
+    ["a scalar catch-all param", "app/docs/[...parts]/page.tsx", [{ parts: "a" }]],
+    ["a missing optional catch-all", "app/docs/[[...parts]]/page.tsx", [{}]],
+  ])("fails App path discovery for generateStaticParams with %s", async (_name, file, result) => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      file,
+      [
+        "export function generateStaticParams() { return []; }",
+        "export const revalidate = 60;",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockResolvedValue(Response.json(result));
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    await expect(emitPrerenderPathManifest({ root: tmpDir })).rejects.toThrow(
+      "Failed to discover warmup path(s)",
+    );
+  });
+
   it("excludes only the locale-specific Pages key affected by a rewrite", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
