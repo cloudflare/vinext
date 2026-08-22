@@ -113,8 +113,10 @@ export function extractLocaleFromUrl(
   const parts = pathname.split("/").filter(Boolean);
   const query = url.includes("?") ? url.slice(url.indexOf("?")) : "";
 
-  if (parts.length > 0 && i18nConfig.locales.includes(parts[0])) {
-    const locale = parts[0];
+  const locale = i18nConfig.locales.find(
+    (candidate) => candidate.toLowerCase() === parts[0]?.toLowerCase(),
+  );
+  if (locale) {
     const rest = "/" + parts.slice(1).join("/");
     return { locale, url: (rest || "/") + query, hadPrefix: true };
   }
