@@ -48,6 +48,7 @@ import {
 import { parseWranglerConfig, runTPR } from "./tpr.js";
 import {
   readPrerenderWarmPlan,
+  waitForCdnWarmTargetReadiness,
   warmCdnCache,
   type CdnWarmOptions,
   type CdnWarmRequestPlan,
@@ -669,13 +670,30 @@ export async function deployWithCdnWarmup(
           stagedWarmPlan.rscPaths.length +
           stagedWarmPlan.loadingShellPaths.length;
         if (stagedWarmRequests > 0) {
-          const warmResult = await warmUploadedVersion(targetUrl, headers, true, stagedWarmPlan);
-          stagedCacheFilled = warmResult.warmed > 0;
-          remainingWarmPlan = {
-            loadingShellPaths: warmResult.retryPlan.loadingShellPaths,
-            paths: warmResult.retryPlan.paths,
-            rscPaths: warmResult.retryPlan.rscPaths,
-          };
+          console.log("  CDN warmup: waiting for the staged Worker version to become stable...");
+          const readiness = await waitForCdnWarmTargetReadiness({
+            targetUrl,
+            headers,
+            plan: stagedWarmPlan,
+            deploymentId: options.deploymentId,
+            expectedBuildId: options.expectedBuildId,
+            expectedRscBuildId: options.expectedRscBuildId,
+            timeoutMs: options.warmCdnTimeout,
+          });
+          if (!readiness.ready) {
+            const message = `CDN warmup could not verify staged Worker readiness: ${readiness.error}.`;
+            if (options.warmCdnStrict) throw new Error(message);
+            console.warn(`  ${message} Warming after promotion instead.`);
+          } else {
+            console.log("  CDN warmup: staged Worker version is stable.");
+            const warmResult = await warmUploadedVersion(targetUrl, headers, true, stagedWarmPlan);
+            stagedCacheFilled = warmResult.warmed > 0;
+            remainingWarmPlan = {
+              loadingShellPaths: warmResult.retryPlan.loadingShellPaths,
+              paths: warmResult.retryPlan.paths,
+              rscPaths: warmResult.retryPlan.rscPaths,
+            };
+          }
         }
       } catch (error) {
         throw withStagedVersionCleanupNote(error);

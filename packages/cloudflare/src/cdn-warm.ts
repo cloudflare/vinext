@@ -1,5 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   PRERENDER_PATHS_MANIFEST,
   type PrerenderPathManifest,
@@ -48,6 +50,10 @@ export type CdnWarmOptions = {
 
 export const DEFAULT_CDN_WARM_CONCURRENCY = 25;
 export const DEFAULT_CDN_WARM_TIMEOUT_MS = 10_000;
+const DEFAULT_STAGED_READINESS_ATTEMPTS = 60;
+const DEFAULT_STAGED_READINESS_INTERVAL_MS = 1_000;
+const DEFAULT_STAGED_READINESS_SUCCESSES = 6;
+const STAGED_READINESS_QUERY_PARAM = "__vinext_cdn_warm_readiness";
 
 export type PrerenderCdnWarmOptions = Omit<CdnWarmOptions, "paths"> & {
   root: string;
@@ -70,6 +76,8 @@ export type CdnWarmRequestPlan = {
   paths: string[];
   rscPaths: string[];
 };
+
+export type CdnWarmReadinessResult = { ready: true } | { error: string; ready: false };
 
 export type PrerenderWarmPlan = {
   buildId?: string;
@@ -299,6 +307,37 @@ async function fetchWithTimeout(
     if (controller.signal.aborted && response?.body) {
       void response.body.cancel().catch(() => {});
     }
+  }
+}
+
+async function fetchHeadersWithTimeout(
+  fetchImpl: typeof fetch,
+  url: URL,
+  timeoutMs: number,
+  headers?: HeadersInit,
+): Promise<Response> {
+  const controller = new AbortController();
+  const requestHeaders = new Headers(headers);
+  requestHeaders.set("User-Agent", "vinext-cloudflare-cdn-warm");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new DOMException(`Timed out after ${timeoutMs}ms`, "AbortError"));
+      }, timeoutMs);
+    });
+    return await Promise.race([
+      fetchImpl(url, {
+        method: "GET",
+        redirect: "manual",
+        headers: requestHeaders,
+        signal: controller.signal,
+      }),
+      timedOut,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -535,6 +574,140 @@ function validateHtmlWarmResponse(response: Response, expectedBuildId?: string):
     return { outcome: "failed", error: `response Vary has unsupported field ${extraVary}` };
   }
   return { outcome: "warmed" };
+}
+
+function validateReadinessResponse(
+  response: Response,
+  kind: "html" | "rsc",
+  expectedBuildId?: string,
+  expectedRscBuildId?: string,
+): string | null {
+  if (response.redirected || response.status < 200 || response.status >= 300) {
+    return response.redirected ? "redirected response" : `HTTP ${response.status}`;
+  }
+  if (
+    kind === "rsc" &&
+    !response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)
+  ) {
+    return `expected ${VINEXT_RSC_CONTENT_TYPE} response`;
+  }
+  const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
+  if (buildIdentityValidation?.outcome === "failed") return buildIdentityValidation.error;
+  if (
+    kind === "rsc" &&
+    expectedRscBuildId !== undefined &&
+    response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) !== expectedRscBuildId
+  ) {
+    return `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build ${expectedRscBuildId}`;
+  }
+  return null;
+}
+
+/**
+ * Wait until version-override requests consistently reach the uploaded build
+ * before any real cache key is filled. Every probe has a unique query key, so
+ * an early response cannot make a later readiness attempt pass from cache.
+ */
+export async function waitForCdnWarmTargetReadiness(
+  options: Pick<
+    CdnWarmOptions,
+    | "deploymentId"
+    | "expectedBuildId"
+    | "expectedRscBuildId"
+    | "fetchImpl"
+    | "headers"
+    | "targetUrl"
+    | "timeoutMs"
+  > & {
+    plan: CdnWarmRequestPlan;
+    maxAttempts?: number;
+    probeIntervalMs?: number;
+    requiredConsecutiveSuccesses?: number;
+  },
+): Promise<CdnWarmReadinessResult> {
+  const rscPath = options.plan.rscPaths[0] ?? options.plan.loadingShellPaths[0];
+  const htmlPath = options.plan.paths[0];
+  const kind = rscPath ? "rsc" : "html";
+  const pathname = rscPath ?? htmlPath;
+  if (!pathname) return { ready: true };
+  if (options.expectedBuildId === undefined && options.expectedRscBuildId === undefined) {
+    return {
+      error: "no response build identity is available for a staged-version readiness probe",
+      ready: false,
+    };
+  }
+
+  const headers = new Headers(options.headers);
+  const probePath = kind === "rsc" ? createCanonicalRscRequestUrl(pathname) : pathname;
+  if (kind === "rsc") {
+    for (const [name, value] of createCanonicalRscRequestHeaders(options.deploymentId)) {
+      headers.set(name, value);
+    }
+  } else {
+    headers.set("Accept", "text/html");
+  }
+  headers.set("Cache-Control", "no-cache");
+  headers.set("Pragma", "no-cache");
+
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
+  const maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_STAGED_READINESS_ATTEMPTS);
+  const probeIntervalMs = Math.max(
+    0,
+    options.probeIntervalMs ?? DEFAULT_STAGED_READINESS_INTERVAL_MS,
+  );
+  const requiredConsecutiveSuccesses = Math.max(
+    1,
+    options.requiredConsecutiveSuccesses ?? DEFAULT_STAGED_READINESS_SUCCESSES,
+  );
+  const probeId = randomUUID();
+  let consecutiveSuccesses = 0;
+  let lastError = "readiness probe did not run";
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const url = buildWarmupUrl(options.targetUrl, probePath);
+    url.searchParams.set(STAGED_READINESS_QUERY_PARAM, `${probeId}-${attempt}`);
+    let response: Response | undefined;
+    try {
+      response = await fetchHeadersWithTimeout(fetchImpl, url, timeoutMs, headers);
+      const validationError = validateReadinessResponse(
+        response,
+        kind,
+        options.expectedBuildId,
+        options.expectedRscBuildId,
+      );
+      if (process.env.VINEXT_CDN_WARM_DEBUG === "1") {
+        console.log(
+          `  CDN warm readiness attempt ${attempt + 1}: ` +
+            `${url.pathname}${url.search} HTTP ${response.status} ` +
+            `build=${response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) ?? response.headers.get(VINEXT_CDN_BUILD_ID_HEADER) ?? "missing"}`,
+        );
+      }
+      if (validationError === null) {
+        consecutiveSuccesses++;
+        if (consecutiveSuccesses >= requiredConsecutiveSuccesses) return { ready: true };
+      } else {
+        consecutiveSuccesses = 0;
+        lastError = validationError;
+      }
+    } catch (error) {
+      consecutiveSuccesses = 0;
+      lastError =
+        error instanceof DOMException && error.name === "AbortError"
+          ? `timed out after ${timeoutMs}ms`
+          : error instanceof Error
+            ? error.message
+            : String(error);
+    } finally {
+      if (response?.body) await response.body.cancel().catch(() => {});
+    }
+    if (attempt + 1 < maxAttempts && probeIntervalMs > 0) await delay(probeIntervalMs);
+  }
+
+  return {
+    error: `${lastError}; uploaded build was not stable for ${requiredConsecutiveSuccesses} consecutive probe(s)`,
+    ready: false,
+  };
 }
 
 function shouldRetryValidationFailure(
