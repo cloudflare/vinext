@@ -82,6 +82,11 @@ describe("createAppPrerenderStaticParamsResolver", () => {
       await expect(nonObjectEntry!({ params: {} })).rejects.toThrow(
         "generateStaticParams must return an array of objects",
       );
+
+      const nonPlainEntry = createAppPrerenderStaticParamsResolver([() => [new Date(0)]]);
+      await expect(nonPlainEntry!({ params: {} })).rejects.toThrow(
+        "generateStaticParams must return an array of objects",
+      );
     } finally {
       if (previous === undefined) delete process.env.__VINEXT_PRERENDER_PATH_DISCOVERY;
       else process.env.__VINEXT_PRERENDER_PATH_DISCOVERY = previous;

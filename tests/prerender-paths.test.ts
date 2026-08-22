@@ -699,6 +699,7 @@ describe("prerender path manifest", () => {
             { params: { slug: "bonjour" }, locale: "fr" },
             "/fr/posts/string-fr",
             "/FR/posts/string-fr-upper",
+            "/en/posts/string-en-explicit",
             "/posts/string-en",
           ],
         });
@@ -729,7 +730,8 @@ describe("prerender path manifest", () => {
       "/posts/hello",
       "/fr/posts/bonjour",
       "/fr/posts/string-fr",
-      "/fr/posts/string-fr-upper",
+      "/FR/posts/string-fr-upper",
+      "/en/posts/string-en-explicit",
       "/posts/string-en",
     ]);
     expect(manifest?.pagesPaths).toEqual(manifest?.paths);
@@ -743,7 +745,8 @@ describe("prerender path manifest", () => {
       "/docs/posts/hello/",
       "/docs/fr/posts/bonjour/",
       "/docs/fr/posts/string-fr/",
-      "/docs/fr/posts/string-fr-upper/",
+      "/docs/FR/posts/string-fr-upper/",
+      "/docs/en/posts/string-en-explicit/",
       "/docs/posts/string-en/",
     ]);
   });
@@ -802,6 +805,8 @@ describe("prerender path manifest", () => {
     ["an array dynamic param", "/posts/[slug].tsx", { params: { slug: ["a", "b"] } }],
     ["a scalar catch-all param", "/docs/[...parts].tsx", { params: { parts: "a" } }],
     ["a query-bearing string path", "/posts/[slug].tsx", "/posts/query?x=1"],
+    ["a relative string path", "/posts/[slug].tsx", "posts/x"],
+    ["a double-slash string path", "/posts/[slug].tsx", "/posts//x"],
   ])("fails path discovery for getStaticPaths entry with %s", async (_name, file, entry) => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");

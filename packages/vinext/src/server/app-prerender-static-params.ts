@@ -35,7 +35,9 @@ function isLazyStaticParamsSource(value: unknown): value is LazyStaticParamsSour
 }
 
 function isRootParams(value: unknown): value is RootParams {
-  return isUnknownRecord(value);
+  if (!isUnknownRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 /**
