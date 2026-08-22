@@ -328,14 +328,47 @@ const REQUIRED_RSC_VARY_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =
   name.trim().toLowerCase(),
 );
 const ADMITTED_CF_CACHE_STATUSES = new Set(["HIT", "MISS", "EXPIRED", "REVALIDATED", "UPDATING"]);
-const NON_CACHEABLE_CF_CACHE_STATUSES = new Set(["BYPASS", "DYNAMIC"]);
+const NON_CACHEABLE_CF_CACHE_STATUSES = new Set(["BYPASS"]);
 const CDN_CACHE_POLICY_HEADERS = [
   "Cloudflare-CDN-Cache-Control",
   "CDN-Cache-Control",
   "Cache-Control",
 ] as const;
-const FIELD_QUALIFIED_SET_COOKIE_RE =
-  /(?:^|,)\s*(?:private|no-cache)\s*=\s*(?:"[^"]*\bset-cookie\b[^"]*"|[^,]*\bset-cookie\b)/i;
+
+function splitCacheControlDirectives(value: string): string[] {
+  const directives: string[] = [];
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index];
+    if (escaped) {
+      escaped = false;
+    } else if (quoted && character === "\\") {
+      escaped = true;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      directives.push(value.slice(start, index));
+      start = index + 1;
+    }
+  }
+  directives.push(value.slice(start));
+  return directives;
+}
+
+function hasFieldQualifiedSetCookie(value: string): boolean {
+  return splitCacheControlDirectives(value).some((directive) => {
+    const separator = directive.indexOf("=");
+    if (separator === -1) return false;
+    const name = directive.slice(0, separator).trim().toLowerCase();
+    if (name !== "private" && name !== "no-cache") return false;
+    const rawFields = directive.slice(separator + 1).trim();
+    const fields =
+      rawFields.startsWith('"') && rawFields.endsWith('"') ? rawFields.slice(1, -1) : rawFields;
+    return fields.split(",").some((field) => field.trim().toLowerCase() === "set-cookie");
+  });
+}
 
 type WarmValidation =
   | { outcome: "warmed" }
@@ -365,10 +398,7 @@ function validateCachePolicy(response: Response, requireCacheStatus: boolean): W
   // cache, while response-time rejection is reported as BYPASS. Downstream
   // freshness cannot reveal a stripped higher-priority edge policy.
   if (cacheStatus && ADMITTED_CF_CACHE_STATUSES.has(cacheStatus)) {
-    if (
-      hasSetCookie &&
-      (!effectivePolicy || !FIELD_QUALIFIED_SET_COOKIE_RE.test(effectivePolicy.value))
-    ) {
+    if (hasSetCookie && (!effectivePolicy || !hasFieldQualifiedSetCookie(effectivePolicy.value))) {
       return {
         outcome: "failed",
         error: "response sets a cookie without an observable field-qualified cache policy",
@@ -385,6 +415,17 @@ function validateCachePolicy(response: Response, requireCacheStatus: boolean): W
           ? "response sets a cookie"
           : `CF-Cache-Status is ${cacheStatus}`;
     return { outcome: "skipped", reason };
+  }
+
+  if (cacheStatus === "DYNAMIC") {
+    if (nonCacheableHeaders.length > 0 || hasSetCookie) {
+      const reason =
+        nonCacheableHeaders.length > 0
+          ? `${nonCacheableHeaders.join(", ")} opts out of caching`
+          : "response sets a cookie";
+      return { outcome: "skipped", reason };
+    }
+    return { outcome: "failed", error: "CF-Cache-Status is DYNAMIC" };
   }
 
   if (nonCacheableHeaders.length > 0 || hasSetCookie) {
@@ -480,6 +521,39 @@ function validateHtmlWarmResponse(response: Response, expectedBuildId?: string):
   return { outcome: "warmed" };
 }
 
+function shouldRetryValidationFailure(
+  response: Response,
+  target: WarmTarget,
+  options: {
+    expectedBuildId?: string;
+    expectedRscBuildId?: string;
+    retryNotFound: boolean;
+    retryPropagationFailures: boolean;
+  },
+): boolean {
+  if (!options.retryPropagationFailures) {
+    return isRetryableStatus(response.status, options.retryNotFound);
+  }
+
+  const expectedIdentities = [
+    options.expectedBuildId === undefined
+      ? null
+      : response.headers.get(VINEXT_CDN_BUILD_ID_HEADER) === options.expectedBuildId,
+    target.kind === "html" || options.expectedRscBuildId === undefined
+      ? null
+      : response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) === options.expectedRscBuildId,
+  ].filter((matches): matches is boolean => matches !== null);
+  if (expectedIdentities.some((matches) => !matches)) return true;
+
+  // A matching identity proves routing reached the uploaded Worker. From that
+  // point, retry only transient HTTP failures; response-shape and admission
+  // failures are deterministic for that build.
+  if (expectedIdentities.length > 0) {
+    return isRetryableStatus(response.status, false);
+  }
+  return isRetryableStatus(response.status, options.retryNotFound);
+}
+
 async function warmOnePath(
   target: WarmTarget,
   options: Required<Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries">> & {
@@ -487,17 +561,18 @@ async function warmOnePath(
     headers?: HeadersInit;
     expectedBuildId?: string;
     expectedRscBuildId?: string;
-    retryAllValidationErrors: boolean;
+    retryPropagationFailures: boolean;
     retryDelayMs: number;
     retryNotFound: boolean;
   },
 ): Promise<
   | { path: string; ok: true; skipped: false }
   | { path: string; ok: true; skipped: true; reason: string }
-  | { path: string; ok: false; error: string }
+  | { path: string; ok: false; error: string; retryable: boolean }
 > {
   const url = buildWarmupUrl(options.targetUrl, target.pathname);
   let lastError = "request failed before the first attempt";
+  let lastRetryable = true;
 
   const canRetry = (attempt: number): boolean => attempt < options.retries;
 
@@ -540,11 +615,8 @@ async function warmOnePath(
           return { path: target.label, ok: true, skipped: true, reason: validation.reason };
         }
         lastError = validation.error;
-        if (
-          !options.retryAllValidationErrors &&
-          !isRetryableStatus(response.status, options.retryNotFound)
-        )
-          break;
+        lastRetryable = shouldRetryValidationFailure(response, target, options);
+        if (!lastRetryable) break;
         if (!canRetry(attempt)) break;
         await waitBeforeRetry();
         continue;
@@ -558,12 +630,10 @@ async function warmOnePath(
         return { path: target.label, ok: true, skipped: true, reason: validation.reason };
       }
       lastError = validation.error;
-      if (
-        !options.retryAllValidationErrors &&
-        !isRetryableStatus(response.status, options.retryNotFound)
-      )
-        break;
+      lastRetryable = shouldRetryValidationFailure(response, target, options);
+      if (!lastRetryable) break;
     } catch (error) {
+      lastRetryable = true;
       if (error instanceof DOMException && error.name === "AbortError") {
         lastError = `timed out after ${options.timeoutMs}ms`;
       } else {
@@ -574,7 +644,7 @@ async function warmOnePath(
     await waitBeforeRetry();
   }
 
-  return { path: target.label, ok: false, error: lastError };
+  return { path: target.label, ok: false, error: lastError, retryable: lastRetryable };
 }
 
 async function runWithConcurrency<T, R>(
@@ -695,7 +765,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       headers: options.headers,
       expectedBuildId: options.expectedBuildId,
       expectedRscBuildId: options.expectedRscBuildId,
-      retryAllValidationErrors: isPropagationRequest,
+      retryPropagationFailures: isPropagationRequest,
       retryDelayMs: isPropagationRequest ? propagationRetryDelayMs : normalRetryDelayMs,
       retryNotFound: isPropagationRequest,
     });
@@ -724,19 +794,28 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     );
     const failed = targets
       .map((target, index) => ({ index, result: results[index], target }))
-      .filter(({ result }) => !result.ok);
-    if (failed.length === 0 || propagationRetries === 0) return results;
+      .filter(
+        (
+          entry,
+        ): entry is {
+          index: number;
+          result: { path: string; ok: false; error: string; retryable: boolean };
+          target: WarmTarget;
+        } => !entry.result.ok,
+      );
+    const retryableFailed = failed.filter(({ result }) => result.retryable);
+    if (retryableFailed.length === 0 || propagationRetries === 0) return results;
 
     progress.finish();
     console.log(
-      `  CDN warmup: retrying ${failed.length} failed request(s) after completing the initial pass...`,
+      `  CDN warmup: retrying ${retryableFailed.length} failed request(s) after completing the initial pass...`,
     );
     const retried = await runWithConcurrency(
-      failed.map(({ target }) => target),
+      retryableFailed.map(({ target }) => target),
       concurrency,
       (target) => warmRequest(target, "propagation-retry", false),
     );
-    for (const [retryIndex, { index }] of failed.entries()) {
+    for (const [retryIndex, { index }] of retryableFailed.entries()) {
       results[index] = retried[retryIndex];
     }
     return results;
@@ -757,7 +836,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       (
         entry,
       ): entry is {
-        result: { path: string; ok: false; error: string };
+        result: { path: string; ok: false; error: string; retryable: boolean };
         target: WarmTarget;
       } => !entry.result.ok,
     );
