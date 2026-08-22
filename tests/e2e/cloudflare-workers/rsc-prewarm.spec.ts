@@ -270,6 +270,17 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   }
 
   await runFresh(async (page) => {
+    await gotoCurrentBuild(page, "/prewarm/router");
+    const shell = await observeRsc(page, () => page.getByTestId("router-prefetch").click());
+    expectLoadingShell(shell);
+
+    const full = await observeRsc(page, () => page.getByTestId("router-navigate").click());
+    expectFull(full);
+    await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
+    await expect(page.getByRole("heading", { name: "Prewarm target" })).toBeVisible();
+  });
+
+  await runFresh(async (page) => {
     let targetRscRequests = 0;
     page.on("request", (request) => {
       const url = new URL(request.url());
@@ -295,8 +306,16 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
   });
 
-  const dynamic = await request.get(`${baseURL}/dynamic?_rsc`, { headers: fullHeaders });
-  expect(dynamic.ok()).toBe(true);
-  expect(dynamic.headers()["cache-control"]).toContain("no-store");
-  expect(dynamic.headers()["cf-cache-status"]).toBe("BYPASS");
+  await runFresh(async (page) => {
+    const dynamicResponsePromise = page.waitForResponse((response) => {
+      const request = response.request();
+      return new URL(response.url()).pathname === "/dynamic" && request.headers().rsc === "1";
+    });
+    await gotoCurrentBuild(page, "/prewarm/dynamic");
+    const dynamic = await dynamicResponsePromise;
+    rejectStaleSeedWorker(dynamic);
+    expect(dynamic.ok()).toBe(true);
+    expect(dynamic.headers()["cache-control"]).toContain("no-store");
+    expect(dynamic.headers()["cf-cache-status"]).toBe("BYPASS");
+  });
 });
