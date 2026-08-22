@@ -12,7 +12,11 @@ import {
   matchAppRoute,
 } from "../routing/app-router.js";
 import { apiRouter, matchRoute, pagesRouter } from "../routing/pages-router.js";
-import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
+import {
+  normalizeStaticPathname,
+  normalizeStaticPathsEntry,
+  type StaticPathsEntry,
+} from "../routing/route-pattern.js";
 import {
   getAppRouteRenderEntryPath,
   classifyAppRoute,
@@ -386,12 +390,9 @@ async function collectPagesPaths(options: {
         const validatedItem = validatePagesStaticPathsEntry(item, route.pattern);
         let itemToNormalize = validatedItem;
         let locale = options.i18n?.defaultLocale;
-        let explicitLocalePrefix: string | undefined;
         if (options.i18n && typeof validatedItem === "string") {
           const localeInfo = extractPagesStaticPathLocale(validatedItem, options.i18n);
           itemToNormalize = localeInfo.url;
-          locale = localeInfo.locale;
-          explicitLocalePrefix = localeInfo.explicitLocalePrefix;
         } else if (
           options.i18n &&
           validatedItem &&
@@ -410,12 +411,15 @@ async function collectPagesPaths(options: {
         if ("error" in normalized) {
           throw new Error(normalized.error);
         }
-        const pathname = buildUrlFromParams(route.pattern, normalized.params);
-        addPath(
-          paths,
-          seen,
-          localizePagesPath(pathname, locale, options.i18n, explicitLocalePrefix),
-        );
+        const pathname =
+          typeof validatedItem === "string"
+            ? normalizeStaticPathname(validatedItem)
+            : localizePagesPath(
+                buildUrlFromParams(route.pattern, normalized.params),
+                locale,
+                options.i18n,
+              );
+        addPath(paths, seen, pathname);
       }
     } catch (error) {
       throwDiscoveryFailure(route.pattern, error);
@@ -429,11 +433,7 @@ function localizePagesPath(
   pathname: string,
   locale: string | undefined,
   i18n: ResolvedNextConfig["i18n"],
-  explicitLocalePrefix?: string,
 ): string {
-  if (explicitLocalePrefix) {
-    return pathname === "/" ? `/${explicitLocalePrefix}` : `/${explicitLocalePrefix}${pathname}`;
-  }
   if (!i18n || !locale || locale === i18n.defaultLocale) return pathname;
   return pathname === "/" ? `/${locale}` : `/${locale}${pathname}`;
 }

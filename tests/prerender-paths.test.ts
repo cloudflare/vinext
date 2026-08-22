@@ -701,6 +701,8 @@ describe("prerender path manifest", () => {
             "/FR/posts/string-fr-upper",
             "/en/posts/string-en-explicit",
             "/posts/string-en",
+            "/posts/%7Euser/",
+            "/posts/a%2fb/",
           ],
         });
       }
@@ -733,6 +735,8 @@ describe("prerender path manifest", () => {
       "/FR/posts/string-fr-upper",
       "/en/posts/string-en-explicit",
       "/posts/string-en",
+      "/posts/%7Euser",
+      "/posts/a%2fb",
     ]);
     expect(manifest?.pagesPaths).toEqual(manifest?.paths);
     expect(fetch).toHaveBeenCalledWith(
@@ -748,6 +752,8 @@ describe("prerender path manifest", () => {
       "/docs/FR/posts/string-fr-upper/",
       "/docs/en/posts/string-en-explicit/",
       "/docs/posts/string-en/",
+      "/docs/posts/%7Euser/",
+      "/docs/posts/a%2fb/",
     ]);
   });
 
