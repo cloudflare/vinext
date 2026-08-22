@@ -52,6 +52,8 @@ export const DEFAULT_CDN_WARM_TIMEOUT_MS = 10_000;
 export type PrerenderCdnWarmOptions = Omit<CdnWarmOptions, "paths"> & {
   root: string;
   includeFallbackShells?: boolean;
+  /** Use the manifest build ID unless the configured adapter cannot expose it. */
+  validateBuildIdentity?: boolean;
 };
 
 export type CdnWarmResult = {
@@ -332,10 +334,8 @@ const CDN_CACHE_POLICY_HEADERS = [
   "CDN-Cache-Control",
   "Cache-Control",
 ] as const;
-const SHARED_CACHE_FRESHNESS_RES = [
-  /(?:^|,)\s*s-maxage\s*=\s*"?(-?\d+)"?/i,
-  /(?:^|,)\s*max-age\s*=\s*"?(-?\d+)"?/i,
-] as const;
+const FIELD_QUALIFIED_SET_COOKIE_RE =
+  /(?:^|,)\s*(?:private|no-cache)\s*=\s*(?:"[^"]*\bset-cookie\b[^"]*"|[^,]*\bset-cookie\b)/i;
 
 type WarmValidation =
   | { outcome: "warmed" }
@@ -357,28 +357,41 @@ function validateCachePolicy(response: Response, requireCacheStatus: boolean): W
   const hasSetCookie = response.headers.has("Set-Cookie");
   const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
 
+  // Cloudflare-CDN-Cache-Control is consumed at the edge and is deliberately
+  // not forwarded to clients. A cacheable Cloudflare-specific policy can
+  // therefore coexist with a downstream `no-store` policy or a Set-Cookie
+  // header that is stripped from the cached object. CF-Cache-Status is the
+  // authoritative admission result: MISS means the response was eligible for
+  // cache, while response-time rejection is reported as BYPASS. Downstream
+  // freshness cannot reveal a stripped higher-priority edge policy.
+  if (cacheStatus && ADMITTED_CF_CACHE_STATUSES.has(cacheStatus)) {
+    if (
+      hasSetCookie &&
+      (!effectivePolicy || !FIELD_QUALIFIED_SET_COOKIE_RE.test(effectivePolicy.value))
+    ) {
+      return {
+        outcome: "failed",
+        error: "response sets a cookie without an observable field-qualified cache policy",
+      };
+    }
+    return { outcome: "warmed" };
+  }
+
+  if (cacheStatus && NON_CACHEABLE_CF_CACHE_STATUSES.has(cacheStatus)) {
+    const reason =
+      nonCacheableHeaders.length > 0
+        ? `${nonCacheableHeaders.join(", ")} opts out of caching`
+        : hasSetCookie
+          ? "response sets a cookie"
+          : `CF-Cache-Status is ${cacheStatus}`;
+    return { outcome: "skipped", reason };
+  }
+
   if (nonCacheableHeaders.length > 0 || hasSetCookie) {
     const reason =
       nonCacheableHeaders.length > 0
         ? `${nonCacheableHeaders.join(", ")} opts out of caching`
         : "response sets a cookie";
-    if (cacheStatus && NON_CACHEABLE_CF_CACHE_STATUSES.has(cacheStatus)) {
-      return { outcome: "skipped", reason };
-    }
-    return {
-      outcome: "failed",
-      error: `${reason}, but CF-Cache-Status is ${cacheStatus ?? "missing"}`,
-    };
-  }
-
-  const sharedFreshness = effectivePolicy
-    ? getSharedCacheFreshnessSeconds(effectivePolicy.value)
-    : null;
-  if (sharedFreshness !== null && sharedFreshness <= 0) {
-    const reason = `${effectivePolicy!.name} has no positive shared-cache freshness`;
-    if (cacheStatus && NON_CACHEABLE_CF_CACHE_STATUSES.has(cacheStatus)) {
-      return { outcome: "skipped", reason };
-    }
     return {
       outcome: "failed",
       error: `${reason}, but CF-Cache-Status is ${cacheStatus ?? "missing"}`,
@@ -390,18 +403,7 @@ function validateCachePolicy(response: Response, requireCacheStatus: boolean): W
       ? { outcome: "failed", error: "response is missing CF-Cache-Status" }
       : { outcome: "warmed" };
   }
-  if (!ADMITTED_CF_CACHE_STATUSES.has(cacheStatus)) {
-    return { outcome: "failed", error: `CF-Cache-Status is ${cacheStatus}` };
-  }
-  return { outcome: "warmed" };
-}
-
-function getSharedCacheFreshnessSeconds(cacheControl: string): number | null {
-  for (const pattern of SHARED_CACHE_FRESHNESS_RES) {
-    const match = pattern.exec(cacheControl);
-    if (match) return Number(match[1]);
-  }
-  return null;
+  return { outcome: "failed", error: `CF-Cache-Status is ${cacheStatus}` };
 }
 
 function validateBuildIdentity(
@@ -445,6 +447,8 @@ function validateRscWarmResponse(
       error: `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build ${expectedRscBuildId}`,
     };
   }
+  const cachePolicyValidation = validateCachePolicy(response, true);
+  if (cachePolicyValidation.outcome !== "warmed") return cachePolicyValidation;
   const vary = new Set(
     (response.headers.get("Vary") ?? "")
       .split(",")
@@ -459,7 +463,7 @@ function validateRscWarmResponse(
   if (extraVary) {
     return { outcome: "failed", error: `response Vary has unsupported field ${extraVary}` };
   }
-  return validateCachePolicy(response, true);
+  return { outcome: "warmed" };
 }
 
 function validateHtmlWarmResponse(response: Response, expectedBuildId?: string): WarmValidation {
@@ -471,7 +475,9 @@ function validateHtmlWarmResponse(response: Response, expectedBuildId?: string):
   }
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
-  return validateCachePolicy(response, true);
+  const cachePolicyValidation = validateCachePolicy(response, true);
+  if (cachePolicyValidation.outcome !== "warmed") return cachePolicyValidation;
+  return { outcome: "warmed" };
 }
 
 async function warmOnePath(
@@ -814,6 +820,7 @@ export async function warmCdnCacheFromPrerender(
   return warmCdnCache({
     ...options,
     ...warmPlan,
-    expectedBuildId: options.expectedBuildId ?? buildId,
+    expectedBuildId:
+      options.expectedBuildId ?? (options.validateBuildIdentity === false ? undefined : buildId),
   });
 }

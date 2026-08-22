@@ -25,6 +25,7 @@ import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
+import { extractLocaleFromUrl } from "../server/pages-i18n.js";
 
 export type PrerenderPathManifest = {
   basePath?: string;
@@ -383,6 +384,7 @@ async function collectAppPaths(options: {
 
 async function resolveAppRscWarmPaths(options: {
   appDir: string;
+  i18n: ResolvedNextConfig["i18n"];
   pagesDir: string | null;
   pageExtensions: readonly string[];
   paths: readonly string[];
@@ -408,10 +410,18 @@ async function resolveAppRscWarmPaths(options: {
     const appRenderEntryPath = getAppRouteRenderEntryPath(matchedAppRoute);
     if (!appRenderEntryPath) continue;
 
-    const pagesMatch = matchRoute(
-      pathname,
-      pathname === "/api" || pathname.startsWith("/api/") ? apiRoutes : pageRoutes,
-    );
+    // Pages Router i18n prefixes are routing metadata rather than part of the
+    // filesystem route. Production strips them before matching Pages/API
+    // routes, while the App Router still matches the original pathname.
+    const pagesPathname = options.i18n
+      ? extractLocaleFromUrl(pathname, options.i18n).url
+      : pathname;
+    // The App-to-Pages production bridge selects the API handler from the raw
+    // request pathname before the Pages matcher strips i18n metadata. A
+    // locale-prefixed `/fr/api/*` path therefore remains a page candidate,
+    // rather than becoming a Pages API request after normalization.
+    const isPagesApiRequest = pathname === "/api" || pathname.startsWith("/api/");
+    const pagesMatch = matchRoute(pagesPathname, isPagesApiRequest ? apiRoutes : pageRoutes);
     if (pagesMatch && pagesRouteHasPriorityOverAppRoute(pagesMatch.route, matchedAppRoute)) {
       continue;
     }
@@ -546,6 +556,7 @@ export async function emitPrerenderPathManifest(
     options.responseVary && appDir
       ? await resolveAppRscWarmPaths({
           appDir,
+          i18n: config.i18n,
           pagesDir,
           pageExtensions: config.pageExtensions,
           paths: discoveredAppPaths,

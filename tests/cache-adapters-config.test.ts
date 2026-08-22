@@ -16,6 +16,7 @@ import {
   findVinextCacheConfigInPlugins,
   loadVinextCacheConfigFromViteConfig,
   generateCacheAdaptersModule,
+  hasBuildIdentityResponseHeader,
   hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
@@ -277,8 +278,13 @@ describe("cdnAdapter builder + factory", () => {
     expect(path.isAbsolute(descriptor.adapter)).toBe(true);
     expect(descriptor.adapter.endsWith("cdn-adapter.runtime.js")).toBe(true);
     expect(descriptor.options).toBeUndefined();
-    expect(descriptor.capabilities).toEqual({ responseVary: "verbatim" });
+    expect(descriptor.capabilities).toEqual({
+      buildIdentity: "response-header",
+      responseVary: "verbatim",
+    });
+    expect(hasBuildIdentityResponseHeader({ cdn: descriptor })).toBe(true);
     expect(hasVerbatimResponseVary({ cdn: descriptor })).toBe(true);
+    expect(hasBuildIdentityResponseHeader({ cdn: { adapter: "custom-cache" } })).toBe(false);
     expect(hasVerbatimResponseVary({ cdn: { adapter: "url-only-cache" } })).toBe(false);
   });
 

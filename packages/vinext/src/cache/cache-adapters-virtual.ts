@@ -25,6 +25,15 @@ import { flattenPluginOptions } from "../utils/plugin-options.js";
  */
 export type CdnCacheAdapterCapabilities = {
   /**
+   * Page responses include the current application build identity in the
+   * framework-owned `X-Vinext-Build-Id` response header, including responses
+   * that are ultimately marked non-cacheable.
+   *
+   * Deploy adapters use this guarantee to distinguish the newly uploaded
+   * Worker from an older version while staged traffic is propagating.
+   */
+  buildIdentity?: "response-header";
+  /**
    * The shared cache selects response variants using every request header
    * named by `Vary`, comparing the header values verbatim.
    *
@@ -48,6 +57,10 @@ export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<st
 
 export function hasVerbatimResponseVary(cache?: VinextCacheConfig | null): boolean {
   return cache?.cdn?.capabilities?.responseVary === "verbatim";
+}
+
+export function hasBuildIdentityResponseHeader(cache?: VinextCacheConfig | null): boolean {
+  return cache?.cdn?.capabilities?.buildIdentity === "response-header";
 }
 
 /**

@@ -31,6 +31,7 @@ import {
   findVinextPrerenderConfigInPlugins,
   findVinextRouteRootConfigInPlugins,
   formatVinextPrerenderLabel,
+  hasBuildIdentityResponseHeader,
   hasVerbatimResponseVary,
   resolveVinextPrerenderDecision,
   type ResolvedVinextPrerenderConfig,
@@ -580,6 +581,12 @@ export async function deployWithCdnWarmup(
       "deploymentId" | "expectedBuildId" | "expectedRscBuildId" | "loadingShellPaths" | "rscPaths"
     >,
 ): Promise<string> {
+  if (options.warmCdnStrict && paths.length > 0 && options.expectedBuildId === undefined) {
+    throw new Error(
+      "Strict CDN HTML warmup requires a CDN adapter that declares build-identity response headers. " +
+        "Configure that adapter capability or rerun without --warm-cdn-strict.",
+    );
+  }
   const upload = runWranglerVersionUpload(root, options);
   const warmUploadedVersion = (
     targetUrl: string,
@@ -610,6 +617,7 @@ export async function deployWithCdnWarmup(
   const wranglerConfig = parseWranglerConfig(root, options.config);
   const deploymentStatus = readWranglerDeploymentStatus(root, options);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
+  const canVerifyStagedHtml = options.expectedBuildId !== undefined;
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let triggersDeployedUrl: string | null = null;
   let stagedCacheFilled = false;
@@ -642,9 +650,29 @@ export async function deployWithCdnWarmup(
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
     if (targetUrl && headers) {
       try {
-        const warmResult = await warmUploadedVersion(targetUrl, headers, true);
-        stagedCacheFilled = warmResult.warmed > 0;
-        remainingWarmPlan = warmResult.retryPlan;
+        if (!canVerifyStagedHtml && remainingWarmPlan.paths.length > 0) {
+          console.log(
+            `  CDN warmup: deferring ${remainingWarmPlan.paths.length} HTML request(s) until after promotion because the CDN adapter does not declare build-identity response headers.`,
+          );
+        }
+        const stagedWarmPlan: CdnWarmRequestPlan = {
+          loadingShellPaths: remainingWarmPlan.loadingShellPaths,
+          paths: canVerifyStagedHtml ? remainingWarmPlan.paths : [],
+          rscPaths: remainingWarmPlan.rscPaths,
+        };
+        const stagedWarmRequests =
+          stagedWarmPlan.paths.length +
+          stagedWarmPlan.rscPaths.length +
+          stagedWarmPlan.loadingShellPaths.length;
+        if (stagedWarmRequests > 0) {
+          const warmResult = await warmUploadedVersion(targetUrl, headers, true, stagedWarmPlan);
+          stagedCacheFilled = warmResult.warmed > 0;
+          remainingWarmPlan = {
+            loadingShellPaths: warmResult.retryPlan.loadingShellPaths,
+            paths: canVerifyStagedHtml ? warmResult.retryPlan.paths : remainingWarmPlan.paths,
+            rscPaths: warmResult.retryPlan.rscPaths,
+          };
+        }
       } catch (error) {
         throw withStagedVersionCleanupNote(error);
       }
@@ -667,6 +695,12 @@ export async function deployWithCdnWarmup(
         "CDN warmup cannot skip promotion because the uploaded Worker version could not be staged at 0% traffic. " +
           "The current deployment must have exactly one version serving 100% traffic.",
       );
+    }
+    if (!canVerifyStagedHtml && remainingWarmPlan.paths.length > 0) {
+      const message =
+        "CDN warmup cannot verify HTML responses before promotion because the configured CDN adapter " +
+        "does not declare build-identity response headers.";
+      console.warn(`  ${message} HTML warmup was deferred and promotion is disabled.`);
     }
     console.log(
       "  CDN warmup: promotion disabled; uploaded Worker version remains staged at 0% traffic.",
@@ -704,6 +738,11 @@ export async function deployWithCdnWarmup(
     remainingWarmPlan.rscPaths.length +
     remainingWarmPlan.loadingShellPaths.length;
   if (remainingWarmRequests > 0) {
+    if (!canVerifyStagedHtml && remainingWarmPlan.paths.length > 0) {
+      console.warn(
+        "  CDN warmup: post-promotion HTML warming is best-effort because the CDN adapter does not declare build-identity response headers.",
+      );
+    }
     try {
       applyTriggers();
     } catch (error) {
@@ -964,6 +1003,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     nextOutput: nextConfig.output,
   });
   const hasStrictResponseVary = hasVerbatimResponseVary(viteConfigMetadata.cacheConfig);
+  const hasBuildIdentityHeader = hasBuildIdentityResponseHeader(viteConfigMetadata.cacheConfig);
   const shouldEmitPrerenderPathManifest =
     options.warmCdnCache || (!options.skipBuild && prerenderDecision);
 
@@ -1049,7 +1089,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       url = await deployWithCdnWarmup(root, warmPlan.paths, {
         ...wranglerOptions,
         deploymentId: warmPlan.deploymentId,
-        expectedBuildId: warmPlan.buildId,
+        expectedBuildId: hasBuildIdentityHeader ? warmPlan.buildId : undefined,
         expectedRscBuildId: warmPlan.rscBuildId,
         loadingShellPaths: warmPlan.loadingShellPaths,
         rscPaths: warmPlan.rscPaths,

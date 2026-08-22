@@ -49,6 +49,18 @@ describe("prerender path manifest", () => {
             { path: ["specific", "value"] },
           ]);
         }
+        if (
+          url.pathname === "/__vinext/prerender/static-params" &&
+          url.searchParams.get("pattern") === "/:locale/about"
+        ) {
+          return Response.json([{ locale: "fr" }]);
+        }
+        if (
+          url.pathname === "/__vinext/prerender/static-params" &&
+          url.searchParams.get("pattern") === "/:locale/api/status"
+        ) {
+          return Response.json([{ locale: "fr" }]);
+        }
         return new Response("null", { headers: { "content-type": "application/json" } });
       }),
     );
@@ -226,6 +238,64 @@ describe("prerender path manifest", () => {
       "/specific/value",
     ]);
     expect(manifest?.loadingShellPaths).toEqual(["/specific/value"]);
+  });
+
+  it("normalizes Pages i18n prefixes before resolving hybrid RSC ownership", async () => {
+    // Next.js normalizes locale prefixes before route matching:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
+    // Locale-prefixed paths do not become Pages API requests after stripping:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-api-support/index.test.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[locale]/about/page.tsx",
+      [
+        "export function generateStaticParams() { return [{ locale: 'fr' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[locale]/about/loading.tsx",
+      "export default function Loading() { return null; }\n",
+    );
+    writeFile(
+      "app/[locale]/api/status/page.tsx",
+      [
+        "export function generateStaticParams() { return [{ locale: 'fr' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[locale]/api/status/loading.tsx",
+      "export default function Loading() { return null; }\n",
+    );
+    writeFile("pages/about.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "pages/api/status.ts",
+      "export default function handler(_request, response) { response.end('ok'); }\n",
+    );
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      { i18n: { defaultLocale: "en", locales: ["en", "fr"] } },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual(["/fr/api/status", "/fr/about", "/about"]);
+    expect(manifest?.rscPaths).toEqual(["/fr/api/status"]);
+    expect(manifest?.loadingShellPaths).toEqual(["/fr/api/status"]);
+    expect(manifest?.pagesPaths).toEqual(["/about"]);
   });
 
   it("skips dynamic warmup paths when static params discovery aborts", async () => {

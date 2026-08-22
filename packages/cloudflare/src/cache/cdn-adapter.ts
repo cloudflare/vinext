@@ -23,6 +23,7 @@ export function cdnAdapter(options?: Record<string, never>) {
     adapter: fileURLToPath(import.meta.resolve("./cdn-adapter.runtime.js")),
     options,
     capabilities: {
+      buildIdentity: "response-header" as const,
       responseVary: "verbatim" as const,
     },
   };
