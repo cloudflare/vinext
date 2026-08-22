@@ -414,4 +414,19 @@ describe("deploy prerender config wiring", () => {
       "deploy",
     ]);
   });
+
+  it("rejects no-promote warmup when discovery finds no requests", async () => {
+    writeApiOnlyProject();
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deploy({
+        root: tmpDir,
+        skipBuild: true,
+        warmCdnCache: true,
+        warmCdnPromote: false,
+      }),
+    ).rejects.toThrow("no build-discovered requests were found to warm");
+    expect(spawn).not.toHaveBeenCalled();
+  });
 });

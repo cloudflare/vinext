@@ -724,6 +724,18 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("rejects no-promote HTML warmup without verifiable build identity before upload", async () => {
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/about"], {
+        warmCdnPromote: false,
+      }),
+    ).rejects.toThrow("discovered HTML requests cannot be verified");
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("applies triggers before post-promotion fallback warmup", async () => {
     const events: string[] = [];
     writeFile(

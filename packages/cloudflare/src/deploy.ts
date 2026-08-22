@@ -592,6 +592,16 @@ export async function deployWithCdnWarmup(
         "Configure that adapter capability or rerun without --warm-cdn-strict.",
     );
   }
+  if (
+    options.warmCdnPromote === false &&
+    paths.length > 0 &&
+    options.expectedBuildId === undefined
+  ) {
+    throw new Error(
+      "CDN warmup cannot skip promotion because the discovered HTML requests cannot be verified. " +
+        "Configure a CDN adapter that declares build-identity response headers.",
+    );
+  }
   const upload = runWranglerVersionUpload(root, options);
   const warmUploadedVersion = (
     targetUrl: string,
@@ -1116,6 +1126,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
         warmCdnPromotionDelay: options.warmCdnPromotionDelay,
       });
     } else {
+      if (options.warmCdnPromote === false) {
+        throw new Error(
+          "CDN warmup cannot skip promotion because no build-discovered requests were found to warm.",
+        );
+      }
       console.log("\n  CDN warmup skipped: no build-discovered paths found.");
       url = await runWranglerDeploy(root, wranglerOptions);
     }
