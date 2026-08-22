@@ -34,3 +34,183 @@ body {
   display: block;
   min-width: max-content;
 }
+
+/*
+ * /readme — prose styles for the build-time-rendered README.
+ *
+ * @tailwindcss/typography is in the workspace catalog but is not a dependency
+ * of this app, so the element styles are written out here. Scoped to
+ * .vinext-readme so they cannot leak into the rest of the site.
+ */
+.vinext-readme {
+  color: var(--text-color-kumo-subtle);
+  line-height: 1.7;
+  font-size: 0.9375rem;
+}
+
+.vinext-readme h2,
+.vinext-readme h3,
+.vinext-readme h4,
+.vinext-readme h5,
+.vinext-readme h6 {
+  color: var(--text-color-kumo-default);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  scroll-margin-top: 2rem;
+}
+
+.vinext-readme h2 {
+  font-size: 1.75rem;
+  margin: 3rem 0 1rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--color-kumo-hairline);
+}
+
+.vinext-readme h2:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.vinext-readme h3 {
+  font-size: 1.25rem;
+  margin: 2.25rem 0 0.75rem;
+}
+
+.vinext-readme h4,
+.vinext-readme h5,
+.vinext-readme h6 {
+  font-size: 1rem;
+  margin: 1.75rem 0 0.5rem;
+}
+
+.vinext-readme p {
+  margin: 0 0 1rem;
+}
+
+.vinext-readme a {
+  color: var(--text-color-kumo-default);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.vinext-readme strong {
+  color: var(--text-color-kumo-default);
+  font-weight: 600;
+}
+
+.vinext-readme ul,
+.vinext-readme ol {
+  margin: 0 0 1rem;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.vinext-readme ul {
+  list-style: disc;
+}
+
+.vinext-readme ol {
+  list-style: decimal;
+}
+
+.vinext-readme li ul,
+.vinext-readme li ol {
+  margin: 0.375rem 0 0;
+}
+
+.vinext-readme :not(pre) > code {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.85em;
+  color: var(--text-color-kumo-default);
+  background: var(--color-kumo-elevated);
+  border: 1px solid var(--color-kumo-hairline);
+  border-radius: 3px;
+  padding: 0.08em 0.32em;
+}
+
+.vinext-readme pre {
+  margin: 0 0 1.25rem;
+  padding: 1.25rem;
+  overflow-x: auto;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-kumo-hairline);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.7;
+}
+
+.vinext-readme blockquote {
+  margin: 0 0 1.25rem;
+  padding: 0.25rem 0 0.25rem 1rem;
+  border-left: 2px solid var(--color-kumo-hairline);
+}
+
+.vinext-readme blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+.vinext-readme hr {
+  margin: 2.5rem 0;
+  border: 0;
+  border-top: 1px solid var(--color-kumo-hairline);
+}
+
+.vinext-readme details {
+  margin: 0 0 1rem;
+  padding: 1rem 1.25rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-kumo-hairline);
+  background: var(--color-kumo-base);
+}
+
+.vinext-readme summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-color-kumo-default);
+}
+
+.vinext-readme details[open] summary {
+  margin-bottom: 1rem;
+}
+
+.vinext-readme img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Wide tables scroll inside their own container so the page never does. */
+.vinext-table-scroll {
+  overflow-x: auto;
+  margin: 0 0 1.25rem;
+  border: 1px solid var(--color-kumo-hairline);
+  border-radius: 0.5rem;
+}
+
+.vinext-table-scroll table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.875rem;
+}
+
+.vinext-table-scroll th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-color-kumo-default);
+  background: var(--color-kumo-elevated);
+  padding: 0.625rem 0.875rem;
+  border-bottom: 1px solid var(--color-kumo-hairline);
+  white-space: nowrap;
+}
+
+.vinext-table-scroll td {
+  padding: 0.625rem 0.875rem;
+  border-bottom: 1px solid var(--color-kumo-hairline);
+  vertical-align: top;
+}
+
+.vinext-table-scroll tr:last-child td {
+  border-bottom: 0;
+}
