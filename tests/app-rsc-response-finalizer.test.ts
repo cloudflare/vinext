@@ -48,6 +48,20 @@ describe("finalizeAppRscResponse — config header application", () => {
     },
   );
 
+  it("does not collapse field-qualified cache directives to no-store", async () => {
+    const cacheControl = 'public, max-age=60, private="set-cookie", no-cache="set-cookie"';
+    const response = new Response("body", { headers: { "Cache-Control": cacheControl } });
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/about"), {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("cache-control")).toBe(cacheControl);
+  });
+
   it("normalizes an adapter-owned cache opt-out after response headers are finalized", async () => {
     const adapter: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,

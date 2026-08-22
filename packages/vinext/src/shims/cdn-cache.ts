@@ -61,8 +61,6 @@ export type CdnCacheableHeaderInput = {
   tags?: readonly string[];
 };
 
-const NON_CACHEABLE_CACHE_DIRECTIVES = new Set(["private", "no-store", "no-cache"]);
-
 /** Whether a Cache-Control value contains an exact non-cacheable directive. */
 export function isNonCacheableCacheControl(cacheControl: string): boolean {
   let start = 0;
@@ -75,7 +73,9 @@ export function isNonCacheableCacheControl(cacheControl: string): boolean {
       const directive = cacheControl.slice(start, index);
       const equals = directive.indexOf("=");
       const name = (equals === -1 ? directive : directive.slice(0, equals)).trim().toLowerCase();
-      if (NON_CACHEABLE_CACHE_DIRECTIVES.has(name)) return true;
+      if (name === "no-store" || (equals === -1 && (name === "private" || name === "no-cache"))) {
+        return true;
+      }
       start = index + 1;
       continue;
     }

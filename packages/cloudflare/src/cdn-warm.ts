@@ -559,14 +559,14 @@ function shouldRetryValidationFailure(
       ? null
       : response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) === options.expectedRscBuildId,
   ].filter((matches): matches is boolean => matches !== null);
-  if (expectedIdentities.some((matches) => !matches)) return true;
 
   // A matching identity proves routing reached the uploaded Worker. From that
   // point, retry only transient HTTP failures; response-shape and admission
   // failures are deterministic for that build.
-  if (expectedIdentities.length > 0) {
+  if (expectedIdentities.some((matches) => matches)) {
     return isRetryableStatus(response.status, false);
   }
+  if (expectedIdentities.some((matches) => !matches)) return true;
   return isRetryableStatus(response.status, options.retryNotFound);
 }
 
