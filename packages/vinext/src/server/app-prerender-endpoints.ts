@@ -90,6 +90,7 @@ async function handleStaticParamsEndpoint(
       pattern,
       rootParamNamesByPattern: options.rootParamNamesByPattern ?? {},
     });
+    if (result === null) return jsonNullResponse();
     return jsonResponse(result);
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);
