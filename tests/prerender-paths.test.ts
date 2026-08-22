@@ -351,7 +351,7 @@ describe("prerender path manifest", () => {
     expect(manifest?.excludedWarmPaths).toEqual(["/foo"]);
   });
 
-  it("excludes Pages-owned hybrid paths from App RSC warm discovery", async () => {
+  it("excludes Pages-owned hybrid paths from App warm discovery", async () => {
     // Next.js resolves matching Pages and App routes by cross-router specificity:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-params/use-params.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/pages-to-app-routing/pages-to-app-routing.test.ts
@@ -387,12 +387,7 @@ describe("prerender path manifest", () => {
       responseVary: "verbatim",
     });
 
-    expect(manifest?.paths).toEqual([
-      "/pages-dir/static",
-      "/pages-dir/foobar",
-      "/api/status",
-      "/specific/value",
-    ]);
+    expect(manifest?.paths).toEqual(["/pages-dir/static", "/specific/value"]);
     expect(manifest?.rscPaths).toEqual(["/pages-dir/static", "/specific/value"]);
     expect(manifest?.loadingShellPaths).toEqual(["/specific/value"]);
     expect(manifest?.pagesPaths).toEqual([]);
@@ -412,6 +407,7 @@ describe("prerender path manifest", () => {
     );
     writeFile("app/pages-dir/static/page.tsx", "export default function Page() { return null; }\n");
     writeFile("app/specific/[id]/page.tsx", "export default function Page() { return null; }\n");
+    writeFile("app/api/status/route.ts", "export function GET() { return new Response('ok'); }\n");
     writeFile(
       "app/specific/[id]/loading.tsx",
       "export default function Loading() { return null; }\n",
@@ -427,9 +423,9 @@ describe("prerender path manifest", () => {
     expect(manifest?.rscPaths).toEqual([
       "/pages-dir/static",
       "/pages-dir/foobar",
-      "/api/status",
       "/specific/value",
     ]);
+    expect(manifest?.paths).toEqual(["/pages-dir/static", "/pages-dir/foobar", "/specific/value"]);
     expect(manifest?.loadingShellPaths).toEqual(["/specific/value"]);
   });
 

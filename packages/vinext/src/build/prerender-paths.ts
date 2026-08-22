@@ -559,13 +559,13 @@ async function collectAppPaths(options: {
   return { loadingShellPaths, paths };
 }
 
-async function resolveAppRscWarmPaths(options: {
+async function resolveAppWarmPaths(options: {
   appDir: string;
   i18n: ResolvedNextConfig["i18n"];
   pagesDir: string | null;
   pageExtensions: readonly string[];
   paths: readonly string[];
-}): Promise<{ loadingShellPaths: string[]; rscPaths: string[] }> {
+}): Promise<{ htmlPaths: string[]; loadingShellPaths: string[]; rscPaths: string[] }> {
   const appRoutes = await appRouter(options.appDir, options.pageExtensions);
   const [pageRoutes, apiRoutes] = options.pagesDir
     ? await Promise.all([
@@ -575,6 +575,7 @@ async function resolveAppRscWarmPaths(options: {
     : [[], []];
 
   const rscPaths: string[] = [];
+  const htmlPaths: string[] = [];
   const loadingShellPaths: string[] = [];
   for (const pathname of options.paths) {
     const appMatch = matchAppRoute(pathname, appRoutes);
@@ -586,6 +587,12 @@ async function resolveAppRscWarmPaths(options: {
 
     const appRenderEntryPath = getAppRouteRenderEntryPath(matchedAppRoute);
     if (!appRenderEntryPath) continue;
+    if (
+      classifyAppRoute(appRenderEntryPath, matchedAppRoute.routePath, matchedAppRoute.isDynamic)
+        .type === "api"
+    ) {
+      continue;
+    }
 
     // Pages Router i18n prefixes are routing metadata rather than part of the
     // filesystem route. Production strips them before matching Pages/API
@@ -603,12 +610,13 @@ async function resolveAppRscWarmPaths(options: {
       continue;
     }
 
+    htmlPaths.push(pathname);
     rscPaths.push(pathname);
     if (appRouteHasMainTreeLoadingBoundary(matchedAppRoute)) {
       loadingShellPaths.push(pathname);
     }
   }
-  return { loadingShellPaths, rscPaths };
+  return { htmlPaths, loadingShellPaths, rscPaths };
 }
 
 function configuredRouteAffectsWarmPath(
@@ -764,20 +772,26 @@ export async function emitPrerenderPathManifest(
       ? paths.filter((pathname) => configuredRouteAffectsWarmPath(pathname, config))
       : [],
   );
-  const warmPaths = paths.filter((pathname) => !excludedWarmPathSet.has(pathname));
-  const appOwnedWarmPaths =
-    options.responseVary && appDir
-      ? await resolveAppRscWarmPaths({
-          appDir,
-          i18n: config.i18n,
-          pagesDir,
-          pageExtensions: config.pageExtensions,
-          paths: discoveredAppPaths.filter((pathname) => !excludedWarmPathSet.has(pathname)),
-        })
-      : {
-          loadingShellPaths: discoveredLoadingShellPaths,
-          rscPaths: discoveredAppPaths,
-        };
+  const configuredPagesWarmPaths = discoveredPagesPaths.filter(
+    (pathname) => !excludedWarmPathSet.has(pathname),
+  );
+  const appOwnedWarmPaths = appDir
+    ? await resolveAppWarmPaths({
+        appDir,
+        i18n: config.i18n,
+        pagesDir,
+        pageExtensions: config.pageExtensions,
+        paths: discoveredAppPaths.filter((pathname) => !excludedWarmPathSet.has(pathname)),
+      })
+    : {
+        htmlPaths: discoveredAppPaths,
+        loadingShellPaths: discoveredLoadingShellPaths,
+        rscPaths: discoveredAppPaths,
+      };
+  const warmPathSet = new Set([...appOwnedWarmPaths.htmlPaths, ...configuredPagesWarmPaths]);
+  const warmPaths = paths.filter(
+    (pathname) => !excludedWarmPathSet.has(pathname) && warmPathSet.has(pathname),
+  );
 
   const manifest: PrerenderPathManifest = {
     ...(config.basePath ? { basePath: config.basePath } : {}),
@@ -786,7 +800,7 @@ export async function emitPrerenderPathManifest(
     ...(config.deploymentId ? { deploymentId: config.deploymentId } : {}),
     ...(pagesDir
       ? {
-          pagesPaths: discoveredPagesPaths.filter((pathname) => !excludedWarmPathSet.has(pathname)),
+          pagesPaths: configuredPagesWarmPaths,
         }
       : {}),
     ...(excludedWarmPathSet.size > 0 ? { excludedWarmPaths: Array.from(excludedWarmPathSet) } : {}),
