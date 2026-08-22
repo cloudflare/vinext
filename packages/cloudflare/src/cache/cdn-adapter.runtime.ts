@@ -48,7 +48,7 @@ const CACHEABLE_EDGE_DIRECTIVE_RE = /(?:^|,)\s*(?:s-maxage|max-age)\s*=/i;
 const EDGE_POLICY_HEADERS = ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"] as const;
 
 function getBuildIdentityResponseHeader(): CdnResponseHeaders {
-  const buildId = process.env.__VINEXT_BUILD_ID;
+  const buildId = process.env.__VINEXT_RSC_BUILD_IDENTITY ?? process.env.__VINEXT_BUILD_ID;
   return buildId ? { [VINEXT_CDN_BUILD_ID_HEADER]: buildId } : {};
 }
 

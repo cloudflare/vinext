@@ -30,6 +30,8 @@ import { extractLocaleFromUrl } from "../server/pages-i18n.js";
 export type PrerenderPathManifest = {
   basePath?: string;
   buildId?: string;
+  /** Opaque per-build identity emitted by CDN adapter page responses. */
+  buildIdentity?: string;
   deploymentId?: string;
   /** Opaque per-build identity emitted by RSC responses. */
   rscBuildId?: string;
@@ -569,6 +571,7 @@ export async function emitPrerenderPathManifest(
   const manifest: PrerenderPathManifest = {
     ...(config.basePath ? { basePath: config.basePath } : {}),
     buildId: config.buildId,
+    ...(rscBuildId ? { buildIdentity: rscBuildId } : {}),
     ...(config.deploymentId ? { deploymentId: config.deploymentId } : {}),
     ...(pagesDir ? { pagesPaths: discoveredPagesPaths } : {}),
     ...(rscBuildId ? { rscBuildId } : {}),

@@ -99,6 +99,7 @@ describe("prerender path manifest", () => {
 
     expect(manifest).toEqual({
       buildId: "build-a",
+      buildIdentity: "rsc-build-a",
       loadingShellPaths: ["/cached/intro", "/cached/featured"],
       rscBuildId: "rsc-build-a",
       responseVary: "verbatim",

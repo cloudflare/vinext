@@ -85,13 +85,14 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 
   it("stamps the application build identity on cacheable and no-store responses", () => {
-    vi.stubEnv("__VINEXT_BUILD_ID", "build-a");
+    vi.stubEnv("__VINEXT_BUILD_ID", "pinned-build");
+    vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "instance-a");
 
     expect(adapter.buildResponseHeaders({ cacheControl: "s-maxage=60" })).toMatchObject({
-      [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+      [VINEXT_CDN_BUILD_ID_HEADER]: "instance-a",
     });
     expect(adapter.buildResponseHeaders({ cacheControl: "no-store" })).toMatchObject({
-      [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+      [VINEXT_CDN_BUILD_ID_HEADER]: "instance-a",
     });
   });
 

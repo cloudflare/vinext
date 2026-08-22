@@ -81,6 +81,7 @@ describe("Cloudflare CDN warmup", () => {
       JSON.stringify({
         basePath: "/docs",
         buildId: "build-a",
+        buildIdentity: "rsc-build-a",
         deploymentId: "dpl_123",
         loadingShellPaths: ["/dashboard"],
         paths: ["/dashboard", "/dynamic", "/pages"],
@@ -97,6 +98,7 @@ describe("Cloudflare CDN warmup", () => {
 
     expect(readPrerenderWarmPlan(tmpDir)).toEqual({
       buildId: "build-a",
+      buildIdentity: "rsc-build-a",
       deploymentId: "dpl_123",
       loadingShellPaths: ["/docs/dashboard/"],
       paths: ["/docs/dashboard/", "/docs/dynamic/", "/docs/pages/"],
@@ -530,6 +532,42 @@ describe("Cloudflare CDN warmup", () => {
     ).rejects.toThrow("response is missing CF-Cache-Status");
   });
 
+  it("rejects HTML variants that the warmer request cannot share with browsers", async () => {
+    const fetchImpl = vi.fn(async () => {
+      const response = cacheableHtml();
+      response.headers.set("vary", `${VINEXT_RSC_VARY_HEADER}, User-Agent`);
+      return response;
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/browser-specific-html"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow("response Vary has unsupported field user-agent");
+  });
+
+  it("accepts HTML varied only by framework RSC selector headers", async () => {
+    const fetchImpl = vi.fn(async () => {
+      const response = cacheableHtml();
+      response.headers.set("vary", VINEXT_RSC_VARY_HEADER);
+      return response;
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/shared-html"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ warmed: 1, failed: 0 });
+  });
+
   it("rejects responses rendered by a different application build", async () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const response =
@@ -780,14 +818,18 @@ describe("Cloudflare CDN warmup", () => {
   });
 
   it("uses the discovery manifest build identity by default", async () => {
-    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/BUILD_ID", "pinned-build\n");
     writeFile(
       "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({ buildId: "build-a", paths: ["/wrong-build"] }),
+      JSON.stringify({
+        buildId: "pinned-build",
+        buildIdentity: "instance-a",
+        paths: ["/wrong-build"],
+      }),
     );
     const fetchImpl = vi.fn(async () => {
       const response = cacheableHtml();
-      response.headers.set(VINEXT_CDN_BUILD_ID_HEADER, "old-build");
+      response.headers.set(VINEXT_CDN_BUILD_ID_HEADER, "old-instance");
       return response;
     });
 
@@ -798,6 +840,36 @@ describe("Cloudflare CDN warmup", () => {
         strict: true,
         targetUrl: "https://app.example.com",
       }),
-    ).rejects.toThrow(`response ${VINEXT_CDN_BUILD_ID_HEADER} does not match build build-a`);
+    ).rejects.toThrow(`response ${VINEXT_CDN_BUILD_ID_HEADER} does not match build instance-a`);
+  });
+
+  it("uses the discovery manifest RSC build identity by default", async () => {
+    writeFile("dist/server/BUILD_ID", "pinned-build\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "pinned-build",
+        buildIdentity: "instance-a",
+        paths: [],
+        responseVary: "verbatim",
+        rscBuildId: "instance-a",
+        rscPaths: ["/wrong-rsc-build"],
+      }),
+    );
+    const fetchImpl = vi.fn(async () => {
+      const response = cacheableRsc();
+      response.headers.set(VINEXT_RSC_BUILD_ID_HEADER, "old-instance");
+      return response;
+    });
+
+    await expect(
+      warmCdnCacheFromPrerender({
+        fetchImpl: fetchImpl as typeof fetch,
+        root: tmpDir,
+        strict: true,
+        targetUrl: "https://app.example.com",
+        validateBuildIdentity: false,
+      }),
+    ).rejects.toThrow(`response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build instance-a`);
   });
 });

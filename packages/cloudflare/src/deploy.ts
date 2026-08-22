@@ -1082,7 +1082,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       url = await deployWithCdnWarmup(root, warmPlan.paths, {
         ...wranglerOptions,
         deploymentId: warmPlan.deploymentId,
-        expectedBuildId: hasBuildIdentityHeader ? warmPlan.buildId : undefined,
+        expectedBuildId: hasBuildIdentityHeader ? warmPlan.buildIdentity : undefined,
         expectedRscBuildId: warmPlan.rscBuildId,
         loadingShellPaths: warmPlan.loadingShellPaths,
         rscPaths: warmPlan.rscPaths,

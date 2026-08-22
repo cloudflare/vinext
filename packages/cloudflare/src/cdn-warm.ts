@@ -52,7 +52,7 @@ export const DEFAULT_CDN_WARM_TIMEOUT_MS = 10_000;
 export type PrerenderCdnWarmOptions = Omit<CdnWarmOptions, "paths"> & {
   root: string;
   includeFallbackShells?: boolean;
-  /** Use the manifest build ID unless the configured adapter cannot expose it. */
+  /** Use the manifest build identity unless the configured adapter cannot expose it. */
   validateBuildIdentity?: boolean;
 };
 
@@ -73,6 +73,7 @@ export type CdnWarmRequestPlan = {
 
 export type PrerenderWarmPlan = {
   buildId?: string;
+  buildIdentity?: string;
   deploymentId?: string;
   loadingShellPaths: string[];
   paths: string[];
@@ -124,6 +125,7 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
         (!Array.isArray(manifest.loadingShellPaths) ||
           !manifest.loadingShellPaths.every((pathname) => typeof pathname === "string"))) ||
       (manifest.basePath !== undefined && typeof manifest.basePath !== "string") ||
+      (manifest.buildIdentity !== undefined && typeof manifest.buildIdentity !== "string") ||
       (manifest.deploymentId !== undefined && typeof manifest.deploymentId !== "string") ||
       (manifest.rscBuildId !== undefined && typeof manifest.rscBuildId !== "string") ||
       (manifest.trailingSlash !== undefined && typeof manifest.trailingSlash !== "boolean") ||
@@ -209,6 +211,7 @@ export function readPrerenderWarmPlan(
   }
   return {
     buildId: manifest.buildId,
+    ...(manifest.buildIdentity ? { buildIdentity: manifest.buildIdentity } : {}),
     ...(manifest.deploymentId ? { deploymentId: manifest.deploymentId } : {}),
     loadingShellPaths: supportsCanonicalRsc
       ? (manifest.loadingShellPaths ?? []).map(applyConfig)
@@ -518,6 +521,13 @@ function validateHtmlWarmResponse(response: Response, expectedBuildId?: string):
   if (buildIdentityValidation) return buildIdentityValidation;
   const cachePolicyValidation = validateCachePolicy(response, true);
   if (cachePolicyValidation.outcome !== "warmed") return cachePolicyValidation;
+  const extraVary = (response.headers.get("Vary") ?? "")
+    .split(",")
+    .map((name) => name.trim().toLowerCase())
+    .find((name) => name && !REQUIRED_RSC_VARY_HEADERS.includes(name));
+  if (extraVary) {
+    return { outcome: "failed", error: `response Vary has unsupported field ${extraVary}` };
+  }
   return { outcome: "warmed" };
 }
 
@@ -895,11 +905,18 @@ export async function warmCdnCacheFromPrerender(
     includeFallbackShells: options.includeFallbackShells,
     strict: options.strict,
   });
-  const { buildId, ...warmPlan } = plan;
+  const warmPlan = {
+    deploymentId: plan.deploymentId,
+    loadingShellPaths: plan.loadingShellPaths,
+    paths: plan.paths,
+    rscPaths: plan.rscPaths,
+  };
   return warmCdnCache({
     ...options,
     ...warmPlan,
     expectedBuildId:
-      options.expectedBuildId ?? (options.validateBuildIdentity === false ? undefined : buildId),
+      options.expectedBuildId ??
+      (options.validateBuildIdentity === false ? undefined : plan.buildIdentity),
+    expectedRscBuildId: options.expectedRscBuildId ?? plan.rscBuildId,
   });
 }
