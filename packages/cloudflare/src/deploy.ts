@@ -1043,6 +1043,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     await emitPrerenderPathManifest({
       root: info.root,
       nextConfig,
+      buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
       responseVary: hasStrictResponseVary ? "verbatim" : undefined,
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });

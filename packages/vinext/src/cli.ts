@@ -64,6 +64,7 @@ import {
 } from "./config/prerender.js";
 import {
   findVinextCacheConfigInPlugins,
+  hasBuildIdentityResponseHeader,
   hasVerbatimResponseVary,
   type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
@@ -729,6 +730,9 @@ async function buildApp() {
     await emitPrerenderPathManifest({
       root,
       nextConfig: resolvedNextConfig,
+      buildIdentity: hasBuildIdentityResponseHeader(buildConfigMetadata.cacheConfig)
+        ? "response-header"
+        : undefined,
       responseVary: hasVerbatimResponseVary(buildConfigMetadata.cacheConfig)
         ? "verbatim"
         : undefined,

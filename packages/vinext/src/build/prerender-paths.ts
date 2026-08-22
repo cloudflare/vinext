@@ -72,6 +72,7 @@ type EmitPrerenderPathManifestOptions = {
   routeRootConfig?: VinextRouteRootConfig | null;
   pagesBundlePath?: string;
   rscBundlePath?: string;
+  buildIdentity?: CdnCacheAdapterCapabilities["buildIdentity"];
   responseVary?: CdnCacheAdapterCapabilities["responseVary"];
 };
 
@@ -847,7 +848,9 @@ export async function emitPrerenderPathManifest(
   const manifest: PrerenderPathManifest = {
     ...(config.basePath ? { basePath: config.basePath } : {}),
     buildId: config.buildId,
-    ...(rscBuildId ? { buildIdentity: rscBuildId } : {}),
+    ...(rscBuildId && options.buildIdentity === "response-header"
+      ? { buildIdentity: rscBuildId }
+      : {}),
     ...(config.deploymentId ? { deploymentId: config.deploymentId } : {}),
     ...(pagesDir
       ? {

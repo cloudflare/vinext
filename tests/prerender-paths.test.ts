@@ -101,7 +101,11 @@ describe("prerender path manifest", () => {
     const { emitPrerenderPathManifest } =
       await import("../packages/vinext/src/build/prerender-paths.js");
 
-    const manifest = await emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" });
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      buildIdentity: "response-header",
+      responseVary: "verbatim",
+    });
 
     expect(manifest).toEqual({
       buildId: "build-a",
@@ -287,6 +291,21 @@ describe("prerender path manifest", () => {
       "http://127.0.0.1:43210/__vinext/prerender/static-params?pattern=%2F%3Acategory",
       expect.any(Object),
     );
+  });
+
+  it("only advertises HTML build identity when the CDN adapter guarantees it", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }\n");
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" });
+
+    expect(manifest?.buildIdentity).toBeUndefined();
+    expect(manifest?.rscBuildId).toBe("rsc-build-a");
   });
 
   it("matches rewrites against the trailing-slash warm URL", async () => {
