@@ -856,10 +856,13 @@ describe("prerender path manifest", () => {
     ["an extra entry key", "/posts/[slug].tsx", { extra: true, params: { slug: "x" } }],
     ["a numeric dynamic param", "/posts/[slug].tsx", { params: { slug: 123 } }],
     ["an array dynamic param", "/posts/[slug].tsx", { params: { slug: ["a", "b"] } }],
+    ["a dot-segment dynamic param", "/posts/[slug].tsx", { params: { slug: "." } }],
     ["a scalar catch-all param", "/docs/[...parts].tsx", { params: { parts: "a" } }],
     ["a query-bearing string path", "/posts/[slug].tsx", "/posts/query?x=1"],
     ["a relative string path", "/posts/[slug].tsx", "posts/x"],
     ["a double-slash string path", "/posts/[slug].tsx", "/posts//x"],
+    ["a raw backslash string path", "/posts/[slug].tsx", "/posts\\admin"],
+    ["an encoded dot-segment string path", "/posts/[...slug].tsx", "/posts/%2E%2E/admin"],
     ["malformed percent-encoding", "/posts/[slug].tsx", "/posts/%ZZ/"],
   ])("fails path discovery for getStaticPaths entry with %s", async (_name, file, entry) => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
@@ -884,6 +887,7 @@ describe("prerender path manifest", () => {
 
   it.each([
     ["a numeric dynamic param", "app/posts/[slug]/page.tsx", [{ slug: 123 }]],
+    ["a dot-segment dynamic param", "app/posts/[slug]/page.tsx", [{ slug: ".." }]],
     ["a scalar catch-all param", "app/docs/[...parts]/page.tsx", [{ parts: "a" }]],
     ["a missing optional catch-all", "app/docs/[[...parts]]/page.tsx", [{}]],
   ])("fails App path discovery for generateStaticParams with %s", async (_name, file, result) => {

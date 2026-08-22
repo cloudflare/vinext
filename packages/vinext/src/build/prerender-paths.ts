@@ -144,6 +144,14 @@ function validatePagesStaticPathsResult(
 
 type DynamicPatternParam = { name: string; optional: boolean; repeat: boolean };
 
+function hasUnsafeRawUrlPathCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code === 92 || code <= 31 || code === 127) return true;
+  }
+  return false;
+}
+
 function getDynamicPatternParams(pattern: string): DynamicPatternParam[] {
   return pattern
     .split("/")
@@ -184,6 +192,12 @@ function validateDiscoveredParams(
         `Parameter ${name} from ${source} for ${pattern} must be ${repeat ? "an array of strings" : "a string"}.`,
       );
     }
+    const values = Array.isArray(paramValue) ? paramValue : [paramValue];
+    if (values.some((entry) => entry === "." || entry === "..")) {
+      throw new Error(
+        `Parameter ${name} from ${source} for ${pattern} must not contain dot path segments.`,
+      );
+    }
   }
   return params as Record<string, string | string[]>;
 }
@@ -194,17 +208,24 @@ function validatePagesStaticPathsEntry(entry: StaticPathsEntry, pattern: string)
       !entry.startsWith("/") ||
       entry.includes("//") ||
       entry.includes("?") ||
-      entry.includes("#")
+      entry.includes("#") ||
+      hasUnsafeRawUrlPathCharacter(entry)
     ) {
       throw new Error(
         `The provided path \`${entry}\` from getStaticPaths does not match the route pattern \`${pattern}\`.`,
       );
     }
+    let decodedSegments: string[];
     try {
-      for (const segment of entry.split("/")) decodeURIComponent(segment);
+      decodedSegments = entry.split("/").map((segment) => decodeURIComponent(segment));
     } catch {
       throw new Error(
         `The provided path \`${entry}\` from getStaticPaths contains malformed percent-encoding.`,
+      );
+    }
+    if (decodedSegments.some((segment) => segment === "." || segment === "..")) {
+      throw new Error(
+        `The provided path \`${entry}\` from getStaticPaths contains a dot path segment.`,
       );
     }
     return entry;
