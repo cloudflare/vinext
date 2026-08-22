@@ -6,9 +6,11 @@ import Footer from 'components/footer'
 export const metadata = {
   title: 'Hacker News — vinext + Cloudflare Workers',
   description: 'Hacker News clone built with React Server Components, running on vinext + Cloudflare Workers.',
+  // Demo deploy on a *.vinext.workers.dev host: keep it out of the index so it
+  // does not compete with vinext.dev for the project's own brand term.
   robots: {
-    index: true,
-    follow: true
+    index: false,
+    follow: false
   }
 }
 

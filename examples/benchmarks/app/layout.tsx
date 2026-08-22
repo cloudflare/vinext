@@ -6,7 +6,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>vinext Benchmarks</title>
+        <meta name="robots" content="noindex, nofollow" />
+        <title>Benchmarks example app</title>
         <meta
           name="description"
           content="Performance benchmarks for vinext vs Next.js, tracked over time."
