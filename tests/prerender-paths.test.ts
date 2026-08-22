@@ -450,7 +450,7 @@ describe("prerender path manifest", () => {
     expect(manifest?.paths).toEqual(["/fr/api/status", "/fr/about", "/about"]);
     expect(manifest?.rscPaths).toEqual(["/fr/api/status"]);
     expect(manifest?.loadingShellPaths).toEqual(["/fr/api/status"]);
-    expect(manifest?.pagesPaths).toEqual(["/about"]);
+    expect(manifest?.pagesPaths).toEqual(["/about", "/fr/about"]);
   });
 
   it("skips dynamic warmup paths when static params discovery aborts", async () => {
@@ -603,6 +603,109 @@ describe("prerender path manifest", () => {
 
     expect(manifest?.paths).toEqual(["/pages-only"]);
     expect(manifest?.pagesPaths).toEqual(["/pages-only"]);
+  });
+
+  it("discovers locale-specific Pages Router warmup keys", async () => {
+    // Next.js passes i18n metadata to getStaticPaths and qualifies each
+    // returned pathname with its selected locale:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/static-paths/pages.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile("pages/about.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "pages/posts/[slug].tsx",
+      [
+        "export function getStaticPaths() { return { paths: [], fallback: false }; }",
+        "export function getStaticProps() { return { props: {}, revalidate: 60 }; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      const rawUrl =
+        input instanceof URL ? input.href : typeof input === "string" ? input : input.url;
+      const url = new URL(rawUrl);
+      if (url.pathname === "/__vinext/prerender/pages-static-paths") {
+        return Response.json({
+          fallback: false,
+          paths: [
+            { params: { slug: "hello" } },
+            { params: { slug: "bonjour" }, locale: "fr" },
+            "/fr/posts/string-fr",
+            "/posts/string-en",
+          ],
+        });
+      }
+      return new Response("null", { headers: { "content-type": "application/json" } });
+    });
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }, { readPrerenderWarmPlan }] =
+      await Promise.all([
+        import("../packages/vinext/src/build/prerender-paths.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+        import("../packages/cloudflare/src/cdn-warm.js"),
+      ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        basePath: "/docs",
+        i18n: { defaultLocale: "en", locales: ["en", "fr"] },
+        trailingSlash: true,
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, nextConfig });
+
+    expect(manifest?.paths).toEqual([
+      "/about",
+      "/fr/about",
+      "/posts/hello",
+      "/fr/posts/bonjour",
+      "/fr/posts/string-fr",
+      "/posts/string-en",
+    ]);
+    expect(manifest?.pagesPaths).toEqual(manifest?.paths);
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:43210/__vinext/prerender/pages-static-paths?pattern=%2Fposts%2F%3Aslug&locales=%5B%22en%22%2C%22fr%22%5D&defaultLocale=en",
+      expect.any(Object),
+    );
+    expect(readPrerenderWarmPlan(tmpDir).paths).toEqual([
+      "/docs/about/",
+      "/docs/fr/about/",
+      "/docs/posts/hello/",
+      "/docs/fr/posts/bonjour/",
+      "/docs/fr/posts/string-fr/",
+      "/docs/posts/string-en/",
+    ]);
+  });
+
+  it("excludes only the locale-specific Pages key affected by a rewrite", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile("pages/about.tsx", "export default function Page() { return null; }\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        i18n: { defaultLocale: "en", locales: ["en", "fr"] },
+        rewrites: () => [{ source: "/fr/about", destination: "/other", locale: false }],
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual(["/about"]);
+    expect(manifest?.pagesPaths).toEqual(["/about"]);
+    expect(manifest?.excludedWarmPaths).toEqual(["/fr/about"]);
   });
 
   it("does not reload disk config when supplied resolved config", async () => {

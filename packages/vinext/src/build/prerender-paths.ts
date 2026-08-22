@@ -221,6 +221,7 @@ async function withPrerenderEndpoints<T>(fn: () => Promise<T>): Promise<T> {
 
 async function collectPagesPaths(options: {
   baseUrl: string | null;
+  i18n: ResolvedNextConfig["i18n"];
   pagesDir: string;
   pageExtensions: readonly string[];
   secretHeaders: Record<string, string>;
@@ -244,7 +245,13 @@ async function collectPagesPaths(options: {
     if (type === "api" || type === "ssr") continue;
 
     if (!route.isDynamic) {
-      addPath(paths, seen, route.pattern);
+      if (options.i18n) {
+        for (const locale of options.i18n.locales) {
+          addPath(paths, seen, localizePagesPath(route.pattern, locale, options.i18n));
+        }
+      } else {
+        addPath(paths, seen, route.pattern);
+      }
       continue;
     }
 
@@ -253,6 +260,10 @@ async function collectPagesPaths(options: {
 
     try {
       const search = new URLSearchParams({ pattern: route.pattern });
+      if (options.i18n) {
+        search.set("locales", JSON.stringify(options.i18n.locales));
+        search.set("defaultLocale", options.i18n.defaultLocale);
+      }
       const text = await fetchDiscoveryEndpoint(
         `${options.baseUrl}/__vinext/prerender/pages-static-paths?${search}`,
         options.secretHeaders,
@@ -264,11 +275,27 @@ async function collectPagesPaths(options: {
         fallback?: unknown;
       };
       for (const item of pathsResult.paths ?? []) {
-        const normalized = normalizeStaticPathsEntry(item, route.pattern);
+        let itemToNormalize = item;
+        let locale = options.i18n?.defaultLocale;
+        if (options.i18n && typeof item === "string") {
+          const localeInfo = extractLocaleFromUrl(item, options.i18n);
+          itemToNormalize = localeInfo.url;
+          locale = localeInfo.locale;
+        } else if (options.i18n && item && typeof item === "object" && item.locale) {
+          if (!options.i18n.locales.includes(item.locale)) {
+            throw new Error(
+              `Invalid locale returned from getStaticPaths for ${route.pattern}: ${item.locale}`,
+            );
+          }
+          locale = item.locale;
+        }
+
+        const normalized = normalizeStaticPathsEntry(itemToNormalize, route.pattern);
         if ("error" in normalized) {
           throw new Error(normalized.error);
         }
-        addPath(paths, seen, buildUrlFromParams(route.pattern, normalized.params));
+        const pathname = buildUrlFromParams(route.pattern, normalized.params);
+        addPath(paths, seen, localizePagesPath(pathname, locale, options.i18n));
       }
     } catch (error) {
       warnDiscoveryFailure(route.pattern, error);
@@ -276,6 +303,15 @@ async function collectPagesPaths(options: {
   }
 
   return paths;
+}
+
+function localizePagesPath(
+  pathname: string,
+  locale: string | undefined,
+  i18n: ResolvedNextConfig["i18n"],
+): string {
+  if (!i18n || !locale || locale === i18n.defaultLocale) return pathname;
+  return pathname === "/" ? `/${locale}` : `/${locale}${pathname}`;
 }
 
 async function collectAppPaths(options: {
@@ -568,6 +604,7 @@ export async function emitPrerenderPathManifest(
       if (pagesDir) {
         for (const pathname of await collectPagesPaths({
           baseUrl,
+          i18n: config.i18n,
           pagesDir,
           pageExtensions: config.pageExtensions,
           secretHeaders,
