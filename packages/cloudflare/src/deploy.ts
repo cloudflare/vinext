@@ -636,6 +636,10 @@ export async function deployWithCdnWarmup(
     paths: canVerifyStagedHtml ? [...paths] : [],
     rscPaths: [...(options.rscPaths ?? [])],
   };
+  const initialWarmRequests =
+    remainingWarmPlan.paths.length +
+    remainingWarmPlan.rscPaths.length +
+    remainingWarmPlan.loadingShellPaths.length;
   let triggersApplied = false;
 
   function applyTriggers(): void {
@@ -678,11 +682,18 @@ export async function deployWithCdnWarmup(
             deploymentId: options.deploymentId,
             expectedBuildId: options.expectedBuildId,
             expectedRscBuildId: options.expectedRscBuildId,
+            retries: options.warmCdnRetries,
             timeoutMs: options.warmCdnTimeout,
           });
           if (!readiness.ready) {
             const message = `CDN warmup could not verify staged Worker readiness: ${readiness.error}.`;
-            if (options.warmCdnStrict) throw new Error(message);
+            if (options.warmCdnStrict || options.warmCdnPromote === false) {
+              const noPromoteNote =
+                options.warmCdnPromote === false
+                  ? " CDN warmup cannot continue because promotion is disabled and the staged version was not warmed."
+                  : "";
+              throw new Error(`${message}${noPromoteNote}`);
+            }
             console.warn(`  ${message} Warming after promotion instead.`);
           } else {
             console.log("  CDN warmup: staged Worker version is stable.");
@@ -706,6 +717,11 @@ export async function deployWithCdnWarmup(
       );
     }
   } else {
+    if (options.warmCdnStrict && initialWarmRequests > 0) {
+      throw new Error(
+        "Strict CDN warmup cannot stage the uploaded Worker at 0% because the current deployment is not exactly one version serving 100% traffic. No traffic or triggers were changed.",
+      );
+    }
     console.warn(
       "  CDN warmup: pre-traffic version override skipped because the current deployment is not one version serving 100% traffic.",
     );

@@ -589,9 +589,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     });
 
     expect(events.slice(0, 4)).toEqual(["upload", "status", "stage", "triggers"]);
-    expect(events.filter((event) => event === "fetch:staged")).toHaveLength(60);
+    expect(events.filter((event) => event === "fetch:staged")).toHaveLength(7);
     expect(events.slice(-2)).toEqual(["promote", "fetch:promoted"]);
-    expect(delayMock).toHaveBeenCalledTimes(59);
+    expect(delayMock).toHaveBeenCalledTimes(6);
     expect(delayMock).toHaveBeenCalledWith(1_000);
   });
 
@@ -831,6 +831,54 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ]);
     expect(events.filter((event) => event === "readiness")).toHaveLength(6);
     expect(events.filter((event) => event === "delay:1000")).toHaveLength(5);
+  });
+
+  it("fails no-promote deployment when staged readiness cannot be established", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
+    );
+    vi.mocked(fetch).mockResolvedValue(
+      new Response("old", {
+        headers: {
+          "cf-cache-status": "MISS",
+          "content-type": "text/html",
+          [VINEXT_CDN_BUILD_ID_HEADER]: "old-build",
+        },
+      }),
+    );
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded my-worker\nWorker Version ID: 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        return "Staged version\nhttps://app.example.com\n";
+      }
+      if (args.includes("triggers")) {
+        return "Triggers deployed\n  app.example.com (custom domain)\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/about"], {
+        expectedBuildId: "app-build-a",
+        warmCdnPromote: false,
+        warmCdnRetries: 0,
+      }),
+    ).rejects.toThrow("promotion is disabled");
+    expect(fetch).toHaveBeenCalledTimes(6);
+    expect(
+      (execFileSyncMock.mock.calls as Array<[string, string[]]>).some(([, args]) =>
+        args.includes("22222222-2222-4222-8222-222222222222@100%"),
+      ),
+    ).toBe(false);
   });
 
   it("rejects strict HTML warmup without verifiable build identity before upload", async () => {
@@ -1166,12 +1214,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("explains promoted version state when strict fallback warming fails", async () => {
+  it("does not promote strict warmup when the existing deployment cannot be staged", async () => {
     writeFile(
       "wrangler.jsonc",
       JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
     );
-    vi.mocked(fetch).mockResolvedValue(new Response("not ready", { status: 500 }));
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
         return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
@@ -1184,10 +1231,6 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           ],
         });
       }
-      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
-        return "Deployed version\nhttps://stable.example.workers.dev\n";
-      }
-      if (args.includes("triggers")) return "Triggers deployed\n";
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -1198,10 +1241,12 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         warmCdnRetries: 0,
         warmCdnStrict: true,
       }),
-    ).rejects.toThrow("already promoted to 100% and its Worker triggers/routes were updated");
+    ).rejects.toThrow("cannot stage the uploaded Worker at 0%");
+    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("explains promoted version state when strict fallback has no target URL", async () => {
+  it("does not require a target URL before rejecting unstaged strict warmup", async () => {
     writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker", workers_dev: false }));
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -1228,7 +1273,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         expectedBuildId: "app-build-a",
         warmCdnStrict: true,
       }),
-    ).rejects.toThrow("already promoted to 100% and its Worker triggers/routes were updated");
+    ).rejects.toThrow("cannot stage the uploaded Worker at 0%");
+    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
     expect(fetch).not.toHaveBeenCalled();
   });
 });

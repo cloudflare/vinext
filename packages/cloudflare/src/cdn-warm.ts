@@ -50,7 +50,7 @@ export type CdnWarmOptions = {
 
 export const DEFAULT_CDN_WARM_CONCURRENCY = 25;
 export const DEFAULT_CDN_WARM_TIMEOUT_MS = 10_000;
-const DEFAULT_STAGED_READINESS_ATTEMPTS = 60;
+const DEFAULT_STAGED_READINESS_RETRIES = 60;
 const DEFAULT_STAGED_READINESS_INTERVAL_MS = 1_000;
 const DEFAULT_STAGED_READINESS_SUCCESSES = 6;
 const STAGED_READINESS_QUERY_PARAM = "__vinext_cdn_warm_readiness";
@@ -616,6 +616,7 @@ export async function waitForCdnWarmTargetReadiness(
     | "expectedRscBuildId"
     | "fetchImpl"
     | "headers"
+    | "retries"
     | "targetUrl"
     | "timeoutMs"
   > & {
@@ -651,7 +652,6 @@ export async function waitForCdnWarmTargetReadiness(
 
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
-  const maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_STAGED_READINESS_ATTEMPTS);
   const probeIntervalMs = Math.max(
     0,
     options.probeIntervalMs ?? DEFAULT_STAGED_READINESS_INTERVAL_MS,
@@ -659,6 +659,11 @@ export async function waitForCdnWarmTargetReadiness(
   const requiredConsecutiveSuccesses = Math.max(
     1,
     options.requiredConsecutiveSuccesses ?? DEFAULT_STAGED_READINESS_SUCCESSES,
+  );
+  const readinessRetries = Math.max(0, options.retries ?? DEFAULT_STAGED_READINESS_RETRIES);
+  const maxAttempts = Math.max(
+    requiredConsecutiveSuccesses,
+    options.maxAttempts ?? requiredConsecutiveSuccesses + readinessRetries,
   );
   const probeId = randomUUID();
   let consecutiveSuccesses = 0;
