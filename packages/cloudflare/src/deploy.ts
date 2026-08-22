@@ -154,6 +154,20 @@ function parseNonNegativeIntegerArg(raw: string, flag: string): number {
   return parsed;
 }
 
+const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
+
+function validatePromotionDelay(value: number, raw = String(value)): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`--warm-cdn-promotion-delay expects a non-negative integer, but got "${raw}".`);
+  }
+  if (value > MAX_NODE_TIMER_DELAY_MS) {
+    throw new Error(
+      `--warm-cdn-promotion-delay must not exceed ${MAX_NODE_TIMER_DELAY_MS} milliseconds, but got "${raw}".`,
+    );
+  }
+  return value;
+}
+
 function formatUnknownError(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return String(error);
@@ -230,9 +244,12 @@ export function parseDeployArgs(args: string[]) {
     warmCdnPromotionDelay:
       values["warm-cdn-promotion-delay"] === undefined
         ? undefined
-        : parseNonNegativeIntegerArg(
+        : validatePromotionDelay(
+            parseNonNegativeIntegerArg(
+              values["warm-cdn-promotion-delay"],
+              "--warm-cdn-promotion-delay",
+            ),
             values["warm-cdn-promotion-delay"],
-            "--warm-cdn-promotion-delay",
           ),
     warmCdnIncludeFallbacks: values["warm-cdn-include-fallbacks"],
     experimentalTPR: values["experimental-tpr"],
@@ -586,6 +603,9 @@ export async function deployWithCdnWarmup(
       "deploymentId" | "expectedBuildId" | "expectedRscBuildId" | "loadingShellPaths" | "rscPaths"
     >,
 ): Promise<string> {
+  if (options.warmCdnPromotionDelay !== undefined) {
+    validatePromotionDelay(options.warmCdnPromotionDelay);
+  }
   if (options.warmCdnStrict && paths.length > 0 && options.expectedBuildId === undefined) {
     throw new Error(
       "Strict CDN HTML warmup requires a CDN adapter that declares build-identity response headers. " +

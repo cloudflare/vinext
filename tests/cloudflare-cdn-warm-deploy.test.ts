@@ -100,6 +100,17 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(hasCdnWarmRequests({ loadingShellPaths: [], paths: [], rscPaths: [] })).toBe(false);
   });
 
+  it("rejects promotion delays that Node timers cannot represent before deploying", async () => {
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], { warmCdnPromotionDelay: 2_147_483_648 }),
+    ).rejects.toThrow(
+      '--warm-cdn-promotion-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
+    );
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
   it("does not promote when deployment status cannot be read", async () => {
     writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {

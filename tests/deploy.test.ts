@@ -827,6 +827,9 @@ describe("parseDeployArgs", () => {
     expect(() => parseDeployArgs(["--warm-cdn-promotion-delay=-1"])).toThrow(
       '--warm-cdn-promotion-delay expects a non-negative integer, but got "-1".',
     );
+    expect(() => parseDeployArgs(["--warm-cdn-promotion-delay=2147483648"])).toThrow(
+      '--warm-cdn-promotion-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
+    );
   });
 
   it("trims whitespace from --env value", () => {
