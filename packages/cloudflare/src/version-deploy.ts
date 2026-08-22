@@ -13,6 +13,7 @@ export { parseWorkersDevUrl } from "./workers-dev-url.js";
 export type WranglerVersionUploadResult = {
   versionId: string;
   previewUrl: string | null;
+  workerName: string | null;
   output: string;
 };
 
@@ -90,16 +91,21 @@ export function parseVersionId(output: string): string | null {
   return output.match(new RegExp(`\\b${versionIdPattern}\\b`))?.[0] ?? null;
 }
 
+export function parseUploadedWorkerName(output: string): string | null {
+  return output.match(/^\s*Uploaded\s+(\S+)\s+\(\d+(?:\.\d+)?\s+sec\)\s*$/im)?.[1] ?? null;
+}
+
 export function parseWranglerVersionUploadOutput(output: string): WranglerVersionUploadResult {
   const parsed = parseJsonObject(output);
   const versionId = findVersionIdInUploadJson(parsed) ?? parseVersionId(output);
   const previewUrl = findPreviewUrlInUploadJson(parsed) ?? parseWorkersDevUrl(output);
+  const workerName = parseUploadedWorkerName(output);
 
   if (!versionId) {
     throw new Error("Could not detect Worker version ID from `wrangler versions upload` output.");
   }
 
-  return { versionId, previewUrl, output };
+  return { versionId, previewUrl, workerName, output };
 }
 
 export function buildWranglerVersionUploadArgs(

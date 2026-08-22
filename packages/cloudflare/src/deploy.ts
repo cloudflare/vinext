@@ -619,7 +619,7 @@ export async function deployWithCdnWarmup(
     });
 
   const wranglerConfig = parseWranglerConfig(root, options.config);
-  const deploymentStatus = readWranglerDeploymentStatus(root, options);
+  const deploymentStatus = runWranglerDeploymentStatus(root, options);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
   const canVerifyStagedHtml = options.expectedBuildId !== undefined;
   if (!canVerifyStagedHtml && paths.length > 0) {
@@ -652,7 +652,10 @@ export async function deployWithCdnWarmup(
     }
     const targetUrl =
       resolveCdnWarmupTargetUrl(root, triggersDeployedUrl, options) ?? staged.deployedUrl;
-    const workerName = resolveWorkerNameForVersionOverride(wranglerConfig, options);
+    const workerName =
+      options.name ??
+      upload.workerName ??
+      resolveWorkerNameForVersionOverride(wranglerConfig, options);
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
     if (targetUrl && headers) {
       try {
@@ -780,17 +783,6 @@ export function resolveCdnWarmupTargetUrl(
   _options?: Pick<DeployOptions, "preview" | "env" | "config">,
 ): string | null {
   return deployedUrl;
-}
-
-function readWranglerDeploymentStatus(
-  root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
-): WranglerDeploymentStatus | null {
-  try {
-    return runWranglerDeploymentStatus(root, options);
-  } catch {
-    return null;
-  }
 }
 
 export function getZeroPercentStagingTraffic(

@@ -10,7 +10,11 @@ export function parseWorkerDeploymentUrl(output: string): string | null {
  * canonical deployment URLs for general CLI reporting.
  */
 export function parseCdnWarmupDeploymentUrl(output: string): string | null {
-  return parseWorkerDeploymentUrl(output) ?? parseCatchAllWorkerRouteOrigin(output);
+  return (
+    parseCustomDomainUrl(output) ??
+    parseCatchAllWorkerRouteOrigin(output) ??
+    parseWorkersDevUrl(output)
+  );
 }
 
 function parseCatchAllWorkerRouteOrigin(output: string): string | null {

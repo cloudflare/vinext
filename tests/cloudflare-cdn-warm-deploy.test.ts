@@ -92,6 +92,29 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(hasCdnWarmRequests({ loadingShellPaths: [], paths: [], rscPaths: [] })).toBe(false);
   });
 
+  it("does not promote when deployment status cannot be read", async () => {
+    writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded my-worker (1.23 sec)\nWorker Version ID: 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        throw new Error("deployment status unavailable");
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/"], {
+        expectedBuildId: "app-build-a",
+        warmCdnStrict: true,
+      }),
+    ).rejects.toThrow("deployment status unavailable");
+    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("warms the production custom domain through a 0% staged version override", async () => {
     const events: string[] = [];
     delayMock.mockImplementation(async (milliseconds: number) => {
@@ -836,6 +859,48 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     for (const [, args] of execFileSyncMock.mock.calls as Array<[string, string[]]>) {
       expect(args).toEqual(expect.arrayContaining(["--name", "cli-worker"]));
     }
+  });
+
+  it("uses Wrangler's uploaded Worker name for a TOML config", async () => {
+    writeFile(
+      "wrangler.toml",
+      ["name = 'toml-worker'", "workers_dev = false", "route = 'app.example.com/*'"].join("\n"),
+    );
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return [
+          "Uploaded toml-worker (1.23 sec)",
+          "Worker Version ID: 22222222-2222-4222-8222-222222222222",
+        ].join("\n");
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        return "Staged version\n";
+      }
+      if (args.includes("deploy") && args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        return "Promoted version\n";
+      }
+      if (args.includes("triggers")) {
+        return "Triggers deployed\n  app.example.com/*\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, ["/"], {
+      expectedBuildId: "app-build-a",
+      warmCdnConcurrency: 1,
+      warmCdnPromotionDelay: 0,
+    });
+
+    const headers = new Headers(vi.mocked(fetch).mock.calls[0]?.[1]?.headers);
+    expect(headers.get("Cloudflare-Workers-Version-Overrides")).toBe(
+      'toml-worker="22222222-2222-4222-8222-222222222222"',
+    );
   });
 
   it("explains staged version cleanup when strict pre-promotion warmup fails", async () => {

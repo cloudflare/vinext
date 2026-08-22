@@ -218,6 +218,7 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
 
     expect(parseWranglerVersionUploadOutput(output)).toMatchObject({
       versionId: "7283300a-90b0-45d6-ba08-7c4b76797f38",
+      workerName: "rsc-prewarm-32362416100",
       previewUrl: "https://7283300a-rsc-prewarm-32362416100.vinext.workers.dev",
     });
   });

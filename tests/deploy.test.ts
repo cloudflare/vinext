@@ -572,6 +572,14 @@ describe("parseWorkerDeploymentUrl", () => {
     expect(parseCdnWarmupDeploymentUrl(`Deployed app triggers\n  ${route}\n`)).toBe(expected);
   });
 
+  it("prefers a concrete Worker route over a workers.dev fallback", () => {
+    expect(
+      parseCdnWarmupDeploymentUrl(
+        "Deployed app triggers\n  https://app.account.workers.dev\n  app.example.com/*\n",
+      ),
+    ).toBe("https://app.example.com");
+  });
+
   it.each(["*.example.com/*", "app.example.com/api/*", "app.example.com/"])(
     "rejects a non-canonical Worker route for CDN warmup: %s",
     (route) => {
