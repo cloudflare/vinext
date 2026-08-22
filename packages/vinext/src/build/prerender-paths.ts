@@ -48,7 +48,7 @@ export type PrerenderPathManifest = {
   loadingShellPaths?: string[];
   /** Pages Router paths selected by the existing HTML warm discovery pass. */
   pagesPaths?: string[];
-  /** Public paths omitted because configured rewrites can change their response identity. */
+  /** Public paths omitted because configured routes can replace their page response. */
   excludedWarmPaths?: string[];
   trailingSlash?: boolean;
   paths: string[];
@@ -101,9 +101,9 @@ function addPath(paths: string[], seen: Set<string>, pathname: string): void {
   paths.push(pathname);
 }
 
-function warnDiscoveryFailure(route: string, error: unknown): void {
+function throwDiscoveryFailure(route: string, error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
-  console.warn(`[vinext] Warning: failed to discover warmup path(s) for ${route}: ${message}`);
+  throw new Error(`Failed to discover warmup path(s) for ${route}: ${message}`, { cause: error });
 }
 
 async function fetchDiscoveryEndpoint(
@@ -118,7 +118,8 @@ async function fetchDiscoveryEndpoint(
       signal: controller.signal,
     });
     const text = await res.text();
-    if (!res.ok || text === "null") return null;
+    if (!res.ok) throw new Error(`path discovery returned HTTP ${res.status}`);
+    if (text === "null") return null;
     return text;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
@@ -278,7 +279,7 @@ async function collectPagesPaths(options: {
         let itemToNormalize = item;
         let locale = options.i18n?.defaultLocale;
         if (options.i18n && typeof item === "string") {
-          const localeInfo = extractLocaleFromUrl(item, options.i18n);
+          const localeInfo = extractPagesStaticPathLocale(item, options.i18n);
           itemToNormalize = localeInfo.url;
           locale = localeInfo.locale;
         } else if (options.i18n && item && typeof item === "object" && item.locale) {
@@ -298,7 +299,7 @@ async function collectPagesPaths(options: {
         addPath(paths, seen, localizePagesPath(pathname, locale, options.i18n));
       }
     } catch (error) {
-      warnDiscoveryFailure(route.pattern, error);
+      throwDiscoveryFailure(route.pattern, error);
     }
   }
 
@@ -312,6 +313,23 @@ function localizePagesPath(
 ): string {
   if (!i18n || !locale || locale === i18n.defaultLocale) return pathname;
   return pathname === "/" ? `/${locale}` : `/${locale}${pathname}`;
+}
+
+function extractPagesStaticPathLocale(
+  url: string,
+  i18n: NonNullable<ResolvedNextConfig["i18n"]>,
+): { locale: string; url: string } {
+  const queryIndex = url.indexOf("?");
+  const pathname = queryIndex === -1 ? url : url.slice(0, queryIndex);
+  const query = queryIndex === -1 ? "" : url.slice(queryIndex);
+  const parts = pathname.split("/").filter(Boolean);
+  const locale =
+    parts.length > 0
+      ? i18n.locales.find((candidate) => candidate.toLowerCase() === parts[0].toLowerCase())
+      : undefined;
+  if (!locale) return extractLocaleFromUrl(url, i18n);
+  const rest = `/${parts.slice(1).join("/")}`;
+  return { locale, url: `${rest || "/"}${query}` };
 }
 
 async function collectAppPaths(options: {
@@ -416,7 +434,7 @@ async function collectAppPaths(options: {
         addDiscoveredPath(buildUrlFromParams(route.pattern, params));
       }
     } catch (error) {
-      warnDiscoveryFailure(route.pattern, error);
+      throwDiscoveryFailure(route.pattern, error);
     }
   }
 
@@ -475,9 +493,12 @@ async function resolveAppRscWarmPaths(options: {
   return { loadingShellPaths, rscPaths };
 }
 
-function configuredRewriteAffectsWarmPath(
+function configuredRouteAffectsWarmPath(
   pathname: string,
-  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "rewrites" | "trailingSlash">,
+  config: Pick<
+    ResolvedNextConfig,
+    "basePath" | "i18n" | "redirects" | "rewrites" | "trailingSlash"
+  >,
 ): boolean {
   const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
   const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
@@ -491,9 +512,9 @@ function configuredRewriteAffectsWarmPath(
     ...config.rewrites.afterFiles,
     ...config.rewrites.fallback,
   ];
-  return rewrites.some((rewrite) =>
+  return [...rewrites, ...config.redirects].some((rule) =>
     Array.from(matchPathnames).some((matchPathname) =>
-      matchesRewriteSource(matchPathname, rewrite, {
+      matchesRewriteSource(matchPathname, rule, {
         basePath: config.basePath,
         hadBasePath: true,
       }),
@@ -571,9 +592,9 @@ export async function emitPrerenderPathManifest(
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn(
-          `[vinext] Warning: failed to start prerender path discovery server: ${message}`,
-        );
+        throw new Error(`Failed to start prerender path discovery server: ${message}`, {
+          cause: error,
+        });
       }
     }
 
@@ -622,7 +643,7 @@ export async function emitPrerenderPathManifest(
 
   const excludedWarmPathSet = new Set(
     options.responseVary
-      ? paths.filter((pathname) => configuredRewriteAffectsWarmPath(pathname, config))
+      ? paths.filter((pathname) => configuredRouteAffectsWarmPath(pathname, config))
       : [],
   );
   const warmPaths = paths.filter((pathname) => !excludedWarmPathSet.has(pathname));

@@ -212,6 +212,44 @@ describe("prerender path manifest", () => {
     expect(manifest?.loadingShellPaths).toEqual(["/safe"]);
   });
 
+  it("excludes warm paths shadowed by configured redirects", async () => {
+    // Next.js applies config redirects before rendering the filesystem route:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/redirect-me/page.tsx",
+      "export const revalidate = 60; export default function Page() {}\n",
+    );
+    writeFile(
+      "app/safe/page.tsx",
+      "export const revalidate = 60; export default function Page() {}\n",
+    );
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        redirects: () => [{ source: "/redirect-me", destination: "/safe", permanent: false }],
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual(["/safe"]);
+    expect(manifest?.excludedWarmPaths).toEqual(["/redirect-me"]);
+    expect(manifest?.rscPaths).toEqual(["/safe"]);
+  });
+
   it("discovers a static child route from parent-layout generateStaticParams", async () => {
     // Next.js supports parent layouts generating params for static child pages:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-static/app/[region]/(default)/layout.js
@@ -453,8 +491,7 @@ describe("prerender path manifest", () => {
     expect(manifest?.pagesPaths).toEqual(["/about", "/fr/about"]);
   });
 
-  it("skips dynamic warmup paths when static params discovery aborts", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("fails path discovery when generateStaticParams discovery aborts", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
@@ -478,13 +515,9 @@ describe("prerender path manifest", () => {
     const { emitPrerenderPathManifest } =
       await import("../packages/vinext/src/build/prerender-paths.js");
 
-    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
-
-    expect(manifest?.paths).toEqual([]);
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("failed to discover warmup path(s) for /cached/:slug"),
+    await expect(emitPrerenderPathManifest({ root: tmpDir })).rejects.toThrow(
+      "Failed to discover warmup path(s) for /cached/:slug: path discovery timed out after 30000ms",
     );
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("timed out after 30000ms"));
   });
 
   it("passes a custom RSC bundle path to the path discovery server", async () => {
@@ -632,6 +665,7 @@ describe("prerender path manifest", () => {
             { params: { slug: "hello" } },
             { params: { slug: "bonjour" }, locale: "fr" },
             "/fr/posts/string-fr",
+            "/FR/posts/string-fr-upper",
             "/posts/string-en",
           ],
         });
@@ -662,6 +696,7 @@ describe("prerender path manifest", () => {
       "/posts/hello",
       "/fr/posts/bonjour",
       "/fr/posts/string-fr",
+      "/fr/posts/string-fr-upper",
       "/posts/string-en",
     ]);
     expect(manifest?.pagesPaths).toEqual(manifest?.paths);
@@ -675,8 +710,30 @@ describe("prerender path manifest", () => {
       "/docs/posts/hello/",
       "/docs/fr/posts/bonjour/",
       "/docs/fr/posts/string-fr/",
+      "/docs/fr/posts/string-fr-upper/",
       "/docs/posts/string-en/",
     ]);
+  });
+
+  it("fails path discovery when getStaticPaths returns an HTTP error", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile(
+      "pages/posts/[slug].tsx",
+      [
+        "export function getStaticPaths() { throw new Error('boom'); }",
+        "export function getStaticProps() { return { props: {}, revalidate: 60 }; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockResolvedValue(new Response("getStaticPaths exploded", { status: 500 }));
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    await expect(emitPrerenderPathManifest({ root: tmpDir })).rejects.toThrow(
+      "Failed to discover warmup path(s) for /posts/:slug: path discovery returned HTTP 500",
+    );
   });
 
   it("excludes only the locale-specific Pages key affected by a rewrite", async () => {
