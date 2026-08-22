@@ -202,6 +202,17 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   ).toBe("HIT");
   expect(await pagesResponse.text()).toContain("Pages prewarm target");
 
+  const appHtmlResponse = await getResponseAfterPromotion(request, `${baseURL}${TARGET_PATH}`);
+  const appHtmlResponseHeaders = appHtmlResponse.headers();
+  expect(appHtmlResponse.ok(), JSON.stringify(appHtmlResponseHeaders)).toBe(true);
+  expect(appHtmlResponseHeaders["content-type"]).toContain("text/html");
+  expect(appHtmlResponseHeaders["x-vinext-build-id"]).toBe(rscBuildId);
+  expect(
+    appHtmlResponseHeaders["cf-cache-status"],
+    `App HTML response headers: ${JSON.stringify(appHtmlResponseHeaders)}`,
+  ).toBe("HIT");
+  expect(await appHtmlResponse.text()).toContain("Prewarm target");
+
   const fullResponse = await getResponseAfterPromotion(
     request,
     `${baseURL}${TARGET_PATH}?_rsc`,
