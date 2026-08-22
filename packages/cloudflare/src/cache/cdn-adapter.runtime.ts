@@ -179,6 +179,10 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     // intentionally empty
   }
 
+  buildResponseIdentityHeaders(): CdnResponseHeaders {
+    return getBuildIdentityResponseHeader();
+  }
+
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
     // No cacheable policy → nobody stores it.
     if (!input.cacheControl) {

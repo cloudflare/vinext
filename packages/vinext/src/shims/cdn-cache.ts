@@ -131,6 +131,13 @@ export type CdnCacheAdapter = {
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders;
 
   /**
+   * Build adapter-owned headers that identify the deployed application build.
+   * Core applies these at the outer page-response boundary, including response
+   * paths that do not pass through cache-policy finalization.
+   */
+  buildResponseIdentityHeaders?(): CdnResponseHeaders;
+
+  /**
    * Whether existing response headers explicitly opt out of storage. Adapters
    * that split browser and provider cache policy should implement this so they
    * can interpret the provider-specific headers they own.

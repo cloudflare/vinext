@@ -51,6 +51,19 @@ function cacheableHtml(body = "ok"): Response {
   });
 }
 
+function cacheableRsc(body = "flight"): Response {
+  return new Response(body, {
+    headers: {
+      "cache-control": "public, max-age=0, must-revalidate",
+      "cdn-cache-control": "public, max-age=60",
+      "cf-cache-status": "MISS",
+      "content-type": "text/x-component",
+      [VINEXT_RSC_BUILD_ID_HEADER]: "app-build-a",
+      vary: VINEXT_RSC_VARY_HEADER,
+    },
+  });
+}
+
 describe("Cloudflare CDN warmup deploy flow", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-warm-deploy-test-"));
@@ -65,6 +78,18 @@ describe("Cloudflare CDN warmup deploy flow", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("recognizes warm plans that contain only canonical RSC requests", async () => {
+    const { hasCdnWarmRequests } = await import("../packages/cloudflare/src/deploy.js");
+
+    expect(hasCdnWarmRequests({ loadingShellPaths: [], paths: [], rscPaths: ["/dashboard"] })).toBe(
+      true,
+    );
+    expect(hasCdnWarmRequests({ loadingShellPaths: ["/dashboard"], paths: [], rscPaths: [] })).toBe(
+      true,
+    );
+    expect(hasCdnWarmRequests({ loadingShellPaths: [], paths: [], rscPaths: [] })).toBe(false);
   });
 
   it("warms the production custom domain through a 0% staged version override", async () => {
@@ -454,7 +479,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toBe("https://my-worker-staging.example.workers.dev");
   });
 
-  it("defers unverifiable HTML warmup until after promotion", async () => {
+  it("skips unverifiable HTML warmup for adapters without build identity", async () => {
     const events: string[] = [];
     writeFile(
       "wrangler.jsonc",
@@ -493,16 +518,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
     await deployWithCdnWarmup(tmpDir, ["/about"], { warmCdnConcurrency: 1 });
 
-    expect(events).toEqual([
-      "upload",
-      "status",
-      "stage",
-      "triggers",
-      "promote",
-      "fetch:https://app.example.com/about",
-    ]);
-    const requestHeaders = new Headers(vi.mocked(fetch).mock.calls[0]![1]?.headers);
-    expect(requestHeaders.has("Cloudflare-Workers-Version-Overrides")).toBe(false);
+    expect(events).toEqual(["upload", "status", "stage", "triggers", "promote"]);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("applies triggers before post-promotion fallback warmup", async () => {
@@ -516,7 +533,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     vi.mocked(fetch).mockImplementation(async (url) => {
       events.push(`fetch:${formatFetchUrl(url)}`);
-      return cacheableHtml();
+      return cacheableRsc();
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -545,6 +562,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
     await deployWithCdnWarmup(tmpDir, ["/"], {
+      expectedRscBuildId: "app-build-a",
+      rscPaths: ["/"],
       warmCdnConcurrency: 1,
     });
 
@@ -553,7 +572,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status",
       "promote",
       "triggers",
-      "fetch:https://app.example.com/",
+      "fetch:https://app.example.com/?_rsc",
     ]);
   });
 

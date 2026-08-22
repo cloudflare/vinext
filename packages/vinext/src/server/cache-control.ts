@@ -75,6 +75,36 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
   }
 }
 
+/** Apply adapter-owned build identity to an HTML or RSC page response. */
+export function applyCdnResponseIdentityHeaders(response: Response, request: Request): Response {
+  const accept = request.headers.get("Accept")?.toLowerCase() ?? "";
+  if (request.headers.get("RSC") !== "1" && !accept.includes("text/html")) return response;
+  const map = getCdnCacheAdapter().buildResponseIdentityHeaders?.();
+  if (!map || Object.keys(map).length === 0) return response;
+
+  try {
+    applyResponseHeaderMap(response.headers, map);
+    return response;
+  } catch {
+    // Response.redirect() has immutable headers. Recreate only those responses
+    // that need adapter identity so the outer runtime boundary can stamp them.
+    const headers = new Headers(response.headers);
+    applyResponseHeaderMap(headers, map);
+    return new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+}
+
+function applyResponseHeaderMap(headers: Headers, map: Record<string, string | null>): void {
+  for (const [name, value] of Object.entries(map)) {
+    if (value === null) headers.delete(name);
+    else headers.set(name, value);
+  }
+}
+
 /**
  * Matches Next.js's `getCacheControlHeader` stale window semantics while
  * preserving vinext's legacy unbounded SWR header when no expire ceiling is
