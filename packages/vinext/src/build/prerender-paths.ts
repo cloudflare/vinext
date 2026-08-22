@@ -31,6 +31,7 @@ import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtua
 import { matchesRewriteSource } from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
+import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 
 export type PrerenderPathManifest = {
   basePath?: string;
@@ -47,6 +48,8 @@ export type PrerenderPathManifest = {
   loadingShellPaths?: string[];
   /** Pages Router paths selected by the existing HTML warm discovery pass. */
   pagesPaths?: string[];
+  /** Public paths omitted because configured rewrites can change their response identity. */
+  excludedWarmPaths?: string[];
   trailingSlash?: boolean;
   paths: string[];
 };
@@ -360,7 +363,14 @@ async function collectAppPaths(options: {
         }
       } else {
         const results = await generateStaticParams({ params: {} });
-        paramSets = Array.isArray(results) || results === null ? results : [];
+        if (results === null) {
+          const layoutParamSets = await resolveParentParams(route, staticParamsMap, {
+            includeLastDynamicSegment: true,
+          });
+          paramSets = layoutParamSets.length > 0 ? layoutParamSets : null;
+        } else {
+          paramSets = Array.isArray(results) ? results : [];
+        }
       }
 
       if (!paramSets?.length) continue;
@@ -379,12 +389,10 @@ async function collectAppPaths(options: {
 
 async function resolveAppRscWarmPaths(options: {
   appDir: string;
-  basePath: string;
   i18n: ResolvedNextConfig["i18n"];
   pagesDir: string | null;
   pageExtensions: readonly string[];
   paths: readonly string[];
-  rewrites: ResolvedNextConfig["rewrites"];
 }): Promise<{ loadingShellPaths: string[]; rscPaths: string[] }> {
   const appRoutes = await appRouter(options.appDir, options.pageExtensions);
   const [pageRoutes, apiRoutes] = options.pagesDir
@@ -396,11 +404,6 @@ async function resolveAppRscWarmPaths(options: {
 
   const rscPaths: string[] = [];
   const loadingShellPaths: string[] = [];
-  const rewrites = [
-    ...options.rewrites.beforeFiles,
-    ...options.rewrites.afterFiles,
-    ...options.rewrites.fallback,
-  ];
   for (const pathname of options.paths) {
     const appMatch = matchAppRoute(pathname, appRoutes);
     if (!appMatch) continue;
@@ -428,25 +431,38 @@ async function resolveAppRscWarmPaths(options: {
       continue;
     }
 
-    // A configured rewrite can make the browser's public URL resolve to a
-    // different route than a direct canonical RSC request. Do not advertise
-    // that public cache key as warmable until discovery can reproduce the
-    // rewrite's request-dependent routing context.
-    const rewritePathname = normalizeDefaultLocalePathname(pathname, options.i18n);
-    const rewriteAffectsPath = rewrites.some((rewrite) =>
-      matchesRewriteSource(rewritePathname, rewrite, {
-        basePath: options.basePath,
-        hadBasePath: true,
-      }),
-    );
-    if (rewriteAffectsPath) continue;
-
     rscPaths.push(pathname);
     if (appRouteHasMainTreeLoadingBoundary(matchedAppRoute)) {
       loadingShellPaths.push(pathname);
     }
   }
   return { loadingShellPaths, rscPaths };
+}
+
+function configuredRewriteAffectsWarmPath(
+  pathname: string,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "rewrites" | "trailingSlash">,
+): boolean {
+  const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
+  const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
+  const matchPathnames = new Set(
+    hostnames.map((hostname) =>
+      normalizeDefaultLocalePathname(canonicalPathname, config.i18n, { hostname }),
+    ),
+  );
+  const rewrites = [
+    ...config.rewrites.beforeFiles,
+    ...config.rewrites.afterFiles,
+    ...config.rewrites.fallback,
+  ];
+  return rewrites.some((rewrite) =>
+    Array.from(matchPathnames).some((matchPathname) =>
+      matchesRewriteSource(matchPathname, rewrite, {
+        basePath: config.basePath,
+        hadBasePath: true,
+      }),
+    ),
+  );
 }
 
 async function startPathDiscoveryServer(options: {
@@ -567,16 +583,20 @@ export async function emitPrerenderPathManifest(
     }
   });
 
+  const excludedWarmPathSet = new Set(
+    options.responseVary
+      ? paths.filter((pathname) => configuredRewriteAffectsWarmPath(pathname, config))
+      : [],
+  );
+  const warmPaths = paths.filter((pathname) => !excludedWarmPathSet.has(pathname));
   const appOwnedWarmPaths =
     options.responseVary && appDir
       ? await resolveAppRscWarmPaths({
           appDir,
-          basePath: config.basePath,
           i18n: config.i18n,
           pagesDir,
           pageExtensions: config.pageExtensions,
-          paths: discoveredAppPaths,
-          rewrites: config.rewrites,
+          paths: discoveredAppPaths.filter((pathname) => !excludedWarmPathSet.has(pathname)),
         })
       : {
           loadingShellPaths: discoveredLoadingShellPaths,
@@ -588,13 +608,18 @@ export async function emitPrerenderPathManifest(
     buildId: config.buildId,
     ...(rscBuildId ? { buildIdentity: rscBuildId } : {}),
     ...(config.deploymentId ? { deploymentId: config.deploymentId } : {}),
-    ...(pagesDir ? { pagesPaths: discoveredPagesPaths } : {}),
+    ...(pagesDir
+      ? {
+          pagesPaths: discoveredPagesPaths.filter((pathname) => !excludedWarmPathSet.has(pathname)),
+        }
+      : {}),
+    ...(excludedWarmPathSet.size > 0 ? { excludedWarmPaths: Array.from(excludedWarmPathSet) } : {}),
     ...(rscBuildId ? { rscBuildId } : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
     ...(options.responseVary ? { rscPaths: appOwnedWarmPaths.rscPaths } : {}),
     ...(options.responseVary ? { loadingShellPaths: appOwnedWarmPaths.loadingShellPaths } : {}),
     trailingSlash: config.trailingSlash,
-    paths,
+    paths: warmPaths,
   };
   fs.mkdirSync(manifestDir, { recursive: true });
   fs.writeFileSync(
@@ -602,7 +627,7 @@ export async function emitPrerenderPathManifest(
     JSON.stringify(manifest, null, 2) + "\n",
     "utf-8",
   );
-  console.log(`  Discovered ${paths.length} CDN warmup path(s).`);
+  console.log(`  Discovered ${warmPaths.length} CDN warmup path(s).`);
 
   return manifest;
 }

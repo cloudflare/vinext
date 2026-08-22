@@ -118,6 +118,9 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
       (manifest.pagesPaths !== undefined &&
         (!Array.isArray(manifest.pagesPaths) ||
           !manifest.pagesPaths.every((pathname) => typeof pathname === "string"))) ||
+      (manifest.excludedWarmPaths !== undefined &&
+        (!Array.isArray(manifest.excludedWarmPaths) ||
+          !manifest.excludedWarmPaths.every((pathname) => typeof pathname === "string"))) ||
       (manifest.rscPaths !== undefined &&
         (!Array.isArray(manifest.rscPaths) ||
           !manifest.rscPaths.every((pathname) => typeof pathname === "string"))) ||
@@ -162,9 +165,11 @@ function readPrerenderPathWarmPaths(
     manifest,
     pagesPaths: (manifest.pagesPaths ?? [])
       .filter((pathname) => pathname.startsWith("/"))
+      .filter((pathname) => !manifest.excludedWarmPaths?.includes(pathname))
       .map((pathname) => applyWarmPathConfig(pathname, manifest)),
     paths: manifest.paths
       .filter((pathname) => pathname.startsWith("/"))
+      .filter((pathname) => !manifest.excludedWarmPaths?.includes(pathname))
       .map((pathname) => applyWarmPathConfig(pathname, manifest)),
   };
 }
@@ -206,6 +211,7 @@ export function readPrerenderWarmPlan(
         includeFallbackShells: true,
       })
         .filter((pathname) => pathname.startsWith("/"))
+        .filter((pathname) => !manifest.excludedWarmPaths?.includes(pathname))
         .map(applyConfig);
     }
   }

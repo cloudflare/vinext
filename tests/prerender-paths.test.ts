@@ -61,6 +61,12 @@ describe("prerender path manifest", () => {
         ) {
           return Response.json([{ locale: "fr" }]);
         }
+        if (
+          url.pathname === "/__vinext/prerender/static-params" &&
+          url.searchParams.get("pattern") === "/:category"
+        ) {
+          return Response.json([{ category: "news" }]);
+        }
         return new Response("null", { headers: { "content-type": "application/json" } });
       }),
     );
@@ -200,9 +206,111 @@ describe("prerender path manifest", () => {
       root: tmpDir,
     });
 
-    expect(manifest?.paths).toEqual(["/rewrite-me", "/safe"]);
+    expect(manifest?.paths).toEqual(["/safe"]);
+    expect(manifest?.excludedWarmPaths).toEqual(["/rewrite-me"]);
     expect(manifest?.rscPaths).toEqual(["/safe"]);
     expect(manifest?.loadingShellPaths).toEqual(["/safe"]);
+  });
+
+  it("discovers a static child route from parent-layout generateStaticParams", async () => {
+    // Next.js supports parent layouts generating params for static child pages:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-static/app/[region]/(default)/layout.js
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[category]/layout.tsx",
+      [
+        "export function generateStaticParams() { return [{ category: 'news' }]; }",
+        "export default function Layout({ children }) { return children; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[category]/foo/page.tsx",
+      "export const revalidate = 60; export default function Page() {}\n",
+    );
+    writeFile(
+      "app/[category]/foo/loading.tsx",
+      "export default function Loading() { return null; }\n",
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual(["/news/foo"]);
+    expect(manifest?.rscPaths).toEqual(["/news/foo"]);
+    expect(manifest?.loadingShellPaths).toEqual(["/news/foo"]);
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:43210/__vinext/prerender/static-params?pattern=%2F%3Acategory",
+      expect.any(Object),
+    );
+  });
+
+  it("matches rewrites against the trailing-slash warm URL", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/foo/page.tsx", "export default function Page() {}\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        trailingSlash: true,
+        rewrites: () => [{ source: "/foo/", destination: "/other" }],
+      },
+      tmpDir,
+    );
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual([]);
+    expect(manifest?.rscPaths).toEqual([]);
+    expect(manifest?.excludedWarmPaths).toEqual(["/foo"]);
+  });
+
+  it("checks rewrite identity for every configured domain default locale", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/foo/page.tsx", "export default function Page() {}\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        i18n: {
+          defaultLocale: "en",
+          locales: ["en", "fr"],
+          domains: [{ domain: "example.fr", defaultLocale: "fr" }],
+        },
+        rewrites: () => [{ source: "/fr/foo", destination: "/other", locale: false }],
+      },
+      tmpDir,
+    );
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual([]);
+    expect(manifest?.rscPaths).toEqual([]);
+    expect(manifest?.excludedWarmPaths).toEqual(["/foo"]);
   });
 
   it("excludes Pages-owned hybrid paths from App RSC warm discovery", async () => {

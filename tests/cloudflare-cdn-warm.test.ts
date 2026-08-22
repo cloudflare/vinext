@@ -132,7 +132,11 @@ describe("Cloudflare CDN warmup", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(
       "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({ buildId: "build-a", paths: ["/", "/cached/intro"] }),
+      JSON.stringify({
+        buildId: "build-a",
+        excludedWarmPaths: ["/blog/[slug]"],
+        paths: ["/", "/cached/intro"],
+      }),
     );
     writeFile(
       "dist/server/vinext-prerender.json",
@@ -151,10 +155,7 @@ describe("Cloudflare CDN warmup", () => {
       }),
     );
 
-    expect(readPrerenderWarmPlan(tmpDir, { includeFallbackShells: true }).paths).toEqual([
-      "/",
-      "/blog/[slug]",
-    ]);
+    expect(readPrerenderWarmPlan(tmpDir, { includeFallbackShells: true }).paths).toEqual(["/"]);
   });
 
   it("falls back to discovered paths when fallback shells were not locally rendered", () => {

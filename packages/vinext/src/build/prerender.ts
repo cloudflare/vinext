@@ -528,6 +528,7 @@ export type StaticParamsMap = Record<
 export async function resolveParentParams(
   childRoute: AppRoute,
   staticParamsMap: StaticParamsMap,
+  options: { includeLastDynamicSegment?: boolean } = {},
 ): Promise<Record<string, string | string[]>[]> {
   const { patternParts } = childRoute;
 
@@ -549,7 +550,8 @@ export async function resolveParentParams(
   const parentSegments: GenerateStaticParamsFn[] = [];
 
   let prefixPattern = "";
-  for (let i = 0; i < lastDynamicIdx; i++) {
+  const prefixEnd = options.includeLastDynamicSegment ? lastDynamicIdx + 1 : lastDynamicIdx;
+  for (let i = 0; i < prefixEnd; i++) {
     const part = patternParts[i];
     prefixPattern += "/" + part;
     if (!part.startsWith(":")) continue;
