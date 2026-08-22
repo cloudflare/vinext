@@ -189,6 +189,26 @@ describe("resolveHybridClientRouteOwner", () => {
     },
   );
 
+  it("matches locale-aware rewrites against the raw App pathname", () => {
+    installWindow({
+      app: [appRoute([":locale", "app-destination"])],
+      locales: ["en", "fr"],
+      pages: [],
+      rewrites: {
+        afterFiles: [],
+        beforeFiles: [
+          {
+            source: "/:nextInternalLocale(en|fr)/source",
+            destination: "/:nextInternalLocale/app-destination",
+          },
+        ],
+        fallback: [],
+      },
+    });
+
+    expect(resolveHybridClientRouteOwner("/fr/source", "")).toBe("app");
+  });
+
   it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
     "returns the %s rewrite destination href",
     (rewritePhase) => {

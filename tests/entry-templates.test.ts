@@ -188,6 +188,12 @@ describe("App Router generated manifest construction", () => {
     expect(code).not.toContain("cookie-secret-canary");
   });
 
+  it("embeds i18n locales used by hybrid App and Pages route ownership", () => {
+    const code = generateBrowserEntry([], null, [], undefined, ["en", "fr"]);
+
+    expect(code).toContain('window.__VINEXT_LOCALES__ = ["en","fr"]');
+  });
+
   it("embeds the Link auto-prefetch route manifest in the browser entry", () => {
     const code = generateBrowserEntry([
       ...minimalAppRoutes,

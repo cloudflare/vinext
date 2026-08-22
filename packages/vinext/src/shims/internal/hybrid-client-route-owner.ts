@@ -20,7 +20,7 @@ import type { ClientRewrite } from "../../client/client-rewrites.js";
 import { mergeRewriteQuery } from "../../utils/query.js";
 import {
   matchDirectHybridClientRoutes,
-  resolveSameOriginPathname,
+  resolveSameOriginAppPathname,
   resolveMatchedHybridClientRouteOwner,
   type HybridClientOwner,
 } from "./hybrid-client-route-owner-direct.js";
@@ -44,7 +44,7 @@ function resolveClientRewrite(
   let matched = false;
 
   for (const rewrite of rewrites) {
-    const pathname = resolveSameOriginPathname(currentHref, basePath);
+    const pathname = resolveSameOriginAppPathname(currentHref, basePath);
     if (pathname === null) return null;
     const url = new URL(currentHref, window.location.href);
     const headers = new Headers({ "user-agent": globalThis.navigator?.userAgent ?? "" });

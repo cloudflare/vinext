@@ -4098,6 +4098,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               graph.routeManifest,
               pagesPrefetchRoutes,
               nextConfig.rewrites,
+              nextConfig.i18n?.locales,
             );
           }
           if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {

@@ -71,8 +71,8 @@ function resolveSameOriginPathnames(
   };
 }
 
-export function resolveSameOriginPathname(href: string, basePath: string): string | null {
-  return resolveSameOriginPathnames(href, basePath)?.pagesPathname ?? null;
+export function resolveSameOriginAppPathname(href: string, basePath: string): string | null {
+  return resolveSameOriginPathnames(href, basePath)?.appPathname ?? null;
 }
 
 function selectPagesRoutes(

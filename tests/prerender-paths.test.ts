@@ -159,6 +159,52 @@ describe("prerender path manifest", () => {
     expect(manifest?.rscBuildId).toBe("rsc-build-a");
   });
 
+  it("excludes App RSC warm paths affected by configured rewrites", async () => {
+    // Rewrite-aware prefetches can resolve a public URL to a different route:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/rewrite-me/page.tsx",
+      "export const revalidate = 60; export default function Page() {}\n",
+    );
+    writeFile("app/rewrite-me/loading.tsx", "export default function Loading() { return null; }\n");
+    writeFile(
+      "app/safe/page.tsx",
+      "export const revalidate = 60; export default function Page() {}\n",
+    );
+    writeFile("app/safe/loading.tsx", "export default function Loading() { return null; }\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        rewrites: () => [
+          {
+            source: "/rewrite-me",
+            destination: "/safe",
+            has: [{ type: "header", key: "x-route-variant", value: "1" }],
+          },
+        ],
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual(["/rewrite-me", "/safe"]);
+    expect(manifest?.rscPaths).toEqual(["/safe"]);
+    expect(manifest?.loadingShellPaths).toEqual(["/safe"]);
+  });
+
   it("excludes Pages-owned hybrid paths from App RSC warm discovery", async () => {
     // Next.js resolves matching Pages and App routes by cross-router specificity:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-params/use-params.test.ts

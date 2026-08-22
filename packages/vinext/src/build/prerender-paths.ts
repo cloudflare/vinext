@@ -24,8 +24,9 @@ import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
+import { matchesRewriteSource } from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
-import { extractLocaleFromUrl } from "../server/pages-i18n.js";
+import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
 
 export type PrerenderPathManifest = {
   basePath?: string;
@@ -386,10 +387,12 @@ async function collectAppPaths(options: {
 
 async function resolveAppRscWarmPaths(options: {
   appDir: string;
+  basePath: string;
   i18n: ResolvedNextConfig["i18n"];
   pagesDir: string | null;
   pageExtensions: readonly string[];
   paths: readonly string[];
+  rewrites: ResolvedNextConfig["rewrites"];
 }): Promise<{ loadingShellPaths: string[]; rscPaths: string[] }> {
   const appRoutes = await appRouter(options.appDir, options.pageExtensions);
   const [pageRoutes, apiRoutes] = options.pagesDir
@@ -401,6 +404,11 @@ async function resolveAppRscWarmPaths(options: {
 
   const rscPaths: string[] = [];
   const loadingShellPaths: string[] = [];
+  const rewrites = [
+    ...options.rewrites.beforeFiles,
+    ...options.rewrites.afterFiles,
+    ...options.rewrites.fallback,
+  ];
   for (const pathname of options.paths) {
     const appMatch = matchAppRoute(pathname, appRoutes);
     if (!appMatch) continue;
@@ -427,6 +435,19 @@ async function resolveAppRscWarmPaths(options: {
     if (pagesMatch && pagesRouteHasPriorityOverAppRoute(pagesMatch.route, matchedAppRoute)) {
       continue;
     }
+
+    // A configured rewrite can make the browser's public URL resolve to a
+    // different route than a direct canonical RSC request. Do not advertise
+    // that public cache key as warmable until discovery can reproduce the
+    // rewrite's request-dependent routing context.
+    const rewritePathname = normalizeDefaultLocalePathname(pathname, options.i18n);
+    const rewriteAffectsPath = rewrites.some((rewrite) =>
+      matchesRewriteSource(rewritePathname, rewrite, {
+        basePath: options.basePath,
+        hadBasePath: true,
+      }),
+    );
+    if (rewriteAffectsPath) continue;
 
     rscPaths.push(pathname);
     if (appRouteHasMainTreeLoadingBoundary(matchedAppRoute)) {
@@ -558,10 +579,12 @@ export async function emitPrerenderPathManifest(
     options.responseVary && appDir
       ? await resolveAppRscWarmPaths({
           appDir,
+          basePath: config.basePath,
           i18n: config.i18n,
           pagesDir,
           pageExtensions: config.pageExtensions,
           paths: discoveredAppPaths,
+          rewrites: config.rewrites,
         })
       : {
           loadingShellPaths: discoveredLoadingShellPaths,

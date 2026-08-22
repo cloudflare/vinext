@@ -24,6 +24,7 @@ export function generateBrowserEntry(
     beforeFiles: [],
     fallback: [],
   },
+  locales: readonly string[] = [],
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
@@ -41,6 +42,7 @@ window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(prefetchRoutes)};
 // the same — whichever entry runs first emits both globals).
 window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(pagesPrefetchRoutes)};
 window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(clientRewrites)};
+window.__VINEXT_LOCALES__ = ${JSON.stringify(locales)};
 registerNavigationRuntimeBootstrap({
     routeManifest: ${buildRouteManifestExpression(routeManifest)}
 });
