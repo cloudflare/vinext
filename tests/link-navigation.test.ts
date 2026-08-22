@@ -59,7 +59,12 @@ const linkPrefetchRoutes = [
     patternParts: ["same-origin-intent-prefetch-target"],
     isDynamic: false,
   },
-  { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
+  {
+    canPrefetchLoadingShell: true,
+    canUseCanonicalLoadingShell: true,
+    patternParts: ["blog", ":slug"],
+    isDynamic: true,
+  },
   { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
   { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
   {

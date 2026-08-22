@@ -6,7 +6,11 @@ import {
   resolveNextConfig,
   type ResolvedNextConfig,
 } from "../config/next-config.js";
-import { appRouter, matchAppRoute } from "../routing/app-router.js";
+import {
+  appRouteHasMainTreeLoadingBoundary,
+  appRouter,
+  matchAppRoute,
+} from "../routing/app-router.js";
 import { apiRouter, matchRoute, pagesRouter } from "../routing/pages-router.js";
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import {
@@ -171,18 +175,6 @@ function resolveConfiguredRouteDirs(
 function appRouteMayHaveGenerateStaticParams(route: Awaited<ReturnType<typeof appRouter>>[number]) {
   if (fileHasNamedExport(route.pagePath, "generateStaticParams")) return true;
   return route.layouts.some((layoutPath) => fileHasNamedExport(layoutPath, "generateStaticParams"));
-}
-
-function appRouteHasMainTreeLoadingBoundary(
-  route: Awaited<ReturnType<typeof appRouter>>[number],
-): boolean {
-  return (
-    route.loadingPath != null ||
-    (route.loadingPaths?.some(
-      (_loadingPath, index) => (route.loadingTreePositions?.[index] ?? 0) > 0,
-    ) ??
-      false)
-  );
 }
 
 async function shouldStartPathDiscoveryServer(options: {

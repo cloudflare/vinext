@@ -261,6 +261,14 @@ describe("prefetch cache eviction", () => {
 
   it("automatic router.prefetch uses the canonical loading-shell variant", async () => {
     vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: true,
+        canUseCanonicalLoadingShell: true,
+        patternParts: ["dashboard"],
+        isDynamic: false,
+      },
+    ];
     vi.resetModules();
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
     const fetch = vi.fn(

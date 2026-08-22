@@ -10,6 +10,8 @@ import { isUnknownRecord } from "../utils/record.js";
 
 export type VinextLinkPrefetchRoute = {
   canPrefetchLoadingShell: boolean;
+  /** The loading shell is an ordinary main-tree variant shared with deploy warmup. */
+  canUseCanonicalLoadingShell?: true;
   documentOnly?: boolean;
   isDynamic: boolean;
   patternParts: string[];

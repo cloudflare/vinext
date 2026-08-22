@@ -6,6 +6,7 @@ import {
 } from "../../server/app-rsc-cache-busting.js";
 
 export type ResolveAppPrefetchRscRequestOptions = {
+  canUseCanonicalLoadingShell: boolean;
   fullHref: string;
   headers: Headers;
   interceptionContext: string | null;
@@ -28,6 +29,7 @@ export type ResolvedAppPrefetchRscRequest = {
  * their varying headers and deterministic `_rsc` digest.
  */
 export async function resolveAppPrefetchRscRequest({
+  canUseCanonicalLoadingShell,
   fullHref,
   headers,
   interceptionContext,
@@ -44,7 +46,9 @@ export async function resolveAppPrefetchRscRequest({
     !requiresRouteTreePrefetch &&
     !prefetchInlining;
   const usesCanonicalLoadingShell =
-    canUseCanonicalSharedRequest && canonicalizeLoadingShellRscRequestHeaders(headers);
+    canUseCanonicalSharedRequest &&
+    canUseCanonicalLoadingShell &&
+    canonicalizeLoadingShellRscRequestHeaders(headers);
   const usesCanonicalFullRoute =
     canUseCanonicalSharedRequest &&
     !usesCanonicalLoadingShell &&

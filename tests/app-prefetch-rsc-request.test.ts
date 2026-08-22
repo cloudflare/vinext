@@ -11,6 +11,7 @@ import {
 import { resolveAppPrefetchRscRequest } from "../packages/vinext/src/shims/internal/app-prefetch-rsc-request.js";
 
 const DEFAULT_OPTIONS = {
+  canUseCanonicalLoadingShell: true,
   interceptionContext: null,
   mountedSlotsHeader: null,
   prefetchInlining: false,
@@ -88,6 +89,32 @@ describe("shared App Router prefetch RSC request resolution", () => {
     expect(headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("1");
     expect(headers.get("next-router-state-tree")).toBeNull();
     expect(headers.get("next-url")).toBeNull();
+  });
+
+  it("keeps non-main-tree loading shells contextual", async () => {
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    const headers = createRscRequestHeaders({
+      nextUrl: "/source",
+      prefetchRouterState: { pathAndSearch: "/source", routeId: "route:/source" },
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+    headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+    const expectedUrl = await createRscRequestUrl("/parallel", new Headers(headers));
+
+    const resolved = await resolveAppPrefetchRscRequest({
+      ...DEFAULT_OPTIONS,
+      canUseCanonicalLoadingShell: false,
+      fullHref: "/parallel",
+      headers,
+    });
+
+    expect(resolved).toEqual({
+      additionalRscUrls: [],
+      rscUrl: expectedUrl,
+      usesCanonicalPrewarmedRequest: false,
+    });
+    expect(headers.get("next-url")).toBe("/source");
+    expect(new URL(expectedUrl, "http://vinext.local").searchParams.get("_rsc")).not.toBe("");
   });
 
   it.each(CONTEXTUAL_CASES)("keeps the request contextual when %s", async (_label, overrides) => {

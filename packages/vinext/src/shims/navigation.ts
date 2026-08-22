@@ -2935,6 +2935,7 @@ const _appRouter: AppRouterInstance = {
       }
       const { additionalRscUrls, rscUrl, usesCanonicalPrewarmedRequest } =
         await resolveAppPrefetchRscRequest({
+          canUseCanonicalLoadingShell: policy.canUseCanonicalLoadingShell === true,
           fullHref,
           headers,
           interceptionContext,

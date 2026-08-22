@@ -92,6 +92,17 @@ export async function appRouter(
   return graph.routes;
 }
 
+/** Whether the route's ordinary main tree has a loading boundary unique to it. */
+export function appRouteHasMainTreeLoadingBoundary(route: AppRoute): boolean {
+  return (
+    route.loadingPath != null ||
+    (route.loadingPaths?.some(
+      (_loadingPath, index) => (route.loadingTreePositions?.[index] ?? 0) > 0,
+    ) ??
+      false)
+  );
+}
+
 // Trie cache — keyed by route array identity (same array = same trie)
 const appTrieCache = createRouteTrieCache<AppRoute>();
 

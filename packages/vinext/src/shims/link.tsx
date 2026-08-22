@@ -534,6 +534,7 @@ function prefetchUrl(
         }
         const { additionalRscUrls, rscUrl, usesCanonicalPrewarmedRequest } =
           await resolveAppPrefetchRscRequest({
+            canUseCanonicalLoadingShell: autoPrefetch.canUseCanonicalLoadingShell === true,
             fullHref,
             headers,
             interceptionContext,
