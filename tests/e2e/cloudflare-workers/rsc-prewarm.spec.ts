@@ -12,7 +12,7 @@ import fs from "node:fs";
 const TARGET_PATH = "/prewarm-target";
 const LOADING_SHELL_RSC_SEARCH = "?_rsc=9qLBDIU2NgN178cB";
 const PROMOTION_STABILITY_WINDOW_MS = 60_000;
-const PROMOTION_READINESS_TIMEOUT_MS = 90_000;
+const PROMOTION_READINESS_TIMEOUT_MS = 120_000;
 const PROMOTION_PROBE_INTERVAL_MS = 1_000;
 const STALE_SEED_RETRY_TIMEOUT_MS = 45_000;
 
@@ -77,7 +77,7 @@ async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<O
   };
 }
 
-function expectCanonical(observed: ObservedRsc): void {
+function expectCanonical(observed: ObservedRsc, rscBuildId: string): void {
   rejectStaleSeedWorker(observed.response);
   console.log(
     `RSC cache trace: url=${observed.url.pathname}${observed.url.search} ` +
@@ -91,22 +91,23 @@ function expectCanonical(observed: ObservedRsc): void {
   expect(observed.headers["next-router-state-tree"]).toBeUndefined();
   expect(observed.headers["next-url"]).toBeUndefined();
   expect(observed.headers["x-vinext-rsc-state-fingerprint"]).toBeUndefined();
+  expect(observed.response.headers()["x-vinext-rsc-build-id"]).toBe(rscBuildId);
   expect(
     observed.response.headers()["cf-cache-status"],
     JSON.stringify({ request: observed.headers, response: observed.response.headers() }),
   ).toBe("HIT");
 }
 
-function expectFull(observed: ObservedRsc): void {
-  expectCanonical(observed);
+function expectFull(observed: ObservedRsc, rscBuildId: string): void {
+  expectCanonical(observed, rscBuildId);
   expect(observed.url.search).toBe("?_rsc");
   expect(observed.headers["next-router-prefetch"]).toBeUndefined();
   expect(observed.headers["next-router-segment-prefetch"]).toBeUndefined();
   expect(observed.headers["x-vinext-rsc-render-mode"]).toBeUndefined();
 }
 
-function expectLoadingShell(observed: ObservedRsc): void {
-  expectCanonical(observed);
+function expectLoadingShell(observed: ObservedRsc, rscBuildId: string): void {
+  expectCanonical(observed, rscBuildId);
   expect(observed.url.search).toBe(LOADING_SHELL_RSC_SEARCH);
   expect(observed.headers["next-router-prefetch"]).toBe("1");
   expect(observed.headers["next-router-segment-prefetch"]).toBe("1");
@@ -167,7 +168,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
 }) => {
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
   if (!baseURL) throw new Error("deployed test requires a base URL");
-  test.setTimeout(180_000);
+  test.setTimeout(240_000);
 
   const buildId = fs.readFileSync("examples/workers-cache/dist/server/BUILD_ID", "utf-8").trim();
   const rscBuildId = fs
@@ -254,30 +255,33 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     expect(response?.ok()).toBe(true);
     await expect(page.getByTestId("build-id")).toHaveText(buildId);
   };
+  const expectTargetCommit = async (page: Page) => {
+    await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
+    await expect(page.getByRole("heading", { name: "Prewarm target" })).toBeVisible();
+    await expect(page.getByTestId("build-id")).toHaveText(buildId);
+  };
 
   for (const source of ["/prewarm/link-a", "/prewarm/link-b"]) {
     await runFresh(async (page) => {
       const shell = await observeRsc(page, async () => {
         await gotoCurrentBuild(page, source);
       });
-      expectLoadingShell(shell);
+      expectLoadingShell(shell, rscBuildId);
 
       const full = await observeRsc(page, () => page.getByTestId("link-prefetch").click());
-      expectFull(full);
-      await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
-      await expect(page.getByRole("heading", { name: "Prewarm target" })).toBeVisible();
+      expectFull(full, rscBuildId);
+      await expectTargetCommit(page);
     });
   }
 
   await runFresh(async (page) => {
     await gotoCurrentBuild(page, "/prewarm/router");
     const shell = await observeRsc(page, () => page.getByTestId("router-prefetch").click());
-    expectLoadingShell(shell);
+    expectLoadingShell(shell, rscBuildId);
 
     const full = await observeRsc(page, () => page.getByTestId("router-navigate").click());
-    expectFull(full);
-    await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
-    await expect(page.getByRole("heading", { name: "Prewarm target" })).toBeVisible();
+    expectFull(full, rscBuildId);
+    await expectTargetCommit(page);
   });
 
   await runFresh(async (page) => {
@@ -291,19 +295,18 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
     const full = await observeRsc(page, async () => {
       await gotoCurrentBuild(page, "/prewarm/full");
     });
-    expectFull(full);
+    expectFull(full, rscBuildId);
     expect(targetRscRequests).toBe(1);
     await page.getByTestId("link-prefetch").click();
-    await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
-    await expect(page.getByRole("heading", { name: "Prewarm target" })).toBeVisible();
+    await expectTargetCommit(page);
     expect(targetRscRequests).toBe(1);
   });
 
   await runFresh(async (page) => {
     await gotoCurrentBuild(page, "/prewarm/soft");
     const full = await observeRsc(page, () => page.getByTestId("soft-navigation").click());
-    expectFull(full);
-    await expect(page).toHaveURL(new RegExp(`${TARGET_PATH}$`));
+    expectFull(full, rscBuildId);
+    await expectTargetCommit(page);
   });
 
   await runFresh(async (page) => {
