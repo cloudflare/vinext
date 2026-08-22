@@ -10,6 +10,7 @@ import {
 import fs from "node:fs";
 
 const TARGET_PATH = "/prewarm-target";
+const PAGES_TARGET_PATH = "/pages-prewarm";
 const LOADING_SHELL_RSC_SEARCH = "?_rsc=9qLBDIU2NgN178cB";
 const PROMOTION_STABILITY_WINDOW_MS = 60_000;
 const PROMOTION_READINESS_TIMEOUT_MS = 120_000;
@@ -32,10 +33,10 @@ function rejectStaleSeedWorker(response: Response | null): void {
   }
 }
 
-async function getCanonicalRscAfterPromotion(
+async function getResponseAfterPromotion(
   request: APIRequestContext,
   url: string,
-  headers: Record<string, string>,
+  headers: Record<string, string> = {},
 ): Promise<APIResponse> {
   const deadline = Date.now() + STALE_SEED_RETRY_TIMEOUT_MS;
   let lastSeedStatus: number | undefined;
@@ -51,7 +52,7 @@ async function getCanonicalRscAfterPromotion(
   } while (Date.now() < deadline);
 
   throw new Error(
-    `stale seed Worker remained reachable for canonical RSC request: ${lastSeedStatus ?? "unknown status"}`,
+    `stale seed Worker remained reachable for prewarmed request: ${lastSeedStatus ?? "unknown status"}`,
   );
 }
 
@@ -160,7 +161,7 @@ async function waitForStablePromotion({
   );
 }
 
-test("deploy-prewarmed full and loading RSC variants are reused by browser navigation", async ({
+test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   baseURL,
   browser,
   playwright,
@@ -190,7 +191,18 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   // without touching either canonical cache entry before its HIT assertion.
   await waitForStablePromotion({ baseURL, buildId, playwright, rscBuildId });
 
-  const fullResponse = await getCanonicalRscAfterPromotion(
+  const pagesResponse = await getResponseAfterPromotion(request, `${baseURL}${PAGES_TARGET_PATH}`);
+  const pagesResponseHeaders = pagesResponse.headers();
+  expect(pagesResponse.ok(), JSON.stringify(pagesResponseHeaders)).toBe(true);
+  expect(pagesResponseHeaders["content-type"]).toContain("text/html");
+  expect(pagesResponseHeaders["x-vinext-build-id"]).toBe(rscBuildId);
+  expect(
+    pagesResponseHeaders["cf-cache-status"],
+    `Pages response headers: ${JSON.stringify(pagesResponseHeaders)}`,
+  ).toBe("HIT");
+  expect(await pagesResponse.text()).toContain("Pages prewarm target");
+
+  const fullResponse = await getResponseAfterPromotion(
     request,
     `${baseURL}${TARGET_PATH}?_rsc`,
     fullHeaders,
@@ -207,7 +219,7 @@ test("deploy-prewarmed full and loading RSC variants are reused by browser navig
   expect(fullBody).toContain(buildId);
   expect(fullBody).toContain("Prewarm target");
 
-  const shellResponse = await getCanonicalRscAfterPromotion(
+  const shellResponse = await getResponseAfterPromotion(
     request,
     `${baseURL}${TARGET_PATH}${LOADING_SHELL_RSC_SEARCH}`,
     shellHeaders,
