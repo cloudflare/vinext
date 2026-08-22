@@ -89,7 +89,17 @@ function renderInline(src: string, options: RenderOptions): string {
     /\[([^\]]+)\]\(([^)\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g,
     (_m, label: string, url: string) => {
       const href = options.rewriteLink ? options.rewriteLink(url) : url;
-      const external = /^https?:\/\//.test(href) && !href.startsWith("https://vinext.dev");
+
+      let external = false;
+      if (/^https?:\/\//i.test(href)) {
+        try {
+          const parsed = new URL(href);
+          external = !(parsed.protocol === "https:" && parsed.hostname === "vinext.dev");
+        } catch {
+          external = true;
+        }
+      }
+
       const attrs = external ? ' target="_blank" rel="noopener noreferrer"' : "";
       return `<a href="${href}"${attrs}>${label}</a>`;
     },
