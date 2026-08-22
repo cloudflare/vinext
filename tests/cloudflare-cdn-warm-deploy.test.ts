@@ -881,6 +881,49 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toBe(false);
   });
 
+  it("fails no-promote deployment when a staged warm request remains unsuccessful", async () => {
+    writeFile(
+      "wrangler.jsonc",
+      JSON.stringify({ name: "my-worker", custom_domains: ["app.example.com"] }),
+    );
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      if (isReadinessFetch(url)) return cacheableHtml();
+      return new Response("unavailable", { status: 503 });
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded my-worker\nWorker Version ID: 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        return "Staged version\nhttps://app.example.com\n";
+      }
+      if (args.includes("triggers")) {
+        return "Triggers deployed\n  app.example.com (custom domain)\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, ["/about"], {
+        expectedBuildId: "app-build-a",
+        warmCdnPromote: false,
+        warmCdnRetries: 0,
+      }),
+    ).rejects.toThrow("1 request(s) remain unwarmed");
+    expect(fetch).toHaveBeenCalledTimes(7);
+    expect(
+      (execFileSyncMock.mock.calls as Array<[string, string[]]>).some(([, args]) =>
+        args.includes("22222222-2222-4222-8222-222222222222@100%"),
+      ),
+    ).toBe(false);
+  });
+
   it("rejects strict HTML warmup without verifiable build identity before upload", async () => {
     writeFile(
       "wrangler.jsonc",
