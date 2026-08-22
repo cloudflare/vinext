@@ -19,7 +19,7 @@ const RUNNER_MAP: Record<string, string> = {
 };
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     // ─── API: Upload benchmark results ─────────────────────────────────
@@ -39,7 +39,9 @@ export default {
     }
 
     // ─── All other routes: delegate to vinext RSC handler ────────────────
-    return handler.fetch(request);
+    // Forward env and ctx: the handler reads bindings from env (cache adapters,
+    // version metadata for CDN warmup verification) and defers work via ctx.
+    return handler.fetch(request, env, ctx);
   },
 };
 

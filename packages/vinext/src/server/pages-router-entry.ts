@@ -35,6 +35,7 @@ import {
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
 import { finalizeMissingStaticAssetResponse } from "./worker-utils.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
+import { stampWorkerVersion } from "./worker-version.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
@@ -102,7 +103,7 @@ export default {
     env?: PagesWorkerEnv,
     ctx?: PagesWorkerExecutionContext,
   ): Promise<Response> {
-    return handleRequest(request, env, ctx);
+    return stampWorkerVersion(await handleRequest(request, env, ctx), env);
   },
 };
 

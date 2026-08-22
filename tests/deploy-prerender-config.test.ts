@@ -167,6 +167,18 @@ function writeApiOnlyProject(): void {
   writeFile("dist/server/index.js", "export default {};\n");
 }
 
+function configureCdnWarmupVersionMetadata(): void {
+  writeFile(
+    "wrangler.jsonc",
+    JSON.stringify({
+      main: "vinext/server/app-router-entry",
+      assets: { directory: "dist/client" },
+      cache: { enabled: true },
+      version_metadata: { binding: "VINEXT_VERSION_METADATA" },
+    }),
+  );
+}
+
 describe("deploy prerender config wiring", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(process.cwd(), ".tmp-vinext-deploy-prerender-"));
@@ -176,6 +188,8 @@ describe("deploy prerender config wiring", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -242,6 +256,7 @@ describe("deploy prerender config wiring", () => {
 
   it("loads Vite config once for all deploy metadata", async () => {
     writeProject("true", '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+    configureCdnWarmupVersionMetadata();
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/index.js", "export default {};\n");
     runPrerenderMock.mockImplementationOnce(async () => {
@@ -297,6 +312,27 @@ describe("deploy prerender config wiring", () => {
         concurrency: undefined,
         nextConfig: expect.objectContaining({ output: "export" }),
       }),
+    );
+  });
+
+  it("skips Worker-version CDN warming for static exports", async () => {
+    writeProjectWithInlineNextConfig('{ output: "export" }');
+    configureCdnWarmupVersionMetadata();
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+    const consoleSpy = vi.spyOn(console, "log");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(vi.mocked(execFileSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
+      expect.stringContaining("wrangler"),
+      "deploy",
+    ]);
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining("CDN warmup skipped: static exports are served by Cloudflare Assets"),
     );
   });
 

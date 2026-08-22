@@ -10,6 +10,8 @@ import {
   type PrerenderManifest,
   type PrerenderedPathSelectionOptions,
 } from "vinext/internal/server/prerender-manifest";
+import { VINEXT_WORKER_VERSION_HEADER } from "vinext/internal/server/worker-version";
+import { normalizeTrailingSlashPathname } from "vinext/server/request-pipeline";
 
 export type CdnWarmOptions = {
   targetUrl: string;
@@ -18,7 +20,15 @@ export type CdnWarmOptions = {
   concurrency?: number;
   timeoutMs?: number;
   retries?: number;
+  retryDelayMs?: number;
   strict?: boolean;
+  expectedVersionId?: string;
+  /**
+   * Require cf-cache-status proof that Workers Cache stored the response, not
+   * just that the expected Worker produced it. A MISS fill is confirmed with a
+   * second identical request that must come back cache-served.
+   */
+  confirmCache?: boolean;
   fetchImpl?: typeof fetch;
 };
 
@@ -62,6 +72,30 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
   }
 }
 
+/**
+ * Manifests record bare route paths and carry `trailingSlash` separately, but
+ * warmup fetches with `redirect: "manual"` so it can verify each cache key
+ * exactly. Requesting `/about` under `trailingSlash: true` would evaluate (and
+ * possibly cache) the 308 at the pre-redirect key while the canonical HTML
+ * entry stays cold — apply the request pipeline's own normalization so warmup
+ * requests the URL the server serves without a redirect.
+ */
+function canonicalizeWarmPathTrailingSlashes(
+  paths: readonly string[],
+  trailingSlash: boolean | undefined,
+): string[] {
+  if (trailingSlash === undefined) return [...paths];
+  const seen = new Set<string>();
+  const canonical: string[] = [];
+  for (const pathname of paths) {
+    const normalized = normalizeTrailingSlashPathname(pathname, trailingSlash) ?? pathname;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    canonical.push(normalized);
+  }
+  return canonical;
+}
+
 function readPrerenderPathWarmPaths(root: string, options?: { strict?: boolean }): string[] | null {
   const manifest = readPrerenderPathManifest(
     path.join(root, "dist", "server", PRERENDER_PATHS_MANIFEST),
@@ -77,7 +111,10 @@ function readPrerenderPathWarmPaths(root: string, options?: { strict?: boolean }
     return [];
   }
 
-  return manifest.paths.filter((pathname) => pathname.startsWith("/"));
+  return canonicalizeWarmPathTrailingSlashes(
+    manifest.paths.filter((pathname) => pathname.startsWith("/")),
+    manifest.trailingSlash,
+  );
 }
 
 export function readPrerenderWarmPaths(
@@ -117,14 +154,20 @@ export function readPrerenderWarmPaths(
     return [];
   }
 
-  return getPrerenderedConcretePaths(manifest, options);
+  return canonicalizeWarmPathTrailingSlashes(
+    getPrerenderedConcretePaths(manifest, options),
+    manifest.trailingSlash,
+  );
 }
 
 export function getWarmPathsFromPrerenderManifest(
   manifest: PrerenderManifest,
   options?: PrerenderedPathSelectionOptions,
 ): string[] {
-  return getPrerenderedConcretePaths(manifest, options);
+  return canonicalizeWarmPathTrailingSlashes(
+    getPrerenderedConcretePaths(manifest, options),
+    manifest.trailingSlash,
+  );
 }
 
 function normalizeWarmPath(pathname: string): string {
@@ -142,11 +185,63 @@ function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
 
+async function waitBeforeRetry(
+  attempt: number,
+  retries: number,
+  retryDelayMs: number,
+): Promise<void> {
+  if (attempt >= retries || retryDelayMs === 0) return;
+  await new Promise((resolve) => setTimeout(resolve, retryDelayMs * 2 ** attempt));
+}
+
+const CF_CACHE_STATUS_HEADER = "cf-cache-status";
+/** Statuses proving the edge served the response from the cache partition. */
+const CACHE_SERVED_STATUSES = new Set(["HIT", "STALE", "UPDATING", "REVALIDATED"]);
+/** Statuses where the Worker ran and the response may have been written to cache. */
+const CACHE_FILL_STATUSES = new Set(["MISS", "EXPIRED"]);
+
+function getCacheStatus(response: Response): string | null {
+  return response.headers.get(CF_CACHE_STATUS_HEADER)?.toUpperCase() ?? null;
+}
+
+/**
+ * Null when the response proves the cache served it from the expected Worker
+ * version's partition; otherwise the reason it does not.
+ */
+function describeUnconfirmedCacheServe(
+  response: Response,
+  expectedVersionId: string | undefined,
+): string | null {
+  if (expectedVersionId) {
+    const actualVersionId = response.headers.get(VINEXT_WORKER_VERSION_HEADER);
+    if (actualVersionId !== expectedVersionId) {
+      return describeVersionMismatch(expectedVersionId, actualVersionId);
+    }
+  }
+  if (response.status >= 400) return `HTTP ${response.status}`;
+  const cacheStatus = getCacheStatus(response);
+  if (cacheStatus && CACHE_SERVED_STATUSES.has(cacheStatus)) return null;
+  return `cache entry not confirmed (${CF_CACHE_STATUS_HEADER}: ${cacheStatus ?? "missing"})`;
+}
+
+/** Error text for a response that didn't prove it came from the expected Worker version. */
+function describeVersionMismatch(
+  expectedVersionId: string,
+  actualVersionId: string | null,
+): string {
+  return actualVersionId
+    ? `expected Worker version ${expectedVersionId}, received ${actualVersionId}`
+    : `expected Worker version ${expectedVersionId}, but the response did not include ` +
+        `${VINEXT_WORKER_VERSION_HEADER} — a custom Worker entry must forward its bindings ` +
+        "as `handler.fetch(request, env, ctx)` for the version to be stamped";
+}
+
 async function fetchWithTimeout(
   fetchImpl: typeof fetch,
   url: URL,
   timeoutMs: number,
   headers: HeadersInit | undefined,
+  redirect: RequestRedirect = "follow",
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -155,7 +250,7 @@ async function fetchWithTimeout(
   try {
     return await fetchImpl(url, {
       method: "GET",
-      redirect: "follow",
+      redirect,
       headers: requestHeaders,
       signal: controller.signal,
     });
@@ -166,9 +261,13 @@ async function fetchWithTimeout(
 
 async function warmOnePath(
   pathname: string,
-  options: Required<Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries">> & {
+  options: Required<
+    Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries" | "retryDelayMs">
+  > & {
     fetchImpl: typeof fetch;
     headers?: HeadersInit;
+    expectedVersionId?: string;
+    confirmCache?: boolean;
   },
 ): Promise<{ path: string; ok: true } | { path: string; ok: false; error: string }> {
   const url = buildWarmupUrl(options.targetUrl, pathname);
@@ -181,21 +280,76 @@ async function warmOnePath(
         url,
         options.timeoutMs,
         options.headers,
+        "manual",
       );
       await response.arrayBuffer();
 
-      if (response.status < 400) {
-        return { path: pathname, ok: true };
+      // A staged version can take a few seconds to become globally routable, so
+      // before the override propagates, the old Worker answers with its own
+      // status codes (including 404s for newly added routes). Check which
+      // Worker actually produced the response before trusting its status —
+      // otherwise a pre-propagation old-Worker 404 looks like a terminal
+      // failure instead of "not warmed yet".
+      if (options.expectedVersionId) {
+        const actualVersionId = response.headers.get(VINEXT_WORKER_VERSION_HEADER);
+        if (actualVersionId !== options.expectedVersionId) {
+          lastError = describeVersionMismatch(options.expectedVersionId, actualVersionId);
+          await waitBeforeRetry(attempt, options.retries, options.retryDelayMs);
+          continue;
+        }
       }
 
+      if (response.status < 400) {
+        if (!options.confirmCache) return { path: pathname, ok: true };
+
+        // "The expected version produced a 200" and "the edge stored that
+        // response in the version's cache partition" are different facts.
+        // Per-entrypoint cache overrides and response-level bypasses
+        // (Set-Cookie, Cache-Control: no-store/private) return a healthy 200
+        // that Workers Cache never stores — only cf-cache-status can tell
+        // those apart from a real warm.
+        const cacheStatus = getCacheStatus(response);
+        if (cacheStatus && CACHE_SERVED_STATUSES.has(cacheStatus)) {
+          return { path: pathname, ok: true };
+        }
+        if (!cacheStatus || !CACHE_FILL_STATUSES.has(cacheStatus)) {
+          // BYPASS/DYNAMIC or a missing header is deterministic for this
+          // response shape: the cache will never store it, so retrying only
+          // burns the retry budget on the same answer.
+          lastError = `response was not stored by Workers Cache (${CF_CACHE_STATUS_HEADER}: ${cacheStatus ?? "missing"})`;
+          break;
+        }
+
+        // MISS/EXPIRED started a fill. Only a second identical request coming
+        // back cache-served proves the fill became a reusable entry.
+        const confirm = await fetchWithTimeout(
+          options.fetchImpl,
+          url,
+          options.timeoutMs,
+          options.headers,
+          "manual",
+        );
+        await confirm.arrayBuffer();
+        const confirmError = describeUnconfirmedCacheServe(confirm, options.expectedVersionId);
+        if (!confirmError) return { path: pathname, ok: true };
+        lastError = confirmError;
+        await waitBeforeRetry(attempt, options.retries, options.retryDelayMs);
+        continue;
+      }
+
+      // These paths came from this build's prerender manifest, so even a 4xx
+      // from the expected Worker version means the intended cache entry was
+      // not populated and must remain a warmup failure.
       lastError = `HTTP ${response.status}`;
       if (!isRetryableStatus(response.status)) break;
+      await waitBeforeRetry(attempt, options.retries, options.retryDelayMs);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         lastError = `timed out after ${options.timeoutMs}ms`;
       } else {
         lastError = error instanceof Error ? error.message : String(error);
       }
+      await waitBeforeRetry(attempt, options.retries, options.retryDelayMs);
     }
   }
 
@@ -227,7 +381,8 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const paths = options.paths;
   const concurrency = Math.max(1, options.concurrency ?? 10);
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
-  const retries = Math.max(0, options.retries ?? 1);
+  const retries = Math.max(0, options.retries ?? (options.expectedVersionId ? 3 : 1));
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 500);
   const fetchImpl = options.fetchImpl ?? fetch;
 
   if (paths.length === 0) {
@@ -241,8 +396,11 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       targetUrl: options.targetUrl,
       timeoutMs,
       retries,
+      retryDelayMs,
       fetchImpl,
       headers: options.headers,
+      expectedVersionId: options.expectedVersionId,
+      confirmCache: options.confirmCache,
     }),
   );
 
@@ -270,7 +428,8 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
 
   if (options.strict && failures.length > 0) {
     throw new Error(
-      `CDN warmup failed for ${failures.length}/${paths.length} path(s). ` +
+      `CDN warmup failed for ${failures.length}/${paths.length} path(s); ` +
+        `verified ${warmed}/${paths.length}. ` +
         `First failure: ${failures[0].path}: ${failures[0].error}`,
     );
   }

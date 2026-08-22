@@ -22,13 +22,18 @@ export function formatDeployHelp(): string {
     --prerender-concurrency <count>
                              Maximum number of routes to pre-render in parallel
     --experimental-warm-cdn-cache
-                             Upload a Worker version, warm build-discovered paths
-                             through the production URL, then promote it (experimental)
+                             Stage a Worker version at 0%, warm build-discovered
+                             paths through a verified version override, then promote
+                             it to 100% (experimental)
     --warm-cdn-concurrency <count>
                              Maximum number of CDN warmup requests in parallel
     --warm-cdn-timeout <ms>  Per-request CDN warmup timeout (default: 5000)
-    --warm-cdn-retries <n>   Retries for transient CDN warmup failures (default: 1)
-    --warm-cdn-strict        Fail deploy when any CDN warmup request fails
+    --warm-cdn-retries <n>   Retries for warmup failures (default: 3)
+                             Increase when Worker version propagation is slow
+    --warm-cdn-strict        Fail when staging or any CDN warmup request fails.
+                             This deploy will not promote after a warmup failure;
+                             inspect deployment status if another deploy may have run
+                             (static exports skip Worker-version warmup because Assets serve them)
     --warm-cdn-include-fallbacks
                              Also warm PPR fallback-shell placeholder paths
     -h, --help               Show this help
@@ -47,6 +52,8 @@ export function formatDeployHelp(): string {
 
   CDN warmup requests populate the edge cache only in the Cloudflare data centers
   reached by the warmup run; they do not globally prefill every edge location.
+  Verified warmup exposes x-vinext-worker-version on Worker-served responses so
+  cached representations can identify the Worker version that produced them.
 
   Examples:
     npx @vinext/cloudflare deploy                                      Build and deploy to production

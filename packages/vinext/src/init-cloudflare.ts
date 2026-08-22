@@ -5,6 +5,8 @@ import MagicString from "magic-string";
 import type { ESTree } from "vite";
 import type { CloudflareInitOptions } from "./init-platform.js";
 import { detectProject } from "./utils/project.js";
+import { isUnknownRecord } from "./utils/record.js";
+import { VINEXT_VERSION_METADATA_BINDING } from "./server/worker-version.js";
 
 const require = createRequire(import.meta.url);
 
@@ -54,6 +56,9 @@ export function validateCloudflarePlatformSetup(
     .map((fileName) => path.join(context.root, fileName))
     .find((candidate) => fs.existsSync(candidate));
   const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
+  if (!wranglerCode) {
+    assertWarmupCompatibleWorkerEntry(context.root, cloudflare);
+  }
   const updatedWranglerCode = wranglerCode
     ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, { root: context.root })
     : undefined;
@@ -177,6 +182,36 @@ function resolveWorkerEntry(root: string): string {
   return "vinext/server/fetch-handler";
 }
 
+const VERSION_STAMPING_WORKER_ENTRIES = new Set([
+  "vinext/server/fetch-handler",
+  "vinext/server/app-router-entry",
+  "vinext/server/pages-router-entry",
+]);
+
+function assertWarmupCompatibleWorkerEntry(
+  root: string,
+  options: CloudflareInitOptions,
+  wranglerCode?: string,
+): void {
+  if (!options.warmCdnCache) return;
+
+  let configuredMain: unknown;
+  if (wranglerCode) {
+    const config = JSON.parse(stripJsonComments(wranglerCode)) as Record<string, unknown>;
+    configuredMain = config.main;
+  }
+  const workerEntry =
+    typeof configuredMain === "string" ? configuredMain : resolveWorkerEntry(root);
+  if (VERSION_STAMPING_WORKER_ENTRIES.has(workerEntry)) return;
+
+  throw new Error(
+    `CDN warmup cannot be configured automatically with custom Worker entry "${workerEntry}" ` +
+      "because vinext cannot verify that every response is stamped with the uploaded Worker version. " +
+      'Use "vinext/server/fetch-handler" as Wrangler main, or configure version metadata and ' +
+      "response stamping explicitly in the custom entry without enabling warmup through vinext init.",
+  );
+}
+
 // Cloudflare deployment scaffolding belongs to `vinext init`.
 export function generateWranglerConfig(
   info: CloudflareProjectInfo,
@@ -199,6 +234,10 @@ export function generateWranglerConfig(
   };
 
   if (options.cdnCache === "workers-cache") config.cache = { enabled: true };
+
+  if (options.warmCdnCache) {
+    config.version_metadata = { binding: VINEXT_VERSION_METADATA_BINDING };
+  }
 
   if (options.imageOptimization === "cloudflare-images") {
     config.images = { binding: "IMAGES" };
@@ -371,6 +410,96 @@ function appendTopLevelJsonProperty(code: string, property: string): string {
   return `${before}${needsComma ? "," : ""}\n${property}\n${code.slice(closing)}`;
 }
 
+/**
+ * The runtime reads the version metadata binding under a fixed name
+ * (VINEXT_VERSION_METADATA_BINDING), and Workers allows only one
+ * version_metadata binding per config scope. A differently named existing
+ * binding is user-owned — code may read it off `env` — so init must not
+ * silently rename it. Fail with a migration path instead.
+ */
+function ensureVersionMetadataInJsonObject(code: string, scopeLabel: string): string {
+  const metadataProperty = findTopLevelJsonProperty(code, "version_metadata");
+  if (!metadataProperty) {
+    return appendTopLevelJsonProperty(
+      code,
+      `  "version_metadata": { "binding": "${VINEXT_VERSION_METADATA_BINDING}" }`,
+    );
+  }
+
+  const parsedMetadata: unknown = JSON.parse(
+    stripJsonComments(code.slice(metadataProperty.valueStart, metadataProperty.valueEnd)),
+  );
+  const metadata = isUnknownRecord(parsedMetadata) ? parsedMetadata : null;
+  if (metadata?.binding === VINEXT_VERSION_METADATA_BINDING) return code;
+
+  const existingBinding =
+    typeof metadata?.binding === "string"
+      ? `a version_metadata binding named "${metadata.binding}"`
+      : "an unrecognized version_metadata entry";
+  throw new Error(
+    `CDN warmup needs the version_metadata binding named "${VINEXT_VERSION_METADATA_BINDING}", ` +
+      `but ${scopeLabel} of the Wrangler config already declares ${existingBinding} and Workers ` +
+      "allows only one version_metadata binding. Rename the existing binding to " +
+      `"${VINEXT_VERSION_METADATA_BINDING}" (updating any code that reads the old name from env), ` +
+      "or re-run vinext init without CDN warmup.",
+  );
+}
+
+function updateNamedEnvironmentObjects(
+  code: string,
+  updateEnvironment: (environmentCode: string, envName: string) => string,
+): string {
+  const envProperty = findTopLevelJsonProperty(code, "env");
+  if (!envProperty) return code;
+
+  const envCode = code.slice(envProperty.valueStart, envProperty.valueEnd);
+  const parsedEnv: unknown = JSON.parse(stripJsonComments(envCode));
+  if (!isUnknownRecord(parsedEnv)) {
+    throw new Error('Wrangler config property "env" must be an object.');
+  }
+  let updatedEnv = envCode;
+  for (const envName of Object.keys(parsedEnv)) {
+    const environmentProperty = findTopLevelJsonProperty(updatedEnv, envName);
+    if (!environmentProperty) continue;
+    const environmentCode = updatedEnv.slice(
+      environmentProperty.valueStart,
+      environmentProperty.valueEnd,
+    );
+    if (!environmentCode.trimStart().startsWith("{")) continue;
+    const updatedEnvironment = updateEnvironment(environmentCode, envName);
+    updatedEnv = `${updatedEnv.slice(0, environmentProperty.valueStart)}${updatedEnvironment}${updatedEnv.slice(environmentProperty.valueEnd)}`;
+  }
+  return `${code.slice(0, envProperty.valueStart)}${updatedEnv}${code.slice(envProperty.valueEnd)}`;
+}
+
+function ensureNamedEnvironmentVersionMetadata(code: string): string {
+  return updateNamedEnvironmentObjects(code, (environmentCode, envName) =>
+    ensureVersionMetadataInJsonObject(environmentCode, `environment "${envName}"`),
+  );
+}
+
+function ensureCacheEnabledInJsonObject(code: string): string {
+  const cacheProperty = findTopLevelJsonProperty(code, "cache");
+  if (!cacheProperty) {
+    return appendTopLevelJsonProperty(code, '  "cache": { "enabled": true }');
+  }
+
+  const cache = JSON.parse(
+    stripJsonComments(code.slice(cacheProperty.valueStart, cacheProperty.valueEnd)),
+  );
+  if (isUnknownRecord(cache) && cache.enabled === true) return code;
+
+  const updatedCache = JSON.stringify({
+    ...(isUnknownRecord(cache) ? cache : {}),
+    enabled: true,
+  });
+  return `${code.slice(0, cacheProperty.valueStart)}${updatedCache}${code.slice(cacheProperty.valueEnd)}`;
+}
+
+function ensureNamedEnvironmentCacheEnabled(code: string): string {
+  return updateNamedEnvironmentObjects(code, ensureCacheEnabledInJsonObject);
+}
+
 export function updateWranglerConfigForCloudflare(
   code: string,
   options: CloudflareInitOptions,
@@ -382,10 +511,14 @@ export function updateWranglerConfigForCloudflare(
   } catch (cause) {
     throw new Error("Could not parse the existing Wrangler JSON/JSONC config.", { cause });
   }
+  assertWarmupCompatibleWorkerEntry(context.root ?? process.cwd(), options, code);
   if (Object.hasOwn(config, "pages_build_output_dir")) {
     throw new Error(
       'The existing Wrangler config uses "pages_build_output_dir", which cannot be combined with the Worker "main" required by vinext. Remove "pages_build_output_dir" and rerun vinext init.',
     );
+  }
+  if (options.warmCdnCache) {
+    assertWarmupCompatibleCacheConfig(config);
   }
   let output = code;
   // Without `main` and `assets` the Cloudflare plugin builds the project as
@@ -403,18 +536,12 @@ export function updateWranglerConfigForCloudflare(
     );
   }
   if (options.cdnCache === "workers-cache") {
-    const cacheProperty = findTopLevelJsonProperty(output, "cache");
-    if (!cacheProperty) {
-      output = appendTopLevelJsonProperty(output, '  "cache": { "enabled": true }');
-    } else {
-      const cache = JSON.parse(
-        stripJsonComments(output.slice(cacheProperty.valueStart, cacheProperty.valueEnd)),
-      ) as Record<string, unknown> | null;
-      if (!cache || cache.enabled !== true) {
-        const updatedCache = JSON.stringify({ ...cache, enabled: true });
-        output = `${output.slice(0, cacheProperty.valueStart)}${updatedCache}${output.slice(cacheProperty.valueEnd)}`;
-      }
-    }
+    output = ensureCacheEnabledInJsonObject(output);
+    output = ensureNamedEnvironmentCacheEnabled(output);
+  }
+  if (options.warmCdnCache) {
+    output = ensureVersionMetadataInJsonObject(output, "the top level");
+    output = ensureNamedEnvironmentVersionMetadata(output);
   }
   if (options.imageOptimization === "cloudflare-images") {
     const imagesProperty = findTopLevelJsonProperty(output, "images");
@@ -448,6 +575,31 @@ export function updateWranglerConfigForCloudflare(
     }
   }
   return output;
+}
+
+function assertWarmupCompatibleCacheConfig(config: Record<string, unknown>): void {
+  const incompatibleScopes: string[] = [];
+  if (isUnknownRecord(config.cache) && config.cache.cross_version_cache === true) {
+    incompatibleScopes.push("the top-level cache config");
+  }
+  if (isUnknownRecord(config.env)) {
+    for (const [envName, value] of Object.entries(config.env)) {
+      if (
+        isUnknownRecord(value) &&
+        isUnknownRecord(value.cache) &&
+        value.cache.cross_version_cache === true
+      ) {
+        incompatibleScopes.push(`environment "${envName}"`);
+      }
+    }
+  }
+  if (incompatibleScopes.length === 0) return;
+
+  throw new Error(
+    `CDN warmup cannot be enabled while cache.cross_version_cache is true in ${incompatibleScopes.join(
+      " and ",
+    )}. Set cross_version_cache to false (or remove it) so each Worker version has an isolated cache partition, then rerun vinext init.`,
+  );
 }
 
 export function getWranglerImagesBinding(code: string): string {

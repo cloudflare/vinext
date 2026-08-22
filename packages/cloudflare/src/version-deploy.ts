@@ -3,8 +3,9 @@ import {
   buildNodeCliInvocation,
   resolveWranglerBin,
   validateWranglerEnvName,
-  type DeployOptions,
-} from "./deploy.js";
+  type WranglerTargetOptions,
+} from "./wrangler-cli.js";
+import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { parseWorkersDevUrl } from "./workers-dev-url.js";
 
 export { parseWorkersDevUrl } from "./workers-dev-url.js";
@@ -15,7 +16,16 @@ export type WranglerVersionUploadResult = {
   output: string;
 };
 
+/**
+ * `wrangler versions deploy` reports the resulting traffic split and never a
+ * URL, so this result carries no deployed URL to read. Only `triggers deploy`
+ * names the attached production target.
+ */
 export type WranglerVersionDeployResult = {
+  output: string;
+};
+
+export type WranglerTriggersDeployResult = {
   deployedUrl: string | null;
   output: string;
 };
@@ -100,7 +110,7 @@ export function parseWranglerVersionUploadOutput(output: string): WranglerVersio
 }
 
 export function buildWranglerVersionUploadArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config"> & { previewAlias?: string },
+  options: WranglerTargetOptions & { previewAlias?: string },
 ): WranglerVersionArgs {
   const args = ["versions", "upload"];
   const env = options.env || (options.preview ? "preview" : undefined);
@@ -121,7 +131,7 @@ export function buildWranglerVersionUploadArgs(
 
 export function buildWranglerVersionDeployArgs(
   versionTraffic: readonly WranglerVersionTraffic[],
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  options: WranglerTargetOptions,
 ): WranglerVersionArgs {
   const args = [
     "versions",
@@ -143,7 +153,7 @@ export function buildWranglerVersionDeployArgs(
 }
 
 export function buildWranglerDeploymentsStatusArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  options: WranglerTargetOptions,
 ): WranglerVersionArgs {
   const args = ["deployments", "status", "--json"];
   const env = options.env || (options.preview ? "preview" : undefined);
@@ -160,7 +170,7 @@ export function buildWranglerDeploymentsStatusArgs(
 }
 
 export function buildWranglerTriggersDeployArgs(
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  options: WranglerTargetOptions,
 ): WranglerVersionArgs {
   const args = ["triggers", "deploy"];
   const env = options.env || (options.preview ? "preview" : undefined);
@@ -257,7 +267,7 @@ export function parseWranglerDeploymentStatusOutput(output: string): WranglerDep
 
 export function runWranglerVersionUpload(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config"> & { previewAlias?: string },
+  options: WranglerTargetOptions & { previewAlias?: string },
   execute: typeof execFileSync = execFileSync,
 ): WranglerVersionUploadResult {
   const { args, env } = buildWranglerVersionUploadArgs(options);
@@ -279,7 +289,7 @@ export function runWranglerVersionUpload(
 export function runWranglerVersionDeploy(
   root: string,
   versionTraffic: readonly WranglerVersionTraffic[],
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  options: WranglerTargetOptions,
   phase: "stage" | "promote-warmed" | "promote-uploaded" = "promote-uploaded",
   execute: typeof execFileSync = execFileSync,
 ): WranglerVersionDeployResult {
@@ -292,13 +302,12 @@ export function runWranglerVersionDeploy(
   } else {
     console.log(`\n  Promoting uploaded Worker version to ${target}...`);
   }
-  const output = runWranglerCommand(root, args, execute);
-  return { deployedUrl: parseWorkersDevUrl(output), output };
+  return { output: runWranglerCommand(root, args, execute) };
 }
 
 export function runWranglerDeploymentStatus(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  options: WranglerTargetOptions,
   execute: typeof execFileSync = execFileSync,
 ): WranglerDeploymentStatus {
   const { args, env } = buildWranglerDeploymentsStatusArgs(options);
@@ -312,9 +321,9 @@ export function runWranglerDeploymentStatus(
 
 export function runWranglerTriggersDeploy(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  options: WranglerTargetOptions,
   execute: typeof execFileSync = execFileSync,
-): WranglerVersionDeployResult {
+): WranglerTriggersDeployResult {
   const { args, env } = buildWranglerTriggersDeployArgs(options);
   if (env) {
     console.log(`\n  Applying Worker triggers for env: ${env}...`);
@@ -322,5 +331,5 @@ export function runWranglerTriggersDeploy(
     console.log("\n  Applying Worker triggers...");
   }
   const output = runWranglerCommand(root, args, execute);
-  return { deployedUrl: parseWorkersDevUrl(output), output };
+  return { deployedUrl: parseWorkerDeploymentUrl(output), output };
 }

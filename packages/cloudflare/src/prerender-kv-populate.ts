@@ -9,6 +9,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { formatUnknownError } from "./utils/format-unknown-error.js";
 import { appIsrCacheKey } from "vinext/internal/server/isr-cache";
 import {
   buildAppPageCacheTags,
@@ -51,11 +52,6 @@ function resolveContainedFile(rootDir: string, relativePath: string): string {
     throw new Error(`[vinext] Refusing to read prerender artifact outside ${resolvedRoot}`);
   }
   return resolvedFile;
-}
-
-function formatUnknownError(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return String(error);
 }
 
 function buildCacheEntry(

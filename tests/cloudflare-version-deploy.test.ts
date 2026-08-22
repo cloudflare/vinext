@@ -9,8 +9,10 @@ import {
   parseWranglerDeploymentStatusOutput,
   parseWranglerVersionUploadOutput,
   runWranglerVersionDeploy,
+  runWranglerTriggersDeploy,
   runWranglerVersionUpload,
 } from "../packages/cloudflare/src/version-deploy.js";
+import { parseWorkersDevProductionUrl } from "../packages/cloudflare/src/worker-deployment-url.js";
 
 describe("Cloudflare Wrangler version deployment helpers", () => {
   afterEach(() => {
@@ -97,7 +99,7 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
 
   it("logs distinct labels for staged and promoted version deploys", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    const execute = vi.fn(() => "Deployed version\nhttps://app.example.workers.dev\n");
+    const execute = vi.fn(() => "Deployed version\n");
 
     runWranglerVersionDeploy(
       "/tmp/app",
@@ -171,6 +173,17 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
       args: ["triggers", "deploy", "--env", "preview"],
       env: "preview",
     });
+  });
+
+  it("reports a custom domain from trigger deployment output", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const execute = vi.fn(
+      () => "Deployed app triggers\n  app.example.com (custom domain - zone name: example.com)\n",
+    );
+
+    expect(runWranglerTriggersDeploy("/tmp/app", {}, execute as never).deployedUrl).toBe(
+      "https://app.example.com",
+    );
   });
 
   it("parses version IDs and preview URLs from Wrangler text output", () => {
@@ -247,5 +260,37 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
         }),
       ).versions,
     ).toEqual([{ versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 }]);
+  });
+
+  it("derives the production workers.dev origin from the version preview URL", () => {
+    // Wrangler builds the preview host as `{version prefix}-{worker}.{subdomain}`,
+    // so dropping the prefix yields the host production traffic reads — and the
+    // cache key warmup has to target.
+    expect(
+      parseWorkersDevProductionUrl(
+        "https://095f00a7-app-warm.example.workers.dev",
+        "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+      ),
+    ).toBe("https://app-warm.example.workers.dev");
+  });
+
+  it("refuses a workers.dev host that does not carry the uploaded version's prefix", () => {
+    // A host that is not the expected preview shape may be any workers.dev
+    // origin, including one this deployment does not answer on. Warming it
+    // could confirm a cache partition production never reads, so resolution
+    // fails closed instead of guessing.
+    expect(
+      parseWorkersDevProductionUrl(
+        "https://app-warm.example.workers.dev",
+        "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+      ),
+    ).toBeNull();
+    expect(
+      parseWorkersDevProductionUrl(
+        "https://095f00a7-app-warm.preview.example.com",
+        "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+      ),
+    ).toBeNull();
+    expect(parseWorkersDevProductionUrl(null, "095f00a7-23a7-43b7-a227-e4c97cab5f22")).toBeNull();
   });
 });

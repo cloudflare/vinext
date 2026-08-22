@@ -96,6 +96,10 @@
       "types": "./dist/server/pregenerated-concrete-paths.d.ts",
       "import": "./dist/server/pregenerated-concrete-paths.js"
     },
+    "./internal/server/worker-version": {
+      "types": "./dist/server/worker-version.d.ts",
+      "import": "./dist/server/worker-version.js"
+    },
     "./internal/build/run-prerender": {
       "types": "./dist/build/run-prerender.d.ts",
       "import": "./dist/build/run-prerender.js"

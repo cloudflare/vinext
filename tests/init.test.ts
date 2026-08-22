@@ -727,14 +727,13 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
 }
 `,
     );
-    writeFile(tmpDir, "worker/index.ts", "export default { fetch() {} };\n");
-
     await runInit(tmpDir, {
       platform: "cloudflare",
       cloudflare: {
         dataCache: "kv",
         cdnCache: "workers-cache",
         imageOptimization: "cloudflare-images",
+        warmCdnCache: true,
       },
     });
 
@@ -748,7 +747,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     expect(wrangler).toContain('"binding": "OTHER"');
     expect(wrangler).toContain('"binding": "VINEXT_KV_CACHE"');
     expect(wrangler).toContain('"images": { "binding": "IMAGES" }');
-    expect(readFile(tmpDir, "worker/index.ts")).toBe("export default { fetch() {} };\n");
+    expect(wrangler).toContain('"version_metadata": { "binding": "VINEXT_VERSION_METADATA" }');
   });
 
   it("additively fills missing prerender config on rerun", async () => {
@@ -874,6 +873,203 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     expect(pkg.scripts["deploy:vinext"]).toBe(
       "vinext-cloudflare deploy --config dist/server/wrangler.json",
     );
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).version_metadata).toBeUndefined();
+  });
+
+  it("configures Worker version metadata when CDN warmup is requested", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "kv",
+        cdnCache: "workers-cache",
+        imageOptimization: "cloudflare-images",
+        warmCdnCache: true,
+      },
+    });
+
+    const wrangler = JSON.parse(readFile(tmpDir, "wrangler.jsonc"));
+    expect(wrangler.version_metadata).toEqual({ binding: "VINEXT_VERSION_METADATA" });
+    expect(wrangler.vars).toBeUndefined();
+    const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
+    expect(pkg.scripts["deploy:vinext"]).toContain("--experimental-warm-cdn-cache");
+  });
+
+  it("rejects automatic CDN warmup setup for a custom Worker entry", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "worker/index.ts", "export default { fetch() {} };\n");
+    const before = snapshotProject(tmpDir);
+
+    await expect(
+      runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "kv",
+          cdnCache: "workers-cache",
+          imageOptimization: "cloudflare-images",
+          warmCdnCache: true,
+        },
+      }),
+    ).rejects.toThrow(
+      'cannot be configured automatically with custom Worker entry "./worker/index.ts"',
+    );
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
+  it("rejects an existing Wrangler config that names a custom Worker entry", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      '{ "main": "./src/custom-worker.ts", "cache": { "enabled": true } }\n',
+    );
+    const before = snapshotProject(tmpDir);
+
+    await expect(
+      runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "kv",
+          cdnCache: "workers-cache",
+          imageOptimization: "cloudflare-images",
+          warmCdnCache: true,
+        },
+      }),
+    ).rejects.toThrow(
+      'cannot be configured automatically with custom Worker entry "./src/custom-worker.ts"',
+    );
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
+  it("rejects cross-version cache config when CDN warmup is requested", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `{
+  "cache": { "enabled": true, "cross_version_cache": true }
+}
+`,
+    );
+    const before = snapshotProject(tmpDir);
+
+    await expect(
+      runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "kv",
+          cdnCache: "workers-cache",
+          imageOptimization: "cloudflare-images",
+          warmCdnCache: true,
+        },
+      }),
+    ).rejects.toThrow(
+      "Set cross_version_cache to false (or remove it) so each Worker version has an isolated cache partition",
+    );
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
+  it("adds the fixed binding to named environments and stays idempotent", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `{
+  "version_metadata": { "binding": "VINEXT_VERSION_METADATA" },
+  "env": {
+    "staging": {
+      // environment-local settings stay intact
+      "name": "my-worker-staging",
+      "cache": { "cross_version_cache": false }
+    },
+    "preview": {
+      "vars": { "EXISTING": "value" },
+      "cache": { "enabled": false }
+    }
+  }
+}
+`,
+    );
+
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "kv",
+        cdnCache: "workers-cache",
+        imageOptimization: "cloudflare-images",
+        warmCdnCache: true,
+      },
+    });
+
+    const wrangler = readFile(tmpDir, "wrangler.jsonc");
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "kv",
+        cdnCache: "workers-cache",
+        imageOptimization: "cloudflare-images",
+        warmCdnCache: true,
+      },
+    });
+    expect(readFile(tmpDir, "wrangler.jsonc")).toBe(wrangler);
+    expect(wrangler).toContain("// environment-local settings stay intact");
+    // Matching top-level binding preserved; staging and preview each get it added.
+    expect(wrangler.match(/"binding": "VINEXT_VERSION_METADATA"/g)).toHaveLength(3);
+    expect(wrangler).toContain('"EXISTING": "value"');
+    expect(wrangler).toContain('"cache": {"cross_version_cache":false,"enabled":true}');
+    expect(wrangler).toContain('"cache": {"enabled":true}');
+  });
+
+  it("rejects a conflicting user-owned version_metadata binding without mutating the project", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `{
+  "version_metadata": { "binding": "CF_VERSION_METADATA" }
+}
+`,
+    );
+    const before = snapshotProject(tmpDir);
+    const exec = vi.fn();
+
+    await expect(
+      runInit(tmpDir, {
+        _exec: exec,
+        cloudflare: {
+          dataCache: "kv",
+          cdnCache: "workers-cache",
+          imageOptimization: "cloudflare-images",
+          warmCdnCache: true,
+        },
+      }),
+    ).rejects.toThrow('already declares a version_metadata binding named "CF_VERSION_METADATA"');
+    expect(exec).not.toHaveBeenCalled();
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
+  it("rejects a conflicting environment-local version_metadata binding", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `{
+  "env": {
+    "preview": {
+      "version_metadata": { "binding": "PREVIEW_VERSION" }
+    }
+  }
+}
+`,
+    );
+    const before = snapshotProject(tmpDir);
+
+    await expect(
+      runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "kv",
+          cdnCache: "workers-cache",
+          imageOptimization: "cloudflare-images",
+          warmCdnCache: true,
+        },
+      }),
+    ).rejects.toThrow('environment "preview"');
+    expect(snapshotProject(tmpDir)).toBe(before);
   });
 
   it("skips the warm CDN cache deploy flag when Cloudflare init opts out", async () => {

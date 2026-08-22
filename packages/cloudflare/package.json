@@ -60,10 +60,17 @@
     "@types/node": "catalog:",
     "vinext": "workspace:*",
     "vite": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "wrangler": "catalog:"
   },
   "peerDependencies": {
-    "vinext": "workspace:^"
+    "vinext": "workspace:^",
+    "wrangler": "^4.80.0"
+  },
+  "peerDependenciesMeta": {
+    "wrangler": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=22"
