@@ -671,6 +671,34 @@ describe("prerender path manifest", () => {
     expect(manifest?.pagesPaths).toEqual(["/pages-only"]);
   });
 
+  it("excludes Pages API handlers from Pages-only concrete warm paths", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile(
+      "pages/[...slug].tsx",
+      [
+        "export function getStaticPaths() { return { paths: [], fallback: false }; }",
+        "export function getStaticProps() { return { props: {}, revalidate: 60 }; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "pages/api/[...slug].ts",
+      "export default function handler(_request, response) { response.end('ok'); }\n",
+    );
+    vi.mocked(fetch).mockResolvedValue(
+      Response.json({ fallback: false, paths: ["/page/foo", "/api/foo"] }),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+
+    expect(manifest?.paths).toEqual(["/page/foo"]);
+    expect(manifest?.pagesPaths).toEqual(["/page/foo"]);
+  });
+
   it("discovers locale-specific Pages Router warmup keys", async () => {
     // Next.js passes i18n metadata to getStaticPaths and qualifies each
     // returned pathname with its selected locale:
@@ -813,6 +841,7 @@ describe("prerender path manifest", () => {
     ["a query-bearing string path", "/posts/[slug].tsx", "/posts/query?x=1"],
     ["a relative string path", "/posts/[slug].tsx", "posts/x"],
     ["a double-slash string path", "/posts/[slug].tsx", "/posts//x"],
+    ["malformed percent-encoding", "/posts/[slug].tsx", "/posts/%ZZ/"],
   ])("fails path discovery for getStaticPaths entry with %s", async (_name, file, entry) => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");

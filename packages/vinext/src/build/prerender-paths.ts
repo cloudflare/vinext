@@ -199,6 +199,13 @@ function validatePagesStaticPathsEntry(entry: StaticPathsEntry, pattern: string)
         `The provided path \`${entry}\` from getStaticPaths does not match the route pattern \`${pattern}\`.`,
       );
     }
+    try {
+      for (const segment of entry.split("/")) decodeURIComponent(segment);
+    } catch {
+      throw new Error(
+        `The provided path \`${entry}\` from getStaticPaths contains malformed percent-encoding.`,
+      );
+    }
     return entry;
   }
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
@@ -427,6 +434,22 @@ async function collectPagesPaths(options: {
   }
 
   return paths;
+}
+
+async function excludePagesApiWarmPaths(options: {
+  i18n: ResolvedNextConfig["i18n"];
+  pagesDir: string;
+  pageExtensions: readonly string[];
+  paths: readonly string[];
+}): Promise<string[]> {
+  const apiRoutes = await apiRouter(options.pagesDir, options.pageExtensions);
+  return options.paths.filter((pathname) => {
+    const pagesPathname = options.i18n
+      ? extractLocaleFromUrl(pathname, options.i18n).url
+      : pathname;
+    if (pagesPathname !== "/api" && !pagesPathname.startsWith("/api/")) return true;
+    return matchRoute(pagesPathname, apiRoutes) === null;
+  });
 }
 
 function localizePagesPath(
@@ -796,6 +819,15 @@ export async function emitPrerenderPathManifest(
   const configuredPagesWarmPaths = discoveredPagesPaths.filter(
     (pathname) => !excludedWarmPathSet.has(pathname),
   );
+  const resolvedPagesWarmPaths =
+    !appDir && pagesDir
+      ? await excludePagesApiWarmPaths({
+          i18n: config.i18n,
+          pagesDir,
+          pageExtensions: config.pageExtensions,
+          paths: configuredPagesWarmPaths,
+        })
+      : configuredPagesWarmPaths;
   const configuredCandidatePaths = paths.filter((pathname) => !excludedWarmPathSet.has(pathname));
   const appOwnedWarmPaths = appDir
     ? await resolveAppWarmPaths({
@@ -810,7 +842,7 @@ export async function emitPrerenderPathManifest(
         loadingShellPaths: discoveredLoadingShellPaths,
         rscPaths: discoveredAppPaths,
       };
-  const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : configuredPagesWarmPaths;
+  const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : resolvedPagesWarmPaths;
 
   const manifest: PrerenderPathManifest = {
     ...(config.basePath ? { basePath: config.basePath } : {}),
@@ -819,7 +851,7 @@ export async function emitPrerenderPathManifest(
     ...(config.deploymentId ? { deploymentId: config.deploymentId } : {}),
     ...(pagesDir
       ? {
-          pagesPaths: configuredPagesWarmPaths,
+          pagesPaths: resolvedPagesWarmPaths,
         }
       : {}),
     ...(excludedWarmPathSet.size > 0 ? { excludedWarmPaths: Array.from(excludedWarmPathSet) } : {}),
