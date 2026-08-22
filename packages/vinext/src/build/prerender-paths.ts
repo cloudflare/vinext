@@ -17,12 +17,7 @@ import {
   normalizeStaticPathsEntry,
   type StaticPathsEntry,
 } from "../routing/route-pattern.js";
-import {
-  getAppRouteRenderEntryPath,
-  classifyAppRoute,
-  classifyPagesRoute,
-  hasNamedExport,
-} from "./report.js";
+import { getAppRouteRenderEntryPath, classifyAppRoute, classifyPagesRoute } from "./report.js";
 import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
@@ -260,7 +255,7 @@ async function fetchDiscoveryEndpoint(
     });
     const text = await res.text();
     if (!res.ok) throw new Error(`path discovery returned HTTP ${res.status}`);
-    if (text === "null") return null;
+    if (res.status === 204) return null;
     return text;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
@@ -269,15 +264,6 @@ async function fetchDiscoveryEndpoint(
     throw error;
   } finally {
     clearTimeout(timeout);
-  }
-}
-
-function fileHasNamedExport(filePath: string | null | undefined, name: string): boolean {
-  if (!filePath) return false;
-  try {
-    return hasNamedExport(fs.readFileSync(filePath, "utf-8"), name);
-  } catch {
-    return false;
   }
 }
 
@@ -317,11 +303,6 @@ function resolveConfiguredRouteDirs(
   };
 }
 
-function appRouteMayHaveGenerateStaticParams(route: Awaited<ReturnType<typeof appRouter>>[number]) {
-  if (fileHasNamedExport(route.pagePath, "generateStaticParams")) return true;
-  return route.layouts.some((layoutPath) => fileHasNamedExport(layoutPath, "generateStaticParams"));
-}
-
 async function shouldStartPathDiscoveryServer(options: {
   appDir: string | null;
   pagesDir: string | null;
@@ -329,20 +310,12 @@ async function shouldStartPathDiscoveryServer(options: {
 }): Promise<boolean> {
   if (options.appDir) {
     const routes = await appRouter(options.appDir, options.pageExtensions);
-    if (routes.some((route) => route.isDynamic && appRouteMayHaveGenerateStaticParams(route))) {
-      return true;
-    }
+    if (routes.some((route) => route.isDynamic)) return true;
   }
 
   if (options.pagesDir) {
     const routes = await pagesRouter(options.pagesDir, options.pageExtensions);
-    if (
-      routes.some(
-        (route) => route.isDynamic && fileHasNamedExport(route.filePath, "getStaticPaths"),
-      )
-    ) {
-      return true;
-    }
+    if (routes.some((route) => route.isDynamic)) return true;
   }
 
   return false;
@@ -397,7 +370,6 @@ async function collectPagesPaths(options: {
       continue;
     }
 
-    if (!fileHasNamedExport(route.filePath, "getStaticPaths")) continue;
     if (!options.baseUrl) continue;
 
     try {
@@ -411,7 +383,7 @@ async function collectPagesPaths(options: {
         options.secretHeaders,
       );
       if (text === null) {
-        throw new Error(`Invalid value returned from getStaticPaths for ${route.pattern}.`);
+        continue;
       }
 
       const pathsResult = validatePagesStaticPathsResult(JSON.parse(text), route.pattern);
@@ -574,7 +546,6 @@ async function collectAppPaths(options: {
       continue;
     }
 
-    if (!appRouteMayHaveGenerateStaticParams(route)) continue;
     try {
       const generateStaticParams = staticParamsMap[route.pattern];
       if (typeof generateStaticParams !== "function") continue;

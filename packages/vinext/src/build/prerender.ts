@@ -755,7 +755,7 @@ export async function prerenderPages({
                 );
                 return { paths: [], fallback: false };
               }
-              if (text === "null") return { paths: [], fallback: false };
+              if (res.status === 204 || text === "null") return { paths: [], fallback: false };
               return JSON.parse(text) as {
                 paths: Array<StaticPathsEntry>;
                 fallback: unknown;
@@ -1183,7 +1183,7 @@ export async function prerenderApp({
               );
               return null;
             }
-            if (text === "null") return null;
+            if (res.status === 204 || text === "null") return null;
             return JSON.parse(text) as Record<string, string | string[]>[];
           })();
           // Only cache on success — a rejected or error promise must not poison

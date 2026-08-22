@@ -67,7 +67,7 @@ describe("prerender path manifest", () => {
         ) {
           return Response.json([{ category: "news" }]);
         }
-        return new Response("null", { headers: { "content-type": "application/json" } });
+        return new Response(null, { status: 204 });
       }),
     );
   });
@@ -291,6 +291,64 @@ describe("prerender path manifest", () => {
       "http://127.0.0.1:43210/__vinext/prerender/static-params?pattern=%2F%3Acategory",
       expect.any(Object),
     );
+  });
+
+  it("discovers dynamic App MDX paths from the built runtime", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[slug]/page.mdx",
+      'export function generateStaticParams() { return [{ slug: "hello" }] }\n\n# Hello\n',
+    );
+    vi.mocked(fetch).mockResolvedValue(Response.json([{ slug: "hello" }]));
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      { pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] },
+      tmpDir,
+    );
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      nextConfig,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual(["/hello"]);
+    expect(manifest?.rscPaths).toEqual(["/hello"]);
+  });
+
+  it("discovers dynamic Pages MDX paths from the built runtime", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile(
+      "pages/[slug].mdx",
+      [
+        'export function getStaticPaths() { return { paths: ["/hello"], fallback: false } }',
+        "export function getStaticProps() { return { props: {}, revalidate: 60 } }",
+        "",
+        "# Hello",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockResolvedValue(Response.json({ fallback: false, paths: ["/hello"] }));
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      { pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] },
+      tmpDir,
+    );
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, nextConfig });
+
+    expect(manifest?.paths).toEqual(["/hello"]);
+    expect(manifest?.pagesPaths).toEqual(["/hello"]);
   });
 
   it("only advertises HTML build identity when the CDN adapter guarantees it", async () => {
@@ -528,7 +586,7 @@ describe("prerender path manifest", () => {
       if (url.pathname === "/__vinext/prerender/pages-static-paths") {
         return Response.json({ fallback: false, paths: ["/health", "/specific/value"] });
       }
-      return new Response("null", { headers: { "content-type": "application/json" } });
+      return new Response(null, { status: 204 });
     });
 
     const { emitPrerenderPathManifest } =
@@ -753,7 +811,7 @@ describe("prerender path manifest", () => {
           ],
         });
       }
-      return new Response("null", { headers: { "content-type": "application/json" } });
+      return new Response(null, { status: 204 });
     });
 
     const [{ emitPrerenderPathManifest }, { resolveNextConfig }, { readPrerenderWarmPlan }] =
