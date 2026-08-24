@@ -28,13 +28,15 @@ vi.mock("node:child_process", async (importOriginal) => {
         return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
       }
       if (args.includes("status")) {
-        return JSON.stringify({ versions: [] });
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("triggers")) {
+        return "Triggers deployed\n  https://app.example.workers.dev\n";
       }
       if (args.includes("deploy")) {
         return "Deployed version\n";
-      }
-      if (args.includes("triggers")) {
-        return "Triggers deployed\n";
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     }),
@@ -85,7 +87,7 @@ function writeProject(prerenderConfig: string, cacheConfig?: string): void {
   );
   writeFile(
     "wrangler.jsonc",
-    '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
   );
   writeFile(
     "vite.config.ts",
@@ -118,7 +120,7 @@ function writeProjectWithInlineNextConfig(nextConfig: string): void {
   );
   writeFile(
     "wrangler.jsonc",
-    '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
   );
   writeFile(
     "vite.config.ts",
@@ -148,7 +150,7 @@ function writeApiOnlyProject(): void {
   );
   writeFile(
     "wrangler.jsonc",
-    '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
   );
   writeFile(
     "vite.config.ts",
@@ -414,10 +416,19 @@ describe("deploy prerender config wiring", () => {
       trailingSlash: false,
       paths: [],
     });
-    expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
-      expect.stringContaining("wrangler"),
-      "deploy",
-    ]);
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => {
+        const wranglerArgs = args as string[];
+        return wranglerArgs.includes("versions") && wranglerArgs.includes("upload");
+      }),
+    ).toBe(true);
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => {
+        const wranglerArgs = args as string[];
+        return wranglerArgs.includes("versions") && wranglerArgs.includes("deploy");
+      }),
+    ).toBe(true);
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it("rejects no-promote warmup when discovery finds no requests", async () => {

@@ -46,6 +46,7 @@ export async function generateServerEntry(
   middlewarePath: string | null,
   instrumentationPath: string | null,
   publicFiles: string[] = [],
+  prerenderSecret?: string,
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
@@ -256,6 +257,9 @@ const i18nConfig = ${i18nConfigJson};
 // match _next/data requests against the embedded buildId without needing
 // to load next.config.js at runtime.
 export const buildId = ${buildIdJson};
+// Per-build capability used by Worker entries to authorize remote path
+// discovery. It is never included in responses or exposed to user modules.
+export const prerenderSecret = ${JSON.stringify(prerenderSecret ?? null)};
 export function normalizeDataRequest(request) {
   return __normalizePagesDataRequest(
     request,

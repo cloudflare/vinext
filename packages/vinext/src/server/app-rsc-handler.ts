@@ -775,7 +775,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const { handleAppPrerenderEndpoint } = await import("./app-prerender-endpoints.js");
     const prerenderEndpointResponse = await handleAppPrerenderEndpoint(request, {
       isPrerenderEnabled() {
-        return process.env.VINEXT_PRERENDER === "1";
+        return (
+          process.env.VINEXT_PRERENDER === "1" ||
+          getRequestExecutionContext()?.isPrerenderPathDiscovery === true
+        );
       },
       getMetadataRoutePaths: options.getPrerenderMetadataRoutePaths,
       loadPagesRoutes: options.loadPrerenderPagesRoutes,

@@ -205,6 +205,8 @@ type AppRouterConfig = {
   publicFiles?: string[];
   /** Server-only token used to validate the draft-mode bypass cookie. */
   draftModeSecret?: string;
+  /** Server-only token used to authorize build-time prerender endpoints. */
+  prerenderSecret?: string;
 };
 
 /**
@@ -249,6 +251,7 @@ export function generateRscEntry(
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
   const draftModeSecret = config?.draftModeSecret ?? randomUUID();
+  const prerenderSecret = config?.prerenderSecret ?? randomUUID();
   const imageAllowedWidths = [
     ...(config?.imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
     ...(config?.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
@@ -581,6 +584,9 @@ ${metaRouteEntries.join(",\n")}
 // Re-exported so the Cloudflare worker entry can strip basePath before
 // recognising /_next/static/* paths (parity with __assetPrefix below).
 export const __basePath = ${JSON.stringify(bp)};
+// Per-build capability used by Worker entries to authorize remote path
+// discovery. It is never included in responses or exposed to user modules.
+export const __prerenderSecret = ${JSON.stringify(prerenderSecret)};
 
 // Hoisted alongside __basePath so __fallbackRenderer / buildPageElements can
 // thread the configured trailingSlash flag through canonical URL rendering.

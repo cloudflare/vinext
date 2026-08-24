@@ -1507,6 +1507,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let rscBuildIdentity: string | undefined;
   let rscCompatibilityId: string | undefined;
   let draftModeSecret = getPagesPreviewModeId();
+  const prerenderSecret =
+    process.env.__VINEXT_SHARED_PRERENDER_SECRET ?? randomBytes(32).toString("hex");
   let previewBuildCredentials: PreviewBuildCredentials | undefined;
   // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
   // `config` hook injects `Loader` as `css.modules.Loader` and
@@ -1576,6 +1578,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
+      prerenderSecret,
     );
   }
 
@@ -4079,6 +4082,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       ),
                 globalNotFoundPath,
                 draftModeSecret,
+                prerenderSecret,
               },
               instrumentationPath,
             );
@@ -6699,10 +6703,9 @@ export const loadServerActionClient = ${
     // Note: augmentChunkHash only affects JS chunk hashes. CSS and static asset
     // hashes are not salted, which is a known gap vs Next.js behavior.
     // Write vinext-server.json to dist/server/ with a per-build prerender secret.
-    // The prerender secret is used by prod-server.ts to authenticate requests to
-    // the internal /__vinext/prerender/* endpoints, which are only reachable during
-    // the prerender phase of `vinext build`. A new secret is generated on every
-    // build so it rotates with every deployment.
+    // The prerender secret is used by prod-server.ts and the Worker entries to
+    // authenticate requests to the internal /__vinext/prerender/* endpoints.
+    // A new secret is generated on every build so it rotates with every deployment.
     //
     // The secret is generated once at plugin creation time so that both the rsc
     // and ssr environments write the exact same value (they share the same
@@ -6710,30 +6713,27 @@ export const loadServerActionClient = ${
     // and the second write would silently overwrite the first with a different
     // secret, causing prerender auth to fail for whichever env's server reads
     // the file last.
-    (() => {
-      const prerenderSecret = randomBytes(32).toString("hex");
-      return {
-        name: "vinext:server-manifest",
-        apply: "build" as const,
-        enforce: "post" as const,
-        writeBundle: {
-          sequential: true,
-          order: "post" as const,
-          handler(options: { dir?: string }) {
-            const envName = this.environment?.name;
-            // Fire for App Router RSC builds (rsc env) and Pages Router SSR builds
-            // (ssr env). Skip client and other environments.
-            if (envName !== "rsc" && envName !== "ssr") return;
+    {
+      name: "vinext:server-manifest",
+      apply: "build" as const,
+      enforce: "post" as const,
+      writeBundle: {
+        sequential: true,
+        order: "post" as const,
+        handler(options: { dir?: string }) {
+          const envName = this.environment?.name;
+          // Fire for App Router RSC builds (rsc env) and Pages Router SSR builds
+          // (ssr env). Skip client and other environments.
+          if (envName !== "rsc" && envName !== "ssr") return;
 
-            const outDir = options.dir;
-            if (!outDir) return;
+          const outDir = options.dir;
+          if (!outDir) return;
 
-            const manifest = { prerenderSecret };
-            fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
-          },
+          const manifest = { prerenderSecret };
+          fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
         },
-      };
-    })(),
+      },
+    },
     {
       name: "vinext:nitro-route-rules",
       nitro: {
