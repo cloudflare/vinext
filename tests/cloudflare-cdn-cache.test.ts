@@ -155,9 +155,9 @@ describe("CloudflareCdnCacheAdapter", () => {
 
     const response = await routedAdapter.validateRequest?.(request);
     expect(response?.status).toBe(503);
-    await expect(response?.text()).resolves.toContain(
-      "requires the `CUSTOM_VERSION` version metadata binding",
-    );
+    const body = await response?.text();
+    expect(body).toContain("requires the `CUSTOM_VERSION` version metadata binding");
+    expect(body).toContain("Named environments do not inherit this binding");
   });
 
   it("does not require version metadata for ordinary requests without an override", async () => {

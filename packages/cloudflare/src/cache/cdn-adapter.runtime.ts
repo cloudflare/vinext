@@ -198,7 +198,8 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     if (!this.versionMetadata) {
       return versionValidationFailure(
         `Cloudflare CDN prewarming requires the \`${this.versionMetadataBinding}\` version metadata binding. ` +
-          `Add "version_metadata": { "binding": "${this.versionMetadataBinding}" } to wrangler.jsonc.`,
+          `Add "version_metadata": { "binding": "${this.versionMetadataBinding}" } to the active Wrangler environment. ` +
+          `Named environments do not inherit this binding from the top level.`,
       );
     }
 

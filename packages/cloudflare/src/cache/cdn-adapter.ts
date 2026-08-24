@@ -28,6 +28,8 @@ export type CdnAdapterOptions = {
  *   }
  * }
  * ```
+ * Wrangler does not inherit `version_metadata` into named environments. Repeat
+ * the binding in every `env.<name>` used for CDN warmup.
  */
 export function cdnAdapter(options?: CdnAdapterOptions) {
   if (
