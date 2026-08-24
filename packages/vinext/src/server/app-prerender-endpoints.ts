@@ -5,6 +5,10 @@ import {
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
 } from "./headers.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import {
+  assertPagesDataExportCompatibility,
+  type PagesDataExportModule,
+} from "./pages-data-export-compatibility.js";
 import type { RootParams } from "vinext/shims/root-params";
 
 type GenerateStaticParams = (args: { params: RootParams }) => unknown;
@@ -14,7 +18,7 @@ export type AppPrerenderRootParamNamesMap = Record<string, readonly string[] | u
 
 type AppPrerenderPageRoute = {
   pattern: string;
-  module?: {
+  module?: PagesDataExportModule & {
     getStaticPaths?: (opts: { locales: string[]; defaultLocale: string }) => unknown;
   };
 };
@@ -111,6 +115,9 @@ async function handlePagesStaticPathsEndpoint(
   try {
     const pageRoutes = await options.loadPagesRoutes?.();
     const route = findPageRoute(pageRoutes, pattern);
+    if (route?.module) {
+      assertPagesDataExportCompatibility(route.module, pattern);
+    }
     const getStaticPaths = route?.module?.getStaticPaths;
     if (typeof getStaticPaths !== "function") {
       return jsonNullResponse();

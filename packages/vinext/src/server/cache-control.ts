@@ -13,6 +13,23 @@ export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
 const SHARED_CACHE_DIRECTIVE_RE = /(?:^|,)\s*s-maxage\s*=/i;
 const NON_CACHEABLE_DIRECTIVE_RE = /(?:private|no-store|no-cache)/i;
 
+export function isExplicitNonCacheableCacheControl(
+  cacheControl: string | null,
+): cacheControl is string {
+  return Boolean(cacheControl && NON_CACHEABLE_DIRECTIVE_RE.test(cacheControl));
+}
+
+/** Whether a response policy prevents a representation from being shared. */
+export function isExplicitNonShareableCacheControl(
+  cacheControl: string | null,
+): cacheControl is string {
+  if (!cacheControl) return false;
+  return cacheControl.split(",").some((directive) => {
+    const [name] = directive.trim().split("=", 1);
+    return name.toLowerCase() === "private" || name.toLowerCase() === "no-store";
+  });
+}
+
 export function shouldUseNextDeployCacheControl(): boolean {
   return process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL === "1";
 }
@@ -31,8 +48,7 @@ export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean
   if (adapter.hasExplicitNonCacheableResponsePolicy) {
     return adapter.hasExplicitNonCacheableResponsePolicy(headers);
   }
-  const cacheControl = headers.get("Cache-Control");
-  return Boolean(cacheControl && NON_CACHEABLE_DIRECTIVE_RE.test(cacheControl));
+  return isExplicitNonCacheableCacheControl(headers.get("Cache-Control"));
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   buildCachedRevalidateCacheControl,
   buildRevalidateCacheControl,
   hasExplicitNonCacheableResponsePolicy,
+  isExplicitNonShareableCacheControl,
   shouldUseNextDeployCacheControl,
 } from "../packages/vinext/src/server/cache-control.js";
 import {
@@ -15,6 +16,14 @@ import {
 } from "../packages/vinext/src/shims/cdn-cache.js";
 
 describe("cache-control helpers", () => {
+  it("distinguishes revalidation from policies that prohibit shared storage", () => {
+    expect(isExplicitNonShareableCacheControl("no-cache")).toBe(false);
+    expect(isExplicitNonShareableCacheControl("public, max-age=0, must-revalidate")).toBe(false);
+    expect(isExplicitNonShareableCacheControl("no-store, must-revalidate")).toBe(true);
+    expect(isExplicitNonShareableCacheControl('private="set-cookie", no-cache')).toBe(true);
+    expect(isExplicitNonShareableCacheControl("PUBLIC, NO-STORE")).toBe(true);
+  });
+
   it("uses Next.js expire minus revalidate for finite SWR windows", () => {
     expect(buildRevalidateCacheControl(60, 300)).toBe("s-maxage=60, stale-while-revalidate=240");
   });

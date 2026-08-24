@@ -6,6 +6,8 @@ import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 type TestPageRoute = {
   pattern: string;
   module?: {
+    default?: unknown;
+    getStaticProps?: () => unknown;
     getStaticPaths?: (opts: { locales: string[]; defaultLocale: string }) => unknown;
   };
 };
@@ -226,6 +228,35 @@ describe("App prerender endpoint helpers", () => {
     await expect(response?.json()).resolves.toEqual({
       fallback: false,
       paths: [{ params: { id: "first" } }],
+    });
+  });
+
+  it("rejects incompatible page exports before empty static paths can skip rendering", async () => {
+    const Page = Object.assign(() => null, { getInitialProps: async () => ({}) });
+    const getStaticPaths = vi.fn(() => ({ fallback: "blocking", paths: [] }));
+    const response = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/pages-static-paths?pattern=/posts/:id"),
+      {
+        isPrerenderEnabled: () => true,
+        loadPagesRoutes: async () => [
+          {
+            module: {
+              default: Page,
+              getStaticPaths,
+              getStaticProps: () => ({ props: {} }),
+            },
+            pattern: "/posts/:id",
+          },
+        ],
+        pathname: "/__vinext/prerender/pages-static-paths",
+        staticParamsMap: {},
+      },
+    );
+
+    expect(getStaticPaths).not.toHaveBeenCalled();
+    expect(response?.status).toBe(500);
+    await expect(response?.json()).resolves.toMatchObject({
+      error: expect.stringContaining("You can not use getInitialProps with getStaticProps"),
     });
   });
 

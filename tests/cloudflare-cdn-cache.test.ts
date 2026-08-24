@@ -132,6 +132,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     // a CDN-Cache-Control directive (which would cache an uncacheable response).
     for (const cc of [
       "no-store, must-revalidate",
+      "NO-STORE",
       "private, no-cache, no-store, max-age=0, must-revalidate",
     ]) {
       const headers = adapter.buildResponseHeaders({ cacheControl: cc, tags: ["x"] });

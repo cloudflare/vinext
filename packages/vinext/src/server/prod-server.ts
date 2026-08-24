@@ -67,6 +67,10 @@ import {
 } from "../utils/asset-prefix.js";
 import { computeClientRuntimeMetadata } from "../utils/client-runtime-metadata.js";
 import { setPagesClientAssets } from "./pages-client-assets.js";
+import {
+  assertPagesDataExportCompatibility,
+  type PagesDataExportModule,
+} from "./pages-data-export-compatibility.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
@@ -1870,7 +1874,7 @@ type PagesRouterServerOptions = {
 
 type PagesServerEntryPageRoute = {
   pattern: string;
-  module?: {
+  module?: PagesDataExportModule & {
     getStaticPaths?: (opts: { locales: string[]; defaultLocale: string }) => Promise<unknown>;
   };
 };
@@ -2025,13 +2029,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const locales: string[] = localesRaw ? JSON.parse(localesRaw) : [];
       const defaultLocale = parsedUrl.searchParams.get("defaultLocale") ?? "";
       const route = pageRoutes?.find((r) => r.pattern === pattern);
-      const fn = route?.module?.getStaticPaths;
-      if (typeof fn !== "function") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end("null");
-        return;
-      }
+      const pageModule = route?.module;
+      const fn = pageModule?.getStaticPaths;
       try {
+        assertPagesDataExportCompatibility(pageModule ?? {}, pattern);
+        if (typeof fn !== "function") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end("null");
+          return;
+        }
         const result = await fn({ locales, defaultLocale });
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));

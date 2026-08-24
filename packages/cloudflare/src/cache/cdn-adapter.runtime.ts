@@ -181,7 +181,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     // A non-cacheable policy (no-store / no-cache / private) must never be
     // promoted to an edge cache. Clear any cacheable headers this adapter owns
     // in case middleware stamped them before the final policy was known.
-    if (/\b(?:no-store|no-cache|private)\b/.test(input.cacheControl)) {
+    if (NON_CACHEABLE_DIRECTIVE_RE.test(input.cacheControl)) {
       return clearCloudflareCdnResponseHeaders(input.cacheControl);
     }
 

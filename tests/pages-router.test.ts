@@ -2776,6 +2776,37 @@ export default class CustomDocument extends Document {
     expect(nextData.props).toEqual({ pageProps: {} });
   });
 
+  it.each([true, false])(
+    "rejects getInitialProps with getStaticProps before a dev fallback: %s exit",
+    async (fallback) => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-invalid-fallback-exports-"));
+      fs.mkdirSync(path.join(tmpDir, "pages", "products"), { recursive: true });
+      fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+      fs.writeFileSync(path.join(tmpDir, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+      fs.writeFileSync(
+        path.join(tmpDir, "pages", "products", "[id].tsx"),
+        `export default function Product() { return <p>fallback product</p>; }
+Product.getInitialProps = async () => ({ fromInitialProps: true });
+export function getStaticPaths() { return { paths: [], fallback: ${fallback} }; }
+export function getStaticProps() { return { props: { fromStaticProps: true } }; }
+`,
+      );
+
+      let tempServer: ViteDevServer | undefined;
+      try {
+        const started = await startFixtureServer(tmpDir);
+        tempServer = started.server;
+
+        const response = await fetch(`${started.baseUrl}/products/unlisted`);
+        expect(response.status).toBe(500);
+        expect(await response.text()).not.toContain("fallback product");
+      } finally {
+        await tempServer?.close();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("resolves real props for the data URL of an unlisted fallback: true path", async () => {
     // Counterpart to the fallback-shell test: the page HTML ships empty props,
     // but the client follows up with `/_next/data/<buildId>/products/unknown.json`
@@ -9834,34 +9865,35 @@ describe("custom App optional pageProps envelope parity", () => {
     });
   }
 
-  // Next.js renders App with `{ ...props, router }`. Production verifies the
-  // ISR MISS -> HIT transition; development reruns GSP for each request.
+  // Next.js renders App with `{ ...props, router }`. A custom App can derive
+  // props from the live request, so production must bypass shared ISR while
+  // both modes preserve the merged props across repeated GSP renders.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
   // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
   for (const mode of ["dev", "prod"] as const) {
     it(`merges primitive App props and preserves router across repeated GSP renders in ${mode}`, async () => {
       const baseUrl = mode === "dev" ? devUrl : prodUrl;
 
-      const missResponse = await fetch(`${baseUrl}/gsp-string`);
-      expect(missResponse.status).toBe(200);
-      expect(missResponse.headers.get("x-nextjs-cache")).toBe(mode === "dev" ? "HIT" : "MISS");
+      const firstResponse = await fetch(`${baseUrl}/gsp-string`);
+      expect(firstResponse.status).toBe(200);
+      expect(firstResponse.headers.get("x-nextjs-cache")).toBe(mode === "dev" ? "HIT" : null);
       if (mode === "dev") {
-        expect(missResponse.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+        expect(firstResponse.headers.get("cache-control")).toBe("no-cache, must-revalidate");
       }
-      const missHtml = await missResponse.text();
-      expect(missHtml).toContain(
+      const firstHtml = await firstResponse.text();
+      expect(firstHtml).toContain(
         '<div id="page-props-json">{&quot;0&quot;:&quot;h&quot;,&quot;1&quot;:&quot;i&quot;,&quot;fromData&quot;:&quot;gsp&quot;}</div>',
       );
-      expect(missHtml).toContain('<div id="app-router-pathname">/gsp-string</div>');
+      expect(firstHtml).toContain('<div id="app-router-pathname">/gsp-string</div>');
 
-      const hitResponse = await fetch(`${baseUrl}/gsp-string`);
-      expect(hitResponse.status).toBe(200);
-      expect(hitResponse.headers.get("x-nextjs-cache")).toBe("HIT");
-      const hitHtml = await hitResponse.text();
-      expect(hitHtml).toContain(
+      const secondResponse = await fetch(`${baseUrl}/gsp-string`);
+      expect(secondResponse.status).toBe(200);
+      expect(secondResponse.headers.get("x-nextjs-cache")).toBe(mode === "dev" ? "HIT" : null);
+      const secondHtml = await secondResponse.text();
+      expect(secondHtml).toContain(
         '<div id="page-props-json">{&quot;0&quot;:&quot;h&quot;,&quot;1&quot;:&quot;i&quot;,&quot;fromData&quot;:&quot;gsp&quot;}</div>',
       );
-      expect(hitHtml).toContain('<div id="app-router-pathname">/gsp-string</div>');
+      expect(secondHtml).toContain('<div id="app-router-pathname">/gsp-string</div>');
     });
   }
 });

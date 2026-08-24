@@ -159,6 +159,8 @@ type RenderPagesPageResponseOptions = {
   isrCachePathname?: string;
   expireSeconds?: number;
   isrRevalidateSeconds: number | false | null;
+  /** Request-derived App props: emit a private, no-store policy instead of ISR headers. */
+  bypassSharedCache?: boolean;
   /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
   isOnDemandRevalidate?: boolean;
   isStaticPropsRoute?: boolean;
@@ -561,7 +563,11 @@ export async function renderPagesPageResponse(
     },
   });
   if (options.documentReqRes?.res.headersSent && options.documentReqRes.responsePromise) {
-    return options.documentReqRes.responsePromise;
+    const response = await options.documentReqRes.responsePromise;
+    if (options.bypassSharedCache) {
+      applyCdnResponseHeaders(response.headers, { cacheControl: ISR_NEVER_CACHE_CONTROL });
+    }
+    return response;
   }
 
   let bodyStream: ReadableStream<Uint8Array>;
@@ -697,7 +703,11 @@ export async function renderPagesPageResponse(
   // this point, so the captured value matches main's original capture site.
   const userSetCacheControl = responseHeaders.has("Cache-Control");
 
-  if (options.scriptNonce) {
+  if (options.bypassSharedCache) {
+    // Checked before the nonce branch: request-derived props need the adapter
+    // so provider-owned edge headers set by App.getInitialProps are cleared.
+    applyCdnResponseHeaders(responseHeaders, { cacheControl: ISR_NEVER_CACHE_CONTROL });
+  } else if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
   } else if (options.isrRevalidateSeconds !== null) {
     // Fresh ISR (MISS) response: route through the CDN adapter with the path tag

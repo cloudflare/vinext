@@ -27,6 +27,7 @@ import {
   PRERENDER_REVALIDATE_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
+import { VINEXT_PRERENDER_RENDER_ERROR_HEADER } from "../packages/vinext/src/server/headers.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -383,6 +384,295 @@ describe("createPagesPageHandler — no default export", () => {
 // ---------------------------------------------------------------------------
 // _next/data JSON envelope
 // ---------------------------------------------------------------------------
+
+describe("createPagesPageHandler — request-aware App props", () => {
+  const AppComponent = Object.assign(() => null, {
+    getInitialProps: async () => ({ viewer: "per-request", pageProps: {} }),
+  });
+  function makeHandler(pageModule: Record<string, unknown>) {
+    return createPagesPageHandler(
+      makeOpts({
+        AppComponent,
+        pageRoutes: [makeRoute("/about", pageModule)],
+        matchRoute: (url, r) => {
+          const route = r.find((rt) => rt.pattern === url.split("?")[0]);
+          return route ? { route, params: {} } : null;
+        },
+      }),
+    );
+  }
+
+  it("marks getStaticProps HTML and data responses as private no-store", async () => {
+    const handler = makeHandler(
+      makePageModule({ getStaticProps: async () => ({ props: { a: 1 }, revalidate: 60 }) }),
+    );
+
+    const html = await handler(makeRequest("/about"), "/about", null, null, null);
+    expect(html.status).toBe(200);
+    expect(html.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(html.headers.get("x-nextjs-cache")).toBeNull();
+
+    const dataUrl = "/_next/data/test-build-id/about.json";
+    const data = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+    expect(data.status).toBe(200);
+    expect(data.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  it("clears adapter-owned edge cache headers set by App.getInitialProps", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const EdgeApp = Object.assign(() => null, {
+      getInitialProps: async ({
+        ctx,
+      }: {
+        ctx: { res: { setHeader(n: string, v: string): void } };
+      }) => {
+        ctx.res.setHeader("CDN-Cache-Control", "s-maxage=600");
+        return { viewer: "per-request", pageProps: {} };
+      },
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        AppComponent: EdgeApp,
+        pageRoutes: [
+          makeRoute(
+            "/about",
+            makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 60 }) }),
+          ),
+        ],
+        matchRoute: (url, r) => {
+          const route = r.find((rt) => rt.pattern === url.split("?")[0]);
+          return route ? { route, params: {} } : null;
+        },
+      }),
+    );
+
+    const html = await handler(makeRequest("/about"), "/about", null, null, null);
+    expect(html.status).toBe(200);
+    expect(html.headers.get("cdn-cache-control")).toBeNull();
+    expect(html.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  it("clears edge cache headers even for nonce-bearing renders", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const EdgeApp = Object.assign(() => null, {
+      getInitialProps: async ({
+        ctx,
+      }: {
+        ctx: { res: { setHeader(n: string, v: string): void } };
+      }) => {
+        ctx.res.setHeader("CDN-Cache-Control", "s-maxage=600");
+        return { viewer: "per-request", pageProps: {} };
+      },
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        AppComponent: EdgeApp,
+        pageRoutes: [
+          makeRoute(
+            "/about",
+            makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 60 }) }),
+          ),
+        ],
+        matchRoute: (url, r) => {
+          const route = r.find((rt) => rt.pattern === url.split("?")[0]);
+          return route ? { route, params: {} } : null;
+        },
+      }),
+    );
+
+    const request = new Request("http://localhost/about", {
+      headers: { "content-security-policy": "script-src 'nonce-abc123'" },
+    });
+    const html = await handler(request, "/about", null, null, null);
+    expect(html.status).toBe(200);
+    expect(html.headers.get("cdn-cache-control")).toBeNull();
+    expect(html.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  it("clears edge cache headers when App.getInitialProps ends the response", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const EdgeApp = Object.assign(() => null, {
+      getInitialProps: async ({
+        ctx,
+      }: {
+        ctx: {
+          res: {
+            end(body: string): void;
+            setHeader(name: string, value: string): void;
+          };
+        };
+      }) => {
+        ctx.res.setHeader("CDN-Cache-Control", "s-maxage=600");
+        ctx.res.end("request-aware short circuit");
+        return { viewer: "per-request", pageProps: {} };
+      },
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        AppComponent: EdgeApp,
+        pageRoutes: [
+          makeRoute(
+            "/about",
+            makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 60 }) }),
+          ),
+        ],
+        matchRoute: (url, routes) => {
+          const route = routes.find((candidate) => candidate.pattern === url.split("?")[0]);
+          return route ? { route, params: {} } : null;
+        },
+      }),
+    );
+
+    const response = await handler(makeRequest("/about"), "/about", null, null, null);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("request-aware short circuit");
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  it("clears edge cache headers when Document.getInitialProps ends the response", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const EdgeDocument = Object.assign(() => null, {
+      getInitialProps: async ({
+        res,
+      }: {
+        res: {
+          end(body: string): void;
+          setHeader(name: string, value: string): void;
+        };
+      }) => {
+        res.setHeader("CDN-Cache-Control", "s-maxage=600");
+        res.end("request-aware document short circuit");
+        return { html: "ignored after res.end" };
+      },
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        AppComponent,
+        DocumentComponent: EdgeDocument,
+        pageRoutes: [
+          makeRoute(
+            "/about",
+            makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 60 }) }),
+          ),
+        ],
+      }),
+    );
+
+    const response = await handler(makeRequest("/about"), "/about", null, null, null);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("request-aware document short circuit");
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  it("still rejects an invalid revalidate value", async () => {
+    const handler = makeHandler(
+      makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 0 }) }),
+    );
+    const res = await handler(makeRequest("/about"), "/about", null, null, null);
+    expect(res.status).toBe(500);
+  });
+
+  it("carries request-aware cache bypass into a recursive 500 render", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const EdgeApp = Object.assign(() => null, {
+      getInitialProps: async ({
+        ctx,
+      }: {
+        ctx: { res: { setHeader(name: string, value: string): void } };
+      }) => {
+        ctx.res.setHeader("CDN-Cache-Control", "s-maxage=600");
+        return { viewer: "per-request", pageProps: {} };
+      },
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        AppComponent: EdgeApp,
+        pageRoutes: [
+          makeRoute(
+            "/about",
+            makePageModule({
+              getStaticProps: async () => {
+                throw new Error("request-aware data failed");
+              },
+            }),
+          ),
+          makeRoute("/500"),
+        ],
+      }),
+    );
+
+    for (const contentSecurityPolicy of [undefined, "script-src 'nonce-test-nonce'"]) {
+      const response = await handler(
+        new Request("http://localhost/about", {
+          headers: contentSecurityPolicy
+            ? { "content-security-policy": contentSecurityPolicy }
+            : undefined,
+        }),
+        "/about",
+        null,
+        null,
+        null,
+      );
+
+      expect(response.status).toBe(500);
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    }
+  });
+});
+
+describe("createPagesPageHandler — data export compatibility", () => {
+  it("marks the invalid getInitialProps and getStaticProps combination fatal only during prerender", async () => {
+    const Page = Object.assign(() => null, {
+      getInitialProps: async () => ({ pageProps: {} }),
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/about",
+            makePageModule({
+              default: Page,
+              getStaticProps: async () => ({ props: {} }),
+            }),
+          ),
+        ],
+      }),
+    );
+    const savedPrerender = process.env.VINEXT_PRERENDER;
+
+    try {
+      delete process.env.VINEXT_PRERENDER;
+      const runtimeResponse = await handler(makeRequest("/about"), "/about", null, null, null);
+      expect(runtimeResponse.status).toBe(500);
+      expect(runtimeResponse.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBeNull();
+
+      process.env.VINEXT_PRERENDER = "1";
+      const prerenderResponse = await handler(makeRequest("/about"), "/about", null, null, null);
+      expect(prerenderResponse.status).toBe(500);
+      expect(prerenderResponse.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+    } finally {
+      if (savedPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = savedPrerender;
+    }
+  });
+});
 
 describe("createPagesPageHandler — _next/data", () => {
   it("detects /_next/data URL and returns JSON envelope", async () => {
@@ -776,6 +1066,39 @@ describe("createPagesPageHandler — preview responses", () => {
     expect(response.status).toBe(404);
     expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("cache-control")).not.toContain("s-maxage");
+  });
+
+  it("propagates request-aware cache bypass through a nonce-bearing custom 404", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const AppComponent = Object.assign(() => null, {
+      getInitialProps: async ({
+        ctx,
+      }: {
+        ctx: { res: { setHeader(name: string, value: string): void } };
+      }) => {
+        ctx.res.setHeader("CDN-Cache-Control", "s-maxage=600");
+        return { viewer: "per-request", pageProps: {} };
+      },
+    });
+    const sourceRoute = makeRoute(
+      "/missing",
+      makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
+    );
+    const notFoundRoute = makeRoute("/404");
+    const handler = createPagesPageHandler(
+      makeOpts({ AppComponent, pageRoutes: [sourceRoute, notFoundRoute] }),
+    );
+    const request = new Request("http://localhost/missing", {
+      headers: { "content-security-policy": "script-src 'nonce-test-nonce'" },
+    });
+
+    const response = await handler(request, "/missing", null, null, null);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
   });
 });
 
