@@ -779,7 +779,6 @@ async function warmOnePath(
     headers?: HeadersInit;
     expectedBuildId?: string;
     expectedRscBuildId?: string;
-    revalidateCachedResponse: boolean;
     retryPropagationFailures: boolean;
     retryDelayMs: number;
     retryNotFound: boolean;
@@ -802,20 +801,11 @@ async function warmOnePath(
 
   for (let attempt = 0; attempt <= options.retries; attempt++) {
     try {
-      const requestHeaders = new Headers(target.headers ?? options.headers);
-      if (options.revalidateCachedResponse) {
-        // A staged request can be answered by an existing old-build CDN object
-        // before the version-overridden Worker runs. Revalidate only failed
-        // keys; this keeps the canonical URL/cache key unchanged while forcing
-        // Cloudflare to replace the stale object with the uploaded build.
-        requestHeaders.set("Cache-Control", "no-cache");
-        requestHeaders.set("Pragma", "no-cache");
-      }
       const { response } = await fetchWithTimeout(
         options.fetchImpl,
         url,
         options.timeoutMs,
-        requestHeaders,
+        target.headers ?? options.headers,
         "manual",
       );
 
@@ -993,7 +983,6 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       headers: options.headers,
       expectedBuildId: options.expectedBuildId,
       expectedRscBuildId: options.expectedRscBuildId,
-      revalidateCachedResponse: retryMode === "propagation-retry",
       retryPropagationFailures: isPropagationRequest,
       retryDelayMs: isPropagationRequest ? propagationRetryDelayMs : normalRetryDelayMs,
       retryNotFound: isPropagationRequest,

@@ -1008,7 +1008,7 @@ describe("Cloudflare CDN warmup", () => {
     );
   });
 
-  it("revalidates isolated stale-build entries after a large successful staged pass", async () => {
+  it("retries isolated stale-build responses after a large successful staged pass", async () => {
     const rscPaths = Array.from({ length: 4_528 }, (_, index) => `/archive/${index}`);
     const stalePaths = new Set(rscPaths.slice(-12));
     const requestHeaders = new Map<string, Headers[]>();
@@ -1054,14 +1054,15 @@ describe("Cloudflare CDN warmup", () => {
       const [initialHeaders, retryHeaders] = requestHeaders.get(pathname)!;
       expect(initialHeaders.get("cache-control")).toBeNull();
       expect(initialHeaders.get("pragma")).toBeNull();
-      expect(retryHeaders.get("cache-control")).toBe("no-cache");
-      expect(retryHeaders.get("pragma")).toBe("no-cache");
+      expect(retryHeaders.get("cache-control")).toBeNull();
+      expect(retryHeaders.get("pragma")).toBeNull();
       expect(retryHeaders.get("accept")).toBe("text/x-component");
       expect(retryHeaders.get("rsc")).toBe("1");
+      expect([...retryHeaders]).toEqual([...initialHeaders]);
     }
   });
 
-  it("still fails strict warmup when targeted revalidation returns the stale build", async () => {
+  it("still fails strict warmup when a targeted retry returns the stale build", async () => {
     const seenHeaders: Headers[] = [];
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       seenHeaders.push(new Headers(init?.headers));
@@ -1088,8 +1089,8 @@ describe("Cloudflare CDN warmup", () => {
 
     expect(seenHeaders).toHaveLength(2);
     expect(seenHeaders[0].get("cache-control")).toBeNull();
-    expect(seenHeaders[1].get("cache-control")).toBe("no-cache");
-    expect(seenHeaders[1].get("pragma")).toBe("no-cache");
+    expect(seenHeaders[1].get("cache-control")).toBeNull();
+    expect(seenHeaders[1].get("pragma")).toBeNull();
   });
 
   it("warms directly from the discovery manifest", async () => {

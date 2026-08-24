@@ -39,6 +39,11 @@ export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean
   return Boolean(cacheControl && isNonCacheableCacheControl(cacheControl));
 }
 
+/** Delegate provider-specific request routing validation to the CDN adapter. */
+export async function validateCdnRequest(request: Request): Promise<Response | null> {
+  return (await getCdnCacheAdapter().validateRequest?.(request)) ?? null;
+}
+
 /**
  * Route a cacheable response's headers through the active CDN cache adapter and
  * apply the result to `headers`. The default adapter yields a single

@@ -32,7 +32,7 @@ import rscHandler, {
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
-import { applyCdnResponseIdentityHeaders } from "./cache-control.js";
+import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
 import {
@@ -105,6 +105,9 @@ async function handleRequest(
   // Register config-driven cache adapters before any rendering touches the cache.
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
   registerConfiguredImageOptimizer(env as Record<string, unknown> | undefined);
+
+  const cdnValidationResponse = await validateCdnRequest(request);
+  if (cdnValidationResponse) return cdnValidationResponse;
 
   const url = new URL(request.url);
 

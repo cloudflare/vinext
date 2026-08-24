@@ -6,6 +6,7 @@ import {
   buildRevalidateCacheControl,
   hasExplicitNonCacheableResponsePolicy,
   shouldUseNextDeployCacheControl,
+  validateCdnRequest,
 } from "../packages/vinext/src/server/cache-control.js";
 import {
   setCdnCacheAdapter,
@@ -240,5 +241,30 @@ describe("applyCdnResponseHeaders", () => {
     expect(
       hasExplicitNonCacheableResponsePolicy(new Headers({ "X-Example-Edge-Policy": "no-store" })),
     ).toBe(true);
+  });
+
+  it("delegates request routing validation without interpreting provider headers", async () => {
+    const rejected = new Response("retry", { status: 503 });
+    const request = new Request("https://example.com/page", {
+      headers: { "X-Provider-Version": "version-b" },
+    });
+    const edge: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders() {
+        return {};
+      },
+      validateRequest(received) {
+        expect(received).toBe(request);
+        return rejected;
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edge);
+
+    await expect(validateCdnRequest(request)).resolves.toBe(rejected);
   });
 });

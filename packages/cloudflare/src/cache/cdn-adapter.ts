@@ -1,5 +1,13 @@
 import { fileURLToPath } from "node:url";
 
+export const DEFAULT_CDN_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
+
+/** Options accepted by {@link cdnAdapter}, forwarded to the runtime factory. */
+export type CdnAdapterOptions = {
+  /** Version metadata binding used to verify version-overridden requests. */
+  versionMetadataBinding?: string;
+};
+
 /**
  * Cloudflare CDN cache adapter - edge-managed page-level ISR backed by the
  * Cloudflare Workers Cache.
@@ -15,10 +23,22 @@ import { fileURLToPath } from "node:url";
  *   "cache": {
  *     "enabled": true,
  *   },
+ *   "version_metadata": {
+ *     "binding": "CF_VERSION_METADATA"
+ *   }
  * }
  * ```
  */
-export function cdnAdapter(options?: Record<string, never>) {
+export function cdnAdapter(options?: CdnAdapterOptions) {
+  if (
+    options?.versionMetadataBinding !== undefined &&
+    (typeof options.versionMetadataBinding !== "string" ||
+      options.versionMetadataBinding.length === 0)
+  ) {
+    throw new TypeError(
+      "[vinext] cdnAdapter({ versionMetadataBinding }) must be a non-empty string binding name.",
+    );
+  }
   return {
     adapter: fileURLToPath(import.meta.resolve("./cdn-adapter.runtime.js")),
     options,

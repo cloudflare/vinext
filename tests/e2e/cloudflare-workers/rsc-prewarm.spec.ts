@@ -191,6 +191,16 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   // without touching either canonical cache entry before its HIT assertion.
   await waitForStablePromotion({ baseURL, buildId, playwright, rscBuildId });
 
+  const workerName = new URL(baseURL).hostname.split(".")[0];
+  const mismatchedOverride = await request.get(`${baseURL}/api/prewarm-version?mismatch=1`, {
+    headers: {
+      "Cloudflare-Workers-Version-Overrides": `${workerName}="00000000-0000-4000-8000-000000000000"`,
+    },
+  });
+  expect(mismatchedOverride.status()).toBe(503);
+  expect(mismatchedOverride.headers()["cache-control"]).toBe("no-store");
+  expect(await mismatchedOverride.text()).toContain("Cloudflare invoked Worker version");
+
   const pagesResponse = await getResponseAfterPromotion(request, `${baseURL}${PAGES_TARGET_PATH}`);
   const pagesResponseHeaders = pagesResponse.headers();
   expect(pagesResponse.ok(), JSON.stringify(pagesResponseHeaders)).toBe(true);

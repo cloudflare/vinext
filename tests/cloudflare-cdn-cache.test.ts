@@ -9,7 +9,9 @@
  *    explicitly configured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
-import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import createCloudflareCdnCacheAdapter, {
+  CloudflareCdnCacheAdapter,
+} from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import {
   getCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -82,6 +84,51 @@ describe("CloudflareCdnCacheAdapter", () => {
 
   it("does not own background revalidation (the edge re-requests origin)", () => {
     expect(adapter.ownsBackgroundRevalidation).toBe(false);
+  });
+
+  it("accepts a version override only in the Worker version it targets", async () => {
+    const routedAdapter = createCloudflareCdnCacheAdapter({
+      env: { CF_VERSION_METADATA: { id: "version-b", tag: "", timestamp: "" } },
+    });
+    const matching = new Request("https://example.com/page", {
+      headers: {
+        "Cloudflare-Workers-Version-Overrides": 'upstream="version-a", app="version-b"',
+      },
+    });
+    const mismatching = new Request("https://example.com/page", {
+      headers: { "Cloudflare-Workers-Version-Overrides": 'app="version-c"' },
+    });
+
+    expect(await routedAdapter.validateRequest?.(matching)).toBeNull();
+    const response = await routedAdapter.validateRequest?.(mismatching);
+    expect(response?.status).toBe(503);
+    expect(response?.headers.get("Cache-Control")).toBe("no-store");
+    await expect(response?.text()).resolves.toContain(
+      "Cloudflare invoked Worker version version-b, but the request override targeted version-c",
+    );
+  });
+
+  it("fails an override loudly when its configured version metadata binding is missing", async () => {
+    const routedAdapter = createCloudflareCdnCacheAdapter({
+      env: {},
+      options: { versionMetadataBinding: "CUSTOM_VERSION" },
+    });
+    const request = new Request("https://example.com/page", {
+      headers: { "Cloudflare-Workers-Version-Overrides": 'app="version-b"' },
+    });
+
+    const response = await routedAdapter.validateRequest?.(request);
+    expect(response?.status).toBe(503);
+    await expect(response?.text()).resolves.toContain(
+      "requires the `CUSTOM_VERSION` version metadata binding",
+    );
+  });
+
+  it("does not require version metadata for ordinary requests without an override", async () => {
+    const routedAdapter = createCloudflareCdnCacheAdapter();
+    expect(
+      await routedAdapter.validateRequest?.(new Request("https://example.com/page")),
+    ).toBeNull();
   });
 
   it("stamps the application build identity on cacheable and no-store responses", () => {

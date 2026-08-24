@@ -16,6 +16,7 @@
     },
   ],
   "cache": { "enabled": true },
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "preview_urls": true,
   "workers_dev": true,
 }

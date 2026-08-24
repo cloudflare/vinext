@@ -101,6 +101,16 @@ export function isNonCacheableCacheControl(cacheControl: string): boolean {
 // equivalent and stay CDN-specific.
 export type CdnCacheAdapter = {
   /**
+   * Validate provider-specific request routing before the application handles
+   * the request. Returning a response short-circuits the request pipeline;
+   * returning `null` continues normally.
+   *
+   * Core deliberately passes the untouched request and does not interpret any
+   * provider headers or bindings itself.
+   */
+  validateRequest?(request: Request): Response | null | Promise<Response | null>;
+
+  /**
    * Read a page-level artifact. Returning a value lets the origin serve it
    * (HIT/STALE); returning `null` makes the origin render fresh.
    *
