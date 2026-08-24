@@ -353,7 +353,7 @@ class CdnWarmProgress {
   private readonly isTTY = process.stderr.isTTY;
   private lastLineLength = 0;
 
-  update(completed: number, total: number, label: string): void {
+  update(completed: number, total: number, label: string, phase = "Warming CDN cache"): void {
     if (!this.isTTY) return;
     const percent = total > 0 ? Math.floor((completed / total) * 100) : 0;
     const filled = Math.floor(percent / 5);
@@ -361,14 +361,15 @@ class CdnWarmProgress {
     const maxLabelLength = 40;
     const shortLabel =
       label.length > maxLabelLength ? `…${label.slice(-(maxLabelLength - 1))}` : label;
-    const line = `Warming CDN cache... ${bar} ${String(completed).padStart(String(total).length)}/${total} ${shortLabel}`;
+    const line = `${phase}... ${bar} ${String(completed).padStart(String(total).length)}/${total} ${shortLabel}`;
     process.stderr.write(`\r${line.padEnd(this.lastLineLength)}`);
     this.lastLineLength = line.length;
   }
 
   finish(): void {
-    if (!this.isTTY) return;
+    if (!this.isTTY || this.lastLineLength === 0) return;
     process.stderr.write(`\r${" ".repeat(this.lastLineLength)}\r`);
+    this.lastLineLength = 0;
   }
 }
 
@@ -1002,15 +1003,10 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const warmRequest = async (
     target: WarmTarget,
     retryMode: WarmRetryMode = "normal",
-    countCompletion = true,
   ): Promise<Awaited<ReturnType<typeof warmOnePath>>> => {
     const result = await warmTarget(target, retryMode);
-    if (countCompletion) completedRequests++;
-    progress.update(
-      completedRequests,
-      requests.length,
-      countCompletion ? target.label : `retrying ${target.label}`,
-    );
+    completedRequests++;
+    progress.update(completedRequests, requests.length, target.label);
     return result;
   };
 
@@ -1038,11 +1034,24 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     console.log(
       `  CDN warmup: retrying ${retryableFailed.length} failed request(s) after completing the initial pass...`,
     );
+    let completedRetries = 0;
+    progress.update(0, retryableFailed.length, "starting retry pass", "Retrying CDN cache");
     const retried = await runWithConcurrency(
       retryableFailed.map(({ target }) => target),
       concurrency,
-      (target) => warmRequest(target, "propagation-retry", false),
+      async (target) => {
+        const result = await warmTarget(target, "propagation-retry");
+        completedRetries++;
+        progress.update(
+          completedRetries,
+          retryableFailed.length,
+          target.label,
+          "Retrying CDN cache",
+        );
+        return result;
+      },
     );
+    progress.finish();
     for (const [retryIndex, { index }] of retryableFailed.entries()) {
       results[index] = retried[retryIndex];
     }

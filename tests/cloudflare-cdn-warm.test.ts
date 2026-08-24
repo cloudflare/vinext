@@ -955,6 +955,59 @@ describe("Cloudflare CDN warmup", () => {
     expect(attempts.get("/slow")).toBe(31);
   });
 
+  it("reports targeted retries with their own progress total", async () => {
+    const originalIsTTY = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+    Object.defineProperty(process.stderr, "isTTY", { configurable: true, value: true });
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const attempts = new Map<string, number>();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(requestHref(input)!).pathname;
+      const attempt = (attempts.get(pathname) ?? 0) + 1;
+      attempts.set(pathname, attempt);
+      if (pathname === "/stale" && attempt === 1) {
+        const stale = cacheableRsc();
+        stale.headers.set(VINEXT_CDN_BUILD_ID_HEADER, "old-build");
+        stale.headers.set(VINEXT_RSC_BUILD_ID_HEADER, "old-rsc-build");
+        return stale;
+      }
+      return cacheableRsc();
+    });
+
+    let progressWrites: string[];
+    try {
+      await expect(
+        warmCdnCache({
+          concurrency: 1,
+          expectedBuildId: "build-a",
+          expectedRscBuildId: "rsc-build-a",
+          fetchImpl: fetchImpl as typeof fetch,
+          paths: [],
+          propagatingTarget: true,
+          retries: 1,
+          retryDelayMs: 0,
+          rscPaths: ["/ready", "/stale"],
+          strict: true,
+          targetUrl: "https://app.example.com",
+        }),
+      ).resolves.toMatchObject({ total: 2, warmed: 2, failed: 0 });
+      progressWrites = stderrWrite.mock.calls.map(([chunk]) => String(chunk));
+    } finally {
+      stderrWrite.mockRestore();
+      if (originalIsTTY) Object.defineProperty(process.stderr, "isTTY", originalIsTTY);
+      else delete (process.stderr as unknown as { isTTY?: boolean }).isTTY;
+    }
+
+    expect(progressWrites).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Warming CDN cache... [████████████████████] 2/2 /stale"),
+        expect.stringContaining(
+          "Retrying CDN cache... [                    ] 0/1 starting retry pass",
+        ),
+        expect.stringContaining("Retrying CDN cache... [████████████████████] 1/1 /stale"),
+      ]),
+    );
+  });
+
   it("revalidates isolated stale-build entries after a large successful staged pass", async () => {
     const rscPaths = Array.from({ length: 4_528 }, (_, index) => `/archive/${index}`);
     const stalePaths = new Set(rscPaths.slice(-12));
