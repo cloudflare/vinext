@@ -48,11 +48,14 @@ import {
 import { parseWranglerConfig, runTPR } from "./tpr.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
 import {
+  DEFAULT_STAGED_READINESS_INTERVAL_MS,
+  DEFAULT_STAGED_READINESS_RETRIES,
   readPrerenderWarmPlan,
   waitForCdnWarmTargetReadiness,
   warmCdnCache,
   type CdnWarmOptions,
   type CdnWarmRequestPlan,
+  type PrerenderWarmPlan,
 } from "./cdn-warm.js";
 import {
   formatMissingCacheAdapterError,
@@ -632,7 +635,12 @@ export async function deployWithCdnWarmup(
     Pick<
       CdnWarmOptions,
       "deploymentId" | "expectedBuildId" | "expectedRscBuildId" | "loadingShellPaths" | "rscPaths"
-    >,
+    > & {
+      discoverWarmPlan?: (target: {
+        headers?: HeadersInit;
+        targetUrl: string;
+      }) => Promise<PrerenderWarmPlan>;
+    },
 ): Promise<string> {
   if (options.warmCdnReadinessProbes !== undefined) {
     parsePositiveIntegerArg(String(options.warmCdnReadinessProbes), "--warm-cdn-readiness-probes");
@@ -643,25 +651,65 @@ export async function deployWithCdnWarmup(
   if (options.warmCdnPromotionDelay !== undefined) {
     validatePromotionDelay(options.warmCdnPromotionDelay);
   }
-  if (
-    !options.dangerouslyPromoteOnCdnWarmError &&
-    paths.length > 0 &&
-    options.expectedBuildId === undefined
-  ) {
-    throw new Error(
-      "CDN HTML warmup requires a CDN adapter that declares build-identity response headers. " +
-        "Configure that adapter capability or deploy without --experimental-warm-cdn-cache.",
+  let deploymentId = options.deploymentId;
+  let expectedBuildId = options.expectedBuildId;
+  let expectedRscBuildId = options.expectedRscBuildId;
+  let warmPlanDiscovered = options.discoverWarmPlan === undefined;
+  let remainingWarmPlan: CdnWarmRequestPlan = {
+    loadingShellPaths: [...(options.loadingShellPaths ?? [])],
+    paths: [...paths],
+    rscPaths: [...(options.rscPaths ?? [])],
+  };
+  let discoveredWarmRequests =
+    remainingWarmPlan.paths.length +
+    remainingWarmPlan.rscPaths.length +
+    remainingWarmPlan.loadingShellPaths.length;
+
+  const prepareWarmPlan = (plan: CdnWarmRequestPlan): CdnWarmRequestPlan => {
+    if (plan.paths.length === 0 || expectedBuildId !== undefined) return plan;
+    if (!options.dangerouslyPromoteOnCdnWarmError) {
+      throw new Error(
+        "CDN HTML warmup requires a CDN adapter that declares build-identity response headers. " +
+          "Configure that adapter capability or deploy without --experimental-warm-cdn-cache.",
+      );
+    }
+    console.warn(
+      `  CDN warmup: skipping ${plan.paths.length} HTML request(s) because the CDN adapter does not declare build-identity response headers.`,
     );
+    return { ...plan, paths: [] };
+  };
+
+  const discoverWarmPlan = async (targetUrl: string, headers?: HeadersInit): Promise<void> => {
+    if (!options.discoverWarmPlan) return;
+    const plan = await options.discoverWarmPlan({ headers, targetUrl });
+    deploymentId = plan.deploymentId;
+    expectedBuildId = plan.buildIdentity;
+    expectedRscBuildId = plan.rscBuildId;
+    remainingWarmPlan = {
+      loadingShellPaths: [...plan.loadingShellPaths],
+      paths: [...plan.paths],
+      rscPaths: [...plan.rscPaths],
+    };
+    discoveredWarmRequests =
+      remainingWarmPlan.paths.length +
+      remainingWarmPlan.rscPaths.length +
+      remainingWarmPlan.loadingShellPaths.length;
+    warmPlanDiscovered = true;
+  };
+
+  if (!options.discoverWarmPlan) {
+    remainingWarmPlan = prepareWarmPlan(remainingWarmPlan);
   }
+
   const upload = runWranglerVersionUpload(root, options);
   const warmUploadedVersion = (
     targetUrl: string,
     headers?: HeadersInit,
     propagatingTarget = false,
     plan: CdnWarmRequestPlan = {
-      loadingShellPaths: [...(options.loadingShellPaths ?? [])],
-      paths: [...paths],
-      rscPaths: [...(options.rscPaths ?? [])],
+      loadingShellPaths: remainingWarmPlan.loadingShellPaths,
+      paths: remainingWarmPlan.paths,
+      rscPaths: remainingWarmPlan.rscPaths,
     },
   ) =>
     warmCdnCache({
@@ -669,9 +717,9 @@ export async function deployWithCdnWarmup(
       paths: plan.paths,
       headers,
       propagatingTarget,
-      deploymentId: options.deploymentId,
-      expectedBuildId: options.expectedBuildId,
-      expectedRscBuildId: options.expectedRscBuildId,
+      deploymentId,
+      expectedBuildId,
+      expectedRscBuildId,
       loadingShellPaths: plan.loadingShellPaths,
       rscPaths: plan.rscPaths,
       concurrency: options.warmCdnConcurrency,
@@ -683,24 +731,15 @@ export async function deployWithCdnWarmup(
   const wranglerConfig = parseWranglerConfig(root, options.config);
   const deploymentStatus = runWranglerDeploymentStatus(root, options);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
-  const canVerifyStagedHtml = options.expectedBuildId !== undefined;
-  if (!canVerifyStagedHtml && paths.length > 0) {
-    console.warn(
-      `  CDN warmup: skipping ${paths.length} HTML request(s) because the CDN adapter does not declare build-identity response headers.`,
-    );
-  }
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let triggersDeployedUrl: string | null = null;
   let stagedCacheFilled = false;
-  let remainingWarmPlan: CdnWarmRequestPlan = {
-    loadingShellPaths: [...(options.loadingShellPaths ?? [])],
-    paths: canVerifyStagedHtml ? [...paths] : [],
-    rscPaths: [...(options.rscPaths ?? [])],
-  };
   const initialWarmRequests =
-    remainingWarmPlan.paths.length +
-    remainingWarmPlan.rscPaths.length +
-    remainingWarmPlan.loadingShellPaths.length;
+    options.discoverWarmPlan === undefined
+      ? remainingWarmPlan.paths.length +
+        remainingWarmPlan.rscPaths.length +
+        remainingWarmPlan.loadingShellPaths.length
+      : 1;
   let triggersApplied = false;
 
   function applyTriggers(): void {
@@ -725,6 +764,14 @@ export async function deployWithCdnWarmup(
     const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
     if (targetUrl && headers) {
       try {
+        if (!warmPlanDiscovered) {
+          console.log("  CDN warmup: discovering paths from the staged Worker version...");
+          await discoverWarmPlan(targetUrl, headers);
+          remainingWarmPlan = prepareWarmPlan(remainingWarmPlan);
+          console.log(
+            `  CDN warmup: discovered ${remainingWarmPlan.paths.length} HTML, ${remainingWarmPlan.rscPaths.length} RSC, and ${remainingWarmPlan.loadingShellPaths.length} loading-shell request(s).`,
+          );
+        }
         const stagedWarmPlan: CdnWarmRequestPlan = {
           loadingShellPaths: remainingWarmPlan.loadingShellPaths,
           paths: remainingWarmPlan.paths,
@@ -740,9 +787,9 @@ export async function deployWithCdnWarmup(
             targetUrl,
             headers,
             plan: stagedWarmPlan,
-            deploymentId: options.deploymentId,
-            expectedBuildId: options.expectedBuildId,
-            expectedRscBuildId: options.expectedRscBuildId,
+            deploymentId,
+            expectedBuildId,
+            expectedRscBuildId,
             probeIntervalMs: options.warmCdnReadinessProbeDelay,
             requiredConsecutiveSuccesses: options.warmCdnReadinessProbes,
             retries: options.warmCdnRetries,
@@ -795,7 +842,7 @@ export async function deployWithCdnWarmup(
     );
   }
 
-  const remainingWarmRequests =
+  const countRemainingWarmRequests = (): number =>
     remainingWarmPlan.paths.length +
     remainingWarmPlan.rscPaths.length +
     remainingWarmPlan.loadingShellPaths.length;
@@ -805,6 +852,14 @@ export async function deployWithCdnWarmup(
       throw new Error(
         "CDN warmup cannot skip promotion because the uploaded Worker version could not be staged at 0% traffic. " +
           "The current deployment must have exactly one version serving 100% traffic.",
+      );
+    }
+    const remainingWarmRequests = countRemainingWarmRequests();
+    if (options.discoverWarmPlan && discoveredWarmRequests === 0) {
+      throw withStagedVersionCleanupNote(
+        new Error(
+          "CDN warmup cannot skip promotion because no build-discovered requests were found to warm.",
+        ),
       );
     }
     if (remainingWarmRequests > 0) {
@@ -850,9 +905,20 @@ export async function deployWithCdnWarmup(
   } catch (error) {
     throw withPromotedVersionTriggerNote(error);
   }
+  let postPromotionTargetUrl =
+    resolveCdnWarmupTargetUrl(root, triggersDeployedUrl, options) ?? deployed.deployedUrl;
+  if (!warmPlanDiscovered && postPromotionTargetUrl) {
+    try {
+      console.log("  CDN warmup: discovering paths from the promoted Worker version...");
+      await discoverWarmPlan(postPromotionTargetUrl);
+      remainingWarmPlan = prepareWarmPlan(remainingWarmPlan);
+    } catch (error) {
+      throw withPromotedVersionWarmupNote(error);
+    }
+  }
+  const remainingWarmRequests = countRemainingWarmRequests();
   if (remainingWarmRequests > 0) {
-    const targetUrl =
-      resolveCdnWarmupTargetUrl(root, triggersDeployedUrl, options) ?? deployed.deployedUrl;
+    const targetUrl = postPromotionTargetUrl;
     if (targetUrl) {
       try {
         await warmUploadedVersion(targetUrl, undefined, true, remainingWarmPlan);
@@ -1088,8 +1154,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   });
   const hasStrictResponseVary = hasVerbatimResponseVary(viteConfigMetadata.cacheConfig);
   const hasBuildIdentityHeader = hasBuildIdentityResponseHeader(viteConfigMetadata.cacheConfig);
-  const shouldEmitPrerenderPathManifest =
-    options.warmCdnCache || (!options.skipBuild && prerenderDecision);
+  const shouldEmitPrerenderPathManifest = !options.skipBuild && prerenderDecision;
 
   // Step 5: Build
   if (!options.skipBuild) {
@@ -1166,36 +1231,37 @@ export async function deploy(options: DeployOptions): Promise<void> {
   let url: string;
 
   if (options.warmCdnCache) {
-    const warmPlan = readPrerenderWarmPlan(root, {
-      includeFallbackShells: options.warmCdnIncludeFallbacks,
-      strict: !options.dangerouslyPromoteOnCdnWarmError,
+    url = await deployWithCdnWarmup(root, [], {
+      ...wranglerOptions,
+      discoverWarmPlan: async ({ headers, targetUrl }) => {
+        await emitPrerenderPathManifest({
+          root: info.root,
+          nextConfig,
+          buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
+          responseVary: hasStrictResponseVary ? "verbatim" : undefined,
+          routeRootConfig: viteConfigMetadata.routeRootConfig,
+          pathDiscoveryTarget: {
+            baseUrl: targetUrl,
+            headers,
+            retries: options.warmCdnRetries ?? DEFAULT_STAGED_READINESS_RETRIES,
+            retryDelayMs:
+              options.warmCdnReadinessProbeDelay ?? DEFAULT_STAGED_READINESS_INTERVAL_MS,
+          },
+        });
+        return readPrerenderWarmPlan(root, {
+          includeFallbackShells: options.warmCdnIncludeFallbacks,
+          strict: !options.dangerouslyPromoteOnCdnWarmError,
+        });
+      },
+      warmCdnConcurrency: options.warmCdnConcurrency,
+      warmCdnTimeout: options.warmCdnTimeout,
+      warmCdnRetries: options.warmCdnRetries,
+      warmCdnReadinessProbes: options.warmCdnReadinessProbes,
+      warmCdnReadinessProbeDelay: options.warmCdnReadinessProbeDelay,
+      dangerouslyPromoteOnCdnWarmError: options.dangerouslyPromoteOnCdnWarmError,
+      warmCdnPromote: options.warmCdnPromote,
+      warmCdnPromotionDelay: options.warmCdnPromotionDelay,
     });
-    if (hasCdnWarmRequests(warmPlan)) {
-      url = await deployWithCdnWarmup(root, warmPlan.paths, {
-        ...wranglerOptions,
-        deploymentId: warmPlan.deploymentId,
-        expectedBuildId: hasBuildIdentityHeader ? warmPlan.buildIdentity : undefined,
-        expectedRscBuildId: warmPlan.rscBuildId,
-        loadingShellPaths: warmPlan.loadingShellPaths,
-        rscPaths: warmPlan.rscPaths,
-        warmCdnConcurrency: options.warmCdnConcurrency,
-        warmCdnTimeout: options.warmCdnTimeout,
-        warmCdnRetries: options.warmCdnRetries,
-        warmCdnReadinessProbes: options.warmCdnReadinessProbes,
-        warmCdnReadinessProbeDelay: options.warmCdnReadinessProbeDelay,
-        dangerouslyPromoteOnCdnWarmError: options.dangerouslyPromoteOnCdnWarmError,
-        warmCdnPromote: options.warmCdnPromote,
-        warmCdnPromotionDelay: options.warmCdnPromotionDelay,
-      });
-    } else {
-      if (options.warmCdnPromote === false) {
-        throw new Error(
-          "CDN warmup cannot skip promotion because no build-discovered requests were found to warm.",
-        );
-      }
-      console.log("\n  CDN warmup skipped: no build-discovered paths found.");
-      url = await runWranglerDeploy(root, wranglerOptions);
-    }
   } else {
     url = await runWranglerDeploy(root, wranglerOptions);
   }

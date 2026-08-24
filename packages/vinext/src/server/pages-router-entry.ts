@@ -38,8 +38,13 @@ import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js"
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
-import type { ExecutionContextLike } from "vinext/shims/request-context";
+import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
+import {
+  createWorkerPrerenderDiscoveryContext,
+  isWorkerPrerenderDiscoveryPath,
+} from "./worker-prerender-discovery.js";
+import { handleAppPrerenderEndpoint } from "./app-prerender-endpoints.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -112,8 +117,13 @@ async function handleRequest(
   env: PagesWorkerEnv | undefined,
   platformCtx: PagesWorkerExecutionContext | ExecutionContextLike | undefined,
 ): Promise<Response> {
-  const ctx = createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
+  const requestCtx = createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
     handleRequest(internalRequest, env, internalCtx),
+  );
+  const ctx = createWorkerPrerenderDiscoveryContext(
+    requestCtx,
+    request,
+    pagesEntry.prerenderSecret,
   );
 
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
@@ -127,6 +137,18 @@ async function handleRequest(
 
     const url = new URL(request.url);
     let pathname = url.pathname;
+
+    if (ctx.isPrerenderPathDiscovery && isWorkerPrerenderDiscoveryPath(pathname)) {
+      const response = await runWithExecutionContext(ctx, () =>
+        handleAppPrerenderEndpoint(request, {
+          isPrerenderEnabled: () => true,
+          loadPagesRoutes: async () => pagesEntry.pageRoutes,
+          pathname,
+          staticParamsMap: {},
+        }),
+      );
+      if (response) return response;
+    }
 
     // Block protocol-relative URL open redirects in all shapes:
     //   literal  //evil.com, /\\evil.com

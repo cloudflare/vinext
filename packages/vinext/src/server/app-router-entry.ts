@@ -28,6 +28,7 @@ import rscHandler, {
   __basePath as __rscBasePath,
   __imageAllowedWidths as __rscImageAllowedWidths,
   __imageConfig as __rscImageConfig,
+  __prerenderSecret as __rscPrerenderSecret,
 } from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -62,6 +63,7 @@ import {
 } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
+import { createWorkerPrerenderDiscoveryContext } from "./worker-prerender-discovery.js";
 
 // Precompute the path components used for `_next/static/*` 404 short-circuit
 // detection. Both `__basePath` and `__assetPrefix` are inlined as
@@ -96,11 +98,12 @@ async function handleRequest(
   // server-owned loopback origin and must retain its HTTP revalidation path.
   // Cloudflare requests instead receive an in-process dispatcher so the
   // credential never leaves the Worker isolate.
-  const ctx = platformCtx?.trustedRevalidateOrigin
+  const requestCtx = platformCtx?.trustedRevalidateOrigin
     ? platformCtx
     : createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
         handleRequest(internalRequest, env, internalCtx),
       );
+  const ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, __rscPrerenderSecret);
 
   // Register config-driven cache adapters before any rendering touches the cache.
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);

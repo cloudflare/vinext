@@ -136,6 +136,171 @@ describe("prerender path manifest", () => {
     expect(closeMock).toHaveBeenCalledOnce();
   });
 
+  it("discovers dynamic paths from an uploaded Worker without loading its bundle in Node", async () => {
+    // No Next.js test port applies: staged Worker version overrides and
+    // cloudflare:workers bindings are Cloudflare-specific.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", 'import { env } from "cloudflare:workers";\n');
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      [
+        'import { env } from "cloudflare:workers";',
+        "export const revalidate = 60;",
+        "export async function generateStaticParams() { await env.KV.get('paths'); return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: {
+        baseUrl: "https://workers-cache.example.workers.dev/ignored-prefix",
+        headers: {
+          "Cloudflare-Workers-Version-Overrides": 'workers-cache="version-b"',
+          "X-Vinext-Expected-Worker-Version": "version-b",
+        },
+      },
+    });
+
+    expect(manifest?.paths).toEqual(["/cached/intro", "/cached/featured"]);
+    expect(startProdServerMock).not.toHaveBeenCalled();
+    const [requestUrl, requestInit] = vi.mocked(fetch).mock.calls[0];
+    const requestHeaders = new Headers(requestInit?.headers);
+    expect(requestUrl).toBe(
+      "https://workers-cache.example.workers.dev/__vinext/prerender/static-params?pattern=%2Fcached%2F%3Aslug",
+    );
+    expect(requestHeaders.get("Cloudflare-Workers-Version-Overrides")).toBe(
+      'workers-cache="version-b"',
+    );
+    expect(requestHeaders.get("X-Vinext-Expected-Worker-Version")).toBe("version-b");
+    expect(requestHeaders.get("x-vinext-prerender-secret")).toBe("staged-discovery-secret");
+  });
+
+  it("retries transient staged-version routing failures during remote discovery", async () => {
+    // No Next.js test port applies: Worker version propagation is Cloudflare-specific.
+    const remoteFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("old Worker", { status: 404 }))
+      .mockResolvedValueOnce(Response.json([{ slug: "intro" }]));
+    vi.stubGlobal("fetch", remoteFetch);
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", 'import { env } from "cloudflare:workers";\n');
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      [
+        "export const revalidate = 60;",
+        "export async function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: {
+        baseUrl: "https://workers-cache.example.workers.dev",
+        retries: 1,
+        retryDelayMs: 0,
+      },
+    });
+
+    expect(manifest?.paths).toEqual(["/cached/intro"]);
+    expect(remoteFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not replay user-code failures during remote discovery", async () => {
+    // No Next.js test port applies: staged Worker discovery is Cloudflare-specific.
+    const remoteFetch = vi.fn<typeof fetch>(async () =>
+      Response.json({ error: "binding lookup failed" }, { status: 500 }),
+    );
+    vi.stubGlobal("fetch", remoteFetch);
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      "export async function generateStaticParams() { return []; } export default function Page() { return null; }",
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    await expect(
+      emitPrerenderPathManifest({
+        root: tmpDir,
+        pathDiscoveryTarget: {
+          baseUrl: "https://workers-cache.example.workers.dev",
+          retries: 3,
+          retryDelayMs: 0,
+        },
+      }),
+    ).rejects.toThrow("path discovery returned HTTP 500");
+    expect(remoteFetch).toHaveBeenCalledOnce();
+  });
+
+  it("discovers binding-backed Pages Router paths from the uploaded Worker", async () => {
+    // No Next.js test port applies: staged Worker version overrides and
+    // cloudflare:workers bindings are Cloudflare-specific.
+    const remoteFetch = vi.fn<typeof fetch>(async () =>
+      Response.json({ fallback: false, paths: [{ params: { slug: "intro" } }] }),
+    );
+    vi.stubGlobal("fetch", remoteFetch);
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "pages-build-a\n");
+    writeFile("dist/server/entry.js", 'import { env } from "cloudflare:workers";\n');
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "pages-discovery-secret" }),
+    );
+    writeFile(
+      "pages/posts/[slug].tsx",
+      [
+        'import { env } from "cloudflare:workers";',
+        "export async function getStaticPaths() { await env.KV.get('paths'); return { fallback: false, paths: [] }; }",
+        "export function getStaticProps() { return { props: {} }; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: {
+        baseUrl: "https://pages-cache.example.workers.dev",
+        headers: { "Cloudflare-Workers-Version-Overrides": 'pages-cache="version-b"' },
+      },
+    });
+
+    expect(manifest?.paths).toEqual(["/posts/intro"]);
+    expect(manifest?.pagesPaths).toEqual(["/posts/intro"]);
+    expect(startProdServerMock).not.toHaveBeenCalled();
+    const [requestUrl, requestInit] = remoteFetch.mock.calls[0];
+    expect(requestUrl).toBe(
+      "https://pages-cache.example.workers.dev/__vinext/prerender/pages-static-paths?pattern=%2Fposts%2F%3Aslug",
+    );
+    expect(new Headers(requestInit?.headers).get("x-vinext-prerender-secret")).toBe(
+      "pages-discovery-secret",
+    );
+  });
+
   it("discovers strict-Vary RSC paths without consulting completed prerender output", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
@@ -627,6 +792,39 @@ describe("prerender path manifest", () => {
 
     await expect(emitPrerenderPathManifest({ root: tmpDir })).rejects.toThrow(
       "Failed to discover warmup path(s) for /cached/:slug: path discovery timed out after 30000ms",
+    );
+  });
+
+  it("explains how to move cloudflare:workers path discovery out of Node", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: "Error [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Received protocol 'cloudflare:'",
+          },
+          { status: 500 },
+        ),
+      ),
+    );
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      [
+        'import { env } from "cloudflare:workers";',
+        "export const revalidate = 60;",
+        "export async function generateStaticParams() { await env.KV.get('paths'); return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    await expect(emitPrerenderPathManifest({ root: tmpDir })).rejects.toThrow(
+      "Cloudflare runtime bindings cannot execute in the local Node prerender server. Use `vinext-cloudflare deploy --experimental-warm-cdn-cache`",
     );
   });
 

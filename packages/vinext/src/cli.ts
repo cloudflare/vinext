@@ -556,6 +556,14 @@ async function buildApp() {
   if (!process.env.__VINEXT_SHARED_REVALIDATE_SECRET) {
     process.env.__VINEXT_SHARED_REVALIDATE_SECRET = randomBytes(32).toString("hex");
   }
+  // The remote prerender path-discovery capability is also embedded in both
+  // server entries and written to vinext-server.json. Hybrid builds create a
+  // second vinext() plugin instance for the Pages bundle, so coordinate one
+  // secret here or the later Pages build would overwrite the manifest with a
+  // capability that the already-built App Worker does not recognize.
+  if (!process.env.__VINEXT_SHARED_PRERENDER_SECRET) {
+    process.env.__VINEXT_SHARED_PRERENDER_SECRET = randomBytes(32).toString("hex");
+  }
   const outputMode = resolvedNextConfig.output;
   const distDir = path.resolve(root, "dist");
 

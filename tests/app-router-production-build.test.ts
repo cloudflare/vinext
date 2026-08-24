@@ -215,6 +215,33 @@ describe("App Router Production build", () => {
     }
   }, 30000);
 
+  it("adopts the shared prerender discovery secret in the Worker and server manifest", async () => {
+    // Hybrid builds instantiate vinext twice; the CLI-provided value must win
+    // so the later Pages build cannot invalidate the App Worker's capability.
+    const sharedSecret = "ab".repeat(32);
+    const previous = process.env.__VINEXT_SHARED_PRERENDER_SECRET;
+    process.env.__VINEXT_SHARED_PRERENDER_SECRET = sharedSecret;
+    try {
+      const builder = await createBuilder({
+        root: APP_FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      expect(
+        JSON.parse(fs.readFileSync(path.join(outDir, "server", "vinext-server.json"), "utf-8")),
+      ).toEqual({ prerenderSecret: sharedSecret });
+      expect(fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8")).toContain(
+        sharedSecret,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.__VINEXT_SHARED_PRERENDER_SECRET;
+      else process.env.__VINEXT_SHARED_PRERENDER_SECRET = previous;
+    }
+  }, 30000);
+
   it("adopts the shared build ID even when generateBuildId is set", async () => {
     // The shared ID must win over a per-instance generateBuildId, because the
     // CLI already resolved it through the user's generateBuildId once. A
