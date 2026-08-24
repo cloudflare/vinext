@@ -58,6 +58,11 @@ export const PRERENDER_PATHS_MANIFEST = "vinext-prerender-paths.json";
 
 const PATH_DISCOVERY_FETCH_TIMEOUT_MS = 30_000;
 
+type PathDiscoveryRetryOptions = {
+  retries?: number;
+  retryDelayMs?: number;
+};
+
 type EmitPrerenderPathManifestOptions = {
   root: string;
   /** Fully resolved Next.js config. Loaded from disk when omitted. */
@@ -69,6 +74,14 @@ type EmitPrerenderPathManifestOptions = {
   rscBundlePath?: string;
   buildIdentity?: CdnCacheAdapterCapabilities["buildIdentity"];
   responseVary?: CdnCacheAdapterCapabilities["responseVary"];
+  /** Execute dynamic path hooks against an already-uploaded Worker. */
+  pathDiscoveryTarget?: {
+    baseUrl: string;
+    headers?: HeadersInit;
+    /** Retry transient staged-version routing responses before failing discovery. */
+    retries?: number;
+    retryDelayMs?: number;
+  };
 };
 
 function readBuiltBuildId(serverDir: string): string | null {
@@ -103,6 +116,13 @@ function addPath(paths: string[], seen: Set<string>, pathname: string): void {
 
 function throwDiscoveryFailure(route: string, error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
+  if (/cloudflare:|ERR_UNSUPPORTED_ESM_URL_SCHEME/i.test(message)) {
+    throw new Error(
+      `Failed to discover warmup path(s) for ${route}: Cloudflare runtime bindings cannot execute in the local Node prerender server. ` +
+        "Use `vinext-cloudflare deploy --experimental-warm-cdn-cache` so path discovery runs against the staged Worker version.",
+      { cause: error },
+    );
+  }
   throw new Error(`Failed to discover warmup path(s) for ${route}: ${message}`, { cause: error });
 }
 
@@ -245,26 +265,54 @@ function validatePagesStaticPathsEntry(entry: StaticPathsEntry, pattern: string)
 async function fetchDiscoveryEndpoint(
   url: string,
   headers: Record<string, string>,
+  retryOptions: PathDiscoveryRetryOptions = {},
 ): Promise<string | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), PATH_DISCOVERY_FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      headers,
-      signal: controller.signal,
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`path discovery returned HTTP ${res.status}`);
-    if (res.status === 204) return null;
-    return text;
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`path discovery timed out after ${PATH_DISCOVERY_FETCH_TIMEOUT_MS}ms`);
+  const retries = Math.max(0, retryOptions.retries ?? 0);
+  const retryDelayMs = Math.max(0, retryOptions.retryDelayMs ?? 0);
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), PATH_DISCOVERY_FETCH_TIMEOUT_MS);
+    let shouldRetry = true;
+    try {
+      const res = await fetch(url, {
+        headers,
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      if (res.ok) {
+        if (res.status === 204) return null;
+        return text;
+      }
+
+      const detail = /cloudflare:|ERR_UNSUPPORTED_ESM_URL_SCHEME/i.test(text) ? text.trim() : "";
+      lastError = new Error(
+        `path discovery returned HTTP ${res.status}${detail ? `: ${detail}` : ""}`,
+      );
+      // A newly applied route can briefly reach the previous Worker (404), and
+      // version-metadata validation rejects that mismatch with 503. User-code
+      // failures use 500 and should surface immediately instead of being replayed.
+      if (res.status !== 404 && res.status !== 503) {
+        shouldRetry = false;
+        throw lastError;
+      }
+    } catch (error) {
+      lastError =
+        error instanceof Error && error.name === "AbortError"
+          ? new Error(`path discovery timed out after ${PATH_DISCOVERY_FETCH_TIMEOUT_MS}ms`)
+          : error;
+      if (!shouldRetry) throw lastError;
+    } finally {
+      clearTimeout(timeout);
     }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
+
+    if (attempt < retries && retryDelayMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
+    }
   }
+
+  throw lastError;
 }
 
 function resolveConfiguredRouteDirs(
@@ -339,6 +387,7 @@ async function collectPagesPaths(options: {
   i18n: ResolvedNextConfig["i18n"];
   pagesDir: string;
   pageExtensions: readonly string[];
+  retryOptions?: PathDiscoveryRetryOptions;
   secretHeaders: Record<string, string>;
 }): Promise<string[]> {
   const [pageRoutes, apiRoutes] = await Promise.all([
@@ -381,6 +430,7 @@ async function collectPagesPaths(options: {
       const text = await fetchDiscoveryEndpoint(
         `${options.baseUrl}/__vinext/prerender/pages-static-paths?${search}`,
         options.secretHeaders,
+        options.retryOptions,
       );
       if (text === null) {
         continue;
@@ -476,6 +526,7 @@ async function collectAppPaths(options: {
   appDir: string;
   baseUrl: string | null;
   pageExtensions: readonly string[];
+  retryOptions?: PathDiscoveryRetryOptions;
   secretHeaders: Record<string, string>;
 }): Promise<{ loadingShellPaths: string[]; paths: string[] }> {
   const routes = await appRouter(options.appDir, options.pageExtensions);
@@ -499,6 +550,7 @@ async function collectAppPaths(options: {
           const text = await fetchDiscoveryEndpoint(
             `${options.baseUrl}/__vinext/prerender/static-params?${search}`,
             options.secretHeaders,
+            options.retryOptions,
           );
           if (text === null) return null;
           const value = JSON.parse(text) as unknown;
@@ -746,7 +798,7 @@ export async function emitPrerenderPathManifest(
       pagesDir,
       pageExtensions: config.pageExtensions,
     });
-    if (needsServer) {
+    if (needsServer && !options.pathDiscoveryTarget) {
       try {
         prodServer = await startPathDiscoveryServer({
           serverDir: bundleServerDir,
@@ -761,12 +813,24 @@ export async function emitPrerenderPathManifest(
       }
     }
 
-    const baseUrl = prodServer ? `http://127.0.0.1:${prodServer.port}` : null;
+    const baseUrl = options.pathDiscoveryTarget?.baseUrl
+      ? new URL(options.pathDiscoveryTarget.baseUrl).origin
+      : prodServer
+        ? `http://127.0.0.1:${prodServer.port}`
+        : null;
     const prerenderSecret =
       readPrerenderSecret(bundleServerDir) ?? readPrerenderSecret(manifestDir);
-    const secretHeaders: Record<string, string> = prerenderSecret
-      ? { [VINEXT_PRERENDER_SECRET_HEADER]: prerenderSecret }
-      : {};
+    if (needsServer && options.pathDiscoveryTarget && !prerenderSecret) {
+      throw new Error(
+        "Cannot discover warmup paths from the staged Worker because dist/server/vinext-server.json does not contain a prerender secret. Rebuild the app before deploying.",
+      );
+    }
+    const secretHeaders: Record<string, string> = Object.fromEntries(
+      new Headers(options.pathDiscoveryTarget?.headers),
+    );
+    if (prerenderSecret) {
+      secretHeaders[VINEXT_PRERENDER_SECRET_HEADER] = prerenderSecret;
+    }
 
     try {
       if (appDir) {
@@ -774,6 +838,7 @@ export async function emitPrerenderPathManifest(
           appDir,
           baseUrl,
           pageExtensions: config.pageExtensions,
+          retryOptions: options.pathDiscoveryTarget,
           secretHeaders,
         });
         for (const pathname of appPathResult.paths) {
@@ -791,6 +856,7 @@ export async function emitPrerenderPathManifest(
           i18n: config.i18n,
           pagesDir,
           pageExtensions: config.pageExtensions,
+          retryOptions: options.pathDiscoveryTarget,
           secretHeaders,
         })) {
           addPath(paths, seen, pathname);

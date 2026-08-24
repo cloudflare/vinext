@@ -67,6 +67,7 @@ function cacheableRsc(body = "flight"): Response {
       "cdn-cache-control": "public, max-age=60",
       "cf-cache-status": "MISS",
       "content-type": "text/x-component",
+      [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a",
       [VINEXT_RSC_BUILD_ID_HEADER]: "app-build-a",
       vary: VINEXT_RSC_VARY_HEADER,
     },
@@ -232,6 +233,70 @@ describe("Cloudflare CDN warmup deploy flow", () => {
             "22222222-2222-4222-8222-222222222222",
       ),
     ).toBe(true);
+  });
+
+  it("discovers binding-backed paths from the staged version before readiness and warming", async () => {
+    const events: string[] = [];
+    writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const headers = new Headers(init?.headers);
+      events.push(isReadinessFetch(input) ? "readiness" : "warm");
+      return headers.get("rsc") === "1" ? cacheableRsc() : cacheableHtml();
+    });
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return "Uploaded my-worker\nWorker Version ID: 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("11111111-1111-4111-8111-111111111111@100%")) {
+        events.push("stage");
+        return "Staged version\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("22222222-2222-4222-8222-222222222222@100%")) {
+        events.push("promote");
+        return "Deployed version\nhttps://my-worker.example.workers.dev\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, [], {
+      discoverWarmPlan: async ({ headers, targetUrl }) => {
+        events.push("discover");
+        expect(targetUrl).toBe("https://my-worker.example.workers.dev");
+        expect(new Headers(headers).get("Cloudflare-Workers-Version-Overrides")).toBe(
+          'my-worker="22222222-2222-4222-8222-222222222222"',
+        );
+        return {
+          buildIdentity: "app-build-a",
+          loadingShellPaths: [],
+          paths: ["/cached/intro"],
+          rscBuildId: "app-build-a",
+          rscPaths: ["/cached/intro"],
+        };
+      },
+      warmCdnPromotionDelay: 0,
+      warmCdnReadinessProbeDelay: 0,
+      warmCdnReadinessProbes: 1,
+    });
+
+    expect(events).toEqual([
+      "stage",
+      "triggers",
+      "discover",
+      "readiness",
+      "warm",
+      "warm",
+      "promote",
+    ]);
   });
 
   it("warms the production custom domain through a 0% staged version override", async () => {

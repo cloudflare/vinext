@@ -125,6 +125,7 @@ describe("App prerender endpoint helpers", () => {
     );
 
     expect(response?.status).toBe(404);
+    expect(response?.headers.get("cache-control")).toBe("no-store");
     await expect(response?.text()).resolves.toBe("This page could not be found");
   });
 
@@ -148,6 +149,7 @@ describe("App prerender endpoint helpers", () => {
 
     expect(generateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
     expect(response?.status).toBe(200);
+    expect(response?.headers.get("cache-control")).toBe("no-store");
     await expect(response?.json()).resolves.toEqual([{ category: "docs", slug: "hello" }]);
   });
 
@@ -249,6 +251,7 @@ describe("App prerender endpoint helpers", () => {
     );
 
     expect(staticParamsResponse?.status).toBe(204);
+    expect(staticParamsResponse?.headers.get("cache-control")).toBe("no-store");
     await expect(staticParamsResponse?.text()).resolves.toBe("");
     expect(pagesResponse?.status).toBe(204);
     await expect(pagesResponse?.text()).resolves.toBe("");
@@ -306,6 +309,7 @@ describe("App prerender endpoint helpers", () => {
     );
 
     expect(missingPatternResponse?.status).toBe(400);
+    expect(missingPatternResponse?.headers.get("cache-control")).toBe("no-store");
     await expect(missingPatternResponse?.text()).resolves.toBe("missing pattern");
     expect(thrownResponse?.status).toBe(500);
     await expect(thrownResponse?.json()).resolves.toEqual({ error: "Error: boom" });

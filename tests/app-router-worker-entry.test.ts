@@ -15,6 +15,7 @@ export const __assetPrefix = "";
 export const __basePath = "";
 export const __imageAllowedWidths = [];
 export const __imageConfig = {};
+export const __prerenderSecret = "worker-prerender-secret";
 export default async function rscHandler(request) {
   globalThis.${CAPTURE_RSC_REQUEST}(request);
   return new Response("ok");
