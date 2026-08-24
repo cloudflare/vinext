@@ -955,6 +955,90 @@ describe("Cloudflare CDN warmup", () => {
     expect(attempts.get("/slow")).toBe(31);
   });
 
+  it("revalidates isolated stale-build entries after a large successful staged pass", async () => {
+    const rscPaths = Array.from({ length: 4_528 }, (_, index) => `/archive/${index}`);
+    const stalePaths = new Set(rscPaths.slice(-12));
+    const requestHeaders = new Map<string, Headers[]>();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(requestHref(input)!);
+      expect(url.search).toBe("?_rsc");
+      const pathname = url.pathname;
+      const headers = new Headers(init?.headers);
+      const headersForPath = requestHeaders.get(pathname) ?? [];
+      headersForPath.push(headers);
+      requestHeaders.set(pathname, headersForPath);
+
+      if (stalePaths.has(pathname) && headersForPath.length === 1) {
+        const stale = cacheableRsc("stale flight");
+        stale.headers.set(VINEXT_CDN_BUILD_ID_HEADER, "old-build");
+        stale.headers.set(VINEXT_RSC_BUILD_ID_HEADER, "old-rsc-build");
+        return stale;
+      }
+      return cacheableRsc();
+    });
+
+    await expect(
+      warmCdnCache({
+        concurrency: 25,
+        expectedBuildId: "build-a",
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: [],
+        propagatingTarget: true,
+        retries: 1,
+        retryDelayMs: 0,
+        rscPaths,
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ total: 4_528, warmed: 4_528, failed: 0 });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(4_540);
+    for (const pathname of rscPaths.slice(0, -12)) {
+      expect(requestHeaders.get(pathname)).toHaveLength(1);
+    }
+    for (const pathname of stalePaths) {
+      const [initialHeaders, retryHeaders] = requestHeaders.get(pathname)!;
+      expect(initialHeaders.get("cache-control")).toBeNull();
+      expect(initialHeaders.get("pragma")).toBeNull();
+      expect(retryHeaders.get("cache-control")).toBe("no-cache");
+      expect(retryHeaders.get("pragma")).toBe("no-cache");
+      expect(retryHeaders.get("accept")).toBe("text/x-component");
+      expect(retryHeaders.get("rsc")).toBe("1");
+    }
+  });
+
+  it("still fails strict warmup when targeted revalidation returns the stale build", async () => {
+    const seenHeaders: Headers[] = [];
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      seenHeaders.push(new Headers(init?.headers));
+      const stale = cacheableRsc("stale flight");
+      stale.headers.set(VINEXT_CDN_BUILD_ID_HEADER, "old-build");
+      stale.headers.set(VINEXT_RSC_BUILD_ID_HEADER, "old-rsc-build");
+      return stale;
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: [],
+        propagatingTarget: true,
+        retries: 1,
+        retryDelayMs: 0,
+        rscPaths: ["/persistently-stale"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow(`response ${VINEXT_CDN_BUILD_ID_HEADER} does not match build build-a`);
+
+    expect(seenHeaders).toHaveLength(2);
+    expect(seenHeaders[0].get("cache-control")).toBeNull();
+    expect(seenHeaders[1].get("cache-control")).toBe("no-cache");
+    expect(seenHeaders[1].get("pragma")).toBe("no-cache");
+  });
+
   it("warms directly from the discovery manifest", async () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(
