@@ -34,7 +34,8 @@ export function formatDeployHelp(): string {
                              required before warming (default: 6)
     --warm-cdn-readiness-probe-delay <ms>
                              Delay between staged-readiness probes (default: 1000)
-    --warm-cdn-strict        Fail deploy when any CDN warmup request fails
+    --dangerously-promote-on-cdn-warm-error
+                             Promote even when staged warmup cannot be verified
     --warm-cdn-no-promote    Leave the warmed Worker version staged at 0% traffic
     --warm-cdn-promotion-delay <ms>
                              Delay before promotion after warmup (default: 15000)

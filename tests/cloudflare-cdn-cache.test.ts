@@ -26,6 +26,7 @@ import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-re
 import { applyCdnResponseIdentityHeaders } from "../packages/vinext/src/server/cache-control.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
+import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
 
 const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
 
@@ -86,17 +87,21 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(adapter.ownsBackgroundRevalidation).toBe(false);
   });
 
-  it("accepts a version override only in the Worker version it targets", async () => {
+  it("accepts a staged warmup only in its expected Worker version", async () => {
     const routedAdapter = createCloudflareCdnCacheAdapter({
       env: { CF_VERSION_METADATA: { id: "version-b", tag: "", timestamp: "" } },
     });
     const matching = new Request("https://example.com/page", {
       headers: {
         "Cloudflare-Workers-Version-Overrides": 'upstream="version-a", app="version-b"',
+        [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-b",
       },
     });
     const mismatching = new Request("https://example.com/page", {
-      headers: { "Cloudflare-Workers-Version-Overrides": 'app="version-c"' },
+      headers: {
+        "Cloudflare-Workers-Version-Overrides": 'app="version-c"',
+        [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-c",
+      },
     });
 
     expect(await routedAdapter.validateRequest?.(matching)).toBeNull();
@@ -104,7 +109,35 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(response?.status).toBe(503);
     expect(response?.headers.get("Cache-Control")).toBe("no-store");
     await expect(response?.text()).resolves.toContain(
-      "Cloudflare invoked Worker version version-b, but the request override targeted version-c",
+      "Cloudflare invoked Worker version version-b, but vinext warmup expected version-c",
+    );
+  });
+
+  it("ignores version overrides that are not vinext staged warmup assertions", async () => {
+    const routedAdapter = createCloudflareCdnCacheAdapter({
+      env: { CF_VERSION_METADATA: { id: "version-a", tag: "", timestamp: "" } },
+    });
+    const downstreamOnly = new Request("https://example.com/page", {
+      headers: {
+        "Cloudflare-Workers-Version-Overrides": 'downstream="version-b"',
+      },
+    });
+
+    expect(await routedAdapter.validateRequest?.(downstreamOnly)).toBeNull();
+  });
+
+  it("rejects a vinext version assertion without a Cloudflare version override", async () => {
+    const routedAdapter = createCloudflareCdnCacheAdapter({
+      env: { CF_VERSION_METADATA: { id: "version-a", tag: "", timestamp: "" } },
+    });
+    const request = new Request("https://example.com/page", {
+      headers: { [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-a" },
+    });
+
+    const response = await routedAdapter.validateRequest?.(request);
+    expect(response?.status).toBe(503);
+    await expect(response?.text()).resolves.toContain(
+      `received ${VINEXT_EXPECTED_WORKER_VERSION_HEADER} without Cloudflare-Workers-Version-Overrides`,
     );
   });
 
@@ -114,7 +147,10 @@ describe("CloudflareCdnCacheAdapter", () => {
       options: { versionMetadataBinding: "CUSTOM_VERSION" },
     });
     const request = new Request("https://example.com/page", {
-      headers: { "Cloudflare-Workers-Version-Overrides": 'app="version-b"' },
+      headers: {
+        "Cloudflare-Workers-Version-Overrides": 'app="version-b"',
+        [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-b",
+      },
     });
 
     const response = await routedAdapter.validateRequest?.(request);

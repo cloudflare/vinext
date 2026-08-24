@@ -43,6 +43,7 @@ import {
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
+import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../version-headers.js";
 
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
 const WORKER_VERSION_OVERRIDE_HEADER = "Cloudflare-Workers-Version-Overrides";
@@ -54,47 +55,6 @@ type WorkerVersionMetadata = {
 type CdnAdapterOptions = {
   versionMetadataBinding?: string;
 };
-
-function parseVersionOverrideIds(value: string): string[] | null {
-  const ids: string[] = [];
-  let index = 0;
-
-  while (index < value.length) {
-    while (value[index] === " " || value[index] === "\t") index++;
-    const equals = value.indexOf("=", index);
-    if (equals <= index || value.slice(index, equals).includes(",")) return null;
-    index = equals + 1;
-    while (value[index] === " " || value[index] === "\t") index++;
-    if (value[index] !== '"') return null;
-    index++;
-
-    let id = "";
-    let closed = false;
-    while (index < value.length) {
-      const character = value[index++];
-      if (character === '"') {
-        closed = true;
-        break;
-      }
-      if (character === "\\") {
-        const escaped = value[index++];
-        if (escaped !== '"' && escaped !== "\\") return null;
-        id += escaped;
-        continue;
-      }
-      id += character;
-    }
-    if (!closed || id.length === 0) return null;
-    ids.push(id);
-
-    while (value[index] === " " || value[index] === "\t") index++;
-    if (index === value.length) break;
-    if (value[index] !== ",") return null;
-    index++;
-  }
-
-  return ids.length > 0 ? ids : null;
-}
 
 function versionValidationFailure(message: string): Response {
   return new Response(`[vinext] ${message}\n`, {
@@ -226,8 +186,14 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   ) {}
 
   validateRequest(request: Request): Response | null {
-    const override = request.headers.get(WORKER_VERSION_OVERRIDE_HEADER);
-    if (override === null) return null;
+    const expectedVersionId = request.headers.get(VINEXT_EXPECTED_WORKER_VERSION_HEADER);
+    if (expectedVersionId === null) return null;
+
+    if (!request.headers.has(WORKER_VERSION_OVERRIDE_HEADER)) {
+      return versionValidationFailure(
+        `received ${VINEXT_EXPECTED_WORKER_VERSION_HEADER} without ${WORKER_VERSION_OVERRIDE_HEADER}.`,
+      );
+    }
 
     if (!this.versionMetadata) {
       return versionValidationFailure(
@@ -236,15 +202,9 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       );
     }
 
-    const requestedVersionIds = parseVersionOverrideIds(override);
-    if (!requestedVersionIds) {
+    if (expectedVersionId !== this.versionMetadata.id) {
       return versionValidationFailure(
-        `could not validate malformed ${WORKER_VERSION_OVERRIDE_HEADER} request header.`,
-      );
-    }
-    if (!requestedVersionIds.includes(this.versionMetadata.id)) {
-      return versionValidationFailure(
-        `Cloudflare invoked Worker version ${this.versionMetadata.id}, but the request override targeted ${requestedVersionIds.join(", ")}.`,
+        `Cloudflare invoked Worker version ${this.versionMetadata.id}, but vinext warmup expected ${expectedVersionId}.`,
       );
     }
     return null;

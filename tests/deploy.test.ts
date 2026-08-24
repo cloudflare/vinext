@@ -713,7 +713,7 @@ describe("parseDeployArgs", () => {
     expect(parsed.skipBuild).toBe(false);
     expect(parsed.dryRun).toBe(false);
     expect(parsed.warmCdnCache).toBe(false);
-    expect(parsed.warmCdnStrict).toBe(false);
+    expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(false);
   });
 
   it("parses --env with space-separated value", () => {
@@ -796,7 +796,7 @@ describe("parseDeployArgs", () => {
       "--warm-cdn-readiness-probes=8",
       "--warm-cdn-readiness-probe-delay",
       "750",
-      "--warm-cdn-strict",
+      "--dangerously-promote-on-cdn-warm-error",
       "--warm-cdn-no-promote",
       "--warm-cdn-promotion-delay=2500",
       "--warm-cdn-include-fallbacks",
@@ -808,7 +808,7 @@ describe("parseDeployArgs", () => {
     expect(parsed.warmCdnRetries).toBe(0);
     expect(parsed.warmCdnReadinessProbes).toBe(8);
     expect(parsed.warmCdnReadinessProbeDelay).toBe(750);
-    expect(parsed.warmCdnStrict).toBe(true);
+    expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(true);
     expect(parsed.warmCdnPromote).toBe(false);
     expect(parsed.warmCdnPromotionDelay).toBe(2500);
     expect(parsed.warmCdnIncludeFallbacks).toBe(true);
