@@ -134,7 +134,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("waits for staged build stability before sending each real warm key once", async () => {
+  it("honors custom staged-readiness probe count and delay before warming", async () => {
     const events: string[] = [];
     const readinessHeaders: Headers[] = [];
     const readinessUrls: string[] = [];
@@ -196,6 +196,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       rscPaths: ["/about"],
       warmCdnConcurrency: 1,
       warmCdnPromotionDelay: 0,
+      warmCdnReadinessProbeDelay: 250,
+      warmCdnReadinessProbes: 3,
       warmCdnStrict: true,
     });
 
@@ -203,17 +205,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "stage",
       "triggers",
       "readiness:old-build",
-      "delay:1000",
+      "delay:250",
       "readiness:app-build-a",
-      "delay:1000",
+      "delay:250",
       "readiness:app-build-a",
-      "delay:1000",
-      "readiness:app-build-a",
-      "delay:1000",
-      "readiness:app-build-a",
-      "delay:1000",
-      "readiness:app-build-a",
-      "delay:1000",
+      "delay:250",
       "readiness:app-build-a",
       "warm:/about?_rsc",
       "promote",
@@ -224,7 +220,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         return url.pathname === "/about" && url.search === "?_rsc";
       }),
     ).toHaveLength(1);
-    expect(new Set(readinessUrls).size).toBe(7);
+    expect(new Set(readinessUrls).size).toBe(4);
     expect(readinessUrls.every((url) => new URL(url).searchParams.has("_rsc"))).toBe(true);
     expect(
       readinessHeaders.every(

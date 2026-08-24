@@ -105,6 +105,10 @@ export type DeployOptions = {
   warmCdnTimeout?: number;
   /** Number of CDN warmup retries for transient failures */
   warmCdnRetries?: number;
+  /** Consecutive successful probes required before warming the staged Worker */
+  warmCdnReadinessProbes?: number;
+  /** Delay between staged Worker readiness probes in milliseconds */
+  warmCdnReadinessProbeDelay?: number;
   /** Fail deployment if any CDN warmup request fails */
   warmCdnStrict?: boolean;
   /** Promote the warmed Worker version to 100% traffic (default: true) */
@@ -156,16 +160,20 @@ function parseNonNegativeIntegerArg(raw: string, flag: string): number {
 
 const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
 
-function validatePromotionDelay(value: number, raw = String(value)): number {
+function validateTimerDelay(value: number, flag: string, raw = String(value)): number {
   if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`--warm-cdn-promotion-delay expects a non-negative integer, but got "${raw}".`);
+    throw new Error(`${flag} expects a non-negative integer, but got "${raw}".`);
   }
   if (value > MAX_NODE_TIMER_DELAY_MS) {
     throw new Error(
-      `--warm-cdn-promotion-delay must not exceed ${MAX_NODE_TIMER_DELAY_MS} milliseconds, but got "${raw}".`,
+      `${flag} must not exceed ${MAX_NODE_TIMER_DELAY_MS} milliseconds, but got "${raw}".`,
     );
   }
   return value;
+}
+
+function validatePromotionDelay(value: number, raw = String(value)): number {
+  return validateTimerDelay(value, "--warm-cdn-promotion-delay", raw);
 }
 
 function formatUnknownError(error: unknown): string {
@@ -190,6 +198,8 @@ const deployArgOptions = {
   "warm-cdn-concurrency": { type: "string" },
   "warm-cdn-timeout": { type: "string" },
   "warm-cdn-retries": { type: "string" },
+  "warm-cdn-readiness-probes": { type: "string" },
+  "warm-cdn-readiness-probe-delay": { type: "string" },
   "warm-cdn-strict": { type: "boolean", default: false },
   "warm-cdn-no-promote": { type: "boolean", default: false },
   "warm-cdn-promotion-delay": { type: "string" },
@@ -239,6 +249,24 @@ export function parseDeployArgs(args: string[]) {
       values["warm-cdn-retries"] === undefined
         ? undefined
         : parseNonNegativeIntegerArg(values["warm-cdn-retries"], "--warm-cdn-retries"),
+    warmCdnReadinessProbes:
+      values["warm-cdn-readiness-probes"] === undefined
+        ? undefined
+        : parsePositiveIntegerArg(
+            values["warm-cdn-readiness-probes"],
+            "--warm-cdn-readiness-probes",
+          ),
+    warmCdnReadinessProbeDelay:
+      values["warm-cdn-readiness-probe-delay"] === undefined
+        ? undefined
+        : validateTimerDelay(
+            parseNonNegativeIntegerArg(
+              values["warm-cdn-readiness-probe-delay"],
+              "--warm-cdn-readiness-probe-delay",
+            ),
+            "--warm-cdn-readiness-probe-delay",
+            values["warm-cdn-readiness-probe-delay"],
+          ),
     warmCdnStrict: values["warm-cdn-strict"],
     warmCdnPromote: !values["warm-cdn-no-promote"],
     warmCdnPromotionDelay:
@@ -594,6 +622,8 @@ export async function deployWithCdnWarmup(
     | "warmCdnConcurrency"
     | "warmCdnTimeout"
     | "warmCdnRetries"
+    | "warmCdnReadinessProbes"
+    | "warmCdnReadinessProbeDelay"
     | "warmCdnStrict"
     | "warmCdnPromote"
     | "warmCdnPromotionDelay"
@@ -603,6 +633,12 @@ export async function deployWithCdnWarmup(
       "deploymentId" | "expectedBuildId" | "expectedRscBuildId" | "loadingShellPaths" | "rscPaths"
     >,
 ): Promise<string> {
+  if (options.warmCdnReadinessProbes !== undefined) {
+    parsePositiveIntegerArg(String(options.warmCdnReadinessProbes), "--warm-cdn-readiness-probes");
+  }
+  if (options.warmCdnReadinessProbeDelay !== undefined) {
+    validateTimerDelay(options.warmCdnReadinessProbeDelay, "--warm-cdn-readiness-probe-delay");
+  }
   if (options.warmCdnPromotionDelay !== undefined) {
     validatePromotionDelay(options.warmCdnPromotionDelay);
   }
@@ -712,6 +748,8 @@ export async function deployWithCdnWarmup(
             deploymentId: options.deploymentId,
             expectedBuildId: options.expectedBuildId,
             expectedRscBuildId: options.expectedRscBuildId,
+            probeIntervalMs: options.warmCdnReadinessProbeDelay,
+            requiredConsecutiveSuccesses: options.warmCdnReadinessProbes,
             retries: options.warmCdnRetries,
             timeoutMs: options.warmCdnTimeout,
           });
@@ -1142,6 +1180,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
         warmCdnConcurrency: options.warmCdnConcurrency,
         warmCdnTimeout: options.warmCdnTimeout,
         warmCdnRetries: options.warmCdnRetries,
+        warmCdnReadinessProbes: options.warmCdnReadinessProbes,
+        warmCdnReadinessProbeDelay: options.warmCdnReadinessProbeDelay,
         warmCdnStrict: options.warmCdnStrict,
         warmCdnPromote: options.warmCdnPromote,
         warmCdnPromotionDelay: options.warmCdnPromotionDelay,

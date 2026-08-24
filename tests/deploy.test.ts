@@ -793,6 +793,9 @@ describe("parseDeployArgs", () => {
       "--warm-cdn-timeout=1500",
       "--warm-cdn-retries",
       "0",
+      "--warm-cdn-readiness-probes=8",
+      "--warm-cdn-readiness-probe-delay",
+      "750",
       "--warm-cdn-strict",
       "--warm-cdn-no-promote",
       "--warm-cdn-promotion-delay=2500",
@@ -803,6 +806,8 @@ describe("parseDeployArgs", () => {
     expect(parsed.warmCdnConcurrency).toBe(6);
     expect(parsed.warmCdnTimeout).toBe(1500);
     expect(parsed.warmCdnRetries).toBe(0);
+    expect(parsed.warmCdnReadinessProbes).toBe(8);
+    expect(parsed.warmCdnReadinessProbeDelay).toBe(750);
     expect(parsed.warmCdnStrict).toBe(true);
     expect(parsed.warmCdnPromote).toBe(false);
     expect(parsed.warmCdnPromotionDelay).toBe(2500);
@@ -817,12 +822,30 @@ describe("parseDeployArgs", () => {
     expect(parseDeployArgs(["--warm-cdn-promotion-delay=0"]).warmCdnPromotionDelay).toBe(0);
   });
 
+  it("allows the staged-readiness probe delay to be set to zero", () => {
+    expect(parseDeployArgs(["--warm-cdn-readiness-probe-delay=0"]).warmCdnReadinessProbeDelay).toBe(
+      0,
+    );
+  });
+
   it("throws for invalid CDN warmup numeric flags", () => {
     expect(() => parseDeployArgs(["--warm-cdn-concurrency=0"])).toThrow(
       '--warm-cdn-concurrency expects a positive integer, but got "0".',
     );
     expect(() => parseDeployArgs(["--warm-cdn-retries=-1"])).toThrow(
       '--warm-cdn-retries expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-probes=0"])).toThrow(
+      '--warm-cdn-readiness-probes expects a positive integer, but got "0".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-probes=1.5"])).toThrow(
+      '--warm-cdn-readiness-probes expects a positive integer, but got "1.5".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-probe-delay=-1"])).toThrow(
+      '--warm-cdn-readiness-probe-delay expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-probe-delay=2147483648"])).toThrow(
+      '--warm-cdn-readiness-probe-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
     );
     expect(() => parseDeployArgs(["--warm-cdn-promotion-delay=-1"])).toThrow(
       '--warm-cdn-promotion-delay expects a non-negative integer, but got "-1".',
