@@ -6,7 +6,6 @@ import {
 } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
-import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 import {
   createRequestContext,
   runWithRequestContext,
@@ -15,6 +14,14 @@ import {
   markEdgeRouteHandlerLinkHeaders,
   markFrameworkLinkHeaders,
 } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+  type CdnResponseHeaders,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+
+afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 const CDN_ADAPTER_KEY = Symbol.for("vinext.cdnCacheAdapter");
 
@@ -34,6 +41,69 @@ function makeRequestContext(headers: Headers = new Headers()): RequestContext {
 // ── config headers applied to non-redirect responses ────────────────────
 
 describe("finalizeAppRscResponse — config header application", () => {
+  it.each(["no-cache", "private, no-cache, no-store, max-age=0, must-revalidate"])(
+    "preserves an existing generic non-cacheable policy: %s",
+    async (cacheControl) => {
+      const response = new Response("body", {
+        headers: { "Cache-Control": cacheControl },
+      });
+
+      await finalizeAppRscResponse(response, new Request("http://example.com/about"), {
+        basePath: "",
+        configHeaders: [],
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      });
+
+      expect(response.headers.get("cache-control")).toBe(cacheControl);
+    },
+  );
+
+  it("does not collapse field-qualified cache directives to no-store", async () => {
+    const cacheControl = 'public, max-age=60, private="set-cookie", no-cache="set-cookie"';
+    const response = new Response("body", { headers: { "Cache-Control": cacheControl } });
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/about"), {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("cache-control")).toBe(cacheControl);
+  });
+
+  it("normalizes an adapter-owned cache opt-out after response headers are finalized", async () => {
+    const adapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders({ cacheControl }): CdnResponseHeaders {
+        return cacheControl ? { "Cache-Control": cacheControl, "X-Example-Edge-Policy": null } : {};
+      },
+      hasExplicitNonCacheableResponsePolicy(headers) {
+        return headers.get("X-Example-Edge-Policy") === "no-store";
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(adapter);
+    const response = new Response("body", {
+      headers: { "X-Example-Edge-Policy": "no-store" },
+    });
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/about"), {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-example-edge-policy")).toBeNull();
+  });
+
   it("applies a matching config header to a 200 response", async () => {
     // Behavior: /about page response gets x-added header from next.config.js headers[].
     // Regression: expected null to be "config"

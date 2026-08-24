@@ -606,6 +606,33 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `images` config                                  | 🟡  | Parsed but not used for optimization                                                                                                                                                                                   |
 | `experimental.optimizePackageImports`            | ✅  | Rewrites barrel imports to direct sub-module imports in RSC/SSR environments. A default set (lucide-react, date-fns, radix-ui, antd, MUI, and others) are always optimized. Add package names here to extend the list. |
 | `vinext({ nextConfig })`                         | ✅  | Inline Next-style config from `vite.config.*`. Supports object-form and function-form config. When provided, this overrides root `next.config.*`.                                                                      |
+| `vinext({ react: { compiler: true } })`          | ✅  | React Compiler auto memoization. Needs `@vitejs/plugin-react` 6.1+ and the optional `oxc-transform-react` package.                                                                                                     |
+
+### React Compiler
+
+vinext auto-registers `@vitejs/plugin-react`, so the React Compiler is enabled through the same `react` option:
+
+```ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [vinext({ react: { compiler: true } })],
+});
+```
+
+The transform itself ships separately, so install it alongside:
+
+```bash
+npm install -D oxc-transform-react
+```
+
+This requires `@vitejs/plugin-react` 6.1.0 or newer. Older versions accept the option and drop it, so vinext fails with an actionable error instead of leaving the compiler silently disabled. The compiler runs on the client environment only.
+
+One caveat: modules whose JSX is lowered earlier in the pipeline are not memoized. Those build and behave correctly, they just miss auto memoization:
+
+- JSX in plain `.js` files, which `vinext:jsx-in-js` compiles first so the compiler can parse them at all. Rename to `.jsx` or `.tsx` to get memoization.
+- Components using `<style jsx>`, which `vinext:styled-jsx` compiles through the Next.js SWC transform before the compiler runs.
 
 ### Environment variable loading (`.env*`)
 

@@ -3,6 +3,10 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../fixtures";
+import {
+  createCanonicalRscRequestHeaders,
+  createCanonicalRscRequestUrl,
+} from "../../../packages/vinext/src/server/app-rsc-cache-busting.js";
 
 const FIXTURE_DIR = `${process.cwd()}/tests/fixtures/cf-app-basic`;
 const BASE_URL = "http://localhost:4195";
@@ -227,15 +231,16 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(htmlRenderToken(await second.text())).toBe(htmlRenderToken(await first.text()));
   });
 
-  test("caches App Router RSC while keeping middleware headers request-specific", async ({
+  test("caches canonical App Router RSC while keeping middleware headers request-specific", async ({
     request,
   }) => {
     const slug = `rsc-${Date.now()}`;
-    const headers = { Accept: "text/x-component", RSC: "1" };
-    const first = await request.get(`${BASE_URL}/middleware-isr/${slug}.rsc`, {
+    const rscUrl = createCanonicalRscRequestUrl(`/middleware-isr/${slug}`);
+    const headers = Object.fromEntries(createCanonicalRscRequestHeaders(null));
+    const first = await request.get(`${BASE_URL}${rscUrl}`, {
       headers: { ...headers, "x-test-visitor-id": "visitor-a" },
     });
-    const second = await request.get(`${BASE_URL}/middleware-isr/${slug}.rsc`, {
+    const second = await request.get(`${BASE_URL}${rscUrl}`, {
       headers: { ...headers, "x-test-visitor-id": "visitor-b" },
     });
     const firstBody = await first.text();
@@ -243,8 +248,10 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
 
     expect(first.headers()["x-visitor-id"]).toBe("visitor-a");
     expect(second.headers()["x-visitor-id"]).toBe("visitor-b");
+    expect(second.headers()["cache-control"]).toContain("no-store");
     expect(second.headers()["cdn-cache-control"]).toBeUndefined();
     expect(second.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+    expect(second.headers()["x-vinext-build-id"]).toBeTruthy();
     expect(second.headers()["x-vinext-cache"]).toBe("HIT");
     expect(secondBody.match(/render-token:([a-f0-9-]+)/)?.[1]).toBe(
       firstBody.match(/render-token:([a-f0-9-]+)/)?.[1],

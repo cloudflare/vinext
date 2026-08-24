@@ -188,6 +188,12 @@ describe("App Router generated manifest construction", () => {
     expect(code).not.toContain("cookie-secret-canary");
   });
 
+  it("embeds i18n locales used by hybrid App and Pages route ownership", () => {
+    const code = generateBrowserEntry([], null, [], undefined, ["en", "fr"]);
+
+    expect(code).toContain('window.__VINEXT_LOCALES__ = ["en","fr"]');
+  });
+
   it("embeds the Link auto-prefetch route manifest in the browser entry", () => {
     const code = generateBrowserEntry([
       ...minimalAppRoutes,
@@ -347,10 +353,10 @@ describe("App Router generated manifest construction", () => {
       '{"canPrefetchLoadingShell":false,"patternParts":["blog",":slug"],"isDynamic":true}',
     );
     expect(code).toContain(
-      '{"canPrefetchLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
+      '{"canPrefetchLoadingShell":true,"canUseCanonicalLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
     );
     expect(code).toContain(
-      '{"canPrefetchLoadingShell":true,"patternParts":["ancestor-loading","slow"],"isDynamic":false}',
+      '{"canPrefetchLoadingShell":true,"canUseCanonicalLoadingShell":true,"patternParts":["ancestor-loading","slow"],"isDynamic":false}',
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["teams",":team","dashboard"],"isDynamic":true,"requiresDynamicNavigationRequest":true}',
@@ -404,6 +410,7 @@ describe("App Router generated manifest construction", () => {
     } satisfies AppRoute;
 
     expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(true);
+    expect(toLinkPrefetchRoute(route).canUseCanonicalLoadingShell).toBeUndefined();
     expect(
       toLinkPrefetchRoute({
         ...route,
@@ -458,6 +465,7 @@ describe("App Router generated manifest construction", () => {
     } satisfies AppRoute;
 
     expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(true);
+    expect(toLinkPrefetchRoute(route).canUseCanonicalLoadingShell).toBeUndefined();
   });
 
   it("marks root-param routes for concrete route-tree prefetching", () => {
@@ -478,6 +486,7 @@ describe("App Router generated manifest construction", () => {
     expect(toLinkPrefetchRoute(route)).toEqual(
       expect.objectContaining({
         canPrefetchLoadingShell: true,
+        canUseCanonicalLoadingShell: true,
         hasRootParams: true,
       }),
     );
@@ -526,6 +535,7 @@ describe("App Router generated manifest construction", () => {
     ]);
     expect(source.canPrefetchLoadingShell).toBe(false);
     expect(target.canPrefetchLoadingShell).toBe(true);
+    expect(target.canUseCanonicalLoadingShell).toBeUndefined();
     expect(unrelated.canPrefetchLoadingShell).toBe(false);
   });
 

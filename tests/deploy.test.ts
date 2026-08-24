@@ -64,7 +64,10 @@ import {
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
 import { domainCandidates, parseWranglerConfig, runTPR } from "../packages/cloudflare/src/tpr.js";
-import { parseWorkerDeploymentUrl } from "../packages/cloudflare/src/worker-deployment-url.js";
+import {
+  parseCdnWarmupDeploymentUrl,
+  parseWorkerDeploymentUrl,
+} from "../packages/cloudflare/src/worker-deployment-url.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -561,6 +564,29 @@ describe("parseWorkerDeploymentUrl", () => {
     expect(parseWorkerDeploymentUrl("Deployed app triggers\n  app.example.com/*\n")).toBeNull();
   });
 
+  it.each([
+    ["app.example.com/*", "https://app.example.com"],
+    ["https://app.example.com/*", "https://app.example.com"],
+    ["http://app.example.com/*", "http://app.example.com"],
+  ])("uses a concrete catch-all Worker route for CDN warmup: %s", (route, expected) => {
+    expect(parseCdnWarmupDeploymentUrl(`Deployed app triggers\n  ${route}\n`)).toBe(expected);
+  });
+
+  it("prefers a concrete Worker route over a workers.dev fallback", () => {
+    expect(
+      parseCdnWarmupDeploymentUrl(
+        "Deployed app triggers\n  https://app.account.workers.dev\n  app.example.com/*\n",
+      ),
+    ).toBe("https://app.example.com");
+  });
+
+  it.each(["*.example.com/*", "app.example.com/api/*", "app.example.com/"])(
+    "rejects a non-canonical Worker route for CDN warmup: %s",
+    (route) => {
+      expect(parseCdnWarmupDeploymentUrl(`Deployed app triggers\n  ${route}\n`)).toBeNull();
+    },
+  );
+
   it("does not report a disabled custom domain", () => {
     expect(
       parseWorkerDeploymentUrl(
@@ -670,6 +696,15 @@ describe("runWranglerKVBulkPut", () => {
 // ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
 
 describe("parseDeployArgs", () => {
+  it("forwards the parsed Wrangler config through the deploy CLI", () => {
+    const cliSource = fs.readFileSync(
+      path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
+      "utf-8",
+    );
+
+    expect(cliSource).toMatch(/config:\s*parsed\.config/);
+  });
+
   it("defaults to production deploy with no flags", () => {
     const parsed = parseDeployArgs([]);
     expect(parsed.preview).toBe(false);
@@ -678,7 +713,7 @@ describe("parseDeployArgs", () => {
     expect(parsed.skipBuild).toBe(false);
     expect(parsed.dryRun).toBe(false);
     expect(parsed.warmCdnCache).toBe(false);
-    expect(parsed.warmCdnStrict).toBe(false);
+    expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(false);
   });
 
   it("parses --env with space-separated value", () => {
@@ -758,7 +793,12 @@ describe("parseDeployArgs", () => {
       "--warm-cdn-timeout=1500",
       "--warm-cdn-retries",
       "0",
-      "--warm-cdn-strict",
+      "--warm-cdn-readiness-probes=8",
+      "--warm-cdn-readiness-probe-delay",
+      "750",
+      "--dangerously-promote-on-cdn-warm-error",
+      "--warm-cdn-no-promote",
+      "--warm-cdn-promotion-delay=2500",
       "--warm-cdn-include-fallbacks",
     ]);
 
@@ -766,8 +806,26 @@ describe("parseDeployArgs", () => {
     expect(parsed.warmCdnConcurrency).toBe(6);
     expect(parsed.warmCdnTimeout).toBe(1500);
     expect(parsed.warmCdnRetries).toBe(0);
-    expect(parsed.warmCdnStrict).toBe(true);
+    expect(parsed.warmCdnReadinessProbes).toBe(8);
+    expect(parsed.warmCdnReadinessProbeDelay).toBe(750);
+    expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(true);
+    expect(parsed.warmCdnPromote).toBe(false);
+    expect(parsed.warmCdnPromotionDelay).toBe(2500);
     expect(parsed.warmCdnIncludeFallbacks).toBe(true);
+  });
+
+  it("promotes warmed Worker versions by default", () => {
+    expect(parseDeployArgs([]).warmCdnPromote).toBe(true);
+  });
+
+  it("allows the CDN warmup promotion delay to be set to zero", () => {
+    expect(parseDeployArgs(["--warm-cdn-promotion-delay=0"]).warmCdnPromotionDelay).toBe(0);
+  });
+
+  it("allows the staged-readiness probe delay to be set to zero", () => {
+    expect(parseDeployArgs(["--warm-cdn-readiness-probe-delay=0"]).warmCdnReadinessProbeDelay).toBe(
+      0,
+    );
   });
 
   it("throws for invalid CDN warmup numeric flags", () => {
@@ -776,6 +834,24 @@ describe("parseDeployArgs", () => {
     );
     expect(() => parseDeployArgs(["--warm-cdn-retries=-1"])).toThrow(
       '--warm-cdn-retries expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-probes=0"])).toThrow(
+      '--warm-cdn-readiness-probes expects a positive integer, but got "0".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-probes=1.5"])).toThrow(
+      '--warm-cdn-readiness-probes expects a positive integer, but got "1.5".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-probe-delay=-1"])).toThrow(
+      '--warm-cdn-readiness-probe-delay expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-probe-delay=2147483648"])).toThrow(
+      '--warm-cdn-readiness-probe-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-promotion-delay=-1"])).toThrow(
+      '--warm-cdn-promotion-delay expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-promotion-delay=2147483648"])).toThrow(
+      '--warm-cdn-promotion-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
     );
   });
 
@@ -3571,6 +3647,39 @@ describe("resolveWorkerNameForVersionOverride", () => {
 });
 
 describe("getZeroPercentStagingTraffic", () => {
+  it("stages beside the sole 100% version and replaces stale 0% versions", () => {
+    expect(
+      getZeroPercentStagingTraffic(
+        {
+          versions: [
+            { versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+            { versionId: "33333333-3333-4333-8333-333333333333", percentage: 0 },
+          ],
+          output: "{}",
+        },
+        "22222222-2222-4222-8222-222222222222",
+      ),
+    ).toEqual([
+      { versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+      { versionId: "22222222-2222-4222-8222-222222222222", percentage: 0 },
+    ]);
+  });
+
+  it("does not stage over an active traffic split", () => {
+    expect(
+      getZeroPercentStagingTraffic(
+        {
+          versions: [
+            { versionId: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+            { versionId: "33333333-3333-4333-8333-333333333333", percentage: 50 },
+          ],
+          output: "{}",
+        },
+        "22222222-2222-4222-8222-222222222222",
+      ),
+    ).toBeNull();
+  });
+
   it("does not stage the uploaded version when it is already the current deployment", () => {
     expect(
       getZeroPercentStagingTraffic(

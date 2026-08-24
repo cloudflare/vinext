@@ -1,9 +1,12 @@
 import {
   cdnCacheAdapterBypassesOriginOnHit,
   getCdnCacheAdapter,
+  isNonCacheableCacheControl,
   shouldUseOriginManagedPageCache,
   type CdnCacheableHeaderInput,
 } from "vinext/shims/cdn-cache";
+
+export { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
 
@@ -16,8 +19,6 @@ const STALE_REVALIDATE_CACHE_CONTROL = "s-maxage=0, stale-while-revalidate";
 export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
 
 const SHARED_CACHE_DIRECTIVE_RE = /(?:^|,)\s*s-maxage\s*=/i;
-const NON_CACHEABLE_DIRECTIVE_RE = /(?:private|no-store|no-cache)/i;
-
 export function shouldUseNextDeployCacheControl(): boolean {
   return process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL === "1";
 }
@@ -37,7 +38,12 @@ export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean
     return adapter.hasExplicitNonCacheableResponsePolicy(headers);
   }
   const cacheControl = headers.get("Cache-Control");
-  return Boolean(cacheControl && NON_CACHEABLE_DIRECTIVE_RE.test(cacheControl));
+  return Boolean(cacheControl && isNonCacheableCacheControl(cacheControl));
+}
+
+/** Delegate provider-specific request routing validation to the CDN adapter. */
+export async function validateCdnRequest(request: Request): Promise<Response | null> {
+  return (await getCdnCacheAdapter().validateRequest?.(request)) ?? null;
 }
 
 /**
@@ -164,6 +170,36 @@ export function finalizeMiddlewareSafePageCacheResponse(
       status: response.status,
       statusText: response.statusText,
     });
+  }
+}
+
+/** Apply adapter-owned build identity to an HTML or RSC page response. */
+export function applyCdnResponseIdentityHeaders(response: Response, request: Request): Response {
+  const accept = request.headers.get("Accept")?.toLowerCase() ?? "";
+  if (request.headers.get("RSC") !== "1" && !accept.includes("text/html")) return response;
+  const map = getCdnCacheAdapter().buildResponseIdentityHeaders?.();
+  if (!map || Object.keys(map).length === 0) return response;
+
+  try {
+    applyResponseHeaderMap(response.headers, map);
+    return response;
+  } catch {
+    // Response.redirect() has immutable headers. Recreate only those responses
+    // that need adapter identity so the outer runtime boundary can stamp them.
+    const headers = new Headers(response.headers);
+    applyResponseHeaderMap(headers, map);
+    return new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+}
+
+function applyResponseHeaderMap(headers: Headers, map: Record<string, string | null>): void {
+  for (const [name, value] of Object.entries(map)) {
+    if (value === null) headers.delete(name);
+    else headers.set(name, value);
   }
 }
 

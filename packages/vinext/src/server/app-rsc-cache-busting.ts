@@ -5,6 +5,7 @@ import {
 } from "./app-rsc-state-fingerprint.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   parseAppRscRenderMode,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
@@ -31,24 +32,12 @@ import { applyDeploymentIdHeader, getDeploymentId } from "../utils/deployment-id
  * repeated canonicalization redirects.
  */
 export const VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM = "_rsc";
+export const VINEXT_RSC_BUILD_ID_HEADER = "X-Vinext-RSC-Build-Id";
 export const VINEXT_RSC_COMPATIBILITY_ID_HEADER = "X-Vinext-RSC-Compatibility-Id";
 export const VINEXT_RSC_CONTENT_TYPE = "text/x-component";
 
 // Re-export so existing consumers that import from this module keep working.
-export { VINEXT_RSC_RENDER_MODE_HEADER } from "./headers.js";
-
-export const VINEXT_RSC_VARY_HEADER = [
-  RSC_HEADER,
-  NEXT_ROUTER_STATE_TREE_HEADER,
-  NEXT_ROUTER_PREFETCH_HEADER,
-  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
-  NEXT_URL_HEADER,
-  VINEXT_INTERCEPTION_CONTEXT_HEADER,
-  VINEXT_INTERCEPTION_ID_HEADER,
-  VINEXT_MOUNTED_SLOTS_HEADER,
-  VINEXT_RSC_RENDER_MODE_HEADER,
-  VINEXT_RSC_STATE_FINGERPRINT_HEADER,
-].join(", ");
+export { VINEXT_RSC_RENDER_MODE_HEADER, VINEXT_RSC_VARY_HEADER } from "./headers.js";
 
 const CACHE_BUSTING_DIGEST_BYTES = 12;
 const textEncoder = new TextEncoder();
@@ -67,6 +56,7 @@ type CreateRscRequestHeadersOptions = {
     routeId: string;
   } | null;
   routerState?: AppRscStateFingerprintInput | null;
+  deploymentId?: string | null;
 };
 
 type ResolveInvalidRscCacheBustingRequestOptions = {
@@ -95,15 +85,27 @@ export function getVinextRscCompatibilityId(): string | null {
   return normalizeCompatibilityId(process.env.__VINEXT_RSC_COMPATIBILITY_ID);
 }
 
+function getVinextRscBuildId(): string | null {
+  return normalizeCompatibilityId(process.env.__VINEXT_RSC_BUILD_IDENTITY);
+}
+
 export function applyRscCompatibilityIdHeader(
   headers: Headers,
   compatibilityId: string | null | undefined = getVinextRscCompatibilityId(),
+  buildId: string | null | undefined = getVinextRscBuildId(),
 ): void {
   const normalized = normalizeCompatibilityId(compatibilityId);
   if (normalized) {
     headers.set(VINEXT_RSC_COMPATIBILITY_ID_HEADER, normalized);
   } else {
     headers.delete(VINEXT_RSC_COMPATIBILITY_ID_HEADER);
+  }
+
+  const normalizedBuildId = normalizeCompatibilityId(buildId);
+  if (normalizedBuildId) {
+    headers.set(VINEXT_RSC_BUILD_ID_HEADER, normalizedBuildId);
+  } else {
+    headers.delete(VINEXT_RSC_BUILD_ID_HEADER);
   }
 }
 
@@ -301,12 +303,30 @@ export function stripRscSuffix(pathname: string): string {
   return pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
 }
 
-export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions = {}): Headers {
+export function createCanonicalRscRequestHeaders(
+  deploymentId: string | null | undefined = getDeploymentId(),
+): Headers {
   const headers = new Headers({
     Accept: VINEXT_RSC_CONTENT_TYPE,
     [RSC_HEADER]: "1",
   });
-  applyDeploymentIdHeader(headers);
+  applyDeploymentIdHeader(headers, deploymentId ?? undefined);
+  return headers;
+}
+
+/** Headers for the deterministic loading-boundary prefetch representation. */
+export function createCanonicalLoadingShellRscRequestHeaders(
+  deploymentId: string | null | undefined = getDeploymentId(),
+): Headers {
+  const headers = createCanonicalRscRequestHeaders(deploymentId);
+  headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+  headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+  headers.set(VINEXT_RSC_RENDER_MODE_HEADER, APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+  return headers;
+}
+
+export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions = {}): Headers {
+  const headers = createCanonicalRscRequestHeaders(options.deploymentId);
 
   if (options.prefetchRouterState) {
     if (options.includePrefetchHeader !== false) {
@@ -357,6 +377,54 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
   return headers;
 }
 
+/**
+ * Convert a full, non-contextual navigation request to the definitive ISR RSC
+ * variant. Partial/intercepted/mounted-slot payloads remain contextual because
+ * their bytes can legitimately differ from the destination's full route.
+ */
+export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): boolean {
+  if (
+    headers.has(VINEXT_RSC_RENDER_MODE_HEADER) ||
+    headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER) ||
+    headers.has(VINEXT_INTERCEPTION_ID_HEADER) ||
+    headers.has(VINEXT_MOUNTED_SLOTS_HEADER)
+  ) {
+    return false;
+  }
+
+  headers.delete(NEXT_ROUTER_PREFETCH_HEADER);
+  headers.delete(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER);
+  headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
+  headers.delete(NEXT_URL_HEADER);
+  headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
+  headers.delete(VINEXT_CLIENT_REUSE_MANIFEST_HEADER);
+  return true;
+}
+
+/**
+ * Convert an ordinary loading-boundary prefetch to the shared loading-shell
+ * variant. The payload is selected by the three retained mode headers; visible
+ * router state is transport context and must not fragment the shared response.
+ */
+export function canonicalizeLoadingShellRscRequestHeaders(headers: Headers): boolean {
+  if (
+    headers.get(VINEXT_RSC_RENDER_MODE_HEADER) !== APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL ||
+    headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER) ||
+    headers.has(VINEXT_INTERCEPTION_ID_HEADER) ||
+    headers.has(VINEXT_MOUNTED_SLOTS_HEADER)
+  ) {
+    return false;
+  }
+
+  headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+  headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+  headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
+  headers.delete(NEXT_URL_HEADER);
+  headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
+  headers.delete(VINEXT_CLIENT_REUSE_MANIFEST_HEADER);
+  return true;
+}
+
 function toRscRequestPath(href: string): string {
   const hashIndex = href.indexOf("#");
   const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
@@ -367,6 +435,13 @@ export async function createRscRequestUrl(href: string, headers: Headers): Promi
   const url = new URL(toRscRequestPath(href), "http://vinext.local");
   const hash = await computeRscCacheBustingSearchParam(headers);
   setRscCacheBustingSearchParam(url, hash);
+  return `${url.pathname}${url.search}`;
+}
+
+/** Build the definitive full-route RSC URL shared by prefetch and navigation. */
+export function createCanonicalRscRequestUrl(href: string): string {
+  const url = new URL(toRscRequestPath(href), "http://vinext.local");
+  setRscCacheBustingSearchParam(url, "");
   return `${url.pathname}${url.search}`;
 }
 

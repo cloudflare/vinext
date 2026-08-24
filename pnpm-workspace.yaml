@@ -40,7 +40,8 @@ catalog:
   "@types/react-dom": ^19.2.3
   "@unpic/react": ^1.0.2
   "@vercel/og": ^0.8.6
-  "@vitejs/plugin-react": ^6.0.1
+  "@vitejs/plugin-react": ^6.1.0
+  oxc-transform-react: ^0.145.0
   "@next/mdx": 16.2.7
   recma-codehike: 0.0.1
   remark-codehike: 0.0.1

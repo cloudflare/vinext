@@ -4,14 +4,17 @@ import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import {
   applyCdnResponseHeaders,
   applyOriginManagedPageCacheResponseHeaders,
+  hasExplicitNonCacheableResponsePolicy,
+  isNonCacheableCacheControl,
+  NO_STORE_CACHE_CONTROL,
 } from "./cache-control.js";
-import { shouldUseOriginManagedPageCache } from "vinext/shims/cdn-cache";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
 import { hasPostConfigLinkHeaders } from "./app-response-header-provenance.js";
+import { shouldUseOriginManagedPageCache } from "vinext/shims/cdn-cache";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -36,6 +39,17 @@ type FinalizeAppRscResponseOptions = {
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const configHeadersAlreadyApplied = new WeakSet<Response>();
+
+function normalizeExplicitNonCacheablePolicy(headers: Headers): void {
+  if (!hasExplicitNonCacheableResponsePolicy(headers)) return;
+  const cacheControl = headers.get("Cache-Control");
+  applyCdnResponseHeaders(headers, {
+    cacheControl:
+      cacheControl && isNonCacheableCacheControl(cacheControl)
+        ? cacheControl
+        : NO_STORE_CACHE_CONTROL,
+  });
+}
 
 /** Mark a response whose final target pipeline has already applied config headers. */
 export function markAppRscResponseConfigHeadersApplied(response: Response): Response {
@@ -123,8 +137,11 @@ export async function finalizeAppRscResponse(
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
   }
 
-  if (!configHeadersAlreadyApplied.has(response)) {
+  if (configHeadersAlreadyApplied.has(response)) {
+    normalizeExplicitNonCacheablePolicy(response.headers);
+  } else {
     await applyAppRscConfigHeaders(response.headers, request, options);
+    normalizeExplicitNonCacheablePolicy(response.headers);
   }
 
   // Static-file 405 responses are synthesized before config headers run.

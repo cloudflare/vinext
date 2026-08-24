@@ -59,7 +59,12 @@ const linkPrefetchRoutes = [
     patternParts: ["same-origin-intent-prefetch-target"],
     isDynamic: false,
   },
-  { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
+  {
+    canPrefetchLoadingShell: true,
+    canUseCanonicalLoadingShell: true,
+    patternParts: ["blog", ":slug"],
+    isDynamic: true,
+  },
   { canPrefetchLoadingShell: false, patternParts: ["products", ":id"], isDynamic: true },
   { canPrefetchLoadingShell: false, patternParts: ["clothing", ":product"], isDynamic: true },
   {
@@ -1359,6 +1364,7 @@ describe("Pages Router Link onClick semantics", () => {
 
 async function renderIsolatedLink(options: {
   appNavigation?: boolean;
+  canonicalRsc?: boolean;
   href: string;
   nodeEnv: string;
   props?: Record<string, unknown>;
@@ -1372,6 +1378,7 @@ async function renderIsolatedLink(options: {
     vi.unstubAllEnvs();
   };
   vi.stubEnv("NODE_ENV", options.nodeEnv);
+  vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", options.canonicalRsc ? "1" : "");
 
   const effects: CapturedEffect[] = [];
   let capturedAnchorProps: CapturedAnchorProps | undefined;
@@ -1937,6 +1944,78 @@ describe("Link prefetch scheduling", () => {
       const entry = Array.from(getPrefetchCache().values())[0];
       expect(entry?.cacheForNavigation).toBe(false);
       expect(entry?.optimisticRouteShell).toBe(true);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("uses the canonical loading-shell variant for an ordinary automatic prefetch", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      canonicalRsc: true,
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      const [input, init] = result.fetch.mock.calls[0]!;
+      expect(input).toBe("/blog/hello?_rsc=9qLBDIU2NgN178cB");
+      const headers = new Headers((init as RequestInit).headers);
+      expect(headers.get("accept")).toBe("text/x-component");
+      expect(headers.get("rsc")).toBe("1");
+      expect(headers.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      );
+      expect(headers.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
+      expect(headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("1");
+      expect(headers.get("next-router-state-tree")).toBeNull();
+      expect(headers.get("next-url")).toBeNull();
+      expect(headers.get("x-vinext-rsc-state-fingerprint")).toBeNull();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("uses the canonical basePath root for an explicit full Link prefetch", async () => {
+    vi.stubEnv("__NEXT_ROUTER_BASEPATH", "/docs");
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "false");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/",
+      nodeEnv: "production",
+      canonicalRsc: true,
+      props: { prefetch: true },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(result.fetch.mock.calls[0]?.[0]).toBe("/docs?_rsc");
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("preserves contextual Link prefetch when canonical sharing is disabled", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      const input = result.fetch.mock.calls[0]?.[0];
+      expect(typeof input).toBe("string");
+      if (typeof input === "string") expect(input).toContain("/blog/hello?_rsc=");
     } finally {
       result.restoreNodeEnv();
     }
@@ -2703,6 +2782,7 @@ describe("Link prefetch scheduling", () => {
       },
     };
     const result = await renderIsolatedLink({
+      canonicalRsc: true,
       href: "/slow-intercept/photo",
       nodeEnv: "production",
       routeManifest,
@@ -2727,6 +2807,11 @@ describe("Link prefetch scheduling", () => {
       );
       const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
       const headers = fetchInit?.headers as Headers | undefined;
+      const input = result.fetch.mock.calls[0]?.[0];
+      expect(typeof input).toBe("string");
+      if (typeof input === "string") {
+        expect(new URL(input, "https://example.com").searchParams.get("_rsc")).not.toBe("");
+      }
       expect(headers?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
         APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
       );

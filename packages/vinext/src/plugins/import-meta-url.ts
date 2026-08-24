@@ -443,15 +443,16 @@ function finalizeEmittedModuleIdentity(
   const urlNamespaceBinding = selectRuntimeBinding("__vinext_module_url");
   const identityBinding = selectRuntimeBinding("__vinext_module_identity");
   const emittedFileName = toSlash(fileName).replace(/^\.\//, "").replace(/^\/+/, "");
-  const processCwd = `${processNamespaceBinding}.cwd()`;
+  const processCwd = `(typeof ${processNamespaceBinding}.cwd === "function" ? ${processNamespaceBinding}.cwd() : "")`;
   const emittedPathFallback = emittedFileName
     ? `(${processCwd}.replace(/[\\\\/]$/, "") + ${JSON.stringify(`/${emittedFileName}`)})`
-    : processCwd;
+    : `(${processCwd} || "/")`;
   const emittedDirName = path.dirname(emittedFileName);
   const emittedDirFallback =
     emittedDirName === "."
-      ? processCwd
+      ? `(${processCwd} || "/")`
       : `(${processCwd}.replace(/[\\\\/]$/, "") + ${JSON.stringify(`/${emittedDirName}`)})`;
+  const absoluteEmittedPath = JSON.stringify(`/${emittedFileName}`.replace(/\/$/, "") || "/");
   const replacements: Record<EmittedModuleIdentityField, string> = {
     __filename: `${identityBinding}.filename`,
     __dirname: `${identityBinding}.dirname`,
@@ -473,7 +474,7 @@ function finalizeEmittedModuleIdentity(
   const needsUrl = usedFields.has("url");
   const needsPath = usedFields.has("__filename") || usedFields.has("__dirname");
   const runtimePreamble = [
-    `import * as ${processNamespaceBinding} from "node:process";`,
+    ...(needsPath ? [`import * as ${processNamespaceBinding} from "node:process";`] : []),
     ...(needsPath ? [`import * as ${fsNamespaceBinding} from "node:fs";`] : []),
     ...(needsUrl ? [`import * as ${urlNamespaceBinding} from "node:url";`] : []),
     `const ${identityBinding} = (() => {`,
@@ -483,7 +484,10 @@ function finalizeEmittedModuleIdentity(
           `  const native = typeof filename === "string" && ${fsNamespaceBinding}.existsSync(filename);`,
           `  const resolvedFilename = native ? filename : ${emittedPathFallback};`,
         ]
-      : [`  const runtimeUrl = import.meta.url;`]),
+      : [
+          `  const runtimeUrl = import.meta.url;`,
+          `  const runtimeFilename = import.meta.filename;`,
+        ]),
     `  return {`,
     ...(needsPath
       ? [
@@ -495,7 +499,7 @@ function finalizeEmittedModuleIdentity(
       ? [
           needsPath
             ? `    url: ${urlNamespaceBinding}.pathToFileURL(resolvedFilename).href,`
-            : `    url: typeof runtimeUrl === "string" && runtimeUrl.startsWith("file:") ? runtimeUrl : ${urlNamespaceBinding}.pathToFileURL(${emittedPathFallback}).href,`,
+            : `    url: typeof runtimeUrl === "string" && runtimeUrl.startsWith("file:") ? runtimeUrl : ${urlNamespaceBinding}.pathToFileURL(typeof runtimeFilename === "string" ? runtimeFilename : ${absoluteEmittedPath}).href,`,
         ]
       : []),
     `  };`,

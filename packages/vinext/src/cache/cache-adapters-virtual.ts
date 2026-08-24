@@ -23,7 +23,27 @@ import { flattenPluginOptions } from "../utils/plugin-options.js";
  * by hand. `options` must be JSON-serializable: it is inlined into the generated
  * registration module and forwarded to the adapter factory at runtime.
  */
-type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
+export type CdnCacheAdapterCapabilities = {
+  /**
+   * Page responses include the current application build identity in the
+   * framework-owned `X-Vinext-Build-Id` response header, including responses
+   * that are ultimately marked non-cacheable.
+   *
+   * Deploy adapters use this guarantee to distinguish the newly uploaded
+   * Worker from an older version while staged traffic is propagating.
+   */
+  buildIdentity?: "response-header";
+  /**
+   * The shared cache selects response variants using every request header
+   * named by `Vary`, comparing the header values verbatim.
+   *
+   * Vinext only uses the canonical deploy-warmed RSC request shape when this
+   * guarantee is present. URL-only caches retain the contextual `_rsc` digest.
+   */
+  responseVary?: "verbatim";
+};
+
+export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
   /**
    * Module specifier (or absolute path, e.g. from `require.resolve(...)`) whose
    * default export is a cache adapter factory.
@@ -31,7 +51,17 @@ type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, u
   adapter: string;
   /** JSON-serializable options forwarded to the factory at runtime. */
   options?: O;
+  /** Build-time cache semantics used by shared request protocol code. */
+  capabilities?: CdnCacheAdapterCapabilities;
 };
+
+export function hasVerbatimResponseVary(cache?: VinextCacheConfig | null): boolean {
+  return cache?.cdn?.capabilities?.responseVary === "verbatim";
+}
+
+export function hasBuildIdentityResponseHeader(cache?: VinextCacheConfig | null): boolean {
+  return cache?.cdn?.capabilities?.buildIdentity === "response-header";
+}
 
 /**
  * The `cache` option of the vinext() plugin: declaratively register cache

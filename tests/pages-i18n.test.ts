@@ -72,6 +72,14 @@ describe("Pages i18n domain helpers", () => {
     expect(addLocalePrefix("/FR/about", "fr", "en")).toBe("/FR/about");
   });
 
+  it("routes locale prefixes case-insensitively using the configured locale", () => {
+    expect(resolvePagesI18nRequest("/FR/about", i18n)).toMatchObject({
+      hadPrefix: true,
+      locale: "fr",
+      url: "/about",
+    });
+  });
+
   it("does not let NEXT_LOCALE override the current domain default locale", () => {
     expect(
       getLocaleRedirect({

@@ -2194,6 +2194,17 @@ describe("resolveParentParams", () => {
     expect(result).toEqual([{ category: "electronics" }, { category: "clothing" }]);
   });
 
+  it("can include a provider for the last dynamic segment", async () => {
+    const child = mockRoute("/:category/foo");
+    const staticParamsMap: StaticParamsMap = {
+      "/:category": async () => [{ category: "news" }],
+    };
+
+    await expect(
+      resolveParentParams(child, staticParamsMap, { includeLastDynamicSegment: true }),
+    ).resolves.toEqual([{ category: "news" }]);
+  });
+
   it("resolves two levels of parent dynamic segments", async () => {
     const child = mockRoute("/a/:b/c/:d/:e");
     const staticParamsMap: StaticParamsMap = {

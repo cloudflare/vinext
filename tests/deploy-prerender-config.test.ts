@@ -273,7 +273,12 @@ describe("deploy prerender config wiring", () => {
     );
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-    await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
+    await deploy({
+      root: tmpDir,
+      skipBuild: true,
+      warmCdnCache: true,
+      dangerouslyPromoteOnCdnWarmError: true,
+    });
 
     expect(fs.readFileSync(path.join(tmpDir, "config-load-count.txt"), "utf8")).toBe("1");
     expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(true);
@@ -398,6 +403,8 @@ describe("deploy prerender config wiring", () => {
 
     await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
 
+    expect(runPrerenderMock).not.toHaveBeenCalled();
+
     expect(
       JSON.parse(
         fs.readFileSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"), "utf-8"),
@@ -411,5 +418,20 @@ describe("deploy prerender config wiring", () => {
       expect.stringContaining("wrangler"),
       "deploy",
     ]);
+  });
+
+  it("rejects no-promote warmup when discovery finds no requests", async () => {
+    writeApiOnlyProject();
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deploy({
+        root: tmpDir,
+        skipBuild: true,
+        warmCdnCache: true,
+        warmCdnPromote: false,
+      }),
+    ).rejects.toThrow("no build-discovered requests were found to warm");
+    expect(spawn).not.toHaveBeenCalled();
   });
 });

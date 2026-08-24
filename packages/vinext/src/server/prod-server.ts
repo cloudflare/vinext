@@ -2033,8 +2033,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const route = pageRoutes?.find((r) => r.pattern === pattern);
       const fn = route?.module?.getStaticPaths;
       if (typeof fn !== "function") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end("null");
+        res.writeHead(204);
+        res.end();
         return;
       }
       try {

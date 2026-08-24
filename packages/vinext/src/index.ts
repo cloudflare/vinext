@@ -52,6 +52,7 @@ import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
   VIRTUAL_CACHE_ADAPTERS,
   generateCacheAdaptersModule,
+  hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
@@ -149,6 +150,12 @@ import {
   formatMissingCloudflarePluginError,
   hasWranglerConfig,
 } from "./utils/project.js";
+import {
+  hasReactCompilerPlugin,
+  isReactCompilerPlugin,
+  isReactCompilerRequested,
+  reactCompilerUnsupportedMessage,
+} from "./utils/react-compiler-support.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
 import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
@@ -1328,6 +1335,9 @@ export type VinextOptions = {
    * Enabled by default. Set to `false` to disable (e.g. if you configure
    * @vitejs/plugin-react manually in your vite.config.ts), or pass an options
    * object to customize the Babel transform.
+   *
+   * Pass `{ compiler: true }` to enable the React Compiler. That requires
+   * @vitejs/plugin-react 6.1+ and the optional `oxc-transform-react` package.
    * @default true
    */
   react?: VitePluginReactOptions | boolean;
@@ -1495,6 +1505,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // once while generating the RSC entry.
   let devPublicFileRoutes: Set<string> | null = null;
   let publicDirConflictOptions: Parameters<typeof assertNoPublicDirAssetConflict>[0] | null = null;
+  let rscBuildIdentity: string | undefined;
   let rscCompatibilityId: string | undefined;
   let draftModeSecret = getPagesPreviewModeId();
   let previewBuildCredentials: PreviewBuildCredentials | undefined;
@@ -1707,6 +1718,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const reactOptions = configuredReactOptions;
 
   let reactPluginPromise: Promise<PluginOption[]> | null = null;
+  let reactCompilerPluginPromise: Promise<PluginOption[]> | null = null;
   if (options.react !== false) {
     if (!resolvedReactPath) {
       throw new Error(
@@ -1716,43 +1728,58 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           " @vitejs/plugin-react",
       );
     }
-    const reactImport = import(pathToFileURL(resolvedReactPath).href);
-    reactPluginPromise = reactImport
-      .then((mod) => {
-        const react = (mod as VitePluginReactModule).default;
-        const limitToCommand = (plugin: Plugin, command: "serve" | "build"): Plugin => {
-          const originalApply = plugin.apply;
-          return {
-            ...plugin,
-            apply(config, env) {
-              if (env.command !== command) return false;
-              if (!originalApply) return true;
-              if (typeof originalApply === "function") {
-                return originalApply(config, env);
-              }
-              return originalApply === env.command;
-            },
-          };
+    // Wrap only the dynamic import: errors raised while assembling the plugin
+    // list (such as the compiler support check below) carry their own
+    // actionable instructions and must not be relabeled as an import failure.
+    const reactImport = import(pathToFileURL(resolvedReactPath).href).catch((cause) => {
+      throw new Error("vinext: Failed to load @vitejs/plugin-react.", { cause });
+    });
+    const allReactPlugins = reactImport.then((mod) => {
+      const react = (mod as VitePluginReactModule).default;
+      const limitToCommand = (plugin: Plugin, command: "serve" | "build"): Plugin => {
+        const originalApply = plugin.apply;
+        return {
+          ...plugin,
+          apply(config, env) {
+            if (env.command !== command) return false;
+            if (!originalApply) return true;
+            if (typeof originalApply === "function") {
+              return originalApply(config, env);
+            }
+            return originalApply === env.command;
+          },
         };
-        const buildPlugins = react(reactOptions).map((plugin) =>
-          limitToCommand(plugin as Plugin, "build"),
-        );
-        const hasConfiguredReactInclude =
-          configuredReactOptions !== undefined &&
-          Object.prototype.hasOwnProperty.call(configuredReactOptions, "include");
-        const serveOptions = hasConfiguredReactInclude
-          ? reactOptions
-          : { ...reactOptions, include: /\.(?:[tj]sx?|mdx)$/i };
-        const servePlugins = react(serveOptions).map((plugin) =>
-          limitToCommand(plugin as Plugin, "serve"),
-        );
-        return [...buildPlugins, ...servePlugins];
-      })
-      .catch((cause) => {
-        throw new Error("vinext: Failed to load @vitejs/plugin-react.", {
-          cause,
-        });
-      });
+      };
+      const resolvedBuildPlugins = react(reactOptions);
+      if (
+        isReactCompilerRequested(configuredReactOptions) &&
+        !hasReactCompilerPlugin(resolvedBuildPlugins)
+      ) {
+        throw new Error(reactCompilerUnsupportedMessage(detectPackageManager(process.cwd())));
+      }
+      const buildPlugins = resolvedBuildPlugins.map((plugin) =>
+        limitToCommand(plugin as Plugin, "build"),
+      );
+      const hasConfiguredReactInclude =
+        configuredReactOptions !== undefined &&
+        Object.prototype.hasOwnProperty.call(configuredReactOptions, "include");
+      const serveOptions = hasConfiguredReactInclude
+        ? reactOptions
+        : { ...reactOptions, include: /\.(?:[tj]sx?|mdx)$/i };
+      const servePlugins = react(serveOptions).map((plugin) =>
+        limitToCommand(plugin as Plugin, "serve"),
+      );
+      return [...buildPlugins, ...servePlugins];
+    });
+    // The React Compiler plugin is registered separately, after
+    // `vinext:jsx-in-js`. Every other plugin in the group keeps its original
+    // position so user-configured transforms still see the untouched source.
+    reactPluginPromise = allReactPlugins.then((plugins) =>
+      plugins.filter((plugin) => !isReactCompilerPlugin(plugin)),
+    );
+    reactCompilerPluginPromise = allReactPlugins.then((plugins) =>
+      plugins.filter(isReactCompilerPlugin),
+    );
   }
 
   const imageImportDimCache = new Map<string, { width: number; height: number }>();
@@ -2045,6 +2072,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     } satisfies Plugin,
+    // Runs after `vinext:jsx-in-js` so JSX in plain `.js` files has already
+    // been compiled: `vite:react-compiler` infers the source language from the
+    // file extension and cannot parse JSX inside a `.js` file.
+    reactCompilerPluginPromise,
     // Allow `import 'server-only'` from middleware (and any module reachable
     // from it) in non-RSC environments. Registered before `vinext:config` so
     // its `enforce: "pre"` resolveId runs ahead of @vitejs/plugin-rsc's
@@ -2278,6 +2309,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ? sharedRscCompatibilityId
               : createRscCompatibilityId(nextConfig);
         }
+        if (env?.command === "build" && rscBuildIdentity === undefined) {
+          const sharedRscBuildIdentity = process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY;
+          rscBuildIdentity =
+            sharedRscBuildIdentity && sharedRscBuildIdentity.length > 0
+              ? sharedRscBuildIdentity
+              : randomBytes(16).toString("hex");
+        }
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
         globalNotFoundCssIsolationPath =
           env?.command === "build" && nextConfig.globalNotFound
@@ -2432,11 +2470,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Also used to namespace ISR cache keys so old cached entries from a
         // previous deploy are never served by the new one.
         defines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
+        // Strict-Vary shared caches can use one stable public URL for the
+        // definitive RSC and loading-shell representations. Other adapters
+        // retain Next-compatible contextual `_rsc` digests.
+        defines["process.env.__VINEXT_CANONICAL_RSC_REQUESTS"] = JSON.stringify(
+          env?.command === "build" && hasVerbatimResponseVary(options.cache) ? "1" : "",
+        );
         // Public browser-facing identity for App Router RSC compatibility
         // checks. Prefer Next.js-style deploymentId when configured; otherwise
         // generate a separate token so RSC headers do not expose
         // generateBuildId() verbatim.
         defines["process.env.__VINEXT_RSC_COMPATIBILITY_ID"] = JSON.stringify(rscCompatibilityId);
+        defines["process.env.__VINEXT_RSC_BUILD_IDENTITY"] = JSON.stringify(rscBuildIdentity ?? "");
         // Deployment ID — mirrors Next.js' configured NEXT_DEPLOYMENT_ID.
         // This remains empty when deploymentId is not configured; the separate
         // "use cache" key builder falls back to __VINEXT_BUILD_ID when needed.
@@ -4083,6 +4128,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               graph.routeManifest,
               pagesPrefetchRoutes,
               nextConfig.rewrites,
+              nextConfig.i18n?.locales,
             );
           }
           if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {
@@ -6629,6 +6675,9 @@ export const loadServerActionClient = ${
             const outDir = path.join(root, "dist", "server");
             fs.mkdirSync(outDir, { recursive: true });
             fs.writeFileSync(path.join(outDir, "BUILD_ID"), nextConfig!.buildId);
+            if (rscBuildIdentity) {
+              fs.writeFileSync(path.join(outDir, "RSC_BUILD_ID"), rscBuildIdentity);
+            }
           },
         },
       };

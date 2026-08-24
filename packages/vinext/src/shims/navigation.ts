@@ -47,13 +47,14 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../server/headers.js";
 import { extractRscCompletionMetadata } from "../server/rsc-completion-metadata.js";
 import {
   isHashOnlyBrowserUrlChange,
-  toBrowserNavigationHref,
+  toCanonicalBrowserNavigationHref,
   toSameOriginAppPath,
   withBasePath,
 } from "./url-utils.js";
@@ -68,7 +69,11 @@ import {
   markPprFallbackShellDynamicBoundary,
 } from "./ppr-fallback-shell.js";
 import { BailoutToCSRError as NavigationBailoutToCSRError } from "./navigation-errors.js";
-import type { AppRscRenderMode } from "../server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  type AppRscRenderMode,
+} from "../server/app-rsc-render-mode.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
 import {
@@ -245,6 +250,8 @@ const isServer = typeof window === "undefined";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 export const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+/** trailingSlash from next.config.js, injected by the plugin at build time */
+const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
 /** prefetch inlining (Segment Cache wire mode), injected by the plugin at build time */
 const __prefetchInlining: boolean = process.env.__VINEXT_PREFETCH_INLINING === "true";
 
@@ -894,7 +901,12 @@ function toAppPrefetchDestination(href: string): string | null {
     if (localPath == null) return null;
     localHref = localPath;
   }
-  const browserHref = toBrowserNavigationHref(localHref, window.location.href, __basePath);
+  const browserHref = toCanonicalBrowserNavigationHref(
+    localHref,
+    window.location.href,
+    __basePath,
+    __trailingSlash,
+  );
   try {
     const url = new URL(browserHref, window.location.href);
     return `${url.pathname}${url.search}`;
@@ -1476,12 +1488,13 @@ export function prefetchRscResponse(
   const prefetched = getPrefetchedUrls();
   const now = Date.now();
   const existing = cache.get(cacheKey);
+  const cacheForNavigation = behavior.cacheForNavigation ?? true;
   if (existing) {
     deletePrefetchCacheEntry(cache, prefetched, cacheKey, existing, false);
   }
 
   const entry: PrefetchCacheEntry = {
-    cacheForNavigation: behavior.cacheForNavigation ?? true,
+    cacheForNavigation,
     cacheKeys: new Set([cacheKey]),
     mountedSlotsHeader,
     optimisticRouteShell: behavior.optimisticRouteShell === true,
@@ -2576,7 +2589,12 @@ export async function navigateClientSide(
   // `link.tsx`.
   const hybridOwner = resolveHybridClientRouteOwner(normalizedHref);
   if (hybridOwner === "pages" || hybridOwner === "document") {
-    const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
+    const fullHref = toCanonicalBrowserNavigationHref(
+      normalizedHref,
+      window.location.href,
+      __basePath,
+      __trailingSlash,
+    );
     notifyAppRouterTransitionStart(fullHref, mode);
     if (mode === "push") {
       saveScrollPosition();
@@ -2586,7 +2604,12 @@ export async function navigateClientSide(
     return;
   }
 
-  const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
+  const fullHref = toCanonicalBrowserNavigationHref(
+    normalizedHref,
+    window.location.href,
+    __basePath,
+    __trailingSlash,
+  );
   stageAppNavigationFailureTarget(fullHref);
   // Match Next.js: App Router reports navigation start before dispatching,
   // including hash-only navigations that short-circuit after URL update.
@@ -2873,8 +2896,14 @@ const _appRouter: AppRouterInstance = {
       const kind = options?.kind === "full" ? "full" : "auto";
       // Dynamic import keeps the policy module and its route-trie
       // dependencies off the startup path of every next/navigation consumer.
-      const { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch } =
-        await import("./internal/app-route-prefetch-policy.js");
+      const [
+        { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch },
+        { resolveAppPrefetchRscRequest },
+      ] = await Promise.all([
+        import("./internal/app-route-prefetch-policy.js"),
+        import("./internal/app-prefetch-rsc-request.js"),
+      ]);
+      if (setup.cancelled) return;
       const policy =
         kind === "full"
           ? resolveFullAppRoutePrefetch()
@@ -2893,14 +2922,28 @@ const _appRouter: AppRouterInstance = {
           __prefetchInlining || requiresRouteTreePrefetch ? "/__PAGE__" : "1",
         );
       }
-      // Both derive from the same headers and neither feeds the other, so the
-      // rewrite variant is generated alongside rather than after.
-      const [rscUrl, ...additionalRscUrls] = await Promise.all([
-        createRscRequestUrl(fullHref, headers),
-        ...(rewrittenPrefetchHref !== null && rewrittenPrefetchHref !== fullHref
-          ? [createRscRequestUrl(rewrittenPrefetchHref, headers)]
-          : []),
-      ]);
+      const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
+      if (!reusable && kind === "auto") {
+        headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+        headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+        headers.set(
+          VINEXT_RSC_RENDER_MODE_HEADER,
+          hasSearchParams
+            ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
+            : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        );
+      }
+      const { additionalRscUrls, rscUrl, usesCanonicalPrewarmedRequest } =
+        await resolveAppPrefetchRscRequest({
+          canUseCanonicalLoadingShell: policy.canUseCanonicalLoadingShell === true,
+          fullHref,
+          headers,
+          interceptionContext,
+          mountedSlotsHeader,
+          prefetchInlining: __prefetchInlining,
+          requiresRouteTreePrefetch,
+          rewrittenPrefetchHref,
+        });
       // A navigation to this same href can start in the same task as this call
       // and win the race above (hybrid-route module load, policy import, RSC
       // URL generation). Nothing was registered in the cache during that
@@ -2942,7 +2985,7 @@ const _appRouter: AppRouterInstance = {
           "low",
         );
       const fetchPromise =
-        reusable && kind === "auto" && requiresRouteTreePrefetch
+        !usesCanonicalPrewarmedRequest && reusable && kind === "auto" && requiresRouteTreePrefetch
           ? fetchRouteTreeGatedPrefetch({
               fetchFullRscPayload,
               fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>

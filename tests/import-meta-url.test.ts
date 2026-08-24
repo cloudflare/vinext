@@ -54,9 +54,11 @@ function expectFinalizedImportMetaUrl(code: string | undefined, fileName = "entr
     `const value = fileURLToPath(({ get value() { return ${identityBinding}.url; } }).value);`,
   );
   expect(code).toContain("const runtimeUrl = import.meta.url;");
+  expect(code).toContain("const runtimeFilename = import.meta.filename;");
   expect(code).toContain(
     `runtimeUrl.startsWith("file:") ? runtimeUrl : ${urlNamespaceBinding}.pathToFileURL(`,
   );
+  expect(code).not.toContain('from "node:process"');
   expect(code).toContain(JSON.stringify(`/${fileName}`));
   expect(code).not.toMatch(/__VINEXT_EMITTED_MODULE_URL_[a-f0-9]{32}__/);
 }
@@ -429,6 +431,63 @@ describe("vinext:import-meta-url plugin", () => {
     expectFinalizedImportMetaUrl(emitted?.code, "deps/esm-identity.js");
     expect(emitted?.code).not.toContain('from "node:fs"');
     expect(emitted?.code).not.toContain("existsSync");
+  });
+
+  it("evaluates a URL-only emitted module without cwd when its runtime URL is non-file", async () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
+      {},
+      [
+        'import { fileURLToPath } from "node:url";',
+        "const filename = fileURLToPath(import.meta.url);",
+        "export default { fetch() { return new Response(filename); } };",
+      ].join("\n"),
+      esmDependencyPath,
+    );
+    const emitted = unwrapHook(capability.optimizeDepsPlugin.renderChunk).call(
+      {},
+      transformed?.code ?? "",
+      { fileName: "worker.mjs" },
+      { format: "es" },
+    );
+    const code = emitted?.code ?? "";
+    const processImport = code.match(/import \* as (\w+) from "node:process";/);
+    // Workerd exposes the node:process module but not process.cwd(), and its
+    // module-registry URL is not guaranteed to use the file: scheme.
+    const workerdLikeCode = code
+      .replace(processImport?.[0] ?? "", processImport ? `const ${processImport[1]} = {};` : "")
+      .replace("const runtimeUrl = import.meta.url;", 'const runtimeUrl = "worker";');
+    const module = await import(
+      `data:text/javascript;base64,${Buffer.from(workerdLikeCode).toString("base64")}`
+    );
+    const response = await module.default.fetch();
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("/worker.mjs");
+  });
+
+  it("evaluates emitted CJS paths without import.meta.filename or cwd", async () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
+      {},
+      "export const paths = [__filename, __dirname];",
+      cjsDependencyPath,
+    );
+    const emitted = unwrapHook(capability.optimizeDepsPlugin.renderChunk).call(
+      {},
+      transformed?.code ?? "",
+      { fileName: "chunks/worker.mjs" },
+      { format: "es" },
+    );
+    const code = emitted?.code ?? "";
+    const processImport = code.match(/import \* as (\w+) from "node:process";/);
+    expect(processImport).not.toBeNull();
+    const workerdLikeCode = code
+      .replace(processImport![0], `const ${processImport![1]} = {};`)
+      .replace("const filename = import.meta.filename;", "const filename = undefined;");
+    const module = await import(
+      `data:text/javascript;base64,${Buffer.from(workerdLikeCode).toString("base64")}`
+    );
+    expect(module.paths).toEqual(["/chunks/worker.mjs", "/chunks"]);
   });
 
   it("preserves dependency new URL asset bases while rewriting direct identity reads", () => {

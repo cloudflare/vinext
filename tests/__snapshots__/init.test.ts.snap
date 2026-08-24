@@ -70,6 +70,9 @@ export default defineConfig({
   "cache": {
     "enabled": true
   },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
   "images": {
     "binding": "IMAGES"
   },
@@ -188,6 +191,9 @@ export default defineConfig({
   },
   "cache": {
     "enabled": true
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
   },
   "images": {
     "binding": "IMAGES"

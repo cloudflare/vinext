@@ -528,6 +528,7 @@ export type StaticParamsMap = Record<
 export async function resolveParentParams(
   childRoute: AppRoute,
   staticParamsMap: StaticParamsMap,
+  options: { includeLastDynamicSegment?: boolean } = {},
 ): Promise<Record<string, string | string[]>[]> {
   const { patternParts } = childRoute;
 
@@ -549,7 +550,8 @@ export async function resolveParentParams(
   const parentSegments: GenerateStaticParamsFn[] = [];
 
   let prefixPattern = "";
-  for (let i = 0; i < lastDynamicIdx; i++) {
+  const prefixEnd = options.includeLastDynamicSegment ? lastDynamicIdx + 1 : lastDynamicIdx;
+  for (let i = 0; i < prefixEnd; i++) {
     const part = patternParts[i];
     prefixPattern += "/" + part;
     if (!part.startsWith(":")) continue;
@@ -753,7 +755,7 @@ export async function prerenderPages({
                 );
                 return { paths: [], fallback: false };
               }
-              if (text === "null") return { paths: [], fallback: false };
+              if (res.status === 204 || text === "null") return { paths: [], fallback: false };
               return JSON.parse(text) as {
                 paths: Array<StaticPathsEntry>;
                 fallback: unknown;
@@ -1181,7 +1183,7 @@ export async function prerenderApp({
               );
               return null;
             }
-            if (text === "null") return null;
+            if (res.status === 204 || text === "null") return null;
             return JSON.parse(text) as Record<string, string | string[]>[];
           })();
           // Only cache on success — a rejected or error promise must not poison

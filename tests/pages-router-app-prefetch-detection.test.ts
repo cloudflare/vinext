@@ -274,9 +274,13 @@ describe("Pages Router records app routes as detected on prefetch", () => {
     });
   });
 
-  it("strips basePath and locale prefixes before matching App routes", async () => {
+  it("keeps locale prefixes for App matching but strips them from the Pages component key", async () => {
     const fakeWindow = installFakeBrowserGlobals([
-      { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
+      {
+        canPrefetchLoadingShell: false,
+        patternParts: [":locale", "about"],
+        isDynamic: true,
+      },
     ]);
     fakeWindow.__VINEXT_LOCALES__ = ["en", "fr"];
     fakeWindow.__VINEXT_DEFAULT_LOCALE__ = "en";

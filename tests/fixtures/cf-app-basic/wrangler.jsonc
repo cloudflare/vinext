@@ -2,7 +2,7 @@
   "name": "cf-app-basic",
   "compatibility_date": "2026-02-12",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "vinext/server/fetch-handler",
+  "main": "worker/index.ts",
   "cache": { "enabled": true },
   "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "00000000000000000000000000000000" }],
   "assets": {

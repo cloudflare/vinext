@@ -132,6 +132,8 @@ describe("App Router Production build", () => {
     expect(fs.existsSync(buildIdPath)).toBe(true);
     const buildId = fs.readFileSync(buildIdPath, "utf-8").trim();
     expect(buildId.length).toBeGreaterThan(0);
+    const rscBuildId = fs.readFileSync(path.join(outDir, "server", "RSC_BUILD_ID"), "utf-8").trim();
+    expect(rscBuildId).toMatch(/^[0-9a-f]{32}$/);
 
     const warmupManifestPath = path.join(outDir, "server", "vinext-prerender-paths.json");
     expect(fs.existsSync(warmupManifestPath)).toBe(false);

@@ -188,7 +188,7 @@ describe("prefetch cache eviction", () => {
 
   it("router.prefetch normalizes same-origin absolute URLs before caching", async () => {
     let fetchedUrl: unknown;
-    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       fetchedUrl = input;
       return new Response("flight", { headers: { "content-type": "text/x-component" } });
     });
@@ -202,6 +202,93 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().has(AppElementsWire.encodeCacheKey(String(fetchedUrl), null))).toBe(
       true,
     );
+  });
+
+  it("full router.prefetch uses the canonical warmed path with trailingSlash enabled", async () => {
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    const navigate = vi.fn(async (_href: string) => {});
+    (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate },
+    };
+
+    navigation.appRouterInstance.prefetch("/dashboard", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    navigation.appRouterInstance.push("/dashboard");
+    await waitForPrefetchSetup(() => navigate.mock.calls.length === 1);
+
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/dashboard/?_rsc");
+    expect(navigate.mock.calls[0]?.[0]).toBe("/dashboard/");
+    const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
+    expect(headers.get("rsc")).toBe("1");
+    expect(headers.get("next-router-state-tree")).toBeNull();
+    expect(headers.get("next-router-prefetch")).toBeNull();
+  });
+
+  it("uses the same canonical basePath root for router.prefetch and router.push", async () => {
+    vi.stubEnv("__NEXT_ROUTER_BASEPATH", "/docs");
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "false");
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    const navigate = vi.fn(async (_href: string) => {});
+    (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate },
+    };
+
+    navigation.appRouterInstance.prefetch("/", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    navigation.appRouterInstance.push("/");
+    await waitForPrefetchSetup(() => navigate.mock.calls.length === 1);
+
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/docs?_rsc");
+    expect(navigate.mock.calls[0]?.[0]).toBe("/docs");
+  });
+
+  it("automatic router.prefetch uses the canonical loading-shell variant", async () => {
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: true,
+        canUseCanonicalLoadingShell: true,
+        patternParts: ["dashboard"],
+        isDynamic: false,
+      },
+    ];
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate: vi.fn() },
+    };
+
+    navigation.appRouterInstance.prefetch("/dashboard");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/dashboard?_rsc=9qLBDIU2NgN178cB");
+    const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
+    expect(headers.get("next-router-prefetch")).toBe("1");
+    expect(headers.get("next-router-segment-prefetch")).toBe("1");
+    expect(headers.get("x-vinext-rsc-render-mode")).toBe("prefetch-loading-shell");
   });
 
   it("router.prefetch calls onInvalidate once when the prefetched response is invalidated", async () => {
@@ -251,6 +338,46 @@ describe("prefetch cache eviction", () => {
 
     expect(firstInvalidate).toHaveBeenCalledTimes(1);
     expect(secondInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps canonical full and loading-shell entries independent", async () => {
+    const fullUrl = "/dashboard?_rsc";
+    const loadingUrl = "/dashboard?_rsc=9qLBDIU2NgN178cB";
+    const fullInvalidate = vi.fn();
+    const loadingInvalidate = vi.fn();
+
+    prefetchRscResponse(
+      fullUrl,
+      Promise.resolve(new Response("full")),
+      null,
+      null,
+      { onInvalidate: fullInvalidate },
+      { cacheForNavigation: true },
+    );
+    prefetchRscResponse(
+      loadingUrl,
+      Promise.resolve(new Response("loading")),
+      null,
+      null,
+      { onInvalidate: loadingInvalidate },
+      { cacheForNavigation: false, optimisticRouteShell: true },
+    );
+    await waitForPrefetchSetup(
+      () =>
+        getPrefetchCache().get(fullUrl)?.outcome === "cache-seeded" &&
+        getPrefetchCache().get(loadingUrl)?.outcome === "cache-seeded",
+    );
+
+    const full = getPrefetchCache().get(fullUrl);
+    const loading = getPrefetchCache().get(loadingUrl);
+    expect(new TextDecoder().decode(full?.snapshot?.buffer)).toBe("full");
+    expect(full?.cacheForNavigation).toBe(true);
+    expect(new TextDecoder().decode(loading?.snapshot?.buffer)).toBe("loading");
+    expect(loading?.cacheForNavigation).toBe(false);
+
+    invalidatePrefetchCache();
+    expect(fullInvalidate).toHaveBeenCalledTimes(1);
+    expect(loadingInvalidate).toHaveBeenCalledTimes(1);
   });
 
   it("demotes completed navigation snapshots without discarding explicit prefetches", () => {
