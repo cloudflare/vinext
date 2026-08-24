@@ -654,6 +654,34 @@ describe("Cloudflare CDN warmup", () => {
     ).resolves.toEqual({ ready: true });
   });
 
+  it("rejects an exact-build server error as staged-version readiness", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("version validation failed", {
+          status: 503,
+          headers: {
+            "cache-control": "no-store",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          },
+        }),
+    );
+
+    await expect(
+      waitForCdnWarmTargetReadiness({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        maxAttempts: 1,
+        plan: { loadingShellPaths: [], paths: ["/"], rscPaths: [] },
+        probeIntervalMs: 0,
+        requiredConsecutiveSuccesses: 1,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toEqual({
+      error: "HTTP 503; uploaded build was not stable for 1 consecutive probe(s)",
+      ready: false,
+    });
+  });
+
   it("does not skip a non-success response from a different build", async () => {
     const fetchImpl = vi.fn(
       async () =>

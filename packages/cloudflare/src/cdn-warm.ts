@@ -613,6 +613,7 @@ function validateReadinessResponse(
     return `response ${VINEXT_RSC_BUILD_ID_HEADER} does not match build ${expectedRscBuildId}`;
   }
   if (response.redirected) return "redirected response";
+  if (response.status >= 500) return `HTTP ${response.status}`;
   if (
     response.status >= 200 &&
     response.status < 300 &&
