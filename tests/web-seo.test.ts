@@ -54,6 +54,13 @@ describe("vinext.dev canonical host handling", () => {
     },
   );
 
+  it("redirects HTTP documents on the canonical host to HTTPS", () => {
+    const response = getCanonicalRedirect(new Request("http://vinext.dev/benchmarks?view=bundles"));
+
+    expect(response?.status).toBe(308);
+    expect(response?.headers.get("location")).toBe("https://vinext.dev/benchmarks?view=bundles");
+  });
+
   it("keeps the workers.dev API origin available to existing CI uploaders", () => {
     expect(
       getCanonicalRedirect(

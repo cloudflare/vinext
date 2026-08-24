@@ -16,7 +16,10 @@ function isPublicDocumentRequest(request: Request, url: URL): boolean {
 export function getCanonicalRedirect(request: Request): Response | null {
   const url = new URL(request.url);
   if (!isPublicDocumentRequest(request, url)) return null;
-  if (url.hostname !== WWW_HOSTNAME && url.hostname !== PRODUCTION_WORKERS_HOSTNAME) return null;
+  const isAlternateHost =
+    url.hostname === WWW_HOSTNAME || url.hostname === PRODUCTION_WORKERS_HOSTNAME;
+  const isInsecureCanonicalUrl = url.hostname === CANONICAL_HOSTNAME && url.protocol === "http:";
+  if (!isAlternateHost && !isInsecureCanonicalUrl) return null;
 
   url.protocol = "https:";
   url.hostname = CANONICAL_HOSTNAME;
