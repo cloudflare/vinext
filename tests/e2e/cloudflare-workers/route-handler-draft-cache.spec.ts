@@ -247,6 +247,18 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     }
   });
 
+  test("routes revalidatePath through the cache-bearing response entrypoint", async ({
+    request,
+  }) => {
+    const slug = `purge-${Date.now()}`;
+    const pathname = `/cdn-stage-app/${slug}`;
+    const purge = await request.post(`${BASE_URL}/api/cdn-stage-revalidate`, {
+      data: { pathname },
+    });
+    expect(purge.status()).toBe(200);
+    expect(await purge.json()).toEqual({ revalidated: pathname });
+  });
+
   test("bypasses the shared response stage for middleware cookie overlays", async ({ request }) => {
     const slug = `cookie-${Date.now()}`;
     const first = await readPersonalized(request, `/cdn-stage-cookie/${slug}`, "visitor-a");
