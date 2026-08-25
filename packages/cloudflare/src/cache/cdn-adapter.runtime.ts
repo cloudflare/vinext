@@ -22,11 +22,9 @@
  *   for the edge to honor max-age + stale-while-revalidate.
  * - `revalidateTag` purges the edge via the request context's `cache.purge({ tags })`.
  *
- * Tag alignment: the tags emitted in `Cache-Tag` come from the page's render
- * tags (already canonicalised via `encodeCacheTag`), and the framework's
- * `revalidateTag` / `revalidatePath` pass the same canonical form to this
- * adapter's `revalidateTag`, so a purge targets exactly the responses that
- * carried the tag.
+ * Tags use fixed-size lowercase digests before emission and purge because
+ * Workers Cache tags are case-insensitive printable ASCII, while Next.js tags
+ * are case-sensitive arbitrary strings.
  *
  * The default export is the adapter factory the generated
  * `virtual:vinext-cache-adapters` registration imports; configure it from
@@ -42,8 +40,19 @@ import {
 } from "vinext/shims/cdn-cache";
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { fnv1a64 } from "vinext/internal/utils/hash";
 import { getVinextCdnBuildIdentity, VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../version-headers.js";
+
+type WorkersCachePurgeError = {
+  code: number;
+  message: string;
+};
+
+type WorkersCachePurgeResult = {
+  errors: WorkersCachePurgeError[];
+  success: boolean;
+};
 
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
 const WORKER_VERSION_OVERRIDE_HEADER = "Cloudflare-Workers-Version-Overrides";
@@ -105,7 +114,9 @@ function hasExplicitCloudflareNonCacheableResponsePolicy(headers: Headers): bool
 
 /** The request-context cache surface this adapter relies on (narrowed from `unknown`). */
 type WorkersCacheLike = {
-  purge(options: { tags: string[] }): Promise<unknown>;
+  // Miniflare currently resolves undefined; production Workers returns the
+  // documented result object.
+  purge(options: { tags: string[] }): Promise<WorkersCachePurgeResult | undefined>;
 };
 
 function getWorkersCache(): WorkersCacheLike | null {
@@ -155,30 +166,32 @@ function toEdgeCacheControl(cacheControl: string): string {
 }
 
 /**
- * Cloudflare's `Cache-Tag` header budget is 16 KB total with each tag capped at
- * 1024 bytes. Keep a conservative ceiling so a page with a large tag set never
- * produces an oversized (silently-dropped) header.
+ * Cloudflare's `Cache-Tag` header budget is 16 KB total. Fixed-size digests let
+ * the full Next.js tag set fit without dropping valid long or Unicode tags.
  */
-const MAX_CACHE_TAG_BYTES = 8 * 1024;
-const MAX_SINGLE_TAG_BYTES = 1024;
+const MAX_CACHE_TAG_BYTES = 16 * 1024;
+const CACHE_TAG_PREFIX = "vinext-";
+const ENCODED_CACHE_TAG_RE = /^vinext-[0-9a-f]{32}$/;
+
+/** Encode a case-sensitive Next.js tag into a fixed Workers Cache tag. */
+export function encodeCloudflareCacheTag(tag: string): string {
+  // Completed-response admission may feed the adapter tags recovered from its
+  // own provisional Cache-Tag header. Preserve that representation so the
+  // admitted header and a later purge use the same platform tag.
+  if (ENCODED_CACHE_TAG_RE.test(tag)) return tag;
+  // Two domain-separated 64-bit rounds keep accidental collisions negligible
+  // while staying synchronous for the response-header interface.
+  return `${CACHE_TAG_PREFIX}${fnv1a64(`0:${tag}`)}${fnv1a64(`1:${tag}`)}`;
+}
 
 /**
- * Build a `Cache-Tag` header value from canonicalised tags. Tags containing a
- * comma (the header separator) or exceeding the per-tag size are skipped, and
- * the whole value is bounded to stay within Cloudflare's limit.
+ * Build a complete `Cache-Tag` header value from canonicalised tags. Returning
+ * null makes the response uncacheable rather than caching with incomplete
+ * invalidation metadata.
  */
 function formatCacheTag(tags: readonly string[]): string | null {
-  const parts: string[] = [];
-  let total = 0;
-  for (const tag of tags) {
-    if (!tag || tag.includes(",") || tag.length > MAX_SINGLE_TAG_BYTES) continue;
-    // +1 accounts for the joining comma.
-    const next = total + tag.length + (parts.length > 0 ? 1 : 0);
-    if (next > MAX_CACHE_TAG_BYTES) break;
-    parts.push(tag);
-    total = next;
-  }
-  return parts.length > 0 ? parts.join(",") : null;
+  const value = tags.map(encodeCloudflareCacheTag).join(",");
+  return value && value.length <= MAX_CACHE_TAG_BYTES ? value : null;
 }
 
 export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
@@ -280,6 +293,13 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       "Cache-Tag": input.tags ? formatCacheTag(input.tags) : null,
     };
 
+    if (input.tags && input.tags.length > 0) {
+      const cacheTag = formatCacheTag(input.tags);
+      if (!cacheTag) {
+        return clearCloudflareCdnResponseHeaders(NO_STORE);
+      }
+      headers["Cache-Tag"] = cacheTag;
+    }
     return headers;
   }
 
@@ -293,11 +313,15 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     if (!cache) return; // no host cache in the request context (e.g. Node dev)
 
     const tagList = (Array.isArray(tags) ? tags : [tags]).filter(
-      (t): t is string => typeof t === "string" && t.length > 0,
+      (t): t is string => typeof t === "string",
     );
     if (tagList.length === 0) return;
 
-    await cache.purge({ tags: tagList });
+    const result = await cache.purge({ tags: tagList.map(encodeCloudflareCacheTag) });
+    if (result?.success === false) {
+      const errors = result.errors.map(({ code, message }) => `${code}: ${message}`).join(", ");
+      throw new Error(`[vinext] Workers Cache purge failed${errors ? `: ${errors}` : ""}`);
+    }
   }
 }
 

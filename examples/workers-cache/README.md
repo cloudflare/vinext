@@ -82,8 +82,10 @@ Cache Rules.
 4. **ISR responses** carry `Cloudflare-CDN-Cache-Control: public, max-age=N,
 stale-while-revalidate=M` (for the edge) plus a browser-facing
    `Cache-Control: public, max-age=0, must-revalidate`, and a `Cache-Tag`
-   header listing both the bare path (`/cached/intro`) and Next.js's internal
-   `_N_T_<path>` form. The Workers Cache reads these to cache and tag-purge.
+   header containing Cloudflare-safe fixed-size digests of both the bare path
+   (`/cached/intro`) and Next.js's internal `_N_T_<path>` form. The Workers
+   Cache reads these to cache and tag-purge without losing Next.js's
+   case-sensitive tag semantics.
 
 5. **`revalidateTag` / `revalidatePath`** in your route handlers fan out to
    both the KV data cache and `ctx.cache.purge(...)` on the platform layer.
