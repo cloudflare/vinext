@@ -4306,6 +4306,89 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it.each([
+    { label: "context-only requests", interceptionId: null, expectedStatus: 200 },
+    {
+      label: "selector-bearing requests",
+      interceptionId: "interception:slot:modal:/feed:/feed->/blog/:slug",
+      expectedStatus: 400,
+    },
+  ])(
+    "revalidates interception proof after afterFiles rewrites for $label",
+    async ({ expectedStatus, interceptionId }) => {
+      const routes = {
+        about: createPageRoute({ pattern: "/about", routeSegments: ["about"] }),
+        blog: createPageRoute({
+          isDynamic: true,
+          pattern: "/blog/:slug",
+          routeSegments: ["blog", "[slug]"],
+        }),
+        feed: createPageRoute({ pattern: "/feed", routeSegments: ["feed"] }),
+      };
+      const matchInterceptRoute = vi.fn(
+        (pathname: string, sourcePathname: string, requestedId?: string | null) =>
+          pathname === "/blog/legacy" &&
+          sourcePathname === "/feed" &&
+          requestedId === interceptionId
+            ? { interceptionSourceIsConcrete: true, params: {}, route: routes.feed }
+            : null,
+      );
+      const dispatchMatchedPage = vi.fn(
+        async () =>
+          new Response("page", {
+            headers: { "Cache-Control": "public, max-age=3600" },
+          }),
+      );
+      const emptyParams: Record<string, string | string[]> = {};
+      const blogParams: Record<string, string | string[]> = { slug: "legacy" };
+      const matchRoute: HandlerOptions["matchRoute"] = (pathname) => {
+        if (pathname === "/about") return { params: emptyParams, route: routes.about };
+        if (pathname === "/blog/legacy") {
+          return { params: blogParams, route: routes.blog };
+        }
+        return null;
+      };
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [{ source: "/blog/legacy", destination: "/about" }],
+          fallback: [],
+        },
+        dispatchMatchedPage,
+        hasInterceptionId: (requestedId) => requestedId === interceptionId,
+        matchInterceptRoute,
+        matchRoute,
+      });
+      const headers = createRscRequestHeaders({
+        interceptionContext: "/feed",
+        interceptionId,
+      });
+      const rscUrl = await createRscRequestUrl("/docs/blog/legacy", headers);
+
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(expectedStatus);
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(matchInterceptRoute).toHaveBeenCalledWith("/about", "/feed", interceptionId);
+      if (interceptionId === null) {
+        expect(dispatchMatchedPage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            bypassInterceptionContextCache: true,
+            cleanPathname: "/about",
+          }),
+        );
+      } else {
+        expect(dispatchMatchedPage).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("lets a static Pages route win before afterFiles rewrites", async () => {
     const dynamicRoute = createPageRoute({
       isDynamic: true,

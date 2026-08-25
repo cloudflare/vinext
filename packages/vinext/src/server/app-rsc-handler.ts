@@ -1144,13 +1144,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     setInterceptionResponseUncacheable(true);
     return badRequestResponse();
   }
-  const bypassInterceptionContextCache =
-    hasRawInterceptionContext && !hasVerifiedInterceptionSource;
+  let bypassInterceptionContextCache = hasRawInterceptionContext && !hasVerifiedInterceptionSource;
   if (interceptionContextHeader !== null) {
     // Replace any direct-target proof after rewrites. Exact graph ownership is
     // the only point where the source identity is safe for shared variants.
     setInterceptionResponseUncacheable(bypassInterceptionContextCache);
   }
+  let interceptionCacheProofInvalidated = false;
+  const invalidateInterceptionCacheProof = (): void => {
+    if (!hasRawInterceptionContext) return;
+    interceptionCacheProofInvalidated = true;
+    bypassInterceptionContextCache = true;
+    setInterceptionResponseUncacheable(true);
+  };
   if (
     interceptionSourceMatch !== null &&
     interceptionSourcePathname !== null &&
@@ -1476,11 +1482,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         },
         matchPathname(cleanPathname),
       );
-      if (afterFilesRewrite instanceof Response) return afterFilesRewrite;
+      if (afterFilesRewrite instanceof Response) {
+        invalidateInterceptionCacheProof();
+        return afterFilesRewrite;
+      }
       if (!afterFilesRewrite) continue;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, afterFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
+      invalidateInterceptionCacheProof();
       filesystemRouteEligible = true;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
@@ -1526,11 +1536,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         },
         matchPathname(cleanPathname),
       );
-      if (fallbackRewrite instanceof Response) return fallbackRewrite;
+      if (fallbackRewrite instanceof Response) {
+        invalidateInterceptionCacheProof();
+        return fallbackRewrite;
+      }
       if (!fallbackRewrite) continue;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
+      invalidateInterceptionCacheProof();
       filesystemRouteEligible = true;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
@@ -1547,6 +1561,30 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }
       if (match) break;
     }
+  }
+
+  if (interceptionCacheProofInvalidated && interceptionContextHeader !== null) {
+    const finalInterceptionTargetPathname = cleanPathnameIsRequestPathname
+      ? requestCleanPathname
+      : cleanPathname;
+    const finalInterceptionSourceMatch =
+      filesystemRouteEligible && match !== null
+        ? (options.matchInterceptRoute?.(
+            finalInterceptionTargetPathname,
+            interceptionContextHeader,
+            interceptionIdHeader,
+          ) ?? null)
+        : null;
+    const hasVerifiedFinalInterceptionSource = provesConcreteInterceptionSource(
+      finalInterceptionSourceMatch,
+    );
+    if (interceptionIdHeader !== null && !hasVerifiedFinalInterceptionSource) {
+      options.clearRequestContext();
+      setInterceptionResponseUncacheable(true);
+      return badRequestResponse();
+    }
+    bypassInterceptionContextCache = !hasVerifiedFinalInterceptionSource;
+    setInterceptionResponseUncacheable(bypassInterceptionContextCache);
   }
 
   if (!filesystemRouteEligible) {
