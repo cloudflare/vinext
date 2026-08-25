@@ -4389,6 +4389,94 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it.each([
+    {
+      expectedBypass: true,
+      expectedCacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
+      expectedMiddlewarePaths: ["/blog/legacy"],
+      initialSourceMatch: false,
+      label: "newly discovered sources",
+    },
+    {
+      expectedBypass: false,
+      expectedCacheControl: "public, max-age=3600",
+      expectedMiddlewarePaths: ["/blog/legacy", "/feed"],
+      initialSourceMatch: true,
+      label: "previously authorized sources",
+    },
+  ])(
+    "restores cacheability after late rewrites only for $label",
+    async ({
+      expectedBypass,
+      expectedCacheControl,
+      expectedMiddlewarePaths,
+      initialSourceMatch,
+    }) => {
+      const routes = {
+        about: createPageRoute({ pattern: "/about", routeSegments: ["about"] }),
+        blog: createPageRoute({
+          isDynamic: true,
+          pattern: "/blog/:slug",
+          routeSegments: ["blog", "[slug]"],
+        }),
+        feed: createPageRoute({ pattern: "/feed", routeSegments: ["feed"] }),
+      };
+      const matchInterceptRoute = vi.fn((pathname: string, sourcePathname: string) =>
+        sourcePathname === "/feed" && (pathname === "/about" || initialSourceMatch)
+          ? { interceptionSourceIsConcrete: true, params: {}, route: routes.feed }
+          : null,
+      );
+      const middlewarePaths: string[] = [];
+      const dispatchMatchedPage = vi.fn(
+        async () =>
+          new Response("page", {
+            headers: { "Cache-Control": "public, max-age=3600" },
+          }),
+      );
+      const emptyParams: Record<string, string | string[]> = {};
+      const blogParams: Record<string, string | string[]> = { slug: "legacy" };
+      const matchRoute: HandlerOptions["matchRoute"] = (pathname) => {
+        if (pathname === "/about") return { params: emptyParams, route: routes.about };
+        if (pathname === "/blog/legacy") {
+          return { params: blogParams, route: routes.blog };
+        }
+        return null;
+      };
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [{ source: "/blog/legacy", destination: "/about" }],
+          fallback: [],
+        },
+        dispatchMatchedPage,
+        matchInterceptRoute,
+        matchRoute,
+        async runMiddleware({ cleanPathname }) {
+          middlewarePaths.push(cleanPathname);
+          return { kind: "continue", cleanPathname, rewritten: false, search: null };
+        },
+      });
+      const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+      const rscUrl = await createRscRequestUrl("/docs/blog/legacy", headers);
+
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe(expectedCacheControl);
+      expect(middlewarePaths).toEqual(expectedMiddlewarePaths);
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bypassInterceptionContextCache: expectedBypass,
+          cleanPathname: "/about",
+        }),
+      );
+    },
+  );
+
   it("lets a static Pages route win before afterFiles rewrites", async () => {
     const dynamicRoute = createPageRoute({
       isDynamic: true,

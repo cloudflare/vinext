@@ -1575,9 +1575,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             interceptionIdHeader,
           ) ?? null)
         : null;
-    const hasVerifiedFinalInterceptionSource = provesConcreteInterceptionSource(
-      finalInterceptionSourceMatch,
-    );
+    const hasVerifiedFinalInterceptionSource =
+      hasVerifiedInterceptionSource &&
+      interceptionSourceMatch !== null &&
+      provesConcreteInterceptionSource(finalInterceptionSourceMatch) &&
+      finalInterceptionSourceMatch?.route === interceptionSourceMatch.route &&
+      haveSamePageParams(finalInterceptionSourceMatch.params, interceptionSourceMatch.params);
     if (interceptionIdHeader !== null && !hasVerifiedFinalInterceptionSource) {
       options.clearRequestContext();
       setInterceptionResponseUncacheable(true);
