@@ -23,7 +23,10 @@ import {
 } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generateServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
-import { readAppRouterEntrySource, readPagesRouterEntrySource } from "./worker-entry-source.js";
+import {
+  readAppRouterEntrySource,
+  readPagesRequestStageEntrySource,
+} from "./worker-entry-source.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
@@ -64,7 +67,7 @@ describe("generateCacheAdaptersModule", () => {
   it("wires only the cdn adapter when only cdn is configured", () => {
     const code = generateCacheAdaptersModule({ cdn: { adapter: "my-cdn-adapter" } });
     expect(code).toContain(`import __vinextCdnAdapterFactory from "my-cdn-adapter";`);
-    expect(code).toContain(`import { setCdnCacheAdapter } from "vinext/shims/cdn-cache";`);
+    expect(code).toContain(`import { setCdnCacheAdapter } from "vinext/shims/cdn-cache-state";`);
     expect(code).toContain(
       "setCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: undefined }));",
     );
@@ -266,7 +269,7 @@ describe("registration is wired into every router/runtime entry", () => {
   });
 
   it("Pages Router worker entry registers with env", () => {
-    const code = readPagesRouterEntrySource();
+    const code = readPagesRequestStageEntrySource();
     expect(code).toContain('from "virtual:vinext-cache-adapters"');
     expect(code).toContain("registerConfiguredCacheAdapters(env)");
     expect(code).toContain("await validateCdnRequest(request)");

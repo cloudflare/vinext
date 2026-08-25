@@ -15,6 +15,7 @@
  * request.
  */
 import { flattenPluginOptions } from "../utils/plugin-options.js";
+import type { VinextMultiStageOutput } from "../server/multi-stage.js";
 
 /**
  * A serializable pointer to a cache adapter module — the shape of each `cache`
@@ -57,6 +58,15 @@ export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<st
   adapter: string;
   /** JSON-serializable options forwarded to the factory at runtime. */
   options?: O;
+  /**
+   * Optional adapter-owned multi-stage server output facade.
+   *
+   * Core vinext only selects and re-exports this module for compatible host
+   * builds. The module owns the transport (for example loopback RPC, a service
+   * binding, or HTTP fetch), while vinext exposes separate, lazily importable
+   * platform-neutral request and response stage modules for it to compose.
+   */
+  output?: VinextMultiStageOutput;
   /** Build-time cache semantics used by shared request protocol code. */
   capabilities?: CdnCacheAdapterCapabilities;
 };
@@ -170,7 +180,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   }
   if (cdn?.adapter) {
     lines.push(`import __vinextCdnAdapterFactory from ${JSON.stringify(cdn.adapter)};`);
-    lines.push(`import { setCdnCacheAdapter } from "vinext/shims/cdn-cache";`);
+    lines.push(`import { setCdnCacheAdapter } from "vinext/shims/cdn-cache-state";`);
   }
 
   lines.push(

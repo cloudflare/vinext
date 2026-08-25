@@ -3,8 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { createServer, type Plugin } from "vite";
 import { describe, expect, it, vi } from "vite-plus/test";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 
 const CAPTURE_RSC_REQUEST = "__vinextCaptureWorkerRscRequest";
+const REGISTER_CDN_ADAPTER = "__vinextRegisterWorkerCdnAdapter";
 
 function workerEntryVirtualModules(): Plugin {
   const modules = new Map([
@@ -22,7 +28,25 @@ export default async function rscHandler(request) {
 }
 `,
     ],
-    ["virtual:vinext-cache-adapters", "export function registerConfiguredCacheAdapters() {}"],
+    [
+      "virtual:vinext-app-request-entry",
+      `
+export const __assetPrefix = "";
+export const __basePath = "";
+export const __imageAllowedWidths = [];
+export const __imageConfig = {};
+export default async function rscHandler(request) {
+  globalThis.${CAPTURE_RSC_REQUEST}(request);
+  return new Response("ok");
+}
+`,
+    ],
+    [
+      "virtual:vinext-cache-adapters",
+      `export function registerConfiguredCacheAdapters(env) {
+  globalThis.${REGISTER_CDN_ADAPTER}?.(env);
+}`,
+    ],
     ["virtual:vinext-image-adapters", "export function registerConfiguredImageOptimizer() {}"],
   ]);
 
@@ -38,6 +62,96 @@ export default async function rscHandler(request) {
 }
 
 describe("App Router Production server worker entry compatibility", () => {
+  it("validates CDN routing and stamps build identity at the request-stage boundary", async () => {
+    // No Next.js test port applies: CDN adapter validation and staged Worker
+    // boundaries are vinext deployment contracts.
+    const capturedRequests: Request[] = [];
+    const capturedEnvs: unknown[] = [];
+    Reflect.set(globalThis, CAPTURE_RSC_REQUEST, (request: Request) => {
+      capturedRequests.push(request);
+    });
+    const adapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders() {
+        return {};
+      },
+      buildResponseIdentityHeaders() {
+        return { "X-Test-Build-Identity": "build-a" };
+      },
+      validateRequest(request) {
+        return request.headers.has("X-Reject-Stage")
+          ? new Response("retry", { status: 503 })
+          : null;
+      },
+      async revalidateTag() {},
+    };
+    Reflect.set(globalThis, REGISTER_CDN_ADAPTER, (env: unknown) => {
+      capturedEnvs.push(env);
+      setCdnCacheAdapter(adapter);
+    });
+
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [workerEntryVirtualModules()],
+        resolve: {
+          alias: {
+            "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+          },
+        },
+        server: { middlewareMode: true },
+      });
+      const entry = (await server.ssrLoadModule(
+        path.resolve(
+          import.meta.dirname,
+          "../packages/vinext/src/server/app-request-stage-independent-entry.ts",
+        ),
+      )) as {
+        handleRequestStage(
+          request: Request,
+          env: unknown,
+          ctx: undefined,
+          dispatchResponseStage: () => Promise<Response>,
+        ): Promise<Response>;
+      };
+      const env = { binding: "value" };
+      const rejected = await entry.handleRequestStage(
+        new Request("https://example.com/rejected", {
+          headers: { Accept: "text/html", "X-Reject-Stage": "1" },
+        }),
+        env,
+        undefined,
+        async () => new Response("unused"),
+      );
+      const accepted = await entry.handleRequestStage(
+        new Request("https://example.com/accepted", { headers: { Accept: "text/html" } }),
+        env,
+        undefined,
+        async () => new Response("unused"),
+      );
+
+      expect(rejected.status).toBe(503);
+      expect(await rejected.text()).toBe("retry");
+      expect(rejected.headers.get("X-Test-Build-Identity")).toBe("build-a");
+      expect(await accepted.text()).toBe("ok");
+      expect(accepted.headers.get("X-Test-Build-Identity")).toBe("build-a");
+      expect(capturedRequests).toHaveLength(1);
+      expect(capturedEnvs).toEqual([env, env]);
+    } finally {
+      await server?.close();
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+      Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
+      Reflect.deleteProperty(globalThis, REGISTER_CDN_ADAPTER);
+    }
+  });
+
   it("restores prerender route params only for the server-owned Node context", async () => {
     // No Next.js test port applies: these headers and this Worker boundary are vinext-specific.
     const capturedRequests: Request[] = [];

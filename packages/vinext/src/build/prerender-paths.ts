@@ -40,6 +40,7 @@ import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { buildPagesDataHref } from "vinext/shims/internal/pages-data-url";
 import { CACHEABILITY_POLICY_HEADERS } from "vinext/shims/cacheability-classification";
+import { resolveBuiltRscEntryPath } from "./server-entry.js";
 
 export type PrerenderRoutePattern = {
   kind: "app-page" | "app-route" | "pages-page";
@@ -51,7 +52,6 @@ export type PrerenderRoutePattern = {
     concretePathname?: string;
   };
 };
-
 export type PrerenderPathManifest = {
   /** App Page HTML paths after hybrid route ownership has been resolved. */
   appPaths?: string[];
@@ -1187,9 +1187,10 @@ export async function emitPrerenderPathManifest(
 
   if (!appDir && !pagesDir) return null;
 
-  const defaultRscBundlePath = options.routeRootConfig?.rscOutDir
-    ? path.join(path.resolve(root, options.routeRootConfig.rscOutDir), "index.js")
-    : path.join(root, "dist", "server", "index.js");
+  const rscServerDir = options.routeRootConfig?.rscOutDir
+    ? path.resolve(root, options.routeRootConfig.rscOutDir)
+    : path.join(root, "dist", "server");
+  const defaultRscBundlePath = resolveBuiltRscEntryPath(rscServerDir);
   const rscBundlePath = options.rscBundlePath ?? defaultRscBundlePath;
   const pagesBundlePath = options.pagesBundlePath ?? path.join(root, "dist", "server", "entry.js");
   const bundleServerDir = fs.existsSync(rscBundlePath)

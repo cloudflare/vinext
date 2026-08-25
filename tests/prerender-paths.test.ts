@@ -1399,6 +1399,41 @@ describe("prerender path manifest", () => {
     );
   });
 
+  it("uses the generated application entry recorded in the server build manifest", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", 'import "cloudflare:workers";\n');
+    writeFile("dist/server/application-entry.js", "export default {};\n");
+    writeFile(
+      "dist/server/.vite/manifest.json",
+      JSON.stringify({
+        "virtual:vinext-rsc-entry": {
+          file: "application-entry.js",
+          isDynamicEntry: true,
+        },
+      }),
+    );
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      [
+        "export const revalidate = 60;",
+        "export function generateStaticParams() { return [{ slug: 'intro' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    await emitPrerenderPathManifest({ root: tmpDir });
+
+    expect(startProdServerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rscEntryPath: toSlash(path.join(tmpDir, "dist/server/application-entry.js")),
+      }),
+    );
+  });
+
   it("derives a custom RSC bundle path from route metadata", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");

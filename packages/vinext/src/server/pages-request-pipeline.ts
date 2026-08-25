@@ -38,7 +38,10 @@ import { normalizeDefaultLocalePathname, stripI18nLocaleForApiRoute } from "./pa
 import { mergeRewriteQuery } from "../utils/query.js";
 import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
-import { isOnDemandRevalidateRequest, PRERENDER_REVALIDATE_HEADER } from "./isr-cache.js";
+import {
+  isOnDemandRevalidateRequest,
+  PRERENDER_REVALIDATE_HEADER,
+} from "./revalidation-request.js";
 import {
   methodNotAllowedResponse,
   sanitizeMethodNotAllowedHeaders,
@@ -76,6 +79,18 @@ export type PagesRenderOptions = {
 };
 
 export type FilesystemRoutePhase = "direct" | "beforeFiles" | "afterFiles" | "fallback";
+
+function headersFromRecord(record: HeaderRecord): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(record)) {
+    if (Array.isArray(value)) {
+      for (const item of value) headers.append(name, item);
+    } else {
+      headers.set(name, value);
+    }
+  }
+  return headers;
+}
 
 type PageRouteMatch = {
   route: { isDynamic: boolean; pattern?: string; dataKind?: "static" | "server" | "none" };
@@ -205,7 +220,14 @@ export type PagesPipelineDeps = {
         stagedHeaders?: Headers,
       ) => Promise<Response>)
     | null;
-  handleApi?: ((request: Request, apiUrl: string, ctx: unknown) => Promise<Response>) | null;
+  handleApi?:
+    | ((
+        request: Request,
+        apiUrl: string,
+        ctx: unknown,
+        stagedHeaders: Headers,
+      ) => Promise<Response>)
+    | null;
   /**
    * Optional override for proxying external rewrite destinations.
    * When supplied, the pipeline calls this instead of proxyExternalRequest(currentRequest, url).
@@ -401,6 +423,17 @@ export async function runPagesRequest(
   let resolvedUrl = originalResolvedUrl;
   let resolvedPathnameIsRequestPathname = true;
   const middlewareHeaders: HeaderRecord = {};
+  const mergeConfigHeadersIntoEarlyResponse = (response: Response): Response => {
+    if (configHeaders.length === 0) return response;
+    const matchedConfigHeaders: HeaderRecord = {};
+    applyConfigHeadersToHeaderRecord(matchedConfigHeaders, {
+      configHeaders,
+      pathname: requestConfigMatchPathname,
+      requestContext: reqCtx,
+      basePathState,
+    });
+    return mergeHeaders(response, matchedConfigHeaders);
+  };
   let middlewareStatus: number | undefined;
   const serveFilesystemRoute = async (
     requestPathname: string,
@@ -484,14 +517,19 @@ export async function runPagesRequest(
         }
         return {
           type: "response",
-          response: new Response(null, {
-            status: result.redirectStatus ?? 307,
-            headers,
-          }),
+          response: mergeConfigHeadersIntoEarlyResponse(
+            new Response(null, {
+              status: result.redirectStatus ?? 307,
+              headers,
+            }),
+          ),
         };
       }
       if (result.response) {
-        return { type: "response", response: result.response };
+        return {
+          type: "response",
+          response: mergeConfigHeadersIntoEarlyResponse(result.response),
+        };
       }
     }
 
@@ -676,7 +714,12 @@ export async function runPagesRequest(
         apiRequestUrl.pathname = addBasePathToPathname(apiRequestUrl.pathname, basePath);
         apiRequest = cloneRequestWithUrl(request, apiRequestUrl.toString());
       }
-      const response = await deps.handleApi(apiRequest, apiLookupUrl, deps.ctx ?? null);
+      const response = await deps.handleApi(
+        apiRequest,
+        apiLookupUrl,
+        deps.ctx ?? null,
+        headersFromRecord(middlewareHeaders),
+      );
       const merged = mergeHeaders(response, middlewareHeaders, middlewareStatus);
       // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
       // mergeHeaders may create a new Response object (losing non-standard
@@ -818,14 +861,7 @@ export async function runPagesRequest(
     // Convert staged middleware headers to a Web Headers object for renderPage.
     // Adapters that need to inject per-request values (e.g. CSP nonces) into the
     // rendered HTML can access them via this argument.
-    const stagedHeaders = new Headers();
-    for (const [k, v] of Object.entries(middlewareHeaders)) {
-      if (Array.isArray(v)) {
-        for (const item of v) stagedHeaders.append(k, item);
-      } else {
-        stagedHeaders.set(k, v);
-      }
-    }
+    const stagedHeaders = headersFromRecord(middlewareHeaders);
 
     let response = await deps.renderPage(request, resolvedUrl, initialRenderOptions, stagedHeaders);
 

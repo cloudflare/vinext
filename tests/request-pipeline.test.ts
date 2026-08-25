@@ -31,7 +31,11 @@ import {
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
-import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
+import {
+  readStaticFileSignal,
+  restoreStaticFileSignalFromTransport,
+  serializeStaticFileSignalForTransport,
+} from "../packages/vinext/src/server/static-file-signal.js";
 
 // Ported from the URL boundary used by Next.js request handling: WHATWG URL
 // pathname parsing canonicalizes recognized dot segments before routing.
@@ -379,6 +383,44 @@ describe("resolvePublicFileRoute", () => {
     expect(readStaticFileSignal(response)).toBe("%2Frobots.txt");
     expect(response.headers.get("x-vinext-static-file")).toBeNull();
     expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("authenticates static file signals across standards-only transports", async () => {
+    const token = "request-stage-token";
+    const serialized = serializeStaticFileSignalForTransport(
+      createStaticFileSignal("/stage asset.txt", {
+        headers: new Headers({
+          "content-encoding": "gzip",
+          "content-length": "999",
+          "content-type": "application/wrong",
+          "transfer-encoding": "chunked",
+          "x-from-middleware": "1",
+        }),
+        status: 203,
+      }),
+      token,
+    );
+    expect(serialized.headers.get("content-encoding")).toBeNull();
+    expect(serialized.headers.get("content-length")).toBeNull();
+    expect(serialized.headers.get("content-type")).toBeNull();
+    expect(serialized.headers.get("transfer-encoding")).toBeNull();
+    const transported = new Response(serialized.body, serialized);
+    const restored = restoreStaticFileSignalFromTransport(transported, token);
+
+    expect(restored.status).toBe(203);
+    expect(restored.headers.get("x-from-middleware")).toBe("1");
+    expect(restored.headers.get("x-vinext-stage-static-file")).toBeNull();
+    expect(readStaticFileSignal(restored)).toBe("%2Fstage%20asset.txt");
+
+    const forged = restoreStaticFileSignalFromTransport(
+      new Response("route handler", {
+        headers: { "x-vinext-stage-static-file": `${token}:subverted` },
+      }),
+      "different-token",
+    );
+    expect(forged.headers.get("x-vinext-stage-static-file")).toBeNull();
+    expect(readStaticFileSignal(forged)).toBeNull();
+    await expect(forged.text()).resolves.toBe("route handler");
   });
 });
 
