@@ -1,7 +1,6 @@
 "use client";
 
-import type { Route } from "next";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useLayoutEffect, useOptimistic, useRef, useTransition } from "react";
 
 const providers = [
@@ -10,7 +9,7 @@ const providers = [
   { name: "disney", value: "337" },
 ] as const;
 
-function nextProviderQuery(currentQuery: string, provider: string) {
+function nextProviderQuery(currentQuery: string | undefined, provider: string) {
   const params = new URLSearchParams(currentQuery);
 
   if (params.get("provider") === provider) {
@@ -23,14 +22,11 @@ function nextProviderQuery(currentQuery: string, provider: string) {
 }
 
 export function ProviderToggle() {
-  // The hybrid Pages/App typings make these nullable; neither is null while
-  // this App Router page is mounted.
-  const pathname = usePathname() ?? "/";
   const router = useRouter();
   const routeSearchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
   const [optimisticQuery, setOptimisticQuery] = useOptimistic(
-    routeSearchParams?.toString() ?? "",
+    routeSearchParams?.toString(),
     (_currentQuery, nextQuery: string) => nextQuery,
   );
   const optimisticQueryRef = useRef(optimisticQuery);
@@ -45,12 +41,13 @@ export function ProviderToggle() {
 
       startTransition(() => {
         setOptimisticQuery(query);
-        // `typedRoutes` rejects arbitrary strings; `as Route` is the Next.js
-        // idiom for hrefs assembled at runtime.
-        router.push((query ? `${pathname}?${query}` : pathname) as Route, { scroll: false });
+        router.push(
+          query ? `/optimistic-search-navigation?${query}` : "/optimistic-search-navigation",
+          { scroll: false },
+        );
       });
     },
-    [pathname, router, setOptimisticQuery],
+    [router, setOptimisticQuery],
   );
 
   const selectedProvider = new URLSearchParams(optimisticQuery).get("provider");
@@ -82,7 +79,6 @@ export function ProviderToggle() {
 }
 
 export function RouterOnlyControl() {
-  const pathname = usePathname() ?? "/";
   const router = useRouter();
 
   return (
@@ -90,7 +86,9 @@ export function RouterOnlyControl() {
       <h2 id="router-control-heading">Router-only control</h2>
       <button
         data-testid="router-only-control"
-        onClick={() => router.push(`${pathname}?provider=control` as Route, { scroll: false })}
+        onClick={() =>
+          router.push("/optimistic-search-navigation?provider=control", { scroll: false })
+        }
         type="button"
       >
         Select control provider

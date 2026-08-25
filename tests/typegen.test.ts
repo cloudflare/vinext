@@ -222,6 +222,8 @@ const dynamicHref: LinkProps<"/blog/hello">["href"] = "/blog/hello";
 const catchAllHref: LinkProps<"/docs/a/b">["href"] = "/docs/a/b";
 declare const router: ReturnType<typeof useRouter>;
 router.push("/dashboard");
+declare const query: string;
+router.push(query ? \`/dashboard?\${query}\` : "/dashboard");
 // @ts-expect-error invalid push target
 router.push("/nope");
 redirect("/dashboard");
