@@ -708,6 +708,7 @@ describe("App RSC route matching", () => {
 
       // A Route Handler descendant falls back to the slot owner (index 0).
       expect(matcher.findIntercept("/hidden", "/feed/admin")).toMatchObject({
+        sourceRouteIsConcrete: false,
         sourceRouteIndex: 0,
       });
       // A lazy Route Handler is classified the same before its first load.
@@ -732,6 +733,7 @@ describe("App RSC route matching", () => {
       });
       // Page descendants still resolve concretely, preserving their params.
       expect(matcher.findIntercept("/hidden", "/feed/recent")).toMatchObject({
+        sourceRouteIsConcrete: true,
         sourceRouteIndex: 2,
         sourceMatchedParams: { tab: "recent" },
       });
@@ -821,16 +823,19 @@ describe("App RSC route matching", () => {
       ]);
 
       expect(matcher.findIntercept("/en/hidden", "/en/feed/admin")).toMatchObject({
+        sourceRouteIsConcrete: false,
         sourceRouteIndex: 0,
         sourceMatchedParams: { locale: "en" },
       });
       // A descendant with no concrete route at all takes the same fallback.
       expect(matcher.findIntercept("/en/hidden", "/en/feed/unknown/deep")).toMatchObject({
+        sourceRouteIsConcrete: false,
         sourceRouteIndex: 0,
         sourceMatchedParams: { locale: "en" },
       });
       // An exact source still matches the owner directly.
       expect(matcher.findIntercept("/en/hidden", "/en/feed")).toMatchObject({
+        sourceRouteIsConcrete: true,
         sourceRouteIndex: 0,
         sourceMatchedParams: { locale: "en" },
       });

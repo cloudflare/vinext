@@ -282,6 +282,7 @@ function createRoute(overrides: Partial<TestRoute> = {}): TestRoute {
 
 type CreateDispatchOptionsOverrides = {
   buildPageElement?: DispatchOptions["buildPageElement"];
+  bypassInterceptionContextCache?: DispatchOptions["bypassInterceptionContextCache"];
   cleanPathname?: string;
   clearRequestContext?: DispatchOptions["clearRequestContext"];
   dynamicConfig?: DispatchOptions["dynamicConfig"];
@@ -345,6 +346,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     }));
   const options: DispatchOptions = {
     buildPageElement,
+    bypassInterceptionContextCache: overrides.bypassInterceptionContextCache,
     cleanPathname: overrides.cleanPathname ?? "/posts/hello",
     clearRequestContext,
     createRscOnErrorHandler() {
@@ -2469,6 +2471,47 @@ describe("app page dispatch", () => {
     });
     expect(options.isrGet).not.toHaveBeenCalled();
     expect(options.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("bypasses shared caches for an unverified interception context", async () => {
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry(
+        buildCachedAppPageValue(
+          "",
+          new TextEncoder().encode("cached-flight").buffer,
+          undefined,
+          buildQueryInvariantRenderObservation(),
+        ),
+      ),
+    );
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+    const { options } = createDispatchOptions({
+      bypassInterceptionContextCache: true,
+      interceptionContext: "/attacker-selected",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet,
+      isrSet,
+      renderToReadableStream: () => createStream(["fresh-flight"]),
+      revalidateSeconds: 60,
+    });
+
+    const response = await runWithExecutionContext(executionContext, () =>
+      dispatchAppPage(options),
+    );
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("fresh-flight");
+    await Promise.all(waitUntilPromises.splice(0));
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it("uses a verified interception id in the persistent RSC cache key", async () => {

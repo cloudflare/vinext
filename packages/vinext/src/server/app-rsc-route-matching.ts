@@ -105,6 +105,7 @@ type AppRscRouteForMatching = {
 
 type AppRscInterceptMatch = AppRscInterceptLookupEntry & {
   matchedParams: AppRscRouteParams;
+  sourceRouteIsConcrete: boolean;
   sourceMatchedParams: AppRscRouteParams;
 };
 
@@ -306,6 +307,7 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         return {
           ...entry,
           page: entry.__loadState.page,
+          sourceRouteIsConcrete: concreteSourceRoute !== null,
           sourceRouteIndex: concreteSourceRouteIndex,
           matchedParams: mergeMatchedParams(sourceParams, params),
           sourceMatchedParams: matchedSourceParams ?? createRouteParams(),

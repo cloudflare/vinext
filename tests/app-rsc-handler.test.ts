@@ -681,8 +681,11 @@ describe("createAppRscHandler", () => {
       dispatchMatchedPage,
       matchInterceptRoute: (_pathname, sourcePathname) =>
         sourcePathname === "/feed/secret" ? { route: sourceRoute, params: {} } : null,
-      matchRoute: (pathname: string) =>
-        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      matchRoute: (pathname: string) => {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/feed/secret") return { params: {}, route: sourceRoute };
+        return null;
+      },
       async runMiddleware({ cleanPathname }) {
         middlewarePaths.push(cleanPathname);
         return cleanPathname.startsWith("/feed/secret")
@@ -715,8 +718,11 @@ describe("createAppRscHandler", () => {
       dispatchMatchedPage,
       matchInterceptRoute: (_pathname, sourcePathname) =>
         sourcePathname === "/%66eed/secret" ? { route: sourceRoute, params: {} } : null,
-      matchRoute: (pathname: string) =>
-        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      matchRoute: (pathname: string) => {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/feed/secret") return { params: {}, route: sourceRoute };
+        return null;
+      },
       middlewareModule: {
         config: { matcher: "/feed/:path*" },
         default(request: NextRequest) {
@@ -733,6 +739,102 @@ describe("createAppRscHandler", () => {
     expect(response.status).toBe(401);
     expect(middlewarePaths).toEqual(["/feed/secret"]);
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "/feed/..",
+    "/feed/%2e%2e",
+    "/feed/./secret",
+    "/feed//secret",
+    "/feed/secret/../../../x",
+    "/feed/..\\secret",
+    "/feed\\..\\secret",
+    "/feed\\secret",
+    "/feed/%09../secret",
+    "/feed/%0a../secret",
+    "/feed/%0d../secret",
+    "/feed/%252e%252e/secret",
+  ])("rejects non-canonical interception source %s before route matching", async (source) => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({
+      isDynamic: true,
+      params: ["path"],
+      pattern: "/feed/:path*",
+      routeSegments: ["feed", "[[...path]]"],
+    });
+    const matcher = createAppRscRouteMatcher([
+      {
+        params: ["path"],
+        pattern: "/feed/:path*",
+        patternParts: ["feed", ":path*"],
+        slots: {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/feed",
+                targetPattern: "/photos/:id",
+                interceptLayouts: [],
+                page: { default() {} },
+                params: ["id"],
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    const matchInterceptRoute = vi.fn((pathname: string, sourcePathname: string) => {
+      const intercept = matcher.findIntercept(pathname, sourcePathname);
+      return intercept ? { route: sourceRoute, params: intercept.sourceMatchedParams } : null;
+    });
+    const runMiddleware = vi.fn(async ({ cleanPathname }: { cleanPathname: string }) => ({
+      kind: "continue" as const,
+      cleanPathname,
+      rewritten: false,
+      search: null,
+    }));
+    const dispatchMatchedPage = vi.fn(async () => new Response("secret"));
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/photos/:path*",
+          headers: [{ key: "Cache-Control", value: "public, max-age=3600" }],
+        },
+      ],
+      dispatchMatchedPage,
+      matchInterceptRoute,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+      runMiddleware,
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: source });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(runMiddleware).not.toHaveBeenCalled();
+    expect(matchInterceptRoute).not.toHaveBeenCalled();
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-canonical interception sources before config redirects", async () => {
+    const handler = createHandler({
+      configHeaders: [],
+      configRedirects: [{ source: "/photos/:id", destination: "/viewer/:id", permanent: false }],
+    });
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/.." });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
   });
 
   it("rejects interception sources containing a raw query delimiter", async () => {
@@ -781,7 +883,7 @@ describe("createAppRscHandler", () => {
     const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
 
     expect(response.status).toBe(400);
-    expect(middlewarePaths).toEqual(["/photos/1"]);
+    expect(middlewarePaths).toEqual([]);
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
@@ -805,6 +907,186 @@ describe("createAppRscHandler", () => {
     expect(matchInterceptRoute).toHaveBeenCalledWith("/photos/1", "/%2561dmin", null);
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({ interceptionContext: "/%2561dmin" }),
+    );
+  });
+
+  it("bypasses shared caches for an unverified canonical interception context", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const matchInterceptRoute = vi.fn(() => null);
+    const dispatchMatchedPage = vi.fn(
+      async () =>
+        new Response("page", {
+          headers: { "Cache-Control": "public, max-age=3600" },
+        }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+    });
+    const headers = createRscRequestHeaders({ interceptionContext: "/attacker-selected" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ bypassInterceptionContextCache: true }),
+    );
+  });
+
+  it("marks early redirects for unverified canonical interception contexts no-store", async () => {
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/photos/:path*",
+          headers: [{ key: "Cache-Control", value: "public, max-age=3600" }],
+        },
+      ],
+      configRedirects: [{ source: "/photos/:id", destination: "/viewer/:id", permanent: false }],
+    });
+    const headers = createRscRequestHeaders({ interceptionContext: "/attacker-selected" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toContain("/docs/viewer/1");
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  it("bypasses shared caches when interception-context normalization drops a raw value", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const dispatchMatchedPage = vi.fn(
+      async () =>
+        new Response("page", {
+          headers: { "Cache-Control": "public, max-age=3600" },
+        }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchRoute: (pathname: string) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+    });
+    const headers = createRscRequestHeaders({ interceptionContext: "not-a-path" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bypassInterceptionContextCache: true,
+        interceptionContext: null,
+      }),
+    );
+  });
+
+  it("keeps verified canonical interception contexts cacheable", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const dispatchMatchedPage = vi.fn(
+      async () =>
+        new Response("page", {
+          headers: { "Cache-Control": "public, max-age=3600" },
+        }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed" ? { route: sourceRoute, params: {} } : null,
+      matchRoute: (pathname: string) => {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/feed") return { params: {}, route: sourceRoute };
+        return null;
+      },
+    });
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ bypassInterceptionContextCache: false }),
+    );
+  });
+
+  it("keeps nonexistent interception descendants out of shared caches", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const matcher = createAppRscRouteMatcher([
+      {
+        params: [],
+        pattern: "/feed",
+        patternParts: ["feed"],
+        slots: {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/feed",
+                targetPattern: "/photos/:id",
+                interceptLayouts: [],
+                page: { default() {} },
+                params: ["id"],
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    const dispatchMatchedPage = vi.fn(
+      async () =>
+        new Response("page", {
+          headers: { "Cache-Control": "public, max-age=3600" },
+        }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute(pathname, sourcePathname) {
+        const intercept = matcher.findIntercept(pathname, sourcePathname);
+        return intercept
+          ? {
+              interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
+              route: sourceRoute,
+              params: intercept.sourceMatchedParams,
+            }
+          : null;
+      },
+      matchRoute(pathname) {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/feed") return { params: {}, route: sourceRoute };
+        return null;
+      },
+    });
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/attacker-selected" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bypassInterceptionContextCache: true,
+        interceptionContext: "/feed/attacker-selected",
+      }),
     );
   });
 
@@ -913,13 +1195,51 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
-  it("preserves a cacheable middleware 400 for a graph-owned id", async () => {
+  it("does not cache middleware responses when graph ownership is not target-specific", async () => {
     const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
     const dispatchMatchedPage = vi.fn(async () => new Response("page"));
     const handler = createHandler({
       configHeaders: [],
       dispatchMatchedPage,
       hasInterceptionId: (requestedId) => requestedId === interceptionId,
+      async runMiddleware() {
+        return {
+          kind: "response",
+          response: new Response("middleware", {
+            status: 400,
+            headers: { "Cache-Control": "public, max-age=3600" },
+          }),
+        };
+      },
+    });
+
+    const headers = createRscRequestHeaders({
+      interceptionContext: "/feed",
+      interceptionId,
+    });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("middleware");
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("preserves cacheable middleware responses after exact interception proof", async () => {
+    const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
+    const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      hasInterceptionId: (requestedId) => requestedId === interceptionId,
+      matchInterceptRoute: (_pathname, sourcePathname, requestedId) =>
+        sourcePathname === "/feed" && requestedId === interceptionId
+          ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+          : null,
       async runMiddleware() {
         return {
           kind: "response",
@@ -993,13 +1313,50 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
+  it.each(["POST", "PUT"])(
+    "rejects interception ids on %s requests before action or route dispatch",
+    async (method) => {
+      const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const dispatchMatchedRouteHandler = vi.fn(async () => new Response("route"));
+      const handleServerActionRequest = vi.fn(async () => new Response("action"));
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        dispatchMatchedRouteHandler,
+        handleServerActionRequest,
+        hasInterceptionId: (requestedId) => requestedId === interceptionId,
+      });
+      const headers = createRscRequestHeaders({
+        interceptionContext: "/feed",
+        interceptionId,
+      });
+      const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers, method }),
+        null,
+      );
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(handleServerActionRequest).not.toHaveBeenCalled();
+      expect(dispatchMatchedRouteHandler).not.toHaveBeenCalled();
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    },
+  );
+
   it("allows an exact graph-owned interception id", async () => {
     const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
     const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
     const dispatchMatchedPage = vi.fn(async () => new Response("intercepted"));
     const matchInterceptRoute = vi.fn(
       (_pathname: string, _sourcePathname: string, requestedId?: string | null) =>
-        requestedId === interceptionId ? { route: sourceRoute, params: {} } : null,
+        requestedId === interceptionId
+          ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+          : null,
     );
     const handler = createHandler({
       configHeaders: [
@@ -1025,6 +1382,84 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("cache-control")).toBe("public, max-age=3600");
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({ interceptionContext: "/feed", interceptionId }),
+    );
+  });
+
+  it("preserves one-decode dynamic source params in concrete interception proof", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({
+      isDynamic: true,
+      params: ["slug"],
+      pattern: "/feed/:slug",
+      routeSegments: ["feed", "[slug]"],
+    });
+    const matcher = createAppRscRouteMatcher([
+      {
+        params: ["slug"],
+        pattern: "/feed/:slug",
+        patternParts: ["feed", ":slug"],
+        slots: {
+          modal: {
+            id: "slot:modal:/feed/:slug",
+            intercepts: [
+              {
+                sourceMatchPattern: "/feed/:slug",
+                targetPattern: "/photos/:id",
+                interceptLayouts: [],
+                page: { default() {} },
+                params: ["id"],
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    const sourceContext = "/feed/%2561";
+    const initialIntercept = matcher.findIntercept("/photos/1", sourceContext);
+    expect(initialIntercept).toMatchObject({
+      sourceMatchedParams: { slug: "%61" },
+      sourceRouteIsConcrete: true,
+    });
+    const interceptionId = initialIntercept!.interceptionId;
+    expect(interceptionId).not.toBeNull();
+    const dispatchMatchedPage = vi.fn(
+      async () =>
+        new Response("page", {
+          headers: { "Cache-Control": "public, max-age=3600" },
+        }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      hasInterceptionId: (requestedId) => matcher.hasInterceptionId(requestedId),
+      matchInterceptRoute(pathname, sourcePathname, requestedId) {
+        const intercept = matcher.findIntercept(pathname, sourcePathname, requestedId);
+        return intercept
+          ? {
+              interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
+              route: sourceRoute,
+              params: intercept.sourceMatchedParams,
+            }
+          : null;
+      },
+      matchRoute: (pathname) =>
+        pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
+    });
+    const headers = createRscRequestHeaders({
+      interceptionContext: sourceContext,
+      interceptionId,
+    });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bypassInterceptionContextCache: false,
+        interceptionId,
+      }),
     );
   });
 

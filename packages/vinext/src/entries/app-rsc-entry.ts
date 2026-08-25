@@ -792,6 +792,7 @@ const __appRscHandler = createAppRscHandler({
   isDev: process.env.NODE_ENV !== "production",
   draftModeSecret: __draftModeSecret,
   dispatchMatchedPage({
+    bypassInterceptionContextCache,
     clientReuseManifest,
     cleanPathname,
     displayPathname,
@@ -854,6 +855,7 @@ const __appRscHandler = createAppRscHandler({
     const _asyncRouteParams = makeThenableParams(params);
     return __dispatchAppPage({
       basePath: __basePath,
+      bypassInterceptionContextCache,
       ensureRouteLoaded: __ensureRouteLoaded,
       clientTraceMetadata: __clientTraceMetadata,
       reactMaxHeadersLength: __reactMaxHeadersLength,
@@ -944,7 +946,11 @@ const __appRscHandler = createAppRscHandler({
         });
       },
       async probePage(probeSearchParams = searchParams) {
-        const __probeIntercept = findIntercept(interceptionPathname, interceptionContext);
+        const __probeIntercept = findIntercept(
+          interceptionPathname,
+          interceptionContext,
+          interceptionId,
+        );
         // The intercepting-route page module is lazy (page: null + __pageLoader).
         // Resolve it before probing so buildAppPageProbes inspects the real page
         // component for dynamic bailout — matching the render path, which also
@@ -965,7 +971,11 @@ const __appRscHandler = createAppRscHandler({
         }));
       },
       renderErrorBoundaryPage(renderErr, errorOrigin) {
-        const __activeIntercept = findIntercept(interceptionPathname, interceptionContext);
+        const __activeIntercept = findIntercept(
+          interceptionPathname,
+          interceptionContext,
+          interceptionId,
+        );
         return __fallbackRenderer.renderErrorBoundary(route, renderErr, isRscRequest, request, params, scriptNonce, middlewareContext, {
           isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
@@ -974,7 +984,11 @@ const __appRscHandler = createAppRscHandler({
         }, errorOrigin);
       },
       renderHttpAccessFallbackPage(statusCode, opts, currentMiddlewareContext) {
-        const __activeIntercept = findIntercept(interceptionPathname, interceptionContext);
+        const __activeIntercept = findIntercept(
+          interceptionPathname,
+          interceptionContext,
+          interceptionId,
+        );
         return __fallbackRenderer.renderHttpAccessFallback(route, statusCode, isRscRequest, request, opts, scriptNonce, currentMiddlewareContext, {
           isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
           routePathname: cleanPathname,
@@ -1388,7 +1402,11 @@ const __appRscHandler = createAppRscHandler({
         params[name] = intercept.sourceMatchedParams[name];
       }
     }
-    return { route, params };
+    return {
+      interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
+      route,
+      params,
+    };
   },
   ${
     middlewarePath

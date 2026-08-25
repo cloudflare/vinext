@@ -100,6 +100,7 @@ type AppPageRequestCacheLife = {
 
 type RenderAppPageLifecycleOptions = {
   basePath?: string;
+  bypassInterceptionContextCache?: boolean;
   /**
    * Allow-list of OpenTelemetry propagation keys to emit as `<meta>` tags in
    * the SSR head. From `experimental.clientTraceMetadata` in `next.config`.
@@ -715,6 +716,8 @@ export async function renderAppPageLifecycle(
     });
   const shouldBypassRscCacheForSkipTransport =
     options.isRscRequest && isSkipTransportEnabled(skipDisposition);
+  const shouldBypassRscCache =
+    shouldBypassRscCacheForSkipTransport || options.bypassInterceptionContextCache === true;
   const dynamicStaleTimeSeconds =
     options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds();
   const outgoingElement = AppElementsWire.encodeOutgoingPayload({
@@ -772,7 +775,7 @@ export async function renderAppPageLifecycle(
     (revalidateSeconds === null || (revalidateSeconds > 0 && revalidateSeconds !== Infinity)) &&
     !options.isDraftMode &&
     !options.isForceDynamic &&
-    !shouldBypassRscCacheForSkipTransport;
+    !shouldBypassRscCache;
   const shouldCaptureRscForCacheMetadata =
     (options.isProduction || options.isPrerender === true) && mayResolveCacheLifeAfterHeaders;
   const createBufferedRscStream = (close: boolean): ReadableStream<Uint8Array> =>
@@ -822,7 +825,6 @@ export async function renderAppPageLifecycle(
     // When skip transport is enabled, omit cacheState because the response is a
     // per-client payload, not a shared-cache MISS/HIT artifact. The absence also
     // keeps finalizeAppPageRscCacheResponse from overwriting no-store.
-    const shouldBypassRscCache = shouldBypassRscCacheForSkipTransport;
     const rscResponsePolicy = shouldBypassRscCache
       ? { cacheControl: NO_STORE_CACHE_CONTROL }
       : resolveAppPageRscResponsePolicy({
@@ -836,7 +838,12 @@ export async function renderAppPageLifecycle(
           revalidateSeconds,
         });
     if (shouldBypassRscCache) {
-      options.isrDebug?.("RSC cache write skipped (skip transport payload)", options.cleanPathname);
+      options.isrDebug?.(
+        options.bypassInterceptionContextCache === true
+          ? "RSC cache write skipped (unverified interception context)"
+          : "RSC cache write skipped (skip transport payload)",
+        options.cleanPathname,
+      );
     }
     const shouldEmitDynamicStaleTime =
       dynamicStaleTimeSeconds !== undefined &&
@@ -932,6 +939,7 @@ export async function renderAppPageLifecycle(
     return finalizeAppPageRscCacheResponse(devRscResponse, {
       capturedRscDataPromise:
         options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
+      bypassInterceptionContextCache: options.bypassInterceptionContextCache,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: finalizeRenderDynamicUsage,
       consumeRenderObservationState: options.consumeRenderObservationState,

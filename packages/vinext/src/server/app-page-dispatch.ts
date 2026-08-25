@@ -273,6 +273,8 @@ export type AppPagePprState = PprFallbackShellState;
 export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   /** Configured basePath (e.g. "/blog"). Used to prefix redirect Locations. */
   basePath?: string;
+  /** Bypass shared RSC caches when the client-supplied interception context was not verified. */
+  bypassInterceptionContextCache?: boolean;
   /**
    * Allow-list of OpenTelemetry propagation keys (from
    * `experimental.clientTraceMetadata`) to surface as `<meta>` tags in the
@@ -709,6 +711,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   }
 
   if (
+    options.bypassInterceptionContextCache !== true &&
     shouldReadAppPageCache({
       isDraftMode,
       isForceDynamic,
@@ -1105,6 +1108,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   return renderAppPageLifecycle({
     basePath: options.basePath,
+    bypassInterceptionContextCache: options.bypassInterceptionContextCache,
     clientTraceMetadata: options.clientTraceMetadata,
     reactMaxHeadersLength: options.reactMaxHeadersLength,
     cleanPathname: options.cleanPathname,
