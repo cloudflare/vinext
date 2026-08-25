@@ -374,7 +374,9 @@ export class MemoryCacheHandler implements CacheHandler {
 
 const HANDLER_KEY = Symbol.for("vinext.cacheHandler");
 const MEMORY_FALLBACK_KEY = Symbol.for("vinext.memoryCacheHandlerFallback");
+const MEMORY_FALLBACK_SIZE_KEY = Symbol.for("vinext.memoryCacheHandlerFallbackSize");
 const globalHandlers = globalThis as unknown as Record<PropertyKey, CacheHandler>;
+const memoryFallbackState = globalThis as unknown as Record<PropertyKey, unknown>;
 const CONFIGURED_HANDLER_KEY = Symbol.for("vinext.configuredCacheHandler");
 type ConfiguredHandlerRegistration =
   | {
@@ -397,11 +399,16 @@ function getActiveHandler(): CacheHandler {
 }
 
 export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions): void {
-  const fallback = new MemoryCacheHandler(options);
-  globalHandlers[MEMORY_FALLBACK_KEY] = fallback;
+  const fallbackSize = resolveMemoryCacheMaxSize(options);
+  let fallback = globalHandlers[MEMORY_FALLBACK_KEY];
+  if (!fallback || memoryFallbackState[MEMORY_FALLBACK_SIZE_KEY] !== fallbackSize) {
+    fallback = new MemoryCacheHandler(options);
+    globalHandlers[MEMORY_FALLBACK_KEY] = fallback;
+    memoryFallbackState[MEMORY_FALLBACK_SIZE_KEY] = fallbackSize;
+  }
   const current = globalHandlers[HANDLER_KEY];
   const registration = configuredHandlerState[CONFIGURED_HANDLER_KEY];
-  if (registration?.handler === current) return;
+  if (registration && registration.handler === current) return;
   globalHandlers[HANDLER_KEY] = fallback;
 }
 

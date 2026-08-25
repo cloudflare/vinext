@@ -225,6 +225,7 @@ describe("generateCacheAdaptersModule", () => {
   it("restores the configured memory fallback after deactivating a generated handler", async () => {
     const handlerKey = Symbol.for("vinext.cacheHandler");
     const fallbackKey = Symbol.for("vinext.memoryCacheHandlerFallback");
+    const fallbackSizeKey = Symbol.for("vinext.memoryCacheHandlerFallbackSize");
     const registrationKey = Symbol.for("vinext.configuredCacheHandler");
 
     try {
@@ -247,6 +248,7 @@ describe("generateCacheAdaptersModule", () => {
       const state = globalThis as Record<PropertyKey, unknown>;
       delete state[handlerKey];
       delete state[fallbackKey];
+      delete state[fallbackSizeKey];
       delete state[registrationKey];
     }
   });
@@ -254,6 +256,7 @@ describe("generateCacheAdaptersModule", () => {
   it("preserves an explicitly installed memory handler while configuring the fallback", () => {
     const handlerKey = Symbol.for("vinext.cacheHandler");
     const fallbackKey = Symbol.for("vinext.memoryCacheHandlerFallback");
+    const fallbackSizeKey = Symbol.for("vinext.memoryCacheHandlerFallbackSize");
     const registrationKey = Symbol.for("vinext.configuredCacheHandler");
 
     try {
@@ -268,6 +271,7 @@ describe("generateCacheAdaptersModule", () => {
       const state = globalThis as Record<PropertyKey, unknown>;
       delete state[handlerKey];
       delete state[fallbackKey];
+      delete state[fallbackSizeKey];
       delete state[registrationKey];
     }
   });
@@ -275,6 +279,7 @@ describe("generateCacheAdaptersModule", () => {
   it("replaces an unowned handler when configuring a new memory fallback", async () => {
     const handlerKey = Symbol.for("vinext.cacheHandler");
     const fallbackKey = Symbol.for("vinext.memoryCacheHandlerFallback");
+    const fallbackSizeKey = Symbol.for("vinext.memoryCacheHandlerFallbackSize");
     const registrationKey = Symbol.for("vinext.configuredCacheHandler");
     const state = globalThis as Record<PropertyKey, unknown>;
 
@@ -296,6 +301,38 @@ describe("generateCacheAdaptersModule", () => {
     } finally {
       delete state[handlerKey];
       delete state[fallbackKey];
+      delete state[fallbackSizeKey];
+      delete state[registrationKey];
+    }
+  });
+
+  it("reuses the active memory fallback across entry module initialization", async () => {
+    const handlerKey = Symbol.for("vinext.cacheHandler");
+    const fallbackKey = Symbol.for("vinext.memoryCacheHandlerFallback");
+    const fallbackSizeKey = Symbol.for("vinext.memoryCacheHandlerFallbackSize");
+    const registrationKey = Symbol.for("vinext.configuredCacheHandler");
+    const state = globalThis as Record<PropertyKey, unknown>;
+
+    try {
+      configureMemoryCacheHandler({ cacheMaxMemorySize: 4096 });
+      const appFallback = getDataCacheHandler();
+      await appFallback.set("app-entry", {
+        kind: "FETCH",
+        data: { headers: {}, body: '"cached"', url: "test" },
+        tags: [],
+        revalidate: 3600,
+      });
+
+      configureMemoryCacheHandler({ cacheMaxMemorySize: 4096 });
+      expect(getDataCacheHandler()).toBe(appFallback);
+      expect(await getDataCacheHandler().get("app-entry")).not.toBeNull();
+
+      configureMemoryCacheHandler({ cacheMaxMemorySize: 8192 });
+      expect(getDataCacheHandler()).not.toBe(appFallback);
+    } finally {
+      delete state[handlerKey];
+      delete state[fallbackKey];
+      delete state[fallbackSizeKey];
       delete state[registrationKey];
     }
   });
