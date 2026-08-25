@@ -4,6 +4,7 @@ import { isStaticFileSignal } from "./static-file-signal.js";
 import {
   applyCdnResponseHeaders,
   applyOriginManagedPageCacheResponseHeaders,
+  finalizeMiddlewareSafePageCacheResponse,
   hasExplicitNonCacheableResponsePolicy,
   isNonCacheableCacheControl,
   NO_STORE_CACHE_CONTROL,
@@ -108,13 +109,7 @@ export async function finalizeAppRscResponse(
   // policy that could replay a personalized redirect above the Worker.
   if (response.status >= 300 && response.status < 400) {
     if (!shouldUseOriginManagedPageCache()) return response;
-    const redirectResponse = new Response(response.body, {
-      headers: response.headers,
-      status: response.status,
-      statusText: response.statusText,
-    });
-    applyOriginManagedPageCacheResponseHeaders(redirectResponse.headers);
-    return redirectResponse;
+    return finalizeMiddlewareSafePageCacheResponse(response, true);
   }
 
   if (!isStaticFileSignal(response)) {

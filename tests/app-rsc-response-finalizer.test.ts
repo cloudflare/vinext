@@ -21,6 +21,7 @@ import {
   type CdnResponseHeaders,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { createStaticFileSignal } from "../packages/vinext/src/server/request-pipeline.js";
+import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -582,6 +583,29 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
     expect(result.headers.get("cache-control")).toContain("no-store");
     expect(result.headers.get("cdn-cache-control")).toBeNull();
     expect(result.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+  });
+
+  it("preserves a middleware-scoped 3xx static-file signal", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = createStaticFileSignal("/public.txt", {
+      headers: new Headers({ "CDN-Cache-Control": "public, max-age=3600" }),
+      status: 307,
+    });
+    const result = await runWithRequestContext(
+      createRequestContext({ originManagedPageCache: true }),
+      () =>
+        finalizeAppRscResponse(response, new Request("http://example.com/public.txt"), {
+          basePath: "",
+          configHeaders: [],
+          i18nConfig: null,
+          requestContext: makeRequestContext(),
+        }),
+    );
+
+    expect(result).toBe(response);
+    expect(readStaticFileSignal(result)).toBe("%2Fpublic.txt");
+    expect(result.headers.get("cache-control")).toContain("no-store");
+    expect(result.headers.get("cdn-cache-control")).toBeNull();
   });
 });
 

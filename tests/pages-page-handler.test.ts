@@ -27,6 +27,10 @@ import {
   PRERENDER_REVALIDATE_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
+import {
+  getDataCacheHandler,
+  setDataCacheHandler,
+} from "../packages/vinext/src/shims/cache-handler.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -776,6 +780,76 @@ describe("createPagesPageHandler — preview responses", () => {
     expect(response.status).toBe(404);
     expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("cache-control")).not.toContain("s-maxage");
+  });
+});
+
+describe("createPagesPageHandler — recursive cache ownership", () => {
+  it("preserves a matcher-excluded route's edge cache ownership for its custom 404", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const pageRoute = makeRoute(
+      "/missing",
+      makePageModule({ getStaticProps: async () => ({ notFound: true, revalidate: 7 }) }),
+    );
+    const notFoundRoute = makeRoute(
+      "/404",
+      makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 6000 }) }),
+    );
+    const handler = createPagesPageHandler(
+      makeOpts({ hasMiddleware: true, pageRoutes: [pageRoute, notFoundRoute] }),
+    );
+
+    const response = await handler(makeRequest("/missing"), "/missing", null, null, {
+      originManagedPageCache: false,
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).not.toContain("no-store");
+    expect(response.headers.get("cdn-cache-control")).toContain("public");
+  });
+
+  it("keeps a matcher-excluded custom 500 off the origin-managed data cache", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const previousDataCache = getDataCacheHandler();
+    const set = vi.fn(async () => {});
+    setDataCacheHandler({
+      async get() {
+        return null;
+      },
+      set,
+      async revalidateTag() {},
+    });
+    const pageRoute = makeRoute(
+      "/error",
+      makePageModule({
+        getStaticProps: async () => {
+          throw new Error("source render failed");
+        },
+      }),
+    );
+    const errorRoute = makeRoute(
+      "/500",
+      makePageModule({ getStaticProps: async () => ({ props: {}, revalidate: 6000 }) }),
+    );
+    const handler = createPagesPageHandler(
+      makeOpts({
+        errorPageRoute: errorRoute,
+        hasMiddleware: true,
+        pageRoutes: [pageRoute, errorRoute],
+      }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const response = await handler(makeRequest("/error"), "/error", null, null, {
+        originManagedPageCache: false,
+      });
+
+      expect(response.status).toBe(500);
+      expect(set).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+      setDataCacheHandler(previousDataCache);
+    }
   });
 });
 

@@ -595,9 +595,10 @@ export function createPagesPageHandler(
     const routerAsPath = i18nConfig
       ? extractLocaleFromUrl(routerAsPathSource, i18nConfig, locale).url
       : routerAsPathSource;
+    const originManagedPageCache = options?.originManagedPageCache ?? hasMiddleware;
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
-      originManagedPageCache: options?.originManagedPageCache ?? hasMiddleware,
+      originManagedPageCache,
     });
 
     const response = await runWithRequestContext(uCtx, async () => {
@@ -889,6 +890,7 @@ export function createPagesPageHandler(
           let notFoundResponse: Response;
           if (notFoundRoute && routePattern !== "/404" && routePattern !== "/_error") {
             notFoundResponse = await renderPage(request, url, manifest, middlewareHeaders, {
+              originManagedPageCache,
               statusCode: 404,
               asPath: routerAsPath,
               renderErrorPageOnMiss: false,
@@ -1148,6 +1150,7 @@ export function createPagesPageHandler(
           if (errorRoute) {
             try {
               return await renderPage(request, url, manifest, middlewareHeaders, {
+                originManagedPageCache,
                 statusCode: 500,
                 asPath: url,
                 renderErrorPageOnMiss: false,
