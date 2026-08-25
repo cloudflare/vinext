@@ -715,7 +715,12 @@ export async function prerenderPages({
     let renderRoundRobin = 0;
     const renderPage = (urlPath: string) => {
       const port = renderPorts[renderRoundRobin++ % renderPorts.length];
-      return fetch(`http://127.0.0.1:${port}${urlPath}`, {
+      // The manual redirect mode below is needed to export redirects returned
+      // by getStaticProps. Avoid confusing the framework's own canonical 308
+      // with one of those application redirects by requesting the configured
+      // trailing-slash form up front, as Next.js's export worker does.
+      const requestPath = config.trailingSlash && !urlPath.endsWith("/") ? `${urlPath}/` : urlPath;
+      return fetch(`http://127.0.0.1:${port}${requestPath}`, {
         headers: secretHeaders,
         redirect: "manual",
       });
@@ -1569,7 +1574,17 @@ export async function prerenderApp({
         if (isSpeculative) {
           htmlHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
         }
-        const htmlRequest = new Request(`http://localhost${urlPath}`, { headers: htmlHeaders });
+        // Match Next.js's export worker: when trailingSlash is enabled, render
+        // the canonical slash form instead of letting the request pipeline
+        // return a 308 that the exporter would misclassify as a failed route.
+        // Keep urlPath unchanged for manifest and output-file identity.
+        // Ported from Next.js: packages/next/src/export/worker.ts
+        // https://github.com/vercel/next.js/blob/canary/packages/next/src/export/worker.ts
+        const requestPath =
+          config.trailingSlash && !urlPath.endsWith("/") ? `${urlPath}/` : urlPath;
+        const htmlRequest = new Request(`http://localhost${requestPath}`, {
+          headers: htmlHeaders,
+        });
         const htmlRender = await runWithHeadersContext(
           headersContextFromRequest(htmlRequest),
           async () => {
@@ -1662,7 +1677,7 @@ export async function prerenderApp({
           if (isSpeculative) {
             rscHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
           }
-          const rscRequest = new Request(`http://localhost${urlPath}`, {
+          const rscRequest = new Request(`http://localhost${requestPath}`, {
             headers: rscHeaders,
           });
           const rscRes = await runWithHeadersContext(headersContextFromRequest(rscRequest), () =>
@@ -1775,7 +1790,11 @@ export async function prerenderApp({
     // The RSC handler returns 404 with full HTML for the not-found.tsx page (or
     // the default Next.js 404). Write it to 404.html for static deployment.
     try {
-      const notFoundRequest = new Request(`http://localhost${NOT_FOUND_SENTINEL_PATH}`);
+      const notFoundPath =
+        config.trailingSlash && !NOT_FOUND_SENTINEL_PATH.endsWith("/")
+          ? `${NOT_FOUND_SENTINEL_PATH}/`
+          : NOT_FOUND_SENTINEL_PATH;
+      const notFoundRequest = new Request(`http://localhost${notFoundPath}`);
       const notFoundRes = await runWithHeadersContext(
         headersContextFromRequest(notFoundRequest),
         () => rscHandler(notFoundRequest),

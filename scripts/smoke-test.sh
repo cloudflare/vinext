@@ -42,6 +42,9 @@ CHECKS=(
   "nextra-docs-template          /about  About"
   "benchmarks                    /       Benchmark"
   "hackernews                    /       Hacker News"
+  "static-export                /       Static by design"
+  "static-export                /catalog/pocket-observatory/  Pocket Observatory"
+  "static-export                /products/atlas/              Atlas Field Kit"
   "vinext-web                    /       Run your Next.js app on Vite"
 )
 

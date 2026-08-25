@@ -57,6 +57,11 @@ jobs:
             working_directory: examples/workers-cache
             wrangler_config: dist/server/wrangler.json
             warm_cdn_cache: true
+          - name: static-export
+            project: static-export
+            working_directory: examples/static-export
+            wrangler_config: deploy/wrangler.jsonc
+            static_export: true
           - name: web
             project: vinext-web
             working_directory: apps/web
@@ -72,7 +77,18 @@ jobs:
         run: vp run build
 
       - name: Build example
+        if: matrix.example.static_export != true
         run: vp build
+        working-directory: ${{ matrix.example.working_directory }}
+
+      - name: Build static export
+        if: matrix.example.static_export == true
+        run: vp exec vinext build
+        working-directory: ${{ matrix.example.working_directory }}
+
+      - name: Verify static export artifact
+        if: matrix.example.static_export == true
+        run: node scripts/verify-output.mjs
         working-directory: ${{ matrix.example.working_directory }}
 
       - name: Apply D1 migrations (benchmarks only)
@@ -291,6 +307,7 @@ jobs:
               { name: 'benchmarks', project: 'benchmarks' },
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
               { name: 'workers-cache', project: 'workers-cache' },
+              { name: 'static-export', project: 'static-export' },
               { name: 'web', project: 'vinext-web', production: 'https://vinext.dev' },
             ];
 
