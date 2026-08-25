@@ -17,6 +17,19 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
+  if (pathname === "/internal-header-secret.txt") {
+    return new Response("blocked by middleware", {
+      status: 403,
+      headers: { "content-type": "text/plain" },
+    });
+  }
+
+  if (pathname === "/static-file-header-collision.txt") {
+    const response = NextResponse.next();
+    response.headers.set("x-vinext-static-file", "/internal-header-secret.txt");
+    return response;
+  }
+
   // Ported from Next.js: test/e2e/app-dir/app/middleware.js
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app/middleware.js
   // The source also exists in pages/, so the client must honor the middleware
@@ -446,6 +459,8 @@ export const config = {
     "/middleware-rewrite-keep-original-query",
     "/middleware-rewrite-status",
     "/middleware-blocked",
+    "/internal-header-secret.txt",
+    "/static-file-header-collision.txt",
     "/admin",
     "/%61dmin",
     "/encoded-parity/middleware/:path*",

@@ -63,6 +63,7 @@ import {
   mergeHeaders,
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
+import { createStaticFileSignal } from "../packages/vinext/src/server/request-pipeline.js";
 import { domainCandidates, parseWranglerConfig, runTPR } from "../packages/cloudflare/src/tpr.js";
 import {
   parseCdnWarmupDeploymentUrl,
@@ -1793,13 +1794,13 @@ describe("readPagesRouterEntrySource", () => {
   });
 
   it("resolveStaticAssetSignal fetches and merges static asset responses with middleware status", async () => {
-    const signalResponse = new Response(null, {
+    const signalResponse = createStaticFileSignal("/logo/logo.svg", {
       status: 403,
-      headers: [
-        ["x-vinext-static-file", encodeURIComponent("/logo/logo.svg")],
+      headers: new Headers([
+        ["x-vinext-static-file", "/application-value.txt"],
         ["x-middleware", "blocked"],
         ["content-type", "text/plain"],
-      ],
+      ]),
     });
 
     const resolved = await resolveStaticAssetSignal(signalResponse, {
@@ -1818,17 +1819,35 @@ describe("readPagesRouterEntrySource", () => {
     expect(resolved!.status).toBe(403);
     expect(resolved!.headers.get("content-type")).toBe("image/svg+xml");
     expect(resolved!.headers.get("x-middleware")).toBe("blocked");
+    expect(resolved!.headers.get("x-vinext-static-file")).toBe("/application-value.txt");
     expect(resolved!.headers.get("x-asset-path")).toBe("/logo/logo.svg");
     expect(await resolved!.text()).toBe("<svg />");
   });
 
-  it("preserves partial asset status over a middleware status override", async () => {
-    const signalResponse = new Response(null, {
-      status: 403,
-      headers: {
-        "x-vinext-static-file": encodeURIComponent("/asset.txt"),
-        "x-middleware": "blocked",
+  it("does not trust an unmarked response carrying a forged static-file header", async () => {
+    const response = new Response("route handler body", {
+      headers: { "x-vinext-static-file": encodeURIComponent("/private.txt") },
+    });
+    let fetched = false;
+
+    const resolved = await resolveStaticAssetSignal(response, {
+      fetchAsset: async () => {
+        fetched = true;
+        return new Response("private asset");
       },
+    });
+
+    expect(resolved).toBeNull();
+    expect(fetched).toBe(false);
+    await expect(response.text()).resolves.toBe("route handler body");
+  });
+
+  it("preserves partial asset status over a middleware status override", async () => {
+    const signalResponse = createStaticFileSignal("/asset.txt", {
+      status: 403,
+      headers: new Headers({
+        "x-middleware": "blocked",
+      }),
     });
 
     const resolved = await resolveStaticAssetSignal(signalResponse, {

@@ -37,6 +37,7 @@ import {
   getHeadersContext,
   headers as requestHeaders,
 } from "../packages/vinext/src/shims/headers.js";
+import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
 
 type TestRoute = {
   __loadPage?: unknown;
@@ -4483,7 +4484,8 @@ describe("createAppRscHandler", () => {
     const response = await handler(new Request("https://example.test/docs/logo.svg"), null);
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("x-vinext-static-file")).toBe("%2Flogo.svg");
+    expect(readStaticFileSignal(response)).toBe("%2Flogo.svg");
+    expect(response.headers.get("x-vinext-static-file")).toBeNull();
     expect(response.headers.get("vary")).toBeNull();
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
     expect(matchRoute).not.toHaveBeenCalled();
