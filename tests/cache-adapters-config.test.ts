@@ -327,8 +327,15 @@ describe("generateCacheAdaptersModule", () => {
       expect(getDataCacheHandler()).toBe(appFallback);
       expect(await getDataCacheHandler().get("app-entry")).not.toBeNull();
 
+      setConfiguredDataCacheHandler(new NoOpCacheHandler(), "build-a", {});
+      configureMemoryCacheHandler({ cacheMaxMemorySize: 4096 });
+      deactivateGeneratedDataCacheHandler();
+      const restoredFallback = getDataCacheHandler();
+      expect(restoredFallback).not.toBe(appFallback);
+      expect(await getDataCacheHandler().get("app-entry")).toBeNull();
+
       configureMemoryCacheHandler({ cacheMaxMemorySize: 8192 });
-      expect(getDataCacheHandler()).not.toBe(appFallback);
+      expect(getDataCacheHandler()).not.toBe(restoredFallback);
     } finally {
       delete state[handlerKey];
       delete state[fallbackKey];

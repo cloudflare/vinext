@@ -400,13 +400,17 @@ function getActiveHandler(): CacheHandler {
 
 export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions): void {
   const fallbackSize = resolveMemoryCacheMaxSize(options);
+  const current = globalHandlers[HANDLER_KEY];
   let fallback = globalHandlers[MEMORY_FALLBACK_KEY];
-  if (!fallback || memoryFallbackState[MEMORY_FALLBACK_SIZE_KEY] !== fallbackSize) {
+  if (
+    !fallback ||
+    fallback !== current ||
+    memoryFallbackState[MEMORY_FALLBACK_SIZE_KEY] !== fallbackSize
+  ) {
     fallback = new MemoryCacheHandler(options);
     globalHandlers[MEMORY_FALLBACK_KEY] = fallback;
     memoryFallbackState[MEMORY_FALLBACK_SIZE_KEY] = fallbackSize;
   }
-  const current = globalHandlers[HANDLER_KEY];
   const registration = configuredHandlerState[CONFIGURED_HANDLER_KEY];
   if (registration && registration.handler === current) return;
   globalHandlers[HANDLER_KEY] = fallback;
