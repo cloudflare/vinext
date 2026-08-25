@@ -875,13 +875,17 @@ async function typegen() {
   const result = await generateRouteTypes({
     root,
     pageExtensions: resolvedNextConfig.pageExtensions,
+    typedRoutes: resolvedNextConfig.typedRoutes,
   });
   const nextEnvMessage =
     result.nextEnvStatus === "unchanged"
       ? `${path.relative(root, result.nextEnvPath)} is up to date`
       : `${result.nextEnvStatus === "created" ? "Created" : "Updated"} ${path.relative(root, result.nextEnvPath)}`;
+  const linkTypesMessage = result.linkTypesPath
+    ? `  Generated typed link types at ${path.relative(root, result.linkTypesPath)}\n`
+    : "";
   console.log(
-    `\n  Generated route types at ${path.relative(root, result.routeTypesPath)}\n  ${nextEnvMessage}\n`,
+    `\n  Generated route types at ${path.relative(root, result.routeTypesPath)}\n${linkTypesMessage}  ${nextEnvMessage}\n`,
   );
 }
 

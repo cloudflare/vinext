@@ -206,8 +206,15 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "partial",
     detail: "experimental support; behavior is incomplete",
   },
+  typedRoutes: {
+    status: "supported",
+    detail: "generates .next/types/link.d.ts with typed Link/useRouter/redirect hrefs",
+  },
   "experimental.ppr": { status: "unsupported", detail: "partial prerendering not yet implemented" },
-  "experimental.typedRoutes": { status: "unsupported", detail: "typed routes not implemented" },
+  "experimental.typedRoutes": {
+    status: "supported",
+    detail: "deprecated alias — moved to top-level typedRoutes (stable)",
+  },
   "experimental.serverActions": {
     status: "supported",
     detail: "server actions via 'use server' directive",
@@ -927,6 +934,7 @@ export function analyzeConfig(root: string): CheckItem[] {
     "transpilePackages",
     "webpack",
     "cacheComponents",
+    "typedRoutes",
     "reactStrictMode",
     "poweredByHeader",
     "skipMiddlewareUrlNormalize",

@@ -283,6 +283,11 @@ export type NextConfig = {
    */
   cacheComponents?: boolean;
   /**
+   * Enable statically typed links.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/typedRoutes
+   */
+  typedRoutes?: boolean;
+  /**
    * Enables source maps while generating static pages.
    * Helps with errors during the prerender phase in `vinext build`.
    * Defaults to `true`. Set to `false` to disable.
@@ -318,6 +323,8 @@ export type NextConfig = {
     defineServer?: Record<string, string | number | boolean>;
   };
   experimental?: {
+    /** @deprecated Use `typedRoutes` instead — this option is now stable. */
+    typedRoutes?: boolean;
     /** Enables hard-navigation recovery when App Router navigation rendering fails. */
     appNavFailHandling?: boolean;
     /**
@@ -412,6 +419,8 @@ export type ResolvedNextConfig = {
   serverResolveExtensions: string[] | null;
   instrumentationClientInject: string[];
   cacheComponents: boolean;
+  /** Emit `.next/types/link.d.ts` typed-link declarations. */
+  typedRoutes: boolean;
   appNavFailHandling: boolean;
   /**
    * Enables the experimental App Router gesture transition API:
@@ -932,6 +941,10 @@ function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
     [
       "experimental.externalMiddlewareRewritesResolve",
       `\`experimental.externalMiddlewareRewritesResolve\` is deprecated. Please use \`experimental.externalProxyRewritesResolve\` instead in ${configFileName}.`,
+    ],
+    [
+      "experimental.typedRoutes",
+      `\`experimental.typedRoutes\` has been moved to \`typedRoutes\`. Please update your ${configFileName} file accordingly.`,
     ],
     [
       "skipMiddlewareUrlNormalize",
@@ -1586,6 +1599,7 @@ export async function resolveNextConfig(
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      typedRoutes: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -1951,6 +1965,9 @@ export async function resolveNextConfig(
         )
       : [],
     cacheComponents: config.cacheComponents ?? false,
+    // The experimental key wins when present, matching Next.js's moved-option
+    // copy semantics.
+    typedRoutes: (experimental?.typedRoutes ?? config.typedRoutes) === true,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,

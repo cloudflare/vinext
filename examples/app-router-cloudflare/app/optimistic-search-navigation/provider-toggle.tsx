@@ -1,5 +1,6 @@
 "use client";
 
+import type { Route } from "next";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useLayoutEffect, useOptimistic, useRef, useTransition } from "react";
 
@@ -22,12 +23,14 @@ function nextProviderQuery(currentQuery: string, provider: string) {
 }
 
 export function ProviderToggle() {
-  const pathname = usePathname();
+  // The hybrid Pages/App typings make these nullable; neither is null while
+  // this App Router page is mounted.
+  const pathname = usePathname() ?? "/";
   const router = useRouter();
   const routeSearchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
   const [optimisticQuery, setOptimisticQuery] = useOptimistic(
-    routeSearchParams.toString(),
+    routeSearchParams?.toString() ?? "",
     (_currentQuery, nextQuery: string) => nextQuery,
   );
   const optimisticQueryRef = useRef(optimisticQuery);
@@ -42,7 +45,9 @@ export function ProviderToggle() {
 
       startTransition(() => {
         setOptimisticQuery(query);
-        router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
+        // `typedRoutes` rejects arbitrary strings; `as Route` is the Next.js
+        // idiom for hrefs assembled at runtime.
+        router.push((query ? `${pathname}?${query}` : pathname) as Route, { scroll: false });
       });
     },
     [pathname, router, setOptimisticQuery],
@@ -77,7 +82,7 @@ export function ProviderToggle() {
 }
 
 export function RouterOnlyControl() {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "/";
   const router = useRouter();
 
   return (
@@ -85,7 +90,7 @@ export function RouterOnlyControl() {
       <h2 id="router-control-heading">Router-only control</h2>
       <button
         data-testid="router-only-control"
-        onClick={() => router.push(`${pathname}?provider=control`, { scroll: false })}
+        onClick={() => router.push(`${pathname}?provider=control` as Route, { scroll: false })}
         type="button"
       >
         Select control provider

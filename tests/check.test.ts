@@ -335,6 +335,28 @@ describe("analyzeConfig", () => {
     expect(cacheComponentsItem?.detail).toContain("experimental support");
   });
 
+  it("reports stable typedRoutes and its deprecated alias as supported", () => {
+    writeFile(
+      "next.config.mjs",
+      `export default {
+        typedRoutes: true,
+        experimental: { typedRoutes: true },
+      };`,
+    );
+
+    const items = analyzeConfig(tmpDir);
+    const typedRoutes = items.find((item) => item.name === "typedRoutes");
+    const experimentalTypedRoutes = items.find((item) => item.name === "experimental.typedRoutes");
+    expect(typedRoutes?.status).toBe("supported");
+    expect(typedRoutes?.detail).toBe(
+      "generates .next/types/link.d.ts with typed Link/useRouter/redirect hrefs",
+    );
+    expect(experimentalTypedRoutes?.status).toBe("supported");
+    expect(experimentalTypedRoutes?.detail).toBe(
+      "deprecated alias — moved to top-level typedRoutes (stable)",
+    );
+  });
+
   it("does not flag webpack when it only appears in a comment", () => {
     writeFile(
       "next.config.js",

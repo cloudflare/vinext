@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "pathslash";
 import { isInvisibleSegment } from "./routing/app-route-graph.js";
 import { appRouteGraph } from "./routing/app-router.js";
+import { apiRouter, pagesRouter } from "./routing/pages-router.js";
 import { patternToNextFormat } from "./routing/route-validation.js";
 import { decodeRouteSegment } from "./routing/utils.js";
 import { compareStrings } from "./utils/compare.js";
@@ -13,17 +14,24 @@ type GenerateRouteTypesOptions = {
   root: string;
   appDir?: string | null;
   pageExtensions?: readonly string[];
+  typedRoutes?: boolean;
 };
 
 export type GenerateRouteTypesResult = {
   routeTypesPath: string;
+  linkTypesPath: string | null;
   nextEnvPath: string;
   nextEnvStatus: "created" | "updated" | "unchanged";
 };
 
 type ParamShape = Map<string, "string" | "string[]" | "string[]?">;
 
-function nextEnvFileContent(hasNext: boolean, hasAppDir: boolean, eol = "\n"): string {
+function nextEnvFileContent(
+  hasNext: boolean,
+  hasAppDir: boolean,
+  typedRoutes: boolean,
+  eol = "\n",
+): string {
   const typeReference = hasNext
     ? `/// <reference types="next" />
 /// <reference types="next/image-types/global" />
@@ -31,8 +39,12 @@ import "vinext/types/augmentations";
 `
     : `import "vinext/types";
 `;
+  const routeTypeImports = typedRoutes
+    ? `import "./.next/types/routes.d.ts";
+import "./.next/types/link.d.ts";`
+    : `import "./.next/types/routes.d.ts";`;
 
-  return `${typeReference}import "./.next/types/routes.d.ts";
+  return `${typeReference}${routeTypeImports}
 
 // NOTE: This file should not be edited
 // see https://nextjs.org/docs/${hasAppDir ? "app" : "pages"}/api-reference/config/typescript for more information.
@@ -50,20 +62,31 @@ export async function generateRouteTypes(
         ? path.resolve(options.appDir)
         : findDir(root, "app", "src/app");
   const outPath = path.join(root, ".next", "types", "routes.d.ts");
+  const linkPath = path.join(root, ".next", "types", "link.d.ts");
   const pagesDir = findDir(root, "pages", "src/pages");
+  const model = appDir
+    ? await collectRouteTypeModel(root, appDir, options.pageExtensions)
+    : emptyRouteTypeModel();
+  if (options.typedRoutes === true && pagesDir) {
+    await collectPagesRouterLinkRoutes(root, pagesDir, options.pageExtensions, model);
+  }
 
-  const content = appDir
-    ? renderRouteTypes(
-        await collectRouteTypeModel(appDir, options.pageExtensions),
-        pagesDir !== null,
-      )
-    : renderRouteTypes(emptyRouteTypeModel(), false);
+  const content = renderRouteTypes(model, appDir !== null && pagesDir !== null);
 
   await fs.mkdir(path.dirname(outPath), { recursive: true });
   await fs.writeFile(outPath, content, "utf-8");
-  const nextEnv = await ensureNextEnvFile(root, appDir !== null);
+  if (options.typedRoutes === true) {
+    await fs.writeFile(linkPath, generateLinkTypesFile(model), "utf-8");
+  } else {
+    // Next.js wipes .next on build, but vinext regenerates in place. Remove a
+    // stale declaration so a migrated tsconfig with
+    // include: [".next/types/**/*.ts"] cannot keep applying it.
+    await fs.rm(linkPath, { force: true });
+  }
+  const nextEnv = await ensureNextEnvFile(root, appDir !== null, options.typedRoutes === true);
   return {
     routeTypesPath: outPath,
+    linkTypesPath: options.typedRoutes === true ? linkPath : null,
     nextEnvPath: nextEnv.path,
     nextEnvStatus: nextEnv.status,
   };
@@ -72,6 +95,7 @@ export async function generateRouteTypes(
 async function ensureNextEnvFile(
   root: string,
   hasAppDir: boolean,
+  typedRoutes: boolean,
 ): Promise<{ path: string; status: GenerateRouteTypesResult["nextEnvStatus"] }> {
   const envPath = path.join(root, "next-env.d.ts");
   let eol = os.EOL;
@@ -84,7 +108,7 @@ async function ensureNextEnvFile(
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const hasNext = await hasNextPackage(root);
-  const content = nextEnvFileContent(hasNext, hasAppDir, eol);
+  const content = nextEnvFileContent(hasNext, hasAppDir, typedRoutes, eol);
   if (existing === content) return { path: envPath, status: "unchanged" };
   await fs.writeFile(envPath, content, "utf-8");
   return { path: envPath, status: existing === undefined ? "created" : "updated" };
@@ -132,6 +156,9 @@ type RouteTypeModel = {
   pageRoutes: string[];
   layoutRoutes: string[];
   routeHandlerRoutes: string[];
+  /** Pages Router page and API routes, collected only for typed-link generation. */
+  pagesRouterRoutes: string[];
+  routeCauses: Map<string, string>;
   params: Map<string, ParamShape>;
   layoutSlots: Map<string, string[]>;
 };
@@ -141,18 +168,25 @@ function emptyRouteTypeModel(): RouteTypeModel {
     pageRoutes: [],
     layoutRoutes: [],
     routeHandlerRoutes: [],
+    pagesRouterRoutes: [],
+    routeCauses: new Map(),
     params: new Map(),
     layoutSlots: new Map(),
   };
 }
 
 async function collectRouteTypeModel(
+  root: string,
   appDir: string,
   pageExtensions?: readonly string[],
 ): Promise<RouteTypeModel> {
   const graph = await appRouteGraph(appDir, pageExtensions);
   const model = emptyRouteTypeModel();
   const segmentGraph = graph.routeManifest.segmentGraph;
+  const graphRoutesById = new Map<string, (typeof graph.routes)[number]>();
+  for (const route of graph.routes) {
+    if (!graphRoutesById.has(route.ids.route)) graphRoutesById.set(route.ids.route, route);
+  }
   const layoutRouteKeys = createLayoutRouteKeyMap(segmentGraph.layouts.values());
   const pageRouteSet = new Set<string>();
   const layoutRouteSet = new Set<string>();
@@ -160,24 +194,37 @@ async function collectRouteTypeModel(
 
   for (const route of segmentGraph.pages.values()) {
     const routeEntry = segmentGraph.routes.get(route.routeId);
+    const routeLiteral = patternToNextFormat(route.pattern);
     addRoute(
       model.pageRoutes,
       pageRouteSet,
       model.params,
-      patternToNextFormat(route.pattern),
+      routeLiteral,
       paramsForPatternParts(routeEntry?.patternParts ?? []),
     );
+    if (!model.routeCauses.has(routeLiteral)) {
+      const pagePath = graphRoutesById.get(route.routeId)?.pagePath;
+      model.routeCauses.set(routeLiteral, pagePath ? path.relative(root, pagePath) : routeLiteral);
+    }
   }
 
   for (const route of segmentGraph.routeHandlers.values()) {
     const routeEntry = segmentGraph.routes.get(route.routeId);
+    const routeLiteral = patternToNextFormat(route.pattern);
     addRoute(
       model.routeHandlerRoutes,
       routeHandlerRouteSet,
       model.params,
-      patternToNextFormat(route.pattern),
+      routeLiteral,
       paramsForPatternParts(routeEntry?.patternParts ?? []),
     );
+    if (!model.routeCauses.has(routeLiteral)) {
+      const routePath = graphRoutesById.get(route.routeId)?.routePath;
+      model.routeCauses.set(
+        routeLiteral,
+        routePath ? path.relative(root, routePath) : routeLiteral,
+      );
+    }
   }
 
   for (const layout of segmentGraph.layouts.values()) {
@@ -218,6 +265,290 @@ async function collectRouteTypeModel(
   for (const slotNames of model.layoutSlots.values()) slotNames.sort(compareStrings);
 
   return model;
+}
+
+/**
+ * Collect Pages Router page and API routes for the typed-link unions. Next.js
+ * folds these into `StaticRoutes`/`DynamicRoutes` alongside App Router routes.
+ * They deliberately stay out of `routes.d.ts`, which models the app dir only.
+ */
+async function collectPagesRouterLinkRoutes(
+  root: string,
+  pagesDir: string,
+  pageExtensions: readonly string[] | undefined,
+  model: RouteTypeModel,
+): Promise<void> {
+  const seen = new Set<string>();
+  // Next.js emits raw `pages/api/*` file paths into the unions (its manifest
+  // stores page API routes as file paths); vinext emits their URL routes
+  // instead, matching how App Router route handlers are treated.
+  for (const route of [
+    ...(await pagesRouter(pagesDir, pageExtensions)),
+    ...(await apiRouter(pagesDir, pageExtensions)),
+  ]) {
+    const routeLiteral = patternToNextFormat(route.pattern);
+    if (seen.has(routeLiteral)) continue;
+    seen.add(routeLiteral);
+    model.pagesRouterRoutes.push(routeLiteral);
+    if (!model.routeCauses.has(routeLiteral)) {
+      model.routeCauses.set(routeLiteral, path.relative(root, route.filePath));
+    }
+  }
+  model.pagesRouterRoutes.sort(compareStrings);
+}
+
+// Ported from Next.js: packages/next/src/server/lib/router-utils/typegen.ts (generateLinkTypesFile)
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/typegen.ts
+const DYNAMIC_ROUTE = /\/\[[^/]+?\](?=\/|$)/;
+
+function isDynamicRoute(route: string): boolean {
+  return DYNAMIC_ROUTE.test(route);
+}
+
+// Helper function to format routes to route types (matches the plugin logic exactly)
+function formatRouteToRouteType(route: string) {
+  const isDynamic = isDynamicRoute(route);
+  if (isDynamic) {
+    route = route
+      .split("/")
+      .map((part) => {
+        if (part.startsWith("[") && part.endsWith("]")) {
+          if (part.startsWith("[...")) {
+            // /[...slug]
+            return `\${CatchAllSlug<T>}`;
+          } else if (part.startsWith("[[...") && part.endsWith("]]")) {
+            // /[[...slug]]
+            return `\${OptionalCatchAllSlug<T>}`;
+          }
+          // /[slug]
+          return `\${SafeSlug<T>}`;
+        }
+        return part;
+      })
+      .join("/");
+  }
+
+  return {
+    isDynamic,
+    routeType: route,
+  };
+}
+
+// Helper function to serialize route types (matches the plugin logic exactly)
+// Each entry is a [routeType, source] tuple.
+function serializeRouteTypes(routeTypes: [routeType: string, cause: string][]) {
+  // Route collection is not deterministic. Use the repo comparator instead
+  // of localeCompare so output stays stable across host locales.
+  routeTypes.sort(([a], [b]) => compareStrings(a, b));
+  let union = "";
+  for (let i = 0; i < routeTypes.length; i++) {
+    const [route, cause] = routeTypes[i];
+    union += `\n    | \`${route}\` // ${cause}`;
+  }
+  return union;
+}
+
+export function generateLinkTypesFile(model: RouteTypeModel): string {
+  const visited = new Set<string>();
+  const staticRouteTypes: [routeType: string, cause: string][] = [];
+  const dynamicRouteTypes: [routeType: string, cause: string][] = [];
+
+  // Matches Next.js's manifest iteration order: app routes, then Pages Router
+  // routes, then app route handlers — first visit wins on duplicate URLs.
+  for (const routes of [model.pageRoutes, model.pagesRouterRoutes, model.routeHandlerRoutes]) {
+    for (const route of routes) {
+      if (visited.has(route)) {
+        continue;
+      }
+      visited.add(route);
+
+      const { isDynamic, routeType } = formatRouteToRouteType(route);
+      const cause = model.routeCauses.get(route) ?? route;
+      if (isDynamic) {
+        dynamicRouteTypes.push([routeType, cause]);
+      } else {
+        staticRouteTypes.push([routeType, cause]);
+      }
+    }
+  }
+
+  const serializedStaticRouteTypes = serializeRouteTypes(staticRouteTypes);
+  const serializedDynamicRouteTypes = serializeRouteTypes(dynamicRouteTypes);
+
+  // If both StaticRoutes and DynamicRoutes are empty, fallback to type 'string & {}'.
+  const routeTypesFallback =
+    !serializedStaticRouteTypes && !serializedDynamicRouteTypes ? "string & {}" : "";
+
+  return `// This file is generated automatically by Next.js
+// Do not edit this file manually
+
+// Type definitions for Next.js routes
+
+/**
+ * Internal types used by the Next.js router and Link component.
+ * These types are not meant to be used directly.
+ * @internal
+ */
+declare namespace __next_route_internal_types__ {
+  type SearchOrHash = \`?\${string}\` | \`#\${string}\`
+  type WithProtocol = \`\${string}:\${string}\`
+
+  type Suffix = '' | SearchOrHash
+
+  type SafeSlug<S extends string> = S extends \`\${string}/\${string}\`
+    ? never
+    : S extends \`\${string}\${SearchOrHash}\`
+    ? never
+    : S extends ''
+    ? never
+    : S
+
+  type CatchAllSlug<S extends string> = S extends \`\${string}\${SearchOrHash}\`
+    ? never
+    : S extends ''
+    ? never
+    : S
+
+  type OptionalCatchAllSlug<S extends string> =
+    S extends \`\${string}\${SearchOrHash}\` ? never : S
+
+  type StaticRoutes = ${serializedStaticRouteTypes || "never"}
+  type DynamicRoutes<T extends string = string> = ${serializedDynamicRouteTypes || "never"}
+
+  type RouteImpl<T> = ${
+    routeTypesFallback ||
+    `
+    ${
+      // This keeps autocompletion working for static routes.
+      "| StaticRoutes"
+    }
+    | SearchOrHash
+    | WithProtocol
+    | \`\${StaticRoutes}\${SearchOrHash}\`
+    | (T extends \`\${DynamicRoutes<infer _>}\${Suffix}\` ? T : never)
+    `
+  }
+}
+
+declare module 'next' {
+  export { default } from 'next/types.js'
+  export * from 'next/types.js'
+
+  export type Route<T extends string = string> =
+    __next_route_internal_types__.RouteImpl<T>
+}
+
+declare module 'next/link' {
+  export { useLinkStatus } from 'next/dist/client/link.js'
+
+  import type { LinkProps as OriginalLinkProps } from 'next/dist/client/link.js'
+  import type { AnchorHTMLAttributes, DetailedHTMLProps } from 'react'
+  import type { UrlObject } from 'url'
+
+  type LinkRestProps = Omit<
+    Omit<
+      DetailedHTMLProps<
+        AnchorHTMLAttributes<HTMLAnchorElement>,
+        HTMLAnchorElement
+      >,
+      keyof OriginalLinkProps
+    > &
+      OriginalLinkProps,
+    'href'
+  >
+
+  export type LinkProps<RouteInferType> = LinkRestProps & {
+    /**
+     * The path or URL to navigate to. This is the only required prop. It can also be an object.
+     * @see https://nextjs.org/docs/api-reference/next/link
+     */
+    href: __next_route_internal_types__.RouteImpl<RouteInferType> | UrlObject
+  }
+
+  export default function Link<RouteType>(props: LinkProps<RouteType>): JSX.Element
+}
+
+declare module 'next/navigation' {
+  export * from 'next/dist/client/components/navigation.js'
+
+  import type { NavigateOptions, AppRouterInstance as OriginalAppRouterInstance } from 'next/dist/shared/lib/app-router-context.shared-runtime.js'
+  import type { RedirectType } from 'next/dist/client/components/redirect-error.js'
+  
+  interface AppRouterInstance extends OriginalAppRouterInstance {
+    /**
+     * Navigate to the provided href.
+     * Pushes a new history entry.
+     */
+    push<RouteType>(href: __next_route_internal_types__.RouteImpl<RouteType>, options?: NavigateOptions): void
+    /**
+     * Navigate to the provided href.
+     * Replaces the current history entry.
+     */
+    replace<RouteType>(href: __next_route_internal_types__.RouteImpl<RouteType>, options?: NavigateOptions): void
+    /**
+     * Prefetch the provided href.
+     */
+    prefetch<RouteType>(href: __next_route_internal_types__.RouteImpl<RouteType>): void
+  }
+
+  export function useRouter(): AppRouterInstance;
+  
+  /**
+   * This function allows you to redirect the user to another URL. It can be used in
+   * [Server Components](https://nextjs.org/docs/app/building-your-application/rendering/server-components),
+   * [Route Handlers](https://nextjs.org/docs/app/building-your-application/routing/route-handlers), and
+   * [Server Actions](https://nextjs.org/docs/app/building-your-application/data-fetching/server-actions-and-mutations).
+   *
+   * - In a Server Component, this will insert a meta tag to redirect the user to the target page.
+   * - In a Route Handler, it will serve a 307 to the caller.
+   * - In a Server Action, it will perform a client-side navigation when JavaScript is available or serve a 303 for a progressive enhancement form submission.
+   * - In a Server Action, type defaults to 'push' and 'replace' elsewhere.
+   *
+   * Read more: [Next.js Docs: redirect](https://nextjs.org/docs/app/api-reference/functions/redirect)
+   */
+  export function redirect<RouteType>(
+    /** The URL to redirect to */
+    url: __next_route_internal_types__.RouteImpl<RouteType>,
+    type?: RedirectType
+  ): never;
+  
+  /**
+   * This function allows you to redirect the user to another URL. It can be used in
+   * [Server Components](https://nextjs.org/docs/app/building-your-application/rendering/server-components),
+   * [Route Handlers](https://nextjs.org/docs/app/building-your-application/routing/route-handlers), and
+   * [Server Actions](https://nextjs.org/docs/app/building-your-application/data-fetching/server-actions-and-mutations).
+   *
+   * - In a Server Component, this will insert a meta tag to redirect the user to the target page.
+   * - In a Route Handler, it will serve a 308 to the caller.
+   * - In a Server Action, it will perform a client-side navigation when JavaScript is available or serve a 303 for a progressive enhancement form submission.
+   *
+   * Read more: [Next.js Docs: redirect](https://nextjs.org/docs/app/api-reference/functions/redirect)
+   */
+  export function permanentRedirect<RouteType>(
+    /** The URL to redirect to */
+    url: __next_route_internal_types__.RouteImpl<RouteType>,
+    type?: RedirectType
+  ): never;
+}
+
+declare module 'next/form' {
+  import type { FormProps as OriginalFormProps } from 'next/dist/client/form.js'
+
+  type FormRestProps = Omit<OriginalFormProps, 'action'>
+
+  export type FormProps<RouteInferType> = {
+    /**
+     * \`action\` can be either a \`string\` or a function.
+     * - If \`action\` is a string, it will be interpreted as a path or URL to navigate to when the form is submitted.
+     *   The path will be prefetched when the form becomes visible.
+     * - If \`action\` is a function, it will be called when the form is submitted. See the [React docs](https://react.dev/reference/react-dom/components/form#props) for more.
+     */
+    action: __next_route_internal_types__.RouteImpl<RouteInferType> | ((formData: FormData) => void)
+  } & FormRestProps
+
+  export default function Form<RouteType>(props: FormProps<RouteType>): JSX.Element
+}
+`;
 }
 
 function renderRouteTypes(model: RouteTypeModel, hasPagesCompat: boolean): string {

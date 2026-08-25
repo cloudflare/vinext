@@ -77,6 +77,7 @@ describe("deprecated config warnings", () => {
         instrumentationHook: true,
         middlewareClientMaxBodySize: "5mb",
         externalMiddlewareRewritesResolve: true,
+        typedRoutes: true,
       },
     });
 
@@ -84,6 +85,7 @@ describe("deprecated config warnings", () => {
       "`experimental.middlewarePrefetch` is deprecated. Please use `experimental.proxyPrefetch` instead in next.config.js.",
       "`experimental.middlewareClientMaxBodySize` is deprecated. Please use `experimental.proxyClientMaxBodySize` instead in next.config.js.",
       "`experimental.externalMiddlewareRewritesResolve` is deprecated. Please use `experimental.externalProxyRewritesResolve` instead in next.config.js.",
+      "`experimental.typedRoutes` has been moved to `typedRoutes`. Please update your next.config.js file accordingly.",
       "`skipMiddlewareUrlNormalize` is deprecated. Please use `skipProxyUrlNormalize` instead in next.config.js.",
       "`experimental.instrumentationHook` is no longer needed, because `instrumentation.js` is available by default. You can remove it from next.config.js.",
     ]);
@@ -134,6 +136,45 @@ describe("deprecated config warnings", () => {
     ).rejects.toThrow(
       "Config options `skipProxyUrlNormalize` and `skipMiddlewareUrlNormalize` cannot be set at the same time.",
     );
+  });
+});
+
+describe("resolveNextConfig typedRoutes", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("resolves the stable top-level option", async () => {
+    await expect(resolveNextConfig({ typedRoutes: true })).resolves.toMatchObject({
+      typedRoutes: true,
+    });
+  });
+
+  it("resolves the deprecated experimental alias and warns", async () => {
+    const root = makeTempDir();
+    fs.writeFileSync(path.join(root, "next.config.mjs"), "export default {}\n");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await expect(
+        resolveNextConfig({ experimental: { typedRoutes: true } }, root),
+      ).resolves.toMatchObject({ typedRoutes: true });
+      expect(warn).toHaveBeenCalledWith(
+        "`experimental.typedRoutes` has been moved to `typedRoutes`. Please update your next.config.mjs file accordingly.",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("lets the experimental alias win when both options are configured", async () => {
+    await expect(
+      resolveNextConfig({ typedRoutes: true, experimental: { typedRoutes: false } }),
+    ).resolves.toMatchObject({ typedRoutes: false });
+  });
+
+  it("defaults to false", async () => {
+    await expect(resolveNextConfig(null)).resolves.toMatchObject({ typedRoutes: false });
   });
 });
 
@@ -2148,6 +2189,7 @@ describe("detectNextIntlConfig", () => {
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      typedRoutes: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
