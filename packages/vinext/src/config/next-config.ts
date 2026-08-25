@@ -961,23 +961,6 @@ function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
   }
 }
 
-/**
- * Load the inline `vinext({ nextConfig })` value from the project's
- * vite.config, if one is declared. `loadConfigFromFile` is injected so CLI
- * callers can pass the project-resolved Vite module.
- */
-export async function findInlineNextConfigFromViteConfig(
-  root: string,
-  loadConfigFromFile: typeof import("vite").loadConfigFromFile,
-): Promise<NextConfigInput | null> {
-  const loaded = await loadConfigFromFile(
-    { command: "build", mode: "production", isSsrBuild: true },
-    undefined,
-    root,
-  );
-  return findVinextNextConfigInPlugins(loaded?.config.plugins);
-}
-
 export async function resolveNextConfigInput(
   config: NextConfigInput,
   phase: string = PHASE_DEVELOPMENT_SERVER,

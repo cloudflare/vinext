@@ -34,7 +34,6 @@ import { resolveInitOptions } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
 import {
   createRscCompatibilityId,
-  findInlineNextConfigFromViteConfig,
   findVinextNextConfigInPlugins,
   loadNextConfig,
   resolveNextConfig,
@@ -78,8 +77,8 @@ import {
 // node_modules — not the project's. This causes dual Vite instances, dual
 // React copies, and plugin resolution failures.
 //
-// To fix this, we resolve Vite dynamically from `process.cwd()` at runtime
-// using `createRequire`. This ensures we always use the project's Vite.
+// To fix this, we resolve Vite dynamically from the active project root at
+// runtime using `createRequire`. This ensures we always use the project's Vite.
 
 type ViteModule = {
   createServer: typeof import("vite").createServer;
@@ -96,10 +95,9 @@ let _viteModule: ViteModule | null = null;
  * Dynamically load Vite from the project root. Falls back to the bundled
  * copy if the project doesn't have its own Vite installation.
  */
-async function loadVite(): Promise<ViteModule> {
+async function loadVite(projectRoot = process.cwd()): Promise<ViteModule> {
   if (_viteModule) return _viteModule;
 
-  const projectRoot = process.cwd();
   let vitePath: string;
 
   try {
@@ -873,15 +871,37 @@ async function typegen() {
   // Inline `vinext({ nextConfig })` from vite.config takes precedence over
   // next.config.* on disk, matching the plugin's own resolution.
   let nextConfigValue: NextConfig | null = null;
+  let routeRootConfig: VinextRouteRootConfig | null = null;
   if (hasViteConfig(root)) {
-    const vite = await loadVite();
-    const inline = await findInlineNextConfigFromViteConfig(root, vite.loadConfigFromFile);
-    if (inline) nextConfigValue = await resolveNextConfigInput(inline, PHASE_PRODUCTION_BUILD);
+    const vite = await loadVite(root);
+    const metadata = await loadBuildViteConfigMetadata(vite, root, "production");
+    routeRootConfig = metadata.routeRootConfig;
+    if (metadata.nextConfig) {
+      nextConfigValue = await resolveNextConfigInput(metadata.nextConfig, PHASE_PRODUCTION_BUILD);
+    }
   }
   nextConfigValue ??= await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
   const resolvedNextConfig = await resolveNextConfig(nextConfigValue, root);
+  const configuredRouteRoot = routeRootConfig?.appDir
+    ? path.resolve(root, routeRootConfig.appDir)
+    : null;
+  const configuredAppDir = configuredRouteRoot ? path.join(configuredRouteRoot, "app") : null;
+  const configuredPagesDir = configuredRouteRoot ? path.join(configuredRouteRoot, "pages") : null;
   const result = await generateRouteTypes({
     root,
+    appDir:
+      routeRootConfig?.disableAppRouter === true
+        ? null
+        : configuredRouteRoot
+          ? configuredAppDir && fs.existsSync(configuredAppDir)
+            ? configuredAppDir
+            : null
+          : undefined,
+    pagesDir: configuredRouteRoot
+      ? configuredPagesDir && fs.existsSync(configuredPagesDir)
+        ? configuredPagesDir
+        : null
+      : undefined,
     pageExtensions: resolvedNextConfig.pageExtensions,
     typedRoutes: resolvedNextConfig.typedRoutes,
   });

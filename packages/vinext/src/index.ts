@@ -1610,6 +1610,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     await generateRouteTypes({
       root,
       appDir: hasAppDir ? appDir : null,
+      pagesDir: hasPagesDir ? pagesDir : null,
       pageExtensions: nextConfig.pageExtensions,
       typedRoutes: nextConfig.typedRoutes,
     });

@@ -461,14 +461,15 @@ describe("generateRouteTypes", () => {
       await writeProjectFile(root, "app/%5Bsites%5D/page.tsx", EMPTY_PAGE);
       await writeProjectFile(root, "app/blog/[slug]/page.tsx", EMPTY_PAGE);
       await writeProjectFile(root, "pages/%5Bid%5D.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "pages/[id].tsx", EMPTY_PAGE);
 
       const result = await generateRouteTypes({ root, typedRoutes: true });
       const generated = await readFile(result.linkTypesPath!, "utf-8");
 
       expect(generated).toContain("| `/[sites]` // app/%5Bsites%5D/page.tsx");
       expect(generated).toContain("| `/[id]` // pages/%5Bid%5D.tsx");
+      expect(generated).toContain("| `/${SafeSlug<T>}` // pages/[id].tsx");
       expect(generated).toContain("| `/blog/${SafeSlug<T>}` // app/blog/[slug]/page.tsx");
-      expect(generated).not.toContain("| `/${SafeSlug<T>}`");
     });
   });
 
@@ -542,6 +543,32 @@ describe("generateRouteTypes", () => {
 
         await eventually(async () => {
           expect(await readFile(linkPath, "utf-8")).toContain("| `/about` // pages/about.tsx");
+        });
+      } finally {
+        await server?.close();
+      }
+    });
+  });
+
+  it("includes Pages Router typed links under a configured route root", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "routes/app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "routes/app/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "routes/pages/legacy.tsx", EMPTY_PAGE);
+
+      let server: ViteDevServer | null = null;
+      try {
+        server = await createServer({
+          root,
+          logLevel: "silent",
+          plugins: [vinext({ appDir: "routes", nextConfig: { typedRoutes: true } })],
+        });
+
+        const linkPath = path.join(root, ".next", "types", "link.d.ts");
+        await eventually(async () => {
+          const generated = await readFile(linkPath, "utf-8");
+          expect(generated).toContain("| `/` // routes/app/page.tsx");
+          expect(generated).toContain("| `/legacy` // routes/pages/legacy.tsx");
         });
       } finally {
         await server?.close();

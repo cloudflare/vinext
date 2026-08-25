@@ -3,10 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { loadConfigFromFile } from "vite-plus";
 import {
   detectNextIntlConfig,
-  findInlineNextConfigFromViteConfig,
   lightningCssFeatureNamesToMask,
   loadNextConfig,
   parseBodySizeLimit,
@@ -138,42 +136,6 @@ describe("deprecated config warnings", () => {
     ).rejects.toThrow(
       "Config options `skipProxyUrlNormalize` and `skipMiddlewareUrlNormalize` cannot be set at the same time.",
     );
-  });
-});
-
-describe("findInlineNextConfigFromViteConfig", () => {
-  it("finds the inline vinext nextConfig marker in vite.config", async () => {
-    const root = makeTempDir();
-    try {
-      fs.writeFileSync(
-        path.join(root, "vite.config.ts"),
-        `export default {
-  plugins: [{ name: "vinext", __vinextNextConfig: { typedRoutes: true } }],
-};
-`,
-      );
-      await expect(findInlineNextConfigFromViteConfig(root, loadConfigFromFile)).resolves.toEqual({
-        typedRoutes: true,
-      });
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("returns null when no plugin declares an inline nextConfig", async () => {
-    const root = makeTempDir();
-    try {
-      fs.writeFileSync(
-        path.join(root, "vite.config.ts"),
-        `export default { plugins: [{ name: "other" }] };
-`,
-      );
-      await expect(
-        findInlineNextConfigFromViteConfig(root, loadConfigFromFile),
-      ).resolves.toBeNull();
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
   });
 });
 

@@ -13,6 +13,7 @@ import { findDir } from "./utils/project.js";
 type GenerateRouteTypesOptions = {
   root: string;
   appDir?: string | null;
+  pagesDir?: string | null;
   pageExtensions?: readonly string[];
   typedRoutes?: boolean;
 };
@@ -63,7 +64,12 @@ export async function generateRouteTypes(
         : findDir(root, "app", "src/app");
   const outPath = path.join(root, ".next", "types", "routes.d.ts");
   const linkPath = path.join(root, ".next", "types", "link.d.ts");
-  const pagesDir = findDir(root, "pages", "src/pages");
+  const pagesDir =
+    options.pagesDir === null
+      ? null
+      : options.pagesDir
+        ? path.resolve(options.pagesDir)
+        : findDir(root, "pages", "src/pages");
   const model = appDir
     ? await collectRouteTypeModel(root, appDir, options.pageExtensions)
     : emptyRouteTypeModel();
@@ -156,25 +162,24 @@ type RouteTypeModel = {
   pageRoutes: string[];
   layoutRoutes: string[];
   routeHandlerRoutes: string[];
-  /** Pages Router page and API routes, collected only for typed-link generation. */
-  pagesRouterRoutes: string[];
-  routeCauses: Map<string, string>;
-  /** Typed-link template info per route, derived from scanner pattern parts. */
-  routeTypeInfo: Map<string, RouteTypeInfo>;
+  appPageLinkRoutes: LinkRouteEntry[];
+  pagesRouterLinkRoutes: LinkRouteEntry[];
+  appRouteHandlerLinkRoutes: LinkRouteEntry[];
   params: Map<string, ParamShape>;
   layoutSlots: Map<string, string[]>;
 };
 
 type RouteTypeInfo = { isDynamic: boolean; routeType: string };
+type LinkRouteEntry = RouteTypeInfo & { cause: string };
 
 function emptyRouteTypeModel(): RouteTypeModel {
   return {
     pageRoutes: [],
     layoutRoutes: [],
     routeHandlerRoutes: [],
-    pagesRouterRoutes: [],
-    routeCauses: new Map(),
-    routeTypeInfo: new Map(),
+    appPageLinkRoutes: [],
+    pagesRouterLinkRoutes: [],
+    appRouteHandlerLinkRoutes: [],
     params: new Map(),
     layoutSlots: new Map(),
   };
@@ -207,13 +212,14 @@ async function collectRouteTypeModel(
       routeLiteral,
       paramsForPatternParts(routeEntry?.patternParts ?? []),
     );
-    if (!model.routeCauses.has(routeLiteral)) {
-      const pagePath = graphRoutesById.get(route.routeId)?.pagePath;
-      model.routeCauses.set(routeLiteral, pagePath ? path.relative(root, pagePath) : routeLiteral);
-    }
-    if (!model.routeTypeInfo.has(routeLiteral) && routeEntry) {
-      model.routeTypeInfo.set(routeLiteral, patternPartsToRouteTypeInfo(routeEntry.patternParts));
-    }
+    const pagePath = graphRoutesById.get(route.routeId)?.pagePath;
+    model.appPageLinkRoutes.push(
+      createLinkRouteEntry(
+        routeLiteral,
+        routeEntry?.patternParts,
+        pagePath ? path.relative(root, pagePath) : routeLiteral,
+      ),
+    );
   }
 
   for (const route of segmentGraph.routeHandlers.values()) {
@@ -226,16 +232,14 @@ async function collectRouteTypeModel(
       routeLiteral,
       paramsForPatternParts(routeEntry?.patternParts ?? []),
     );
-    if (!model.routeCauses.has(routeLiteral)) {
-      const routePath = graphRoutesById.get(route.routeId)?.routePath;
-      model.routeCauses.set(
+    const routePath = graphRoutesById.get(route.routeId)?.routePath;
+    model.appRouteHandlerLinkRoutes.push(
+      createLinkRouteEntry(
         routeLiteral,
+        routeEntry?.patternParts,
         routePath ? path.relative(root, routePath) : routeLiteral,
-      );
-    }
-    if (!model.routeTypeInfo.has(routeLiteral) && routeEntry) {
-      model.routeTypeInfo.set(routeLiteral, patternPartsToRouteTypeInfo(routeEntry.patternParts));
-    }
+      ),
+    );
   }
 
   for (const layout of segmentGraph.layouts.values()) {
@@ -273,6 +277,8 @@ async function collectRouteTypeModel(
   model.pageRoutes.sort(compareStrings);
   model.layoutRoutes.sort(compareStrings);
   model.routeHandlerRoutes.sort(compareStrings);
+  model.appPageLinkRoutes.sort(compareLinkRouteEntries);
+  model.appRouteHandlerLinkRoutes.sort(compareLinkRouteEntries);
   for (const slotNames of model.layoutSlots.values()) slotNames.sort(compareStrings);
 
   return model;
@@ -289,7 +295,6 @@ async function collectPagesRouterLinkRoutes(
   pageExtensions: readonly string[] | undefined,
   model: RouteTypeModel,
 ): Promise<void> {
-  const seen = new Set<string>();
   // Next.js emits raw `pages/api/*` file paths into the unions (its manifest
   // stores page API routes as file paths); vinext emits their URL routes
   // instead, matching how App Router route handlers are treated.
@@ -298,17 +303,11 @@ async function collectPagesRouterLinkRoutes(
     ...(await apiRouter(pagesDir, pageExtensions)),
   ]) {
     const routeLiteral = patternToNextFormat(route.pattern);
-    if (seen.has(routeLiteral)) continue;
-    seen.add(routeLiteral);
-    model.pagesRouterRoutes.push(routeLiteral);
-    if (!model.routeCauses.has(routeLiteral)) {
-      model.routeCauses.set(routeLiteral, path.relative(root, route.filePath));
-    }
-    if (!model.routeTypeInfo.has(routeLiteral)) {
-      model.routeTypeInfo.set(routeLiteral, patternPartsToRouteTypeInfo(route.patternParts));
-    }
+    model.pagesRouterLinkRoutes.push(
+      createLinkRouteEntry(routeLiteral, route.patternParts, path.relative(root, route.filePath)),
+    );
   }
-  model.pagesRouterRoutes.sort(compareStrings);
+  model.pagesRouterLinkRoutes.sort(compareLinkRouteEntries);
 }
 
 /**
@@ -369,6 +368,21 @@ function formatRouteToRouteType(route: string) {
   };
 }
 
+function createLinkRouteEntry(
+  route: string,
+  patternParts: readonly string[] | undefined,
+  cause: string,
+): LinkRouteEntry {
+  return {
+    ...(patternParts ? patternPartsToRouteTypeInfo(patternParts) : formatRouteToRouteType(route)),
+    cause,
+  };
+}
+
+function compareLinkRouteEntries(left: LinkRouteEntry, right: LinkRouteEntry): number {
+  return compareStrings(left.routeType, right.routeType) || compareStrings(left.cause, right.cause);
+}
+
 // Helper function to serialize route types (matches the plugin logic exactly)
 // Each entry is a [routeType, source] tuple.
 function serializeRouteTypes(routeTypes: [routeType: string, cause: string][]) {
@@ -389,23 +403,24 @@ function generateLinkTypesFile(model: RouteTypeModel): string {
   const dynamicRouteTypes: [routeType: string, cause: string][] = [];
 
   // Matches Next.js's manifest iteration order: app routes, then Pages Router
-  // routes, then app route handlers — first visit wins on duplicate URLs.
-  for (const routes of [model.pageRoutes, model.pagesRouterRoutes, model.routeHandlerRoutes]) {
+  // routes, then app route handlers — first visit wins on duplicate route
+  // templates. Use the scanner-derived template rather than the decoded route
+  // literal as the identity so `[id]` and the literal `%5Bid%5D` can coexist.
+  for (const routes of [
+    model.appPageLinkRoutes,
+    model.pagesRouterLinkRoutes,
+    model.appRouteHandlerLinkRoutes,
+  ]) {
     for (const route of routes) {
-      if (visited.has(route)) {
+      if (visited.has(route.routeType)) {
         continue;
       }
-      visited.add(route);
+      visited.add(route.routeType);
 
-      // Scanner-derived info is authoritative (see patternPartsToRouteTypeInfo);
-      // the ported string-based formatter is the fallback.
-      const { isDynamic, routeType } =
-        model.routeTypeInfo.get(route) ?? formatRouteToRouteType(route);
-      const cause = model.routeCauses.get(route) ?? route;
-      if (isDynamic) {
-        dynamicRouteTypes.push([routeType, cause]);
+      if (route.isDynamic) {
+        dynamicRouteTypes.push([route.routeType, route.cause]);
       } else {
-        staticRouteTypes.push([routeType, cause]);
+        staticRouteTypes.push([route.routeType, route.cause]);
       }
     }
   }
@@ -511,7 +526,7 @@ declare module 'next/navigation' {
 
   import type { NavigateOptions, AppRouterInstance as OriginalAppRouterInstance } from 'next/dist/shared/lib/app-router-context.shared-runtime.js'
   import type { RedirectType } from 'next/dist/client/components/redirect-error.js'
-  
+${"  "}
   interface AppRouterInstance extends OriginalAppRouterInstance {
     /**
      * Navigate to the provided href.
@@ -530,7 +545,7 @@ declare module 'next/navigation' {
   }
 
   export function useRouter(): AppRouterInstance;
-  
+${"  "}
   /**
    * This function allows you to redirect the user to another URL. It can be used in
    * [Server Components](https://nextjs.org/docs/app/building-your-application/rendering/server-components),
@@ -549,7 +564,7 @@ declare module 'next/navigation' {
     url: __next_route_internal_types__.RouteImpl<RouteType>,
     type?: RedirectType
   ): never;
-  
+${"  "}
   /**
    * This function allows you to redirect the user to another URL. It can be used in
    * [Server Components](https://nextjs.org/docs/app/building-your-application/rendering/server-components),
