@@ -211,7 +211,15 @@ async function typecheckTypedRoutesConsumer(
       root,
       consumerPath,
       `import type { Route } from "next";
+// These are dependencies of generated link.d.ts. Import them from source so
+// skipLibCheck cannot hide a missing @vinext/types compatibility alias.
+import type {} from "next/types.js";
 import type { LinkProps } from "next/link";
+import type { LinkProps as InternalLinkProps } from "next/dist/client/link.js";
+import type { FormProps as InternalFormProps } from "next/dist/client/form.js";
+import type * as InternalNavigation from "next/dist/client/components/navigation.js";
+import type { RedirectType } from "next/dist/client/components/redirect-error.js";
+import type { NavigateOptions } from "next/dist/shared/lib/app-router-context.shared-runtime.js";
 import { redirect, useRouter } from "next/navigation";
 
 const route: Route = "/dashboard";
@@ -230,7 +238,22 @@ redirect("/dashboard");
 // @ts-expect-error invalid redirect target
 redirect("/nope");
 const cast = "/anything" as Route;
-void [route, badRoute, dashboardHref, dynamicHref, catchAllHref, cast];
+type GeneratedLinkTypeDependencies = [
+  InternalLinkProps,
+  InternalFormProps,
+  typeof InternalNavigation,
+  RedirectType,
+  NavigateOptions,
+];
+void [
+  route,
+  badRoute,
+  dashboardHref,
+  dynamicHref,
+  catchAllHref,
+  cast,
+  null as GeneratedLinkTypeDependencies | null,
+];
 `,
     );
   } else {
