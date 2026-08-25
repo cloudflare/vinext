@@ -3980,6 +3980,88 @@ describe("createMultiStageChunkFileNames", () => {
     );
     expect(calls).toBe(2);
   });
+
+  it("adds independent HTTP stage entries to the Pages server environment", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-http-stages-"));
+    await fsp.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "node_modules"),
+      "junction",
+    );
+    await fsp.mkdir(path.join(root, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(root, "pages", "index.tsx"),
+      "export default function Page() { return <h1>page</h1>; }\n",
+    );
+
+    try {
+      const entries = {
+        request: "/adapter/http-request-stage.js",
+        response: "/adapter/http-response-stage.js",
+      };
+      const plugins = vinext({
+        cache: {
+          cdn: {
+            adapter: "/adapter/cache.js",
+            output: {
+              entries,
+              entry: entries.request,
+              matchesBuild: ({ plugins }) =>
+                plugins.some(({ name }) => name === "independent-http-host"),
+              type: "multi-stage",
+            },
+          },
+        },
+      });
+      const configPlugin = plugins.find(
+        (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+      );
+      const outputPlugin = plugins.find(
+        (plugin: any) =>
+          plugin.name === "vinext:multi-stage-server-output" &&
+          typeof plugin.configEnvironment === "function",
+      );
+      expect(configPlugin).toBeDefined();
+      expect(outputPlugin).toBeDefined();
+
+      await (configPlugin as any).config(
+        {
+          build: {},
+          plugins: [{ name: "independent-http-host" }],
+          root,
+        },
+        { command: "build", mode: "production" },
+      );
+      const result = (outputPlugin as any).configEnvironment("ssr", {
+        build: { rolldownOptions: { input: "virtual:main" } },
+      });
+
+      expect(result.build.rolldownOptions.input).toEqual({
+        index: "virtual:main",
+        "vinext-request-stage": entries.request,
+        "vinext-response-stage": entries.response,
+      });
+      const arrayOutputResult = (outputPlugin as any).configEnvironment("ssr", {
+        build: {
+          rolldownOptions: {
+            input: "virtual:main",
+            output: [{ dir: "esm" }, { dir: "cjs" }],
+          },
+        },
+      });
+      expect(arrayOutputResult.build.rolldownOptions).toEqual({
+        input: {
+          index: "virtual:main",
+          "vinext-request-stage": entries.request,
+          "vinext-response-stage": entries.response,
+        },
+      });
+      expect((outputPlugin as any).configEnvironment("client", {})).toBeNull();
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 describe("createMultiStageCodeSplittingConfig", () => {

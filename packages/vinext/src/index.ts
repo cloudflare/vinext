@@ -64,6 +64,7 @@ import {
   VIRTUAL_CACHE_ADAPTERS,
   generateCdnCacheAdapterModule,
   generateCacheAdaptersModule,
+  mergeMultiStageBuildInputs,
   hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   type VinextCacheConfig,
@@ -4590,11 +4591,13 @@ export const loadServerActionClient = ${
       configEnvironment(name, config) {
         // Vite's standalone `build.ssr` path still names its sole environment
         // `client`. Distinguish that server build from the real browser
-        // environment when applying server-stage chunk partitioning.
+        // environment so generic hosts can emit independent stage entries
+        // without having to opt into Vite's multi-environment builder.
         const isStandaloneSsrEnvironment = typeof config.build?.ssr === "string";
         // App Router's `ssr` environment is the client-component renderer and
-        // must not receive server-stage output configuration. In a Pages-only
-        // build, however, `ssr` is the actual server environment.
+        // must not receive host deployment entries. In a Pages-only build,
+        // however, `ssr` is the actual server environment, so independent
+        // request/response stage entries belong there.
         if (
           !selectedMultiStageOutput ||
           (name === "client" && !isStandaloneSsrEnvironment) ||
@@ -4604,12 +4607,38 @@ export const loadServerActionClient = ${
         }
         const bundlerOptions = getBuildBundlerOptions(config.build);
         const output = bundlerOptions?.output;
+        const hostInput =
+          bundlerOptions?.input ??
+          (typeof config.build?.ssr === "string" ? config.build.ssr : undefined);
+        const input = selectedMultiStageOutput.entries
+          ? mergeMultiStageBuildInputs(
+              hostInput as string | string[] | Record<string, string> | undefined,
+              selectedMultiStageOutput.entries,
+            )
+          : undefined;
+        // Named stage inputs are independent of output shape. Hosts using
+        // multiple output configs still receive separately deployable stages;
+        // their own output patterns remain untouched because there is no
+        // unambiguous single chunkFileNames policy to augment.
         if (Array.isArray(output)) {
-          return null;
+          return input
+            ? {
+                build: {
+                  ...(isStandaloneSsrEnvironment ? { ssr: true } : {}),
+                  ...withBuildBundlerOptions({ input }),
+                },
+              }
+            : null;
         }
         return {
           build: {
+            // A string-valued `build.ssr` is itself treated as the sole entry
+            // after environment hooks run. We already preserved that string in
+            // the merged input map above, so switch to boolean SSR mode to let
+            // the bundler honor every adapter-supplied entry.
+            ...(isStandaloneSsrEnvironment ? { ssr: true } : {}),
             ...withBuildBundlerOptions({
+              ...(input ? { input } : {}),
               output: {
                 chunkFileNames: createMultiStageChunkFileNames(
                   resolveAssetsDir(nextConfig.assetPrefix ?? ""),

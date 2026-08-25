@@ -49,6 +49,11 @@ export type VinextResponseStageTransport<Props = unknown> = (
 export type VinextMultiStageOutput = {
   /** Adapter-owned module that becomes the deployment entry when selected. */
   entry: string;
+  /** Complete adapter-owned host entries for independently deployable stages. */
+  entries?: {
+    request: string;
+    response: string;
+  };
   type: "multi-stage";
   /** Decide whether the current build host supports this adapter's transport. */
   matchesBuild?: (build: { plugins: readonly { name?: string }[] }) => boolean;

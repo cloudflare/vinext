@@ -1,0 +1,166 @@
+import type { VinextRequestStageTransport } from "vinext/server/multi-stage";
+import { loadVinextResponseStage } from "vinext/server/response-stage";
+import {
+  deserializeRequest,
+  serializeRequest,
+  startNodeFetchServer,
+  type SerializedRequest,
+} from "./http-stage-node";
+
+type StageEnvelope = {
+  options: { cache: "shared" | "bypass" };
+  props: unknown;
+  request: SerializedRequest;
+};
+
+type ResponseSnapshot = {
+  body: ArrayBuffer;
+  headers: Array<[string, string]>;
+  status: number;
+  statusText: string;
+};
+
+const cache = new Map<string, Promise<ResponseSnapshot | null>>();
+const STREAM_DELAY_MS = 250;
+
+function responseCacheKey(request: Request, props: unknown): string {
+  return JSON.stringify([request.method, request.url, props]);
+}
+
+async function snapshotResponse(response: Response): Promise<ResponseSnapshot> {
+  return {
+    body: await response.arrayBuffer(),
+    headers: [...response.headers],
+    status: response.status,
+    statusText: response.statusText,
+  };
+}
+
+function responseFromSnapshot(snapshot: ResponseSnapshot): Response {
+  return new Response(snapshot.body.slice(0), {
+    headers: snapshot.headers,
+    status: snapshot.status,
+    statusText: snapshot.statusText,
+  });
+}
+
+function withHostHeaders(response: Response, state: "BYPASS" | "HIT" | "MISS"): Response {
+  const headers = new Headers(response.headers);
+  headers.set("x-http-response-stage-pid", String(process.pid));
+  headers.set("x-http-stage-cache", state);
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+function delayAfterFirstBytes(response: Response): Response {
+  if (!response.body) return response;
+  const reader = response.body.getReader();
+  let delayedRemainder: Uint8Array | null = null;
+  let splitFirstChunk = false;
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (delayedRemainder) {
+        await new Promise((resolve) => setTimeout(resolve, STREAM_DELAY_MS));
+        controller.enqueue(delayedRemainder);
+        delayedRemainder = null;
+        return;
+      }
+      const next = await reader.read();
+      if (next.done) {
+        reader.releaseLock();
+        controller.close();
+        return;
+      }
+      if (!splitFirstChunk && next.value.byteLength > 1) {
+        splitFirstChunk = true;
+        const split = Math.max(1, Math.floor(next.value.byteLength / 2));
+        delayedRemainder = next.value.slice(split);
+        controller.enqueue(next.value.slice(0, split));
+        return;
+      }
+      splitFirstChunk = true;
+      controller.enqueue(next.value);
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } finally {
+        reader.releaseLock();
+      }
+    },
+  });
+  const headers = new Headers(response.headers);
+  headers.set("x-http-stage-stream-delay", String(STREAM_DELAY_MS));
+  return new Response(stream, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+function isSharedCacheable(response: Response): boolean {
+  const policy =
+    response.headers.get("cloudflare-cdn-cache-control") ??
+    response.headers.get("cdn-cache-control") ??
+    response.headers.get("cache-control");
+  return (
+    response.status >= 200 &&
+    response.status < 400 &&
+    policy !== null &&
+    !/(?:^|,)\s*(?:no-store|no-cache|private)\b/i.test(policy)
+  );
+}
+
+const responseStageFetch = async (transportRequest: Request): Promise<Response> => {
+  if (new URL(transportRequest.url).pathname !== "/__vinext_response_stage") {
+    return new Response("Not Found", { status: 404 });
+  }
+  const envelope = (await transportRequest.json()) as StageEnvelope;
+  const request = deserializeRequest(envelope.request);
+  const cacheKey = responseCacheKey(request, envelope.props);
+
+  if (envelope.options.cache === "shared") {
+    const snapshot = await cache.get(cacheKey);
+    if (snapshot) return withHostHeaders(responseFromSnapshot(snapshot), "HIT");
+  }
+
+  const requestOrigin = process.env.VINEXT_REQUEST_STAGE_ORIGIN;
+  if (!requestOrigin) return new Response("Missing request-stage origin", { status: 500 });
+  const dispatchRequestStage: VinextRequestStageTransport = async (stageRequest) =>
+    fetch(new URL("/__vinext_request_stage", requestOrigin), {
+      body: JSON.stringify({ request: await serializeRequest(stageRequest) }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+  const { handleResponseStage } = await loadVinextResponseStage();
+  const rendered = await handleResponseStage(
+    request,
+    {},
+    { hostRuntime: "node" },
+    envelope.props,
+    dispatchRequestStage,
+    envelope.options,
+  );
+  if (envelope.options.cache === "bypass" || !isSharedCacheable(rendered)) {
+    return withHostHeaders(rendered, "BYPASS");
+  }
+
+  if (!rendered.body) {
+    cache.set(cacheKey, Promise.resolve(await snapshotResponse(rendered.clone())));
+    return withHostHeaders(rendered, "MISS");
+  }
+  const [foregroundBody, cacheBody] = rendered.body.tee();
+  const foreground = delayAfterFirstBytes(new Response(foregroundBody, rendered));
+  cache.set(
+    cacheKey,
+    snapshotResponse(new Response(cacheBody, rendered)).catch(() => null),
+  );
+  return withHostHeaders(foreground, "MISS");
+};
+
+export default { fetch: responseStageFetch };
+
+startNodeFetchServer(responseStageFetch);
