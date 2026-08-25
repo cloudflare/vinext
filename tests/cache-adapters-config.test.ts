@@ -45,12 +45,14 @@ import {
   setConfiguredCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import {
+  configureMemoryCacheHandler,
   deactivateGeneratedDataCacheHandler,
   getDataCacheHandler,
   hasDataCacheAdapterRegistrationFailed,
   isConfiguredDataCacheHandlerActive,
   markDataCacheAdapterRegistrationFailed,
   MemoryCacheHandler,
+  NoOpCacheHandler,
   setConfiguredDataCacheHandler,
   setDataCacheHandler,
 } from "../packages/vinext/src/shims/cache-handler.js";
@@ -217,6 +219,84 @@ describe("generateCacheAdaptersModule", () => {
       delete state[handlerRegistrationKey];
       delete state[adapterKey];
       delete state[adapterRegistrationKey];
+    }
+  });
+
+  it("restores the configured memory fallback after deactivating a generated handler", async () => {
+    const handlerKey = Symbol.for("vinext.cacheHandler");
+    const fallbackKey = Symbol.for("vinext.memoryCacheHandlerFallback");
+    const registrationKey = Symbol.for("vinext.configuredCacheHandler");
+
+    try {
+      setConfiguredDataCacheHandler(new NoOpCacheHandler(), "build-a", {});
+
+      // A new entry configures its fallback while the previous generated
+      // handler is still active in the isolate.
+      configureMemoryCacheHandler({ cacheMaxMemorySize: 0 });
+      deactivateGeneratedDataCacheHandler();
+
+      const fallback = getDataCacheHandler();
+      await fallback.set("disabled", {
+        kind: "FETCH",
+        data: { headers: {}, body: '"cached"', url: "test" },
+        tags: [],
+        revalidate: 3600,
+      });
+      expect(await fallback.get("disabled")).toBeNull();
+    } finally {
+      const state = globalThis as Record<PropertyKey, unknown>;
+      delete state[handlerKey];
+      delete state[fallbackKey];
+      delete state[registrationKey];
+    }
+  });
+
+  it("preserves an explicitly installed memory handler while configuring the fallback", () => {
+    const handlerKey = Symbol.for("vinext.cacheHandler");
+    const fallbackKey = Symbol.for("vinext.memoryCacheHandlerFallback");
+    const registrationKey = Symbol.for("vinext.configuredCacheHandler");
+
+    try {
+      const manual = new MemoryCacheHandler();
+      setDataCacheHandler(manual);
+
+      configureMemoryCacheHandler({ cacheMaxMemorySize: 0 });
+
+      expect(getDataCacheHandler()).toBe(manual);
+      expect(isConfiguredDataCacheHandlerActive("build-a", {})).toBe(true);
+    } finally {
+      const state = globalThis as Record<PropertyKey, unknown>;
+      delete state[handlerKey];
+      delete state[fallbackKey];
+      delete state[registrationKey];
+    }
+  });
+
+  it("replaces an unowned handler when configuring a new memory fallback", async () => {
+    const handlerKey = Symbol.for("vinext.cacheHandler");
+    const fallbackKey = Symbol.for("vinext.memoryCacheHandlerFallback");
+    const registrationKey = Symbol.for("vinext.configuredCacheHandler");
+    const state = globalThis as Record<PropertyKey, unknown>;
+
+    try {
+      const stale = new NoOpCacheHandler();
+      state[handlerKey] = stale;
+
+      configureMemoryCacheHandler({ cacheMaxMemorySize: 0 });
+
+      const fallback = getDataCacheHandler();
+      expect(fallback).not.toBe(stale);
+      await fallback.set("disabled", {
+        kind: "FETCH",
+        data: { headers: {}, body: '"cached"', url: "test" },
+        tags: [],
+        revalidate: 3600,
+      });
+      expect(await fallback.get("disabled")).toBeNull();
+    } finally {
+      delete state[handlerKey];
+      delete state[fallbackKey];
+      delete state[registrationKey];
     }
   });
 

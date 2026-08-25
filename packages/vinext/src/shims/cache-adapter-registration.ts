@@ -9,6 +9,7 @@ type GeneratedCdnRegistration = {
 };
 
 const DATA_HANDLER_KEY = Symbol.for("vinext.cacheHandler");
+const DATA_MEMORY_FALLBACK_KEY = Symbol.for("vinext.memoryCacheHandlerFallback");
 const DATA_REGISTRATION_KEY = Symbol.for("vinext.configuredCacheHandler");
 const CDN_ADAPTER_KEY = Symbol.for("vinext.cdnCacheAdapter");
 const CDN_REGISTRATION_KEY = Symbol.for("vinext.configuredCdnCacheAdapter");
@@ -20,7 +21,12 @@ export function deactivateGeneratedDataCacheHandler(): void {
   if (registration?.kind !== "generated") return;
 
   if (state[DATA_HANDLER_KEY] === registration.handler) {
-    delete state[DATA_HANDLER_KEY];
+    const fallback = state[DATA_MEMORY_FALLBACK_KEY];
+    if (fallback === undefined) {
+      delete state[DATA_HANDLER_KEY];
+    } else {
+      state[DATA_HANDLER_KEY] = fallback;
+    }
   }
   delete state[DATA_REGISTRATION_KEY];
 }
