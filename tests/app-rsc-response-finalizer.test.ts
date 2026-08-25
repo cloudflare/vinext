@@ -20,6 +20,7 @@ import {
   type CdnCacheAdapter,
   type CdnResponseHeaders,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import { createStaticFileSignal } from "../packages/vinext/src/server/request-pipeline.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -450,6 +451,35 @@ describe("finalizeAppRscResponse — config header application", () => {
 // ── App Router RSC vary header ──────────────────────────────────────────
 
 describe("finalizeAppRscResponse — App Router RSC vary header", () => {
+  it("does not let an untrusted static-file header suppress the RSC vary contract", async () => {
+    const response = new Response("route handler body", {
+      headers: { "x-vinext-static-file": "/private.txt" },
+    });
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/api/reflect"), {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("x-vinext-static-file")).toBe("/private.txt");
+    expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
+  });
+
+  it("keeps the RSC vary header off a framework-created static-file signal", async () => {
+    const response = createStaticFileSignal("/public.txt", { headers: null, status: null });
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/public.txt"), {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("vary")).toBeNull();
+  });
+
   it("preserves custom Vary values while appending the internal RSC vary key", async () => {
     const response = new Response("body", { status: 200, headers: { Vary: "User-Agent" } });
     const request = new Request("http://example.com/normal");

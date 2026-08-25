@@ -78,7 +78,6 @@ import {
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
-  VINEXT_STATIC_FILE_HEADER,
 } from "./headers.js";
 import {
   readTrustedPrerenderRouteParamsFromHeaders,
@@ -102,6 +101,7 @@ import { evaluateStaticPreconditions } from "./http-conditional.js";
 import { parseHttpDate } from "./http-date.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { readTrustedRevalidationHostname } from "./revalidation-host.js";
+import { readStaticFileSignal } from "./static-file-signal.js";
 
 /**
  * mtime of the build each bare (query-less) server-entry URL was first
@@ -416,12 +416,10 @@ function nodeHeadersToWebHeaders(headersRecord: IncomingMessage["headers"]): Hea
 const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
 
 // Constant header-name sets for `omitHeadersCaseInsensitive`. Hoisted to module
-// scope so the `.map().toLowerCase()` + `Set` allocation happens once at module
-// load instead of per response. All entries must be lowercase; the static-file
-// header constant is already `x-vinext-static-file`.
+// scope so the Set allocation happens once at module load instead of per response.
+// All entries must be lowercase.
 const OMIT_BODY_HEADERS: ReadonlySet<string> = new Set(["content-length", "content-type"]);
 const OMIT_STATIC_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
-  VINEXT_STATIC_FILE_HEADER,
   "content-encoding",
   "content-length",
   "content-range",
@@ -1788,7 +1786,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         return;
       }
 
-      const staticFileSignal = response.headers.get(VINEXT_STATIC_FILE_HEADER);
+      const staticFileSignal = readStaticFileSignal(response);
       if (staticFileSignal) {
         let staticFilePath = "/";
         try {

@@ -1,10 +1,5 @@
 import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
-import {
-  INTERNAL_HEADERS,
-  MIDDLEWARE_HEADER_PREFIX,
-  VINEXT_INTERNAL_HEADERS,
-  VINEXT_STATIC_FILE_HEADER,
-} from "./headers.js";
+import { INTERNAL_HEADERS, MIDDLEWARE_HEADER_PREFIX, VINEXT_INTERNAL_HEADERS } from "./headers.js";
 import { MIDDLEWARE_CACHE_HEADER } from "../utils/protocol-headers.js";
 import { getUnconsumedMiddlewareRequestHeaders } from "../utils/middleware-request-headers.js";
 import {
@@ -13,8 +8,10 @@ import {
   notFoundResponse,
 } from "./http-error-responses.js";
 import { isOpenRedirectShaped } from "./open-redirect.js";
+import { createStaticFileSignal, type StaticFileSignalContext } from "./static-file-signal.js";
 
 export { isOpenRedirectShaped } from "./open-redirect.js";
+export { createStaticFileSignal };
 
 const PATHNAME_CANONICALIZATION_BASE = new URL("http://vinext.invalid/");
 
@@ -102,11 +99,6 @@ export { hasBasePath, stripBasePath };
 
 export type HeaderRecord = Record<string, string | string[]>;
 
-type StaticFileSignalContext = {
-  headers: Headers | null;
-  status: number | null;
-};
-
 type ResolvePublicFileRouteOptions = {
   cleanPathname: string;
   middlewareContext: StaticFileSignalContext;
@@ -119,24 +111,6 @@ const FILE_LIKE_PATHNAME_RE = /\.[^/]+\/?$/;
 
 function isWellKnownPathname(pathname: string): boolean {
   return pathname === "/.well-known" || pathname.startsWith("/.well-known/");
-}
-
-export function createStaticFileSignal(
-  pathname: string,
-  context: StaticFileSignalContext,
-): Response {
-  const headers = new Headers({
-    [VINEXT_STATIC_FILE_HEADER]: encodeURIComponent(pathname),
-  });
-  if (context.headers) {
-    for (const [key, value] of context.headers) {
-      headers.append(key, value);
-    }
-  }
-  return new Response(null, {
-    status: context.status ?? 200,
-    headers,
-  });
 }
 
 /**

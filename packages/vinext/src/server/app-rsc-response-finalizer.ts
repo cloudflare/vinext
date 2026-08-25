@@ -1,6 +1,6 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
-import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
+import { isStaticFileSignal } from "./static-file-signal.js";
 import {
   applyCdnResponseHeaders,
   applyOriginManagedPageCacheResponseHeaders,
@@ -117,7 +117,7 @@ export async function finalizeAppRscResponse(
     return redirectResponse;
   }
 
-  if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
+  if (!isStaticFileSignal(response)) {
     const varyHeader = response.headers.get("Vary");
     if (varyHeader === null) {
       response.headers.set("Vary", VINEXT_RSC_VARY_HEADER);

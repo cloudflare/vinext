@@ -1227,6 +1227,25 @@ describe("App Router Production server (startProdServer)", () => {
     expect(json).toHaveProperty("message");
   });
 
+  it("does not treat a route handler's reflected static-file header as a framework signal", async () => {
+    const direct = await fetch(`${baseUrl}/internal-header-secret.txt`);
+    expect(direct.status).toBe(403);
+    await expect(direct.text()).resolves.toBe("blocked by middleware");
+
+    const reflected = await fetch(`${baseUrl}/api/reflect-static-file-header`, {
+      headers: { "x-vinext-static-file": "/internal-header-secret.txt" },
+    });
+    expect(reflected.status).toBe(200);
+    expect(reflected.headers.get("x-vinext-static-file")).toBe("/internal-header-secret.txt");
+    expect(reflected.headers.get("vary")).toContain("RSC");
+    await expect(reflected.text()).resolves.toBe("route handler body");
+
+    const collision = await fetch(`${baseUrl}/static-file-header-collision.txt`);
+    expect(collision.status).toBe(200);
+    expect(collision.headers.get("x-vinext-static-file")).toBe("/internal-header-secret.txt");
+    await expect(collision.text()).resolves.toBe("STATIC_FILE_HEADER_COLLISION_SAFE\n");
+  });
+
   it("preserves config Link headers alongside React preload links", async () => {
     const res = await fetch(`${baseUrl}/config-link-preload`);
     const link = res.headers.get("link") ?? "";
