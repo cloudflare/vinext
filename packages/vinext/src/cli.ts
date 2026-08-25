@@ -34,11 +34,13 @@ import { resolveInitOptions } from "./init-platform.js";
 import { loadDotenv } from "./config/dotenv.js";
 import {
   createRscCompatibilityId,
+  findInlineNextConfigFromViteConfig,
   findVinextNextConfigInPlugins,
   loadNextConfig,
   resolveNextConfig,
   resolveNextConfigInput,
   PHASE_PRODUCTION_BUILD,
+  type NextConfig,
   type NextConfigInput,
 } from "./config/next-config.js";
 import { emitStandaloneOutput } from "./build/standalone.js";
@@ -868,10 +870,16 @@ async function typegen() {
     root,
     mode: "production",
   });
-  const resolvedNextConfig = await resolveNextConfig(
-    await loadNextConfig(root, PHASE_PRODUCTION_BUILD),
-    root,
-  );
+  // Inline `vinext({ nextConfig })` from vite.config takes precedence over
+  // next.config.* on disk, matching the plugin's own resolution.
+  let nextConfigValue: NextConfig | null = null;
+  if (hasViteConfig(root)) {
+    const vite = await loadVite();
+    const inline = await findInlineNextConfigFromViteConfig(root, vite.loadConfigFromFile);
+    if (inline) nextConfigValue = await resolveNextConfigInput(inline, PHASE_PRODUCTION_BUILD);
+  }
+  nextConfigValue ??= await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
+  const resolvedNextConfig = await resolveNextConfig(nextConfigValue, root);
   const result = await generateRouteTypes({
     root,
     pageExtensions: resolvedNextConfig.pageExtensions,

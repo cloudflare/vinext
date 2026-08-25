@@ -159,9 +159,13 @@ type RouteTypeModel = {
   /** Pages Router page and API routes, collected only for typed-link generation. */
   pagesRouterRoutes: string[];
   routeCauses: Map<string, string>;
+  /** Typed-link template info per route, derived from scanner pattern parts. */
+  routeTypeInfo: Map<string, RouteTypeInfo>;
   params: Map<string, ParamShape>;
   layoutSlots: Map<string, string[]>;
 };
+
+type RouteTypeInfo = { isDynamic: boolean; routeType: string };
 
 function emptyRouteTypeModel(): RouteTypeModel {
   return {
@@ -170,6 +174,7 @@ function emptyRouteTypeModel(): RouteTypeModel {
     routeHandlerRoutes: [],
     pagesRouterRoutes: [],
     routeCauses: new Map(),
+    routeTypeInfo: new Map(),
     params: new Map(),
     layoutSlots: new Map(),
   };
@@ -206,6 +211,9 @@ async function collectRouteTypeModel(
       const pagePath = graphRoutesById.get(route.routeId)?.pagePath;
       model.routeCauses.set(routeLiteral, pagePath ? path.relative(root, pagePath) : routeLiteral);
     }
+    if (!model.routeTypeInfo.has(routeLiteral) && routeEntry) {
+      model.routeTypeInfo.set(routeLiteral, patternPartsToRouteTypeInfo(routeEntry.patternParts));
+    }
   }
 
   for (const route of segmentGraph.routeHandlers.values()) {
@@ -224,6 +232,9 @@ async function collectRouteTypeModel(
         routeLiteral,
         routePath ? path.relative(root, routePath) : routeLiteral,
       );
+    }
+    if (!model.routeTypeInfo.has(routeLiteral) && routeEntry) {
+      model.routeTypeInfo.set(routeLiteral, patternPartsToRouteTypeInfo(routeEntry.patternParts));
     }
   }
 
@@ -293,8 +304,32 @@ async function collectPagesRouterLinkRoutes(
     if (!model.routeCauses.has(routeLiteral)) {
       model.routeCauses.set(routeLiteral, path.relative(root, route.filePath));
     }
+    if (!model.routeTypeInfo.has(routeLiteral)) {
+      model.routeTypeInfo.set(routeLiteral, patternPartsToRouteTypeInfo(route.patternParts));
+    }
   }
   model.pagesRouterRoutes.sort(compareStrings);
+}
+
+/**
+ * Derive a route's typed-link template from the scanners' pattern parts
+ * (`:param` markers with pre-decoded static segments) instead of re-parsing
+ * the decoded route string. Percent-encoded literal bracket segments (e.g.
+ * `%5Bslug%5D`) decode to `[slug]`, which string-based classification would
+ * misread as a dynamic parameter.
+ */
+function patternPartsToRouteTypeInfo(patternParts: readonly string[]): RouteTypeInfo {
+  let isDynamic = false;
+  const segments = patternParts.map((part) => {
+    if (part.startsWith(":")) {
+      isDynamic = true;
+      if (part.endsWith("+")) return "${CatchAllSlug<T>}";
+      if (part.endsWith("*")) return "${OptionalCatchAllSlug<T>}";
+      return "${SafeSlug<T>}";
+    }
+    return part;
+  });
+  return { isDynamic, routeType: segments.length === 0 ? "/" : `/${segments.join("/")}` };
 }
 
 // Ported from Next.js: packages/next/src/server/lib/router-utils/typegen.ts (generateLinkTypesFile)
@@ -348,7 +383,7 @@ function serializeRouteTypes(routeTypes: [routeType: string, cause: string][]) {
   return union;
 }
 
-export function generateLinkTypesFile(model: RouteTypeModel): string {
+function generateLinkTypesFile(model: RouteTypeModel): string {
   const visited = new Set<string>();
   const staticRouteTypes: [routeType: string, cause: string][] = [];
   const dynamicRouteTypes: [routeType: string, cause: string][] = [];
@@ -362,7 +397,10 @@ export function generateLinkTypesFile(model: RouteTypeModel): string {
       }
       visited.add(route);
 
-      const { isDynamic, routeType } = formatRouteToRouteType(route);
+      // Scanner-derived info is authoritative (see patternPartsToRouteTypeInfo);
+      // the ported string-based formatter is the fallback.
+      const { isDynamic, routeType } =
+        model.routeTypeInfo.get(route) ?? formatRouteToRouteType(route);
       const cause = model.routeCauses.get(route) ?? route;
       if (isDynamic) {
         dynamicRouteTypes.push([routeType, cause]);

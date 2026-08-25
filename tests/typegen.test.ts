@@ -455,6 +455,23 @@ describe("generateRouteTypes", () => {
     });
   });
 
+  it("keeps percent-encoded literal bracket segments static in typed links", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/%5Bsites%5D/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/blog/[slug]/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "pages/%5Bid%5D.tsx", EMPTY_PAGE);
+
+      const result = await generateRouteTypes({ root, typedRoutes: true });
+      const generated = await readFile(result.linkTypesPath!, "utf-8");
+
+      expect(generated).toContain("| `/[sites]` // app/%5Bsites%5D/page.tsx");
+      expect(generated).toContain("| `/[id]` // pages/%5Bid%5D.tsx");
+      expect(generated).toContain("| `/blog/${SafeSlug<T>}` // app/blog/[slug]/page.tsx");
+      expect(generated).not.toContain("| `/${SafeSlug<T>}`");
+    });
+  });
+
   it("builds typed-link unions for Pages Router-only projects", async () => {
     await withTempProject(async (root) => {
       await writeProjectFile(root, "pages/index.tsx", EMPTY_PAGE);
@@ -495,6 +512,36 @@ describe("generateRouteTypes", () => {
 
         await eventually(async () => {
           expect(await readFile(linkPath, "utf-8")).toContain("| `/about` // app/about/page.tsx");
+        });
+      } finally {
+        await server?.close();
+      }
+    });
+  });
+
+  it("regenerates typed-link declarations when Pages Router files change in dev", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "pages/index.tsx", EMPTY_PAGE);
+
+      let server: ViteDevServer | null = null;
+      try {
+        server = await createServer({
+          root,
+          logLevel: "silent",
+          plugins: [vinext({ appDir: root, nextConfig: { typedRoutes: true } })],
+        });
+
+        const linkPath = path.join(root, ".next", "types", "link.d.ts");
+        await eventually(async () => {
+          expect(await readFile(linkPath, "utf-8")).toContain("| `/` // pages/index.tsx");
+        });
+
+        const aboutPage = path.join(root, "pages/about.tsx");
+        await writeProjectFile(root, "pages/about.tsx", EMPTY_PAGE);
+        server.watcher.emit("add", aboutPage);
+
+        await eventually(async () => {
+          expect(await readFile(linkPath, "utf-8")).toContain("| `/about` // pages/about.tsx");
         });
       } finally {
         await server?.close();

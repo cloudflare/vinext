@@ -2344,7 +2344,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               INSTRUMENTATION_CLIENT_EMPTY_MODULE,
             )
           : null;
-        if (env?.command === "build") {
+        // `vinext build` runs a secondary Pages Router SSR build for hybrid
+        // apps with `disableAppRouter: true`. The primary build has already
+        // generated route types from the full route set; regenerating here
+        // would clobber them with an app-less model (and, with typedRoutes
+        // off in the secondary instance, delete link.d.ts).
+        const isHybridPagesOnlyBuild = options.disableAppRouter === true && fs.existsSync(appDir);
+        if (env?.command === "build" && !isHybridPagesOnlyBuild) {
           await writeRouteTypes();
         }
 
@@ -4888,6 +4894,8 @@ export const loadServerActionClient = ${
             pageExtensions.test(filePath)
           ) {
             invalidateRouteCache(pagesDir);
+            // Pages Router routes feed the generated typed-link unions.
+            regenerateAppRouteTypes();
             routeChanged = true;
           }
           if (hasAppDir && shouldInvalidateAppRouteFile(appDir, filePath, fileMatcher)) {
@@ -4930,6 +4938,8 @@ export const loadServerActionClient = ${
             pageExtensions.test(filePath)
           ) {
             invalidateRouteCache(pagesDir);
+            // Pages Router routes feed the generated typed-link unions.
+            regenerateAppRouteTypes();
             routeChanged = true;
           }
           if (hasAppDir && shouldInvalidateAppRouteFile(appDir, filePath, fileMatcher)) {
