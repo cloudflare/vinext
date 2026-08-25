@@ -8,6 +8,13 @@ import { NextResponse, type NextRequest } from "next/server";
  * for #1520.
  */
 export async function middleware(request: NextRequest) {
+  const visitorId = request.headers.get("x-test-visitor-id") ?? "anonymous";
+  if (request.nextUrl.pathname.startsWith("/cdn-stage-cookie/")) {
+    const response = NextResponse.next();
+    response.cookies.set("stage-cookie", visitorId);
+    response.headers.set("x-cdn-stage-visitor", visitorId);
+    return response;
+  }
   if (request.nextUrl.pathname === "/%61dmin") {
     return NextResponse.rewrite(new URL("/admin", request.url));
   }
@@ -24,5 +31,15 @@ export async function middleware(request: NextRequest) {
   }
   const headers = new Headers(request.headers);
   headers.set("x-from-middleware", "hello-from-middleware");
-  return NextResponse.next({ request: { headers } });
+  const response = NextResponse.next({ request: { headers } });
+  if (
+    request.nextUrl.pathname.startsWith("/cdn-stage-app/") ||
+    request.nextUrl.pathname.startsWith("/cdn-stage-cookie/") ||
+    request.nextUrl.pathname.startsWith("/cdn-stage-late/") ||
+    request.nextUrl.pathname.startsWith("/api/cdn-stage-late-route/") ||
+    request.nextUrl.pathname.startsWith("/cdn-stage-pages/")
+  ) {
+    response.headers.set("x-cdn-stage-visitor", visitorId);
+  }
+  return response;
 }

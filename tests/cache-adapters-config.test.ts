@@ -317,6 +317,33 @@ describe("cdnAdapter builder + factory", () => {
     expect(path.isAbsolute(descriptor.adapter)).toBe(true);
     expect(descriptor.adapter.endsWith("cdn-adapter.runtime.js")).toBe(true);
     expect(descriptor.options).toBeUndefined();
+    expect(descriptor.output.type).toBe("multi-stage");
+    expect(path.isAbsolute(descriptor.output.entry)).toBe(true);
+    expect(descriptor.output.entry.endsWith("cdn-adapter.worker.js")).toBe(true);
+    expect(
+      descriptor.output.transformHostEntry({
+        code: 'import handler from "vinext/server/fetch-handler";\nexport default handler;',
+        id: "\0virtual:cloudflare/worker-entry",
+      }),
+    ).toContain(`export { VinextCachedResponse } from ${JSON.stringify(descriptor.output.entry)};`);
+    expect(
+      descriptor.output.transformHostEntry({
+        code: "export default { fetch() {} };",
+        id: "/app/unrelated.ts",
+      }),
+    ).toBeNull();
+    expect(
+      descriptor.output.transformHostEntry({
+        code: 'export default function Docs() { return "vinext/server/fetch-handler"; }',
+        id: "/app/page.tsx",
+      }),
+    ).toBeNull();
+    expect(
+      descriptor.output.transformHostEntry({
+        code: '// import handler from "vinext/server/fetch-handler";\nexport default {};',
+        id: "/app/page.ts",
+      }),
+    ).toBeNull();
     expect(descriptor.capabilities).toEqual({
       buildIdentity: "response-header",
       responsePolicyHeaderNames: ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"],

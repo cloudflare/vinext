@@ -251,6 +251,89 @@ export default createAdapter;
     ).toContain("__VINEXT_PREGENERATED_CONCRETE_PATHS");
   }, 60_000);
 
+  it("preserves the CDN response entrypoint through Cloudflare's virtual host entry", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-entrypoint-build-"));
+    tmpDirs.push(root);
+    writeCloudflareAppFixture(root, "vinext-cdn-entrypoint-build");
+    fs.rmSync(path.join(root, "node_modules"));
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "fixtures/cf-app-basic/node_modules"),
+      path.join(root, "node_modules"),
+      "junction",
+    );
+    writeFixtureFile(
+      root,
+      "worker/index.ts",
+      'import handler from "vinext/server/fetch-handler";\n\nexport default handler;\n',
+    );
+
+    const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as {
+      cloudflare: CloudflarePluginFactory;
+    };
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: root, cache: { cdn: cdnAdapter() } }),
+        cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+      ],
+      logLevel: "silent",
+    });
+
+    await builder.buildApp();
+
+    const worker = fs.readFileSync(path.join(root, "dist/server/index.js"), "utf8");
+    expect(worker).toMatch(/export\s*\{[^}]*\b(?:[A-Za-z_$][\w$]*\s+as\s+)?VinextCachedResponse\b/);
+    const wrangler = JSON.parse(
+      fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"),
+    );
+    expect(wrangler.exports).toMatchObject({
+      default: { type: "worker", cache: { enabled: false } },
+      VinextCachedResponse: { type: "worker", cache: { enabled: true } },
+    });
+  }, 60_000);
+
+  it("keeps the adapter-owned response entrypoint when a custom Worker uses its reserved export", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-entrypoint-collision-"));
+    tmpDirs.push(root);
+    writeCloudflareAppFixture(root, "vinext-cdn-entrypoint-collision");
+    fs.rmSync(path.join(root, "node_modules"));
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "fixtures/cf-app-basic/node_modules"),
+      path.join(root, "node_modules"),
+      "junction",
+    );
+    writeFixtureFile(
+      root,
+      "worker/index.ts",
+      [
+        'import handler from "vinext/server/fetch-handler";',
+        'export class VinextCachedResponse { marker = "CUSTOM_RESERVED_EXPORT_MARKER"; }',
+        "export default handler;",
+        "",
+      ].join("\n"),
+    );
+
+    const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as {
+      cloudflare: CloudflarePluginFactory;
+    };
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: root, cache: { cdn: cdnAdapter() } }),
+        cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+      ],
+      logLevel: "silent",
+    });
+
+    await builder.buildApp();
+
+    const buildOutput = readTextFilesRecursive(path.join(root, "dist/server"));
+    expect(buildOutput).toContain("Invalid vinext response-stage invocation");
+    expect(buildOutput).not.toContain("CUSTOM_RESERVED_EXPORT_MARKER");
+  }, 60_000);
+
   it("keeps the data adapter out of the emitted request-stage graph", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cache-adapter-stages-"));
     tmpDirs.push(root);

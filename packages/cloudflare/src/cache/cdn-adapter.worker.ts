@@ -1,0 +1,227 @@
+import { WorkerEntrypoint } from "cloudflare:workers";
+import type {
+  VinextAssetFetcher,
+  VinextRequestStageTransport,
+  VinextResponseStageDispatchOptions,
+  VinextResponseStageTransport,
+} from "vinext/server/multi-stage";
+import { loadVinextRequestStage } from "vinext/server/request-stage";
+import { loadVinextResponseStage } from "vinext/server/response-stage";
+
+type StageBinding = {
+  fetch(request: Request): Promise<Response> | Response;
+  purge?(options: CachePurgeOptions): unknown;
+};
+
+type StageBindingFactory = (options: { props: unknown }) => StageBinding;
+
+type CloudflareStageContext = {
+  assets?: VinextAssetFetcher;
+  cache?: unknown;
+  exports?: Record<string, unknown>;
+  props?: unknown;
+  hostRuntime?: "worker";
+  passThroughOnException?(): void;
+  waitUntil?(promise: Promise<unknown>): void;
+};
+
+type CloudflareResponseStageInvocation = {
+  options: VinextResponseStageDispatchOptions;
+  props: unknown;
+  requestUrl: string;
+};
+
+type CachePurgeOptions = { tags: string[] };
+
+const RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
+
+function withWorkerHostRuntime(
+  context: CloudflareStageContext | undefined,
+  env?: unknown,
+): CloudflareStageContext {
+  const candidateAssets =
+    env && typeof env === "object" && Reflect.has(env, "ASSETS")
+      ? Reflect.get(env, "ASSETS")
+      : undefined;
+  const assets =
+    candidateAssets &&
+    (typeof candidateAssets === "object" || typeof candidateAssets === "function") &&
+    Reflect.has(candidateAssets, "fetch") &&
+    typeof Reflect.get(candidateAssets, "fetch") === "function"
+      ? (candidateAssets as VinextAssetFetcher)
+      : context?.assets;
+
+  return {
+    ...(assets === undefined ? {} : { assets }),
+    ...(context?.cache === undefined ? {} : { cache: context.cache }),
+    ...(context?.exports === undefined ? {} : { exports: context.exports }),
+    hostRuntime: "worker",
+    ...(typeof context?.passThroughOnException === "function"
+      ? { passThroughOnException: () => context.passThroughOnException?.() }
+      : {}),
+    ...(context?.props === undefined ? {} : { props: context.props }),
+    ...(typeof context?.waitUntil === "function"
+      ? { waitUntil: (promise: Promise<unknown>) => context.waitUntil?.(promise) }
+      : {}),
+  };
+}
+
+function hasFetch(value: unknown): value is StageBinding {
+  return (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function") &&
+    "fetch" in value &&
+    typeof value.fetch === "function"
+  );
+}
+
+function hasPurge(value: unknown): value is Required<Pick<StageBinding, "purge">> {
+  return (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function") &&
+    "purge" in value &&
+    typeof value.purge === "function"
+  );
+}
+
+function getResponseStageBinding(
+  context: CloudflareStageContext,
+  serializedInvocation: string,
+): StageBinding | null {
+  const binding = context.exports?.[RESPONSE_STAGE_EXPORT];
+  if (typeof binding !== "function") return null;
+
+  // Configurable-entrypoint props cross a Workers RPC boundary. Some vinext
+  // route metadata objects intentionally use null prototypes, which are valid
+  // in-process but are not supported by Workers RPC serialization. Normalize
+  // the transport contract to plain JSON data at the adapter boundary.
+  const props = JSON.parse(serializedInvocation) as CloudflareResponseStageInvocation;
+  const target = (binding as StageBindingFactory)({ props });
+  return hasFetch(target) ? target : null;
+}
+
+async function createCacheFacingRequest(
+  request: Request,
+  serializedInvocation: string,
+): Promise<Request> {
+  const bytes = new TextEncoder().encode(`${request.url}\0${serializedInvocation}`);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const key = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const url = new URL(request.url);
+  url.searchParams.set("__vinext_cache_key", key);
+  return new Request(url, request);
+}
+
+function withResponseStagePurge(context: CloudflareStageContext): CloudflareStageContext {
+  const factory = context.exports?.[RESPONSE_STAGE_EXPORT];
+  if (typeof factory !== "function") return context;
+  const fallback = context.cache;
+  return {
+    ...context,
+    cache: {
+      purge(options: CachePurgeOptions) {
+        const target = (factory as StageBindingFactory)({ props: {} });
+        if (hasPurge(target)) return target.purge(options);
+        return hasPurge(fallback) ? fallback.purge(options) : undefined;
+      },
+    },
+  };
+}
+
+function getResponseStageInvocation(value: unknown): CloudflareResponseStageInvocation | null {
+  if (!value || typeof value !== "object") return null;
+  const options = Reflect.get(value, "options");
+  if (!options || typeof options !== "object") return null;
+  const cache = Reflect.get(options, "cache");
+  if (cache !== "shared" && cache !== "bypass") return null;
+  const requestUrl = Reflect.get(value, "requestUrl");
+  if (typeof requestUrl !== "string") return null;
+  try {
+    new URL(requestUrl);
+  } catch {
+    return null;
+  }
+  return {
+    options: options as VinextResponseStageDispatchOptions,
+    props: Reflect.get(value, "props"),
+    requestUrl,
+  };
+}
+
+async function invokeResponseStage(
+  request: Request,
+  env: unknown,
+  context: CloudflareStageContext,
+  invocation: CloudflareResponseStageInvocation,
+): Promise<Response> {
+  const dispatchResponseStage: VinextResponseStageTransport = (stageRequest, props, options) =>
+    invokeResponseStage(stageRequest, env, context, {
+      options,
+      props,
+      requestUrl: stageRequest.url,
+    });
+  const dispatchRequestStage: VinextRequestStageTransport = async (stageRequest) => {
+    const { handleRequestStage } = await loadVinextRequestStage<unknown, CloudflareStageContext>();
+    return handleRequestStage(stageRequest, env, context, dispatchResponseStage);
+  };
+  const { handleResponseStage } = await loadVinextResponseStage<unknown, CloudflareStageContext>();
+  return handleResponseStage(
+    request,
+    env,
+    context,
+    invocation.props,
+    dispatchRequestStage,
+    invocation.options,
+  );
+}
+
+/** Cache-bearing entrypoint. Workers Cache HITs bypass this class entirely. */
+export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
+  async fetch(request: Request): Promise<Response> {
+    const context = withWorkerHostRuntime(this.ctx, this.env);
+    const invocation = getResponseStageInvocation(context.props);
+    if (!invocation) {
+      return new Response("Invalid vinext response-stage invocation", { status: 400 });
+    }
+    return invokeResponseStage(
+      new Request(invocation.requestUrl, request),
+      this.env,
+      context,
+      invocation,
+    );
+  }
+
+  async purge(options: CachePurgeOptions): Promise<unknown> {
+    const cache = Reflect.get(this.ctx, "cache");
+    if (!hasPurge(cache)) return undefined;
+    return cache.purge(options);
+  }
+}
+
+/** Uncached gateway: request routing and middleware always execute here. */
+export default {
+  async fetch(
+    request: Request,
+    env: unknown,
+    context: CloudflareStageContext | undefined,
+  ): Promise<Response> {
+    const stageContext = withResponseStagePurge(withWorkerHostRuntime(context, env));
+    const dispatchResponseStage: VinextResponseStageTransport = async (
+      stageRequest,
+      props,
+      options,
+    ) => {
+      const invocation = { options, props, requestUrl: stageRequest.url };
+      if (options.cache === "bypass") {
+        return invokeResponseStage(stageRequest, env, stageContext, invocation);
+      }
+      const serializedInvocation = JSON.stringify(invocation);
+      const binding = getResponseStageBinding(stageContext, serializedInvocation);
+      return binding
+        ? await binding.fetch(await createCacheFacingRequest(stageRequest, serializedInvocation))
+        : invokeResponseStage(stageRequest, env, stageContext, invocation);
+    };
+    const { handleRequestStage } = await loadVinextRequestStage<unknown, CloudflareStageContext>();
+    return handleRequestStage(request, env, stageContext, dispatchResponseStage);
+  },
+};
