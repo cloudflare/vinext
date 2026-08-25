@@ -1,4 +1,5 @@
 const STATIC_FILE_SIGNAL = Symbol.for("vinext.static-file-signal");
+const ORIGIN_MANAGED_STATIC_FILE_SIGNAL = Symbol.for("vinext.origin-managed-static-file-signal");
 
 export type StaticFileSignalContext = {
   headers: Headers | null;
@@ -42,6 +43,17 @@ export function createStaticFileSignal(
 /** Whether this response was created by vinext's public-file router. */
 export function isStaticFileSignal(response: Response): boolean {
   return typeof Reflect.get(response, STATIC_FILE_SIGNAL) === "string";
+}
+
+/** Mark a static-file signal whose composed response must bypass shared edge caching. */
+export function markOriginManagedStaticFileSignal(response: Response): Response {
+  Object.defineProperty(response, ORIGIN_MANAGED_STATIC_FILE_SIGNAL, { value: true });
+  return response;
+}
+
+/** Whether cache safety must be reapplied after the host resolves the asset body. */
+export function isOriginManagedStaticFileSignal(response: Response): boolean {
+  return Reflect.get(response, ORIGIN_MANAGED_STATIC_FILE_SIGNAL) === true;
 }
 
 /** Return the encoded asset pathname only for a framework-created signal. */

@@ -1,6 +1,6 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
-import { isStaticFileSignal } from "./static-file-signal.js";
+import { isStaticFileSignal, markOriginManagedStaticFileSignal } from "./static-file-signal.js";
 import {
   applyCdnResponseHeaders,
   applyOriginManagedPageCacheResponseHeaders,
@@ -102,17 +102,23 @@ export async function finalizeAppRscResponse(
   request: Request,
   options: FinalizeAppRscResponseOptions,
 ): Promise<Response> {
+  const staticFileSignal = isStaticFileSignal(response);
+  const originManagedPageCache = shouldUseOriginManagedPageCache();
+  if (staticFileSignal && originManagedPageCache) {
+    markOriginManagedStaticFileSignal(response);
+  }
+
   // Next.js deliberately excludes config headers from redirect responses.
   // Outside middleware's cache-safety scope preserve the original response
   // identity, including Response.redirect()'s immutable header guard. Inside
   // that scope rebuild it with mutable headers before removing any shared-cache
   // policy that could replay a personalized redirect above the Worker.
   if (response.status >= 300 && response.status < 400) {
-    if (!shouldUseOriginManagedPageCache()) return response;
+    if (!originManagedPageCache) return response;
     return finalizeMiddlewareSafePageCacheResponse(response, true);
   }
 
-  if (!isStaticFileSignal(response)) {
+  if (!staticFileSignal) {
     const varyHeader = response.headers.get("Vary");
     if (varyHeader === null) {
       response.headers.set("Vary", VINEXT_RSC_VARY_HEADER);

@@ -8,5 +8,6 @@
   "assets": {
     "not_found_handling": "none",
     "binding": "ASSETS",
+    "run_worker_first": ["/internal-header-secret.txt"],
   },
 }

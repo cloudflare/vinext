@@ -39,7 +39,8 @@ export async function middleware(request: NextRequest) {
   if (
     request.nextUrl.pathname.startsWith("/middleware-isr/") ||
     request.nextUrl.pathname.startsWith("/pages-middleware-isr/") ||
-    request.nextUrl.pathname.startsWith("/api/middleware-isr/")
+    request.nextUrl.pathname.startsWith("/api/middleware-isr/") ||
+    request.nextUrl.pathname === "/internal-header-secret.txt"
   ) {
     response.headers.set(
       "x-visitor-id",

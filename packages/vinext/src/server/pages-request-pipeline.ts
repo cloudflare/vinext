@@ -483,7 +483,7 @@ export async function runPagesRequest(
   // Next.js skips middleware for authenticated on-demand revalidation. Besides
   // parity, this keeps the internal credential out of user middleware and any
   // external destination it may choose.
-  if (!isOnDemandRevalidate && typeof deps.runMiddleware === "function") {
+  if (!isOnDemandRevalidate && deps.hasMiddleware && typeof deps.runMiddleware === "function") {
     const result = await deps.runMiddleware(deps.middlewareRequest ?? request, deps.ctx ?? null, {
       isDataRequest,
     });

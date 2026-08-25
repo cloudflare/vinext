@@ -29,7 +29,7 @@ function baseDeps(overrides?: Partial<PagesPipelineDeps>): PagesPipelineDeps {
     hadBasePath: true,
     isDataReq: false,
     isDataRequest: false,
-    hasMiddleware: false,
+    hasMiddleware: overrides?.runMiddleware !== undefined,
     ...overrides,
   };
 }
@@ -49,6 +49,29 @@ function makeRenderPage(status = 200, body = "ok") {
 }
 
 describe("on-demand revalidation middleware bypass", () => {
+  it("does not execute or promote generated no-op middleware when none exists", async () => {
+    const runMiddleware = makeMiddleware({});
+    const renderPage = makeRenderPage();
+    const deps = baseDeps({
+      authorizeOnDemandRevalidate: (value) => value === "build-secret",
+      hasMiddleware: false,
+      renderPage,
+      runMiddleware,
+    });
+
+    await runPagesRequest(makeRequest("/page"), deps);
+    await runPagesRequest(
+      makeRequest("/page", { [PRERENDER_REVALIDATE_HEADER]: "build-secret" }),
+      deps,
+    );
+
+    expect(runMiddleware).not.toHaveBeenCalled();
+    expect(renderPage).toHaveBeenCalledTimes(2);
+    for (const call of renderPage.mock.calls) {
+      expect(call[2]).toBeUndefined();
+    }
+  });
+
   it("uses the runtime adapter's authoritative credential verifier", async () => {
     const runMiddleware = makeMiddleware({});
     const authorizeOnDemandRevalidate = vi.fn((value: string | null) => value === "build-secret");

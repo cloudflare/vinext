@@ -189,6 +189,27 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(htmlRenderToken(secondHtml)).toBe(htmlRenderToken(firstHtml));
   });
 
+  test("keeps middleware personalization outside the shared edge cache for public assets", async () => {
+    const edgeUrl = edgeCacheUrl("/internal-header-secret.txt");
+    const first = await fetch(edgeUrl, {
+      headers: { "x-test-visitor-id": "visitor-a" },
+    });
+    const second = await fetch(edgeUrl, {
+      headers: { "x-test-visitor-id": "visitor-b" },
+    });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(await first.text()).toContain("VINEXT_INTERNAL_HEADER_SECRET");
+    expect(await second.text()).toContain("VINEXT_INTERNAL_HEADER_SECRET");
+    expect(first.headers.get("x-visitor-id")).toBe("visitor-a");
+    expect(second.headers.get("x-visitor-id")).toBe("visitor-b");
+    expect(first.headers.get("x-test-edge-cache")).toBe("MISS");
+    expect(second.headers.get("x-test-edge-cache")).toBe("MISS");
+    expect(first.headers.get("cdn-cache-control")).toBeNull();
+    expect(second.headers.get("cdn-cache-control")).toBeNull();
+  });
+
   test("caches App Router HTML while running middleware for every request", async ({ request }) => {
     // Next.js keeps middleware above its incremental response cache: the page
     // can be a HIT while middleware effects remain request-specific.

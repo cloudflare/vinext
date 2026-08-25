@@ -22,6 +22,7 @@ import {
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { createStaticFileSignal } from "../packages/vinext/src/server/request-pipeline.js";
 import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
+import { resolveStaticAssetSignal } from "../packages/vinext/src/server/worker-utils.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -606,6 +607,66 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
     expect(readStaticFileSignal(result)).toBe("%2Fpublic.txt");
     expect(result.headers.get("cache-control")).toContain("no-store");
     expect(result.headers.get("cdn-cache-control")).toBeNull();
+  });
+
+  it("reapplies middleware-safe caching after resolving a public asset", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const signal = createStaticFileSignal("/public.txt", {
+      headers: new Headers({
+        "Cache-Control": "public, s-maxage=60",
+        "CDN-Cache-Control": "public, max-age=60",
+        "x-visitor-id": "visitor-a",
+      }),
+      status: 200,
+    });
+    const finalized = await runWithRequestContext(
+      createRequestContext({ originManagedPageCache: true }),
+      () =>
+        finalizeAppRscResponse(signal, new Request("http://example.com/public.txt"), {
+          basePath: "",
+          configHeaders: [],
+          i18nConfig: null,
+          requestContext: makeRequestContext(),
+        }),
+    );
+
+    const result = await resolveStaticAssetSignal(finalized, {
+      fetchAsset: async () =>
+        new Response("asset body", {
+          headers: {
+            "Cache-Control": "public, max-age=86400",
+            "Content-Type": "text/plain",
+          },
+        }),
+    });
+
+    expect(await result!.text()).toBe("asset body");
+    expect(result!.headers.get("content-type")).toBe("text/plain");
+    expect(result!.headers.get("x-visitor-id")).toBe("visitor-a");
+    expect(result!.headers.get("cache-control")).toContain("no-store");
+    expect(result!.headers.get("cdn-cache-control")).toBeNull();
+  });
+
+  it("keeps matcher-excluded public assets edge-cacheable after resolution", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const signal = createStaticFileSignal("/public.txt", { headers: null, status: 200 });
+    const finalized = await runWithRequestContext(createRequestContext(), () =>
+      finalizeAppRscResponse(signal, new Request("http://example.com/public.txt"), {
+        basePath: "",
+        configHeaders: [],
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      }),
+    );
+
+    const result = await resolveStaticAssetSignal(finalized, {
+      fetchAsset: async () =>
+        new Response("asset body", {
+          headers: { "Cache-Control": "public, max-age=86400" },
+        }),
+    });
+
+    expect(result!.headers.get("cache-control")).toBe("public, max-age=86400");
   });
 });
 
