@@ -11,8 +11,10 @@ import worker, {
 } from "../packages/cloudflare/src/cache/cdn-adapter.worker.js";
 import {
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
-  type PagesPageResponseStageProps,
+  type WorkerResponseStageProps,
 } from "../packages/vinext/src/server/worker-stages.js";
+
+type PagesPageResponseStageProps = Extract<WorkerResponseStageProps, { kind: "pages-page" }>;
 
 const stages = vi.hoisted(() => ({
   request: vi.fn(),
