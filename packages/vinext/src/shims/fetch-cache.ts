@@ -629,14 +629,18 @@ function getFetchObservationUrl(input: string | URL | Request): string {
   return typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 }
 
+function addDynamicFetchObservation(input: string | URL | Request): void {
+  _getState().dynamicFetchUrls.add(getFetchObservationUrl(input));
+}
+
 function recordDynamicFetchObservation(input: string | URL | Request): void {
   if (isInsideAnyCacheScope()) return;
-  _getState().dynamicFetchUrls.add(getFetchObservationUrl(input));
+  addDynamicFetchObservation(input);
 }
 
 function markUncachedFetchForPageOutput(input: string | URL | Request): void {
   if (isInsideAnyCacheScope()) return;
-  recordDynamicFetchObservation(input);
+  addDynamicFetchObservation(input);
   // Next.js lowers the active prerender store to zero when an uncached fetch
   // makes the render dynamic. `force-static` is the exception: dynamic usage
   // is suppressed there, so later metadata-only fetches keep inheriting the
