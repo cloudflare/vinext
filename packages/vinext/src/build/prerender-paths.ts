@@ -57,8 +57,13 @@ export const PRERENDER_PATH_DISCOVERY_ENV = "__VINEXT_PRERENDER_PATH_DISCOVERY";
 export const PRERENDER_PATHS_MANIFEST = "vinext-prerender-paths.json";
 
 const PATH_DISCOVERY_FETCH_TIMEOUT_MS = 30_000;
+export const DEFAULT_REMOTE_PATH_DISCOVERY_RETRIES = 60;
+export const DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS = 1_000;
+export const DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS = 120_000;
 
 type PathDiscoveryRetryOptions = {
+  deadlineAt?: number;
+  phaseTimeoutMs?: number;
   retries?: number;
   retryDelayMs?: number;
 };
@@ -79,6 +84,7 @@ type EmitPrerenderPathManifestOptions = {
     baseUrl: string;
     headers?: HeadersInit;
     /** Retry transient staged-version routing responses before failing discovery. */
+    phaseTimeoutMs?: number;
     retries?: number;
     retryDelayMs?: number;
   };
@@ -269,18 +275,39 @@ async function fetchDiscoveryEndpoint(
 ): Promise<string | null> {
   const retries = Math.max(0, retryOptions.retries ?? 0);
   const retryDelayMs = Math.max(0, retryOptions.retryDelayMs ?? 0);
+  const phaseTimeoutMs = Math.max(
+    1,
+    retryOptions.phaseTimeoutMs ?? DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS,
+  );
+  const deadlineAt = retryOptions.deadlineAt ?? Date.now() + phaseTimeoutMs;
   let lastError: unknown;
 
+  const phaseTimeoutError = () =>
+    new Error(`remote path discovery exceeded its ${phaseTimeoutMs}ms phase deadline`);
+
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) throw phaseTimeoutError();
+
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), PATH_DISCOVERY_FETCH_TIMEOUT_MS);
+    const attemptTimeoutMs = Math.min(PATH_DISCOVERY_FETCH_TIMEOUT_MS, remainingMs);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     let shouldRetry = true;
     try {
-      const res = await fetch(url, {
-        headers,
-        signal: controller.signal,
+      const request = (async () => {
+        const res = await fetch(url, {
+          headers,
+          signal: controller.signal,
+        });
+        return { res, text: await res.text() };
+      })();
+      const timedOut = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new DOMException(`Timed out after ${attemptTimeoutMs}ms`, "AbortError"));
+        }, attemptTimeoutMs);
       });
-      const text = await res.text();
+      const { res, text } = await Promise.race([request, timedOut]);
       if (res.ok) {
         if (res.status === 204) return null;
         return text;
@@ -298,17 +325,20 @@ async function fetchDiscoveryEndpoint(
         throw lastError;
       }
     } catch (error) {
+      if (Date.now() >= deadlineAt) throw phaseTimeoutError();
       lastError =
         error instanceof Error && error.name === "AbortError"
-          ? new Error(`path discovery timed out after ${PATH_DISCOVERY_FETCH_TIMEOUT_MS}ms`)
+          ? new Error(`path discovery timed out after ${attemptTimeoutMs}ms`)
           : error;
       if (!shouldRetry) throw lastError;
     } finally {
-      clearTimeout(timeout);
+      if (timeout !== undefined) clearTimeout(timeout);
     }
 
     if (attempt < retries && retryDelayMs > 0) {
-      await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
+      const delayMs = Math.min(retryDelayMs, Math.max(0, deadlineAt - Date.now()));
+      if (delayMs <= 0) throw phaseTimeoutError();
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
     }
   }
 
@@ -831,6 +861,20 @@ export async function emitPrerenderPathManifest(
     if (prerenderSecret) {
       secretHeaders[VINEXT_PRERENDER_SECRET_HEADER] = prerenderSecret;
     }
+    const pathDiscoveryRetryOptions = options.pathDiscoveryTarget
+      ? {
+          deadlineAt:
+            Date.now() +
+            Math.max(
+              1,
+              options.pathDiscoveryTarget.phaseTimeoutMs ??
+                DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS,
+            ),
+          phaseTimeoutMs: options.pathDiscoveryTarget.phaseTimeoutMs,
+          retries: options.pathDiscoveryTarget.retries,
+          retryDelayMs: options.pathDiscoveryTarget.retryDelayMs,
+        }
+      : undefined;
 
     try {
       if (appDir) {
@@ -838,7 +882,7 @@ export async function emitPrerenderPathManifest(
           appDir,
           baseUrl,
           pageExtensions: config.pageExtensions,
-          retryOptions: options.pathDiscoveryTarget,
+          retryOptions: pathDiscoveryRetryOptions,
           secretHeaders,
         });
         for (const pathname of appPathResult.paths) {
@@ -856,7 +900,7 @@ export async function emitPrerenderPathManifest(
           i18n: config.i18n,
           pagesDir,
           pageExtensions: config.pageExtensions,
-          retryOptions: options.pathDiscoveryTarget,
+          retryOptions: pathDiscoveryRetryOptions,
           secretHeaders,
         })) {
           addPath(paths, seen, pathname);

@@ -222,6 +222,44 @@ describe("prerender path manifest", () => {
     expect(remoteFetch).toHaveBeenCalledTimes(2);
   });
 
+  it("bounds all remote discovery retries by one phase deadline", async () => {
+    // No Next.js test port applies: staged Worker discovery is Cloudflare-specific.
+    const remoteFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("old Worker", { status: 503 }))
+      .mockResolvedValueOnce(new Response("old Worker", { status: 503 }))
+      // The phase deadline remains authoritative even if fetch ignores abort.
+      .mockImplementation(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", remoteFetch);
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", 'import { env } from "cloudflare:workers";\n');
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      "export async function generateStaticParams() { return []; } export default function Page() { return null; }",
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const discovery = emitPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: {
+        baseUrl: "https://workers-cache.example.workers.dev",
+        phaseTimeoutMs: 25,
+        retries: 60,
+        retryDelayMs: 10,
+      },
+    });
+    await expect(discovery).rejects.toThrow(
+      "remote path discovery exceeded its 25ms phase deadline",
+    );
+    expect(remoteFetch).toHaveBeenCalledTimes(3);
+  });
+
   it("does not replay user-code failures during remote discovery", async () => {
     // No Next.js test port applies: staged Worker discovery is Cloudflare-specific.
     const remoteFetch = vi.fn<typeof fetch>(async () =>
