@@ -24,7 +24,7 @@ import { Buffer } from "node:buffer";
 import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
-import { getHeadersContext, markDynamicUsage } from "./headers.js";
+import { getHeadersContext, isInsideAnyCacheScope, markDynamicUsage } from "./headers.js";
 import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
@@ -630,10 +630,12 @@ function getFetchObservationUrl(input: string | URL | Request): string {
 }
 
 function recordDynamicFetchObservation(input: string | URL | Request): void {
+  if (isInsideAnyCacheScope()) return;
   _getState().dynamicFetchUrls.add(getFetchObservationUrl(input));
 }
 
 function markUncachedFetchForPageOutput(input: string | URL | Request): void {
+  if (isInsideAnyCacheScope()) return;
   recordDynamicFetchObservation(input);
   // Next.js lowers the active prerender store to zero when an uncached fetch
   // makes the render dynamic. `force-static` is the exception: dynamic usage

@@ -609,6 +609,13 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         : admittedArgs;
       const callArgs = executionArgs as TArgs;
 
+      if (cacheVariant === "private") {
+        // Private cache results are request-specific. Mark the enclosing route
+        // before key construction so a direct-execution fallback cannot make
+        // the response look reusable.
+        markDynamicUsage();
+      }
+
       // Build the cache key. Use encodeReply (RSC protocol) when available —
       // it correctly handles React elements as temporary references (excluded
       // from key). Falls back to stableStringify when RSC is unavailable.
@@ -648,13 +655,6 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         const parentCtx = cacheContextStorage.getStore();
         if (parentCtx && parentCtx.variant !== "private") {
           throwPrivateUseCacheInsidePublicUseCacheError();
-        }
-
-        if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
-          // Next.js treats "use cache: private" as dynamic during prerendering:
-          // it is excluded from the static artifact and resolved per request.
-          // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
-          markDynamicUsage();
         }
 
         const privateCache = _getPrivateState()._privateCache!;
