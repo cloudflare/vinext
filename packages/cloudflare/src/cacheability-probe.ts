@@ -26,6 +26,7 @@ type ProbePayload = {
 };
 
 export type CacheabilityProbeResult = {
+  cacheableTargets: CdnWarmTarget[];
   failures: string[];
   manifest: CacheabilityManifest;
   probed: number;
@@ -81,17 +82,19 @@ async function probeTarget(options: {
         redirect: "manual",
         signal: controller.signal,
       });
-      const text = await response.text();
       if (
         options.expectedBuildId !== undefined &&
         response.headers.get(VINEXT_CDN_BUILD_ID_HEADER) !== options.expectedBuildId
       ) {
+        await response.body?.cancel().catch(() => {});
         reason = "probe reached an unexpected Worker build";
         retryable = true;
       } else if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
         reason = `probe returned HTTP ${response.status}`;
         retryable = response.status === 404 || response.status === 503;
       } else {
+        const text = await response.text();
         try {
           return JSON.parse(text) as ProbePayload;
         } catch {
@@ -129,10 +132,11 @@ export async function probeStagedWorkerCacheability(options: {
 }): Promise<CacheabilityProbeResult> {
   const secret = readPrerenderSecret(options.root);
   const concurrency = Math.max(1, options.concurrency ?? 25);
-  const retries = Math.max(0, options.retries ?? 0);
+  const retries = Math.max(0, options.retries ?? 2);
   const retryDelayMs = Math.max(0, options.retryDelayMs ?? 0);
   const timeoutMs = options.timeoutMs ?? 30_000;
   const routes: Record<string, CacheabilityManifestRoute> = {};
+  const cacheableTargets: CdnWarmTarget[] = [];
   const failures: string[] = [];
   let nextIndex = 0;
 
@@ -176,6 +180,11 @@ export async function probeStagedWorkerCacheability(options: {
         failures.push(`${target.label}: ${result.reason ?? "probe failed"}`);
       }
 
+      // Dynamic identities are represented by absence. The runtime treats a
+      // missing exact identity as private, which keeps the deployed asset small
+      // and prevents the final warm/certification pass from rendering it again.
+      if (result.state !== "static-candidate") continue;
+
       const route: CacheabilityManifestRoute = {
         kind: "app-page",
         pattern: result.pattern,
@@ -192,15 +201,25 @@ export async function probeStagedWorkerCacheability(options: {
           route.requestKey,
         )
       ] = route;
+      cacheableTargets.push(target);
     }
   };
 
   await Promise.all(
     Array.from({ length: Math.min(concurrency, options.targets.length) }, () => worker()),
   );
+  const sortedRoutes = Object.fromEntries(
+    Object.entries(routes).sort(([first], [second]) => first.localeCompare(second)),
+  );
+  cacheableTargets.sort((first, second) =>
+    `${first.kind}\0${first.sourcePathname}`.localeCompare(
+      `${second.kind}\0${second.sourcePathname}`,
+    ),
+  );
   return {
+    cacheableTargets,
     failures,
-    manifest: { buildId: options.buildId, routes, version: 1 },
+    manifest: { buildId: options.buildId, routes: sortedRoutes, version: 1 },
     probed: options.targets.length,
   };
 }

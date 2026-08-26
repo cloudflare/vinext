@@ -695,6 +695,8 @@ type CdnWarmDeployOptions = Pick<
   };
 
 type PreparedCdnWarmDeployOptions = CdnWarmDeployOptions & {
+  triggersAlreadyApplied?: boolean;
+  triggersDeployedUrl?: string | null;
   uploadedVersion?: WranglerVersionUploadResult;
 };
 
@@ -829,7 +831,7 @@ async function deployUploadedVersionWithCdnWarmup(
   const deploymentStatus = runWranglerDeploymentStatus(root, options);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
-  let triggersDeployedUrl: string | null = null;
+  let triggersDeployedUrl: string | null = options.triggersDeployedUrl ?? null;
   let stagedCacheFilled = false;
   const initialWarmRequests =
     options.discoverWarmPlan === undefined || hasPreparedWarmPlan
@@ -837,7 +839,7 @@ async function deployUploadedVersionWithCdnWarmup(
         remainingWarmPlan.rscPaths.length +
         remainingWarmPlan.loadingShellPaths.length
       : 1;
-  let triggersApplied = false;
+  let triggersApplied = options.triggersAlreadyApplied === true;
 
   function applyTriggers(): void {
     if (triggersApplied) return;
@@ -1101,6 +1103,7 @@ async function deployWithCacheabilityProbe(
   let prepared:
     | {
         plan: PrerenderWarmPlan;
+        triggersDeployedUrl: string | null;
         upload: WranglerVersionUploadResult;
       }
     | undefined;
@@ -1185,7 +1188,7 @@ async function deployWithCacheabilityProbe(
       buildId: discovered.buildId,
       concurrency: options.warmCdnConcurrency,
       expectedResponseBuildId: plan.buildIdentity,
-      retries: options.warmCdnRetries ?? 1,
+      retries: options.warmCdnRetries ?? DEFAULT_STAGED_READINESS_RETRIES,
       retryDelayMs: options.warmCdnReadinessProbeDelay ?? DEFAULT_STAGED_READINESS_INTERVAL_MS,
       root,
       targets,
@@ -1195,6 +1198,23 @@ async function deployWithCacheabilityProbe(
     if (probe.failures.length > 0) {
       throw new Error(
         `Two-stage CDN warming failed to classify ${probe.failures.length}/${probe.probed} request(s). First failure: ${probe.failures[0]}`,
+      );
+    }
+    const finalPlan: PrerenderWarmPlan = {
+      ...plan,
+      loadingShellPaths: probe.cacheableTargets
+        .filter((target) => target.kind === "rsc-loading-shell")
+        .map((target) => target.sourcePathname),
+      paths: probe.cacheableTargets
+        .filter((target) => target.kind === "html")
+        .map((target) => target.sourcePathname),
+      rscPaths: probe.cacheableTargets
+        .filter((target) => target.kind === "rsc-full")
+        .map((target) => target.sourcePathname),
+    };
+    if (!hasCdnWarmRequests(finalPlan)) {
+      throw new Error(
+        "Two-stage CDN warming did not classify any App Page request identities as cacheable.",
       );
     }
 
@@ -1214,7 +1234,7 @@ async function deployWithCacheabilityProbe(
         }),
     );
     assertDeploymentTrafficUnchanged(root, options, probeTraffic);
-    prepared = { plan, upload: finalUpload };
+    prepared = { plan: finalPlan, triggersDeployedUrl: triggersUrl, upload: finalUpload };
   } catch (error) {
     throw withStagedVersionCleanupNote(error);
   }
@@ -1226,6 +1246,8 @@ async function deployWithCacheabilityProbe(
     expectedRscBuildId: prepared.plan.rscBuildId,
     loadingShellPaths: prepared.plan.loadingShellPaths,
     rscPaths: prepared.plan.rscPaths,
+    triggersAlreadyApplied: true,
+    triggersDeployedUrl: prepared.triggersDeployedUrl,
     uploadedVersion: prepared.upload,
   });
 }

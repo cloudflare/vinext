@@ -8,6 +8,10 @@ import {
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
+import {
+  MAX_CACHEABILITY_MANIFEST_ROUTES,
+  withCacheabilityManifestArtifact,
+} from "../packages/cloudflare/src/cacheability-artifact.js";
 import { CACHEABILITY_MANIFEST_MODULE } from "../packages/vinext/src/server/cacheability-manifest.js";
 import { VINEXT_CACHEABILITY_PROBE_HEADER } from "../packages/vinext/src/server/headers.js";
 
@@ -151,7 +155,48 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 
-  it("probes one staged version, uploads a manifest module, then warms and promotes the final version", async () => {
+  it("rejects a generated artifact whose Worker main cannot reach the manifest module", () => {
+    writeTwoStageWorkerArtifact();
+    writeFile("dist/server/index.js", "export default { fetch() {} };\n");
+
+    expect(() =>
+      withCacheabilityManifestArtifact(
+        tmpDir,
+        "dist/server/wrangler.json",
+        { buildId: "build-a", routes: {}, version: 1 },
+        () => undefined,
+      ),
+    ).toThrow(`Worker main module to import ${CACHEABILITY_MANIFEST_MODULE}`);
+  });
+
+  it("rejects a manifest with more exact identities than the deployment bound", () => {
+    writeTwoStageWorkerArtifact();
+    const route = {
+      kind: "app-page" as const,
+      pattern: "/page",
+      representation: "html" as const,
+      requestKey: "/page",
+      state: "static-candidate" as const,
+      status: 200,
+    };
+    const routes = Object.fromEntries(
+      Array.from({ length: MAX_CACHEABILITY_MANIFEST_ROUTES + 1 }, (_, index) => [
+        `route-${index}`,
+        route,
+      ]),
+    );
+
+    expect(() =>
+      withCacheabilityManifestArtifact(
+        tmpDir,
+        "dist/server/wrangler.json",
+        { buildId: "build-a", routes, version: 1 },
+        () => undefined,
+      ),
+    ).toThrow(`the limit is ${MAX_CACHEABILITY_MANIFEST_ROUTES}`);
+  });
+
+  it("uploads only static identities, then warms and promotes the final version", async () => {
     writeTwoStageWorkerArtifact();
     const events: string[] = [];
     let uploadCount = 0;
@@ -209,8 +254,20 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const headers = new Headers(init?.headers);
       if (headers.get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
-        events.push("probe");
-        return appPageProbeResponse();
+        const pathname = new URL(formatFetchUrl(input)).pathname;
+        events.push(`probe-${pathname}`);
+        return pathname === "/dynamic"
+          ? Response.json(
+              {
+                kind: "app-page",
+                pattern: "/dynamic",
+                state: "dynamic",
+                status: 200,
+                version: 1,
+              },
+              { headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a" } },
+            )
+          : appPageProbeResponse();
       }
       if (isReadinessFetch(input)) events.push("readiness");
       else events.push("warm");
@@ -222,13 +279,13 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       cacheabilityProbe: true,
       config: "dist/server/wrangler.json",
       discoverWarmPlan: async () => ({
-        appPaths: ["/about"],
+        appPaths: ["/about", "/dynamic"],
         buildId: "app-build-a",
         buildIdentity: "app-build-a",
         loadingShellPaths: [],
         // The discovery manifest can contain a mixed App/Pages HTML plan.
         // This stack only certifies App Pages; the Pages path stays private.
-        paths: ["/about", "/pages-about"],
+        paths: ["/about", "/dynamic", "/pages-about"],
         rscPaths: [],
       }),
       warmCdnConcurrency: 1,
@@ -246,13 +303,13 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "stage-probe",
       "triggers",
       "readiness",
-      "probe",
+      "probe-/about",
+      "probe-/dynamic",
       "status-2",
       "upload-final",
       "status-3",
       "status-4",
       "stage-final",
-      "triggers",
       "readiness",
       "warm",
       "promote-final",
