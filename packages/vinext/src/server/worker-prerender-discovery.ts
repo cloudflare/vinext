@@ -38,14 +38,15 @@ export function createWorkerPrerenderDiscoveryContext(
   request: Request,
   expectedSecret: string | null | undefined,
 ): ExecutionContextLike {
-  const pathname = new URL(request.url).pathname;
-  if (
-    !expectedSecret ||
-    !isWorkerPrerenderDiscoveryPath(pathname) ||
-    !secretsMatch(request.headers.get(VINEXT_PRERENDER_SECRET_HEADER) ?? "", expectedSecret)
-  ) {
+  // Ordinary traffic never carries this capability. Reject it before URL
+  // parsing so staged discovery adds no URL work to the common request path.
+  const providedSecret = request.headers.get(VINEXT_PRERENDER_SECRET_HEADER);
+  if (!expectedSecret || !providedSecret || !secretsMatch(providedSecret, expectedSecret)) {
     return base;
   }
+
+  const pathname = new URL(request.url).pathname;
+  if (!isWorkerPrerenderDiscoveryPath(pathname)) return base;
 
   return { ...base, isPrerenderPathDiscovery: true };
 }
