@@ -37,6 +37,10 @@ export type RouteCacheabilityState = {
   mode: "admit" | "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
   preserveResponseCachePolicy?: boolean;
+  probeBailout?: {
+    kind: "private-cache";
+    outcome: RouteCacheabilityOutcome;
+  };
   route?: {
     kind: "app-page" | "app-route";
     pattern: string;
@@ -168,4 +172,15 @@ export function recordRouteCacheability(outcome: RouteCacheabilityOutcome): void
     : outcome;
   state.outcome = resolvedOutcome;
   state.complete?.(resolvedOutcome);
+}
+
+export function recordRouteCacheabilityProbeBailout(
+  kind: "private-cache",
+  outcome: RouteCacheabilityOutcome,
+): void {
+  const state = readRouteCacheabilityState();
+  if (state?.mode !== "probe" || !state.route) return;
+  state.probeBailout = { kind, outcome };
+  state.outcome = outcome;
+  state.complete?.(outcome);
 }

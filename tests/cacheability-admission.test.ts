@@ -392,3 +392,58 @@ describe("single-request cacheability admission", () => {
     );
   });
 });
+
+describe("cacheability probe finalization", () => {
+  function contextWith(state: RouteCacheabilityState) {
+    return {
+      [CACHEABILITY_REQUEST_STATE]: state,
+      waitUntil() {},
+    };
+  }
+
+  it("does not let ordinary dynamic usage hide a route 500", async () => {
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "probe",
+      outcome: { cacheable: false, dynamicUsage: true },
+      route: { kind: "app-page", pattern: "/broken" },
+    };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("broken", { status: 500 }),
+      contextWith(state),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      reason: "route returned HTTP 500",
+      state: "probe-failed",
+      status: 500,
+    });
+  });
+
+  it("recognizes only the dedicated private-cache suspension bailout", async () => {
+    const outcome = {
+      cacheable: false,
+      dynamicUsage: true,
+      reason: '"use cache: private" requires request-time execution',
+    };
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "probe",
+      outcome,
+      probeBailout: { kind: "private-cache", outcome },
+      route: { kind: "app-page", pattern: "/private" },
+    };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("discarded render", { status: 500 }),
+      contextWith(state),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      reason: outcome.reason,
+      state: "dynamic",
+      status: 500,
+    });
+  });
+});
