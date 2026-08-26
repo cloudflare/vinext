@@ -49,6 +49,16 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
+  // Reject legacy payloads in place, then coalesce the simultaneous cold fill
+  // so a deployment-wide schema cutover does not stampede the origin.
+  const seedLegacyDedupeResult = await request.post("/cacheability/unstable-cache-upgrade-dedupe");
+  expect(seedLegacyDedupeResult.status()).toBe(204);
+  const dedupedUpgrade = await request.get("/cacheability/unstable-cache-upgrade-dedupe");
+  await expect(dedupedUpgrade.json()).resolves.toEqual({
+    executions: 1,
+    values: [1, 1, 1],
+  });
+
   const identityProbe = await request.get("/cacheability/static", {
     headers: { ...headers, [probeHeader]: "identity" },
   });
