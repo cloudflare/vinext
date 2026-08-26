@@ -12,13 +12,13 @@ import {
   CACHEABILITY_PROBE_TIMEOUT_MS,
 } from "./cacheability-limits.js";
 
-export type CacheabilityProbeRouteState =
+type CacheabilityProbeRouteState =
   | "dynamic"
   | "probe-failed"
   | "runtime-check"
   | "static-candidate";
 
-export type CacheabilityProbeResult = {
+type CacheabilityProbeResult = {
   cacheControl?: string;
   kind?: "app-page";
   pattern?: string;
