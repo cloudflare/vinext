@@ -92,6 +92,11 @@ import {
   isAppLayoutObservationUnsafeForStaticReuse,
   type AppLayoutParamAccessTracker,
 } from "./app-layout-param-observation.js";
+import {
+  beginRouteCacheability,
+  isRouteCacheabilityIdentityProbe,
+  isRouteCacheabilityProbe,
+} from "vinext/shims/cacheability-classification";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -632,6 +637,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
   const route = options.route;
+  beginRouteCacheability("app-page", route.pattern);
+  if (isRouteCacheabilityIdentityProbe()) {
+    options.clearRequestContext();
+    return new Response(null, { status: 204 });
+  }
   const dynamicConfig = options.dynamicConfig;
   const currentRevalidateSeconds = options.revalidateSeconds;
   const interceptionId = options.isRscRequest
@@ -711,6 +721,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   }
 
   if (
+    !isRouteCacheabilityProbe() &&
     options.bypassInterceptionContextCache !== true &&
     shouldReadAppPageCache({
       isDraftMode,

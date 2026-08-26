@@ -52,6 +52,7 @@ import {
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
 import {
+  VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
@@ -107,7 +108,24 @@ async function handleRequest(
     : createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
         handleRequest(internalRequest, env, internalCtx),
       );
-  const ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, __rscPrerenderSecret);
+  let ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, __rscPrerenderSecret);
+  let finalizeCacheabilityResponse:
+    | ((response: Response, ctx: ExecutionContextLike) => Promise<Response>)
+    | undefined;
+  if (request.headers.has(VINEXT_CACHEABILITY_PROBE_HEADER)) {
+    // Keep the capture/classification runtime out of every ordinary request.
+    // Authentication still happens before internal headers are removed below.
+    const cacheability = await import("./cacheability-request.js");
+    const probeContext = cacheability.createWorkerCacheabilityContext(
+      ctx,
+      request,
+      __rscPrerenderSecret,
+    );
+    if (probeContext !== ctx) {
+      ctx = probeContext;
+      finalizeCacheabilityResponse = cacheability.finalizeWorkerCacheabilityResponse;
+    }
+  }
 
   // Register config-driven cache adapters before any rendering touches the cache.
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
@@ -204,12 +222,15 @@ async function handleRequest(
       });
       if (assetResponse) response = assetResponse;
     }
-    return finalizeMissingStaticAssetResponse(response, missingBuildAsset);
+    response = finalizeMissingStaticAssetResponse(response, missingBuildAsset);
+    return finalizeCacheabilityResponse ? finalizeCacheabilityResponse(response, ctx) : response;
   }
 
   if (result === null || result === undefined) {
-    return missingBuildAsset ? notFoundStaticAssetResponse() : notFoundResponse();
+    const response = missingBuildAsset ? notFoundStaticAssetResponse() : notFoundResponse();
+    return finalizeCacheabilityResponse ? finalizeCacheabilityResponse(response, ctx) : response;
   }
 
-  return new Response(String(result), { status: 200 });
+  const response = new Response(String(result), { status: 200 });
+  return finalizeCacheabilityResponse ? finalizeCacheabilityResponse(response, ctx) : response;
 }

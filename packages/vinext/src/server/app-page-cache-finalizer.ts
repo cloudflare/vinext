@@ -1,5 +1,11 @@
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
-import { applyCdnResponseHeaders, NO_STORE_CACHE_CONTROL } from "./cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  buildRevalidateCacheControl,
+  hasExplicitNonCacheableResponsePolicy,
+  NO_STORE_CACHE_CONTROL,
+  STATIC_CACHE_CONTROL,
+} from "./cache-control.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_CACHE_HEADER } from "./headers.js";
 import {
@@ -12,6 +18,12 @@ import type { RenderObservation } from "./cache-proof.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
+import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
+import {
+  deferRouteCacheability,
+  isRouteCacheabilityProbe,
+  type RouteCacheabilityOutcome,
+} from "vinext/shims/cacheability-classification";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageRscCacheKeyBuilder = (
@@ -157,10 +169,86 @@ function resolveAppPageCacheControl(options: {
   });
 }
 
+function appPageCacheControlHeader(cacheControl: CacheControlMetadata): string {
+  return cacheControl.revalidate === Infinity
+    ? STATIC_CACHE_CONTROL
+    : buildRevalidateCacheControl(cacheControl.revalidate, cacheControl.expire);
+}
+
+function finalizeProbeAppPageResponse(
+  response: Response,
+  options: {
+    capturedDynamicUsageBeforeContextCleanup?: () => boolean;
+    consumeDynamicUsage: () => boolean;
+    consumeRenderObservationState?: () => AppPageRenderObservationState;
+    getPageTags: () => string[];
+    getRequestCacheLife?: () => AppPageRequestCacheLife | null;
+    expireSeconds?: number;
+    revalidateSeconds: number | null;
+  },
+): Response | null {
+  if (!isRouteCacheabilityProbe()) return null;
+  const complete = deferRouteCacheability();
+  if (!complete) return response;
+
+  let completed = false;
+  const finish = (): void => {
+    if (completed) return;
+    completed = true;
+
+    let outcome: RouteCacheabilityOutcome;
+    if (
+      options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
+      options.consumeDynamicUsage()
+    ) {
+      outcome = {
+        cacheable: false,
+        dynamicUsage: true,
+        reason: "dynamic API used during render",
+      };
+    } else if (
+      response.headers.has("set-cookie") ||
+      hasExplicitNonCacheableResponsePolicy(response.headers)
+    ) {
+      outcome = { cacheable: false, reason: "response explicitly opts out of shared caching" };
+    } else {
+      const cacheControl = resolveAppPageCacheControl({
+        expireSeconds: options.expireSeconds,
+        requestCacheLife: options.getRequestCacheLife?.(),
+        revalidateSeconds: options.revalidateSeconds,
+      });
+      outcome = cacheControl
+        ? {
+            cacheable: true,
+            cacheControl: appPageCacheControlHeader(cacheControl),
+            tags: options.getPageTags(),
+          }
+        : { cacheable: false, reason: "render did not produce a cache policy" };
+    }
+    options.consumeRenderObservationState?.();
+    complete(outcome);
+  };
+
+  if (!response.body) {
+    finish();
+    return response;
+  }
+  return new Response(deferUntilStreamConsumed(response.body, finish), {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
 export function finalizeAppPageHtmlCacheResponse(
   response: Response,
   options: FinalizeAppPageHtmlCacheResponseOptions,
 ): Response {
+  const probeResponse = finalizeProbeAppPageResponse(response, options);
+  if (probeResponse) {
+    void options.capturedRscDataPromise?.catch(() => {});
+    return probeResponse;
+  }
   if (!response.body) {
     return response;
   }
@@ -262,6 +350,11 @@ export function finalizeAppPageRscCacheResponse(
   response: Response,
   options: ScheduleAppPageRscCacheWriteOptions,
 ): Response {
+  const probeResponse = finalizeProbeAppPageResponse(response, options);
+  if (probeResponse) {
+    void options.capturedRscDataPromise?.catch(() => {});
+    return probeResponse;
+  }
   // Persisting to the ISR store and finalizing the client-facing headers are
   // independent decisions. Mounted-slot and unverified-interception variants
   // are deliberately never stored, but a fresh MISS stream can still reach a

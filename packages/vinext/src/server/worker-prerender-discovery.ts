@@ -16,7 +16,7 @@ export function isWorkerPrerenderDiscoveryPath(pathname: string): boolean {
   return PRERENDER_DISCOVERY_PATHS.has(pathname);
 }
 
-function secretsMatch(provided: string, expected: string): boolean {
+export function workerCapabilityMatches(provided: string, expected: string): boolean {
   // The generated secret is fixed-width hex, so always scan the full expected
   // value and fold the length mismatch into the result. Do not use ordinary
   // string equality for this externally supplied capability.
@@ -41,7 +41,7 @@ export function createWorkerPrerenderDiscoveryContext(
   // Ordinary traffic never carries this capability. Reject it before URL
   // parsing so staged discovery adds no URL work to the common request path.
   const providedSecret = request.headers.get(VINEXT_PRERENDER_SECRET_HEADER);
-  if (!expectedSecret || !providedSecret || !secretsMatch(providedSecret, expectedSecret)) {
+  if (!expectedSecret || !providedSecret || !workerCapabilityMatches(providedSecret, expectedSecret)) {
     return base;
   }
 
