@@ -361,6 +361,32 @@ describe("app route handler execution helpers", () => {
     expect(result.crossedTaskBoundary).toBe(true);
   });
 
+  it("bounds a never-settling Cache Components staged probe at the task boundary", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    let executions = 0;
+    let aborted = false;
+    const result = await runAppRouteHandler({
+      cacheComponents: true,
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      handlerFn(request) {
+        executions += 1;
+        request.signal.addEventListener("abort", () => {
+          aborted = true;
+        });
+        return new Promise<Response>(() => {});
+      },
+      isCacheabilityProbe: true,
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      observeCompletedBody: true,
+      params: null,
+      request: new Request("https://example.com/api/never-settles"),
+    });
+
+    expect(executions).toBe(2);
+    expect(result.crossedTaskBoundary).toBe(true);
+    expect(aborted).toBe(true);
+  });
+
   it("uses synchronous platform I/O to decide Cache Components route eligibility", async () => {
     const execute = (
       routePattern: string,
@@ -630,9 +656,9 @@ describe("app route handler execution helpers", () => {
       });
 
       expect(pulls).toBe(1);
-      expect(cancellations).toBe(0);
+      expect(cancellations).toBe(1);
       expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
-      await expect(response.text()).resolves.toBe("deferred");
+      await expect(response.text()).resolves.toBe("");
     } finally {
       setDataCacheHandler(originalHandler);
     }
@@ -710,6 +736,7 @@ describe("app route handler execution helpers", () => {
               if (sent) controller.close();
               sent = true;
               await new Promise((resolve) => setTimeout(resolve, 0));
+              await new Promise((resolve) => setTimeout(resolve, 0));
             },
           }),
         );
@@ -734,7 +761,7 @@ describe("app route handler execution helpers", () => {
     expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
     expect(isrSet).not.toHaveBeenCalled();
     expect(response.headers.get("cache-control")).toBeNull();
-    await expect(response.text()).resolves.toBe("dynamic stream");
+    await expect(response.text()).resolves.toBe("");
   });
 
   it("rejects an uncached fetch started while a Route Handler body is pulled", async () => {

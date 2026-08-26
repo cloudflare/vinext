@@ -21,11 +21,20 @@
 
 import { Buffer } from "node:buffer";
 
-import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
+import {
+  getDataCacheHandler,
+  trackProspectiveCacheFill,
+  type CachedFetchValue,
+  type CacheHandler,
+} from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { getHeadersContext, markDynamicUsage } from "./headers.js";
-import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
+import {
+  _hasPendingRevalidatedTag,
+  _queuePendingRevalidation,
+  _setRequestScopedCacheLife,
+} from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
   isInsideUnifiedScope,
@@ -1111,274 +1120,292 @@ function dedupeFetch(
  * 5. Respects `next.tags` for tag-based invalidation via revalidateTag()
  */
 function createPatchedFetch(): typeof globalThis.fetch {
-  return async function patchedFetch(
+  return function patchedFetch(
     input: string | URL | Request,
     init?: RequestInit,
   ): Promise<Response> {
-    const nextOpts = (init as ExtendedRequestInit | undefined)?.next as
-      | NextFetchOptions
-      | undefined;
-    const cacheDirective = resolveSegmentCacheDirective(
-      getFetchCacheDirective(input, init),
-      nextOpts,
-      _getState().currentFetchCacheMode,
-      _getState().currentForceDynamicFetchDefault,
-    );
+    const operation = (async (): Promise<Response> => {
+      const nextOpts = (init as ExtendedRequestInit | undefined)?.next as
+        | NextFetchOptions
+        | undefined;
+      const cacheDirective = resolveSegmentCacheDirective(
+        getFetchCacheDirective(input, init),
+        nextOpts,
+        _getState().currentFetchCacheMode,
+        _getState().currentForceDynamicFetchDefault,
+      );
 
-    // Determine caching behavior:
-    // - cache: 'no-store' → skip cache entirely
-    // - cache: 'force-cache' → cache indefinitely (revalidate = Infinity)
-    // - next.revalidate: false → cache indefinitely (same as force-cache)
-    // - next.revalidate: 0 → same as 'no-store'
-    // - next.revalidate: N → cache for N seconds
-    // - No cache/next options → default behavior (no caching, pass-through)
+      // Determine caching behavior:
+      // - cache: 'no-store' → skip cache entirely
+      // - cache: 'force-cache' → cache indefinitely (revalidate = Infinity)
+      // - next.revalidate: false → cache indefinitely (same as force-cache)
+      // - next.revalidate: 0 → same as 'no-store'
+      // - next.revalidate: N → cache for N seconds
+      // - No cache/next options → default behavior (no caching, pass-through)
 
-    // If no caching options at all, just pass through to original fetch
-    if (!nextOpts && !cacheDirective) {
-      recordDynamicFetchObservation(input);
-      return dedupeFetch(input, init);
-    }
+      // If no caching options at all, just pass through to original fetch
+      if (!nextOpts && !cacheDirective) {
+        recordDynamicFetchObservation(input);
+        return dedupeFetch(input, init);
+      }
 
-    // Explicit no-store or no-cache — bypass cache entirely
-    // Deliberate divergence from upstream: Next.js only calls
-    // markCurrentScopeAsDynamic for 'no-store'/revalidate: 0, while 'no-cache'
-    // merely opts the fetch out of caching. We conservatively mark the page
-    // dynamic for 'no-cache' too, since its response is never reusable.
-    if (
-      cacheDirective === "no-store" ||
-      cacheDirective === "no-cache" ||
-      nextOpts?.revalidate === 0
-    ) {
-      // Strip the `next` property before passing to real fetch
-      const cleanInit = stripNextFromInit(init, cacheDirective);
-      markUncachedFetchForPageOutput(input);
-      return dedupeFetch(input, cleanInit);
-    }
+      // Explicit no-store or no-cache — bypass cache entirely
+      // Deliberate divergence from upstream: Next.js only calls
+      // markCurrentScopeAsDynamic for 'no-store'/revalidate: 0, while 'no-cache'
+      // merely opts the fetch out of caching. We conservatively mark the page
+      // dynamic for 'no-cache' too, since its response is never reusable.
+      if (
+        cacheDirective === "no-store" ||
+        cacheDirective === "no-cache" ||
+        nextOpts?.revalidate === 0
+      ) {
+        // Strip the `next` property before passing to real fetch
+        const cleanInit = stripNextFromInit(init, cacheDirective);
+        markUncachedFetchForPageOutput(input);
+        return dedupeFetch(input, cleanInit);
+      }
 
-    // Safety: when per-user auth headers are present and the developer hasn't
-    // explicitly opted into caching with `cache: 'force-cache'` or an explicit
-    // `next.revalidate`, skip caching to prevent accidental cross-user data
-    // leakage. Developers who understand the implications can still force
-    // caching by using `cache: 'force-cache'` or `next: { revalidate: N }`.
-    // This is an automatic safety bypass, not an explicit opt-out, so it does
-    // NOT mark the page dynamic via markDynamicUsage(). It still records a
-    // dynamic fetch observation: the per-user response must downgrade the
-    // page output to fresh render, or a statically cached page could leak
-    // one user's auth-keyed data to everyone else.
-    // Ordering is deliberate: an explicit `no-store`/`no-cache`/`revalidate: 0`
-    // takes the stronger branch above and fully marks the page dynamic even
-    // when auth headers are present — this bypass only handles auth-keyed
-    // fetches that would otherwise be implicitly cacheable.
-    const hasExplicitCacheOpt =
-      cacheDirective === "force-cache" ||
-      nextOpts?.revalidate === false ||
-      (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
-    if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
-      const cleanInit = stripNextFromInit(init, cacheDirective);
-      recordDynamicFetchObservation(input);
-      return dedupeFetch(input, cleanInit);
-    }
-
-    // Determine revalidation period
-    let revalidateSeconds: number;
-    if (cacheDirective === "force-cache") {
-      // force-cache means cache indefinitely (we use a very large number)
-      revalidateSeconds =
-        nextOpts?.revalidate && typeof nextOpts.revalidate === "number"
-          ? nextOpts.revalidate
-          : ONE_YEAR_SECONDS;
-    } else if (nextOpts?.revalidate === false) {
-      // revalidate: false means cache indefinitely
-      revalidateSeconds = ONE_YEAR_SECONDS;
-    } else if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
-      revalidateSeconds = nextOpts.revalidate;
-    } else {
-      // During prerender, a fetch without an explicit cache lifetime inherits
-      // the active route's revalidate value in Next.js. Tags make this fetch
-      // cacheable, but do not independently make it cache indefinitely.
-      if (nextOpts?.tags && nextOpts.tags.length > 0) {
-        const routeRevalidate = _getState().currentFetchRevalidate;
-        if (routeRevalidate === 0) {
-          const cleanInit = stripNextFromInit(init, cacheDirective);
-          markUncachedFetchForPageOutput(input);
-          return dedupeFetch(input, cleanInit);
-        }
-        revalidateSeconds =
-          routeRevalidate === null || routeRevalidate === Infinity
-            ? ONE_YEAR_SECONDS
-            : routeRevalidate;
-      } else {
-        // next: {} with no revalidate or tags — pass through
+      // Safety: when per-user auth headers are present and the developer hasn't
+      // explicitly opted into caching with `cache: 'force-cache'` or an explicit
+      // `next.revalidate`, skip caching to prevent accidental cross-user data
+      // leakage. Developers who understand the implications can still force
+      // caching by using `cache: 'force-cache'` or `next: { revalidate: N }`.
+      // This is an automatic safety bypass, not an explicit opt-out, so it does
+      // NOT mark the page dynamic via markDynamicUsage(). It still records a
+      // dynamic fetch observation: the per-user response must downgrade the
+      // page output to fresh render, or a statically cached page could leak
+      // one user's auth-keyed data to everyone else.
+      // Ordering is deliberate: an explicit `no-store`/`no-cache`/`revalidate: 0`
+      // takes the stronger branch above and fully marks the page dynamic even
+      // when auth headers are present — this bypass only handles auth-keyed
+      // fetches that would otherwise be implicitly cacheable.
+      const hasExplicitCacheOpt =
+        cacheDirective === "force-cache" ||
+        nextOpts?.revalidate === false ||
+        (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
+      if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
         const cleanInit = stripNextFromInit(init, cacheDirective);
         recordDynamicFetchObservation(input);
         return dedupeFetch(input, cleanInit);
       }
-    }
 
-    // Record cacheable-fetch observation synchronously, before the first await,
-    // so that probe-based skip-eligibility checks (e.g. runLayoutProbe) can
-    // snapshot the dependency even when callers start a fetch but do not await
-    // its result before yielding to the probe harness.
-    // If key generation later fails and the fetch falls back to dynamic,
-    // recording both cacheable and dynamic is conservative — a false "unsafe"
-    // result costs performance, not correctness.
-    recordCacheableFetchObservation(input);
-    if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
-      // Upstream mutates the active prerender store when an explicit fetch
-      // lifetime is shorter. Later metadata-only fetches inherit that live
-      // minimum rather than the route's original segment-config seed.
-      lowerCurrentFetchRevalidate(nextOpts.revalidate);
-    }
-    recordFiniteFetchRevalidate(revalidateSeconds);
-    const reqTags = _getState().currentRequestTags;
-    const tags = encodeCacheTags(nextOpts?.tags ?? []);
-    if (tags.length > 0) {
-      for (const tag of tags) {
-        if (!reqTags.includes(tag)) {
-          reqTags.push(tag);
+      // Determine revalidation period
+      let revalidateSeconds: number;
+      if (cacheDirective === "force-cache") {
+        // force-cache means cache indefinitely (we use a very large number)
+        revalidateSeconds =
+          nextOpts?.revalidate && typeof nextOpts.revalidate === "number"
+            ? nextOpts.revalidate
+            : ONE_YEAR_SECONDS;
+      } else if (nextOpts?.revalidate === false) {
+        // revalidate: false means cache indefinitely
+        revalidateSeconds = ONE_YEAR_SECONDS;
+      } else if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
+        revalidateSeconds = nextOpts.revalidate;
+      } else {
+        // During prerender, a fetch without an explicit cache lifetime inherits
+        // the active route's revalidate value in Next.js. Tags make this fetch
+        // cacheable, but do not independently make it cache indefinitely.
+        if (nextOpts?.tags && nextOpts.tags.length > 0) {
+          const routeRevalidate = _getState().currentFetchRevalidate;
+          if (routeRevalidate === 0) {
+            const cleanInit = stripNextFromInit(init, cacheDirective);
+            markUncachedFetchForPageOutput(input);
+            return dedupeFetch(input, cleanInit);
+          }
+          revalidateSeconds =
+            routeRevalidate === null || routeRevalidate === Infinity
+              ? ONE_YEAR_SECONDS
+              : routeRevalidate;
+        } else {
+          // next: {} with no revalidate or tags — pass through
+          const cleanInit = stripNextFromInit(init, cacheDirective);
+          recordDynamicFetchObservation(input);
+          return dedupeFetch(input, cleanInit);
         }
       }
-    }
 
-    const softTags = _getState().currentFetchSoftTags;
-    let fetchInit = stripNextFromInit(init, cacheDirective);
-    let cacheKey: string;
-    try {
-      cacheKey = await buildFetchCacheKey(input, fetchInit);
-      // Cache-key generation may consume and stash request bodies on fetchInit;
-      // normalize again so the real fetch receives the restored body.
-      fetchInit = stripNextFromInit(fetchInit, cacheDirective);
-    } catch (err) {
-      if (
-        err instanceof BodyTooLargeForCacheKeyError ||
-        err instanceof SkipCacheKeyGenerationError
-      ) {
+      // Record cacheable-fetch observation synchronously, before the first await,
+      // so that probe-based skip-eligibility checks (e.g. runLayoutProbe) can
+      // snapshot the dependency even when callers start a fetch but do not await
+      // its result before yielding to the probe harness.
+      // If key generation later fails and the fetch falls back to dynamic,
+      // recording both cacheable and dynamic is conservative — a false "unsafe"
+      // result costs performance, not correctness.
+      recordCacheableFetchObservation(input);
+      if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
+        // Upstream mutates the active prerender store when an explicit fetch
+        // lifetime is shorter. Later metadata-only fetches inherit that live
+        // minimum rather than the route's original segment-config seed.
+        lowerCurrentFetchRevalidate(nextOpts.revalidate);
+      }
+      recordFiniteFetchRevalidate(revalidateSeconds);
+      const reqTags = _getState().currentRequestTags;
+      const tags = encodeCacheTags(nextOpts?.tags ?? []);
+      if (tags.length > 0) {
+        for (const tag of tags) {
+          if (!reqTags.includes(tag)) {
+            reqTags.push(tag);
+          }
+        }
+      }
+
+      const softTags = _getState().currentFetchSoftTags;
+      let fetchInit = stripNextFromInit(init, cacheDirective);
+      let cacheKey: string;
+      try {
+        cacheKey = await buildFetchCacheKey(input, fetchInit);
+        // Cache-key generation may consume and stash request bodies on fetchInit;
+        // normalize again so the real fetch receives the restored body.
         fetchInit = stripNextFromInit(fetchInit, cacheDirective);
-        // The developer opted into caching but we couldn't build a cache key
-        // (body too large / unserializable). That is an internal vinext
-        // limitation, not an explicit uncached-fetch decision, so record only
-        // the observation (downgrading the page output to fresh render)
-        // without marking the whole page dynamic.
-        recordDynamicFetchObservation(input);
-        return dedupeFetch(input, fetchInit);
+      } catch (err) {
+        if (
+          err instanceof BodyTooLargeForCacheKeyError ||
+          err instanceof SkipCacheKeyGenerationError
+        ) {
+          fetchInit = stripNextFromInit(fetchInit, cacheDirective);
+          // The developer opted into caching but we couldn't build a cache key
+          // (body too large / unserializable). That is an internal vinext
+          // limitation, not an explicit uncached-fetch decision, so record only
+          // the observation (downgrading the page output to fresh render)
+          // without marking the whole page dynamic.
+          recordDynamicFetchObservation(input);
+          return dedupeFetch(input, fetchInit);
+        }
+        throw err;
       }
-      throw err;
-    }
-    const handler = getDataCacheHandler();
-    let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
+      const handler = getDataCacheHandler();
+      let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
 
-    // Try cache first
-    try {
-      let cached = mustBypassPendingRevalidation
-        ? null
-        : await handler.get(cacheKey, {
-            kind: "FETCH",
+      // Try cache first
+      try {
+        let cached = mustBypassPendingRevalidation
+          ? null
+          : await handler.get(cacheKey, {
+              kind: "FETCH",
+              tags,
+              softTags,
+              revalidate: revalidateSeconds,
+            });
+        if (
+          cached?.value?.kind === "FETCH" &&
+          _hasPendingRevalidatedTag([...(cached.value.tags ?? []), ...tags, ...softTags])
+        ) {
+          mustBypassPendingRevalidation = true;
+          cached = null;
+        }
+        if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
+          await lowerFetchCacheRevalidateIfNeeded(
+            handler,
+            cacheKey,
+            cached.value,
             tags,
-            softTags,
-            revalidate: revalidateSeconds,
-          });
-      if (
-        cached?.value?.kind === "FETCH" &&
-        _hasPendingRevalidatedTag([...(cached.value.tags ?? []), ...tags, ...softTags])
-      ) {
-        mustBypassPendingRevalidation = true;
-        cached = null;
-      }
-      if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
-        await lowerFetchCacheRevalidateIfNeeded(
-          handler,
-          cacheKey,
-          cached.value,
-          tags,
-          revalidateSeconds,
-        );
-        const cachedData = cached.value.data;
-        return buildCachedFetchResponse(cachedData, input);
-      }
-
-      // Stale entry — we could do stale-while-revalidate here, but for fetch()
-      // the simpler approach is to just re-fetch (the page-level ISR handles SWR).
-      // However, if we have a stale entry, return it and trigger background refetch.
-      if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
-        if (shouldRefreshStaleFetchInForeground()) {
-          const freshResponse = await dedupeFetch(input, fetchInit);
-          await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds);
-          return freshResponse;
+            revalidateSeconds,
+          );
+          const cachedData = cached.value.data;
+          return buildCachedFetchResponse(cachedData, input);
         }
 
-        const staleData = cached.value.data;
+        // Stale entry — we could do stale-while-revalidate here, but for fetch()
+        // the simpler approach is to just re-fetch (the page-level ISR handles SWR).
+        // However, if we have a stale entry, return it and trigger background refetch.
+        if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
+          if (shouldRefreshStaleFetchInForeground()) {
+            const freshResponse = await dedupeFetch(input, fetchInit);
+            await writeFetchCacheResponse(
+              handler,
+              cacheKey,
+              freshResponse,
+              tags,
+              revalidateSeconds,
+            );
+            return freshResponse;
+          }
 
-        // Background refetch — deduped so only one in-flight refetch runs
-        // per cache key, preventing thundering herd on popular endpoints.
-        if (!pendingRefetches.has(cacheKey)) {
-          const refetchPromise = originalFetch(input, fetchInit)
-            .then(async (freshResp) => {
-              await writeFetchCacheResponse(handler, cacheKey, freshResp, tags, revalidateSeconds, {
-                cloneForReturn: false,
+          const staleData = cached.value.data;
+
+          // Background refetch — deduped so only one in-flight refetch runs
+          // per cache key, preventing thundering herd on popular endpoints.
+          if (!pendingRefetches.has(cacheKey)) {
+            const refetchPromise = originalFetch(input, fetchInit)
+              .then(async (freshResp) => {
+                await writeFetchCacheResponse(
+                  handler,
+                  cacheKey,
+                  freshResp,
+                  tags,
+                  revalidateSeconds,
+                  {
+                    cloneForReturn: false,
+                  },
+                );
+              })
+              .catch((err) => {
+                const url =
+                  typeof input === "string"
+                    ? input
+                    : input instanceof URL
+                      ? input.toString()
+                      : input.url;
+                console.error(
+                  `[vinext] fetch cache background revalidation failed for ${url} (key=${cacheKey.slice(0, 12)}...):`,
+                  err,
+                );
+              })
+              .finally(() => {
+                // Only clear if we still own the slot — the timeout may have
+                // already replaced it with a newer refetch promise.
+                if (pendingRefetches.get(cacheKey) === refetchPromise) {
+                  pendingRefetches.delete(cacheKey);
+                }
+                clearTimeout(timeoutId);
               });
-            })
-            .catch((err) => {
-              const url =
-                typeof input === "string"
-                  ? input
-                  : input instanceof URL
-                    ? input.toString()
-                    : input.url;
-              console.error(
-                `[vinext] fetch cache background revalidation failed for ${url} (key=${cacheKey.slice(0, 12)}...):`,
-                err,
-              );
-            })
-            .finally(() => {
-              // Only clear if we still own the slot — the timeout may have
-              // already replaced it with a newer refetch promise.
+
+            pendingRefetches.set(cacheKey, refetchPromise);
+
+            // Safety net: if the upstream fetch hangs forever, force-clean the
+            // dedup entry so future stale hits can retry instead of being
+            // permanently suppressed.
+            const timeoutId = setTimeout(() => {
               if (pendingRefetches.get(cacheKey) === refetchPromise) {
                 pendingRefetches.delete(cacheKey);
               }
-              clearTimeout(timeoutId);
-            });
+            }, DEDUP_TIMEOUT_MS);
 
-          pendingRefetches.set(cacheKey, refetchPromise);
+            getRequestExecutionContext()?.waitUntil(refetchPromise);
+          }
 
-          // Safety net: if the upstream fetch hangs forever, force-clean the
-          // dedup entry so future stale hits can retry instead of being
-          // permanently suppressed.
-          const timeoutId = setTimeout(() => {
-            if (pendingRefetches.get(cacheKey) === refetchPromise) {
-              pendingRefetches.delete(cacheKey);
-            }
-          }, DEDUP_TIMEOUT_MS);
-
-          getRequestExecutionContext()?.waitUntil(refetchPromise);
+          // Return stale data immediately
+          return buildCachedFetchResponse(staleData, input);
         }
-
-        // Return stale data immediately
-        return buildCachedFetchResponse(staleData, input);
+      } catch (cacheErr) {
+        // Cache read failed — fall through to network
+        console.error("[vinext] fetch cache read error:", cacheErr);
       }
-    } catch (cacheErr) {
-      // Cache read failed — fall through to network
-      console.error("[vinext] fetch cache read error:", cacheErr);
-    }
 
-    // Cache miss — fetch from network
-    const response = await (mustBypassPendingRevalidation
-      ? originalFetch(input, fetchInit)
-      : dedupeFetch(input, fetchInit));
+      // Cache miss — fetch from network
+      const response = await (mustBypassPendingRevalidation
+        ? originalFetch(input, fetchInit)
+        : dedupeFetch(input, fetchInit));
 
-    const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
-    if (cacheValue) {
-      handler
-        .set(cacheKey, cacheValue, {
-          fetchCache: true,
-          tags,
-          revalidate: revalidateSeconds,
-        })
-        .catch((err) => {
-          console.error("[vinext] fetch cache write error:", err);
-        });
-    }
+      const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
+      if (cacheValue) {
+        const cacheWrite = handler
+          .set(cacheKey, cacheValue, {
+            fetchCache: true,
+            tags,
+            revalidate: revalidateSeconds,
+          })
+          .catch((err) => {
+            console.error("[vinext] fetch cache write error:", err);
+          });
+        _queuePendingRevalidation(cacheWrite);
+      }
 
-    return response;
+      return response;
+    })();
+    trackProspectiveCacheFill(operation);
+    return operation;
   } as typeof globalThis.fetch;
 }
 

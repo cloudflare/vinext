@@ -265,6 +265,7 @@ type DispatchMatchedRouteHandlerOptions<TRoute> = {
    */
   params: AppPageParams | null;
   request: Request;
+  renderedConcreteUrlPaths?: ReadonlySet<string>;
   route: TRoute;
   searchParams: URLSearchParams;
 };
@@ -1739,6 +1740,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // an object shape; only the user-facing handler context surfaces null.
       params: route.isDynamic ? renderParams : null,
       request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),
+      renderedConcreteUrlPaths: getRenderedConcreteUrlPathsForRoute(route.pattern),
       route,
       searchParams: resolvedSearchParams,
     });

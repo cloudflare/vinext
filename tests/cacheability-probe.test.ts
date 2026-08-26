@@ -7,6 +7,7 @@ import { probeStagedWorkerCacheability } from "../packages/cloudflare/src/cachea
 import { withEmbeddedCacheabilityManifest } from "../packages/cloudflare/src/cacheability-artifact.js";
 import {
   CACHEABILITY_MANIFEST_PLACEHOLDER,
+  cacheabilityManifestHasGeneratedPath,
   cacheabilityRouteKey,
   parseCacheabilityManifest,
   resetEmbeddedCacheabilityManifestForTests,
@@ -22,7 +23,9 @@ import {
   finalizeWorkerCacheabilityResponse,
   markRequestCacheabilityUnsafe,
   markRouteCacheabilityPolicyProvisional,
+  recordRouteCacheabilityCapturedBody,
   recordRouteCacheability,
+  type CapturedResponseBody,
 } from "../packages/vinext/src/server/cacheability-request.js";
 import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
 import { finalizeAppPageHtmlCacheResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
@@ -134,6 +137,17 @@ describe("cacheability manifests", () => {
         headers: [],
         rewrites: {
           afterFiles: [],
+          beforeFiles: [{ source: "/account", destination: "https://origin.example/account" }],
+          fallback: [],
+        },
+      }),
+    ).toBe(true);
+    expect(
+      configRoutesCanVaryResponse({
+        ...base,
+        headers: [],
+        rewrites: {
+          afterFiles: [],
           beforeFiles: [{ source: "/account", destination: "/static-account" }],
           fallback: [],
         },
@@ -231,12 +245,14 @@ describe("cacheability manifests", () => {
         state: "runtime-check",
       },
       [cacheabilityRouteKey("app-page", "/products/:id", "/products/static")]: {
+        generatedPath: true,
         kind: "app-page",
         path: "/products/static",
         pattern: "/products/:id",
         state: "static-candidate",
       },
       [cacheabilityRouteKey("app-page", "/products/:id", "/products/dynamic")]: {
+        generatedPath: true,
         kind: "app-page",
         path: "/products/dynamic",
         pattern: "/products/:id",
@@ -275,6 +291,7 @@ describe("cacheability manifests", () => {
       ),
     );
 
+    const relatedPaths = Array.from({ length: 10_000 }, (_, index) => `/api/source-${index}`);
     const result = await probeStagedWorkerCacheability({
       root,
       routes: [
@@ -283,6 +300,7 @@ describe("cacheability manifests", () => {
           path: "/api/source",
           pattern: "/api/source",
           probePath: "/api/source",
+          probeGroupPaths: relatedPaths,
         },
       ],
       targetUrl: "https://shop.example.com",
@@ -293,21 +311,23 @@ describe("cacheability manifests", () => {
     expect(
       result.manifest.routes[cacheabilityRouteKey("app-route", "/api/target", "/api/source")],
     ).toEqual({
+      generatedPath: true,
       kind: "app-route",
       path: "/api/source",
       pattern: "/api/target",
       state: "static-candidate",
     });
-    expect(result.resolutions).toEqual([
-      {
-        exactPath: "/api/source",
-        kind: "app-route",
-        pattern: "/api/target",
-        sourceKind: "app-route",
-        sourcePattern: "/api/source",
-        state: "static-candidate",
-      },
-    ]);
+    expect(result.manifest.routes["app-route:/api/target"].generatedPaths).toHaveLength(10_000);
+    expect(result.resolutions).toHaveLength(1);
+    expect(result.resolutions[0]).toMatchObject({
+      exactPath: "/api/source",
+      kind: "app-route",
+      pattern: "/api/target",
+      sourceKind: "app-route",
+      sourcePattern: "/api/source",
+      state: "static-candidate",
+    });
+    expect(result.resolutions[0].relatedPaths).toHaveLength(10_000);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -348,7 +368,8 @@ describe("cacheability manifests", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(result.probed).toBe(1);
     expect(Object.keys(result.manifest.routes)).toHaveLength(2);
-    expect(JSON.stringify(result.manifest)).not.toContain("item-999");
+    expect(result.manifest.routes["app-page:/catalog/:slug"].generatedPaths).toHaveLength(999);
+    expect(JSON.stringify(result.manifest).length).toBeLessThan(25_000);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -389,6 +410,7 @@ describe("cacheability manifests", () => {
 
     expect(result.probed).toBe(1);
     expect(result.manifest.routes["app-route:/api/products/:id"]).toEqual({
+      generatedPaths: ["/api/products/b"],
       kind: "app-route",
       pattern: "/api/products/:id",
       state: "runtime-check",
@@ -418,7 +440,7 @@ describe("cacheability manifests", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it("does not embed generated Route Handler path lists in the runtime manifest", async () => {
+  it("stores generated Route Handler membership without repeating route metadata", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-route-scale-"));
     fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
     fs.writeFileSync(
@@ -457,8 +479,18 @@ describe("cacheability manifests", () => {
       targetUrl: "https://shop.example.com",
     });
 
-    expect(JSON.stringify(result.manifest).length).toBeLessThan(1_000);
-    expect(JSON.stringify(result.manifest)).not.toContain("item-99999");
+    expect(Object.keys(result.manifest.routes)).toHaveLength(2);
+    expect(result.manifest.routes["app-route:/api/products/:id"].generatedPaths).toHaveLength(
+      99_999,
+    );
+    const compactPaths = result.manifest.routes["app-route:/api/products/:id"].generatedPaths;
+    expect(cacheabilityManifestHasGeneratedPath(compactPaths, "/api/products/item-99999")).toBe(
+      true,
+    );
+    expect(cacheabilityManifestHasGeneratedPath(compactPaths, "/api/products/not-generated")).toBe(
+      false,
+    );
+    expect(JSON.stringify(result.manifest).length).toBeLessThan(3_500_000);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -855,6 +887,41 @@ describe("buffered cache admission", () => {
     expect(response.headers.get("Location")).toBe("/private");
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+  });
+
+  it("forces an externally rewritten response to no-store before route dispatch", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/account"),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      const unsafe = configRoutesCanVaryResponse({
+        basePathState: { basePath: "", hadBasePath: true },
+        headers: [],
+        pathname: "/account",
+        redirects: [],
+        rewrites: {
+          afterFiles: [],
+          beforeFiles: [{ source: "/account", destination: "https://origin.example/profile" }],
+          fallback: [],
+        },
+      });
+      if (unsafe) markRequestCacheabilityUnsafe("config can proxy this pathname externally");
+      return finalizeWorkerCacheabilityResponse(
+        new Response("personalized upstream", {
+          headers: { "CDN-Cache-Control": "public, max-age=60" },
+        }),
+        ctx,
+      );
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    await expect(response.text()).resolves.toBe("personalized upstream");
   });
 
   it("disables admission when a middleware source matches but its request condition does not", async () => {
@@ -1377,12 +1444,13 @@ describe("buffered cache admission", () => {
     );
     await runWithExecutionContext(context, async () => {
       const captureCount = CACHEABILITY_RESPONSE_CAPTURE_BUDGET / CACHEABILITY_RESPONSE_BODY_LIMIT;
+      const bytesPerCapture = CACHEABILITY_RESPONSE_CAPTURE_BUDGET / captureCount / 2;
       const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
       const pending = Array.from({ length: captureCount }, () => {
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             controllers.push(controller);
-            controller.enqueue(new Uint8Array([1]));
+            controller.enqueue(new Uint8Array(bytesPerCapture));
           },
         });
         return captureResponseBodyBounded(new Response(stream));
@@ -1407,8 +1475,7 @@ describe("buffered cache admission", () => {
       for (const controller of controllers) controller.close();
       const completed = await Promise.all(pending);
       for (const capture of completed) {
-        expect(capture.failClosed).toBe(false);
-        void capture.fallback?.cancel();
+        await capture.fallback?.cancel();
         if (!capture.failClosed) capture.release();
       }
     });
@@ -1422,15 +1489,19 @@ describe("buffered cache admission", () => {
       "secret-a",
     );
     await runWithExecutionContext(context, async () => {
-      const captureCount = CACHEABILITY_RESPONSE_CAPTURE_BUDGET / CACHEABILITY_RESPONSE_BODY_LIMIT;
-      const retained = await Promise.all(
-        Array.from({ length: captureCount }, () =>
-          captureResponseBodyBounded(new Response(new Uint8Array([1]))),
-        ),
-      );
+      const retained: CapturedResponseBody[] = [];
+      for (let index = 0; index < 2; index++) {
+        const capture = await captureResponseBodyBounded(
+          new Response(new Uint8Array(CACHEABILITY_RESPONSE_BODY_LIMIT)),
+        );
+        await capture.fallback?.cancel();
+        retained.push(capture);
+      }
       expect(retained.every((capture) => !capture.failClosed)).toBe(true);
 
-      const excess = await captureResponseBodyBounded(new Response(new Uint8Array([2])));
+      const excess = await captureResponseBodyBounded(
+        new Response(new Uint8Array(CACHEABILITY_RESPONSE_BODY_LIMIT)),
+      );
       expect(excess).toMatchObject({
         failClosed: true,
         reason: expect.stringContaining("isolate budget"),
@@ -1442,11 +1513,82 @@ describe("buffered cache admission", () => {
           capture.release();
         }
       }
+      await excess.fallback?.cancel();
       const afterRelease = await captureResponseBodyBounded(new Response(new Uint8Array([3])));
       expect(afterRelease.failClosed).toBe(false);
       if (!afterRelease.failClosed) {
         await afterRelease.fallback?.cancel();
         afterRelease.release();
+      }
+    });
+  });
+
+  it("releases captures that finish after request admission has closed", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/late-capture"),
+      "secret-a",
+    );
+    const release = vi.fn();
+
+    await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/late-capture")).toBe(true);
+      recordRouteCacheability({ cacheable: false, dynamicUsage: true });
+      await finalizeWorkerCacheabilityResponse(new Response("dynamic"), ctx);
+
+      expect(recordRouteCacheabilityCapturedBody(new ArrayBuffer(1), release)).toBe(true);
+    });
+
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("retains failed tee captures in the aggregate budget until fallback cancellation", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const context = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      new Request("https://example.com/failed-capture-budget"),
+      "secret-a",
+    );
+    await runWithExecutionContext(context, async () => {
+      const captureCount = CACHEABILITY_RESPONSE_CAPTURE_BUDGET / CACHEABILITY_RESPONSE_BODY_LIMIT;
+      const failed = [];
+      for (let index = 0; index < captureCount; index++) {
+        failed.push(
+          await captureResponseBodyBounded(
+            new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new Uint8Array(CACHEABILITY_RESPONSE_BODY_LIMIT));
+                  controller.enqueue(new Uint8Array([1]));
+                  controller.close();
+                },
+              }),
+            ),
+          ),
+        );
+      }
+      expect(failed.every((capture) => capture.failClosed)).toBe(true);
+
+      const excess = await captureResponseBodyBounded(
+        new Response(new Uint8Array(CACHEABILITY_RESPONSE_BODY_LIMIT)),
+      );
+      expect(excess).toMatchObject({
+        failClosed: true,
+        reason: expect.stringContaining("isolate budget"),
+      });
+
+      await Promise.all(
+        failed.map((capture) =>
+          capture.failClosed ? capture.fallback.cancel() : Promise.resolve(),
+        ),
+      );
+      await excess.fallback?.cancel();
+      const afterCancellation = await captureResponseBodyBounded(new Response(new Uint8Array([3])));
+      expect(afterCancellation.failClosed).toBe(false);
+      if (!afterCancellation.failClosed) {
+        await afterCancellation.fallback?.cancel();
+        afterCancellation.release();
       }
     });
   });

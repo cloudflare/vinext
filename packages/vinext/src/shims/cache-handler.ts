@@ -4,6 +4,11 @@ import {
   readCacheControlRevalidateField,
 } from "../utils/cache-control-metadata.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import { runWithoutPlatformIoTracking } from "./platform-io-tracking.js";
+
+function frameworkNow(): number {
+  return runWithoutPlatformIoTracking(() => Date.now());
+}
 
 export type CacheHandlerValue = {
   lastModified: number;
@@ -255,7 +260,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
     this.touchEntry(key, entry);
 
-    const now = Date.now();
+    const now = frameworkNow();
     if (entry.expireAt !== null && now > entry.expireAt) {
       return {
         lastModified: entry.lastModified,
@@ -314,7 +319,7 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return;
 
-    const now = Date.now();
+    const now = frameworkNow();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
         ? now + effectiveRevalidate * 1000
@@ -359,7 +364,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
   async revalidateTag(tags: string | string[]): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
-    const now = Date.now();
+    const now = frameworkNow();
     for (const tag of tagList) {
       this.tagRevalidatedAt.set(tag, now);
       while (this.tagRevalidatedAt.size > MAX_REVALIDATED_TAG_ENTRIES) {
@@ -378,6 +383,23 @@ const globalHandlers = globalThis as unknown as Record<PropertyKey, CacheHandler
 const prospectiveCacheHandlerAls = getOrCreateAls<CacheHandler>(
   "vinext.cacheHandler.prospective.als",
 );
+const prospectiveCacheFillsAls = getOrCreateAls<Set<Promise<unknown>>>(
+  "vinext.cacheHandler.prospective.fills.als",
+);
+
+export function trackProspectiveCacheFill<T>(promise: Promise<T>): void {
+  const fills = prospectiveCacheFillsAls.getStore();
+  if (!fills) return;
+  fills.add(promise);
+  void promise.finally(() => fills.delete(promise)).catch(() => {});
+}
+
+export async function waitForProspectiveCacheFills(): Promise<void> {
+  const fills = prospectiveCacheFillsAls.getStore();
+  if (!fills) return;
+  await Promise.resolve();
+  while (fills.size > 0) await Promise.allSettled(fills);
+}
 
 function getActiveHandler(): CacheHandler {
   return globalHandlers[HANDLER_KEY] ?? (globalHandlers[HANDLER_KEY] = new MemoryCacheHandler());
@@ -410,52 +432,64 @@ export function runWithProspectiveDataCache<T>(fn: () => T): T {
   const base = getActiveHandler();
   const entries = new Map<string, CacheHandlerValue>();
   const handler: CacheHandler = {
-    async get(key, ctx) {
-      const requestEntry = entries.get(key);
-      if (requestEntry !== undefined) return requestEntry;
+    get(key, ctx) {
+      const operation = (async () => {
+        const requestEntry = entries.get(key);
+        if (requestEntry !== undefined) return requestEntry;
 
-      const persistentEntry = await base.get(key, ctx);
-      // A remote handler can already contain this value before the prospective
-      // pass starts. Keep that hit request-local so the bounded final pass does
-      // not mistake a second KV/network round trip for uncached I/O.
-      if (persistentEntry !== null) entries.set(key, persistentEntry);
-      return persistentEntry;
+        const persistentEntry = await base.get(key, ctx);
+        // A remote handler can already contain this value before the prospective
+        // pass starts. Keep that hit request-local so the bounded final pass does
+        // not mistake a second KV/network round trip for uncached I/O.
+        if (persistentEntry !== null) entries.set(key, persistentEntry);
+        return persistentEntry;
+      })();
+      trackProspectiveCacheFill(operation);
+      return operation;
     },
-    async set(key, data, ctx) {
-      let revalidate = readCacheControlRevalidateField(ctx);
-      if (data && "revalidate" in data) {
-        if (typeof data.revalidate === "number") revalidate = data.revalidate;
-        else if (data.revalidate === false) revalidate ??= false;
-      }
-      if (revalidate !== 0) {
-        const expire = readCacheControlNumberField(ctx, "expire");
-        const stale = readCacheControlNumberField(ctx, "stale");
-        entries.set(key, {
-          lastModified: Date.now(),
-          value: data,
-          ...(typeof revalidate === "number" || revalidate === false
-            ? {
-                cacheControl: {
-                  revalidate,
-                  ...(expire === undefined ? {} : { expire }),
-                  ...(stale === undefined ? {} : { stale }),
-                },
-              }
-            : {}),
-        });
-      }
-      await base.set(key, data, ctx);
+    set(key, data, ctx) {
+      const operation = (async () => {
+        let revalidate = readCacheControlRevalidateField(ctx);
+        if (data && "revalidate" in data) {
+          if (typeof data.revalidate === "number") revalidate = data.revalidate;
+          else if (data.revalidate === false) revalidate ??= false;
+        }
+        if (revalidate !== 0) {
+          const expire = readCacheControlNumberField(ctx, "expire");
+          const stale = readCacheControlNumberField(ctx, "stale");
+          entries.set(key, {
+            lastModified: frameworkNow(),
+            value: data,
+            ...(typeof revalidate === "number" || revalidate === false
+              ? {
+                  cacheControl: {
+                    revalidate,
+                    ...(expire === undefined ? {} : { expire }),
+                    ...(stale === undefined ? {} : { stale }),
+                  },
+                }
+              : {}),
+          });
+        }
+        await base.set(key, data, ctx);
+      })();
+      trackProspectiveCacheFill(operation);
+      return operation;
     },
-    async revalidateTag(tags, durations) {
-      entries.clear();
-      await base.revalidateTag(tags, durations);
+    revalidateTag(tags, durations) {
+      const operation = (async () => {
+        entries.clear();
+        await base.revalidateTag(tags, durations);
+      })();
+      trackProspectiveCacheFill(operation);
+      return operation;
     },
     resetRequestCache() {
       entries.clear();
       base.resetRequestCache?.();
     },
   };
-  return prospectiveCacheHandlerAls.run(handler, fn);
+  return prospectiveCacheFillsAls.run(new Set(), () => prospectiveCacheHandlerAls.run(handler, fn));
 }
 
 export function setCacheHandler(handler: CacheHandler): void {

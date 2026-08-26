@@ -31,8 +31,13 @@ import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
-import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
+import {
+  getDataCacheHandler,
+  trackProspectiveCacheFill,
+  type CachedFetchValue,
+} from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
+import { isStagedCacheabilityProbeActive } from "./cacheability-classification.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
@@ -53,6 +58,35 @@ export * from "./cache-handler.js";
 export * from "./cache-request-state.js";
 
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
+
+function canCommitRevalidation(expression: string): boolean {
+  if (
+    isStagedCacheabilityProbeActive() ||
+    (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1")
+  ) {
+    // Classification/prerender execution must be observational: a purge here
+    // would mutate shared state before the route has even been promoted.
+    _markDynamic();
+    return false;
+  }
+  const cacheContext = getRegisteredCacheContext();
+  if (cacheContext) {
+    throw new Error(
+      `Route used "${expression}" inside a "use cache" which is unsupported. ` +
+        "To ensure revalidation is performed consistently it must always happen outside of renders and cached functions.",
+    );
+  }
+  if (isInsideUnstableCacheScope()) {
+    throw new Error(
+      `Route used "${expression}" inside a function cached with "unstable_cache(...)" which is unsupported. ` +
+        "To ensure revalidation is performed consistently it must always happen outside of renders and cached functions.",
+    );
+  }
+  // A Route Handler containing a revalidation call is request-time behavior;
+  // it must never be admitted to the Full Route Cache.
+  if (getHeadersAccessPhase() !== "action") _markDynamic();
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Request-scoped ExecutionContext ALS
@@ -96,6 +130,7 @@ function scheduleRevalidation(promise: Promise<void>): undefined {
  * @param profile - cacheLife profile name (e.g. 'max', 'hours') or inline { expire: number }
  */
 export function revalidateTag(tag: string, profile?: string | { expire?: number }): undefined {
+  if (!canCommitRevalidation(`revalidateTag ${tag}`)) return undefined;
   // Resolve the profile to durations for the handler
   let durations: { expire?: number } | undefined;
   if (typeof profile === "string") {
@@ -151,6 +186,7 @@ async function _invalidateEncodedTag(
  * layout/page hierarchy tags, so only no-type invalidation applies there.
  */
 export function revalidatePath(path: string, type?: "page" | "layout"): undefined {
+  if (!canCommitRevalidation(`revalidatePath ${path}`)) return undefined;
   markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   // Strip trailing slash so root "/" becomes "" — avoids double-slash in _N_T_//layout
   const stem = path.endsWith("/") ? path.slice(0, -1) : path;
@@ -611,8 +647,8 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   // the user callback. Next.js's synchronous platform-I/O wrappers no-op for
   // the whole `unstable-cache` work unit, so cache-handler clock reads cannot
   // accidentally make the enclosing Cache Components route dynamic.
-  const cachedFn = (...args: Parameters<T>) =>
-    _unstableCacheAls.run(true, async () => {
+  const cachedFn = (...args: Parameters<T>) => {
+    const operation = _unstableCacheAls.run(true, async () => {
       const argsKey = JSON.stringify(args);
       const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
       addCollectedRequestTags(tags);
@@ -668,6 +704,9 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       }
       return await refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
     });
+    trackProspectiveCacheFill(operation);
+    return operation;
+  };
 
   return cachedFn as T;
 }

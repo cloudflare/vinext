@@ -23,12 +23,17 @@ type ProbePayload = {
   version?: number;
 };
 
+function mergeGeneratedPaths(...groups: readonly string[][]): string[] {
+  return Array.from(new Set(groups.flat())).sort();
+}
+
 function isProbeRouteKind(value: unknown): value is CacheabilityRouteKind {
   return value === "app-page" || value === "app-route" || value === "pages-page";
 }
 
 export type CacheabilityProbeResult = {
   failures: string[];
+  identityProbed: number;
   manifest: CacheabilityManifest;
   probed: number;
   /** Successful public-path resolutions used only to build the final warm plan. */
@@ -37,6 +42,7 @@ export type CacheabilityProbeResult = {
 
 export type CacheabilityProbeResolution = {
   exactPath: string;
+  relatedPaths?: string[];
   kind: CacheabilityRouteKind;
   pattern: string;
   sourceKind: CacheabilityRouteKind;
@@ -87,6 +93,7 @@ async function probeRoute(options: {
   timeoutMs: number;
   retries: number;
   retryDelayMs: number;
+  mode?: "full" | "identity";
 }): Promise<ProbePayload> {
   if (!options.route.probePath) {
     return {
@@ -99,7 +106,7 @@ async function probeRoute(options: {
   const headers = new Headers(options.headers);
   headers.set("Accept", options.route.kind === "app-route" ? "*/*" : "text/html");
   headers.set("Cache-Control", "no-cache");
-  headers.set(VINEXT_CACHEABILITY_PROBE_HEADER, "1");
+  headers.set(VINEXT_CACHEABILITY_PROBE_HEADER, options.mode === "identity" ? "identity" : "1");
   headers.set(VINEXT_PRERENDER_SECRET_HEADER, options.secret);
   let failureReason = "probe failed";
   for (let attempt = 0; attempt <= options.retries; attempt++) {
@@ -141,6 +148,92 @@ async function probeRoute(options: {
   return { reason: failureReason, state: "probe-failed", version: 1 };
 }
 
+async function resolveProbeRouteIdentityGroups(options: {
+  concurrency: number;
+  headers?: HeadersInit;
+  retries: number;
+  retryDelayMs: number;
+  routes: readonly CacheabilityProbeRoute[];
+  secret: string;
+  targetUrl: string;
+  timeoutMs: number;
+}): Promise<{ failures: string[]; identityProbed: number; routes: CacheabilityProbeRoute[] }> {
+  const passthrough: CacheabilityProbeRoute[] = [];
+  const tasks: Array<{ route: CacheabilityProbeRoute; path: string }> = [];
+  for (const route of options.routes) {
+    if (!route.probePath || !route.probeGroupPaths?.length) {
+      passthrough.push(route);
+      continue;
+    }
+    for (const path of [route.probePath, ...route.probeGroupPaths]) tasks.push({ route, path });
+  }
+  if (tasks.length === 0) return { failures: [], identityProbed: 0, routes: passthrough };
+
+  const failures: string[] = [];
+  const grouped = new Map<
+    CacheabilityProbeRoute,
+    Map<string, { kind: CacheabilityRouteKind; paths: string[]; pattern: string }>
+  >();
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (nextIndex < tasks.length) {
+      const task = tasks[nextIndex++];
+      const result = await probeRoute({
+        headers: options.headers,
+        mode: "identity",
+        retries: options.retries,
+        retryDelayMs: options.retryDelayMs,
+        route: { ...task.route, probePath: task.path },
+        secret: options.secret,
+        targetUrl: options.targetUrl,
+        timeoutMs: options.timeoutMs,
+      });
+      if (
+        result.version !== 1 ||
+        !isProbeRouteKind(result.kind) ||
+        typeof result.pattern !== "string" ||
+        !result.pattern.startsWith("/")
+      ) {
+        failures.push(
+          `${task.route.kind}:${task.route.pattern}:${task.path}: staged route identity probe failed (${result.reason ?? "invalid route identity"})`,
+        );
+        continue;
+      }
+      const routeGroups = grouped.get(task.route) ?? new Map();
+      grouped.set(task.route, routeGroups);
+      const key = `${result.kind}:${result.pattern}`;
+      const group = routeGroups.get(key) ?? {
+        kind: result.kind,
+        paths: [],
+        pattern: result.pattern,
+      };
+      group.paths.push(task.path);
+      routeGroups.set(key, group);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.max(1, Math.min(options.concurrency, tasks.length)) }, () =>
+      worker(),
+    ),
+  );
+
+  const routes = [...passthrough];
+  for (const [sourceRoute, routeGroups] of grouped) {
+    for (const group of routeGroups.values()) {
+      const [probePath, ...relatedPaths] = group.paths;
+      routes.push({
+        ...sourceRoute,
+        path: probePath,
+        probeGroupPaths: relatedPaths,
+        probePath,
+        runtimeCheckWarmPaths: relatedPaths,
+        warmPaths: [probePath],
+      });
+    }
+  }
+  return { failures, identityProbed: tasks.length, routes };
+}
+
 export async function probeStagedWorkerCacheability(options: {
   buildId?: string;
   concurrency?: number;
@@ -153,13 +246,28 @@ export async function probeStagedWorkerCacheability(options: {
   retryDelayMs?: number;
 }): Promise<CacheabilityProbeResult> {
   const secret = readPrerenderSecret(options.root);
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const retries = Math.max(0, options.retries ?? 0);
+  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 0);
+  const concurrency = Math.max(1, options.concurrency ?? 25);
+  const identityGroups = await resolveProbeRouteIdentityGroups({
+    concurrency,
+    headers: options.headers,
+    retries,
+    retryDelayMs,
+    routes: options.routes,
+    secret,
+    targetUrl: options.targetUrl,
+    timeoutMs,
+  });
+  const probeRoutes = identityGroups.routes;
   const routes: Record<string, CacheabilityManifestRoute> = {};
-  const failures: string[] = [];
+  const failures: string[] = [...identityGroups.failures];
   const resolutions: CacheabilityProbeResolution[] = [];
   let probed = 0;
   let nextIndex = 0;
 
-  for (const route of options.routes) {
+  for (const route of probeRoutes) {
     const patternKey = cacheabilityRouteKey(route.kind, route.pattern);
     if (!routes[patternKey]) {
       routes[patternKey] = {
@@ -175,11 +283,22 @@ export async function probeStagedWorkerCacheability(options: {
     } else if (route.path === undefined && route.fallbackState === "dynamic") {
       routes[patternKey].state = "dynamic";
     }
+    const generatedSiblingPaths = [
+      ...(route.runtimeCheckWarmPaths ?? []),
+      ...(route.probeGroupPaths ?? []),
+    ];
+    if (generatedSiblingPaths.length > 0) {
+      routes[patternKey].generatedPaths = mergeGeneratedPaths(
+        routes[patternKey].generatedPaths ?? [],
+        generatedSiblingPaths,
+      );
+    }
 
     const exactPath = route.path ?? route.probePath;
     if (exactPath) {
       const location = manifestLocation(route, exactPath);
       routes[location.key] = {
+        ...(location.path ? { generatedPath: true } : {}),
         kind: route.kind,
         ...(location.path ? { path: location.path } : {}),
         pattern: route.pattern,
@@ -189,8 +308,8 @@ export async function probeStagedWorkerCacheability(options: {
   }
 
   const worker = async (): Promise<void> => {
-    while (nextIndex < options.routes.length) {
-      const route = options.routes[nextIndex++];
+    while (nextIndex < probeRoutes.length) {
+      const route = probeRoutes[nextIndex++];
       if (!route.probePath) continue;
       probed += 1;
       const result = await probeRoute({
@@ -198,9 +317,9 @@ export async function probeStagedWorkerCacheability(options: {
         route,
         secret,
         targetUrl: options.targetUrl,
-        timeoutMs: options.timeoutMs ?? 30_000,
-        retries: Math.max(0, options.retries ?? 0),
-        retryDelayMs: Math.max(0, options.retryDelayMs ?? 0),
+        timeoutMs,
+        retries,
+        retryDelayMs,
       });
       const exactPath = route.path ?? route.probePath;
       const location = manifestLocation(route, exactPath);
@@ -225,6 +344,7 @@ export async function probeStagedWorkerCacheability(options: {
         continue;
       }
       routes[key] = {
+        ...(location.path ? { generatedPath: true } : {}),
         kind: route.kind,
         ...(location.path ? { path: location.path } : {}),
         pattern: route.pattern,
@@ -232,6 +352,7 @@ export async function probeStagedWorkerCacheability(options: {
       };
       resolutions.push({
         exactPath: exactPath!,
+        ...(route.probeGroupPaths?.length ? { relatedPaths: route.probeGroupPaths } : {}),
         kind: result.kind!,
         pattern: result.pattern!,
         sourceKind: route.kind,
@@ -245,20 +366,37 @@ export async function probeStagedWorkerCacheability(options: {
       if (result.kind !== route.kind || result.pattern !== route.pattern) {
         const resolvedKey = cacheabilityRouteKey(result.kind!, result.pattern!, exactPath);
         routes[resolvedKey] = {
+          generatedPath: true,
           kind: result.kind!,
           path: exactPath,
           pattern: result.pattern!,
           state,
         };
       }
+      if (route.probeGroupPaths?.length) {
+        const resolvedPatternKey = cacheabilityRouteKey(result.kind!, result.pattern!);
+        const resolvedPatternRoute = (routes[resolvedPatternKey] ??= {
+          kind: result.kind!,
+          pattern: result.pattern!,
+          state: "runtime-check",
+        });
+        resolvedPatternRoute.generatedPaths = mergeGeneratedPaths(
+          resolvedPatternRoute.generatedPaths ?? [],
+          route.probeGroupPaths,
+        );
+      }
     }
   };
 
-  const concurrency = Math.max(1, Math.min(options.concurrency ?? 25, options.routes.length || 1));
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  // The Worker charges the isolate budget incrementally for bytes actually
+  // retained, so small responses keep deploy-level concurrency while an
+  // individual large response still fails classification closed.
+  const fullProbeConcurrency = Math.max(1, Math.min(concurrency, probeRoutes.length || 1));
+  await Promise.all(Array.from({ length: fullProbeConcurrency }, () => worker()));
 
   return {
     failures,
+    identityProbed: identityGroups.identityProbed,
     manifest: {
       ...(options.buildId ? { buildId: options.buildId } : {}),
       routes,

@@ -1,5 +1,5 @@
 import { createContext, runInContext } from "node:vm";
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import { createElement, Suspense, use } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import {
@@ -96,6 +96,7 @@ function createByteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
 
 function createNoopRscEmbedTransform() {
   return {
+    cancel: async () => {},
     flush: () => "",
     finalize: async () => "",
     async drainFinal(emit: (scripts: string) => void) {
@@ -107,6 +108,25 @@ function createNoopRscEmbedTransform() {
 }
 
 describe("createRscEmbedTransform raw buffer (#981)", () => {
+  it("cancels a backpressured Flight source when the HTML consumer disconnects", async () => {
+    let cancelled = false;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(64 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const transform = createRscEmbedTransform(source);
+
+    await vi.waitFor(() => expect(transform.flush()).not.toBe(""));
+    await transform.cancel("client disconnected");
+
+    expect(cancelled).toBe(true);
+    await expect(transform.getRawBuffer()).rejects.toThrow("raw RSC capture was not enabled");
+  });
+
   it("accumulates raw bytes while producing embed scripts", async () => {
     const sideStream = createTextStream(["chunk1", "chunk2"]);
     const transform = createRscEmbedTransform(sideStream, { rawBufferLimitBytes: 1024 });
@@ -620,6 +640,7 @@ describe("createTickBufferedTransform pre-head splice", () => {
       // Simulate React Fizz emitting the closing tags BEFORE flush appends
       // trailing flight chunks / preinit scripts.
       const rsc = {
+        cancel: async () => {},
         flush: () => "",
         finalize: async () => '<script id="trailing-rsc">rsc()</script>',
         async drainFinal(emit: (scripts: string) => void) {
@@ -645,6 +666,7 @@ describe("createTickBufferedTransform pre-head splice", () => {
       // When `<head>` never appears, injectHTML falls back to end-of-stream
       // emission. The closing tags must still come last.
       const rsc = {
+        cancel: async () => {},
         flush: () => "",
         finalize: async () => "",
         async drainFinal() {},
@@ -664,6 +686,7 @@ describe("createTickBufferedTransform pre-head splice", () => {
       // Defense-in-depth: if React Fizz somehow ends without `</body></html>`,
       // we still emit a well-formed document close.
       const rsc = {
+        cancel: async () => {},
         flush: () => "",
         finalize: async () => "",
         async drainFinal() {},

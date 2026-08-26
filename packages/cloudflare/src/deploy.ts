@@ -707,17 +707,18 @@ export function applyResolvedCacheabilityWarmKinds(
     ) {
       continue;
     }
-    const pathname = resolution.exactPath;
-    paths.delete(pathname);
-    rscPaths.delete(pathname);
-    loadingShellPaths.delete(pathname);
-    if (resolution.state === "dynamic") continue;
+    for (const pathname of [resolution.exactPath, ...(resolution.relatedPaths ?? [])]) {
+      paths.delete(pathname);
+      rscPaths.delete(pathname);
+      loadingShellPaths.delete(pathname);
+      if (pathname === resolution.exactPath && resolution.state === "dynamic") continue;
 
-    paths.add(pathname);
-    if (resolution.kind === "app-page") {
-      rscPaths.add(pathname);
-      if (targetPatternsWithLoadingShells.has(resolution.pattern)) {
-        loadingShellPaths.add(pathname);
+      paths.add(pathname);
+      if (resolution.kind === "app-page") {
+        rscPaths.add(pathname);
+        if (targetPatternsWithLoadingShells.has(resolution.pattern)) {
+          loadingShellPaths.add(pathname);
+        }
       }
     }
   }

@@ -380,6 +380,12 @@ export async function handleSsr(
     capturedRscDataTimeoutMs?: number;
     /** Release isolate-wide capacity after retaining raw RSC bytes. */
     releaseCapturedRscDataBudget?: () => void;
+    /** Charge each retained raw RSC chunk against isolate-wide capacity. */
+    reserveCapturedRscDataBytes?: (bytes: number) => boolean;
+    /** Release raw RSC capacity when chunk storage is replaced. */
+    releaseCapturedRscDataBytes?: (bytes: number) => void;
+    /** Transfer raw-capture capacity to the request-level admission owner. */
+    retainCapturedRscData?: (release: () => void) => boolean;
     pprFallbackShellSignal?: AbortSignal;
     formState?: ReactFormState | null;
     basePath?: string;
@@ -449,6 +455,8 @@ export async function handleSsr(
               getInitialNavigationCacheMetadata: options?.getInitialNavigationCacheMetadata,
               rawBufferLimitBytes: options.capturedRscDataLimitBytes,
               rawBufferTimeoutMs: options.capturedRscDataTimeoutMs,
+              reserveRawBufferBytes: options.reserveCapturedRscDataBytes,
+              releaseRawBufferBytes: options.releaseCapturedRscDataBytes,
             });
           } catch (error) {
             options.releaseCapturedRscDataBudget?.();
@@ -457,7 +465,10 @@ export async function handleSsr(
           if (options.capturedRscDataRef) {
             const release = options.releaseCapturedRscDataBudget ?? (() => {});
             const captured = rscEmbed.getRawBuffer().then(
-              (body) => ({ body, release }),
+              (body) => {
+                const transferred = options.retainCapturedRscData?.(release) ?? false;
+                return { body, release: transferred ? () => {} : release };
+              },
               (error) => {
                 release();
                 throw error;
@@ -769,7 +780,10 @@ export async function handleSsr(
               options?.scriptNonce,
             ),
           ),
-          cleanup,
+          () => {
+            void rscEmbed.cancel("HTML response stream completed or cancelled").catch(() => {});
+            cleanup();
+          },
         );
 
         return {

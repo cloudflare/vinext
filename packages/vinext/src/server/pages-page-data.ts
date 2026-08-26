@@ -43,7 +43,10 @@ import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
-import { beginRouteCacheability } from "./cacheability-request.js";
+import {
+  beginRouteCacheability,
+  isRouteCacheabilityIdentityProbe,
+} from "./cacheability-request.js";
 
 export type PagesRedirectResult = {
   destination: string;
@@ -1195,6 +1198,9 @@ export async function resolvePagesPageData(
   // terminal result. Redirect and notFound results bypass the React page
   // renderer but are still full-route cache entries in Next.js.
   beginRouteCacheability("pages-page", options.routePattern);
+  if (isRouteCacheabilityIdentityProbe()) {
+    return { kind: "response", response: new Response(null) };
+  }
 
   // Next.js passes `params: null` (effectively) to gSSP/gSP context for
   // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.

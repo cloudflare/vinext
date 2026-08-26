@@ -46,6 +46,14 @@ describe("prerender path manifest", () => {
         }
         if (
           url.pathname === "/__vinext/prerender/static-params" &&
+          url.searchParams.get("pattern") === "/legacy/:slug"
+        ) {
+          return Response.json(
+            Array.from({ length: 100 }, (_, index) => ({ slug: `item-${index}` })),
+          );
+        }
+        if (
+          url.pathname === "/__vinext/prerender/static-params" &&
           url.searchParams.get("pattern") === "/:path+"
         ) {
           return Response.json([
@@ -545,6 +553,43 @@ describe("prerender path manifest", () => {
         probePath: "/api/source",
       }),
     );
+  });
+
+  it("groups high-cardinality deterministic rewrite paths into one render probe", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/legacy/[slug]/page.tsx",
+      "export function generateStaticParams() { return []; } export default function Page() {}\n",
+    );
+    writeFile("app/products/[slug]/page.tsx", "export default function Page() {}\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      { rewrites: () => [{ source: "/legacy/:slug", destination: "/products/:slug" }] },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+    const routes = manifest?.cacheabilityRoutes?.filter(
+      (route) => route.pattern === "/legacy/:slug" && route.probePath,
+    );
+
+    expect(routes).toHaveLength(1);
+    expect(routes?.[0]).toMatchObject({
+      probePath: "/legacy/item-0",
+      probeGroupPaths: expect.arrayContaining(["/legacy/item-99"]),
+    });
+    expect(routes?.[0].probeGroupPaths).toHaveLength(99);
   });
 
   it("excludes external rewrites from Worker route probing and warming", async () => {

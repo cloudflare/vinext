@@ -84,6 +84,10 @@ const appPagePprRuntimePath = resolveEntryPath(
   "../server/app-page-ppr-runtime.js",
   import.meta.url,
 );
+const cacheComponentsPlatformIoPath = resolveEntryPath(
+  "../server/cache-components-platform-io.js",
+  import.meta.url,
+);
 const fileBasedMetadataPath = resolveEntryPath("../server/file-based-metadata.js", import.meta.url);
 const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
 const appSegmentConfigPath = resolveEntryPath("../server/app-segment-config.js", import.meta.url);
@@ -413,6 +417,12 @@ ${
   appPagePprRuntime as __appPagePprRuntime,
   createAppPprFallbackShells as __createAppPprFallbackShells,
 } from ${JSON.stringify(appPagePprRuntimePath)};`
+    : ""
+}
+${
+  cacheComponents
+    ? `import { installCacheComponentsPlatformIoTracking as __installCacheComponentsPlatformIoTracking } from ${JSON.stringify(cacheComponentsPlatformIoPath)};
+await __installCacheComponentsPlatformIoTracking();`
     : ""
 }
 import {
@@ -878,6 +888,8 @@ const __appRscHandler = createAppRscHandler({
           mountedSlotsHeader,
           renderMode,
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
+          observeParamsAccess: ${JSON.stringify(cacheComponents)},
+          paramsRequireRuntimeFallback: buildOptions?.paramsRequireRuntimeFallback === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
           serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
           isProduction: process.env.NODE_ENV === "production",
@@ -1041,6 +1053,7 @@ const __appRscHandler = createAppRscHandler({
     cleanPathname,
     middlewareContext,
     params,
+    renderedConcreteUrlPaths,
     request,
     route,
     searchParams,
@@ -1079,6 +1092,7 @@ const __appRscHandler = createAppRscHandler({
       dynamicParamsConfig: __routeHandlerSegmentConfig.dynamicParamsConfig,
       generateStaticParams: __routeHandlerGenerateStaticParams,
       params,
+      renderedConcreteUrlPaths,
       request,
       route: {
         isDynamic: route.isDynamic,
@@ -1273,6 +1287,7 @@ const __appRscHandler = createAppRscHandler({
           mountedSlotsHeader: actionMountedSlotsHeader,
           renderMode: actionRenderMode,
           observeMetadataSearchParamsAccess: observeMetadataSearchParamsAccess === true,
+          observeParamsAccess: ${JSON.stringify(cacheComponents)},
           observePageSearchParamsAccess: observePageSearchParamsAccess === true,
         }, undefined, actionCleanPathname, targetScriptNonce ?? scriptNonce);
       },

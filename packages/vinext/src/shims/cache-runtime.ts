@@ -30,6 +30,7 @@
 
 import {
   getDataCacheHandler,
+  trackProspectiveCacheFill,
   type CachedFetchValue,
   type CacheControlMetadata,
   type CacheHandlerValue,
@@ -53,6 +54,7 @@ import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
 import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
 import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
 import { getCurrentRootParams, type RootParams } from "./root-params.js";
+import { isRouteCacheabilityClassificationActive } from "./cacheability-classification.js";
 
 export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
@@ -592,8 +594,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   // it's scoped to a single request and doesn't persist across HMR.
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
 
-  const cachedFn = (...args: TArgs): Promise<TResult> =>
-    trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
+  const cachedFn = (...args: TArgs): Promise<TResult> => {
+    const operation = trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
       const rsc = await getRscModule();
       const keySeed = getUseCacheKeySeed();
       const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
@@ -650,7 +652,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           throwPrivateUseCacheInsidePublicUseCacheError();
         }
 
-        if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
+        if (
+          (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") ||
+          isRouteCacheabilityClassificationActive()
+        ) {
           // Next.js treats "use cache: private" as dynamic during prerendering:
           // it is excluded from the static artifact and resolved per request.
           // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
@@ -842,6 +847,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
       return collectedResult ? collectedResult.result : result;
     }, cacheVariant);
+    trackProspectiveCacheFill(operation);
+    return operation;
+  };
 
   // Preserve the original function's arity on the wrapper. The wrapper is
   // declared as `(...args)` (arity 0), which hides the original signature.

@@ -10,6 +10,10 @@ export type CacheabilityRouteState =
   | "probe-failed";
 
 export type CacheabilityManifestRoute = {
+  /** The pathname came from generateStaticParams/getStaticPaths discovery. */
+  generatedPath?: boolean;
+  /** Compact pattern-level membership for generated paths not fully probed. */
+  generatedPaths?: string[];
   kind: CacheabilityRouteKind;
   /** Concrete public pathname classified by this entry. Omitted for the pattern fallback. */
   path?: string;
@@ -36,6 +40,23 @@ export function cacheabilityRouteKey(
   // a JSON tuple so arbitrary dynamic-pattern/path characters cannot collide.
   if (path !== undefined) return JSON.stringify([kind, pattern, path]);
   return `${kind}:${pattern}`;
+}
+
+export function cacheabilityManifestHasGeneratedPath(
+  generatedPaths: readonly string[] | undefined,
+  pathname: string,
+): boolean {
+  if (!generatedPaths) return false;
+  let low = 0;
+  let high = generatedPaths.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >>> 1;
+    const candidate = generatedPaths[middle];
+    if (candidate === pathname) return true;
+    if (candidate < pathname) low = middle + 1;
+    else high = middle - 1;
+  }
+  return false;
 }
 
 function isCacheabilityRouteKind(value: unknown): value is CacheabilityRouteKind {
@@ -71,6 +92,12 @@ export function parseCacheabilityManifest(
         !route.pattern.startsWith("/") ||
         (route.path !== undefined &&
           (typeof route.path !== "string" || !route.path.startsWith("/"))) ||
+        (route.generatedPath !== undefined && typeof route.generatedPath !== "boolean") ||
+        (route.generatedPaths !== undefined &&
+          (!Array.isArray(route.generatedPaths) ||
+            !route.generatedPaths.every(
+              (path) => typeof path === "string" && path.startsWith("/"),
+            ))) ||
         !isCacheabilityRouteState(route.state) ||
         key !==
           cacheabilityRouteKey(
@@ -82,6 +109,10 @@ export function parseCacheabilityManifest(
         return null;
       }
       routes[key] = {
+        ...(route.generatedPath === true ? { generatedPath: true } : {}),
+        ...(Array.isArray(route.generatedPaths)
+          ? { generatedPaths: Array.from(new Set<string>(route.generatedPaths)).sort() }
+          : {}),
         kind: route.kind,
         ...(typeof route.path === "string" ? { path: route.path } : {}),
         pattern: route.pattern,

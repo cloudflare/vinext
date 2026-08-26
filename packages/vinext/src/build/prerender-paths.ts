@@ -78,6 +78,8 @@ export type CacheabilityProbeRoute = {
   warmPaths?: string[];
   /** Additional paths warmed once with the final Worker's runtime check. */
   runtimeCheckWarmPaths?: string[];
+  /** Paths sharing the probed deterministic rewrite identity. */
+  probeGroupPaths?: string[];
   /** Only generated concrete paths may use this dynamic pattern's runtime check. */
 };
 
@@ -744,7 +746,7 @@ async function collectCacheabilityProbeRoutes(options: {
   pagesDir: string | null;
   pageExtensions: readonly string[];
   paths: readonly string[];
-  individuallyProbedPaths?: ReadonlySet<string>;
+  individuallyProbedPathGroups?: ReadonlyMap<string, string>;
 }): Promise<CacheabilityProbeRoute[]> {
   const appRoutes = options.appDir ? await appRouter(options.appDir, options.pageExtensions) : [];
   const [pageRoutes, apiRoutes] = options.pagesDir
@@ -792,20 +794,29 @@ async function collectCacheabilityProbeRoutes(options: {
     pattern: string,
     warmPaths: readonly string[],
   ): void => {
-    const individuallyProbed = warmPaths.filter((pathname) =>
-      options.individuallyProbedPaths?.has(pathname),
-    );
+    const probeGroups = new Map<string, string[]>();
+    for (const pathname of warmPaths) {
+      const group = options.individuallyProbedPathGroups?.get(pathname);
+      if (!group) continue;
+      const paths = probeGroups.get(group);
+      if (paths) paths.push(pathname);
+      else probeGroups.set(group, [pathname]);
+    }
     const sharedPatternPaths = warmPaths.filter(
-      (pathname) => !options.individuallyProbedPaths?.has(pathname),
+      (pathname) => !options.individuallyProbedPathGroups?.has(pathname),
     );
     const [probePath, ...runtimeCheckWarmPaths] = sharedPatternPaths;
-    for (const pathname of individuallyProbed) {
+    for (const paths of probeGroups.values()) {
+      const [pathname, ...probeGroupPaths] = paths;
       result.push({
         kind,
         path: pathname,
         pattern,
         probePath: pathname,
         warmPaths: [pathname],
+        ...(probeGroupPaths.length > 0
+          ? { probeGroupPaths, runtimeCheckWarmPaths: probeGroupPaths }
+          : {}),
       });
     }
     if (!probePath) return;
@@ -913,22 +924,29 @@ function configuredRouteAffectsWarmPath(
   );
 }
 
-function deterministicInternalRewriteAffectsWarmPath(
+function deterministicInternalRewriteGroupForWarmPath(
   pathname: string,
   config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "rewrites" | "trailingSlash">,
-): boolean {
-  return [
-    ...config.rewrites.beforeFiles,
-    ...config.rewrites.afterFiles,
-    ...config.rewrites.fallback,
-  ]
-    .filter(
-      (rewrite) =>
+): string | null {
+  const phases = [
+    ["beforeFiles", config.rewrites.beforeFiles],
+    ["afterFiles", config.rewrites.afterFiles],
+    ["fallback", config.rewrites.fallback],
+  ] as const;
+  const matches: string[] = [];
+  for (const [phase, rewrites] of phases) {
+    rewrites.forEach((rewrite, index) => {
+      if (
         !isExternalUrl(rewrite.destination) &&
         (rewrite.has?.length ?? 0) === 0 &&
-        (rewrite.missing?.length ?? 0) === 0,
-    )
-    .some((rewrite) => configuredRuleMatchesWarmPath(pathname, rewrite, config));
+        (rewrite.missing?.length ?? 0) === 0 &&
+        configuredRuleMatchesWarmPath(pathname, rewrite, config)
+      ) {
+        matches.push(`${phase}:${index}:${rewrite.source}:${rewrite.destination}`);
+      }
+    });
+  }
+  return matches.length > 0 ? matches.join("|") : null;
 }
 
 async function startPathDiscoveryServer(options: {
@@ -1107,11 +1125,11 @@ export async function emitPrerenderPathManifest(
         })
       : configuredPagesWarmPaths;
   const configuredCandidatePaths = paths.filter((pathname) => !excludedWarmPathSet.has(pathname));
-  const individuallyProbedRewritePaths = new Set(
-    configuredCandidatePaths.filter((pathname) =>
-      deterministicInternalRewriteAffectsWarmPath(pathname, config),
-    ),
-  );
+  const individuallyProbedRewritePathGroups = new Map<string, string>();
+  for (const pathname of configuredCandidatePaths) {
+    const group = deterministicInternalRewriteGroupForWarmPath(pathname, config);
+    if (group) individuallyProbedRewritePathGroups.set(pathname, group);
+  }
   const appOwnedWarmPaths = appDir
     ? await resolveAppWarmPaths({
         appDir,
@@ -1134,7 +1152,7 @@ export async function emitPrerenderPathManifest(
     pagesDir,
     pageExtensions: config.pageExtensions,
     paths: paths.filter((pathname) => !excludedWarmPathSet.has(pathname)),
-    individuallyProbedPaths: individuallyProbedRewritePaths,
+    individuallyProbedPathGroups: individuallyProbedRewritePathGroups,
   });
 
   const manifest: PrerenderPathManifest = {

@@ -148,6 +148,10 @@ export type AppPageSsrHandler = {
       capturedRscDataTimeoutMs?: number;
       /** Release isolate-wide capacity after retaining raw RSC bytes. */
       releaseCapturedRscDataBudget?: () => void;
+      reserveCapturedRscDataBytes?: (bytes: number) => boolean;
+      releaseCapturedRscDataBytes?: (bytes: number) => void;
+      /** Transfer raw-capture capacity to the request-level admission owner. */
+      retainCapturedRscData?: (release: () => void) => boolean;
       /** Abort signal for a build-time PPR fallback-shell static render. */
       pprFallbackShellSignal?: AbortSignal;
       /** When true, wait for the full React tree before emitting bytes. */
@@ -204,6 +208,10 @@ type RenderAppPageHtmlStreamOptions = {
   capturedRscDataTimeoutMs?: number;
   /** Release isolate-wide capacity after retaining raw RSC bytes. */
   releaseCapturedRscDataBudget?: () => void;
+  reserveCapturedRscDataBytes?: (bytes: number) => boolean;
+  releaseCapturedRscDataBytes?: (bytes: number) => void;
+  /** Transfer completed raw bytes to the request-level admission owner. */
+  retainCapturedRscData?: (release: () => void) => boolean;
   /** Abort signal for a build-time PPR fallback-shell static render. */
   pprFallbackShellSignal?: AbortSignal;
   /** When true, wait for the full React tree before emitting bytes. */
@@ -285,6 +293,9 @@ export async function renderAppPageHtmlStream(
     capturedRscDataLimitBytes: options.capturedRscDataLimitBytes,
     capturedRscDataTimeoutMs: options.capturedRscDataTimeoutMs,
     releaseCapturedRscDataBudget: options.releaseCapturedRscDataBudget,
+    reserveCapturedRscDataBytes: options.reserveCapturedRscDataBytes,
+    releaseCapturedRscDataBytes: options.releaseCapturedRscDataBytes,
+    retainCapturedRscData: options.retainCapturedRscData,
     pprFallbackShellSignal: options.pprFallbackShellSignal,
     waitForAllReady: options.waitForAllReady,
     isStaticGeneration: options.isStaticGeneration,

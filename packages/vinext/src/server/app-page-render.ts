@@ -80,9 +80,10 @@ import {
 import {
   CACHEABILITY_RESPONSE_BODY_LIMIT,
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+  createCacheabilityCaptureReservation,
   recordRouteCacheability,
   recordRouteCacheabilityCapturedBody,
-  reserveCacheabilityResponseCapture,
+  retainRouteCacheabilityCapture,
 } from "./cacheability-request.js";
 import type {
   AppLayoutParamAccessTracker,
@@ -1028,18 +1029,21 @@ export async function renderAppPageLifecycle(
     },
     async renderHtmlStream() {
       const ssrHandler = await options.loadSsrHandler();
-      const releaseCapturedRscDataBudget = shouldCaptureRscForCacheMetadata
-        ? reserveCacheabilityResponseCapture()
+      const capturedRscDataReservation = shouldCaptureRscForCacheMetadata
+        ? createCacheabilityCaptureReservation()
         : undefined;
       return renderAppPageHtmlStream({
         capturedRscDataRef,
-        capturedRscDataLimitBytes: releaseCapturedRscDataBudget
+        capturedRscDataLimitBytes: capturedRscDataReservation
           ? CACHEABILITY_RESPONSE_BODY_LIMIT
           : undefined,
-        capturedRscDataTimeoutMs: releaseCapturedRscDataBudget
+        capturedRscDataTimeoutMs: capturedRscDataReservation
           ? CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS
           : undefined,
-        releaseCapturedRscDataBudget: releaseCapturedRscDataBudget ?? undefined,
+        releaseCapturedRscDataBudget: capturedRscDataReservation?.releaseAll,
+        reserveCapturedRscDataBytes: capturedRscDataReservation?.tryReserve,
+        releaseCapturedRscDataBytes: capturedRscDataReservation?.release,
+        retainCapturedRscData: retainRouteCacheabilityCapture,
         getInitialNavigationCacheMetadata: () => {
           let kind: "dynamic" | "static";
           if (options.isForceStatic) {

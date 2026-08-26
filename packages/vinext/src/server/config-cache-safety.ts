@@ -1,5 +1,6 @@
 import type { NextHeader, NextRedirect, NextRewrite } from "../config/next-config.js";
 import { matchesRewriteSource, type BasePathMatchState } from "../config/config-matchers.js";
+import { isExternalUrl } from "../utils/external-url.js";
 
 type RequestVaryingConfigRoutes = {
   basePathState: BasePathMatchState;
@@ -18,19 +19,25 @@ type RequestVaryingConfigRoutes = {
  *
  * A response cached by a request that does not satisfy `has`/`missing` would
  * bypass the rule for a later request that does. Unconditional headers and
- * rewrites are deterministic for the public source URL: CDN keys remain
+ * internal rewrites are deterministic for the public source URL: CDN keys remain
  * source-path keyed while the Worker resolves the same rewrite destination on
  * a miss, matching Next.js's rewritten-path Full Route Cache behavior. Config
  * redirects still return before route admission and remain conservative here.
  */
 export function configRoutesCanVaryResponse(options: RequestVaryingConfigRoutes): boolean {
-  const conditionalRules = [
+  const rewrites = [
     ...options.rewrites.beforeFiles,
     ...options.rewrites.afterFiles,
     ...options.rewrites.fallback,
-    ...options.headers,
-  ].filter((rule) => (rule.has?.length ?? 0) > 0 || (rule.missing?.length ?? 0) > 0);
-  return [...options.redirects, ...conditionalRules].some((rule) =>
+  ];
+  const conditionalRules = [...rewrites, ...options.headers].filter(
+    (rule) => (rule.has?.length ?? 0) > 0 || (rule.missing?.length ?? 0) > 0,
+  );
+  // External rewrite responses are not rendered by a vinext route, so no late
+  // dynamic-usage observation can certify them. Always fail CDN admission
+  // closed, even for an unconditional source-to-origin mapping.
+  const externalRewrites = rewrites.filter((rewrite) => isExternalUrl(rewrite.destination));
+  return [...options.redirects, ...conditionalRules, ...externalRewrites].some((rule) =>
     matchesRewriteSource(options.pathname, rule, options.basePathState),
   );
 }

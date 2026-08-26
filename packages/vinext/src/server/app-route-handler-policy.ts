@@ -114,6 +114,12 @@ export function hasAppRouteHandlerDefaultExport(handler: RouteHandlerModule): bo
   return typeof handler.default === "function";
 }
 
+// Ported from Next.js:
+// packages/next/src/server/route-modules/app-route/module.ts#hasNonStaticMethods
+export function hasNonStaticAppRouteHandlerMethods(handler: RouteHandlerModule): boolean {
+  return Boolean(handler.POST || handler.PUT || handler.DELETE || handler.PATCH || handler.OPTIONS);
+}
+
 export function resolveAppRouteHandlerMethod(
   handler: AppRouteHandlerModule,
   method: string,

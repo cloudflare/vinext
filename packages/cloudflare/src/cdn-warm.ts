@@ -153,7 +153,10 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
                   route.warmPaths.every((pathname) => typeof pathname === "string"))) &&
               (route.runtimeCheckWarmPaths === undefined ||
                 (Array.isArray(route.runtimeCheckWarmPaths) &&
-                  route.runtimeCheckWarmPaths.every((pathname) => typeof pathname === "string"))),
+                  route.runtimeCheckWarmPaths.every((pathname) => typeof pathname === "string"))) &&
+              (route.probeGroupPaths === undefined ||
+                (Array.isArray(route.probeGroupPaths) &&
+                  route.probeGroupPaths.every((pathname) => typeof pathname === "string"))),
           ))) ||
       (manifest.rscPaths !== undefined &&
         (!Array.isArray(manifest.rscPaths) ||
@@ -274,6 +277,9 @@ export function readPrerenderWarmPlan(
                     applyConfig(pathname),
                   ),
                 }
+              : {}),
+            ...(route.probeGroupPaths
+              ? { probeGroupPaths: route.probeGroupPaths.map((pathname) => applyConfig(pathname)) }
               : {}),
           })),
         }

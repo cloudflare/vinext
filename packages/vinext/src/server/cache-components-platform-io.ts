@@ -1,15 +1,17 @@
-import { getOrCreateAls } from "vinext/shims/internal/als-registry";
 import { isInsideAnyCacheScope, markDynamicUsage } from "vinext/shims/headers";
+import {
+  isPlatformIoTrackingActive,
+  runWithPlatformIoTracking,
+} from "vinext/shims/platform-io-tracking";
 
 type NodeCrypto = typeof import("node:crypto");
 
 const INSTALL_KEY = Symbol.for("vinext.cacheComponents.platformIo.install");
 const CORE_INSTALLED_KEY = Symbol.for("vinext.cacheComponents.platformIo.coreInstalled");
-const trackingAls = getOrCreateAls<boolean>("vinext.cacheComponents.platformIo.tracking");
 const globalState = globalThis as typeof globalThis & Record<PropertyKey, unknown>;
 
 function trackSynchronousPlatformIo(): void {
-  if (trackingAls.getStore() !== true || isInsideAnyCacheScope()) return;
+  if (!isPlatformIoTrackingActive() || isInsideAnyCacheScope()) return;
   markDynamicUsage();
 }
 
@@ -141,5 +143,5 @@ export async function runWithCacheComponentsPlatformIoTracking<T>(
   fn: () => T | Promise<T>,
 ): Promise<T> {
   await installCacheComponentsPlatformIoTracking();
-  return trackingAls.run(true, fn);
+  return runWithPlatformIoTracking(fn);
 }

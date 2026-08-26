@@ -12,6 +12,7 @@ import { after } from "../packages/vinext/src/shims/server.js";
 import {
   createWorkerCacheabilityContext,
   finalizeWorkerCacheabilityResponse,
+  markRequestCacheabilityUnsafe,
 } from "../packages/vinext/src/server/cacheability-request.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { resetEmbeddedCacheabilityManifestForTests } from "../packages/vinext/src/server/cacheability-manifest.js";
@@ -20,6 +21,7 @@ import {
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { isKnownDynamicAppRoute } from "../packages/vinext/src/server/app-route-handler-runtime.js";
 
 const manifestGlobal = "__VINEXT_CACHEABILITY_MANIFEST__";
 
@@ -155,6 +157,106 @@ describe("app route handler dispatch", () => {
     });
   });
 
+  it("executes Cache Components POST streams once without poisoning sibling GET caching", async () => {
+    const pattern = "/api/cache-components-post-regression";
+    let pulls = 0;
+    const post = vi.fn((request: Request) => {
+      request.headers.get("authorization");
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            pulls += 1;
+            controller.enqueue(new TextEncoder().encode("posted"));
+            controller.close();
+          },
+        }),
+      );
+    });
+
+    const response = await dispatchAppRouteHandler({
+      cacheComponents: true,
+      cleanPathname: pattern,
+      clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
+      i18n: null,
+      isDevelopment: false,
+      isProduction: true,
+      async isrGet() {
+        return null;
+      },
+      isrRouteKey: (pathname) => `route:${pathname}`,
+      async isrSet() {},
+      middlewareContext: { headers: null, status: null },
+      middlewareRequestHeaders: null,
+      params: null,
+      request: new Request(`https://example.com${pattern}`, { method: "POST" }),
+      route: {
+        pattern,
+        routeHandler: { GET: () => new Response("get"), POST: post },
+        routeSegments: ["api", "cache-components-post-regression"],
+      },
+      scheduleBackgroundRegeneration() {},
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(post).toHaveBeenCalledOnce();
+    expect(response.body?.locked).toBe(false);
+    await expect(response.text()).resolves.toBe("posted");
+    expect(pulls).toBe(1);
+    expect(isKnownDynamicAppRoute(pattern)).toBe(false);
+  });
+
+  it("classifies Cache Components GET routes with non-static sibling methods as dynamic", async () => {
+    const request = new Request("https://example.com/api/mixed-methods", {
+      headers: {
+        "X-Vinext-Cacheability-Probe": "1",
+        "X-Vinext-Prerender-Secret": "secret-a",
+      },
+    });
+    const ctx = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", waitUntil() {} },
+      request,
+      "secret-a",
+    );
+    const get = vi.fn(() => new Response("get"));
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      const routeResponse = await dispatchAppRouteHandler({
+        cacheComponents: true,
+        cleanPathname: "/api/mixed-methods",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return null;
+        },
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: null,
+        request,
+        route: {
+          pattern: "/api/mixed-methods",
+          routeHandler: { GET: get, POST: () => new Response("post") },
+          routeSegments: ["api", "mixed-methods"],
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+      return finalizeWorkerCacheabilityResponse(routeResponse, ctx);
+    });
+
+    expect(get).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "app-route",
+      pattern: "/api/mixed-methods",
+      state: "dynamic",
+    });
+  });
+
   it("streams manifest-proven dynamic Cache Components handlers without a prospective pass", async () => {
     vi.stubGlobal(
       manifestGlobal,
@@ -239,6 +341,65 @@ describe("app route handler dispatch", () => {
     await expect(response.text()).resolves.toBe("streamed");
     expect(pulls).toBe(1);
     expect(cancellations).toBe(0);
+  });
+
+  it("streams pre-route unsafe Cache Components GET handlers without observation", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/api/unsafe-stream");
+    const context = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      request,
+      "secret-a",
+    );
+    let pulls = 0;
+    const get = vi.fn(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              pulls += 1;
+              controller.enqueue(new TextEncoder().encode("unsafe"));
+              controller.close();
+            },
+          }),
+        ),
+    );
+
+    const response = await runWithExecutionContext(context, async () => {
+      markRequestCacheabilityUnsafe("request-conditional config can vary this pathname");
+      const routeResponse = await dispatchAppRouteHandler({
+        cacheComponents: true,
+        cleanPathname: "/api/unsafe-stream",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return null;
+        },
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: null,
+        request,
+        route: {
+          pattern: "/api/unsafe-stream",
+          routeHandler: { GET: get },
+          routeSegments: ["api", "unsafe-stream"],
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+      return finalizeWorkerCacheabilityResponse(routeResponse, context);
+    });
+
+    expect(get).toHaveBeenCalledOnce();
+    expect(response.body?.locked).toBe(false);
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("unsafe");
+    expect(pulls).toBe(1);
   });
 
   it.each([
@@ -863,7 +1024,7 @@ describe("app route handler dispatch", () => {
       expect(routeCacheWritten).toBe(false);
       releaseInvalidation();
       await regenerationPromise;
-      expect(routeCacheWritten).toBe(true);
+      expect(routeCacheWritten).toBe(false);
     } finally {
       releaseInvalidation();
       setDataCacheHandler(previousHandler);

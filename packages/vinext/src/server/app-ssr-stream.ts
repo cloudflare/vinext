@@ -13,6 +13,8 @@ import {
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/navigation-runtime.js";
 
 type RscEmbedTransform = {
+  /** Stop the independent Flight pump when the HTML consumer disconnects. */
+  cancel(reason?: unknown): Promise<void>;
   flush(): string;
   finalize(): Promise<string>;
   /** Drain remaining scripts incrementally, preserving backpressure. */
@@ -29,6 +31,10 @@ type RscEmbedTransformOptions = {
   rawBufferLimitBytes?: number;
   /** Fail prospective raw capture without stalling the HTML stream indefinitely. */
   rawBufferTimeoutMs?: number;
+  /** Charge retained raw bytes against the request's isolate-wide budget. */
+  reserveRawBufferBytes?: (bytes: number) => boolean;
+  /** Release retained raw bytes when capture storage changes ownership. */
+  releaseRawBufferBytes?: (bytes: number) => void;
 };
 
 type HtmlInsertion = string | (() => string);
@@ -146,6 +152,7 @@ export function createRscEmbedTransform(
   let pendingBytes = 0;
   const rawChunks: Uint8Array[] | null = options.rawBufferLimitBytes === undefined ? null : [];
   let rawLength = 0;
+  let rawReservedBytes = 0;
   let rawBufferFailure: Error | null = null;
   let reading = false;
   let pumpDone = false;
@@ -166,6 +173,7 @@ export function createRscEmbedTransform(
   // still observes the original rejection when a cache owner does claim it.
   void rawBufferFailurePromise?.catch(() => {});
   let rawBufferTimeout: ReturnType<typeof setTimeout> | undefined;
+  let cancelled = false;
 
   const notifyActivity = (): void => {
     activityVersion += 1;
@@ -177,6 +185,8 @@ export function createRscEmbedTransform(
     if (!rawChunks || rawBufferFailure) return;
     rawBufferFailure = error;
     rawChunks.length = 0;
+    options.releaseRawBufferBytes?.(rawReservedBytes);
+    rawReservedBytes = 0;
     rejectRawBufferFailure?.(error);
     rejectRawBufferFailure = null;
   };
@@ -195,13 +205,23 @@ export function createRscEmbedTransform(
         if (result.done) break;
         if (rawChunks && !rawBufferFailure) {
           rawLength += result.value.byteLength;
-          if (rawLength <= options.rawBufferLimitBytes!) {
+          if (
+            rawLength <= options.rawBufferLimitBytes! &&
+            (options.reserveRawBufferBytes?.(result.value.byteLength) ?? true)
+          ) {
+            rawReservedBytes += result.value.byteLength;
             rawChunks.push(result.value);
           } else {
             // Embedding still has to drain the Flight stream for a valid HTML
             // response. Stop retaining bytes and make only the prospective
             // cache artifact fail closed.
-            failRawBuffer(new Error(`RSC body exceeded ${options.rawBufferLimitBytes} bytes`));
+            failRawBuffer(
+              new Error(
+                rawLength > options.rawBufferLimitBytes!
+                  ? `RSC body exceeded ${options.rawBufferLimitBytes} bytes`
+                  : "RSC body exceeded the isolate capture budget",
+              ),
+            );
           }
         }
         try {
@@ -268,6 +288,20 @@ export function createRscEmbedTransform(
   };
 
   const transform: RscEmbedTransform = {
+    async cancel(reason): Promise<void> {
+      if (cancelled) return;
+      cancelled = true;
+      if (rawBufferTimeout !== undefined) clearTimeout(rawBufferTimeout);
+      failRawBuffer(new Error("RSC embed stream was cancelled"));
+      pendingChunks = [];
+      pendingBytes = 0;
+      const resume = resumeReader;
+      resumeReader = null;
+      resume?.();
+      notifyActivity();
+      await reader.cancel(reason).catch(() => {});
+    },
+
     flush: flushPending,
 
     async finalize(): Promise<string> {
@@ -306,8 +340,14 @@ export function createRscEmbedTransform(
         throw new Error("raw RSC capture was not enabled");
       }
       if (rawBufferFailure) throw rawBufferFailure;
+      if (!(options.reserveRawBufferBytes?.(rawLength) ?? true)) {
+        failRawBuffer(new Error("RSC body exceeded the isolate capture budget"));
+        throw rawBufferFailure;
+      }
       const buffer = concatUint8Arrays(rawChunks);
       rawChunks.length = 0;
+      options.releaseRawBufferBytes?.(rawReservedBytes);
+      rawReservedBytes = rawLength;
       return buffer.buffer;
     },
   };
@@ -728,7 +768,7 @@ export function createTickBufferedTransform(
     controller.enqueue(encoder.encode(working));
   };
 
-  return new TransformStream<Uint8Array, Uint8Array>({
+  const transform = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       buffered.push(decoder.decode(chunk, { stream: true }));
 
@@ -781,4 +821,22 @@ export function createTickBufferedTransform(
       controller.enqueue(encoder.encode(DOCUMENT_CLOSE_SUFFIX));
     },
   });
+  const reader = transform.readable.getReader();
+  const readable = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const result = await reader.read();
+        if (result.done) controller.close();
+        else controller.enqueue(result.value);
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      await Promise.all([reader.cancel(reason).catch(() => {}), rscEmbed.cancel(reason)]);
+    },
+  });
+  // TransformStream is structural in lib.dom. Wrapping only the readable side
+  // gives pipeThrough() a cancellation hook for the independent Flight pump.
+  return { readable, writable: transform.writable } as TransformStream<Uint8Array, Uint8Array>;
 }

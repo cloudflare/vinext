@@ -1,6 +1,10 @@
 import { Suspense, createElement } from "react";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import {
+  createCacheabilityPageParamsObserver,
+  makeCacheabilityAwarePageParams,
+} from "./cacheability-route-params.js";
+import {
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
   type ApplyAppPageFileBasedMetadata,
@@ -118,6 +122,10 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   observePageSearchParamsAccess?: boolean;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
   observeMetadataSearchParamsAccess?: boolean;
+  /** Apply Cache Components fallback-param semantics to params access. */
+  observeParamsAccess?: boolean;
+  /** Conservative fallback when no CDN admission context carries generated membership. */
+  paramsRequireRuntimeFallback?: boolean;
   /** Whether generated metadata may stream into the response body. */
   serveStreamingMetadata?: boolean;
   /** Whether streamed render errors must be sanitized for client transport. */
@@ -367,6 +375,10 @@ export async function buildPageElements<
     pageModule: isSiblingIntercept ? null : (effectivePageModule ?? null),
     parallelRoutes,
     params: effectiveParams,
+    paramsObserver: createCacheabilityPageParamsObserver(
+      pageRequest.observeParamsAccess === true,
+      pageRequest.paramsRequireRuntimeFallback === true,
+    ),
     routePath: route.pattern,
     routeSegments: route.routeSegments ?? null,
     searchParams,
@@ -490,7 +502,13 @@ export async function buildPageElements<
       : null;
   void streamingMetadataOutlet?.catch(() => null);
 
-  const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
+  const pageProps: Record<string, unknown> = {
+    params: makeCacheabilityAwarePageParams(
+      effectiveParams,
+      pageRequest.observeParamsAccess === true,
+      pageRequest.paramsRequireRuntimeFallback === true,
+    ),
+  };
   const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
   const pageTreePosition = (sourcePageSegments ?? route.routeSegments ?? []).length;
   const hasPageLoadingBoundary =
@@ -639,7 +657,13 @@ export async function buildPageElements<
         );
         siblingInterceptElement = createElement(
           LayoutComponent,
-          { params: makeThenableParams(interceptLayoutParams) },
+          {
+            params: makeCacheabilityAwarePageParams(
+              interceptLayoutParams,
+              pageRequest.observeParamsAccess === true,
+              pageRequest.paramsRequireRuntimeFallback === true,
+            ),
+          },
           siblingInterceptElement,
         );
       }
@@ -663,7 +687,12 @@ export async function buildPageElements<
     interceptionId: opts?.interceptionId ?? null,
     layoutParamAccess: options.layoutParamAccess,
     mountedSlotIds,
-    makeThenableParams,
+    makeThenableParams: (value) =>
+      makeCacheabilityAwarePageParams(
+        value,
+        pageRequest.observeParamsAccess === true,
+        pageRequest.paramsRequireRuntimeFallback === true,
+      ),
     matchedParams: params,
     pageRenderDependency,
     metadataPlacement,

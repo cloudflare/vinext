@@ -94,6 +94,7 @@ import {
   beginRouteCacheability,
   captureResponseBodyBounded,
   isAdmissibleCacheStatus,
+  isRouteCacheabilityIdentityProbe,
   recordRouteCacheability,
   recordRouteCacheabilityCapturedBody,
 } from "./cacheability-request.js";
@@ -319,6 +320,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     options?: {
       observeMetadataSearchParamsAccess?: boolean;
       observePageSearchParamsAccess?: boolean;
+      paramsRequireRuntimeFallback?: boolean;
       serveStreamingMetadata?: boolean;
     },
   ) => Promise<AppPageElement>;
@@ -665,6 +667,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
   const route = options.route;
+  const runCacheComponentsUserCode = <T>(fn: () => T | Promise<T>): Promise<T> =>
+    runWithPlatformIoTrackingIfCacheComponents(options.pprRuntime !== undefined, fn);
   beginRouteCacheability("app-page", route.pattern, {
     // Next.js exempts PPR routes from its static-to-dynamic invariant because
     // request APIs can run in the postponed portion while the shell is static.
@@ -676,6 +680,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     // suppress or certify another.
     useManifestClassification: !options.isRscRequest,
   });
+  if (isRouteCacheabilityIdentityProbe()) return new Response(null);
   const dynamicConfig = options.dynamicConfig;
   const currentRevalidateSeconds = options.revalidateSeconds;
   const interceptionId = options.isRscRequest
@@ -978,19 +983,21 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           },
           async () => {
             const { renderAppPageCacheArtifacts } = await import("./app-page-cache-render.js");
-            const revalidatedElement = await options.buildPageElement(
-              revalidationTarget.route,
-              revalidationTarget.params,
-              revalidationTarget.interceptOpts,
-              new URLSearchParams(),
-              undefined,
-              {
-                observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
-                observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
-                // Cache regeneration produces a complete static artifact, so metadata
-                // must be resolved into <head> before the artifact is stored.
-                serveStreamingMetadata: false,
-              },
+            const revalidatedElement = await runCacheComponentsUserCode(() =>
+              options.buildPageElement(
+                revalidationTarget.route,
+                revalidationTarget.params,
+                revalidationTarget.interceptOpts,
+                new URLSearchParams(),
+                undefined,
+                {
+                  observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
+                  observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
+                  // Cache regeneration produces a complete static artifact, so metadata
+                  // must be resolved into <head> before the artifact is stored.
+                  serveStreamingMetadata: false,
+                },
+              ),
             );
             const revalidatedOnError = options.createRscOnErrorHandler(
               options.cleanPathname,
@@ -1128,17 +1135,19 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
       setCurrentFetchRevalidate(options.resolveRouteRevalidateSeconds?.(interceptRoute) ?? null);
       setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
-      return options.buildPageElement(
-        interceptRoute,
-        interceptParams,
-        interceptOpts,
-        interceptSearchParams,
-        interceptLayoutParamAccess,
-        {
-          observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
-          observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
-          serveStreamingMetadata: placeGeneratedMetadataInBody,
-        },
+      return runCacheComponentsUserCode(() =>
+        options.buildPageElement(
+          interceptRoute,
+          interceptParams,
+          interceptOpts,
+          interceptSearchParams,
+          interceptLayoutParamAccess,
+          {
+            observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
+            observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
+            serveStreamingMetadata: placeGeneratedMetadataInBody,
+          },
+        ),
       );
     },
     cleanPathname: options.cleanPathname,
@@ -1197,21 +1206,26 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   const buildCurrentPageElement = () =>
     buildAppPageElement({
-      buildPageElement() {
+      async buildPageElement() {
         if (options.actionFailed) {
           throw options.actionError;
         }
-        return options.buildPageElement(
-          route,
-          options.params,
-          interceptResult.interceptOpts,
-          pageSearchParams,
-          layoutParamAccess,
-          {
-            observeMetadataSearchParamsAccess: !isForceStatic,
-            observePageSearchParamsAccess: !isForceStatic,
-            serveStreamingMetadata: placeGeneratedMetadataInBody,
-          },
+        return runCacheComponentsUserCode(() =>
+          options.buildPageElement(
+            route,
+            options.params,
+            interceptResult.interceptOpts,
+            pageSearchParams,
+            layoutParamAccess,
+            {
+              observeMetadataSearchParamsAccess: !isForceStatic,
+              observePageSearchParamsAccess: !isForceStatic,
+              paramsRequireRuntimeFallback:
+                route.pattern.includes(":") &&
+                options.renderedConcreteUrlPaths?.has(options.cleanPathname) !== true,
+              serveStreamingMetadata: placeGeneratedMetadataInBody,
+            },
+          ),
         );
       },
       async probePageSpecialError() {
@@ -1219,7 +1233,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           return null;
         }
         const pageError = await probeAppPageThrownError({
-          probePage: () => options.probePage(pageSearchParams),
+          probePage: () => runCacheComponentsUserCode(() => options.probePage(pageSearchParams)),
           runWithSuppressedHookWarning(probe) {
             return options.runWithSuppressedHookWarning(probe);
           },
