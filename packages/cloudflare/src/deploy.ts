@@ -837,6 +837,7 @@ async function deployUploadedVersionWithCdnWarmup(
       paths: remainingWarmPlan.paths,
       rscPaths: remainingWarmPlan.rscPaths,
     },
+    requireCacheHit = false,
   ) =>
     warmCdnCache({
       targetUrl,
@@ -852,7 +853,8 @@ async function deployUploadedVersionWithCdnWarmup(
       phaseTimeoutMs: hasPreparedWarmPlan ? DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS : undefined,
       timeoutMs: options.warmCdnTimeout,
       retries: options.warmCdnRetries,
-      strict: !options.dangerouslyPromoteOnCdnWarmError,
+      requireCacheHit,
+      strict: requireCacheHit || !options.dangerouslyPromoteOnCdnWarmError,
     });
 
   const wranglerConfig = parseWranglerConfig(root, options.config);
@@ -866,6 +868,11 @@ async function deployUploadedVersionWithCdnWarmup(
     );
   }
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
+  if (hasPreparedWarmPlan && !stagingTraffic) {
+    throw new Error(
+      "Two-stage CDN warming stopped because Worker deployment traffic changed before the final version could be staged. No final version was promoted.",
+    );
+  }
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let triggersDeployedUrl: string | null = options.triggersDeployedUrl ?? null;
   let stagedCacheFilled = false;
@@ -975,12 +982,31 @@ async function deployUploadedVersionWithCdnWarmup(
               }
               console.warn(`  ${message} Promoting because the dangerous override is enabled.`);
             }
-            stagedCacheFilled = warmResult.warmed > 0;
             remainingWarmPlan = {
               loadingShellPaths: warmResult.retryPlan.loadingShellPaths,
               paths: warmResult.retryPlan.paths,
               rscPaths: warmResult.retryPlan.rscPaths,
             };
+            if (hasPreparedWarmPlan && warmResult.warmed > 0) {
+              console.log(
+                `  CDN warmup: certifying ${warmResult.warmed} staged cache entr${warmResult.warmed === 1 ? "y" : "ies"} before promotion...`,
+              );
+              const certification = await warmUploadedVersion(
+                targetUrl,
+                headers,
+                true,
+                warmResult.warmedPlan,
+                true,
+              );
+              if (certification.warmed !== warmResult.warmed) {
+                throw new Error(
+                  `CDN warmup certified ${certification.warmed}/${warmResult.warmed} staged cache entries as reusable.`,
+                );
+              }
+              stagedCacheFilled = true;
+            } else {
+              stagedCacheFilled = warmResult.warmed > 0;
+            }
           }
         }
       } catch (error) {

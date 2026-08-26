@@ -215,6 +215,11 @@ describe("Cloudflare CDN warmup", () => {
       skipped: 0,
       failed: 0,
       failures: [],
+      warmedPlan: {
+        loadingShellPaths: ["/search?q=x"],
+        paths: ["/search?q=x"],
+        rscPaths: ["/search?q=x"],
+      },
       retryPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
     });
     expect(fetchImpl).toHaveBeenCalledTimes(3);
@@ -292,8 +297,95 @@ describe("Cloudflare CDN warmup", () => {
       skipped: 2,
       failed: 0,
       failures: [],
+      warmedPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
       retryPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
     });
+  });
+
+  it("does not certify a staged cache fill until the entry is reusable", async () => {
+    let attempt = 0;
+    const fetchImpl = vi.fn(async () => {
+      attempt += 1;
+      const response = cacheableHtml();
+      response.headers.set("cf-cache-status", attempt === 1 ? "MISS" : "HIT");
+      return response;
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/staged"],
+        propagatingTarget: true,
+        requireCacheHit: true,
+        retries: 1,
+        retryDelayMs: 0,
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ warmed: 1, failed: 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a cache fill that becomes private during certification", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("dynamic", {
+          headers: {
+            "cache-control": "no-store",
+            "cf-cache-status": "BYPASS",
+            "content-type": "text/html",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          },
+        }),
+    );
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/changed"],
+        requireCacheHit: true,
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow("CF-Cache-Status is BYPASS; the cache fill is not reusable");
+  });
+
+  it("certifies from response headers without consuming the cached body", async () => {
+    let cancelled = false;
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.enqueue(new Uint8Array([1]));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          {
+            headers: {
+              "cf-cache-status": "HIT",
+              "content-type": "text/html",
+              [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+            },
+          },
+        ),
+    );
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/cached"],
+        requireCacheHit: true,
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ warmed: 1, failed: 0 });
+    await vi.waitFor(() => expect(cancelled).toBe(true));
   });
 
   it("uses Cloudflare cache-control precedence when validating admission", async () => {
