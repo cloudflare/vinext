@@ -51,7 +51,11 @@ import {
   filterInternalHeaders,
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
-import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
+import {
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
+} from "./headers.js";
 import {
   readTrustedPrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
@@ -167,6 +171,7 @@ async function handleRequest(
     const filteredHeaders = ctx.isInternalPagesRevalidation
       ? new Headers(request.headers)
       : filterInternalHeaders(request.headers);
+    filteredHeaders.delete(VINEXT_PRERENDER_SECRET_HEADER);
     filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
     const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
       trustedPrerenderRouteParams,
