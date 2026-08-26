@@ -6577,7 +6577,7 @@ describe("next/cache shim", () => {
             data: {
               headers: {},
               body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:stale-swr-test:[]",
+              url: "unstable_cache:v2:stale-swr-test:[]",
             },
             tags: ["stale-swr"],
             revalidate: 1,
@@ -6652,7 +6652,7 @@ describe("next/cache shim", () => {
             data: {
               headers: {},
               body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:foreground-test:[]",
+              url: "unstable_cache:v2:foreground-test:[]",
             },
             tags: ["foreground"],
             revalidate: 1,

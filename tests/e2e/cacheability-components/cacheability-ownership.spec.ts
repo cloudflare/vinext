@@ -84,6 +84,13 @@ test("preserves Cache Components ownership while probing inside workerd", async 
   // Ported from Next.js:
   // test/e2e/app-dir/cache-components-errors/use-cache-private.util.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components-errors/use-cache-private.util.ts
+  // Seed the physical key used before vinext rejected this invalid nesting.
+  // The fixed runtime must not serve private output persisted by an older
+  // deployment without ever reaching the new boundary check.
+  const seedLegacyPrivateResult = await request.post(
+    "/use-cache-private-in-unstable-cache/state",
+  );
+  expect(seedLegacyPrivateResult.status()).toBe(204);
   const nestedPrivateProbe = await request.get("/use-cache-private-in-unstable-cache", {
     headers,
   });
