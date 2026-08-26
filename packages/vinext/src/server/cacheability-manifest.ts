@@ -11,6 +11,8 @@ export type CacheabilityRouteState =
 
 export type CacheabilityManifestRoute = {
   kind: CacheabilityRouteKind;
+  /** Concrete public pathname classified by this entry. Omitted for the pattern fallback. */
+  path?: string;
   pattern: string;
   state: CacheabilityRouteState;
 };
@@ -25,7 +27,14 @@ declare const __VINEXT_CACHEABILITY_MANIFEST__: string | undefined;
 
 let parsedManifest: CacheabilityManifest | null | undefined;
 
-export function cacheabilityRouteKey(kind: CacheabilityRouteKind, pattern: string): string {
+export function cacheabilityRouteKey(
+  kind: CacheabilityRouteKind,
+  pattern: string,
+  path?: string,
+): string {
+  // Retain the original readable key for pattern fallbacks. Exact-path keys use
+  // a JSON tuple so arbitrary dynamic-pattern/path characters cannot collide.
+  if (path !== undefined) return JSON.stringify([kind, pattern, path]);
   return `${kind}:${pattern}`;
 }
 
@@ -60,13 +69,21 @@ export function parseCacheabilityManifest(
         !isCacheabilityRouteKind(route.kind) ||
         typeof route.pattern !== "string" ||
         !route.pattern.startsWith("/") ||
+        (route.path !== undefined &&
+          (typeof route.path !== "string" || !route.path.startsWith("/"))) ||
         !isCacheabilityRouteState(route.state) ||
-        key !== cacheabilityRouteKey(route.kind, route.pattern)
+        key !==
+          cacheabilityRouteKey(
+            route.kind,
+            route.pattern,
+            typeof route.path === "string" ? route.path : undefined,
+          )
       ) {
         return null;
       }
       routes[key] = {
         kind: route.kind,
+        ...(typeof route.path === "string" ? { path: route.path } : {}),
         pattern: route.pattern,
         state: route.state,
       };

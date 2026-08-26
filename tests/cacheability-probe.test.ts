@@ -7,6 +7,7 @@ import { probeStagedWorkerCacheability } from "../packages/cloudflare/src/cachea
 import { withEmbeddedCacheabilityManifest } from "../packages/cloudflare/src/cacheability-artifact.js";
 import {
   CACHEABILITY_MANIFEST_PLACEHOLDER,
+  cacheabilityRouteKey,
   parseCacheabilityManifest,
   resetEmbeddedCacheabilityManifestForTests,
 } from "../packages/vinext/src/server/cacheability-manifest.js";
@@ -74,7 +75,7 @@ describe("cacheability manifests", () => {
     ).toBeNull();
   });
 
-  it("probes one representative path per pattern and runtime-checks unprobed routes", async () => {
+  it("classifies each generated path independently and runtime-checks unprobed paths", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-probe-"));
     fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
     fs.writeFileSync(
@@ -91,7 +92,7 @@ describe("cacheability manifests", () => {
         return Response.json({
           kind: "app-page",
           pattern: "/products/:id",
-          state: "static-candidate",
+          state: url.endsWith("/products/static") ? "static-candidate" : "dynamic",
           status: 200,
           version: 1,
         });
@@ -99,22 +100,46 @@ describe("cacheability manifests", () => {
     );
 
     const result = await probeStagedWorkerCacheability({
+      concurrency: 1,
       headers: { "Cloudflare-Workers-Version-Overrides": 'shop="version-a"' },
       root,
       routes: [
-        { kind: "app-page", pattern: "/products/:id", probePath: "/products/known" },
+        {
+          kind: "app-page",
+          path: "/products/static",
+          pattern: "/products/:id",
+          probePath: "/products/static",
+        },
+        {
+          kind: "app-page",
+          path: "/products/dynamic",
+          pattern: "/products/:id",
+          probePath: "/products/dynamic",
+        },
         { kind: "pages-page", pattern: "/account" },
       ],
       targetUrl: "https://shop.example.com",
     });
 
     expect(result.failures).toEqual([]);
-    expect(result.probed).toBe(1);
+    expect(result.probed).toBe(2);
     expect(result.manifest.routes).toEqual({
       "app-page:/products/:id": {
         kind: "app-page",
         pattern: "/products/:id",
+        state: "runtime-check",
+      },
+      [cacheabilityRouteKey("app-page", "/products/:id", "/products/static")]: {
+        kind: "app-page",
+        path: "/products/static",
+        pattern: "/products/:id",
         state: "static-candidate",
+      },
+      [cacheabilityRouteKey("app-page", "/products/:id", "/products/dynamic")]: {
+        kind: "app-page",
+        path: "/products/dynamic",
+        pattern: "/products/:id",
+        state: "dynamic",
       },
       "pages-page:/account": {
         kind: "pages-page",
@@ -122,9 +147,10 @@ describe("cacheability manifests", () => {
         state: "runtime-check",
       },
     });
-    expect(requests[0].url).toBe("https://shop.example.com/products/known");
+    expect(requests[0].url).toBe("https://shop.example.com/products/static");
     expect(requests[0].headers.get("X-Vinext-Cacheability-Probe")).toBe("1");
     expect(requests[0].headers.get("X-Vinext-Prerender-Secret")).toBe("secret-a");
+    expect(requests[1].url).toBe("https://shop.example.com/products/dynamic");
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -153,13 +179,24 @@ describe("cacheability manifests", () => {
       retries: 1,
       retryDelayMs: 0,
       root,
-      routes: [{ kind: "app-page", pattern: "/products/:id", probePath: "/products/known" }],
+      routes: [
+        {
+          kind: "app-page",
+          path: "/products/known",
+          pattern: "/products/:id",
+          probePath: "/products/known",
+        },
+      ],
       targetUrl: "https://shop.example.com",
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(result.failures).toEqual([]);
-    expect(result.manifest.routes["app-page:/products/:id"].state).toBe("static-candidate");
+    expect(
+      result.manifest.routes[cacheabilityRouteKey("app-page", "/products/:id", "/products/known")]
+        .state,
+    ).toBe("static-candidate");
+    expect(result.manifest.routes["app-page:/products/:id"].state).toBe("runtime-check");
     fs.rmSync(root, { recursive: true, force: true });
   });
 

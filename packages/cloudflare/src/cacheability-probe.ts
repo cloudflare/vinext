@@ -124,11 +124,31 @@ export async function probeStagedWorkerCacheability(options: {
   let nextIndex = 0;
 
   for (const route of options.routes) {
-    routes[cacheabilityRouteKey(route.kind, route.pattern)] = {
-      kind: route.kind,
-      pattern: route.pattern,
-      state: route.fallbackState ?? "runtime-check",
-    };
+    const patternKey = cacheabilityRouteKey(route.kind, route.pattern);
+    if (!routes[patternKey]) {
+      routes[patternKey] = {
+        kind: route.kind,
+        pattern: route.pattern,
+        // An exact-path classification must never certify sibling params.
+        // The pattern entry remains the runtime fallback for every unprobed
+        // path. Explicit unpathed routes (for example known Pages SSR) may
+        // conservatively make the whole pattern dynamic.
+        state:
+          route.path === undefined ? (route.fallbackState ?? "runtime-check") : "runtime-check",
+      };
+    } else if (route.path === undefined && route.fallbackState === "dynamic") {
+      routes[patternKey].state = "dynamic";
+    }
+
+    const exactPath = route.path ?? route.probePath;
+    if (exactPath) {
+      routes[cacheabilityRouteKey(route.kind, route.pattern, exactPath)] = {
+        kind: route.kind,
+        path: exactPath,
+        pattern: route.pattern,
+        state: route.fallbackState ?? "runtime-check",
+      };
+    }
   }
 
   const worker = async (): Promise<void> => {
@@ -145,7 +165,8 @@ export async function probeStagedWorkerCacheability(options: {
         retries: Math.max(0, options.retries ?? 0),
         retryDelayMs: Math.max(0, options.retryDelayMs ?? 0),
       });
-      const key = cacheabilityRouteKey(route.kind, route.pattern);
+      const exactPath = route.path ?? route.probePath;
+      const key = cacheabilityRouteKey(route.kind, route.pattern, exactPath);
       const integrityFailure =
         result.version !== 1 || result.kind !== route.kind || result.pattern !== route.pattern;
       const state = integrityFailure ? "probe-failed" : result.state;
@@ -153,11 +174,21 @@ export async function probeStagedWorkerCacheability(options: {
         const reason = integrityFailure
           ? `probe identity mismatch (expected ${key}, received ${String(result.kind)}:${String(result.pattern)})`
           : (result.reason ?? "probe failed without a reason");
-        routes[key] = { kind: route.kind, pattern: route.pattern, state: "probe-failed" };
+        routes[key] = {
+          kind: route.kind,
+          ...(exactPath ? { path: exactPath } : {}),
+          pattern: route.pattern,
+          state: "probe-failed",
+        };
         failures.push(`${key}: ${reason}`);
         continue;
       }
-      routes[key] = { kind: route.kind, pattern: route.pattern, state };
+      routes[key] = {
+        kind: route.kind,
+        ...(exactPath ? { path: exactPath } : {}),
+        pattern: route.pattern,
+        state,
+      };
     }
   };
 

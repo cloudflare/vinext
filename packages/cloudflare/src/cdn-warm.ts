@@ -143,6 +143,7 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
                 route.fallbackState === "dynamic" ||
                 route.fallbackState === "runtime-check") &&
               typeof route.pattern === "string" &&
+              (route.path === undefined || typeof route.path === "string") &&
               (route.probePath === undefined || typeof route.probePath === "string") &&
               (route.warmPaths === undefined ||
                 (Array.isArray(route.warmPaths) &&
@@ -256,6 +257,7 @@ export function readPrerenderWarmPlan(
       ? {
           cacheabilityRoutes: manifest.cacheabilityRoutes.map((route) => ({
             ...route,
+            ...(route.path ? { path: applyConfig(route.path) } : {}),
             ...(route.probePath ? { probePath: applyConfig(route.probePath) } : {}),
             ...(route.warmPaths
               ? { warmPaths: route.warmPaths.map((pathname) => applyConfig(pathname)) }

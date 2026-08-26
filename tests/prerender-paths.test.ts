@@ -94,6 +94,10 @@ describe("prerender path manifest", () => {
     );
     writeFile("app/cached/loading.tsx", "export default function Loading() { return null; }\n");
     writeFile(
+      "app/cache-route/route.ts",
+      "export const revalidate = 60; export function GET() { return new Response('cached'); }\n",
+    );
+    writeFile(
       "app/dynamic/page.tsx",
       "export const dynamic = 'force-dynamic'; export default function Page() { return null; }\n",
     );
@@ -111,18 +115,34 @@ describe("prerender path manifest", () => {
       buildId: "build-a",
       buildIdentity: "rsc-build-a",
       cacheabilityRoutes: [
-        { kind: "app-page", pattern: "/", probePath: "/", warmPaths: ["/"] },
+        { kind: "app-page", path: "/", pattern: "/", probePath: "/", warmPaths: ["/"] },
         {
           kind: "app-page",
+          path: "/cached/featured",
           pattern: "/cached/:slug",
-          probePath: "/cached/intro",
-          warmPaths: ["/cached/intro", "/cached/featured"],
+          probePath: "/cached/featured",
+          warmPaths: ["/cached/featured"],
         },
         {
           kind: "app-page",
+          path: "/cached/intro",
+          pattern: "/cached/:slug",
+          probePath: "/cached/intro",
+          warmPaths: ["/cached/intro"],
+        },
+        {
+          kind: "app-page",
+          path: "/dynamic",
           pattern: "/dynamic",
           probePath: "/dynamic",
           warmPaths: ["/dynamic"],
+        },
+        {
+          kind: "app-route",
+          path: "/cache-route",
+          pattern: "/cache-route",
+          probePath: "/cache-route",
+          warmPaths: ["/cache-route"],
         },
       ],
       loadingShellPaths: ["/cached/intro", "/cached/featured"],
@@ -149,6 +169,45 @@ describe("prerender path manifest", () => {
       }),
     );
     expect(closeMock).toHaveBeenCalledOnce();
+  });
+
+  it("never probes a concrete path whose middleware source can match", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/guarded/page.tsx", "export default function Page() { return null; }\n");
+    writeFile("app/public/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "proxy.ts",
+      [
+        "export function proxy() {}",
+        "export const config = {",
+        "  matcher: [{ source: '/guarded', has: [{ type: 'header', key: 'authorization' }] }],",
+        "};",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+
+    expect(manifest?.cacheabilityRoutes).toEqual([
+      {
+        fallbackState: "dynamic",
+        kind: "app-page",
+        path: "/guarded",
+        pattern: "/guarded",
+        warmPaths: ["/guarded"],
+      },
+      {
+        kind: "app-page",
+        path: "/public",
+        pattern: "/public",
+        probePath: "/public",
+        warmPaths: ["/public"],
+      },
+    ]);
   });
 
   it("discovers dynamic paths from an uploaded Worker without loading its bundle in Node", async () => {
@@ -399,6 +458,47 @@ describe("prerender path manifest", () => {
       kind: "app-page",
       pattern: "/rewrite-me",
     });
+  });
+
+  it("excludes warm paths covered by request-conditional config headers", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/conditional/page.tsx", "export default function Page() {}\n");
+    writeFile("app/safe/page.tsx", "export default function Page() {}\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        headers: () => [
+          {
+            source: "/conditional",
+            has: [{ type: "cookie", key: "private" }],
+            headers: [{ key: "Cache-Control", value: "no-store" }],
+          },
+        ],
+      },
+      tmpDir,
+    );
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual(["/safe"]);
+    expect(manifest?.excludedWarmPaths).toEqual(["/conditional"]);
+    expect(manifest?.cacheabilityRoutes?.find((route) => route.pattern === "/conditional")).toEqual(
+      {
+        fallbackState: "runtime-check",
+        kind: "app-page",
+        pattern: "/conditional",
+      },
+    );
   });
 
   it("excludes warm paths shadowed by configured redirects", async () => {
@@ -1073,7 +1173,8 @@ describe("prerender path manifest", () => {
       "http://127.0.0.1:43210/__vinext/prerender/pages-static-paths?pattern=%2Fposts%2F%3Aslug&locales=%5B%22en%22%2C%22fr%22%5D&defaultLocale=en",
       expect.any(Object),
     );
-    expect(readPrerenderWarmPlan(tmpDir).paths).toEqual([
+    const warmPlan = readPrerenderWarmPlan(tmpDir);
+    expect(warmPlan.paths).toEqual([
       "/docs/about/",
       "/docs/fr/about/",
       "/docs/posts/hello/",
@@ -1085,6 +1186,9 @@ describe("prerender path manifest", () => {
       "/docs/posts/%7Euser/",
       "/docs/posts/a%2fb/",
     ]);
+    expect(new Set(warmPlan.cacheabilityRoutes?.flatMap((route) => route.path ?? []))).toEqual(
+      new Set(warmPlan.paths),
+    );
   });
 
   it("fails path discovery when getStaticPaths returns an HTTP error", async () => {

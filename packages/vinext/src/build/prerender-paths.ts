@@ -12,12 +12,19 @@ import {
   matchAppRoute,
 } from "../routing/app-router.js";
 import { apiRouter, matchRoute, pagesRouter } from "../routing/pages-router.js";
+import { createValidFileMatcher } from "../routing/file-matcher.js";
 import {
   normalizeStaticPathname,
   normalizeStaticPathsEntry,
   type StaticPathsEntry,
 } from "../routing/route-pattern.js";
-import { getAppRouteRenderEntryPath, classifyAppRoute, classifyPagesRoute } from "./report.js";
+import {
+  getAppRouteRenderEntryPath,
+  classifyAppRoute,
+  classifyPagesRoute,
+  extractMiddlewareMatcherConfig,
+  type StaticMiddlewareMatcher,
+} from "./report.js";
 import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
@@ -31,6 +38,8 @@ import { matchesRewriteSource } from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
+import { findMiddlewareFile } from "../server/middleware.js";
+import { middlewareMatcherCanRunForPath } from "../server/middleware-cache-safety.js";
 
 export type PrerenderPathManifest = {
   basePath?: string;
@@ -58,9 +67,11 @@ export type PrerenderPathManifest = {
 export type CacheabilityProbeRoute = {
   fallbackState?: "dynamic" | "runtime-check";
   kind: "app-page" | "app-route" | "pages-page";
+  /** Concrete public pathname whose result must not certify sibling params. */
+  path?: string;
   pattern: string;
   probePath?: string;
-  /** Concrete warm targets owned by this pattern; only the first is probed. */
+  /** Concrete warm targets owned by this exact classification item. */
   warmPaths?: string[];
 };
 
@@ -590,13 +601,11 @@ async function collectAppPaths(options: {
   });
 
   for (const route of routes) {
+    const isRouteHandler = route.routePath !== null;
     const renderEntryPath = getAppRouteRenderEntryPath(route);
-    if (!renderEntryPath) continue;
+    if (!isRouteHandler && !renderEntryPath) continue;
 
-    const { type } = classifyAppRoute(renderEntryPath, route.routePath, route.isDynamic);
-    if (type === "api") continue;
-
-    const hasMainTreeLoadingBoundary = appRouteHasMainTreeLoadingBoundary(route);
+    const hasMainTreeLoadingBoundary = !isRouteHandler && appRouteHasMainTreeLoadingBoundary(route);
     const addDiscoveredPath = (pathname: string): void => {
       addPath(paths, seen, pathname);
       if (hasMainTreeLoadingBoundary) {
@@ -722,6 +731,7 @@ async function resolveAppWarmPaths(options: {
 async function collectCacheabilityProbeRoutes(options: {
   appDir: string | null;
   i18n: ResolvedNextConfig["i18n"];
+  middleware?: { matcher: StaticMiddlewareMatcher | undefined };
   pagesDir: string | null;
   pageExtensions: readonly string[];
   paths: readonly string[];
@@ -767,25 +777,45 @@ async function collectCacheabilityProbeRoutes(options: {
   }
 
   const result: CacheabilityProbeRoute[] = [];
+  const addConcreteRoute = (
+    kind: CacheabilityProbeRoute["kind"],
+    pattern: string,
+    pathname: string,
+    optionsForPath: { intrinsicallyDynamic?: boolean } = {},
+  ): void => {
+    const middlewareCovered = Boolean(
+      options.middleware &&
+      middlewareMatcherCanRunForPath(pathname, options.middleware.matcher, options.i18n),
+    );
+    const dynamic = middlewareCovered || optionsForPath.intrinsicallyDynamic === true;
+    result.push({
+      ...(dynamic ? { fallbackState: "dynamic" as const } : { probePath: pathname }),
+      kind,
+      path: pathname,
+      pattern,
+      warmPaths: [pathname],
+    });
+  };
+
   for (const route of appRoutes) {
     const renderEntryPath = getAppRouteRenderEntryPath(route);
-    if (!renderEntryPath) continue;
+    if (!route.routePath && !renderEntryPath) continue;
     const kind = route.routePath ? "app-route" : "app-page";
     const key = `${kind}:${route.pattern}`;
-    // Dynamic route handlers are conservatively ineligible until vinext wires
-    // their generateStaticParams export into deployed discovery. Fixed route
-    // handlers are cheap to execute once and the runtime still re-checks every
-    // admitted cache miss.
-    const fixedRouteHandlerProbe =
-      kind === "app-route" && !route.isDynamic ? route.pattern : undefined;
     const warmPaths = pathsByRoute.get(key) ?? [];
-    const probePath = warmPaths[0] ?? fixedRouteHandlerProbe;
-    result.push({
-      kind,
-      pattern: route.pattern,
-      ...(probePath ? { probePath } : { fallbackState: "runtime-check" }),
-      ...(warmPaths.length > 0 ? { warmPaths } : {}),
-    });
+    for (const pathname of warmPaths) {
+      addConcreteRoute(kind, route.pattern, pathname);
+    }
+    if (warmPaths.length > 0) continue;
+
+    // Next.js can prerender a fixed GET route handler. Probe it independently
+    // and expose it as a final warm target; a dynamic handler remains an
+    // on-demand runtime check until generateStaticParams discovery is wired.
+    if (kind === "app-route" && !route.isDynamic) {
+      addConcreteRoute(kind, route.pattern, route.pattern);
+    } else {
+      result.push({ kind, pattern: route.pattern, fallbackState: "runtime-check" });
+    }
   }
 
   const apiPatterns = new Set(apiRoutes.map((route) => route.pattern));
@@ -802,24 +832,32 @@ async function collectCacheabilityProbeRoutes(options: {
     const key = `pages-page:${route.pattern}`;
     const isSsr = classifyPagesRoute(route.filePath).type === "ssr";
     const warmPaths = pathsByRoute.get(key) ?? [];
-    const probePath = isSsr ? undefined : warmPaths[0];
-    result.push({
-      ...(!probePath ? { fallbackState: isSsr ? "dynamic" : "runtime-check" } : {}),
-      kind: "pages-page",
-      pattern: route.pattern,
-      ...(probePath ? { probePath } : {}),
-      ...(warmPaths.length > 0 ? { warmPaths } : {}),
-    });
+    for (const pathname of warmPaths) {
+      addConcreteRoute("pages-page", route.pattern, pathname, {
+        intrinsicallyDynamic: isSsr,
+      });
+    }
+    if (warmPaths.length === 0 || isSsr) {
+      result.push({
+        fallbackState: isSsr ? "dynamic" : "runtime-check",
+        kind: "pages-page",
+        pattern: route.pattern,
+      });
+    }
   }
 
-  return result.sort((a, b) => `${a.kind}:${a.pattern}`.localeCompare(`${b.kind}:${b.pattern}`));
+  return result.sort((a, b) =>
+    `${a.kind}:${a.pattern}:${a.path ?? ""}`.localeCompare(
+      `${b.kind}:${b.pattern}:${b.path ?? ""}`,
+    ),
+  );
 }
 
 function configuredRouteAffectsWarmPath(
   pathname: string,
   config: Pick<
     ResolvedNextConfig,
-    "basePath" | "i18n" | "redirects" | "rewrites" | "trailingSlash"
+    "basePath" | "headers" | "i18n" | "redirects" | "rewrites" | "trailingSlash"
   >,
 ): boolean {
   const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
@@ -834,12 +872,23 @@ function configuredRouteAffectsWarmPath(
     ...config.rewrites.afterFiles,
     ...config.rewrites.fallback,
   ];
-  return [...rewrites, ...config.redirects].some((rule) =>
+  // Unconditional response headers are visible to the completed-render probe.
+  // Conditional rules are not: a future request can satisfy `has`/`missing`
+  // and receive a different policy after a headerless probe. Treat source
+  // coverage alone as unsafe, matching rewrites/redirects.
+  const conditionalHeaders = config.headers.filter(
+    (rule) => (rule.has?.length ?? 0) > 0 || (rule.missing?.length ?? 0) > 0,
+  );
+  return [...rewrites, ...config.redirects, ...conditionalHeaders].some((rule) =>
     Array.from(matchPathnames).some((matchPathname) =>
-      matchesRewriteSource(matchPathname, rule, {
-        basePath: config.basePath,
-        hadBasePath: true,
-      }),
+      matchesRewriteSource(
+        matchPathname,
+        { basePath: rule.basePath, destination: "/", source: rule.source },
+        {
+          basePath: config.basePath,
+          hadBasePath: true,
+        },
+      ),
     ),
   );
 }
@@ -1009,9 +1058,20 @@ export async function emitPrerenderPathManifest(
         rscPaths: discoveredAppPaths,
       };
   const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : resolvedPagesWarmPaths;
+  const routeConventionBase = path.dirname(appDir ?? pagesDir!);
+  const middlewareConventionDir =
+    routeConventionBase === path.join(root, "src") ? routeConventionBase : root;
+  const middlewarePath = findMiddlewareFile(
+    root,
+    createValidFileMatcher(config.pageExtensions),
+    middlewareConventionDir,
+  );
   const cacheabilityRoutes = await collectCacheabilityProbeRoutes({
     appDir,
     i18n: config.i18n,
+    ...(middlewarePath
+      ? { middleware: { matcher: extractMiddlewareMatcherConfig(middlewarePath) } }
+      : {}),
     pagesDir,
     pageExtensions: config.pageExtensions,
     paths: paths.filter((pathname) => !excludedWarmPathSet.has(pathname)),
