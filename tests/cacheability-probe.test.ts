@@ -6,6 +6,7 @@ import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-
 import { probeStagedWorkerCacheability } from "../packages/cloudflare/src/cacheability-probe.js";
 import { withEmbeddedCacheabilityManifest } from "../packages/cloudflare/src/cacheability-artifact.js";
 import {
+  CACHEABILITY_MANIFEST_MODULE_FILE,
   CACHEABILITY_MANIFEST_PLACEHOLDER,
   cacheabilityManifestHasGeneratedPath,
   cacheabilityRouteKey,
@@ -695,7 +696,10 @@ describe("cacheability manifests", () => {
     const source = `export const value = \`${CACHEABILITY_MANIFEST_PLACEHOLDER}\`;`;
     fs.writeFileSync(firstPath, source);
     fs.writeFileSync(secondPath, source);
-    fs.writeFileSync(path.join(root, "dist/server/wrangler.json"), "{}");
+    fs.writeFileSync(
+      path.join(root, "dist/server/wrangler.json"),
+      JSON.stringify({ main: "entry.js" }),
+    );
     let isolatedConfigPath = "";
 
     expect(
@@ -716,16 +720,23 @@ describe("cacheability manifests", () => {
           isolatedConfigPath = path.join(root, configPath);
           const isolatedDirectory = path.dirname(isolatedConfigPath);
           const embedded = fs.readFileSync(path.join(isolatedDirectory, "entry.js"), "utf-8");
-          const manifestModule = fs.readFileSync(
-            path.join(isolatedDirectory, "__vinext_cacheability_manifest.js"),
+          const manifestFile = fs.readFileSync(
+            path.join(isolatedDirectory, CACHEABILITY_MANIFEST_MODULE_FILE),
             "utf-8",
           );
-          expect(embedded).toContain("__vinext_cacheability_manifest.js");
-          expect(manifestModule).toContain("app-page:/products/:id");
-          expect(embedded).not.toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
-          expect(
-            fs.readFileSync(path.join(isolatedDirectory, "chunks/router.js"), "utf-8"),
-          ).toContain("../__vinext_cacheability_manifest.js");
+          const config = JSON.parse(fs.readFileSync(isolatedConfigPath, "utf-8"));
+          expect(config.rules).toEqual([
+            {
+              fallthrough: true,
+              globs: [CACHEABILITY_MANIFEST_MODULE_FILE],
+              type: "Text",
+            },
+          ]);
+          expect(manifestFile).toContain("app-page:/products/:id");
+          expect(embedded).toBe(source);
+          expect(fs.readFileSync(path.join(isolatedDirectory, "chunks/router.js"), "utf-8")).toBe(
+            source,
+          );
           expect(fs.readFileSync(firstPath, "utf-8")).toBe(source);
           return "uploaded";
         },
@@ -748,7 +759,12 @@ describe("cacheability manifests", () => {
     );
     fs.writeFileSync(
       path.join(serverDirectory, "wrangler.generated.json"),
-      JSON.stringify({ main: "worker.mjs", name: "custom-name", preview_urls: true }),
+      JSON.stringify({
+        main: "worker.mjs",
+        name: "custom-name",
+        preview_urls: true,
+        rules: [{ globs: [CACHEABILITY_MANIFEST_MODULE_FILE], type: "Text" }],
+      }),
     );
 
     withEmbeddedCacheabilityManifest(
@@ -761,38 +777,16 @@ describe("cacheability manifests", () => {
           main: "worker.mjs",
           name: "custom-name",
           preview_urls: true,
+          rules: [{ globs: [CACHEABILITY_MANIFEST_MODULE_FILE], type: "Text" }],
         });
         expect(
           fs.readFileSync(
             path.join(path.dirname(path.join(root, configPath)), "worker.mjs"),
             "utf-8",
           ),
-        ).not.toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
+        ).toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
       },
     );
-    fs.rmSync(root, { recursive: true, force: true });
-  });
-
-  it("inserts the manifest import after a generated artifact shebang", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-shebang-"));
-    const entryPath = path.join(root, "dist/server/entry.js");
-    fs.mkdirSync(path.dirname(entryPath), { recursive: true });
-    fs.writeFileSync(
-      entryPath,
-      `#!/usr/bin/env node\nexport const value = ${JSON.stringify(CACHEABILITY_MANIFEST_PLACEHOLDER)};`,
-    );
-    fs.writeFileSync(path.join(root, "dist/server/wrangler.json"), "{}");
-
-    withEmbeddedCacheabilityManifest(root, undefined, { routes: {}, version: 1 }, (configPath) => {
-      const embedded = fs.readFileSync(
-        path.join(root, path.dirname(configPath), "entry.js"),
-        "utf-8",
-      );
-      expect(embedded).toMatch(
-        /^#!\/usr\/bin\/env node\nimport __vinextCacheabilityManifest_7a4d2d86/,
-      );
-    });
-
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -817,10 +811,17 @@ describe("cacheability manifests", () => {
           const isolated = path.join(root, configPath);
           expect(JSON.parse(fs.readFileSync(isolated, "utf-8"))).toEqual({
             main: "server/entry.js",
+            rules: [
+              {
+                fallthrough: true,
+                globs: [CACHEABILITY_MANIFEST_MODULE_FILE],
+                type: "Text",
+              },
+            ],
           });
           expect(
             fs.readFileSync(path.join(path.dirname(isolated), "server/entry.js"), "utf-8"),
-          ).not.toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
+          ).toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
           return "uploaded";
         },
       ),
@@ -834,7 +835,10 @@ describe("cacheability manifests", () => {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const source = `export const value = ${JSON.stringify(CACHEABILITY_MANIFEST_PLACEHOLDER)};`;
     fs.writeFileSync(filePath, source);
-    fs.writeFileSync(path.join(root, "dist/server/wrangler.json"), "{}");
+    fs.writeFileSync(
+      path.join(root, "dist/server/wrangler.json"),
+      JSON.stringify({ main: "entry.js" }),
+    );
 
     expect(() =>
       withEmbeddedCacheabilityManifest(root, undefined, { routes: {}, version: 1 }, () => {
@@ -847,6 +851,61 @@ describe("cacheability manifests", () => {
 });
 
 describe("buffered cache admission", () => {
+  it("uses the final Worker's manifest text binding for ordinary admission", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const context = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/known"),
+      "secret-a",
+      JSON.stringify({
+        routes: {
+          [cacheabilityRouteKey("app-page", "/products/:id", "/products/known")]: {
+            kind: "app-page",
+            path: "/products/known",
+            pattern: "/products/:id",
+            state: "dynamic",
+          },
+        },
+        version: 1,
+      }),
+    );
+
+    await runWithExecutionContext(context, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(false);
+    });
+  });
+
+  it("parses one immutable manifest binding only once per Worker isolate", () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const binding = JSON.stringify({
+      routes: {
+        "app-page:/products/:id": {
+          kind: "app-page",
+          pattern: "/products/:id",
+          state: "static-candidate",
+        },
+      },
+      version: 1,
+    });
+    const first = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/one"),
+      "secret-a",
+      binding,
+    );
+    const second = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/two"),
+      "secret-a",
+      binding,
+    );
+    const stateSymbol = Symbol.for("vinext.cacheabilityRequestState");
+    const firstState = Reflect.get(first, stateSymbol) as { manifest?: unknown };
+    const secondState = Reflect.get(second, stateSymbol) as { manifest?: unknown };
+
+    expect(firstState.manifest).toBe(secondState.manifest);
+  });
+
   // Next.js decides static eligibility from the completed render and throws on
   // static-to-dynamic transitions rather than caching request-specific output:
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/app-page-runtime.ts
@@ -2265,6 +2324,32 @@ describe("buffered cache admission", () => {
         await afterRelease.fallback?.cancel();
         afterRelease.release();
       }
+    });
+  });
+
+  it("keeps an admitted response capture reserved until the client drains or cancels it", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const context = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      new Request("https://example.com/retained-admission-budget"),
+      "secret-a",
+    );
+
+    await runWithExecutionContext(context, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response(new Uint8Array([1]), {
+          headers: { "CDN-Cache-Control": "public, max-age=60" },
+        }),
+        context,
+      );
+      const remainingBudget = createCacheabilityCaptureReservation();
+      expect(remainingBudget.tryReserve(CACHEABILITY_RESPONSE_CAPTURE_BUDGET)).toBe(false);
+
+      await response.body?.cancel();
+      expect(remainingBudget.tryReserve(CACHEABILITY_RESPONSE_CAPTURE_BUDGET)).toBe(true);
+      remainingBudget.releaseAll();
     });
   });
 

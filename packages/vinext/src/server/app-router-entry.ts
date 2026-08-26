@@ -72,6 +72,8 @@ import {
   createWorkerCacheabilityContext,
   finalizeWorkerCacheabilityResponse,
 } from "./cacheability-request.js";
+// @ts-expect-error -- external text module emitted by vinext for Worker builds
+import cacheabilityManifestBinding from "virtual:vinext-cacheability-manifest";
 
 // Precompute the path components used for `_next/static/*` 404 short-circuit
 // detection. Both `__basePath` and `__assetPrefix` are inlined as
@@ -121,112 +123,118 @@ async function handleRequest(
   // Register config-driven cache adapters before any rendering touches the cache.
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
   registerConfiguredImageOptimizer(env as Record<string, unknown> | undefined);
-  const ctx = createWorkerCacheabilityContext(discoveryCtx, request, __rscPrerenderSecret);
-
-  const cdnValidationResponse = await validateCdnRequest(request);
-  if (cdnValidationResponse) return cdnValidationResponse;
-
-  const url = new URL(request.url);
-
-  if (isImageOptimizationPath(url.pathname) && env?.ASSETS && getImageOptimizer()) {
-    const assetFetcher = env.ASSETS;
-    return handleConfiguredImageOptimization(
-      request,
-      (assetPath) =>
-        Promise.resolve(assetFetcher.fetch(new Request(new URL(assetPath, request.url)))),
-      __rscImageAllowedWidths,
-      __rscImageConfig,
-    );
-  }
-
-  // Block protocol-relative URL open redirects (//evil.com/, /\evil.com/,
-  // /%5Cevil.com/, /%2F/evil.com/). Check BEFORE decode so both literal and
-  // percent-encoded variants are caught — encoded forms survive segment-wise
-  // decoding and would otherwise reach trailing-slash redirect emitters.
-  if (isOpenRedirectShaped(url.pathname)) {
-    return notFoundResponse();
-  }
-
-  // Validate that percent-encoding is well-formed. The RSC handler performs
-  // the actual decode + normalize; we only check here to return a clean 400
-  // instead of letting a malformed sequence crash downstream.
-  try {
-    decodeURIComponent(url.pathname);
-  } catch {
-    // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
-    return badRequestResponse();
-  }
-
-  // Valid assets are served by Cloudflare's ASSETS binding before the worker
-  // is invoked. Missing asset-shaped requests still need to reach middleware
-  // so it can rewrite or respond; a final 404 is converted back to Next.js's
-  // canonical plain-text static-file response below.
-  const missingBuildAsset = isNextStaticPath(
-    url.pathname,
-    __workerBasePath,
-    __workerAssetPathPrefix,
+  const ctx = createWorkerCacheabilityContext(
+    discoveryCtx,
+    request,
+    __rscPrerenderSecret,
+    typeof cacheabilityManifestBinding === "string" ? cacheabilityManifestBinding : undefined,
   );
 
-  // Strip internal headers from inbound requests before any handler or
-  // middleware sees them. Must happen before the RSC handler runs.
-  // Builds a new Headers — Request.headers is immutable in Workers.
-  {
-    // Only prod-server's `createNodeExecutionContext` sets `hostRuntime: "node"`,
-    // and it runs after `nodeToWebRequest` verified the payload against the build
-    // secret, so that payload is trusted and must survive filtering. A request
-    // reaching a deployed Worker carries no such context, so a forged payload
-    // stays dropped. Never trust a header for this decision.
-    const trustedPrerenderRouteParams =
-      ctx.hostRuntime === "node" ? readTrustedPrerenderRouteParams(request) : null;
-    const filteredHeaders = ctx.isInternalPagesRevalidation
-      ? new Headers(request.headers)
-      : filterInternalHeaders(request.headers);
-    filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
-    const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
-      trustedPrerenderRouteParams,
-    );
-    if (prerenderRouteParamsHeader !== null) {
-      filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
-      // Carry the capability only across this server-owned boundary so the RSC
-      // handler can validate the re-serialized payload once more. That handler
-      // strips both headers before middleware or user code receives the request.
-      filteredHeaders.set(VINEXT_PRERENDER_SECRET_HEADER, __rscPrerenderSecret);
-    }
-    request = cloneRequestWithHeaders(request, filteredHeaders);
-  }
+  return runWithExecutionContext(ctx, async () => {
+    const cdnValidationResponse = await validateCdnRequest(request);
+    if (cdnValidationResponse) return cdnValidationResponse;
 
-  // Do NOT decode/normalize the pathname here. The RSC handler
-  // (virtual:vinext-rsc-entry) is the single point of decoding — it calls
-  // decodeURIComponent + normalizePath on the incoming URL. Decoding here
-  // AND in the handler would double-decode, causing inconsistent path
-  // matching between middleware and routing.
+    const url = new URL(request.url);
 
-  // Delegate to RSC handler (which decodes + normalizes the pathname itself),
-  // wrapping in the ExecutionContext ALS scope so downstream code can reach
-  // ctx.waitUntil() without having ctx threaded through every call site.
-  const handleFn = () => rscHandler(request, ctx);
-  const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
-
-  if (result instanceof Response) {
-    let response = result;
-    if (env?.ASSETS) {
+    if (isImageOptimizationPath(url.pathname) && env?.ASSETS && getImageOptimizer()) {
       const assetFetcher = env.ASSETS;
-      const assetResponse = await resolveStaticAssetSignal(response, {
-        fetchAsset: (path) =>
-          Promise.resolve(assetFetcher.fetch(createStaticAssetRequest(path, request))),
-      });
-      if (assetResponse) response = assetResponse;
+      return handleConfiguredImageOptimization(
+        request,
+        (assetPath) =>
+          Promise.resolve(assetFetcher.fetch(new Request(new URL(assetPath, request.url)))),
+        __rscImageAllowedWidths,
+        __rscImageConfig,
+      );
     }
-    response = finalizeMissingStaticAssetResponse(response, missingBuildAsset);
-    return finalizeWorkerCacheabilityResponse(response, ctx);
-  }
 
-  if (result === null || result === undefined) {
-    return finalizeWorkerCacheabilityResponse(
-      missingBuildAsset ? notFoundStaticAssetResponse() : notFoundResponse(),
-      ctx,
+    // Block protocol-relative URL open redirects (//evil.com/, /\evil.com/,
+    // /%5Cevil.com/, /%2F/evil.com/). Check BEFORE decode so both literal and
+    // percent-encoded variants are caught — encoded forms survive segment-wise
+    // decoding and would otherwise reach trailing-slash redirect emitters.
+    if (isOpenRedirectShaped(url.pathname)) {
+      return notFoundResponse();
+    }
+
+    // Validate that percent-encoding is well-formed. The RSC handler performs
+    // the actual decode + normalize; we only check here to return a clean 400
+    // instead of letting a malformed sequence crash downstream.
+    try {
+      decodeURIComponent(url.pathname);
+    } catch {
+      // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
+      return badRequestResponse();
+    }
+
+    // Valid assets are served by Cloudflare's ASSETS binding before the worker
+    // is invoked. Missing asset-shaped requests still need to reach middleware
+    // so it can rewrite or respond; a final 404 is converted back to Next.js's
+    // canonical plain-text static-file response below.
+    const missingBuildAsset = isNextStaticPath(
+      url.pathname,
+      __workerBasePath,
+      __workerAssetPathPrefix,
     );
-  }
 
-  return finalizeWorkerCacheabilityResponse(new Response(String(result), { status: 200 }), ctx);
+    // Strip internal headers from inbound requests before any handler or
+    // middleware sees them. Must happen before the RSC handler runs.
+    // Builds a new Headers — Request.headers is immutable in Workers.
+    {
+      // Only prod-server's `createNodeExecutionContext` sets `hostRuntime: "node"`,
+      // and it runs after `nodeToWebRequest` verified the payload against the build
+      // secret, so that payload is trusted and must survive filtering. A request
+      // reaching a deployed Worker carries no such context, so a forged payload
+      // stays dropped. Never trust a header for this decision.
+      const trustedPrerenderRouteParams =
+        ctx.hostRuntime === "node" ? readTrustedPrerenderRouteParams(request) : null;
+      const filteredHeaders = ctx.isInternalPagesRevalidation
+        ? new Headers(request.headers)
+        : filterInternalHeaders(request.headers);
+      filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
+      const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
+        trustedPrerenderRouteParams,
+      );
+      if (prerenderRouteParamsHeader !== null) {
+        filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+        // Carry the capability only across this server-owned boundary so the RSC
+        // handler can validate the re-serialized payload once more. That handler
+        // strips both headers before middleware or user code receives the request.
+        filteredHeaders.set(VINEXT_PRERENDER_SECRET_HEADER, __rscPrerenderSecret);
+      }
+      request = cloneRequestWithHeaders(request, filteredHeaders);
+    }
+
+    // Do NOT decode/normalize the pathname here. The RSC handler
+    // (virtual:vinext-rsc-entry) is the single point of decoding — it calls
+    // decodeURIComponent + normalizePath on the incoming URL. Decoding here
+    // AND in the handler would double-decode, causing inconsistent path
+    // matching between middleware and routing.
+
+    // Keep routing, rendering, and response finalization in one ALS scope so
+    // bounded capture and instrumentation retain the request deadline and
+    // waitUntil owner after the RSC handler resolves.
+    const result = await rscHandler(request, ctx);
+
+    if (result instanceof Response) {
+      let response = result;
+      if (env?.ASSETS) {
+        const assetFetcher = env.ASSETS;
+        const assetResponse = await resolveStaticAssetSignal(response, {
+          fetchAsset: (path) =>
+            Promise.resolve(assetFetcher.fetch(createStaticAssetRequest(path, request))),
+        });
+        if (assetResponse) response = assetResponse;
+      }
+      response = finalizeMissingStaticAssetResponse(response, missingBuildAsset);
+      return finalizeWorkerCacheabilityResponse(response, ctx);
+    }
+
+    if (result === null || result === undefined) {
+      return finalizeWorkerCacheabilityResponse(
+        missingBuildAsset ? notFoundStaticAssetResponse() : notFoundResponse(),
+        ctx,
+      );
+    }
+
+    return finalizeWorkerCacheabilityResponse(new Response(String(result), { status: 200 }), ctx);
+  });
 }

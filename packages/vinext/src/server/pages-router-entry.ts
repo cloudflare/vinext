@@ -49,6 +49,8 @@ import {
   createWorkerCacheabilityContext,
   finalizeWorkerCacheabilityResponse,
 } from "./cacheability-request.js";
+// @ts-expect-error -- external text module emitted by vinext for Worker builds
+import cacheabilityManifestBinding from "virtual:vinext-cacheability-manifest";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -134,7 +136,12 @@ async function handleRequest(
   // can resolve their configured bindings before request handling begins.
   registerConfiguredCacheAdapters(env);
   registerConfiguredImageOptimizer(env);
-  const ctx = createWorkerCacheabilityContext(discoveryCtx, request, pagesEntry.prerenderSecret);
+  const ctx = createWorkerCacheabilityContext(
+    discoveryCtx,
+    request,
+    pagesEntry.prerenderSecret,
+    typeof cacheabilityManifestBinding === "string" ? cacheabilityManifestBinding : undefined,
+  );
 
   return runWithExecutionContext(ctx, async () => {
     try {

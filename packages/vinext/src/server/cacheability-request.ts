@@ -6,10 +6,11 @@ import {
   cacheabilityManifestHasGeneratedPath,
   cacheabilityRouteKey,
   cacheabilityRouteAllowsPath,
+  getBoundCacheabilityManifest,
   getEmbeddedCacheabilityManifest,
+  type CacheabilityManifest,
   type CacheabilityManifestRoute,
   type CacheabilityRouteKind,
-  type CacheabilityRouteState,
 } from "./cacheability-manifest.js";
 import {
   RSC_HEADER,
@@ -20,11 +21,9 @@ import {
   VINEXT_INTERNAL_HEADERS,
 } from "./headers.js";
 import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
-import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { CACHEABILITY_REQUEST_STATE } from "vinext/shims/cacheability-classification";
 import { runWithoutPlatformIoTracking } from "vinext/shims/platform-io-tracking";
 import {
-  CACHEABILITY_RESPONSE_BODY_LIMIT,
   CACHEABILITY_RESPONSE_CAPTURE_BUDGET,
   CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
   CACHEABILITY_RESPONSE_CAPTURE_PENDING_LIMIT,
@@ -43,11 +42,11 @@ export {
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
 } from "./cacheability-limits.js";
 
-function frameworkNow(): number {
+export function frameworkNow(): number {
   return runWithoutPlatformIoTracking(() => Date.now());
 }
 
-type CacheabilityOutcome = {
+export type CacheabilityOutcome = {
   cacheControl?: string;
   cacheable: boolean;
   /** Infrastructure prevented a complete classification; user code was not dynamic. */
@@ -61,9 +60,10 @@ type CacheabilityRequestRoute = Pick<CacheabilityManifestRoute, "kind" | "patter
   partialPrerender: boolean;
 };
 
-type CacheabilityRequestState = {
+export type CacheabilityRequestState = {
   captureDeadlineAt?: number;
   capturedBody?: ArrayBuffer | null;
+  capturedBodyRelease?: () => void;
   closed?: boolean;
   releaseCapturedBodies?: Set<() => void>;
   complete?: (outcome: CacheabilityOutcome) => void;
@@ -71,6 +71,7 @@ type CacheabilityRequestState = {
   explicitCachePolicy?: string;
   explicitCachePolicyHeader?: string;
   manifestOutcome?: CacheabilityOutcome;
+  manifest?: CacheabilityManifest;
   manifestRoute?: CacheabilityManifestRoute;
   mode: "admit" | "admit-all" | "identity" | "probe" | "warm";
   outcome?: CacheabilityOutcome;
@@ -111,7 +112,7 @@ function tracksWorkerCaptureMemory(): boolean {
     context?.hostRuntime === "worker" &&
     context.isCloudflareWorker === true &&
     context.trustedRevalidateOrigin === undefined &&
-    readState(context) !== null
+    readCacheabilityState(context) !== null
   );
 }
 
@@ -160,7 +161,7 @@ function createCaptureReaderRelease(): () => void {
   };
 }
 
-async function acquireCaptureReader(
+export async function acquireCacheabilityCaptureReader(
   signal: AbortSignal | undefined,
   timeoutMs: number,
 ): Promise<(() => void) | null> {
@@ -201,62 +202,6 @@ async function acquireCaptureReader(
   });
 }
 
-function streamCapturedPrefixThenReader(
-  prefix: Uint8Array[],
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  releasePrefix: () => void,
-  sourceOwnedOverflow?: Uint8Array,
-): ReadableStream<Uint8Array> {
-  let index = 0;
-  let released = false;
-  const release = (): void => {
-    if (released) return;
-    released = true;
-    releasePrefix();
-  };
-  return new ReadableStream<Uint8Array>(
-    {
-      async cancel(reason) {
-        prefix.length = 0;
-        sourceOwnedOverflow = undefined;
-        release();
-        await reader.cancel(reason).catch(() => {});
-      },
-      async pull(controller) {
-        try {
-          if (index < prefix.length) {
-            controller.enqueue(prefix[index++]);
-            if (index === prefix.length) {
-              prefix.length = 0;
-              if (!sourceOwnedOverflow) release();
-            }
-            return;
-          }
-          if (sourceOwnedOverflow) {
-            const chunk = sourceOwnedOverflow;
-            sourceOwnedOverflow = undefined;
-            controller.enqueue(chunk);
-            // Keep the reader permit while the source-owned overflow is
-            // retained. Releasing after enqueue bounds slow consumers too:
-            // another capture cannot start until this large chunk has left
-            // the stream's closure/queue.
-            release();
-            return;
-          }
-          release();
-          const result = await reader.read();
-          if (result.done) controller.close();
-          else controller.enqueue(result.value);
-        } catch (error) {
-          release();
-          controller.error(error);
-        }
-      },
-    },
-    { highWaterMark: 0 },
-  );
-}
-
 const REPRESENTATION_HEADERS = [
   "accept-ranges",
   "content-digest",
@@ -277,7 +222,9 @@ const SUPPORTED_VARY_HEADERS = new Set(
   VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
 );
 
-function readState(ctx: ExecutionContextLike | null | undefined): CacheabilityRequestState | null {
+export function readCacheabilityState(
+  ctx: ExecutionContextLike | null | undefined,
+): CacheabilityRequestState | null {
   if (!ctx) return null;
   return (
     (Reflect.get(ctx, CACHEABILITY_REQUEST_STATE) as CacheabilityRequestState | undefined) ?? null
@@ -322,7 +269,10 @@ function hasNonCacheablePolicy(headers: Headers): boolean {
   return policy !== undefined && isNonCacheableCacheControl(policy.value);
 }
 
-function responseHasFinalCacheOptOut(response: Response, state: CacheabilityRequestState): boolean {
+export function responseHasFinalCacheOptOut(
+  response: Response,
+  state: CacheabilityRequestState,
+): boolean {
   if (!isAdmissibleCacheStatus(response.status) || response.headers.has("set-cookie")) return true;
   if (!hasNonCacheablePolicy(response.headers)) return false;
 
@@ -336,7 +286,7 @@ function responseHasFinalCacheOptOut(response: Response, state: CacheabilityRequ
   );
 }
 
-function responsePolicyIsCacheable(response: Response): boolean {
+export function responsePolicyIsCacheable(response: Response): boolean {
   if (!isAdmissibleCacheStatus(response.status) || response.headers.has("set-cookie")) return false;
   if (hasNonCacheablePolicy(response.headers)) return false;
   const policy = effectiveResponseCachePolicy(response.headers)?.value;
@@ -347,11 +297,11 @@ function responsePolicyIsCacheable(response: Response): boolean {
     .some((match) => match !== null && Number(match[1]) > 0);
 }
 
-function responseCachePolicy(response: Response): string | undefined {
+export function responseCachePolicy(response: Response): string | undefined {
   return effectiveResponseCachePolicy(response.headers)?.value;
 }
 
-function explicitCachePolicyOutcome(
+export function explicitCachePolicyOutcome(
   response: Response,
   state: CacheabilityRequestState,
 ): CacheabilityOutcome | undefined {
@@ -366,13 +316,13 @@ function explicitCachePolicyOutcome(
   return { cacheable: true, cacheControl: state.explicitCachePolicy };
 }
 
-function responseHasUnsupportedVary(response: Response): boolean {
+export function responseHasUnsupportedVary(response: Response): boolean {
   return (response.headers.get("Vary") ?? "")
     .split(",")
     .some((name) => name.trim() !== "" && !SUPPORTED_VARY_HEADERS.has(name.trim().toLowerCase()));
 }
 
-function isUpgradeResponse(response: Response): boolean {
+export function isUpgradeResponse(response: Response): boolean {
   return (
     response.status === 101 ||
     response.headers.has("Upgrade") ||
@@ -380,14 +330,14 @@ function isUpgradeResponse(response: Response): boolean {
   );
 }
 
-function syntheticErrorResponse(response: Response): Response {
+export function syntheticErrorResponse(response: Response): Response {
   const headers = new Headers(response.headers);
   for (const name of REPRESENTATION_HEADERS) headers.delete(name);
   applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
   return new Response("Internal Server Error", { headers, status: 500 });
 }
 
-function captureCapacityUnavailableResponse(): Response {
+export function captureCapacityUnavailableResponse(): Response {
   return new Response("Cacheability capture capacity is temporarily unavailable", {
     headers: { "Cache-Control": NO_STORE_CACHE_CONTROL, "Retry-After": "1" },
     status: 503,
@@ -405,7 +355,7 @@ function createStaticToDynamicError(
   );
 }
 
-async function reportStaticToDynamicError(
+export async function reportStaticToDynamicError(
   state: CacheabilityRequestState,
   outcome: CacheabilityOutcome,
 ): Promise<void> {
@@ -432,7 +382,7 @@ async function reportStaticToDynamicError(
   );
 }
 
-function uncacheableStreamingResponse(response: Response): Response {
+export function uncacheableStreamingResponse(response: Response): Response {
   const headers = new Headers(response.headers);
   applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
   return new Response(response.body, {
@@ -456,220 +406,26 @@ export type CapturedResponseBody =
       reason: string;
     };
 
-/**
- * Collect a response body only while it remains within the Worker-safe size
- * and time bounds. The fallback branch preserves every byte when collection
- * must stop, allowing callers to fail cache admission without breaking the
- * streamed response.
- */
+export type CacheabilityCaptureOptions = {
+  onCaptureStart?: () => void;
+  signal?: AbortSignal;
+  waitForCapacity?: boolean;
+};
+
+/** Lazily load bounded capture so ordinary origin-managed requests avoid it. */
 export async function captureResponseBodyBounded(
   response: Response,
-  options: {
-    onCaptureStart?: () => void;
-    signal?: AbortSignal;
-    waitForCapacity?: boolean;
-  } = {},
+  options: CacheabilityCaptureOptions = {},
 ): Promise<CapturedResponseBody> {
-  if (options.signal?.aborted) {
-    throw options.signal.reason ?? new Error("response capture was aborted");
-  }
-  if (!response.body) {
-    return { body: null, fallback: null, failClosed: false, release: () => {} };
-  }
-
-  const declaredLength = Number(response.headers.get("Content-Length"));
-  if (Number.isFinite(declaredLength) && declaredLength > CACHEABILITY_RESPONSE_BODY_LIMIT) {
-    return {
-      failure: "oversize",
-      failClosed: true,
-      fallback: response.body,
-      reason: `response body exceeded ${CACHEABILITY_RESPONSE_BODY_LIMIT} bytes`,
-    };
-  }
-
-  const captureStartedAt = frameworkNow();
-  const requestDeadlineAt = readState(getRequestExecutionContext())?.captureDeadlineAt;
-  const captureDeadlineAt = Math.min(
-    captureStartedAt + CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
-    requestDeadlineAt ?? Number.POSITIVE_INFINITY,
-  );
-  const remainingCaptureMs = (): number => Math.max(0, captureDeadlineAt - frameworkNow());
-  const waitForCapacity =
-    options.waitForCapacity ??
-    (() => {
-      const mode = readState(getRequestExecutionContext())?.mode;
-      return mode === "probe" || mode === "warm";
-    })();
-  const releaseReader = await acquireCaptureReader(
-    options.signal,
-    waitForCapacity ? remainingCaptureMs() : 0,
-  );
-  if (!releaseReader) {
-    if (options.signal?.aborted) {
-      throw options.signal.reason ?? new Error("response capture was aborted");
-    }
-    return {
-      failure: "capacity",
-      failClosed: true,
-      fallback: response.body,
-      reason: waitForCapacity
-        ? "response capture did not acquire isolate capacity before the classification deadline"
-        : "response capture isolate capacity is currently unavailable",
-    };
-  }
-  try {
-    options.onCaptureStart?.();
-  } catch (error) {
-    releaseReader();
-    throw error;
-  }
-
-  const reservation = createCacheabilityCaptureReservation();
-
-  let captureStream: ReadableStream<Uint8Array>;
-  let fallback: ReadableStream<Uint8Array>;
-  try {
-    [captureStream, fallback] = response.body.tee();
-  } catch (error) {
-    releaseReader();
-    reservation.releaseAll();
-    throw error;
-  }
-  const reader = captureStream.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  let retainedChunkBytes = 0;
-  let overflowChunk: Uint8Array | undefined;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  let removeAbortListener: (() => void) | undefined;
-
-  try {
-    const readResult = await Promise.race([
-      (async () => {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) return "complete" as const;
-          length += value.byteLength;
-          if (length > CACHEABILITY_RESPONSE_BODY_LIMIT) {
-            overflowChunk = value;
-            return "oversized" as const;
-          }
-          // The capture and unread fallback tee branches both retain this
-          // chunk until classification completes.
-          if (!reservation.tryReserve(value.byteLength * 2)) {
-            overflowChunk = value;
-            return "budget-exhausted" as const;
-          }
-          retainedChunkBytes += value.byteLength;
-          chunks.push(value);
-        }
-      })(),
-      new Promise<"timed-out">((resolve) => {
-        timeout = setTimeout(() => resolve("timed-out"), remainingCaptureMs());
-      }),
-      new Promise<"aborted">((resolve) => {
-        const signal = options.signal;
-        if (!signal) return;
-        const onAbort = () => resolve("aborted");
-        signal.addEventListener("abort", onAbort, { once: true });
-        removeAbortListener = () => signal.removeEventListener("abort", onAbort);
-      }),
-    ]);
-    if (readResult === "aborted") {
-      await Promise.allSettled([reader.cancel(options.signal?.reason), fallback.cancel()]);
-      releaseReader();
-      reservation.releaseAll();
-      throw options.signal?.reason ?? new Error("response capture was aborted");
-    }
-    if (readResult !== "complete") {
-      if (readResult !== "timed-out") {
-        // The current chunk has already left the source, so returning the tee
-        // fallback would retain an uncharged duplicate. Drop that branch and
-        // stream the captured prefix plus the original reader instead.
-        void fallback.cancel().catch(() => {});
-        reservation.release(retainedChunkBytes);
-        return {
-          failure: readResult === "budget-exhausted" ? "budget" : "oversize",
-          failClosed: true,
-          fallback: streamCapturedPrefixThenReader(
-            chunks,
-            reader,
-            () => {
-              reservation.releaseAll();
-              releaseReader();
-            },
-            overflowChunk,
-          ),
-          reason:
-            readResult === "budget-exhausted"
-              ? `response capture exceeded the ${CACHEABILITY_RESPONSE_CAPTURE_BUDGET} byte isolate budget`
-              : `response body exceeded ${CACHEABILITY_RESPONSE_BODY_LIMIT} bytes`,
-        };
-      }
-      void reader.cancel().catch(() => {});
-      releaseReader();
-      // Cancelling the capture branch drops one of the two retained copies;
-      // the fallback keeps the other until its consumer drains or cancels it.
-      reservation.release(retainedChunkBytes);
-      return {
-        failure: "timeout",
-        failClosed: true,
-        // A tee may already have buffered the captured prefix into the unread
-        // fallback branch. Keep that memory inside the aggregate reservation
-        // until the downstream response drains or cancels the branch.
-        fallback: deferUntilStreamConsumed(fallback, reservation.releaseAll),
-        reason: `response body did not complete within ${CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS}ms`,
-      };
-    }
-    releaseReader();
-  } catch (error) {
-    releaseReader();
-    void fallback.cancel().catch(() => {});
-    reservation.releaseAll();
-    throw error;
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
-    removeAbortListener?.();
-  }
-
-  try {
-    // Account for the contiguous result while the source chunks are still
-    // retained. This bounds the short-lived copy peak as well as steady state.
-    if (!reservation.tryReserve(length)) {
-      void fallback.cancel().catch(() => {});
-      reservation.release(retainedChunkBytes);
-      return {
-        failure: "budget",
-        failClosed: true,
-        fallback: streamCapturedPrefixThenReader(chunks, reader, reservation.releaseAll),
-        reason: `response capture exceeded the ${CACHEABILITY_RESPONSE_CAPTURE_BUDGET} byte isolate budget`,
-      };
-    }
-    const body = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of chunks) {
-      body.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    chunks.length = 0;
-    reservation.release(retainedChunkBytes);
-    return {
-      body: body.buffer,
-      fallback: deferUntilStreamConsumed(fallback, () => reservation.release(length)),
-      failClosed: false,
-      release: () => reservation.release(length),
-    };
-  } catch (error) {
-    reservation.releaseAll();
-    void fallback.cancel().catch(() => {});
-    throw error;
-  }
+  const { captureResponseBodyBoundedRuntime } = await import("./cacheability-response.js");
+  return captureResponseBodyBoundedRuntime(response, options);
 }
 
 export function createWorkerCacheabilityContext(
   base: ExecutionContextLike,
   request: Request,
   expectedSecret: string | null | undefined,
+  manifestBinding?: string,
 ): ExecutionContextLike {
   const probeMode = request.headers.get(VINEXT_CACHEABILITY_PROBE_HEADER);
   const requestedCapability = probeMode === "1" || probeMode === "identity" || probeMode === "warm";
@@ -680,7 +436,10 @@ export function createWorkerCacheabilityContext(
       request.headers.get(VINEXT_PRERENDER_SECRET_HEADER) ?? "",
       expectedSecret ?? "",
     );
-  const manifest = getEmbeddedCacheabilityManifest();
+  const manifest =
+    manifestBinding === undefined
+      ? getEmbeddedCacheabilityManifest()
+      : getBoundCacheabilityManifest(manifestBinding);
   if (
     !authorizedCapability &&
     (base.hostRuntime !== "worker" || getCdnCacheAdapter().ownsBackgroundRevalidation)
@@ -693,6 +452,7 @@ export function createWorkerCacheabilityContext(
     diagnosticHeaders.delete(name);
   }
   const state: CacheabilityRequestState = {
+    ...(manifest ? { manifest } : {}),
     mode: authorizedCapability
       ? probeMode === "identity"
         ? "identity"
@@ -717,7 +477,7 @@ export function createWorkerCacheabilityContext(
 
 /** Absolute deadline shared by every capture owned by this authenticated request. */
 export function getRouteCacheabilityCaptureDeadline(): number | undefined {
-  return readState(getRequestExecutionContext())?.captureDeadlineAt;
+  return readCacheabilityState(getRequestExecutionContext())?.captureDeadlineAt;
 }
 
 export function beginRouteCacheability(
@@ -725,7 +485,7 @@ export function beginRouteCacheability(
   pattern: string,
   options: { partialPrerender?: boolean; useManifestClassification?: boolean } = {},
 ): boolean {
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   if (!state) return false;
 
   // Authenticated probes must observe the route regardless of the configured
@@ -743,7 +503,7 @@ export function beginRouteCacheability(
   const manifestRoutes =
     options.useManifestClassification === false || (kind === "app-page" && state.requestIsRsc)
       ? undefined
-      : getEmbeddedCacheabilityManifest()?.routes;
+      : state.manifest?.routes;
   // The staged probe certifies the HTML document representation. Full RSC
   // and loading-shell responses can execute a different part of a PPR tree,
   // so they retain their own completed-response runtime check.
@@ -787,17 +547,17 @@ export function beginRouteCacheability(
 
 /** True only for an authenticated staged-Worker cacheability probe. */
 export function isRouteCacheabilityProbe(): boolean {
-  return readState(getRequestExecutionContext())?.mode === "probe";
+  return readCacheabilityState(getRequestExecutionContext())?.mode === "probe";
 }
 
 /** True for the cheap staged pass that resolves routing without user rendering. */
 export function isRouteCacheabilityIdentityProbe(): boolean {
-  return readState(getRequestExecutionContext())?.mode === "identity";
+  return readCacheabilityState(getRequestExecutionContext())?.mode === "identity";
 }
 
 /** A final manifest has already proven this concrete route representation dynamic. */
 export function isRouteManifestProvenDynamic(): boolean {
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   return (
     state?.mode === "admit" &&
     (state.manifestRoute?.state === "dynamic" || state.manifestRoute?.state === "probe-failed")
@@ -806,7 +566,7 @@ export function isRouteManifestProvenDynamic(): boolean {
 
 /** The request can no longer become eligible for whole-response CDN reuse. */
 export function isRouteCacheabilityAlreadyUncacheable(): boolean {
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   return Boolean(
     state?.route &&
     (state.unsafeReason ||
@@ -822,7 +582,7 @@ export function isRouteCacheabilityAlreadyUncacheable(): boolean {
  * discovered by generateStaticParams/getStaticPaths retain static semantics.
  */
 export function routeParamsRequireRuntime(fallbackWithoutManifest = false): boolean {
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   if (!state?.route) return fallbackWithoutManifest;
   if (!state.route.pattern.includes(":")) return false;
   if (state.mode === "probe") return false;
@@ -834,7 +594,7 @@ export function routeParamsRequireRuntime(fallbackWithoutManifest = false): bool
 
 /** Prevent whole-response CDN admission when an earlier request phase can vary this URL. */
 export function markRequestCacheabilityUnsafe(reason: string): void {
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   if (!state || state.unsafeReason) return;
   state.unsafeReason = reason;
   if (state.route) {
@@ -843,7 +603,7 @@ export function markRequestCacheabilityUnsafe(reason: string): void {
 }
 
 export function deferRouteCacheability(): ((outcome: CacheabilityOutcome) => void) | null {
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   if (!state?.route || state.completion) return null;
 
   state.completion = new Promise<CacheabilityOutcome>((resolve) => {
@@ -859,7 +619,7 @@ export function deferRouteCacheability(): ((outcome: CacheabilityOutcome) => voi
 }
 
 export function recordRouteCacheability(outcome: CacheabilityOutcome): void {
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   if (!state?.route) return;
   const finalOutcome = state.unsafeReason
     ? { cacheable: false, reason: state.unsafeReason }
@@ -882,7 +642,7 @@ export function recordRouteCacheabilityCapturedBody(
   body: ArrayBuffer | null,
   release?: () => void,
 ): boolean {
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   if (!state?.route) return false;
   if (state.closed) {
     // Transfer owns the release callback even when the request already
@@ -891,14 +651,15 @@ export function recordRouteCacheabilityCapturedBody(
     release?.();
     return true;
   }
+  state.capturedBodyRelease?.();
   state.capturedBody = body;
-  if (release) (state.releaseCapturedBodies ??= new Set()).add(release);
+  state.capturedBodyRelease = release;
   return true;
 }
 
 /** Retain capture capacity that belongs to a side artifact such as raw RSC. */
 export function retainRouteCacheabilityCapture(release: () => void): boolean {
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   if (!state?.route) return false;
   if (state.closed) {
     release();
@@ -912,14 +673,14 @@ export function retainRouteCacheabilityCapture(release: () => void): boolean {
 export function markRouteCacheabilityPolicyProvisional(headers: Headers): void {
   const snapshot = snapshotCachePolicy(headers);
   frameworkCachePolicies.set(headers, snapshot);
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   if (!state?.route) return;
   state.provisionalPolicy = snapshot;
 }
 
 /** Whether the current cache headers are still exactly framework-generated. */
 export function isRouteCacheabilityPolicyProvisional(headers: Headers): boolean {
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   const responseSnapshot = frameworkCachePolicies.get(headers);
   return Boolean(
     (responseSnapshot && cachePoliciesMatch(responseSnapshot, snapshotCachePolicy(headers))) ||
@@ -934,7 +695,7 @@ export function markRouteCacheabilityPolicyExplicit(
   cacheControl: string,
   headerName = "Cache-Control",
 ): void {
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   if (!state) return;
   state.provisionalPolicy = undefined;
   state.explicitCachePolicy = cacheControl;
@@ -949,7 +710,7 @@ export function markRouteCacheabilityResponsePolicyExplicit(headers: Headers): v
 
 /** Replace only the framework policy that an earlier explicit config policy supersedes. */
 export function applyExplicitRouteCacheabilityPolicy(headers: Headers): void {
-  const state = readState(getRequestExecutionContext());
+  const state = readCacheabilityState(getRequestExecutionContext());
   if (!isRouteCacheabilityPolicyProvisional(headers)) return;
   headers.delete("Cache-Control");
   headers.delete("CDN-Cache-Control");
@@ -960,286 +721,12 @@ export function applyExplicitRouteCacheabilityPolicy(headers: Headers): void {
   }
 }
 
-function probeResponse(
-  state: CacheabilityRequestState,
-  routeState: CacheabilityRouteState,
-  outcome: CacheabilityOutcome,
-  status: number,
-): Response {
-  const body = {
-    cacheControl: outcome.cacheControl,
-    ...(state.explicitCachePolicy && state.outcome?.dynamicUsage === true
-      ? { explicitPolicyDynamicOverride: true }
-      : {}),
-    kind: state.route?.kind,
-    pattern: state.route?.pattern,
-    reason: outcome.reason,
-    state: routeState,
-    status,
-    version: 1,
-  };
-  return new Response(JSON.stringify(body), {
-    headers: {
-      "Cache-Control": NO_STORE_CACHE_CONTROL,
-      "Content-Type": "application/json",
-    },
-    status: 200,
-  });
-}
-
+/** Lazily load response capture and admission only for edge-managed classification. */
 export async function finalizeWorkerCacheabilityResponse(
   response: Response,
   ctx: ExecutionContextLike,
 ): Promise<Response> {
-  const state = readState(ctx);
-  if (!state) return response;
-  try {
-    return await finalizeWorkerCacheabilityResponseWithState(response, state);
-  } finally {
-    state.closed = true;
-    for (const release of state.releaseCapturedBodies ?? []) release();
-    state.releaseCapturedBodies = undefined;
-  }
-}
-
-async function finalizeWorkerCacheabilityResponseWithState(
-  response: Response,
-  state: CacheabilityRequestState,
-): Promise<Response> {
-  if (state.mode === "identity") {
-    void response.body?.cancel().catch(() => {});
-    return probeResponse(
-      state,
-      state.route ? "runtime-check" : "probe-failed",
-      {
-        cacheable: false,
-        ...(state.route ? {} : { reason: "request did not resolve to a probeable route" }),
-      },
-      response.status,
-    );
-  }
-  if (!state.route) {
-    if (state.mode === "probe") {
-      return probeResponse(
-        state,
-        "probe-failed",
-        { cacheable: false, reason: "request did not resolve to a probeable route" },
-        response.status,
-      );
-    }
-    return state.unsafeReason && !isUpgradeResponse(response)
-      ? uncacheableStreamingResponse(response)
-      : response;
-  }
-
-  // Upgrade/WebSocket responses carry runtime-owned state outside the standard
-  // body/header tuple. Reconstructing them drops that state, so never admit or
-  // reshape an ordinary upgrade response.
-  if (isUpgradeResponse(response)) {
-    if (state.mode !== "probe") return response;
-    return probeResponse(
-      state,
-      "dynamic",
-      { cacheable: false, reason: "upgrade response" },
-      response.status,
-    );
-  }
-
-  if (state.mode === "probe" && response.status >= 500) {
-    void response.body?.cancel().catch(() => {});
-    return probeResponse(
-      state,
-      "probe-failed",
-      { cacheable: false, reason: `route returned HTTP ${response.status}` },
-      response.status,
-    );
-  }
-
-  const authoritativePolicyOutcome = explicitCachePolicyOutcome(response, state);
-  const staticCandidateBecameDynamic = (outcome: CacheabilityOutcome | undefined): boolean =>
-    state.mode !== "probe" &&
-    !(
-      state.manifestRoute?.explicitPolicyDynamicOverride === true &&
-      authoritativePolicyOutcome !== undefined
-    ) &&
-    state.manifestRoute?.state === "static-candidate" &&
-    state.route?.partialPrerender !== true &&
-    outcome?.dynamicUsage === true;
-  const staticToDynamicErrorResponse = async (outcome: CacheabilityOutcome): Promise<Response> => {
-    await reportStaticToDynamicError(state, outcome);
-    return syntheticErrorResponse(response);
-  };
-
-  const explicitOutcome = state.manifestOutcome ?? state.outcome;
-  if (staticCandidateBecameDynamic(explicitOutcome)) {
-    void response.body?.cancel().catch(() => {});
-    return staticToDynamicErrorResponse(explicitOutcome!);
-  }
-  if (state.mode === "warm" && explicitOutcome?.classificationFailure === true) {
-    void response.body?.cancel().catch(() => {});
-    return captureCapacityUnavailableResponse();
-  }
-
-  const isEventStream = response.headers
-    .get("content-type")
-    ?.toLowerCase()
-    .startsWith("text/event-stream");
-  const unsupportedVary = responseHasUnsupportedVary(response);
-  if (
-    isEventStream ||
-    unsupportedVary ||
-    (authoritativePolicyOutcome === undefined && explicitOutcome?.cacheable === false) ||
-    responseHasFinalCacheOptOut(response, state) ||
-    (!state.completion && !responsePolicyIsCacheable(response))
-  ) {
-    if (state.mode === "probe") {
-      void response.body?.cancel().catch(() => {});
-      return probeResponse(
-        state,
-        explicitOutcome?.classificationFailure === true ? "probe-failed" : "dynamic",
-        explicitOutcome ?? {
-          cacheable: false,
-          reason: isEventStream
-            ? "event stream"
-            : unsupportedVary
-              ? "response varies by an unsupported request header"
-              : undefined,
-        },
-        response.status,
-      );
-    }
-    return uncacheableStreamingResponse(response);
-  }
-
-  const deferredOutcome = state.completion ? await state.completion : undefined;
-  const classificationFailureOutcome =
-    state.manifestOutcome?.classificationFailure === true
-      ? state.manifestOutcome
-      : deferredOutcome?.classificationFailure === true
-        ? deferredOutcome
-        : state.outcome?.classificationFailure === true
-          ? state.outcome
-          : undefined;
-  const completedOutcome =
-    classificationFailureOutcome ??
-    authoritativePolicyOutcome ??
-    state.manifestOutcome ??
-    deferredOutcome ??
-    state.outcome;
-  if (state.mode === "warm" && completedOutcome?.classificationFailure === true) {
-    void response.body?.cancel().catch(() => {});
-    return captureCapacityUnavailableResponse();
-  }
-  if (staticCandidateBecameDynamic(completedOutcome)) {
-    void response.body?.cancel().catch(() => {});
-    return staticToDynamicErrorResponse(completedOutcome!);
-  }
-  if (completedOutcome?.cacheable === false) {
-    if (state.mode === "probe") {
-      void response.body?.cancel().catch(() => {});
-      return probeResponse(
-        state,
-        completedOutcome.classificationFailure === true ? "probe-failed" : "dynamic",
-        completedOutcome,
-        response.status,
-      );
-    }
-    return uncacheableStreamingResponse(response);
-  }
-
-  let captured: CapturedResponseBody;
-  if (state.capturedBody !== undefined) {
-    captured = { body: state.capturedBody, fallback: null, failClosed: false, release: () => {} };
-  } else {
-    try {
-      captured = await captureResponseBodyBounded(response);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      if (state.mode === "probe") {
-        return probeResponse(state, "probe-failed", { cacheable: false, reason }, response.status);
-      }
-      return syntheticErrorResponse(response);
-    }
-  }
-
-  const releaseCaptured = captured.failClosed ? null : captured.release;
-  try {
-    if (captured.failClosed) {
-      if (state.mode === "probe") {
-        void captured.fallback.cancel().catch(() => {});
-        return probeResponse(
-          state,
-          "probe-failed",
-          {
-            cacheable: false,
-            reason: captured.reason,
-          },
-          response.status,
-        );
-      }
-      if (state.mode === "warm") {
-        void captured.fallback.cancel().catch(() => {});
-        return captureCapacityUnavailableResponse();
-      }
-      return uncacheableStreamingResponse(
-        new Response(captured.fallback, {
-          headers: response.headers,
-          status: response.status,
-          statusText: response.statusText,
-        }),
-      );
-    }
-
-    const outcome =
-      completedOutcome ??
-      ({
-        cacheable: responsePolicyIsCacheable(response),
-        cacheControl: responseCachePolicy(response),
-      } satisfies CacheabilityOutcome);
-    const cacheable =
-      !state.unsafeReason && outcome.cacheable && !responseHasFinalCacheOptOut(response, state);
-
-    if (state.mode === "warm" && outcome.classificationFailure === true) {
-      await captured.fallback?.cancel().catch(() => {});
-      return captureCapacityUnavailableResponse();
-    }
-
-    if (state.mode === "probe") {
-      await captured.fallback?.cancel().catch(() => {});
-      return probeResponse(
-        state,
-        cacheable
-          ? "static-candidate"
-          : outcome.classificationFailure === true
-            ? "probe-failed"
-            : "dynamic",
-        outcome,
-        response.status,
-      );
-    }
-
-    if (staticCandidateBecameDynamic(outcome)) {
-      await captured.fallback?.cancel().catch(() => {});
-      return staticToDynamicErrorResponse(outcome);
-    }
-
-    await captured.fallback?.cancel().catch(() => {});
-
-    const headers = new Headers(response.headers);
-    if (cacheable && outcome.cacheControl) {
-      applyCdnResponseHeaders(headers, {
-        cacheControl: outcome.cacheControl,
-        tags: outcome.tags,
-      });
-    } else {
-      applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
-    }
-    return new Response(captured.body, {
-      headers,
-      status: response.status,
-      statusText: response.statusText,
-    });
-  } finally {
-    releaseCaptured?.();
-  }
+  if (!readCacheabilityState(ctx)) return response;
+  const { finalizeWorkerCacheabilityResponseRuntime } = await import("./cacheability-response.js");
+  return finalizeWorkerCacheabilityResponseRuntime(response, ctx);
 }

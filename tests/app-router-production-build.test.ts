@@ -32,6 +32,24 @@ function readAllJs(dir: string): string {
   return out;
 }
 
+function readStaticServerImportGraph(entryPath: string): Set<string> {
+  const visited = new Set<string>();
+  const visit = (filePath: string): void => {
+    if (visited.has(filePath)) return;
+    visited.add(filePath);
+    const source = fs.readFileSync(filePath, "utf-8");
+    const staticImport = /\b(?:import(?!\s*\()|export)\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']/g;
+    for (const match of source.matchAll(staticImport)) {
+      const specifier = match[1];
+      if (!specifier.startsWith(".")) continue;
+      const resolved = path.resolve(path.dirname(filePath), specifier);
+      if (fs.existsSync(resolved)) visit(resolved);
+    }
+  };
+  visit(entryPath);
+  return visited;
+}
+
 describe("App Router Production build", () => {
   const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
 
@@ -118,6 +136,23 @@ describe("App Router Production build", () => {
     // RSC bundle should contain route handling code
     const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");
     expect(rscEntry).toContain("handler");
+
+    // Bounded response capture is specific to edge-managed classification. A
+    // default origin-managed build keeps it as a lazy chunk instead of paying
+    // its startup cost on every request.
+    const staticServerModules = readStaticServerImportGraph(
+      path.join(outDir, "server", "index.js"),
+    );
+    expect(
+      [...staticServerModules].some((filePath) =>
+        path.basename(filePath).includes("cacheability-response"),
+      ),
+    ).toBe(false);
+    expect(
+      fs
+        .readdirSync(path.join(outDir, "server", "_next", "static"))
+        .some((fileName) => fileName.includes("cacheability-response")),
+    ).toBe(true);
 
     // Asset manifest should be generated
     expect(fs.existsSync(path.join(outDir, "server", "__vite_rsc_assets_manifest.js"))).toBe(true);

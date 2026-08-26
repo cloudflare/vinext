@@ -1,39 +1,97 @@
 import fs from "node:fs";
 import path from "node:path";
-import { CACHEABILITY_MANIFEST_PLACEHOLDER } from "vinext/internal/server/cacheability-manifest";
-import type { CacheabilityManifest } from "vinext/internal/server/cacheability-manifest";
+import {
+  CACHEABILITY_MANIFEST_MODULE_FILE,
+  CACHEABILITY_MANIFEST_PLACEHOLDER,
+  type CacheabilityManifest,
+} from "vinext/internal/server/cacheability-manifest";
 
-const EMBEDDED_CACHEABILITY_MODULE = "__vinext_cacheability_manifest.js";
-const EMBEDDED_CACHEABILITY_IDENTIFIER = "__vinextCacheabilityManifest_7a4d2d86";
+type WranglerArtifactConfig = Record<string, unknown> & {
+  base_dir?: unknown;
+  main?: unknown;
+  rules?: unknown[];
+};
 
-function collectServerJavaScript(directory: string): string[] {
-  const files: string[] = [];
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    const entryPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...collectServerJavaScript(entryPath));
-    } else if (entry.isFile() && (entry.name.endsWith(".js") || entry.name.endsWith(".mjs"))) {
-      files.push(entryPath);
-    }
+type WranglerModuleRule = { globs?: unknown; type?: unknown };
+
+function readGeneratedWranglerConfig(configPath: string): WranglerArtifactConfig {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  } catch (error) {
+    throw new Error(
+      `Two-stage CDN warming requires a generated JSON Wrangler config at ${configPath}. Rebuild the app before deploying.`,
+      { cause: error },
+    );
   }
-  return files;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Generated Wrangler config at ${configPath} must contain a JSON object.`);
+  }
+  return parsed as WranglerArtifactConfig;
+}
+
+function resolveManifestArtifact(
+  configPath: string,
+  config: WranglerArtifactConfig,
+): { filePath: string; ruleGlob: string } {
+  if (typeof config.main !== "string" || config.main.length === 0) {
+    throw new Error("Generated Wrangler config must identify its main Worker module.");
+  }
+  const configDirectory = path.dirname(configPath);
+  const mainPath = path.resolve(configDirectory, config.main);
+  const filePath = path.join(path.dirname(mainPath), CACHEABILITY_MANIFEST_MODULE_FILE);
+  const baseDirectory =
+    typeof config.base_dir === "string"
+      ? path.resolve(configDirectory, config.base_dir)
+      : path.dirname(mainPath);
+  const ruleGlob = path.relative(baseDirectory, filePath).split(path.sep).join("/");
+  if (ruleGlob.startsWith("../") || path.isAbsolute(ruleGlob)) {
+    throw new Error(
+      "Generated Wrangler config base_dir must contain the cacheability manifest module.",
+    );
+  }
+  return { filePath, ruleGlob };
+}
+
+function isManifestRule(rule: unknown, ruleGlob: string): boolean {
+  if (!rule || typeof rule !== "object" || Array.isArray(rule)) return false;
+  const candidate = rule as WranglerModuleRule;
+  return (
+    candidate.type === "Text" &&
+    Array.isArray(candidate.globs) &&
+    candidate.globs.includes(ruleGlob)
+  );
+}
+
+/** Verify that the selected build was produced with the manifest-module seam. */
+export function assertCacheabilityManifestArtifact(configPath: string): void {
+  const config = readGeneratedWranglerConfig(configPath);
+  if (!Array.isArray(config.rules)) {
+    throw new Error("Generated Wrangler config must contain module rules.");
+  }
+  const manifestArtifact = resolveManifestArtifact(configPath, config);
+  if (!config.rules.some((rule) => isManifestRule(rule, manifestArtifact.ruleGlob))) {
+    throw new Error(
+      "Generated Wrangler config does not include the cacheability Text module rule.",
+    );
+  }
+  if (
+    !fs.existsSync(manifestArtifact.filePath) ||
+    fs.readFileSync(manifestArtifact.filePath, "utf-8") !== CACHEABILITY_MANIFEST_PLACEHOLDER
+  ) {
+    throw new Error("Generated Worker does not include the cacheability manifest placeholder.");
+  }
 }
 
 /**
- * Embed a version-specific cacheability manifest into an isolated copy of the
- * server output for one synchronous Wrangler upload.
- *
- * Vinext's RSC build emits multiple pre-bundled Worker modules and Wrangler's
- * `--define` does not transform those attached modules. Replacing the explicit
- * identifier with imports of one generated module avoids a second application
- * build and avoids duplicating a potentially large manifest in every router
- * bundle. Keeping the reusable build immutable also makes a failed or
- * interrupted upload safe for later deploy attempts.
+ * Attach a version-specific cacheability manifest to an isolated copy of the
+ * generated Worker through its reserved imported text module. The probe upload
+ * receives the non-manifest placeholder; only the final version receives data.
  */
 export function withEmbeddedCacheabilityManifest<T>(
   root: string,
   configuredPath: string | undefined,
-  manifest: CacheabilityManifest,
+  manifest: CacheabilityManifest | null,
   upload: (configPath: string) => T,
 ): T {
   const distDirectory = path.join(root, "dist");
@@ -45,72 +103,34 @@ export function withEmbeddedCacheabilityManifest<T>(
     );
   }
   const serverDirectory = path.dirname(configPath);
-  // fs.cp rejects a directory-to-descendant copy before its filter runs. A
-  // config at dist/wrangler.json therefore needs a sibling temporary tree;
-  // nested dist/server configs can stay under dist as before.
   const isolatedParent = serverDirectory === distDirectory ? root : distDirectory;
   const isolatedServerDirectory = fs.mkdtempSync(
     path.join(isolatedParent, ".vinext-cacheability-"),
   );
-  const placeholderLiterals = [
-    JSON.stringify(CACHEABILITY_MANIFEST_PLACEHOLDER),
-    `'${CACHEABILITY_MANIFEST_PLACEHOLDER}'`,
-    `\`${CACHEABILITY_MANIFEST_PLACEHOLDER}\``,
-  ];
-  const replacement = EMBEDDED_CACHEABILITY_IDENTIFIER;
-  let replacements = 0;
 
   try {
     fs.cpSync(serverDirectory, isolatedServerDirectory, { recursive: true });
-    const serverArtifacts = collectServerJavaScript(isolatedServerDirectory);
-    for (const filePath of serverArtifacts) {
-      const content = fs.readFileSync(filePath, "utf-8");
-      const presentLiterals = placeholderLiterals.filter((literal) => content.includes(literal));
-      if (presentLiterals.length === 0) continue;
-      replacements += 1;
-      const relativeModulePath = path
-        .relative(
-          path.dirname(filePath),
-          path.join(isolatedServerDirectory, EMBEDDED_CACHEABILITY_MODULE),
-        )
-        .split(path.sep)
-        .join("/");
-      const moduleSpecifier = relativeModulePath.startsWith(".")
-        ? relativeModulePath
-        : `./${relativeModulePath}`;
-      const importStatement = `import ${EMBEDDED_CACHEABILITY_IDENTIFIER} from ${JSON.stringify(moduleSpecifier)};\n`;
-      const replaced = presentLiterals.reduce(
-        (embedded, literal) => embedded.replaceAll(literal, replacement),
-        content,
-      );
-      const shebangEnd = replaced.startsWith("#!") ? replaced.indexOf("\n") : -1;
-      const embedded =
-        shebangEnd === -1
-          ? importStatement + replaced
-          : `${replaced.slice(0, shebangEnd + 1)}${importStatement}${replaced.slice(shebangEnd + 1)}`;
-      fs.writeFileSync(filePath, embedded);
+    const isolatedConfigPath = path.join(isolatedServerDirectory, path.basename(configPath));
+    const config = readGeneratedWranglerConfig(isolatedConfigPath);
+    if (config.rules !== undefined && !Array.isArray(config.rules)) {
+      throw new Error("Generated Wrangler config rules must be an array.");
     }
 
-    if (replacements === 0) {
-      throw new Error(
-        "Cannot embed the cacheability manifest because its placeholder was not found in dist/server. Rebuild the app before deploying.",
-      );
-    }
+    const manifestArtifact = resolveManifestArtifact(isolatedConfigPath, config);
 
-    // All router environments import one attached module instead of each
-    // embedding the full manifest. This is especially important for large
-    // generateStaticParams/getStaticPaths sets: Wrangler uploads the module
-    // once and V8 parses one JSON payload rather than one copy per bundle.
     fs.writeFileSync(
-      path.join(isolatedServerDirectory, EMBEDDED_CACHEABILITY_MODULE),
-      `export default ${JSON.stringify(JSON.stringify(manifest))};\n`,
+      manifestArtifact.filePath,
+      manifest === null ? CACHEABILITY_MANIFEST_PLACEHOLDER : JSON.stringify(manifest),
     );
+    if (!(config.rules ?? []).some((rule) => isManifestRule(rule, manifestArtifact.ruleGlob))) {
+      config.rules = [
+        ...(config.rules ?? []),
+        { fallthrough: true, globs: [manifestArtifact.ruleGlob], type: "Text" },
+      ];
+    }
+    fs.writeFileSync(isolatedConfigPath, `${JSON.stringify(config, null, 2)}\n`);
 
-    const isolatedConfigPath = path.relative(
-      root,
-      path.join(isolatedServerDirectory, path.basename(configPath)),
-    );
-    return upload(isolatedConfigPath);
+    return upload(path.relative(root, isolatedConfigPath));
   } finally {
     fs.rmSync(isolatedServerDirectory, { recursive: true, force: true });
   }

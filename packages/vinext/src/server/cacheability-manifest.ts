@@ -1,6 +1,10 @@
 export const CACHEABILITY_MANIFEST_PLACEHOLDER =
   "__VINEXT_CACHEABILITY_MANIFEST_7A4D2D86_5848_4C3D_A2D5_52B32F178CF9__";
 
+/** Reserved attached module populated by two-stage Cloudflare deploys. */
+export const CACHEABILITY_MANIFEST_MODULE_FILE =
+  "__vinext_cacheability_manifest.vinext-cacheability";
+
 export type CacheabilityRouteKind = "app-page" | "app-route" | "pages-page";
 
 export type CacheabilityRouteState =
@@ -41,6 +45,8 @@ export type CacheabilityManifest = {
 declare const __VINEXT_CACHEABILITY_MANIFEST__: string | undefined;
 
 let parsedManifest: CacheabilityManifest | null | undefined;
+let parsedBindingManifest: CacheabilityManifest | null | undefined;
+let parsedBindingManifestRaw: string | undefined;
 
 export function cacheabilityRouteKey(
   kind: CacheabilityRouteKind,
@@ -305,7 +311,19 @@ export function getEmbeddedCacheabilityManifest(): CacheabilityManifest | null {
   return parsedManifest;
 }
 
+/** Parse the immutable attached Worker module at most once per isolate/version. */
+export function getBoundCacheabilityManifest(raw: string): CacheabilityManifest | null {
+  if (parsedBindingManifestRaw === raw && parsedBindingManifest !== undefined) {
+    return parsedBindingManifest;
+  }
+  parsedBindingManifestRaw = raw;
+  parsedBindingManifest = parseCacheabilityManifest(raw);
+  return parsedBindingManifest;
+}
+
 /** Test-only reset for modules whose compile-time define is stubbed between cases. */
 export function resetEmbeddedCacheabilityManifestForTests(): void {
   parsedManifest = undefined;
+  parsedBindingManifest = undefined;
+  parsedBindingManifestRaw = undefined;
 }

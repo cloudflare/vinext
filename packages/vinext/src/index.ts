@@ -182,6 +182,7 @@ import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
+import { createCacheabilityManifestModulePlugin } from "./plugins/cacheability-manifest-module.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
@@ -190,6 +191,7 @@ import {
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
 import { createTransitiveExternalsPlugin } from "./plugins/transitive-externals.js";
+import { CACHEABILITY_MANIFEST_MODULE_FILE } from "./server/cacheability-manifest.js";
 // Keep this source-relative: resolving through vinext's package export can read
 // a stale built copy while developing or testing the source tree.
 // oxlint-disable-next-line vinext-local/prefer-import-alias
@@ -1129,6 +1131,8 @@ const VIRTUAL_CLIENT_ENTRY = "virtual:vinext-client-entry";
 const RESOLVED_CLIENT_ENTRY = VIRTUAL_PREFIX + VIRTUAL_CLIENT_ENTRY;
 const VIRTUAL_PAGES_CLIENT_ASSETS = "virtual:vinext-pages-client-assets";
 const RESOLVED_PAGES_CLIENT_ASSETS = VIRTUAL_PREFIX + VIRTUAL_PAGES_CLIENT_ASSETS;
+const VIRTUAL_CACHEABILITY_MANIFEST = "virtual:vinext-cacheability-manifest";
+const RESOLVED_CACHEABILITY_MANIFEST = VIRTUAL_PREFIX + VIRTUAL_CACHEABILITY_MANIFEST;
 
 // Virtual module IDs for App Router entries
 const VIRTUAL_RSC_ENTRY = "virtual:vinext-rsc-entry";
@@ -3944,6 +3948,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Pages Router virtual modules
           if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
           if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
+          if (
+            cleanId === VIRTUAL_CACHEABILITY_MANIFEST ||
+            cleanId.endsWith("/" + VIRTUAL_CACHEABILITY_MANIFEST)
+          ) {
+            if (this.environment?.config.command === "build") {
+              return { id: `./${CACHEABILITY_MANIFEST_MODULE_FILE}`, external: true };
+            }
+            return RESOLVED_CACHEABILITY_MANIFEST;
+          }
           if (cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY)) {
             return RESOLVED_SERVER_ENTRY;
           }
@@ -4054,6 +4067,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
             if (Object.keys(ssrManifest).length > 0) metadata.ssrManifest = ssrManifest;
             return `export default ${JSON.stringify(metadata)};`;
+          }
+          if (id === RESOLVED_CACHEABILITY_MANIFEST) {
+            return "export default undefined;";
           }
           // App Router virtual modules
           if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
@@ -4444,6 +4460,10 @@ export const loadServerActionClient = ${
         return null;
       },
     },
+    // @cloudflare/vite-plugin emits the deployable Wrangler config during its
+    // generateBundle hook. Run post-order so ordinary builds carry an inert
+    // text module and two-stage deploys can replace that one known artifact.
+    createCacheabilityManifestModulePlugin(),
     {
       name: "vinext:css-url-assets-restore",
       enforce: "post",

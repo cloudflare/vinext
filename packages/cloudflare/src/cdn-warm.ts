@@ -24,6 +24,7 @@ import {
 } from "vinext/internal/server/app-rsc-cache-busting";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
+import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "vinext/internal/server/headers";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "./cache/cdn-build-id.js";
 
 export type CdnWarmOptions = {
@@ -670,7 +671,15 @@ function validateReadinessResponse(
   kind: "html" | "rsc",
   expectedBuildId?: string,
   expectedRscBuildId?: string,
+  versionIdentityProbe = false,
 ): string | null {
+  if (versionIdentityProbe) {
+    if (response.status < 200 || response.status >= 300) return `HTTP ${response.status}`;
+    if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
+      return "expected cacheability identity response";
+    }
+    return null;
+  }
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation?.outcome === "failed") return buildIdentityValidation.error;
   if (
@@ -717,14 +726,28 @@ export async function waitForCdnWarmTargetReadiness(
     maxAttempts?: number;
     probeIntervalMs?: number;
     requiredConsecutiveSuccesses?: number;
+    versionIdentityProbe?: boolean;
   },
 ): Promise<CdnWarmReadinessResult> {
   const rscPath = options.plan.rscPaths[0] ?? options.plan.loadingShellPaths[0];
   const htmlPath = options.plan.paths[0];
-  const kind = rscPath ? "rsc" : "html";
-  const pathname = rscPath ?? htmlPath;
+  const kind = options.versionIdentityProbe ? "html" : rscPath ? "rsc" : "html";
+  const pathname = options.versionIdentityProbe ? (htmlPath ?? rscPath) : (rscPath ?? htmlPath);
   if (!pathname) return { ready: true };
-  if (options.expectedBuildId === undefined && options.expectedRscBuildId === undefined) {
+  if (
+    options.versionIdentityProbe &&
+    new Headers(options.headers).get(VINEXT_EXPECTED_WORKER_VERSION_HEADER) === null
+  ) {
+    return {
+      error: `no ${VINEXT_EXPECTED_WORKER_VERSION_HEADER} is available for a Worker identity probe`,
+      ready: false,
+    };
+  }
+  if (
+    !options.versionIdentityProbe &&
+    options.expectedBuildId === undefined &&
+    options.expectedRscBuildId === undefined
+  ) {
     return {
       error: "no response build identity is available for a staged-version readiness probe",
       ready: false,
@@ -773,6 +796,7 @@ export async function waitForCdnWarmTargetReadiness(
         kind,
         options.expectedBuildId,
         options.expectedRscBuildId,
+        options.versionIdentityProbe,
       );
       if (process.env.VINEXT_CDN_WARM_DEBUG === "1") {
         console.log(

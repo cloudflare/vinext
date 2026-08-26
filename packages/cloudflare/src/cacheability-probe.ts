@@ -95,6 +95,13 @@ export function buildCacheabilityWarmHeaders(root: string, headers?: HeadersInit
   return result;
 }
 
+export function buildCacheabilityIdentityHeaders(root: string, headers?: HeadersInit): Headers {
+  const result = new Headers(headers);
+  result.set(VINEXT_CACHEABILITY_PROBE_HEADER, "identity");
+  result.set(VINEXT_PRERENDER_SECRET_HEADER, readPrerenderSecret(root));
+  return result;
+}
+
 async function probeRoute(options: {
   headers?: HeadersInit;
   route: CacheabilityProbeRoute;

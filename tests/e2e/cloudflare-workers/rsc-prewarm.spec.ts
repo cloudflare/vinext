@@ -217,6 +217,25 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   expect(warmedResponse.headers()["cf-cache-status"]).toBe("HIT");
   await warmedResponse.dispose();
 
+  // The embedded manifest is route classification, not a warmed artifact.
+  // Purging the CDN entry must therefore allow the same final Worker to admit
+  // and refill it again without another probe deployment.
+  const purgeTarget = "/cache-probe/static/known";
+  const beforePurge = await getResponseAfterPromotion(request, `${baseURL}${purgeTarget}`);
+  expect(beforePurge.headers()["cf-cache-status"]).toBe("HIT");
+  await beforePurge.dispose();
+  const purge = await request.post(`${baseURL}/api/revalidate-path`, {
+    data: { path: purgeTarget },
+  });
+  expect(purge.ok()).toBe(true);
+  await purge.dispose();
+  const refilled = await getResponseAfterPromotion(request, `${baseURL}${purgeTarget}`);
+  expect(refilled.headers()["cf-cache-status"]).toBe("MISS");
+  await refilled.dispose();
+  const reusedAfterPurge = await getResponseAfterPromotion(request, `${baseURL}${purgeTarget}`);
+  expect(reusedAfterPurge.headers()["cf-cache-status"]).toBe("HIT");
+  await reusedAfterPurge.dispose();
+
   const workerName = new URL(baseURL).hostname.split(".")[0];
   const downstreamOnlyOverride = await request.get(`${baseURL}/api/prewarm-version?downstream=1`, {
     headers: {

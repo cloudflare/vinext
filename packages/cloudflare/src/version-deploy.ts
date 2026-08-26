@@ -289,12 +289,14 @@ export function runWranglerVersionDeploy(
   root: string,
   versionTraffic: readonly WranglerVersionTraffic[],
   options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
-  phase: "stage" | "promote-warmed" | "promote-uploaded" = "promote-uploaded",
+  phase: "rollback" | "stage" | "promote-warmed" | "promote-uploaded" = "promote-uploaded",
   execute: typeof execFileSync = execFileSync,
 ): WranglerVersionDeployResult {
   const { args, env } = buildWranglerVersionDeployArgs(versionTraffic, options);
   const target = env ? `env: ${env}` : "production";
-  if (phase === "stage") {
+  if (phase === "rollback") {
+    console.log(`\n  Rolling back Worker traffic in ${target}...`);
+  } else if (phase === "stage") {
     console.log(`\n  Staging uploaded Worker version at 0% for CDN warmup in ${target}...`);
   } else if (phase === "promote-warmed") {
     console.log(`\n  Promoting warmed Worker version to ${target}...`);

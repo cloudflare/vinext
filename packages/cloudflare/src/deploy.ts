@@ -19,7 +19,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { emitPrerenderPathManifest } from "vinext/internal/build/prerender-paths";
 import { runPrerender } from "vinext/internal/build/run-prerender";
 import {
-  CACHEABILITY_MANIFEST_PLACEHOLDER,
   cacheabilityRouteKey,
   type CacheabilityManifest,
 } from "vinext/internal/server/cacheability-manifest";
@@ -85,6 +84,7 @@ import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
 import {
+  buildCacheabilityIdentityHeaders,
   buildCacheabilityWarmHeaders,
   probeStagedWorkerCacheability,
   type CacheabilityProbeResolution,
@@ -93,7 +93,10 @@ import {
   CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY,
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
 } from "vinext/internal/server/cacheability-limits";
-import { withEmbeddedCacheabilityManifest } from "./cacheability-artifact.js";
+import {
+  assertCacheabilityManifestArtifact,
+  withEmbeddedCacheabilityManifest,
+} from "./cacheability-artifact.js";
 
 export const DEFAULT_CDN_WARM_PROMOTION_DELAY_MS = 15_000;
 const CACHEABILITY_DEPLOY_TIMEOUT_MARGIN_MS = 5_000;
@@ -765,24 +768,12 @@ function validateTwoStageCacheabilityArtifact(
     );
   }
 
-  const containsPlaceholder = (directory: string): boolean => {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-      const entryPath = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
-        if (containsPlaceholder(entryPath)) return true;
-      } else if (
-        entry.isFile() &&
-        (entry.name.endsWith(".js") || entry.name.endsWith(".mjs")) &&
-        fs.readFileSync(entryPath, "utf-8").includes(CACHEABILITY_MANIFEST_PLACEHOLDER)
-      ) {
-        return true;
-      }
-    }
-    return false;
-  };
-  if (!containsPlaceholder(path.dirname(configPath))) {
+  try {
+    assertCacheabilityManifestArtifact(configPath);
+  } catch (error) {
     throw new Error(
-      "Cannot embed the cacheability manifest because its placeholder was not found in the generated Worker artifacts. Rebuild the app before deploying.",
+      "Two-stage CDN warming requires a Worker build with its generated cacheability manifest module. Rebuild the app before deploying.",
+      { cause: error },
     );
   }
 }
@@ -953,7 +944,11 @@ export async function deployWithCdnWarmup(
   }
 
   const wranglerConfig = parseWranglerConfig(root, options.config);
-  const probeUpload = runWranglerVersionUpload(root, options);
+  const probeUpload = options.twoStageCacheability
+    ? withEmbeddedCacheabilityManifest(root, options.config, null, (config) =>
+        runWranglerVersionUpload(root, { ...options, config }),
+      )
+    : runWranglerVersionUpload(root, options);
   if (options.twoStageCacheability) {
     if (!probeUpload.previewUrl) {
       throw new Error(
@@ -1038,6 +1033,7 @@ export async function deployWithCdnWarmup(
     });
 
   const deploymentStatus = runWranglerDeploymentStatus(root, options);
+  const rollbackTraffic = deploymentStatus.versions;
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, probeUpload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let finalStagingTraffic: WranglerVersionTraffic[] | null = null;
@@ -1051,6 +1047,41 @@ export async function deployWithCdnWarmup(
       : 1;
   let triggersApplied = false;
   let triggerDeploymentStarted = false;
+
+  function promotedFailure(error: unknown): Error {
+    if (!options.twoStageCacheability || options.dangerouslyPromoteOnCdnWarmError) {
+      return triggersApplied
+        ? withPromotedVersionWarmupNote(error)
+        : withPromotedVersionTriggerNote(error);
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      assertVersionServingExclusively(
+        finalUpload.versionId,
+        runWranglerDeploymentStatus(root, options),
+        "before automatic rollback",
+      );
+      runWranglerVersionDeploy(root, rollbackTraffic, options, "rollback");
+      assertDeploymentTrafficUnchanged(
+        rollbackTraffic,
+        runWranglerDeploymentStatus(root, options),
+        "after automatic rollback",
+      );
+      return new Error(
+        `${message} The final Worker version was automatically rolled back to the deployment that was serving before this two-stage deploy. ` +
+          "Worker triggers are non-versioned and may still reflect the attempted deployment.",
+        { cause: error },
+      );
+    } catch (rollbackError) {
+      const rollbackMessage =
+        rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+      return new Error(
+        `${message} Automatic rollback could not be completed safely: ${rollbackMessage}. ` +
+          "Inspect the active deployment before retrying.",
+        { cause: error },
+      );
+    }
+  }
 
   function applyTriggers(): void {
     if (triggersApplied) return;
@@ -1185,7 +1216,9 @@ export async function deployWithCdnWarmup(
           console.log("  CDN warmup: waiting for the staged Worker version to become stable...");
           const readiness = await waitForCdnWarmTargetReadiness({
             targetUrl,
-            headers,
+            headers: options.twoStageCacheability
+              ? buildCacheabilityIdentityHeaders(root, headers)
+              : headers,
             plan: options.twoStageCacheability
               ? buildFinalReadinessPlan(stagedWarmPlan, cacheabilityRoutes)
               : stagedWarmPlan,
@@ -1196,6 +1229,7 @@ export async function deployWithCdnWarmup(
             requiredConsecutiveSuccesses: options.warmCdnReadinessProbes,
             retries: options.warmCdnRetries,
             timeoutMs: options.warmCdnTimeout,
+            versionIdentityProbe: options.twoStageCacheability,
           });
           if (!readiness.ready) {
             const message = `CDN warmup could not verify staged Worker readiness: ${readiness.error}.`;
@@ -1299,6 +1333,7 @@ export async function deployWithCdnWarmup(
   }
 
   let deployed: ReturnType<typeof runWranglerVersionDeploy>;
+  let promotionCompleted = false;
   try {
     if (stagedCacheFilled) {
       const promotionDelay = options.warmCdnPromotionDelay ?? DEFAULT_CDN_WARM_PROMOTION_DELAY_MS;
@@ -1321,6 +1356,7 @@ export async function deployWithCdnWarmup(
       options,
       stagedCacheFilled ? "promote-warmed" : "promote-uploaded",
     );
+    promotionCompleted = true;
     if (options.twoStageCacheability) {
       assertVersionServingExclusively(
         finalUpload.versionId,
@@ -1329,22 +1365,50 @@ export async function deployWithCdnWarmup(
       );
     }
   } catch (error) {
+    if (promotionCompleted && options.twoStageCacheability) {
+      throw promotedFailure(error);
+    }
     throw staged ? withStagedVersionCleanupNote(error) : error;
   }
   try {
     applyTriggers();
   } catch (error) {
-    throw withPromotedVersionTriggerNote(error);
+    throw promotedFailure(error);
   }
   let postPromotionTargetUrl =
     resolveCdnWarmupTargetUrl(root, triggersDeployedUrl, options) ?? deployed.deployedUrl;
+  const finalVersionHeaders = options.twoStageCacheability
+    ? { [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: finalUpload.versionId }
+    : undefined;
+  if (options.twoStageCacheability && postPromotionTargetUrl) {
+    const readiness = await waitForCdnWarmTargetReadiness({
+      targetUrl: postPromotionTargetUrl,
+      headers: buildCacheabilityIdentityHeaders(root, finalVersionHeaders),
+      plan: buildFinalReadinessPlan(remainingWarmPlan, cacheabilityRoutes),
+      deploymentId,
+      expectedBuildId,
+      expectedRscBuildId,
+      probeIntervalMs: options.warmCdnReadinessProbeDelay,
+      requiredConsecutiveSuccesses: options.warmCdnReadinessProbes,
+      retries: options.warmCdnRetries,
+      timeoutMs: options.warmCdnTimeout,
+      versionIdentityProbe: true,
+    });
+    if (!readiness.ready) {
+      throw promotedFailure(
+        new Error(
+          `CDN warmup could not verify the promoted manifest-bearing Worker on the production hostname: ${readiness.error}.`,
+        ),
+      );
+    }
+  }
   if (!warmPlanDiscovered && postPromotionTargetUrl) {
     try {
       console.log("  CDN warmup: discovering paths from the promoted Worker version...");
-      await discoverWarmPlan(postPromotionTargetUrl);
+      await discoverWarmPlan(postPromotionTargetUrl, finalVersionHeaders);
       remainingWarmPlan = prepareWarmPlan(remainingWarmPlan);
     } catch (error) {
-      throw withPromotedVersionWarmupNote(error);
+      throw promotedFailure(error);
     }
   }
   const remainingWarmRequests = countRemainingWarmRequests();
@@ -1354,7 +1418,7 @@ export async function deployWithCdnWarmup(
       try {
         const warmResult = await warmUploadedVersion(
           targetUrl,
-          undefined,
+          finalVersionHeaders,
           true,
           remainingWarmPlan,
           options.twoStageCacheability === true,
@@ -1366,7 +1430,7 @@ export async function deployWithCdnWarmup(
           );
           const verification = await verifyUploadedVersionCache(
             targetUrl,
-            undefined,
+            finalVersionHeaders,
             warmResult.warmedPlan,
           );
           if (verification.warmed !== warmResult.warmed) {
@@ -1388,10 +1452,10 @@ export async function deployWithCdnWarmup(
           };
         }
       } catch (error) {
-        throw withPromotedVersionWarmupNote(error);
+        throw promotedFailure(error);
       }
     } else if (!options.dangerouslyPromoteOnCdnWarmError) {
-      throw withPromotedVersionWarmupNote(
+      throw promotedFailure(
         new Error(
           "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +
             "Configure a route/custom domain, ensure Wrangler prints a workers.dev URL, or deploy without --experimental-warm-cdn-cache.",
@@ -1404,11 +1468,15 @@ export async function deployWithCdnWarmup(
     }
   }
   if (options.twoStageCacheability) {
-    assertVersionServingExclusively(
-      finalUpload.versionId,
-      runWranglerDeploymentStatus(root, options),
-      "during active cache warming and certification",
-    );
+    try {
+      assertVersionServingExclusively(
+        finalUpload.versionId,
+        runWranglerDeploymentStatus(root, options),
+        "during active cache warming and certification",
+      );
+    } catch (error) {
+      throw promotedFailure(error);
+    }
   }
   return (
     deployed.deployedUrl ??

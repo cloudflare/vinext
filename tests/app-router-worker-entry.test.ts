@@ -5,25 +5,44 @@ import { createServer, type Plugin } from "vite";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 const CAPTURE_RSC_REQUEST = "__vinextCaptureWorkerRscRequest";
+const CAPTURE_FINALIZER_CONTEXT = "__vinextCaptureFinalizerContext";
 
 function workerEntryVirtualModules(): Plugin {
   const modules = new Map([
     [
       "virtual:vinext-rsc-entry",
       `
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 export const __assetPrefix = "";
 export const __basePath = "";
 export const __imageAllowedWidths = [];
 export const __imageConfig = {};
 export const __prerenderSecret = "worker-prerender-secret";
-export default async function rscHandler(request) {
+export default async function rscHandler(request, ctx) {
   globalThis.${CAPTURE_RSC_REQUEST}(request);
+  const state = ctx[Symbol.for("vinext.cacheabilityRequestState")];
+  if (state) {
+    state.route = { kind: "app-page", partialPrerender: false, pattern: "/cacheability-context" };
+    state.outcome = { cacheable: true, cacheControl: "public, max-age=60" };
+    let sent = false;
+    return new Response(new ReadableStream({
+      pull(controller) {
+        globalThis.${CAPTURE_FINALIZER_CONTEXT}(getRequestExecutionContext() !== null);
+        if (sent) controller.close();
+        else {
+          sent = true;
+          controller.enqueue(new TextEncoder().encode("cacheable"));
+        }
+      },
+    }), { headers: { "CDN-Cache-Control": "public, max-age=60" } });
+  }
   return new Response("ok");
 }
 `,
     ],
     ["virtual:vinext-cache-adapters", "export function registerConfiguredCacheAdapters() {}"],
     ["virtual:vinext-image-adapters", "export function registerConfiguredImageOptimizer() {}"],
+    ["virtual:vinext-cacheability-manifest", "export default undefined"],
   ]);
 
   return {
@@ -71,6 +90,7 @@ describe("App Router Production server worker entry compatibility", () => {
             ctx?: {
               waitUntil(promise: Promise<unknown>): void;
               hostRuntime?: "node" | "worker";
+              isCloudflareWorker?: boolean;
               trustedRevalidateOrigin?: string;
             },
           ): Promise<Response>;
@@ -116,6 +136,58 @@ describe("App Router Production server worker entry compatibility", () => {
       Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
       if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
       else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("keeps cacheability response finalization inside the Worker execution context", async () => {
+    // No Next.js test port applies: this is vinext's Cloudflare Worker ALS boundary.
+    const observations: boolean[] = [];
+    Reflect.set(globalThis, CAPTURE_RSC_REQUEST, () => {});
+    Reflect.set(globalThis, CAPTURE_FINALIZER_CONTEXT, (active: boolean) => {
+      observations.push(active);
+    });
+
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [workerEntryVirtualModules()],
+        resolve: {
+          alias: {
+            "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+          },
+        },
+        server: { middlewareMode: true },
+      });
+      const entry = (await server.ssrLoadModule(
+        path.resolve(import.meta.dirname, "../packages/vinext/src/server/app-router-entry.ts"),
+      )) as {
+        default: {
+          fetch(request: Request, env: unknown, ctx: unknown): Promise<Response>;
+        };
+      };
+
+      const response = await entry.default.fetch(
+        new Request("https://example.com/cacheability-context", {
+          headers: {
+            "X-Vinext-Cacheability-Probe": "1",
+            "X-Vinext-Prerender-Secret": "worker-prerender-secret",
+          },
+        }),
+        undefined,
+        { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      );
+
+      const payload = await response.json();
+      expect(payload).toMatchObject({ state: "static-candidate" });
+      expect(observations.length).toBeGreaterThan(0);
+      expect(observations.every(Boolean)).toBe(true);
+    } finally {
+      await server?.close();
+      Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
+      Reflect.deleteProperty(globalThis, CAPTURE_FINALIZER_CONTEXT);
     }
   });
 

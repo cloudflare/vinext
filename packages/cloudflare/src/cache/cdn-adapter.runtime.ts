@@ -46,7 +46,6 @@ import { VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../version-headers.js";
 
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
-const WORKER_VERSION_OVERRIDE_HEADER = "Cloudflare-Workers-Version-Overrides";
 
 type WorkerVersionMetadata = {
   id: string;
@@ -188,12 +187,6 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   validateRequest(request: Request): Response | null {
     const expectedVersionId = request.headers.get(VINEXT_EXPECTED_WORKER_VERSION_HEADER);
     if (expectedVersionId === null) return null;
-
-    if (!request.headers.has(WORKER_VERSION_OVERRIDE_HEADER)) {
-      return versionValidationFailure(
-        `received ${VINEXT_EXPECTED_WORKER_VERSION_HEADER} without ${WORKER_VERSION_OVERRIDE_HEADER}.`,
-      );
-    }
 
     if (!this.versionMetadata) {
       return versionValidationFailure(

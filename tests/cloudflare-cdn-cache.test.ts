@@ -126,7 +126,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(await routedAdapter.validateRequest?.(downstreamOnly)).toBeNull();
   });
 
-  it("rejects a vinext version assertion without a Cloudflare version override", async () => {
+  it("accepts a promoted-version assertion without a Cloudflare version override", async () => {
     const routedAdapter = createCloudflareCdnCacheAdapter({
       env: { CF_VERSION_METADATA: { id: "version-a", tag: "", timestamp: "" } },
     });
@@ -134,11 +134,7 @@ describe("CloudflareCdnCacheAdapter", () => {
       headers: { [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-a" },
     });
 
-    const response = await routedAdapter.validateRequest?.(request);
-    expect(response?.status).toBe(503);
-    await expect(response?.text()).resolves.toContain(
-      `received ${VINEXT_EXPECTED_WORKER_VERSION_HEADER} without Cloudflare-Workers-Version-Overrides`,
-    );
+    expect(await routedAdapter.validateRequest?.(request)).toBeNull();
   });
 
   it("fails an override loudly when its configured version metadata binding is missing", async () => {
