@@ -162,6 +162,10 @@ export type CacheContext = {
 // Store on globalThis via Symbol so headers.ts can detect "use cache" scope
 // without a direct import (avoiding circular dependencies).
 export const cacheContextStorage = getOrCreateAls<CacheContext>("vinext.cacheRuntime.contextAls");
+// `unstable_cache()` owns a separate scope in cache.ts. Use the shared ALS
+// registry directly here so checking the parent does not pull the full
+// `next/cache` implementation into the use-cache runtime chunk.
+const unstableCacheContextStorage = getOrCreateAls<boolean>("vinext.unstableCache.als");
 
 // Register the context accessor so cacheLife()/cacheTag() in cache.ts can
 // access the context without a circular import.
@@ -607,6 +611,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       if (parentCtx && parentCtx.variant !== "private") {
         throwPrivateUseCacheInsidePublicUseCacheError();
       }
+      if (unstableCacheContextStorage.getStore() === true) {
+        throwPrivateUseCacheInsideUnstableCacheError();
+      }
       // Next.js decides that a private cache requires request-time execution at
       // the cache boundary, before key serialization or any private user code.
       markDynamicUsage();
@@ -912,6 +919,13 @@ function throwPrivateUseCacheInsidePublicUseCacheError(): never {
   const error = new Error(
     '"use cache: private" must not be used within "use cache". It can only be nested inside of another "use cache: private".',
   );
+  const ctx = getRequestContext();
+  if (ctx) ctx.invalidDynamicUsageError = error;
+  throw error;
+}
+
+function throwPrivateUseCacheInsideUnstableCacheError(): never {
+  const error = new Error('"use cache: private" must not be used within `unstable_cache()`.');
   const ctx = getRequestContext();
   if (ctx) ctx.invalidDynamicUsageError = error;
   throw error;
