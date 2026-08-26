@@ -25,6 +25,22 @@
       "state": "runtime-check",
       "status": 200
     },
+    "[\"app-page\",\"/cacheability/static\",\"rsc-full\",\"/cacheability/static?_rsc\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/static",
+      "representation": "rsc-full",
+      "requestKey": "/cacheability/static?_rsc",
+      "state": "static-candidate",
+      "status": 200
+    },
+    "[\"app-page\",\"/cacheability/static\",\"rsc-loading-shell\",\"/cacheability/static?_rsc=9qLBDIU2NgN178cB\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/static",
+      "representation": "rsc-loading-shell",
+      "requestKey": "/cacheability/static?_rsc=9qLBDIU2NgN178cB",
+      "state": "static-candidate",
+      "status": 200
+    },
     "[\"app-page\",\"/cacheability/static-to-dynamic/:slug\",\"html\",\"/cacheability/static-to-dynamic/runtime\"]": {
       "kind": "app-page",
       "pattern": "/cacheability/static-to-dynamic/:slug",

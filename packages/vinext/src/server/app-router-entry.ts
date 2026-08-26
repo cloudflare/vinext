@@ -147,8 +147,8 @@ async function handleRequest(
     getCdnCacheAdapter().requiresCompletedResponseAdmission === true;
   if (
     !finalizeCacheabilityResponse &&
-    isPotentialCompletedAdmissionRequest(request) &&
-    (__rscCacheabilityManifest || requiresCompletedResponseAdmission)
+    (__rscCacheabilityManifest || requiresCompletedResponseAdmission) &&
+    isPotentialCompletedAdmissionRequest(request)
   ) {
     const cacheability = await import("./cacheability-request.js");
     const admissionContext = cacheability.createWorkerCacheabilityAdmissionContext(

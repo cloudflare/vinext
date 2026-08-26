@@ -162,7 +162,7 @@ async function waitForStablePromotion({
   );
 }
 
-test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
+test("deploy-prewarmed App HTML and RSC variants are reused", async ({
   baseURL,
   browser,
   playwright,
@@ -224,10 +224,10 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   expect(pagesResponse.ok(), JSON.stringify(pagesResponseHeaders)).toBe(true);
   expect(pagesResponseHeaders["content-type"]).toContain("text/html");
   expect(pagesResponseHeaders["x-vinext-build-id"]).toBe(rscBuildId);
-  expect(
-    pagesResponseHeaders["cf-cache-status"],
-    `Pages response headers: ${JSON.stringify(pagesResponseHeaders)}`,
-  ).toBe("HIT");
+  // This layer only probes App Pages. Pages Router keeps its existing
+  // route-owned cache policy, but is deliberately not prewarmed yet.
+  expect(pagesResponseHeaders["cache-control"]).toContain("public");
+  expect(pagesResponseHeaders["cf-cache-status"]).toBe("MISS");
   expect(await pagesResponse.text()).toContain("Pages prewarm target");
 
   const appHtmlResponse = await getResponseAfterPromotion(
