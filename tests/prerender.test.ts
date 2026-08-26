@@ -274,7 +274,7 @@ describe("prerenderApp — RSC extraction", () => {
     const rscPayload = '0:["$","main",null,{"children":"basePath page"}]\n';
     const server = createServer((req, res) => {
       requestedPaths.push(req.url ?? "");
-      if (req.url !== "/docs/") {
+      if (req.url !== "/docs") {
         res.statusCode = 404;
         res.end("<html>not found</html>");
         return;
@@ -305,7 +305,7 @@ describe("prerenderApp — RSC extraction", () => {
         _prodServer: { server, port },
       });
 
-      expect(requestedPaths).toContain("/docs/");
+      expect(requestedPaths).toContain("/docs");
       expect(requestedPaths).not.toContain("/");
       expect(findRoute(result.routes, "/")).toMatchObject({
         route: "/",
@@ -765,6 +765,73 @@ describe("prerenderApp — RSC extraction", () => {
 });
 
 // ─── Pages Router ─────────────────────────────────────────────────────────────
+
+describe("prerenderPages — basePath export", () => {
+  it("requests and writes Pages exports under basePath", async () => {
+    const root = tmpDir("vinext-prerender-pages-basepath-");
+    const outDir = path.join(root, "out");
+    const pagesDir = path.join(root, "pages");
+    fs.mkdirSync(pagesDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pagesDir, "about.tsx"),
+      "export default function About() { return null; }\n",
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "index.tsx"),
+      "export default function Home() { return null; }\n",
+    );
+
+    const requestedPaths: string[] = [];
+    const server = createServer((req, res) => {
+      requestedPaths.push(req.url ?? "");
+      if (req.url !== "/docs" && req.url !== "/docs/about") {
+        res.statusCode = 404;
+        res.end("not found");
+        return;
+      }
+      res.setHeader("content-type", "text/html");
+      res.end(`<!DOCTYPE html><html><body>Pages basePath ${req.url}</body></html>`);
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+      const { pagesRouter, apiRouter } =
+        await import("../packages/vinext/src/routing/pages-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await pagesRouter(pagesDir);
+      const apiRoutes = await apiRouter(pagesDir);
+      const config = await resolveNextConfig({ basePath: "/docs", output: "export" });
+
+      const result = await prerenderPages({
+        mode: "export",
+        routes,
+        apiRoutes,
+        pagesDir,
+        outDir,
+        config,
+        _prodServer: { server, port },
+      });
+
+      expect(requestedPaths).toEqual(expect.arrayContaining(["/docs", "/docs/about"]));
+      expect(findRoute(result.routes, "/about")).toMatchObject({
+        route: "/about",
+        status: "rendered",
+        outputFiles: ["docs/about.html"],
+      });
+      expect(fs.readFileSync(path.join(outDir, "docs", "about.html"), "utf8")).toContain(
+        "Pages basePath /docs/about",
+      );
+      expect(fs.readFileSync(path.join(outDir, "docs.html"), "utf8")).toContain(
+        "Pages basePath /docs",
+      );
+      expect(fs.existsSync(path.join(outDir, "about.html"))).toBe(false);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("prerenderPages — default mode (pages-basic)", () => {
   let outDir: string;

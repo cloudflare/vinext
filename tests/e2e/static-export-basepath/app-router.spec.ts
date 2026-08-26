@@ -24,3 +24,13 @@ test("basePath root soft navigation uses index.txt without trailingSlash", async
   expect(documentPaths).toEqual(["/docs/about"]);
   expect(await page.evaluate(() => Reflect.get(window, "__staticExportSoftNavigation"))).toBe(true);
 });
+
+test("serves static metadata and the rendered 404 under basePath", async ({ request }) => {
+  const robots = await request.get(`${BASE}/docs/robots.txt`);
+  expect(robots.status()).toBe(200);
+  expect(await robots.text()).toContain("Disallow: /docs/private");
+
+  const missing = await request.get(`${BASE}/docs/missing`);
+  expect(missing.status()).toBe(404);
+  expect(await missing.text()).toContain("BasePath Not Found");
+});
