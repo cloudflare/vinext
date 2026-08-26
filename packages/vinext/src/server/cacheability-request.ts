@@ -1,10 +1,15 @@
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import {
   CACHEABILITY_REQUEST_STATE,
+  CACHEABILITY_POLICY_HEADERS,
   type RouteCacheabilityOutcome,
   type RouteCacheabilityState,
 } from "vinext/shims/cacheability-classification";
-import { applyCdnResponseHeaders, NO_STORE_CACHE_CONTROL } from "./cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  isNonCacheableCacheControl,
+  NO_STORE_CACHE_CONTROL,
+} from "./cache-control.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -401,6 +406,22 @@ function cacheabilityEvaluationFailureResponse(pattern: string): Response {
   });
 }
 
+function hasStrictFinalResponseVeto(response: Response, state: RouteCacheabilityState): boolean {
+  if (state.finalResponseVetoReason || response.headers.has("set-cookie")) return true;
+
+  for (const name of CACHEABILITY_POLICY_HEADERS) {
+    const value = response.headers.get(name);
+    if (
+      value !== null &&
+      value !== state.initialResponseCachePolicy?.[name] &&
+      isNonCacheableCacheControl(value)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function finalizeWorkerCacheabilityAdmission(
   response: Response,
   state: RouteCacheabilityState,
@@ -437,6 +458,9 @@ async function finalizeWorkerCacheabilityAdmission(
   }
 
   if (state.forcedDynamicReason) {
+    return responseWithCachePolicy(response, response.body, null);
+  }
+  if (hasStrictFinalResponseVeto(response, state)) {
     return responseWithCachePolicy(response, response.body, null);
   }
   if (hasUnsupportedCacheabilityVary(response.headers)) {

@@ -2,6 +2,14 @@ import { getRequestExecutionContext } from "./request-context.js";
 
 export const CACHEABILITY_REQUEST_STATE = Symbol.for("vinext.cacheabilityRequestState");
 
+export const CACHEABILITY_POLICY_HEADERS = [
+  "cache-control",
+  "cdn-cache-control",
+  "cloudflare-cdn-cache-control",
+] as const;
+
+type CacheabilityPolicyHeader = (typeof CACHEABILITY_POLICY_HEADERS)[number];
+
 export type RouteCacheabilityOutcome = {
   cacheControl?: string;
   cacheable: boolean;
@@ -23,7 +31,9 @@ export type RouteCacheabilityState = {
   captureDeadlineAt: number;
   complete?: (outcome: RouteCacheabilityOutcome) => void;
   completion?: Promise<RouteCacheabilityOutcome>;
+  finalResponseVetoReason?: string;
   forcedDynamicReason?: string;
+  initialResponseCachePolicy?: Partial<Record<CacheabilityPolicyHeader, string>>;
   mode: "admit" | "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
   route?: {
@@ -52,6 +62,26 @@ export function markRouteCacheabilityDynamic(reason: string): void {
   const state = readRouteCacheabilityState();
   if (!state) return;
   state.forcedDynamicReason = reason;
+}
+
+/** Keep a completed response private without treating it as static-to-dynamic. */
+export function markRouteCacheabilityFinalResponseUncacheable(reason: string): void {
+  const state = readRouteCacheabilityState();
+  if (!state || state.mode !== "admit") return;
+  state.finalResponseVetoReason ??= reason;
+}
+
+/** Record renderer-owned policy so admission can identify policy added later. */
+export function captureRouteCacheabilityResponsePolicy(headers: Headers): void {
+  const state = readRouteCacheabilityState();
+  if (!state || state.mode !== "admit" || state.initialResponseCachePolicy) return;
+
+  const policy: Partial<Record<CacheabilityPolicyHeader, string>> = {};
+  for (const name of CACHEABILITY_POLICY_HEADERS) {
+    const value = headers.get(name);
+    if (value !== null) policy[name] = value;
+  }
+  state.initialResponseCachePolicy = policy;
 }
 
 /** True only for an authenticated probe that must render the matched App Page. */

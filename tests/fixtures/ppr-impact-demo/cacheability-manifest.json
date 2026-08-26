@@ -25,6 +25,38 @@
       "state": "runtime-check",
       "status": 200
     },
+    "[\"app-page\",\"/cacheability/static\",\"html\",\"/cacheability/static?late-policy=set-cookie\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/static",
+      "representation": "html",
+      "requestKey": "/cacheability/static?late-policy=set-cookie",
+      "state": "static-candidate",
+      "status": 200
+    },
+    "[\"app-page\",\"/cacheability/static\",\"html\",\"/cacheability/static?late-policy=cache-control\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/static",
+      "representation": "html",
+      "requestKey": "/cacheability/static?late-policy=cache-control",
+      "state": "static-candidate",
+      "status": 200
+    },
+    "[\"app-page\",\"/cacheability/static\",\"html\",\"/cacheability/static?late-policy=cdn-cache-control\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/static",
+      "representation": "html",
+      "requestKey": "/cacheability/static?late-policy=cdn-cache-control",
+      "state": "static-candidate",
+      "status": 200
+    },
+    "[\"app-page\",\"/cacheability/static\",\"html\",\"/cacheability/static?late-policy=cloudflare-cdn-cache-control\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/static",
+      "representation": "html",
+      "requestKey": "/cacheability/static?late-policy=cloudflare-cdn-cache-control",
+      "state": "static-candidate",
+      "status": 200
+    },
     "[\"app-page\",\"/cacheability/static\",\"rsc-full\",\"/cacheability/static?_rsc\"]": {
       "kind": "app-page",
       "pattern": "/cacheability/static",

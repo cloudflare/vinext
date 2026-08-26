@@ -20,6 +20,7 @@ import { readStreamAsText } from "../utils/text-stream.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import {
+  captureRouteCacheabilityResponsePolicy,
   deferRouteCacheability,
   isRouteCacheabilityEvaluation,
   type RouteCacheabilityOutcome,
@@ -192,6 +193,7 @@ function finalizeEvaluatedAppPageResponse(
   if (!isRouteCacheabilityEvaluation()) return null;
   const complete = deferRouteCacheability();
   if (!complete) return response;
+  captureRouteCacheabilityResponsePolicy(response.headers);
 
   let completed = false;
   const finish = (): void => {

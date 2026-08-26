@@ -37,6 +37,25 @@ test("admits only exact manifest-backed App Page responses after clean EOF", asy
   expect(runtimeCheck.status()).toBe(200);
   expect(runtimeCheck.headers()["cdn-cache-control"]).toContain("public");
 
+  const lateCookie = await request.get("/cacheability/static?late-policy=set-cookie", {
+    headers: { Accept: "text/html" },
+  });
+  expect(lateCookie.status()).toBe(200);
+  expect(lateCookie.headers()["set-cookie"]).toContain("late-config=cookie");
+  expect(lateCookie.headers()["cache-control"]).toContain("no-store");
+  expect(lateCookie.headers()["cdn-cache-control"]).toBeUndefined();
+  expect(lateCookie.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+
+  for (const policy of ["cache-control", "cdn-cache-control", "cloudflare-cdn-cache-control"]) {
+    const latePrivatePolicy = await request.get(`/cacheability/static?late-policy=${policy}`, {
+      headers: { Accept: "text/html" },
+    });
+    expect(latePrivatePolicy.status()).toBe(200);
+    expect(latePrivatePolicy.headers()["cache-control"]).toContain("no-store");
+    expect(latePrivatePolicy.headers()["cdn-cache-control"]).toBeUndefined();
+    expect(latePrivatePolicy.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+  }
+
   const unlistedQuery = await request.get("/cacheability/static?unlisted=1", {
     headers: { Accept: "text/html" },
   });

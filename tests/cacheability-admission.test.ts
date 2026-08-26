@@ -126,6 +126,7 @@ describe("single-request cacheability admission", () => {
       cacheable: true,
       cacheControl: "s-maxage=60, stale-while-revalidate=540",
     };
+    state.initialResponseCachePolicy = { "cache-control": "no-store" };
 
     const response = await finalizeWorkerCacheabilityResponse(
       new Response("static", { headers: { "Cache-Control": "no-store" } }),

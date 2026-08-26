@@ -5,9 +5,15 @@ import {
   type RequestContext,
 } from "../config/config-matchers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
-import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
+import {
+  CACHEABILITY_POLICY_HEADERS,
+  markRouteCacheabilityDynamic,
+  markRouteCacheabilityFinalResponseUncacheable,
+} from "vinext/shims/cacheability-classification";
+import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 
 const ADDITIVE_CONFIG_HEADER_NAMES = new Set(["set-cookie", "vary"]);
+const CACHEABILITY_POLICY_HEADER_NAMES = new Set<string>(CACHEABILITY_POLICY_HEADERS);
 
 function markConditionalConfigHeaderCacheability(rule: NextHeader): void {
   if (
@@ -19,6 +25,23 @@ function markConditionalConfigHeaderCacheability(rule: NextHeader): void {
     // isolated by the platform. Headers and cookies are neither, so a response
     // header selected by either cannot be shared safely under the request URL.
     markRouteCacheabilityDynamic("next.config headers depend on request headers or cookies");
+  }
+}
+
+function markExplicitConfigResponseVeto(
+  matched: ReadonlyArray<{ key: string; value: string }>,
+): void {
+  for (const header of matched) {
+    const name = header.key.toLowerCase();
+    if (name === "set-cookie") {
+      markRouteCacheabilityFinalResponseUncacheable("next.config headers set a cookie");
+      continue;
+    }
+    if (CACHEABILITY_POLICY_HEADER_NAMES.has(name) && isNonCacheableCacheControl(header.value)) {
+      markRouteCacheabilityFinalResponseUncacheable(
+        `next.config headers set a non-cacheable ${header.key} policy`,
+      );
+    }
   }
 }
 
@@ -106,6 +129,7 @@ export function applyConfigHeadersToResponse(
       markConditionalConfigHeaderCacheability,
     ),
   );
+  markExplicitConfigResponseVeto(matched);
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "link") {
@@ -138,6 +162,7 @@ export function applyConfigHeadersToHeaderRecord(
       markConditionalConfigHeaderCacheability,
     ),
   );
+  markExplicitConfigResponseVeto(matched);
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "set-cookie") {
