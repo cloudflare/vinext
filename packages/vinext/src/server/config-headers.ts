@@ -5,8 +5,22 @@ import {
   type RequestContext,
 } from "../config/config-matchers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
+import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
 
 const ADDITIVE_CONFIG_HEADER_NAMES = new Set(["set-cookie", "vary"]);
+
+function markConditionalConfigHeaderCacheability(rule: NextHeader): void {
+  if (
+    [...(rule.has ?? []), ...(rule.missing ?? [])].some(
+      (condition) => condition.type === "header" || condition.type === "cookie",
+    )
+  ) {
+    // Query values are already part of the public CDN key and hostnames are
+    // isolated by the platform. Headers and cookies are neither, so a response
+    // header selected by either cannot be shared safely under the request URL.
+    markRouteCacheabilityDynamic("next.config headers depend on request headers or cookies");
+  }
+}
 
 type ApplyConfigHeadersOptions = {
   configHeaders: NextHeader[];
@@ -89,6 +103,7 @@ export function applyConfigHeadersToResponse(
       options.configHeaders,
       options.requestContext,
       options.basePathState,
+      markConditionalConfigHeaderCacheability,
     ),
   );
   for (const header of matched) {
@@ -120,6 +135,7 @@ export function applyConfigHeadersToHeaderRecord(
       options.configHeaders,
       options.requestContext,
       options.basePathState,
+      markConditionalConfigHeaderCacheability,
     ),
   );
   for (const header of matched) {

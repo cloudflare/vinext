@@ -291,6 +291,50 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it.each([
+    {
+      condition: { type: "cookie" as const, key: "tenant" },
+      expectedReason: "next.config headers depend on request headers or cookies",
+      requestUrl: "https://example.test/docs/about",
+      requestHeaders: { Cookie: "tenant=alice" },
+    },
+    {
+      condition: { type: "query" as const, key: "tenant" },
+      expectedReason: undefined,
+      requestUrl: "https://example.test/docs/about?tenant=alice",
+      requestHeaders: undefined,
+    },
+  ])(
+    "keeps $condition.type-conditioned config header cacheability aligned with the public key",
+    async ({ condition, expectedReason, requestHeaders, requestUrl }) => {
+      const handler = createHandler({
+        configHeaders: [
+          {
+            source: "/about",
+            has: [condition],
+            headers: [{ key: "X-Tenant", value: "alice" }],
+          },
+        ],
+      });
+      const state: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 1_000,
+        mode: "admit",
+      };
+      const context = {
+        [CACHEABILITY_REQUEST_STATE]: state,
+        waitUntil() {},
+      };
+
+      const response = await runWithExecutionContext(context, () =>
+        handler(new Request(requestUrl, { headers: requestHeaders }), null),
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("X-Tenant")).toBe("alice");
+      expect(state.forcedDynamicReason).toBe(expectedReason);
+    },
+  );
+
   it("passes source config headers into Server Action execution", async () => {
     let sourceConfigHeader: string | null | undefined;
     const handleServerActionRequest: NonNullable<

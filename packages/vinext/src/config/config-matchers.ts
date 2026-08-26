@@ -1384,6 +1384,7 @@ export function matchHeaders(
   headers: NextHeader[],
   ctx: RequestContext,
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+  onRuleMatch?: (rule: NextHeader) => void,
 ): Array<{ key: string; value: string }> {
   const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
   pathname = stripTrailingSlashForConfigMatch(pathname);
@@ -1405,6 +1406,7 @@ export function matchHeaders(
           continue;
         }
       }
+      onRuleMatch?.(rule);
       result.push(...rule.headers);
     }
   }
