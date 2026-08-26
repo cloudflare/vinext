@@ -54,6 +54,8 @@ export type ApplyAppMiddlewareResult =
       cleanPathname: string;
       /** Present on real middleware results; optional for older generated callers. */
       matched?: boolean;
+      /** True when this pathname can match middleware for some request context. */
+      pathnameEligible?: boolean;
       rewritten: boolean;
       search: string | null;
     }
@@ -61,6 +63,8 @@ export type ApplyAppMiddlewareResult =
       kind: "response";
       /** Present on real middleware results; optional for older generated callers. */
       matched?: boolean;
+      /** True when this pathname can match middleware for some request context. */
+      pathnameEligible?: boolean;
       response: Response;
     };
 
@@ -275,6 +279,7 @@ export async function applyAppMiddleware(
 ): Promise<ApplyAppMiddlewareResult> {
   const forwarded = applyForwardedMiddlewareContext(options.request, options.context);
   let matched = forwarded.applied;
+  let pathnameEligible = forwarded.applied;
   let cleanPathname = options.cleanPathname;
   let rewritten = false;
   let search: string | null = null;
@@ -288,6 +293,7 @@ export async function applyAppMiddleware(
           return {
             kind: "response",
             matched,
+            pathnameEligible,
             response: validationResponseWithMiddlewareHeaders(validationResponse, options.context),
           };
         }
@@ -296,6 +302,7 @@ export async function applyAppMiddleware(
         return {
           kind: "response",
           matched,
+          pathnameEligible,
           response: await proxyExternalMiddlewareRewrite(
             externalRequest,
             forwarded.rewriteUrl,
@@ -335,6 +342,9 @@ export async function applyAppMiddleware(
         onMatch() {
           matched = true;
         },
+        onPathMatch() {
+          pathnameEligible = true;
+        },
         requestBodyAlreadyIsolated: true,
         request: middlewareRequest,
         trailingSlash: options.trailingSlash,
@@ -349,12 +359,22 @@ export async function applyAppMiddleware(
     if (!result.continue) {
       cancelRequestBody(options.request);
       if (result.redirectUrl) {
-        return { kind: "response", matched, response: responseFromMiddlewareRedirect(result) };
+        return {
+          kind: "response",
+          matched,
+          pathnameEligible,
+          response: responseFromMiddlewareRedirect(result),
+        };
       }
       if (result.response) {
-        return { kind: "response", matched, response: result.response };
+        return { kind: "response", matched, pathnameEligible, response: result.response };
       }
-      return { kind: "response", matched, response: internalServerErrorResponse() };
+      return {
+        kind: "response",
+        matched,
+        pathnameEligible,
+        response: internalServerErrorResponse(),
+      };
     }
 
     if (result.responseHeaders) {
@@ -375,6 +395,7 @@ export async function applyAppMiddleware(
           return {
             kind: "response",
             matched,
+            pathnameEligible,
             response: validationResponseWithMiddlewareHeaders(validationResponse, options.context),
           };
         }
@@ -382,6 +403,7 @@ export async function applyAppMiddleware(
         return {
           kind: "response",
           matched,
+          pathnameEligible,
           response: await proxyExternalMiddlewareRewrite(
             externalRequest,
             result.rewriteUrl,
@@ -408,5 +430,12 @@ export async function applyAppMiddleware(
     processMiddlewareHeaders(options.context.headers);
   }
 
-  return { kind: "continue", cleanPathname, matched, rewritten, search };
+  return {
+    kind: "continue",
+    cleanPathname,
+    matched,
+    pathnameEligible,
+    rewritten,
+    search,
+  };
 }

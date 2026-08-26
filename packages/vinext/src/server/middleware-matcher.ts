@@ -75,6 +75,49 @@ export function matchesMiddleware(
   return false;
 }
 
+/**
+ * Whether a pathname can reach middleware, ignoring request-specific
+ * `has`/`missing` conditions. This is deliberately separate from
+ * `matchesMiddleware`: ordinary middleware execution must still evaluate the
+ * full request, while cacheability certification needs a stable answer for
+ * every request that can share the pathname's cache entry.
+ */
+export function matchesMiddlewarePathname(
+  pathname: string,
+  matcher: MatcherConfig | undefined,
+  i18nConfig?: NextI18nConfig | null,
+  localeContext?: MiddlewareLocaleMatchContext,
+): boolean {
+  if (!matcher) {
+    return true;
+  }
+
+  if (typeof matcher === "string") {
+    return matchMatcherPattern(pathname, matcher, i18nConfig, localeContext);
+  }
+  if (!Array.isArray(matcher)) {
+    return true;
+  }
+
+  for (const item of matcher) {
+    if (typeof item === "string") {
+      if (matchMatcherPattern(pathname, item, i18nConfig, localeContext)) {
+        return true;
+      }
+      continue;
+    }
+
+    if (!isValidMiddlewareMatcherObjectConfig(item)) {
+      return true;
+    }
+    if (matchObjectMatcher(pathname, item, i18nConfig, localeContext)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function matchMatcherPattern(
   pathname: string,
   pattern: string,

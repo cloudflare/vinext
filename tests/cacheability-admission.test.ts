@@ -223,6 +223,62 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toContain("changed from static to dynamic");
   });
 
+  const lateFinalPolicyCases: Array<{
+    finalHeaders: Record<string, string>;
+    initialPolicy: NonNullable<RouteCacheabilityState["initialResponseCachePolicy"]>;
+    name: string;
+  }> = [
+    {
+      finalHeaders: { "Set-Cookie": "session=private; Path=/; HttpOnly" },
+      initialPolicy: {},
+      name: "Set-Cookie",
+    },
+    {
+      finalHeaders: { "Cache-Control": "private, no-store" },
+      initialPolicy: { "cache-control": "public, s-maxage=60" },
+      name: "Cache-Control",
+    },
+    {
+      finalHeaders: { "CDN-Cache-Control": "private, no-store" },
+      initialPolicy: { "cdn-cache-control": "public, s-maxage=60" },
+      name: "CDN-Cache-Control",
+    },
+    {
+      finalHeaders: { "Cloudflare-CDN-Cache-Control": "private, no-store" },
+      initialPolicy: { "cloudflare-cdn-cache-control": "public, s-maxage=60" },
+      name: "Cloudflare-CDN-Cache-Control",
+    },
+  ];
+
+  it.each(lateFinalPolicyCases)(
+    "keeps a manifest-backed response private after late $name",
+    async (testCase) => {
+      const { raw } = staticManifestRoute();
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        request,
+        raw,
+        "build-a",
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind: "app-page", pattern: "/page" };
+      state.initialResponseCachePolicy = testCase.initialPolicy;
+      state.outcome = {
+        cacheable: true,
+        cacheControl: "s-maxage=60, stale-while-revalidate=540",
+      };
+
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response("late private response", { headers: testCase.finalHeaders }),
+        context,
+      );
+
+      expect(state.finalResponseVetoReason).toBeUndefined();
+      expect(response.headers.get("Cache-Control")).toContain("no-store");
+      await expect(response.text()).resolves.toBe("late private response");
+    },
+  );
+
   it("does not add admission overhead for adapters that persist completed artifacts", () => {
     const base = { waitUntil() {} };
     expect(createWorkerCacheabilityAdmissionContext(base, request, null, "build-a", false)).toBe(

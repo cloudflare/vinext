@@ -914,12 +914,16 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       request: userlandRequest,
       validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
     });
-    if (middlewareResult.matched) {
+    if (middlewareResult.pathnameEligible) {
       // Next.js runs matched middleware before serving a page response. A CDN
       // HIT in front of this Worker would skip that request-specific boundary,
       // so this architecture must remain private until middleware is isolated
       // into an uncached outer stage.
-      markRouteCacheabilityDynamic("middleware matched this request");
+      markRouteCacheabilityDynamic(
+        middlewareResult.matched
+          ? "middleware matched this request"
+          : "middleware is eligible for this pathname",
+      );
     }
     if (middlewareResult.kind === "response") {
       if (request.body && !request.body.locked) {
@@ -1277,8 +1281,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         void sourceRequest.body.cancel().catch(() => {});
       }
     }
-    if (sourceMiddlewareResult.matched) {
-      markRouteCacheabilityDynamic("middleware matched this request");
+    if (sourceMiddlewareResult.pathnameEligible) {
+      markRouteCacheabilityDynamic(
+        sourceMiddlewareResult.matched
+          ? "middleware matched this request"
+          : "middleware is eligible for this pathname",
+      );
     }
     if (sourceMiddlewareResult.kind === "response") {
       options.clearRequestContext();

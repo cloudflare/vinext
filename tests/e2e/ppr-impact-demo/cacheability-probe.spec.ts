@@ -89,6 +89,39 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
+  // Next.js first matches the pathname regexp and only then evaluates
+  // request-specific `has`/`missing` conditions:
+  // packages/next/src/shared/lib/router/utils/middleware-route-matcher.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/middleware-route-matcher.ts
+  // A condition-free staged probe must therefore not certify a pathname that
+  // a later cookie- or header-bearing request can send through middleware.
+  for (const { conditionHeaders, pathname } of [
+    {
+      conditionHeaders: { Cookie: "cacheability-middleware=1" },
+      pathname: "/cacheability/conditional-middleware-cookie",
+    },
+    {
+      conditionHeaders: { "X-Cacheability-Middleware": "enabled" },
+      pathname: "/cacheability/conditional-middleware-header",
+    },
+  ]) {
+    const conditionMiss = await request.get(pathname);
+    expect(conditionMiss.headers()["x-cacheability-middleware"]).toBeUndefined();
+    const conditionHit = await request.get(pathname, { headers: conditionHeaders });
+    expect(conditionHit.headers()["x-cacheability-middleware"]).toBe("matched");
+
+    const conditionalMiddlewareProbe = await request.get(pathname, { headers });
+    expect(conditionalMiddlewareProbe.ok()).toBe(true);
+    await expect(conditionalMiddlewareProbe.json()).resolves.toMatchObject({
+      kind: "app-page",
+      pattern: pathname,
+      reason: "middleware is eligible for this pathname",
+      state: "dynamic",
+      status: 200,
+      version: 1,
+    });
+  }
+
   const identityProbe = await request.get("/cacheability/static", {
     headers: { ...headers, [probeHeader]: "identity" },
   });

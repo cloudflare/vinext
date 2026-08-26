@@ -6,4 +6,16 @@ export function proxy() {
   return response;
 }
 
-export const config = { matcher: "/cacheability/middleware" };
+export const config = {
+  matcher: [
+    "/cacheability/middleware",
+    {
+      source: "/cacheability/conditional-middleware-cookie",
+      has: [{ type: "cookie", key: "cacheability-middleware" }],
+    },
+    {
+      source: "/cacheability/conditional-middleware-header",
+      has: [{ type: "header", key: "x-cacheability-middleware", value: "enabled" }],
+    },
+  ],
+};

@@ -17,6 +17,7 @@ import {
 } from "./headers.js";
 import {
   matchesMiddleware,
+  matchesMiddlewarePathname,
   type MatcherConfig,
   type MiddlewareLocaleMatchContext,
 } from "./middleware-matcher.js";
@@ -36,6 +37,8 @@ export type MiddlewareModule = Record<string, unknown>;
 
 export type MiddlewareResult = {
   continue: boolean;
+  /** True when this pathname can match middleware for some request context. */
+  pathnameEligible?: boolean;
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
@@ -84,6 +87,8 @@ type ExecuteMiddlewareOptions = {
   normalizedPathname?: string;
   /** Called only after the configured matcher accepts this request. */
   onMatch?: () => void;
+  /** Called when the pathname matches, before request `has`/`missing` checks. */
+  onPathMatch?: () => void;
   /**
    * The caller already created an isolated body branch for middleware. This
    * lets App Router normalize that branch's URL and headers without adding a
@@ -426,6 +431,18 @@ export async function executeMiddleware(
             };
     }
   }
+  const encodedPathMatches =
+    encodedMatchPathname !== null &&
+    matchesMiddlewarePathname(encodedMatchPathname, matcher, options.i18nConfig, localeContext);
+  const decodedPathMatches =
+    !encodedPathMatches &&
+    decodedMatchPathname !== null &&
+    decodedMatchPathname !== encodedMatchPathname &&
+    matchesMiddlewarePathname(decodedMatchPathname, matcher, options.i18nConfig, localeContext);
+  if (encodedPathMatches || decodedPathMatches) {
+    options.onPathMatch?.();
+  }
+
   const encodedMatches =
     encodedMatchPathname !== null &&
     matchesMiddleware(
@@ -643,6 +660,17 @@ export async function executeMiddleware(
 export async function runGeneratedMiddleware(
   options: RunGeneratedMiddlewareOptions,
 ): Promise<MiddlewareResult> {
-  const run = () => executeMiddleware(options);
+  let pathnameEligible = false;
+  const run = async () => {
+    const result = await executeMiddleware({
+      ...options,
+      onPathMatch() {
+        pathnameEligible = true;
+        options.onPathMatch?.();
+      },
+    });
+    if (pathnameEligible) result.pathnameEligible = true;
+    return result;
+  };
   return options.ctx ? runWithExecutionContext(options.ctx, run) : run();
 }
