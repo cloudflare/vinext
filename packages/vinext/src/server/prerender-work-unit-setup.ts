@@ -35,7 +35,6 @@ export async function runWithPrerenderWorkUnit(
       },
       fn,
     );
-    let abandoned = false;
     try {
       const result = await Promise.race([
         render.then((response) => ({ kind: "response" as const, response })),
@@ -49,13 +48,12 @@ export async function runWithPrerenderWorkUnit(
       // pending so user try/catch blocks cannot execute a probe-only fallback.
       // If another renderer branch happens to settle, dispose its body without
       // extending the request lifetime.
-      abandoned = true;
       void render.then((response) => response.body?.cancel()).catch(() => {});
       return new Response(null, {
         headers: { "Cache-Control": NO_STORE_CACHE_CONTROL },
       });
     } finally {
-      if (!abandoned) controller.abort();
+      controller.abort();
     }
   }
   return fn();
