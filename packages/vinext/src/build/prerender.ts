@@ -1588,7 +1588,9 @@ export async function prerenderApp({
         // Match Next.js's export worker: when trailingSlash is enabled, render
         // the canonical slash form instead of letting the request pipeline
         // return a 308 that the exporter would misclassify as a failed route.
-        // Keep urlPath unchanged for manifest and output-file identity.
+        // Keep urlPath unchanged for route and manifest identity. Exported
+        // artifacts are rooted under basePath alongside the client assets so
+        // an ordinary static host can serve the output tree verbatim.
         // Ported from Next.js: packages/next/src/export/worker.ts
         // https://github.com/vercel/next.js/blob/canary/packages/next/src/export/worker.ts
         const routeRequestPath =
@@ -1707,7 +1709,11 @@ export async function prerenderApp({
         const outputFiles: string[] = [];
 
         // Write HTML
-        const htmlOutputPath = getOutputPath(urlPath, config.trailingSlash);
+        const htmlOutputPath = getOutputPath(
+          urlPath,
+          config.trailingSlash,
+          mode === "export" ? config.basePath : "",
+        );
         const htmlFullPath = path.join(outDir, htmlOutputPath);
         fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
         fs.writeFileSync(htmlFullPath, html, "utf-8");
@@ -1719,6 +1725,7 @@ export async function prerenderApp({
         const rscOutputPath = getRscOutputPath(urlPath, {
           mode,
           trailingSlash: config.trailingSlash,
+          basePath: mode === "export" ? config.basePath : "",
         });
         const rscFullPath = path.join(outDir, rscOutputPath);
         fs.mkdirSync(path.dirname(rscFullPath), { recursive: true });

@@ -109,6 +109,20 @@ describe("getRscOutputPath", () => {
     expect(getRscOutputPath("/target", { mode: "export", trailingSlash: false })).toBe(
       "target.txt",
     );
+    expect(
+      getRscOutputPath("/", {
+        mode: "export",
+        trailingSlash: false,
+        basePath: "/docs",
+      }),
+    ).toBe("docs/index.txt");
+    expect(
+      getRscOutputPath("/target", {
+        mode: "export",
+        trailingSlash: false,
+        basePath: "/docs",
+      }),
+    ).toBe("docs/target.txt");
   });
 
   it("retains .rsc files for server prerenders", () => {
@@ -246,7 +260,7 @@ describe("extractRscPayloadFromPrerenderedHtml", () => {
 });
 
 describe("prerenderApp — RSC extraction", () => {
-  it("requests App pages through basePath while writing basePath-free artifacts", async () => {
+  it("requests App pages through basePath and writes basePath-prefixed export artifacts", async () => {
     const root = tmpDir("vinext-prerender-app-basepath-");
     const outDir = path.join(root, "out");
     const appDir = path.join(root, "app");
@@ -297,8 +311,10 @@ describe("prerenderApp — RSC extraction", () => {
         route: "/",
         status: "rendered",
       });
-      expect(fs.readFileSync(path.join(outDir, "index.txt"), "utf8")).toBe(rscPayload);
-      expect(fs.existsSync(path.join(outDir, "docs", "index.txt"))).toBe(false);
+      expect(fs.readFileSync(path.join(outDir, "docs.html"), "utf8")).toContain("<html><body>");
+      expect(fs.readFileSync(path.join(outDir, "docs", "index.txt"), "utf8")).toBe(rscPayload);
+      expect(fs.existsSync(path.join(outDir, "index.html"))).toBe(false);
+      expect(fs.existsSync(path.join(outDir, "index.txt"))).toBe(false);
     } finally {
       await closeServer(server);
       fs.rmSync(root, { recursive: true, force: true });

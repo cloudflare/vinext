@@ -261,7 +261,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4203/docs" },
     server: {
       command:
-        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../tests/e2e/static-export/serve-static.mjs dist/client 4203 /docs",
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../tests/e2e/static-export/serve-static.mjs dist/client 4203",
       cwd: "./tests/fixtures/static-export-basepath",
       port: 4203,
       reuseExistingServer: !process.env.CI,
