@@ -18,7 +18,6 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS,
-  DEFAULT_REMOTE_PATH_DISCOVERY_RETRIES,
   DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS,
   emitPrerenderPathManifest,
 } from "vinext/internal/build/prerender-paths";
@@ -1319,7 +1318,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
             headers,
             phaseTimeoutMs:
               options.warmCdnDiscoveryTimeout ?? DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS,
-            retries: options.warmCdnDiscoveryRetries ?? DEFAULT_REMOTE_PATH_DISCOVERY_RETRIES,
+            retries: options.warmCdnDiscoveryRetries,
             retryDelayMs: DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS,
           },
         });

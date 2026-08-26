@@ -177,6 +177,10 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
     .readFileSync("examples/workers-cache/dist/server/RSC_BUILD_ID", "utf-8")
     .trim();
 
+  // Match a browser navigation and the HTML request emitted by cdn-warm.ts.
+  // Playwright's APIRequestContext otherwise sends `Accept: */*`, which is a
+  // different representation from the one this deployed regression warms.
+  const htmlHeaders = { accept: "text/html" };
   const fullHeaders = { accept: "text/x-component", rsc: "1" };
   const shellHeaders = {
     ...fullHeaders,
@@ -211,7 +215,11 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   expect(mismatchedOverride.headers()["cache-control"]).toBe("no-store");
   expect(await mismatchedOverride.text()).toContain("Cloudflare invoked Worker version");
 
-  const pagesResponse = await getResponseAfterPromotion(request, `${baseURL}${PAGES_TARGET_PATH}`);
+  const pagesResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${PAGES_TARGET_PATH}`,
+    htmlHeaders,
+  );
   const pagesResponseHeaders = pagesResponse.headers();
   expect(pagesResponse.ok(), JSON.stringify(pagesResponseHeaders)).toBe(true);
   expect(pagesResponseHeaders["content-type"]).toContain("text/html");
@@ -222,7 +230,11 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   ).toBe("HIT");
   expect(await pagesResponse.text()).toContain("Pages prewarm target");
 
-  const appHtmlResponse = await getResponseAfterPromotion(request, `${baseURL}${TARGET_PATH}`);
+  const appHtmlResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    htmlHeaders,
+  );
   const appHtmlResponseHeaders = appHtmlResponse.headers();
   expect(appHtmlResponse.ok(), JSON.stringify(appHtmlResponseHeaders)).toBe(true);
   expect(appHtmlResponseHeaders["content-type"]).toContain("text/html");

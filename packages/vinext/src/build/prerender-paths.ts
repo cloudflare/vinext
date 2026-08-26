@@ -57,7 +57,6 @@ export const PRERENDER_PATH_DISCOVERY_ENV = "__VINEXT_PRERENDER_PATH_DISCOVERY";
 export const PRERENDER_PATHS_MANIFEST = "vinext-prerender-paths.json";
 
 const PATH_DISCOVERY_FETCH_TIMEOUT_MS = 30_000;
-export const DEFAULT_REMOTE_PATH_DISCOVERY_RETRIES = 60;
 export const DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS = 1_000;
 export const DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS = 120_000;
 
@@ -273,21 +272,48 @@ async function fetchDiscoveryEndpoint(
   headers: Record<string, string>,
   retryOptions: PathDiscoveryRetryOptions = {},
 ): Promise<string | null> {
-  const retries = Math.max(0, retryOptions.retries ?? 0);
-  const retryDelayMs = Math.max(0, retryOptions.retryDelayMs ?? 0);
+  const hasSharedPhaseDeadline = retryOptions.deadlineAt !== undefined;
+  const retryDelayMs = Math.max(
+    0,
+    retryOptions.retryDelayMs ??
+      (hasSharedPhaseDeadline ? DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS : 0),
+  );
   const phaseTimeoutMs = Math.max(
     1,
     retryOptions.phaseTimeoutMs ?? DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS,
   );
+  // An explicit retry limit remains authoritative. Otherwise let fast
+  // transient responses keep retrying for the advertised phase duration
+  // instead of silently stopping halfway through it. A zero-delay caller uses
+  // the standard cadence only for calculating a bounded attempt budget; the
+  // deadline below remains the authoritative wall-clock limit.
+  const retryBudgetDelayMs =
+    retryDelayMs > 0 ? retryDelayMs : DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS;
+  const retries = Math.max(
+    0,
+    retryOptions.retries ??
+      (hasSharedPhaseDeadline ? Math.ceil(phaseTimeoutMs / retryBudgetDelayMs) : 0),
+  );
   const deadlineAt = retryOptions.deadlineAt ?? Date.now() + phaseTimeoutMs;
   let lastError: unknown;
+  let attemptsRun = 0;
+  let lastTransientStatus: number | undefined;
 
+  const attemptSummary = () =>
+    ` after ${attemptsRun} attempt(s)${
+      lastTransientStatus === undefined
+        ? ""
+        : `; last transient status was HTTP ${lastTransientStatus}`
+    }`;
   const phaseTimeoutError = () =>
-    new Error(`remote path discovery exceeded its ${phaseTimeoutMs}ms phase deadline`);
+    new Error(
+      `remote path discovery exceeded its ${phaseTimeoutMs}ms phase deadline${attemptSummary()}`,
+    );
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     const remainingMs = deadlineAt - Date.now();
     if (remainingMs <= 0) throw phaseTimeoutError();
+    attemptsRun++;
 
     const controller = new AbortController();
     const attemptTimeoutMs = Math.min(PATH_DISCOVERY_FETCH_TIMEOUT_MS, remainingMs);
@@ -324,6 +350,7 @@ async function fetchDiscoveryEndpoint(
         shouldRetry = false;
         throw lastError;
       }
+      lastTransientStatus = res.status;
     } catch (error) {
       if (Date.now() >= deadlineAt) throw phaseTimeoutError();
       lastError =
@@ -342,7 +369,8 @@ async function fetchDiscoveryEndpoint(
     }
   }
 
-  throw lastError;
+  const message = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`${message}${attemptSummary()}`, { cause: lastError });
 }
 
 function resolveConfiguredRouteDirs(
