@@ -1,5 +1,6 @@
 import type { AppMiddlewareContext } from "./app-middleware.js";
 import type { EdgeApiExecutionRuntime } from "./edge-api-runtime.js";
+import { beginRouteCacheability } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
@@ -194,6 +195,12 @@ export async function renderPagesFallback(
     (pageMatch === null || !pagesRouteHasPriorityOverAppRoute(pageMatch.route, appRouteMatch.route))
   ) {
     return null;
+  }
+  if (pageMatch !== null) {
+    // The bridge runs in the App request environment, while the Pages renderer
+    // can use a separate module graph. Register ownership here so the outer
+    // admission finalizer can apply the Pages manifest decision.
+    beginRouteCacheability("pages-page", pageMatch.route.pattern);
   }
   const renderRequest = pagesDataRequest
     ? cloneRequestWithUrl(pagesRequest, pagesDataRequest.url)

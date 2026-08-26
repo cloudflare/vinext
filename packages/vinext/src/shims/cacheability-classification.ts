@@ -51,6 +51,7 @@ export type RouteCacheabilityState = {
 export function preserveRouteCacheabilityResponsePolicy(): void {
   const state = readRouteCacheabilityState();
   if (!state || state.mode !== "admit") return;
+  if (state.route?.kind === "pages-page") return;
   state.preserveResponseCachePolicy = true;
 }
 
@@ -69,6 +70,12 @@ export function beginRouteCacheability(
   const state = readRouteCacheabilityState();
   if (!state) return false;
   state.route = { kind, pattern };
+  if (kind === "pages-page") {
+    // App routing preserves an independently handled Pages response while the
+    // request is in transit. Once Pages classification begins, this layer owns
+    // admission and must fail unlisted or request-specific identities closed.
+    state.preserveResponseCachePolicy = false;
+  }
   return true;
 }
 
