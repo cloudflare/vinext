@@ -322,13 +322,13 @@ describe("prerender path manifest", () => {
       root: tmpDir,
       pathDiscoveryTarget: {
         baseUrl: "https://workers-cache.example.workers.dev",
-        phaseTimeoutMs: 25,
+        phaseTimeoutMs: 100,
         retries: 60,
         retryDelayMs: 10,
       },
     });
     await expect(discovery).rejects.toThrow(
-      "remote path discovery exceeded its 25ms phase deadline",
+      "remote path discovery exceeded its 100ms phase deadline",
     );
     expect(remoteFetch).toHaveBeenCalledTimes(3);
   });
