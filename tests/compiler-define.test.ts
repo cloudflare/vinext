@@ -170,12 +170,14 @@ describe("compiler.define forwarding to Vite", () => {
       expect(rscResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
+        "process.env.NEXT_PHASE": "globalThis.__VINEXT_NEXT_PHASE",
         "process.env.NEXT_RUNTIME": '"nodejs"',
         ...previewDefines,
       });
       expect(ssrResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
+        "process.env.NEXT_PHASE": "globalThis.__VINEXT_NEXT_PHASE",
         "process.env.NEXT_RUNTIME": '"nodejs"',
         ...previewDefines,
       });
@@ -345,6 +347,7 @@ describe("compiler.define forwarding to Vite", () => {
       expect(rscResult?.define?.["process.env.NEXT_RUNTIME"]).toBe('"nodejs"');
       expect(Object.keys(rscResult!.define!)).toEqual([
         "process.env.NEXT_RUNTIME",
+        "process.env.NEXT_PHASE",
         ...PREVIEW_DEFINE_NAMES,
       ]);
       getPreviewDefines(rscResult?.define);
