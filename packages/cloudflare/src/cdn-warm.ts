@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   PRERENDER_PATHS_MANIFEST,
+  type CacheabilityProbeRoute,
   type PrerenderPathManifest,
 } from "vinext/internal/build/prerender-paths";
 import {
@@ -23,6 +24,7 @@ import {
 } from "vinext/internal/server/app-rsc-cache-busting";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
+import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "vinext/internal/server/headers";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "./cache/cdn-build-id.js";
 
 export type CdnWarmOptions = {
@@ -44,14 +46,16 @@ export type CdnWarmOptions = {
   retryDelayMs?: number;
   /** Retry a newly staged version or preview alias until its routing has propagated. */
   propagatingTarget?: boolean;
+  /** Require the response to come from a reusable cache entry, not merely an eligible MISS. */
+  requireCacheHit?: boolean;
   strict?: boolean;
   fetchImpl?: typeof fetch;
 };
 
 export const DEFAULT_CDN_WARM_CONCURRENCY = 25;
 export const DEFAULT_CDN_WARM_TIMEOUT_MS = 10_000;
-const DEFAULT_STAGED_READINESS_RETRIES = 60;
-const DEFAULT_STAGED_READINESS_INTERVAL_MS = 1_000;
+export const DEFAULT_STAGED_READINESS_RETRIES = 60;
+export const DEFAULT_STAGED_READINESS_INTERVAL_MS = 1_000;
 const DEFAULT_STAGED_READINESS_SUCCESSES = 6;
 const STAGED_READINESS_QUERY_PARAM = "__vinext_cdn_warm_readiness";
 
@@ -68,6 +72,7 @@ export type CdnWarmResult = {
   skipped: number;
   failed: number;
   failures: Array<{ path: string; error: string }>;
+  warmedPlan: CdnWarmRequestPlan;
   retryPlan: CdnWarmRequestPlan;
 };
 
@@ -87,6 +92,7 @@ export type PrerenderWarmPlan = {
   paths: string[];
   rscBuildId?: string;
   rscPaths: string[];
+  cacheabilityRoutes?: CacheabilityProbeRoute[];
 };
 
 function applyWarmPathConfig(
@@ -129,6 +135,30 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
       (manifest.excludedWarmPaths !== undefined &&
         (!Array.isArray(manifest.excludedWarmPaths) ||
           !manifest.excludedWarmPaths.every((pathname) => typeof pathname === "string"))) ||
+      (manifest.cacheabilityRoutes !== undefined &&
+        (!Array.isArray(manifest.cacheabilityRoutes) ||
+          !manifest.cacheabilityRoutes.every(
+            (route) =>
+              route &&
+              (route.kind === "app-page" ||
+                route.kind === "app-route" ||
+                route.kind === "pages-page") &&
+              (route.fallbackState === undefined ||
+                route.fallbackState === "dynamic" ||
+                route.fallbackState === "runtime-check") &&
+              typeof route.pattern === "string" &&
+              (route.path === undefined || typeof route.path === "string") &&
+              (route.probePath === undefined || typeof route.probePath === "string") &&
+              (route.warmPaths === undefined ||
+                (Array.isArray(route.warmPaths) &&
+                  route.warmPaths.every((pathname) => typeof pathname === "string"))) &&
+              (route.runtimeCheckWarmPaths === undefined ||
+                (Array.isArray(route.runtimeCheckWarmPaths) &&
+                  route.runtimeCheckWarmPaths.every((pathname) => typeof pathname === "string"))) &&
+              (route.probeGroupPaths === undefined ||
+                (Array.isArray(route.probeGroupPaths) &&
+                  route.probeGroupPaths.every((pathname) => typeof pathname === "string"))),
+          ))) ||
       (manifest.rscPaths !== undefined &&
         (!Array.isArray(manifest.rscPaths) ||
           !manifest.rscPaths.every((pathname) => typeof pathname === "string"))) ||
@@ -233,6 +263,28 @@ export function readPrerenderWarmPlan(
     paths: htmlPaths,
     ...(supportsCanonicalRsc ? { rscBuildId: manifest.rscBuildId } : {}),
     rscPaths: supportsCanonicalRsc ? manifest.rscPaths!.map(applyConfig) : [],
+    ...(manifest.cacheabilityRoutes
+      ? {
+          cacheabilityRoutes: manifest.cacheabilityRoutes.map((route) => ({
+            ...route,
+            ...(route.path ? { path: applyConfig(route.path) } : {}),
+            ...(route.probePath ? { probePath: applyConfig(route.probePath) } : {}),
+            ...(route.warmPaths
+              ? { warmPaths: route.warmPaths.map((pathname) => applyConfig(pathname)) }
+              : {}),
+            ...(route.runtimeCheckWarmPaths
+              ? {
+                  runtimeCheckWarmPaths: route.runtimeCheckWarmPaths.map((pathname) =>
+                    applyConfig(pathname),
+                  ),
+                }
+              : {}),
+            ...(route.probeGroupPaths
+              ? { probeGroupPaths: route.probeGroupPaths.map((pathname) => applyConfig(pathname)) }
+              : {}),
+          })),
+        }
+      : {}),
   };
 }
 
@@ -377,6 +429,7 @@ const REQUIRED_RSC_VARY_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =
   name.trim().toLowerCase(),
 );
 const ADMITTED_CF_CACHE_STATUSES = new Set(["HIT", "MISS", "EXPIRED", "REVALIDATED", "UPDATING"]);
+const REUSABLE_CF_CACHE_STATUSES = new Set(["HIT", "REVALIDATED", "UPDATING"]);
 const NON_CACHEABLE_CF_CACHE_STATUSES = new Set(["BYPASS"]);
 const CDN_CACHE_POLICY_HEADERS = [
   "Cloudflare-CDN-Cache-Control",
@@ -424,7 +477,11 @@ type WarmValidation =
   | { outcome: "skipped"; reason: string }
   | { outcome: "failed"; error: string };
 
-function validateCachePolicy(response: Response, requireCacheStatus: boolean): WarmValidation {
+function validateCachePolicy(
+  response: Response,
+  requireCacheStatus: boolean,
+  requireCacheHit = false,
+): WarmValidation {
   const effectivePolicy = CDN_CACHE_POLICY_HEADERS.map((name) => ({
     name,
     value: response.headers.get(name),
@@ -438,6 +495,13 @@ function validateCachePolicy(response: Response, requireCacheStatus: boolean): W
       : [];
   const hasSetCookie = response.headers.has("Set-Cookie");
   const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
+
+  if (requireCacheHit && !REUSABLE_CF_CACHE_STATUSES.has(cacheStatus ?? "")) {
+    return {
+      outcome: "failed",
+      error: `CF-Cache-Status is ${cacheStatus ?? "missing"}; the cache fill is not reusable`,
+    };
+  }
 
   // Cloudflare-CDN-Cache-Control is consumed at the edge and is deliberately
   // not forwarded to clients. A cacheable Cloudflare-specific policy can
@@ -520,6 +584,7 @@ function validateRscWarmResponse(
   response: Response,
   expectedBuildId?: string,
   expectedRscBuildId?: string,
+  requireCacheHit = false,
 ): WarmValidation {
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
@@ -548,7 +613,7 @@ function validateRscWarmResponse(
   ) {
     return { outcome: "failed", error: `expected ${VINEXT_RSC_CONTENT_TYPE} response` };
   }
-  const cachePolicyValidation = validateCachePolicy(response, true);
+  const cachePolicyValidation = validateCachePolicy(response, true, requireCacheHit);
   if (cachePolicyValidation.outcome !== "warmed") return cachePolicyValidation;
   if (
     terminalResponse &&
@@ -573,7 +638,11 @@ function validateRscWarmResponse(
   return { outcome: "warmed" };
 }
 
-function validateHtmlWarmResponse(response: Response, expectedBuildId?: string): WarmValidation {
+function validateHtmlWarmResponse(
+  response: Response,
+  expectedBuildId?: string,
+  requireCacheHit = false,
+): WarmValidation {
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
   if (response.redirected) {
@@ -585,7 +654,7 @@ function validateHtmlWarmResponse(response: Response, expectedBuildId?: string):
       return { outcome: "failed", error: `HTTP ${response.status}` };
     }
   }
-  const cachePolicyValidation = validateCachePolicy(response, true);
+  const cachePolicyValidation = validateCachePolicy(response, true, requireCacheHit);
   if (cachePolicyValidation.outcome !== "warmed") return cachePolicyValidation;
   const extraVary = (response.headers.get("Vary") ?? "")
     .split(",")
@@ -602,7 +671,15 @@ function validateReadinessResponse(
   kind: "html" | "rsc",
   expectedBuildId?: string,
   expectedRscBuildId?: string,
+  versionIdentityProbe = false,
 ): string | null {
+  if (versionIdentityProbe) {
+    if (response.status < 200 || response.status >= 300) return `HTTP ${response.status}`;
+    if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
+      return "expected cacheability identity response";
+    }
+    return null;
+  }
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation?.outcome === "failed") return buildIdentityValidation.error;
   if (
@@ -649,14 +726,28 @@ export async function waitForCdnWarmTargetReadiness(
     maxAttempts?: number;
     probeIntervalMs?: number;
     requiredConsecutiveSuccesses?: number;
+    versionIdentityProbe?: boolean;
   },
 ): Promise<CdnWarmReadinessResult> {
   const rscPath = options.plan.rscPaths[0] ?? options.plan.loadingShellPaths[0];
   const htmlPath = options.plan.paths[0];
-  const kind = rscPath ? "rsc" : "html";
-  const pathname = rscPath ?? htmlPath;
+  const kind = options.versionIdentityProbe ? "html" : rscPath ? "rsc" : "html";
+  const pathname = options.versionIdentityProbe ? (htmlPath ?? rscPath) : (rscPath ?? htmlPath);
   if (!pathname) return { ready: true };
-  if (options.expectedBuildId === undefined && options.expectedRscBuildId === undefined) {
+  if (
+    options.versionIdentityProbe &&
+    new Headers(options.headers).get(VINEXT_EXPECTED_WORKER_VERSION_HEADER) === null
+  ) {
+    return {
+      error: `no ${VINEXT_EXPECTED_WORKER_VERSION_HEADER} is available for a Worker identity probe`,
+      ready: false,
+    };
+  }
+  if (
+    !options.versionIdentityProbe &&
+    options.expectedBuildId === undefined &&
+    options.expectedRscBuildId === undefined
+  ) {
     return {
       error: "no response build identity is available for a staged-version readiness probe",
       ready: false,
@@ -705,6 +796,7 @@ export async function waitForCdnWarmTargetReadiness(
         kind,
         options.expectedBuildId,
         options.expectedRscBuildId,
+        options.versionIdentityProbe,
       );
       if (process.env.VINEXT_CDN_WARM_DEBUG === "1") {
         console.log(
@@ -783,6 +875,7 @@ async function warmOnePath(
     retryPropagationFailures: boolean;
     retryDelayMs: number;
     retryNotFound: boolean;
+    requireCacheHit: boolean;
   },
 ): Promise<
   | { path: string; ok: true; skipped: false }
@@ -802,13 +895,26 @@ async function warmOnePath(
 
   for (let attempt = 0; attempt <= options.retries; attempt++) {
     try {
-      const { response } = await fetchWithTimeout(
-        options.fetchImpl,
-        url,
-        options.timeoutMs,
-        target.headers ?? options.headers,
-        "manual",
-      );
+      const response = options.requireCacheHit
+        ? await fetchHeadersWithTimeout(
+            options.fetchImpl,
+            url,
+            options.timeoutMs,
+            target.headers ?? options.headers,
+          )
+        : (
+            await fetchWithTimeout(
+              options.fetchImpl,
+              url,
+              options.timeoutMs,
+              target.headers ?? options.headers,
+              "manual",
+            )
+          ).response;
+      // Certification only needs immutable response metadata. A reusable HIT
+      // is already stored at the edge, so downloading it again would double
+      // warmup bandwidth without proving anything more.
+      if (options.requireCacheHit) void response.body?.cancel().catch(() => {});
 
       if (process.env.VINEXT_CDN_WARM_DEBUG === "1") {
         console.log(
@@ -826,6 +932,7 @@ async function warmOnePath(
           response,
           options.expectedBuildId,
           options.expectedRscBuildId,
+          options.requireCacheHit,
         );
         if (validation.outcome === "warmed") {
           return { path: target.label, ok: true, skipped: false };
@@ -834,14 +941,26 @@ async function warmOnePath(
           return { path: target.label, ok: true, skipped: true, reason: validation.reason };
         }
         lastError = validation.error;
-        lastRetryable = shouldRetryValidationFailure(response, target, options);
+        lastRetryable =
+          (options.requireCacheHit &&
+            ADMITTED_CF_CACHE_STATUSES.has(
+              response.headers.get("CF-Cache-Status")?.trim().toUpperCase() ?? "",
+            ) &&
+            !REUSABLE_CF_CACHE_STATUSES.has(
+              response.headers.get("CF-Cache-Status")?.trim().toUpperCase() ?? "",
+            )) ||
+          shouldRetryValidationFailure(response, target, options);
         if (!lastRetryable) break;
         if (!canRetry(attempt)) break;
         await waitBeforeRetry();
         continue;
       }
 
-      const validation = validateHtmlWarmResponse(response, options.expectedBuildId);
+      const validation = validateHtmlWarmResponse(
+        response,
+        options.expectedBuildId,
+        options.requireCacheHit,
+      );
       if (validation.outcome === "warmed") {
         return { path: target.label, ok: true, skipped: false };
       }
@@ -849,7 +968,15 @@ async function warmOnePath(
         return { path: target.label, ok: true, skipped: true, reason: validation.reason };
       }
       lastError = validation.error;
-      lastRetryable = shouldRetryValidationFailure(response, target, options);
+      lastRetryable =
+        (options.requireCacheHit &&
+          ADMITTED_CF_CACHE_STATUSES.has(
+            response.headers.get("CF-Cache-Status")?.trim().toUpperCase() ?? "",
+          ) &&
+          !REUSABLE_CF_CACHE_STATUSES.has(
+            response.headers.get("CF-Cache-Status")?.trim().toUpperCase() ?? "",
+          )) ||
+        shouldRetryValidationFailure(response, target, options);
       if (!lastRetryable) break;
     } catch (error) {
       lastRetryable = true;
@@ -957,6 +1084,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       skipped: 0,
       failed: 0,
       failures: [],
+      warmedPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
       retryPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
     };
   }
@@ -987,6 +1115,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       retryPropagationFailures: isPropagationRequest,
       retryDelayMs: isPropagationRequest ? propagationRetryDelayMs : normalRetryDelayMs,
       retryNotFound: isPropagationRequest,
+      requireCacheHit: options.requireCacheHit === true,
     });
   };
 
@@ -1069,6 +1198,10 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     );
   const failures = failedRequests.map(({ result: { path, error } }) => ({ path, error }));
   const skippedResults = results.filter((result) => result.ok && result.skipped);
+  const warmedRequests = requests.filter((_target, index) => {
+    const result = results[index];
+    return result.ok && !result.skipped;
+  });
   const warmed = results.length - failures.length - skippedResults.length;
 
   console.log(
@@ -1092,6 +1225,17 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     skipped: skippedResults.length,
     failed: failures.length,
     failures,
+    warmedPlan: {
+      loadingShellPaths: warmedRequests
+        .filter((target) => target.kind === "rsc-loading-shell")
+        .map((target) => target.sourcePathname),
+      paths: warmedRequests
+        .filter((target) => target.kind === "html")
+        .map((target) => target.sourcePathname),
+      rscPaths: warmedRequests
+        .filter((target) => target.kind === "rsc-full")
+        .map((target) => target.sourcePathname),
+    },
     retryPlan: {
       loadingShellPaths: failedRequests
         .filter(({ target }) => target.kind === "rsc-loading-shell")

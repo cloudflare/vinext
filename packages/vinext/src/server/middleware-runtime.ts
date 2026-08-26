@@ -31,6 +31,8 @@ import {
   stripBasePath,
 } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
+import { middlewareMatcherCanRunForPath } from "./middleware-cache-safety.js";
+import { markRequestCacheabilityUnsafe } from "./cacheability-request.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -394,6 +396,20 @@ export async function executeMiddleware(
     }
   } catch {
     // Match Next.js: malformed encoding is non-fatal for matcher eligibility.
+  }
+
+  if (
+    [encodedMatchPathname, decodedMatchPathname].some(
+      (candidate, index, candidates) =>
+        candidate !== null &&
+        (index === 0 || candidate !== candidates[0]) &&
+        middlewareMatcherCanRunForPath(candidate, matcher, options.i18nConfig),
+    )
+  ) {
+    // Ignore matcher has/missing predicates for cache safety. A headerless
+    // request can populate a shared entry that a later authenticated request
+    // would otherwise receive before middleware has a chance to run.
+    markRequestCacheabilityUnsafe("middleware can vary this pathname");
   }
 
   let localeContext: MiddlewareLocaleMatchContext | undefined;

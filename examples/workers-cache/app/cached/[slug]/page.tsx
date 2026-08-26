@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { env } from "cloudflare:workers";
 import { CacheStatusProbe } from "../../components/cache-status-probe";
 import { RevalidateControls } from "../../components/revalidate-controls";
 
@@ -8,7 +9,11 @@ import { RevalidateControls } from "../../components/revalidate-controls";
 // Cache layer honours it automatically.
 export const revalidate = 60;
 
-export function generateStaticParams() {
+export async function generateStaticParams() {
+  // Exercise path discovery in the deployed Workers runtime. The value is not
+  // significant; reading it proves workerd-only bindings are available before
+  // the prewarmer decides which concrete paths to request.
+  await env.VINEXT_KV_CACHE.get("vinext-prewarm-path-discovery-probe");
   return [{ slug: "intro" }, { slug: "featured" }];
 }
 

@@ -11,10 +11,16 @@ import {
   type RscEmbeddedChunk,
 } from "./app-rsc-embedded-chunks.js";
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/navigation-runtime.js";
+import { CacheabilityClassificationError } from "./cacheability-classification-error.js";
+import { runWithoutPlatformIoTracking } from "vinext/shims/platform-io-tracking";
 
 type RscEmbedTransform = {
+  /** Stop the independent Flight pump when the HTML consumer disconnects. */
+  cancel(reason?: unknown): Promise<void>;
   flush(): string;
   finalize(): Promise<string>;
+  /** Drain remaining scripts incrementally, preserving backpressure. */
+  drainFinal(emit: (scripts: string) => void): Promise<void>;
   /** Resolves when all raw bytes from the embed stream have been read. */
   getRawBuffer(): Promise<ArrayBuffer>;
 };
@@ -23,6 +29,16 @@ type RscEmbedTransformOptions = {
   mirrorNextFlight?: boolean;
   scriptNonce?: string;
   getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
+  /** Opt in to retaining raw Flight bytes, bounded to this many bytes. */
+  rawBufferLimitBytes?: number;
+  /** Fail prospective raw capture without stalling the HTML stream indefinitely. */
+  rawBufferTimeoutMs?: number;
+  /** Absolute request deadline; takes precedence over rawBufferTimeoutMs. */
+  rawBufferDeadlineAt?: number;
+  /** Charge retained raw bytes against the request's isolate-wide budget. */
+  reserveRawBufferBytes?: (bytes: number) => boolean;
+  /** Release retained raw bytes when capture storage changes ownership. */
+  releaseRawBufferBytes?: (bytes: number) => void;
 };
 
 type HtmlInsertion = string | (() => string);
@@ -129,11 +145,71 @@ export function createRscEmbedTransform(
 ): RscEmbedTransform {
   const options =
     typeof optionsOrNonce === "string" ? { scriptNonce: optionsOrNonce } : optionsOrNonce;
+  if (
+    options.rawBufferLimitBytes !== undefined &&
+    (!Number.isSafeInteger(options.rawBufferLimitBytes) || options.rawBufferLimitBytes < 0)
+  ) {
+    throw new RangeError("rawBufferLimitBytes must be a non-negative safe integer");
+  }
   const reader = embedStream.getReader();
   let pendingChunks: RscEmbeddedChunk[] = [];
-  const rawChunks: Uint8Array[] = [];
+  let pendingBytes = 0;
+  const rawChunks: Uint8Array[] | null = options.rawBufferLimitBytes === undefined ? null : [];
+  let rawLength = 0;
+  let rawReservedBytes = 0;
+  let rawBufferFailure: Error | null = null;
   let reading = false;
+  let pumpDone = false;
+  let pumpError: unknown;
+  let activityVersion = 0;
+  let activityWaiters: Array<() => void> = [];
+  let resumeReader: (() => void) | null = null;
   let mirroredNextFlightBootstrap = false;
+  const maxPendingBytes = Math.max(64 * 1024, options.rawBufferLimitBytes ?? 256 * 1024);
+  let rejectRawBufferFailure: ((error: Error) => void) | null = null;
+  const rawBufferFailurePromise = rawChunks
+    ? new Promise<never>((_resolve, reject) => {
+        rejectRawBufferFailure = reject;
+      })
+    : null;
+  // A prospective raw artifact may never be claimed after a later dynamic
+  // bailout. Mark its failure channel handled immediately; getRawBuffer()
+  // still observes the original rejection when a cache owner does claim it.
+  void rawBufferFailurePromise?.catch(() => {});
+  let rawBufferTimeout: ReturnType<typeof setTimeout> | undefined;
+  let cancelled = false;
+
+  const notifyActivity = (): void => {
+    activityVersion += 1;
+    const waiters = activityWaiters;
+    activityWaiters = [];
+    for (const resolve of waiters) resolve();
+  };
+  const failRawBuffer = (error: Error): void => {
+    if (!rawChunks || rawBufferFailure) return;
+    rawBufferFailure = error;
+    rawChunks.length = 0;
+    options.releaseRawBufferBytes?.(rawReservedBytes);
+    rawReservedBytes = 0;
+    rejectRawBufferFailure?.(error);
+    rejectRawBufferFailure = null;
+  };
+  const rawBufferTimeoutMs =
+    options.rawBufferDeadlineAt === undefined
+      ? options.rawBufferTimeoutMs
+      : Math.max(0, options.rawBufferDeadlineAt - runWithoutPlatformIoTracking(() => Date.now()));
+  if (rawChunks && rawBufferTimeoutMs !== undefined) {
+    const timeoutError = new CacheabilityClassificationError(
+      options.rawBufferDeadlineAt === undefined
+        ? `RSC body did not complete within ${rawBufferTimeoutMs}ms`
+        : "RSC body did not complete before the request classification deadline",
+    );
+    if (options.rawBufferDeadlineAt !== undefined && rawBufferTimeoutMs === 0) {
+      failRawBuffer(timeoutError);
+    } else {
+      rawBufferTimeout = setTimeout(() => failRawBuffer(timeoutError), rawBufferTimeoutMs);
+    }
+  }
 
   async function pumpReader(): Promise<void> {
     if (reading) return;
@@ -142,7 +218,27 @@ export function createRscEmbedTransform(
       while (true) {
         const result = await reader.read();
         if (result.done) break;
-        rawChunks.push(result.value);
+        if (rawChunks && !rawBufferFailure) {
+          rawLength += result.value.byteLength;
+          if (
+            rawLength <= options.rawBufferLimitBytes! &&
+            (options.reserveRawBufferBytes?.(result.value.byteLength) ?? true)
+          ) {
+            rawReservedBytes += result.value.byteLength;
+            rawChunks.push(result.value);
+          } else {
+            // Embedding still has to drain the Flight stream for a valid HTML
+            // response. Stop retaining bytes and make only the prospective
+            // cache artifact fail closed.
+            failRawBuffer(
+              new CacheabilityClassificationError(
+                rawLength > options.rawBufferLimitBytes!
+                  ? `RSC body exceeded ${options.rawBufferLimitBytes} bytes`
+                  : "RSC body exceeded the isolate capture budget",
+              ),
+            );
+          }
+        }
         try {
           const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
           const text = decoder.decode(result.value);
@@ -150,64 +246,129 @@ export function createRscEmbedTransform(
         } catch {
           pendingChunks.push([RSC_EMBEDDED_BINARY_CHUNK, bytesToBase64(result.value)]);
         }
+        pendingBytes += result.value.byteLength;
+        notifyActivity();
+        if (pendingBytes >= maxPendingBytes) {
+          await new Promise<void>((resolve) => {
+            resumeReader = resolve;
+          });
+        }
       }
     } catch (error) {
+      pumpError = error;
       if (process.env.NODE_ENV !== "production") {
         console.warn("[vinext] RSC embed stream read error:", error);
       }
       throw error;
     } finally {
       reading = false;
+      pumpDone = true;
+      if (rawBufferTimeout !== undefined) clearTimeout(rawBufferTimeout);
+      notifyActivity();
     }
   }
 
   const pumpPromise = pumpReader();
+  // drainFinal() reports pumpError directly so it can preserve incremental
+  // emission. Keep the underlying task from becoming an unhandled rejection
+  // when no raw-buffer consumer was registered.
+  void pumpPromise.catch(() => {});
 
-  return {
-    flush(): string {
-      if (pendingChunks.length === 0) return "";
+  const flushPending = (): string => {
+    if (pendingChunks.length === 0) return "";
 
-      const chunks = pendingChunks;
-      pendingChunks = [];
+    const chunks = pendingChunks;
+    pendingChunks = [];
+    pendingBytes = 0;
+    const resume = resumeReader;
+    resumeReader = null;
+    resume?.();
 
-      let scripts = "";
-      for (const chunk of chunks) {
-        scripts += createInlineScriptTag(
-          createNavigationRuntimeRscChunkScript(chunk),
-          options.scriptNonce,
-        );
-        if (options.mirrorNextFlight) {
-          if (!mirroredNextFlightBootstrap) {
-            scripts += createInlineScriptTag(
-              createNextFlightBootstrapScript(),
-              options.scriptNonce,
-            );
-            scripts += createInlineScriptTag(createNextFlightCleanupScript(), options.scriptNonce);
-            mirroredNextFlightBootstrap = true;
-          }
-          scripts += createInlineScriptTag(createNextFlightChunkScript(chunk), options.scriptNonce);
+    let scripts = "";
+    for (const chunk of chunks) {
+      scripts += createInlineScriptTag(
+        createNavigationRuntimeRscChunkScript(chunk),
+        options.scriptNonce,
+      );
+      if (options.mirrorNextFlight) {
+        if (!mirroredNextFlightBootstrap) {
+          scripts += createInlineScriptTag(createNextFlightBootstrapScript(), options.scriptNonce);
+          scripts += createInlineScriptTag(createNextFlightCleanupScript(), options.scriptNonce);
+          mirroredNextFlightBootstrap = true;
         }
+        scripts += createInlineScriptTag(createNextFlightChunkScript(chunk), options.scriptNonce);
       }
+    }
+    return scripts;
+  };
+
+  const transform: RscEmbedTransform = {
+    async cancel(reason): Promise<void> {
+      if (cancelled) return;
+      cancelled = true;
+      if (rawBufferTimeout !== undefined) clearTimeout(rawBufferTimeout);
+      failRawBuffer(new Error("RSC embed stream was cancelled"));
+      pendingChunks = [];
+      pendingBytes = 0;
+      const resume = resumeReader;
+      resumeReader = null;
+      resume?.();
+      notifyActivity();
+      await reader.cancel(reason).catch(() => {});
+    },
+
+    flush: flushPending,
+
+    async finalize(): Promise<string> {
+      let scripts = "";
+      await this.drainFinal((chunk) => {
+        scripts += chunk;
+      });
       return scripts;
     },
 
-    async finalize(): Promise<string> {
-      await pumpPromise;
-      let scripts = this.flush();
-      scripts += createInlineScriptTag(
-        createNavigationRuntimeRscDoneScript(options.getInitialNavigationCacheMetadata?.()),
-        options.scriptNonce,
+    async drainFinal(emit): Promise<void> {
+      for (;;) {
+        const observedVersion = activityVersion;
+        const scripts = flushPending();
+        if (scripts) emit(scripts);
+        if (pumpError) throw pumpError;
+        if (pumpDone) break;
+        if (activityVersion === observedVersion) {
+          await new Promise<void>((resolve) => activityWaiters.push(resolve));
+        }
+      }
+      emit(
+        createInlineScriptTag(
+          createNavigationRuntimeRscDoneScript(options.getInitialNavigationCacheMetadata?.()),
+          options.scriptNonce,
+        ),
       );
-      return scripts;
     },
 
     async getRawBuffer(): Promise<ArrayBuffer> {
-      await pumpPromise;
+      if (rawBufferFailure) throw rawBufferFailure;
+      await (rawBufferFailurePromise
+        ? Promise.race([pumpPromise, rawBufferFailurePromise])
+        : pumpPromise);
+      if (!rawChunks) {
+        throw new Error("raw RSC capture was not enabled");
+      }
+      if (rawBufferFailure) throw rawBufferFailure;
+      if (!(options.reserveRawBufferBytes?.(rawLength) ?? true)) {
+        failRawBuffer(
+          new CacheabilityClassificationError("RSC body exceeded the isolate capture budget"),
+        );
+        throw rawBufferFailure;
+      }
       const buffer = concatUint8Arrays(rawChunks);
       rawChunks.length = 0;
+      options.releaseRawBufferBytes?.(rawReservedBytes);
+      rawReservedBytes = rawLength;
       return buffer.buffer;
     },
   };
+  return transform;
 }
 
 /**
@@ -624,7 +785,7 @@ export function createTickBufferedTransform(
     controller.enqueue(encoder.encode(working));
   };
 
-  return new TransformStream<Uint8Array, Uint8Array>({
+  const transform = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       buffered.push(decoder.decode(chunk, { stream: true }));
 
@@ -667,10 +828,9 @@ export function createTickBufferedTransform(
         emitInsertion(controller);
       }
 
-      const finalScripts = await rscEmbed.finalize();
-      if (finalScripts) {
-        controller.enqueue(encoder.encode(finalScripts));
-      }
+      await rscEmbed.drainFinal((scripts) => {
+        if (scripts) controller.enqueue(encoder.encode(scripts));
+      });
 
       // Emit `</body></html>` last so the document always terminates with a
       // well-formed close, after any trailing flight chunks / preinit scripts.
@@ -678,4 +838,22 @@ export function createTickBufferedTransform(
       controller.enqueue(encoder.encode(DOCUMENT_CLOSE_SUFFIX));
     },
   });
+  const reader = transform.readable.getReader();
+  const readable = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const result = await reader.read();
+        if (result.done) controller.close();
+        else controller.enqueue(result.value);
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      await Promise.all([reader.cancel(reason).catch(() => {}), rscEmbed.cancel(reason)]);
+    },
+  });
+  // TransformStream is structural in lib.dom. Wrapping only the readable side
+  // gives pipeThrough() a cancellation hook for the independent Flight pump.
+  return { readable, writable: transform.writable } as TransformStream<Uint8Array, Uint8Array>;
 }

@@ -12,6 +12,8 @@ import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../../../packages/cloudfl
 
 const TARGET_PATH = "/prewarm-target";
 const PAGES_TARGET_PATH = "/pages-prewarm";
+const CACHEABILITY_PROBE_HEADER = "X-Vinext-Cacheability-Probe";
+const PRERENDER_SECRET_HEADER = "X-Vinext-Prerender-Secret";
 const LOADING_SHELL_RSC_SEARCH = "?_rsc=9qLBDIU2NgN178cB";
 const PROMOTION_STABILITY_WINDOW_MS = 60_000;
 const PROMOTION_READINESS_TIMEOUT_MS = 120_000;
@@ -176,6 +178,11 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   const rscBuildId = fs
     .readFileSync("examples/workers-cache/dist/server/RSC_BUILD_ID", "utf-8")
     .trim();
+  const prerenderSecret = (
+    JSON.parse(
+      fs.readFileSync("examples/workers-cache/dist/server/vinext-server.json", "utf-8"),
+    ) as { prerenderSecret: string }
+  ).prerenderSecret;
 
   const fullHeaders = { accept: "text/x-component", rsc: "1" };
   const shellHeaders = {
@@ -191,6 +198,43 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   // no-store version endpoint. This proves the promoted build is stable
   // without touching either canonical cache entry before its HIT assertion.
   await waitForStablePromotion({ baseURL, buildId, playwright, rscBuildId });
+
+  // Exercise authenticated warm mode inside workerd on a fresh, unmanifested
+  // concrete path. This is the same runtime path the final deploy uses after
+  // promotion, including late body classification and CDN header admission.
+  const warmSlug = `e2e-warm-${Date.now()}`;
+  const warmPath = `/cache-probe/bare-fetch/${warmSlug}`;
+  const warmResponse = await request.get(`${baseURL}${warmPath}`, {
+    headers: {
+      [CACHEABILITY_PROBE_HEADER]: "warm",
+      [PRERENDER_SECRET_HEADER]: prerenderSecret,
+    },
+  });
+  expect(warmResponse.ok()).toBe(true);
+  expect(warmResponse.headers()["cf-cache-status"]).toBe("MISS");
+  expect(await warmResponse.text()).toContain(`cache-probe bare fetch ${warmSlug}`);
+  const warmedResponse = await request.get(`${baseURL}${warmPath}`);
+  expect(warmedResponse.headers()["cf-cache-status"]).toBe("HIT");
+  await warmedResponse.dispose();
+
+  // The embedded manifest is route classification, not a warmed artifact.
+  // Purging the CDN entry must therefore allow the same final Worker to admit
+  // and refill it again without another probe deployment.
+  const purgeTarget = "/cache-probe/static/known";
+  const beforePurge = await getResponseAfterPromotion(request, `${baseURL}${purgeTarget}`);
+  expect(beforePurge.headers()["cf-cache-status"]).toBe("HIT");
+  await beforePurge.dispose();
+  const purge = await request.post(`${baseURL}/api/revalidate-path`, {
+    data: { path: purgeTarget },
+  });
+  expect(purge.ok()).toBe(true);
+  await purge.dispose();
+  const refilled = await getResponseAfterPromotion(request, `${baseURL}${purgeTarget}`);
+  expect(refilled.headers()["cf-cache-status"]).toBe("MISS");
+  await refilled.dispose();
+  const reusedAfterPurge = await getResponseAfterPromotion(request, `${baseURL}${purgeTarget}`);
+  expect(reusedAfterPurge.headers()["cf-cache-status"]).toBe("HIT");
+  await reusedAfterPurge.dispose();
 
   const workerName = new URL(baseURL).hostname.split(".")[0];
   const downstreamOnlyOverride = await request.get(`${baseURL}/api/prewarm-version?downstream=1`, {
@@ -232,6 +276,34 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
     `App HTML response headers: ${JSON.stringify(appHtmlResponseHeaders)}`,
   ).toBe("HIT");
   expect(await appHtmlResponse.text()).toContain("Prewarm target");
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+  // An unconditional config policy remains authoritative even when the App
+  // page deliberately renders dynamically.
+  const explicitPolicyResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}/cache-probe/config-cache`,
+  );
+  const explicitPolicyHeaders = explicitPolicyResponse.headers();
+  expect(explicitPolicyResponse.ok(), JSON.stringify(explicitPolicyHeaders)).toBe(true);
+  expect(explicitPolicyHeaders["cf-cache-status"]).toBe("HIT");
+  expect(await explicitPolicyResponse.text()).toContain(
+    "Force-dynamic page with an explicit config cache policy",
+  );
+
+  for (const [pathname, marker] of [
+    ["/cache-probe/config-pages-ssr", "Pages SSR with an explicit config cache policy"],
+    ["/cache-probe/user-pages-ssr", "Pages SSR with a response cache policy"],
+    ["/cache-probe/config-route", "Route Handler with an explicit config cache policy"],
+    ["/cache-probe/route-user-cache", "Dynamic Route Handler with a response cache policy"],
+  ] as const) {
+    const response = await getResponseAfterPromotion(request, `${baseURL}${pathname}`);
+    const headers = response.headers();
+    expect(response.ok(), `${pathname}: ${JSON.stringify(headers)}`).toBe(true);
+    expect(headers["cf-cache-status"], `${pathname}: ${JSON.stringify(headers)}`).toBe("HIT");
+    expect(await response.text()).toContain(marker);
+  }
 
   const fullResponse = await getResponseAfterPromotion(
     request,
@@ -364,4 +436,105 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
     expect(dynamic.headers()["cache-control"]).toContain("no-store");
     expect(dynamic.headers()["cf-cache-status"]).toBe("BYPASS");
   });
+
+  // Cacheability expectations mirror Next.js's completed-render classification:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic-data/dynamic-data.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts
+  const staticParamsResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}/cache-probe/static/known`,
+  );
+  expect(staticParamsResponse.ok()).toBe(true);
+  expect(staticParamsResponse.headers()["cf-cache-status"]).toBe("HIT");
+  expect((await staticParamsResponse.text()).replaceAll("<!-- -->", "")).toContain(
+    "cache-probe static params known",
+  );
+
+  const bareFetchResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}/cache-probe/bare-fetch/known`,
+  );
+  expect(bareFetchResponse.ok()).toBe(true);
+  expect(bareFetchResponse.headers()["cf-cache-status"]).toBe("HIT");
+  expect((await bareFetchResponse.text()).replaceAll("<!-- -->", "")).toContain(
+    "cache-probe bare fetch known",
+  );
+  const bareFetchRscResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}/cache-probe/bare-fetch/known?_rsc`,
+    fullHeaders,
+  );
+  expect(bareFetchRscResponse.headers()["cf-cache-status"]).toBe("HIT");
+  expect(bareFetchRscResponse.headers()["content-type"]).toContain("text/x-component");
+
+  const onDemandBareFetchSlug = `on-demand-bare-${buildId.slice(0, 8)}`;
+  const onDemandBareFetchUrl = `${baseURL}/cache-probe/bare-fetch/${onDemandBareFetchSlug}`;
+  const onDemandBareFetchMiss = await getResponseAfterPromotion(request, onDemandBareFetchUrl);
+  expect(onDemandBareFetchMiss.headers()["cf-cache-status"]).toBe("MISS");
+  expect((await onDemandBareFetchMiss.text()).replaceAll("<!-- -->", "")).toContain(
+    `cache-probe bare fetch ${onDemandBareFetchSlug}`,
+  );
+  const onDemandBareFetchHit = await getResponseAfterPromotion(request, onDemandBareFetchUrl);
+  expect(onDemandBareFetchHit.headers()["cf-cache-status"]).toBe("HIT");
+
+  // Only `known` was discovered and warmed. Like Next.js fallback blocking,
+  // another parameter is checked from its completed first render and then
+  // admitted without requiring a second deploy or a manifest entry per path.
+  const onDemandSlug = `on-demand-${buildId.slice(0, 8)}`;
+  const onDemandUrl = `${baseURL}/cache-probe/static/${onDemandSlug}`;
+  const onDemandMiss = await getResponseAfterPromotion(request, onDemandUrl);
+  expect(onDemandMiss.headers()["cf-cache-status"]).toBe("MISS");
+  expect((await onDemandMiss.text()).replaceAll("<!-- -->", "")).toContain(
+    `cache-probe static params ${onDemandSlug}`,
+  );
+  const onDemandHit = await getResponseAfterPromotion(request, onDemandUrl);
+  expect(onDemandHit.headers()["cf-cache-status"]).toBe("HIT");
+
+  const staticRouteResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}/cache-probe/route-static`,
+  );
+  expect(staticRouteResponse.headers()["cf-cache-status"]).toBe("HIT");
+  expect(await staticRouteResponse.text()).toBe("cache-probe static route handler");
+
+  const generatedStaticRouteResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}/cache-probe/route-static/known`,
+  );
+  // This route revalidates after 60 seconds, the same duration as the
+  // promotion-stability window. UPDATING is a cached stale response while the
+  // edge refreshes it in the background; only MISS/BYPASS would be a failure.
+  expect(["HIT", "UPDATING"]).toContain(generatedStaticRouteResponse.headers()["cf-cache-status"]);
+  expect(await generatedStaticRouteResponse.text()).toBe("cache-probe static route handler known");
+
+  const expectDynamic = async (
+    pathname: string,
+    expectedBody: string,
+    headers?: Record<string, string>,
+  ): Promise<void> => {
+    const response = await getResponseAfterPromotion(request, `${baseURL}${pathname}`, headers);
+    const responseHeaders = response.headers();
+    expect(response.ok(), JSON.stringify(responseHeaders)).toBe(true);
+    expect(responseHeaders["cache-control"]).toContain("no-store");
+    expect(responseHeaders["cf-cache-status"]).toBe("BYPASS");
+    expect((await response.text()).replaceAll("<!-- -->", "")).toContain(expectedBody);
+  };
+
+  await expectDynamic("/cache-probe/cookies", "cache-probe cookie first", {
+    cookie: "cache-probe=first",
+  });
+  await expectDynamic("/cache-probe/cookies", "cache-probe cookie second", {
+    cookie: "cache-probe=second",
+  });
+  await expectDynamic("/cache-probe/headers", "cache-probe header first", {
+    "x-cache-probe": "first",
+  });
+  await expectDynamic("/cache-probe/headers", "cache-probe header second", {
+    "x-cache-probe": "second",
+  });
+  await expectDynamic("/cache-probe/search?value=first", "cache-probe search first");
+  await expectDynamic("/cache-probe/search?value=second", "cache-probe search second");
+  await expectDynamic("/cache-probe/no-store", "cache-probe no-store fetch");
+  await expectDynamic("/cache-probe/route-request?value=first", '"value":"first"');
+  await expectDynamic("/cache-probe/route-request?value=second", '"value":"second"');
 });

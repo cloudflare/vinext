@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  assertAppRouteCacheComponentsConfig,
   getAppRouteHandlerRevalidateSeconds,
   hasAppRouteHandlerDefaultExport,
   isPossibleAppRouteActionRequest,
@@ -22,6 +23,39 @@ describe("app route handler policy helpers", () => {
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: Infinity })).toBeNull();
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: Number.NaN })).toBeNull();
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: false })).toBe(Infinity);
+  });
+
+  // Ported from Next.js static eligibility:
+  // packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts
+  it("treats every Next.js App Route static-generation opt-in as immutable", () => {
+    expect(getAppRouteHandlerRevalidateSeconds({ dynamic: "force-static" })).toBe(Infinity);
+    expect(getAppRouteHandlerRevalidateSeconds({ dynamic: "error" })).toBe(Infinity);
+    expect(
+      getAppRouteHandlerRevalidateSeconds({
+        generateStaticParams() {
+          return [{ slug: "one" }];
+        },
+      }),
+    ).toBe(Infinity);
+    expect(getAppRouteHandlerRevalidateSeconds({ dynamic: "force-dynamic" })).toBeNull();
+    expect(getAppRouteHandlerRevalidateSeconds({})).toBeNull();
+  });
+
+  it("matches Cache Components Route Handler defaults and rejects segment config", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/cache-components/cache-components.routes.test.ts
+    // test/e2e/app-dir/cache-components-route-handler-errors/
+    expect(getAppRouteHandlerRevalidateSeconds({}, true)).toBe(Infinity);
+    expect(() => assertAppRouteCacheComponentsConfig({})).not.toThrow();
+    for (const config of [
+      { dynamic: "force-static" },
+      { revalidate: 60 },
+      { fetchCache: "force-cache" },
+    ]) {
+      expect(() => assertAppRouteCacheComponentsConfig(config)).toThrow(
+        "is not compatible with `nextConfig.cacheComponents`. Please remove it.",
+      );
+    }
   });
 
   it("treats revalidate = 0 as never-cache for route handler ISR read/write gates", () => {
@@ -47,6 +81,7 @@ describe("app route handler policy helpers", () => {
       isProduction: true,
       method: "GET",
       revalidateSeconds: 0,
+      responseStatus: 200,
     };
     // Writing a never-cache response to ISR would persist uncacheable
     // content under a key that later requests would try to serve.
@@ -110,11 +145,9 @@ describe("app route handler policy helpers", () => {
     expect(shouldReadAppRouteHandlerCache({ ...base, method: "HEAD", isAutoHead: false })).toBe(
       false,
     );
-    // Infinity (from revalidate = false) disables ISR reads because the
-    // handler is fully static — the response is cached indefinitely with
-    // no revalidation window. ISR reads would introduce KV cache churn for
-    // a handler that never needs to revalidate.
-    expect(shouldReadAppRouteHandlerCache({ ...base, revalidateSeconds: Infinity })).toBe(false);
+    // Next persists revalidate:false as a Full Route Cache entry whose cache
+    // policy has an infinite revalidation lifetime.
+    expect(shouldReadAppRouteHandlerCache({ ...base, revalidateSeconds: Infinity })).toBe(true);
   });
 
   it("determines when route handler cache headers and writes are allowed", () => {
@@ -126,6 +159,7 @@ describe("app route handler policy helpers", () => {
       isProduction: true,
       method: "GET",
       revalidateSeconds: 60,
+      responseStatus: 200,
     };
 
     expect(shouldApplyAppRouteHandlerRevalidateHeader(base)).toBe(true);
@@ -136,15 +170,14 @@ describe("app route handler policy helpers", () => {
       shouldApplyAppRouteHandlerRevalidateHeader({ ...base, handlerSetCacheControl: true }),
     ).toBe(false);
     expect(shouldWriteAppRouteHandlerCache(base)).toBe(true);
+    expect(shouldWriteAppRouteHandlerCache({ ...base, handlerSetCacheControl: true })).toBe(true);
     expect(shouldWriteAppRouteHandlerCache({ ...base, isProduction: false })).toBe(false);
     expect(shouldWriteAppRouteHandlerCache({ ...base, dynamicConfig: "force-dynamic" })).toBe(
       false,
     );
-    // Infinity (from revalidate = false) disables ISR writes because the
-    // response is meant to be cached indefinitely — persisting to ISR
-    // would introduce unnecessary KV writes and risk broken entries from
-    // Infinity serialization.
-    expect(shouldWriteAppRouteHandlerCache({ ...base, revalidateSeconds: Infinity })).toBe(false);
+    expect(shouldWriteAppRouteHandlerCache({ ...base, revalidateSeconds: Infinity })).toBe(true);
+    expect(shouldWriteAppRouteHandlerCache({ ...base, responseStatus: 500 })).toBe(false);
+    expect(shouldWriteAppRouteHandlerCache({ ...base, responseStatus: 404 })).toBe(true);
     // Infinity still emits a revalidate header for the static Cache-Control.
     expect(
       shouldApplyAppRouteHandlerRevalidateHeader({ ...base, revalidateSeconds: Infinity }),

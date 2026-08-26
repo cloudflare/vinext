@@ -182,6 +182,7 @@ import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
+import { createCacheabilityManifestModulePlugin } from "./plugins/cacheability-manifest-module.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
@@ -190,6 +191,7 @@ import {
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
 import { createTransitiveExternalsPlugin } from "./plugins/transitive-externals.js";
+import { CACHEABILITY_MANIFEST_MODULE_FILE } from "./server/cacheability-manifest.js";
 // Keep this source-relative: resolving through vinext's package export can read
 // a stale built copy while developing or testing the source tree.
 // oxlint-disable-next-line vinext-local/prefer-import-alias
@@ -333,6 +335,40 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
+
+const CACHE_COMPONENTS_INCOMPATIBLE_ROUTE_EXPORTS = new Set([
+  "dynamic",
+  "revalidate",
+  "fetchCache",
+]);
+
+function findCacheComponentsIncompatibleRouteExport(code: string, id: string): string | null {
+  if (![...CACHE_COMPONENTS_INCOMPATIBLE_ROUTE_EXPORTS].some((name) => code.includes(name))) {
+    return null;
+  }
+  const ast = parseAst(code, { lang: parserLanguageForScript(id) });
+  for (const statement of ast.body) {
+    if (statement.type !== "ExportNamedDeclaration" || statement.exportKind === "type") continue;
+    const declaration = statement.declaration;
+    if (declaration?.type === "VariableDeclaration") {
+      for (const declarator of declaration.declarations) {
+        if (
+          declarator.id.type === "Identifier" &&
+          CACHE_COMPONENTS_INCOMPATIBLE_ROUTE_EXPORTS.has(declarator.id.name)
+        ) {
+          return declarator.id.name;
+        }
+      }
+    }
+    for (const specifier of statement.specifiers) {
+      if (specifier.exportKind === "type") continue;
+      const exported = specifier.exported;
+      const name = exported.type === "Identifier" ? exported.name : String(exported.value);
+      if (CACHE_COMPONENTS_INCOMPATIBLE_ROUTE_EXPORTS.has(name)) return name;
+    }
+  }
+  return null;
+}
 
 function hasServerOnlyMarkerImport(code: string): boolean {
   if (!code.includes("server-only")) return false;
@@ -1095,6 +1131,8 @@ const VIRTUAL_CLIENT_ENTRY = "virtual:vinext-client-entry";
 const RESOLVED_CLIENT_ENTRY = VIRTUAL_PREFIX + VIRTUAL_CLIENT_ENTRY;
 const VIRTUAL_PAGES_CLIENT_ASSETS = "virtual:vinext-pages-client-assets";
 const RESOLVED_PAGES_CLIENT_ASSETS = VIRTUAL_PREFIX + VIRTUAL_PAGES_CLIENT_ASSETS;
+const VIRTUAL_CACHEABILITY_MANIFEST = "virtual:vinext-cacheability-manifest";
+const RESOLVED_CACHEABILITY_MANIFEST = VIRTUAL_PREFIX + VIRTUAL_CACHEABILITY_MANIFEST;
 
 // Virtual module IDs for App Router entries
 const VIRTUAL_RSC_ENTRY = "virtual:vinext-rsc-entry";
@@ -1507,6 +1545,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let rscBuildIdentity: string | undefined;
   let rscCompatibilityId: string | undefined;
   let draftModeSecret = getPagesPreviewModeId();
+  const prerenderSecret =
+    process.env.__VINEXT_SHARED_PRERENDER_SECRET ?? randomBytes(32).toString("hex");
   let previewBuildCredentials: PreviewBuildCredentials | undefined;
   // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
   // `config` hook injects `Loader` as `css.modules.Loader` and
@@ -1576,6 +1616,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
+      prerenderSecret,
     );
   }
 
@@ -3712,6 +3753,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           );
         }
 
+        if (config.command === "build" && hasAppDir && nextConfig.cacheComponents) {
+          const appRoutes = await appRouter(appDir, nextConfig.pageExtensions, fileMatcher);
+          for (const route of appRoutes) {
+            if (!route.routePath) continue;
+            const source = fs.readFileSync(route.routePath, "utf-8");
+            const incompatibleExport = findCacheComponentsIncompatibleRouteExport(
+              source,
+              route.routePath,
+            );
+            if (incompatibleExport) {
+              throw new Error(
+                `Route segment config "${incompatibleExport}" is not compatible with \`nextConfig.cacheComponents\`. Please remove it.`,
+              );
+            }
+          }
+        }
+
         if (config.command === "build") {
           publicDirConflictOptions = {
             root: config.root,
@@ -3890,6 +3948,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Pages Router virtual modules
           if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
           if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
+          if (
+            cleanId === VIRTUAL_CACHEABILITY_MANIFEST ||
+            cleanId.endsWith("/" + VIRTUAL_CACHEABILITY_MANIFEST)
+          ) {
+            if (this.environment?.config.command === "build") {
+              return { id: `./${CACHEABILITY_MANIFEST_MODULE_FILE}`, external: true };
+            }
+            return RESOLVED_CACHEABILITY_MANIFEST;
+          }
           if (cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY)) {
             return RESOLVED_SERVER_ENTRY;
           }
@@ -4001,6 +4068,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             if (Object.keys(ssrManifest).length > 0) metadata.ssrManifest = ssrManifest;
             return `export default ${JSON.stringify(metadata)};`;
           }
+          if (id === RESOLVED_CACHEABILITY_MANIFEST) {
+            return "export default undefined;";
+          }
           // App Router virtual modules
           if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
             const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
@@ -4079,6 +4149,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       ),
                 globalNotFoundPath,
                 draftModeSecret,
+                prerenderSecret,
               },
               instrumentationPath,
             );
@@ -4389,6 +4460,10 @@ export const loadServerActionClient = ${
         return null;
       },
     },
+    // @cloudflare/vite-plugin emits the deployable Wrangler config during its
+    // generateBundle hook. Run post-order so ordinary builds carry an inert
+    // text module and two-stage deploys can replace that one known artifact.
+    createCacheabilityManifestModulePlugin(),
     {
       name: "vinext:css-url-assets-restore",
       enforce: "post",
@@ -6076,6 +6151,33 @@ export const loadServerActionClient = ${
         return null;
       },
     },
+    {
+      name: "vinext:validate-cache-components-route-config",
+      enforce: "pre",
+      transform: {
+        filter: {
+          id: { exclude: VIRTUAL_MODULE_ID_RE },
+          code: /\b(?:dynamic|revalidate|fetchCache)\b/,
+        },
+        handler(code, id) {
+          if (!nextConfig.cacheComponents || !hasAppDir) return null;
+          const modulePath = toSlash(stripViteModuleQuery(id));
+          if (
+            !isPathInsideOrEqual(appDir, modulePath) ||
+            !fileMatcher.isAppRouterRoute(modulePath)
+          ) {
+            return null;
+          }
+          const incompatibleExport = findCacheComponentsIncompatibleRouteExport(code, modulePath);
+          if (incompatibleExport) {
+            throw new Error(
+              `Route segment config "${incompatibleExport}" is not compatible with \`nextConfig.cacheComponents\`. Please remove it.`,
+            );
+          }
+          return null;
+        },
+      },
+    },
     // Next.js rejects `export * from "..."` when compiling Pages Router files
     // for the client. API routes have no client compilation, so they are
     // excluded here along with virtual and non-page modules.
@@ -6699,10 +6801,9 @@ export const loadServerActionClient = ${
     // Note: augmentChunkHash only affects JS chunk hashes. CSS and static asset
     // hashes are not salted, which is a known gap vs Next.js behavior.
     // Write vinext-server.json to dist/server/ with a per-build prerender secret.
-    // The prerender secret is used by prod-server.ts to authenticate requests to
-    // the internal /__vinext/prerender/* endpoints, which are only reachable during
-    // the prerender phase of `vinext build`. A new secret is generated on every
-    // build so it rotates with every deployment.
+    // The prerender secret is used by prod-server.ts and the Worker entries to
+    // authenticate requests to the internal /__vinext/prerender/* endpoints.
+    // A new secret is generated on every build so it rotates with every deployment.
     //
     // The secret is generated once at plugin creation time so that both the rsc
     // and ssr environments write the exact same value (they share the same
@@ -6710,30 +6811,27 @@ export const loadServerActionClient = ${
     // and the second write would silently overwrite the first with a different
     // secret, causing prerender auth to fail for whichever env's server reads
     // the file last.
-    (() => {
-      const prerenderSecret = randomBytes(32).toString("hex");
-      return {
-        name: "vinext:server-manifest",
-        apply: "build" as const,
-        enforce: "post" as const,
-        writeBundle: {
-          sequential: true,
-          order: "post" as const,
-          handler(options: { dir?: string }) {
-            const envName = this.environment?.name;
-            // Fire for App Router RSC builds (rsc env) and Pages Router SSR builds
-            // (ssr env). Skip client and other environments.
-            if (envName !== "rsc" && envName !== "ssr") return;
+    {
+      name: "vinext:server-manifest",
+      apply: "build" as const,
+      enforce: "post" as const,
+      writeBundle: {
+        sequential: true,
+        order: "post" as const,
+        handler(options: { dir?: string }) {
+          const envName = this.environment?.name;
+          // Fire for App Router RSC builds (rsc env) and Pages Router SSR builds
+          // (ssr env). Skip client and other environments.
+          if (envName !== "rsc" && envName !== "ssr") return;
 
-            const outDir = options.dir;
-            if (!outDir) return;
+          const outDir = options.dir;
+          if (!outDir) return;
 
-            const manifest = { prerenderSecret };
-            fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
-          },
+          const manifest = { prerenderSecret };
+          fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
         },
-      };
-    })(),
+      },
+    },
     {
       name: "vinext:nitro-route-rules",
       nitro: {

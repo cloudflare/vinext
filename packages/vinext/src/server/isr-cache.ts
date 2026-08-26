@@ -189,7 +189,10 @@ export function isrCacheControl(
   claims: { expireSeconds?: number; staleSeconds?: number } = {},
 ): CacheControlMetadata {
   return {
-    revalidate: revalidateSeconds,
+    // Infinity is the request-time sentinel for `revalidate = false`, but it
+    // is not JSON-safe (`JSON.stringify` turns it into null). Cache metadata
+    // uses Next.js's serializable representation for an infinite lifetime.
+    revalidate: revalidateSeconds === Infinity ? false : revalidateSeconds,
     ...(claims.expireSeconds === undefined ? {} : { expire: claims.expireSeconds }),
     ...(claims.staleSeconds === undefined ? {} : { stale: claims.staleSeconds }),
   };

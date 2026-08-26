@@ -26,7 +26,7 @@
  */
 
 import {
-  getDataCacheHandler,
+  getDataCacheHandlerUntracked,
   type CacheHandlerValue,
   type IncrementalCacheValue,
 } from "./cache-handler.js";
@@ -189,7 +189,7 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = true;
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
-    return getDataCacheHandler().get(key, ctx);
+    return getDataCacheHandlerUntracked().get(key, ctx);
   }
 
   async set(
@@ -197,7 +197,7 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void> {
-    await getDataCacheHandler().set(key, data, ctx);
+    await getDataCacheHandlerUntracked().set(key, data, ctx);
   }
 
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {

@@ -27,7 +27,7 @@ type CreateAppPageFontDataOptions = {
 export type AppSsrRenderResult = {
   htmlStream: ReadableStream<Uint8Array>;
   metadataReady: Promise<void>;
-  capturedRscData: Promise<ArrayBuffer> | null;
+  capturedRscData: Promise<CapturedAppPageRscData> | null;
   shellErrorRecovered?: boolean;
   /**
    * Preload `Link` header value emitted by React during SSR (via `onHeaders`),
@@ -35,6 +35,12 @@ export type AppSsrRenderResult = {
    * emitted no preload headers (or emission was disabled with `0`).
    */
   linkHeader?: string;
+};
+
+export type CapturedAppPageRscData = {
+  body: ArrayBuffer;
+  /** Release isolate-wide capture capacity after every consumer is finished. */
+  release: () => void;
 };
 
 export function isAppSsrRenderResult(value: unknown): value is AppSsrRenderResult {
@@ -47,7 +53,7 @@ const resolvedMetadataReady = Promise.resolve();
 
 function normalizeAppSsrRenderResult(
   raw: ReadableStream<Uint8Array> | AppSsrRenderResult,
-  fallbackCapturedRscData: Promise<ArrayBuffer> | null = null,
+  fallbackCapturedRscData: Promise<CapturedAppPageRscData> | null = null,
 ): AppSsrRenderResult {
   if (isAppSsrRenderResult(raw)) {
     return raw;
@@ -135,7 +141,19 @@ export type AppPageSsrHandler = {
       reactMaxHeadersLength?: number;
       rootParams?: RootParams;
       sideStream?: ReadableStream<Uint8Array>;
-      capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+      capturedRscDataRef?: { value: Promise<CapturedAppPageRscData> | null };
+      /** Maximum raw RSC bytes retained for a prospective cache artifact. */
+      capturedRscDataLimitBytes?: number;
+      /** Maximum time raw RSC capture may retain isolate-wide capacity. */
+      capturedRscDataTimeoutMs?: number;
+      /** Absolute authenticated-request deadline shared with every response capture. */
+      capturedRscDataDeadlineAt?: number;
+      /** Release isolate-wide capacity after retaining raw RSC bytes. */
+      releaseCapturedRscDataBudget?: () => void;
+      reserveCapturedRscDataBytes?: (bytes: number) => boolean;
+      releaseCapturedRscDataBytes?: (bytes: number) => void;
+      /** Transfer raw-capture capacity to the request-level admission owner. */
+      retainCapturedRscData?: (release: () => void) => boolean;
       /** Abort signal for a build-time PPR fallback-shell static render. */
       pprFallbackShellSignal?: AbortSignal;
       /** When true, wait for the full React tree before emitting bytes. */
@@ -185,7 +203,19 @@ type RenderAppPageHtmlStreamOptions = {
    *  handleSsr skips its internal tee and accumulates raw RSC bytes. */
   sideStream?: ReadableStream<Uint8Array>;
   /** Out-parameter filled with accumulated raw RSC bytes after stream consumption. */
-  capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+  capturedRscDataRef?: { value: Promise<CapturedAppPageRscData> | null };
+  /** Maximum raw RSC bytes retained for a prospective cache artifact. */
+  capturedRscDataLimitBytes?: number;
+  /** Maximum time raw RSC capture may retain isolate-wide capacity. */
+  capturedRscDataTimeoutMs?: number;
+  /** Absolute authenticated-request deadline shared with every response capture. */
+  capturedRscDataDeadlineAt?: number;
+  /** Release isolate-wide capacity after retaining raw RSC bytes. */
+  releaseCapturedRscDataBudget?: () => void;
+  reserveCapturedRscDataBytes?: (bytes: number) => boolean;
+  releaseCapturedRscDataBytes?: (bytes: number) => void;
+  /** Transfer completed raw bytes to the request-level admission owner. */
+  retainCapturedRscData?: (release: () => void) => boolean;
   /** Abort signal for a build-time PPR fallback-shell static render. */
   pprFallbackShellSignal?: AbortSignal;
   /** When true, wait for the full React tree before emitting bytes. */
@@ -218,7 +248,7 @@ type AppPageHtmlStreamRecoveryResult = {
   htmlStream: ReadableStream<Uint8Array> | null;
   response: Response | null;
   metadataReady: Promise<void>;
-  capturedRscData: Promise<ArrayBuffer> | null;
+  capturedRscData: Promise<CapturedAppPageRscData> | null;
   shellErrorRecovered: boolean;
   /** React-emitted preload `Link` header (already capped). */
   linkHeader?: string;
@@ -264,6 +294,13 @@ export async function renderAppPageHtmlStream(
     rootParams: options.rootParams,
     sideStream: options.sideStream,
     capturedRscDataRef: options.capturedRscDataRef,
+    capturedRscDataLimitBytes: options.capturedRscDataLimitBytes,
+    capturedRscDataTimeoutMs: options.capturedRscDataTimeoutMs,
+    capturedRscDataDeadlineAt: options.capturedRscDataDeadlineAt,
+    releaseCapturedRscDataBudget: options.releaseCapturedRscDataBudget,
+    reserveCapturedRscDataBytes: options.reserveCapturedRscDataBytes,
+    releaseCapturedRscDataBytes: options.releaseCapturedRscDataBytes,
+    retainCapturedRscData: options.retainCapturedRscData,
     pprFallbackShellSignal: options.pprFallbackShellSignal,
     waitForAllReady: options.waitForAllReady,
     isStaticGeneration: options.isStaticGeneration,
@@ -279,12 +316,18 @@ export async function renderAppPageHtmlStream(
     getInitialNavigationCacheMetadata: options.getInitialNavigationCacheMetadata,
   };
 
-  const rawResult = await options.ssrHandler.handleSsr(
-    options.rscStream,
-    options.navigationContext,
-    options.fontData,
-    ssrOptions,
-  );
+  let rawResult: ReadableStream<Uint8Array> | AppSsrRenderResult;
+  try {
+    rawResult = await options.ssrHandler.handleSsr(
+      options.rscStream,
+      options.navigationContext,
+      options.fontData,
+      ssrOptions,
+    );
+  } catch (error) {
+    options.releaseCapturedRscDataBudget?.();
+    throw error;
+  }
 
   return normalizeAppSsrRenderResult(rawResult, options.capturedRscDataRef?.value ?? null);
 }

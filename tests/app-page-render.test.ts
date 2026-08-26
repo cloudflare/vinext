@@ -38,6 +38,7 @@ import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import type { IsrWritePolicy } from "../packages/vinext/src/server/isr-cache.js";
 import type { InitialNavigationCacheMetadata } from "../packages/vinext/src/server/app-ssr-stream.js";
+import type { CapturedAppPageRscData } from "../packages/vinext/src/server/app-page-stream.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -48,6 +49,14 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
+  beginRouteCacheability,
+  createWorkerCacheabilityContext,
+  finalizeWorkerCacheabilityResponse,
+  recordRouteCacheability,
+} from "../packages/vinext/src/server/cacheability-request.js";
+import { applyConfigHeadersToResponse } from "../packages/vinext/src/server/config-headers.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 function captureRecord(value: ReactNode | AppOutgoingElements): Record<string, unknown> {
   if (!isAppElementsRecord(value)) {
@@ -77,6 +86,10 @@ function createDeferred<T = void>() {
   return { promise, reject, resolve };
 }
 
+function capturedRscData(body: ArrayBuffer): CapturedAppPageRscData {
+  return { body, release() {} };
+}
+
 function createCommonOptions() {
   const waitUntilPromises: Promise<void>[] = [];
   const renderToReadableStream = vi.fn(() => createStream(["flight-data"]));
@@ -89,7 +102,7 @@ function createCommonOptions() {
         formState?: unknown;
         scriptNonce?: string;
         sideStream?: ReadableStream<Uint8Array>;
-        capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+        capturedRscDataRef?: { value: Promise<CapturedAppPageRscData> | null };
       },
     ) {
       // Fill capturedRscDataRef so the ISR cache write path can verify paired
@@ -97,7 +110,7 @@ function createCommonOptions() {
       // that by providing a resolved promise with test fixture data.
       if (options?.capturedRscDataRef) {
         options.capturedRscDataRef.value = Promise.resolve(
-          new TextEncoder().encode("flight-data").buffer,
+          capturedRscData(new TextEncoder().encode("flight-data").buffer),
         );
         // Consume the sideStream so the stream is not left hanging
         if (options.sideStream) {
@@ -533,10 +546,13 @@ describe("app page render lifecycle", () => {
       consumeDynamicUsage,
       consumeRenderObservationState() {
         return {
-          dynamicFetches: ["https://api.example.test/posts?token=secret"],
+          dynamicFetches: [],
           requestApis: ["headers"],
         };
       },
+      // force-static intentionally substitutes empty request values, so the
+      // observation remains safe to persist while still exercising redaction.
+      isForceStatic: true,
       isProduction: true,
       isRscRequest: true,
       revalidateSeconds: 60,
@@ -895,7 +911,7 @@ describe("app page render lifecycle", () => {
         async handleSsr(_rscStream, _navigationContext, _fontData, options) {
           if (options?.capturedRscDataRef) {
             options.capturedRscDataRef.value = Promise.resolve(
-              new TextEncoder().encode("flight-data").buffer,
+              capturedRscData(new TextEncoder().encode("flight-data").buffer),
             );
           }
           if (options?.sideStream) {
@@ -1064,7 +1080,7 @@ describe("app page render lifecycle", () => {
       requestCacheLife = null;
       return value;
     });
-    const releaseRscData = createDeferred<ArrayBuffer>();
+    const releaseRscData = createDeferred<CapturedAppPageRscData>();
 
     const responsePromise = renderAppPageLifecycle({
       ...common.options,
@@ -1077,7 +1093,7 @@ describe("app page render lifecycle", () => {
           _navContext: unknown,
           _fontData: unknown,
           options?: {
-            capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+            capturedRscDataRef?: { value: Promise<CapturedAppPageRscData> | null };
             fallbackToErrorDocumentOnShellError?: boolean;
             sideStream?: ReadableStream<Uint8Array>;
             waitForAllReady?: boolean;
@@ -1101,7 +1117,7 @@ describe("app page render lifecycle", () => {
     await Promise.resolve();
     expect(getRequestCacheLife).not.toHaveBeenCalled();
     requestCacheLife = { revalidate: 1, expire: 3 };
-    releaseRscData.resolve(new ArrayBuffer(0));
+    releaseRscData.resolve(capturedRscData(new ArrayBuffer(0)));
     const response = await responsePromise;
 
     expect(capturedWaitForAllReady).toBe(false);
@@ -1118,7 +1134,7 @@ describe("app page render lifecycle", () => {
     const common = createCommonOptions();
     let dynamicUsed = false;
     const getRequestCacheLife = vi.fn(() => null);
-    const pendingRscData = new Promise<ArrayBuffer>(() => {});
+    const pendingRscData = new Promise<CapturedAppPageRscData>(() => {});
 
     const response = await renderAppPageLifecycle({
       ...common.options,
@@ -1136,7 +1152,7 @@ describe("app page render lifecycle", () => {
           _navContext: unknown,
           _fontData: unknown,
           options?: {
-            capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+            capturedRscDataRef?: { value: Promise<CapturedAppPageRscData> | null };
             sideStream?: ReadableStream<Uint8Array>;
           },
         ) {
@@ -1219,13 +1235,15 @@ describe("app page render lifecycle", () => {
           _fontData: unknown,
           options?: {
             sideStream?: ReadableStream<Uint8Array>;
-            capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+            capturedRscDataRef?: { value: Promise<CapturedAppPageRscData> | null };
           },
         ) {
           const stream = options?.sideStream ?? rscStream;
-          const capturedRscData = new Response(stream).arrayBuffer();
+          const capturedRscDataPromise = new Response(stream)
+            .arrayBuffer()
+            .then((body) => capturedRscData(body));
           if (options?.capturedRscDataRef) {
-            options.capturedRscDataRef.value = capturedRscData;
+            options.capturedRscDataRef.value = capturedRscDataPromise;
           }
 
           const htmlStream = new ReadableStream<Uint8Array>({
@@ -1237,8 +1255,8 @@ describe("app page render lifecycle", () => {
 
           return {
             htmlStream,
-            metadataReady: capturedRscData.then(() => {}),
-            capturedRscData,
+            metadataReady: capturedRscDataPromise.then(() => {}),
+            capturedRscData: capturedRscDataPromise,
           };
         },
       }),
@@ -1462,6 +1480,57 @@ describe("app page render lifecycle", () => {
     // no pending cacheLife claim to advertise.
     expect(response.headers.get(VINEXT_STALE_TIME_PENDING_HEADER)).toBeNull();
     await expect(response.text()).resolves.toBe("flight-data");
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+  it("lets config Cache-Control replace a force-dynamic page's framework policy", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const request = new Request("https://example.com/posts/post");
+      const context = createWorkerCacheabilityContext(
+        { hostRuntime: "worker", waitUntil() {} },
+        request,
+        "secret-a",
+      );
+      const common = createCommonOptions();
+
+      const response = await runWithExecutionContext(context, async () => {
+        expect(beginRouteCacheability("app-page", "/posts/:slug")).toBe(true);
+        recordRouteCacheability({
+          cacheable: false,
+          dynamicUsage: true,
+          reason: "dynamic = force-dynamic",
+        });
+        const rendered = await renderAppPageLifecycle({
+          ...common.options,
+          isForceDynamic: true,
+          isProduction: true,
+        });
+        applyConfigHeadersToResponse(rendered.headers, {
+          configHeaders: [
+            {
+              source: "/posts/:slug",
+              headers: [{ key: "Cache-Control", value: "s-maxage=32" }],
+            },
+          ],
+          pathname: "/posts/post",
+          requestContext: {
+            cookies: {},
+            headers: new Headers(),
+            host: "example.com",
+            query: new URLSearchParams(),
+          },
+        });
+        return finalizeWorkerCacheabilityResponse(rendered, context);
+      });
+
+      expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+      expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=32");
+      await expect(response.text()).resolves.toBe("<html>page</html>");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("omits the dynamic stale time header on static production default-config RSC responses", async () => {

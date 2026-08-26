@@ -22,10 +22,10 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
-  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
+  VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH,
   VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
@@ -95,7 +95,7 @@ import {
 import {
   matchPrerenderRouteParamsPayload,
   readTrustedPrerenderRouteParams,
-  serializePrerenderRouteParamsHeader,
+  type PrerenderRouteParamsPayload,
 } from "./prerender-route-params.js";
 import {
   createServerActionNotFoundResponse,
@@ -107,6 +107,8 @@ import {
   type AppRouteTreePrefetchRoute,
   type PrefetchInliningConfig,
 } from "./app-route-tree-prefetch.js";
+import { configRoutesCanVaryResponse } from "./config-cache-safety.js";
+import { markRequestCacheabilityUnsafe } from "./cacheability-request.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -263,6 +265,7 @@ type DispatchMatchedRouteHandlerOptions<TRoute> = {
    */
   params: AppPageParams | null;
   request: Request;
+  renderedConcreteUrlPaths?: ReadonlySet<string>;
   route: TRoute;
   searchParams: URLSearchParams;
 };
@@ -409,6 +412,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   rootParamNamesByPattern?: RootParamNamesMap;
   setNavigationContext: (context: NavigationContextValue) => void;
   staticParamsMap: StaticParamsMap;
+  validatePrerenderAppRouteHandlers?: () => Promise<void>;
   trailingSlash: boolean;
   validateDevRequestOrigin?: (request: Request) => Response | null;
 };
@@ -615,6 +619,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   dispatchInternalRequest: (request: Request) => Promise<Response>,
   allowInternalRscDocumentFallback: boolean,
   setInterceptionResponseUncacheable: (uncacheable: boolean) => void,
+  prerenderRouteParamsPayload: PrerenderRouteParamsPayload | null,
 ): Promise<Response> {
   const handlerStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
 
@@ -770,18 +775,23 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (
     pathname === VINEXT_PRERENDER_STATIC_PARAMS_PATH ||
     pathname === VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH ||
-    pathname === VINEXT_PRERENDER_METADATA_ROUTES_PATH
+    pathname === VINEXT_PRERENDER_METADATA_ROUTES_PATH ||
+    pathname === VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH
   ) {
     const { handleAppPrerenderEndpoint } = await import("./app-prerender-endpoints.js");
     const prerenderEndpointResponse = await handleAppPrerenderEndpoint(request, {
       isPrerenderEnabled() {
-        return process.env.VINEXT_PRERENDER === "1";
+        return (
+          process.env.VINEXT_PRERENDER === "1" ||
+          getRequestExecutionContext()?.isPrerenderPathDiscovery === true
+        );
       },
       getMetadataRoutePaths: options.getPrerenderMetadataRoutePaths,
       loadPagesRoutes: options.loadPrerenderPagesRoutes,
       pathname,
       rootParamNamesByPattern: options.rootParamNamesByPattern,
       staticParamsMap: options.staticParamsMap,
+      validateAppRouteHandlers: options.validatePrerenderAppRouteHandlers,
     });
     if (prerenderEndpointResponse) return prerenderEndpointResponse;
   }
@@ -818,6 +828,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // `/rewrite`, unlike Next.js. Dynamic captures must likewise retain their
   // original percent-encoding for Location substitution.
   const redirectPathname = matchPathname(requestCleanPathname);
+  if (
+    configRoutesCanVaryResponse({
+      basePathState,
+      headers: options.configHeaders,
+      pathname: redirectPathname,
+      redirects: options.configRedirects,
+      rewrites: options.configRewrites,
+    })
+  ) {
+    markRequestCacheabilityUnsafe("request-conditional config can vary this pathname");
+  }
   const configMatchers =
     HAS_CONFIG_REDIRECTS && options.configRedirects.length
       ? await import("../config/config-matchers.js")
@@ -1658,7 +1679,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     options.clearRequestContext();
     return applyMiddlewareContextToResponse(response, middlewareContext);
   }
-  const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
   const prerenderRouteParamsMatch = matchPrerenderRouteParamsPayload(
     prerenderRouteParamsPayload,
     route.pattern,
@@ -1720,6 +1740,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // an object shape; only the user-facing handler context surfaces null.
       params: route.isDynamic ? renderParams : null,
       request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),
+      renderedConcreteUrlPaths: getRenderedConcreteUrlPathsForRoute(route.pattern),
       route,
       searchParams: resolvedSearchParams,
     });
@@ -1872,14 +1893,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     const executionContext = isExecutionContextLike(ctx)
       ? ctx
       : (getRequestExecutionContext() ?? null);
-    // Read the trusted prerender route params before filtering strips the
-    // route-params header (it IS in VINEXT_INTERNAL_HEADERS), then re-attach the
-    // validated value below so the second read in handleAppRscRequest still sees
-    // it. The secret was already verified upstream at prod-server's
-    // nodeToWebRequest boundary; the surviving secret header (NOT in either
-    // internal-header list) lets readTrustedPrerenderRouteParams's
-    // VINEXT_PRERENDER gate pass on the reconstructed request. If the secret
-    // header is ever added to VINEXT_INTERNAL_HEADERS, that second read breaks.
+    // Capture the trusted payload before filtering strips both transport
+    // headers. Pass the validated value directly into route dispatch so neither
+    // the capability nor the encoded payload is visible to middleware/user code.
     const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(rawRequest);
     const isTrustedSpeculativePrerender =
       process.env.VINEXT_PRERENDER === "1" &&
@@ -1894,12 +1910,6 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     }
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
-    }
-    const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
-      prerenderRouteParamsPayload,
-    );
-    if (prerenderRouteParamsHeader !== null) {
-      filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
     }
     if (isTrustedSpeculativePrerender) {
       filteredHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
@@ -1951,6 +1961,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
               (uncacheable) => {
                 interceptionResponseUncacheable = uncacheable;
               },
+              prerenderRouteParamsPayload,
             );
           } catch (error) {
             if (process.env.NODE_ENV !== "production") {

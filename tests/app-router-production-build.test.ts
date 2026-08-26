@@ -32,6 +32,24 @@ function readAllJs(dir: string): string {
   return out;
 }
 
+function readStaticServerImportGraph(entryPath: string): Set<string> {
+  const visited = new Set<string>();
+  const visit = (filePath: string): void => {
+    if (visited.has(filePath)) return;
+    visited.add(filePath);
+    const source = fs.readFileSync(filePath, "utf-8");
+    const staticImport = /\b(?:import(?!\s*\()|export)\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']/g;
+    for (const match of source.matchAll(staticImport)) {
+      const specifier = match[1];
+      if (!specifier.startsWith(".")) continue;
+      const resolved = path.resolve(path.dirname(filePath), specifier);
+      if (fs.existsSync(resolved)) visit(resolved);
+    }
+  };
+  visit(entryPath);
+  return visited;
+}
+
 describe("App Router Production build", () => {
   const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
 
@@ -119,6 +137,23 @@ describe("App Router Production build", () => {
     const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");
     expect(rscEntry).toContain("handler");
 
+    // Bounded response capture is specific to edge-managed classification. A
+    // default origin-managed build keeps it as a lazy chunk instead of paying
+    // its startup cost on every request.
+    const staticServerModules = readStaticServerImportGraph(
+      path.join(outDir, "server", "index.js"),
+    );
+    expect(
+      [...staticServerModules].some((filePath) =>
+        path.basename(filePath).includes("cacheability-response"),
+      ),
+    ).toBe(false);
+    expect(
+      fs
+        .readdirSync(path.join(outDir, "server", "_next", "static"))
+        .some((fileName) => fileName.includes("cacheability-response")),
+    ).toBe(true);
+
     // Asset manifest should be generated
     expect(fs.existsSync(path.join(outDir, "server", "__vite_rsc_assets_manifest.js"))).toBe(true);
 
@@ -182,6 +217,53 @@ describe("App Router Production build", () => {
     }
   }, 30000);
 
+  // Ported from Next.js: test/e2e/app-dir/cache-components/cache-components-invalid-config.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components-invalid-config.test.ts
+  it("fails the build for incompatible Cache Components Route Handler config", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cache-components-config-"));
+
+    try {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app", "api"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Page() { return <p>home</p>; }
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "api", "route.ts"),
+        `export const revalidate = 60;
+export function GET() { return new Response("invalid"); }
+`,
+      );
+
+      await expect(async () => {
+        const builder = await createBuilder({
+          root: tmpDir,
+          configFile: false,
+          plugins: [vinext({ appDir: tmpDir, nextConfig: { cacheComponents: true } })],
+          logLevel: "silent",
+        });
+        await builder.buildApp();
+      }).rejects.toThrow(
+        'Route segment config "revalidate" is not compatible with `nextConfig.cacheComponents`',
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {
     // The `vinext build` CLI resolves the build ID once and shares it via
     // __VINEXT_SHARED_BUILD_ID so that every plugin instance in a build (App
@@ -212,6 +294,33 @@ describe("App Router Production build", () => {
     } finally {
       if (previous === undefined) delete process.env.__VINEXT_SHARED_BUILD_ID;
       else process.env.__VINEXT_SHARED_BUILD_ID = previous;
+    }
+  }, 30000);
+
+  it("adopts the shared prerender discovery secret in the Worker and server manifest", async () => {
+    // Hybrid builds instantiate vinext twice; the CLI-provided value must win
+    // so the later Pages build cannot invalidate the App Worker's capability.
+    const sharedSecret = "ab".repeat(32);
+    const previous = process.env.__VINEXT_SHARED_PRERENDER_SECRET;
+    process.env.__VINEXT_SHARED_PRERENDER_SECRET = sharedSecret;
+    try {
+      const builder = await createBuilder({
+        root: APP_FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      expect(
+        JSON.parse(fs.readFileSync(path.join(outDir, "server", "vinext-server.json"), "utf-8")),
+      ).toEqual({ prerenderSecret: sharedSecret });
+      expect(fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8")).toContain(
+        sharedSecret,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.__VINEXT_SHARED_PRERENDER_SECRET;
+      else process.env.__VINEXT_SHARED_PRERENDER_SECRET = previous;
     }
   }, 30000);
 

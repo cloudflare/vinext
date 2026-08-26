@@ -12,18 +12,27 @@ import {
   matchAppRoute,
 } from "../routing/app-router.js";
 import { apiRouter, matchRoute, pagesRouter } from "../routing/pages-router.js";
+import { createValidFileMatcher } from "../routing/file-matcher.js";
 import {
   normalizeStaticPathname,
   normalizeStaticPathsEntry,
   type StaticPathsEntry,
 } from "../routing/route-pattern.js";
-import { getAppRouteRenderEntryPath, classifyAppRoute, classifyPagesRoute } from "./report.js";
+import {
+  getAppRouteRenderEntryPath,
+  classifyAppRoute,
+  classifyPagesRoute,
+  extractMiddlewareMatcherConfig,
+} from "./report.js";
 import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
 import { findDir } from "../utils/project.js";
 import { BLOCKED_PAGES, PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
-import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
+import {
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH,
+} from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
@@ -31,6 +40,9 @@ import { matchesRewriteSource } from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
+import { findMiddlewareFile } from "../server/middleware.js";
+import { middlewareMatcherCanRunForPath } from "../server/middleware-cache-safety.js";
+import { isExternalUrl } from "../utils/external-url.js";
 
 export type PrerenderPathManifest = {
   basePath?: string;
@@ -49,14 +61,37 @@ export type PrerenderPathManifest = {
   pagesPaths?: string[];
   /** Public paths omitted because configured routes can replace their page response. */
   excludedWarmPaths?: string[];
+  /** One representative deployed probe per route pattern, with a safe runtime fallback. */
+  cacheabilityRoutes?: CacheabilityProbeRoute[];
   trailingSlash?: boolean;
   paths: string[];
+};
+
+export type CacheabilityProbeRoute = {
+  fallbackState?: "dynamic" | "runtime-check";
+  kind: "app-page" | "app-route" | "pages-page";
+  /** Concrete public pathname whose result must not certify sibling params. */
+  path?: string;
+  pattern: string;
+  probePath?: string;
+  /** Concrete warm targets owned by this exact classification item. */
+  warmPaths?: string[];
+  /** Additional paths warmed once with the final Worker's runtime check. */
+  runtimeCheckWarmPaths?: string[];
+  /** Paths sharing the probed deterministic rewrite identity. */
+  probeGroupPaths?: string[];
+  /** Only generated concrete paths may use this dynamic pattern's runtime check. */
 };
 
 export const PRERENDER_PATH_DISCOVERY_ENV = "__VINEXT_PRERENDER_PATH_DISCOVERY";
 export const PRERENDER_PATHS_MANIFEST = "vinext-prerender-paths.json";
 
 const PATH_DISCOVERY_FETCH_TIMEOUT_MS = 30_000;
+
+type PathDiscoveryRetryOptions = {
+  retries?: number;
+  retryDelayMs?: number;
+};
 
 type EmitPrerenderPathManifestOptions = {
   root: string;
@@ -69,6 +104,14 @@ type EmitPrerenderPathManifestOptions = {
   rscBundlePath?: string;
   buildIdentity?: CdnCacheAdapterCapabilities["buildIdentity"];
   responseVary?: CdnCacheAdapterCapabilities["responseVary"];
+  /** Execute dynamic path hooks against an already-uploaded Worker. */
+  pathDiscoveryTarget?: {
+    baseUrl: string;
+    headers?: HeadersInit;
+    /** Retry transient staged-version routing responses before failing discovery. */
+    retries?: number;
+    retryDelayMs?: number;
+  };
 };
 
 function readBuiltBuildId(serverDir: string): string | null {
@@ -103,6 +146,13 @@ function addPath(paths: string[], seen: Set<string>, pathname: string): void {
 
 function throwDiscoveryFailure(route: string, error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
+  if (/cloudflare:|ERR_UNSUPPORTED_ESM_URL_SCHEME/i.test(message)) {
+    throw new Error(
+      `Failed to discover warmup path(s) for ${route}: Cloudflare runtime bindings cannot execute in the local Node prerender server. ` +
+        "Use `vinext-cloudflare deploy --experimental-warm-cdn-cache` so path discovery runs against the staged Worker version.",
+      { cause: error },
+    );
+  }
   throw new Error(`Failed to discover warmup path(s) for ${route}: ${message}`, { cause: error });
 }
 
@@ -245,26 +295,56 @@ function validatePagesStaticPathsEntry(entry: StaticPathsEntry, pattern: string)
 async function fetchDiscoveryEndpoint(
   url: string,
   headers: Record<string, string>,
+  retryOptions: PathDiscoveryRetryOptions = {},
 ): Promise<string | null> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), PATH_DISCOVERY_FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      headers,
-      signal: controller.signal,
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`path discovery returned HTTP ${res.status}`);
-    if (res.status === 204) return null;
-    return text;
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`path discovery timed out after ${PATH_DISCOVERY_FETCH_TIMEOUT_MS}ms`);
+  const retries = Math.max(0, retryOptions.retries ?? 0);
+  const retryDelayMs = Math.max(0, retryOptions.retryDelayMs ?? 0);
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), PATH_DISCOVERY_FETCH_TIMEOUT_MS);
+    let shouldRetry = true;
+    try {
+      const res = await fetch(url, {
+        headers,
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      if (res.ok) {
+        if (res.status === 204) return null;
+        return text;
+      }
+
+      const detail = /cloudflare:|ERR_UNSUPPORTED_ESM_URL_SCHEME|\[vinext\]/i.test(text)
+        ? text.trim()
+        : "";
+      lastError = new Error(
+        `path discovery returned HTTP ${res.status}${detail ? `: ${detail}` : ""}`,
+      );
+      // A newly applied route can briefly reach the previous Worker (404), and
+      // version-metadata validation rejects that mismatch with 503. User-code
+      // failures use 500 and should surface immediately instead of being replayed.
+      if (res.status !== 404 && res.status !== 503) {
+        shouldRetry = false;
+        throw lastError;
+      }
+    } catch (error) {
+      lastError =
+        error instanceof Error && error.name === "AbortError"
+          ? new Error(`path discovery timed out after ${PATH_DISCOVERY_FETCH_TIMEOUT_MS}ms`)
+          : error;
+      if (!shouldRetry) throw lastError;
+    } finally {
+      clearTimeout(timeout);
     }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
+
+    if (attempt < retries && retryDelayMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
+    }
   }
+
+  throw lastError;
 }
 
 function resolveConfiguredRouteDirs(
@@ -339,6 +419,7 @@ async function collectPagesPaths(options: {
   i18n: ResolvedNextConfig["i18n"];
   pagesDir: string;
   pageExtensions: readonly string[];
+  retryOptions?: PathDiscoveryRetryOptions;
   secretHeaders: Record<string, string>;
 }): Promise<string[]> {
   const [pageRoutes, apiRoutes] = await Promise.all([
@@ -381,6 +462,7 @@ async function collectPagesPaths(options: {
       const text = await fetchDiscoveryEndpoint(
         `${options.baseUrl}/__vinext/prerender/pages-static-paths?${search}`,
         options.secretHeaders,
+        options.retryOptions,
       );
       if (text === null) {
         continue;
@@ -476,6 +558,7 @@ async function collectAppPaths(options: {
   appDir: string;
   baseUrl: string | null;
   pageExtensions: readonly string[];
+  retryOptions?: PathDiscoveryRetryOptions;
   secretHeaders: Record<string, string>;
 }): Promise<{ loadingShellPaths: string[]; paths: string[] }> {
   const routes = await appRouter(options.appDir, options.pageExtensions);
@@ -499,6 +582,7 @@ async function collectAppPaths(options: {
           const text = await fetchDiscoveryEndpoint(
             `${options.baseUrl}/__vinext/prerender/static-params?${search}`,
             options.secretHeaders,
+            options.retryOptions,
           );
           if (text === null) return null;
           const value = JSON.parse(text) as unknown;
@@ -527,13 +611,11 @@ async function collectAppPaths(options: {
   });
 
   for (const route of routes) {
+    const isRouteHandler = route.routePath !== null;
     const renderEntryPath = getAppRouteRenderEntryPath(route);
-    if (!renderEntryPath) continue;
+    if (!isRouteHandler && !renderEntryPath) continue;
 
-    const { type } = classifyAppRoute(renderEntryPath, route.routePath, route.isDynamic);
-    if (type === "api") continue;
-
-    const hasMainTreeLoadingBoundary = appRouteHasMainTreeLoadingBoundary(route);
+    const hasMainTreeLoadingBoundary = !isRouteHandler && appRouteHasMainTreeLoadingBoundary(route);
     const addDiscoveredPath = (pathname: string): void => {
       addPath(paths, seen, pathname);
       if (hasMainTreeLoadingBoundary) {
@@ -656,33 +738,228 @@ async function resolveAppWarmPaths(options: {
   return { htmlPaths, loadingShellPaths, rscPaths };
 }
 
+async function collectCacheabilityProbeRoutes(options: {
+  appDir: string | null;
+  cacheComponents: boolean;
+  excludedPaths?: ReadonlySet<string>;
+  isExcludedPath?: (pathname: string) => boolean;
+  i18n: ResolvedNextConfig["i18n"];
+  pagesDir: string | null;
+  pageExtensions: readonly string[];
+  paths: readonly string[];
+  individuallyProbedPathGroups?: ReadonlyMap<string, string>;
+}): Promise<CacheabilityProbeRoute[]> {
+  const appRoutes = options.appDir ? await appRouter(options.appDir, options.pageExtensions) : [];
+  const [pageRoutes, apiRoutes] = options.pagesDir
+    ? await Promise.all([
+        pagesRouter(options.pagesDir, options.pageExtensions),
+        apiRouter(options.pagesDir, options.pageExtensions),
+      ])
+    : [[], []];
+  const pathsByRoute = new Map<string, Set<string>>();
+  const addRoutePath = (key: string, pathname: string): void => {
+    const existing = pathsByRoute.get(key);
+    if (existing) {
+      existing.add(pathname);
+    } else {
+      pathsByRoute.set(key, new Set([pathname]));
+    }
+  };
+
+  for (const pathname of options.paths) {
+    const appMatch = matchAppRoute(pathname, appRoutes);
+    const pagesPathname = options.i18n
+      ? extractLocaleFromUrl(pathname, options.i18n).url
+      : pathname;
+    const isPagesApiRequest = pathname === "/api" || pathname.startsWith("/api/");
+    const pagesMatch = matchRoute(pagesPathname, isPagesApiRequest ? apiRoutes : pageRoutes);
+    if (
+      pagesMatch &&
+      (!appMatch || pagesRouteHasPriorityOverAppRoute(pagesMatch.route, appMatch.route))
+    ) {
+      if (!isPagesApiRequest) {
+        addRoutePath(`pages-page:${pagesMatch.route.pattern}`, pathname);
+      }
+      continue;
+    }
+    if (appMatch) {
+      const kind = appMatch.route.routePath ? "app-route" : "app-page";
+      const key = `${kind}:${appMatch.route.pattern}`;
+      addRoutePath(key, pathname);
+    }
+  }
+
+  const result: CacheabilityProbeRoute[] = [];
+  const addProbeableRoute = (
+    kind: CacheabilityProbeRoute["kind"],
+    pattern: string,
+    warmPaths: readonly string[],
+  ): void => {
+    const probeGroups = new Map<string, string[]>();
+    for (const pathname of warmPaths) {
+      const group = options.individuallyProbedPathGroups?.get(pathname);
+      if (!group) continue;
+      const paths = probeGroups.get(group);
+      if (paths) paths.push(pathname);
+      else probeGroups.set(group, [pathname]);
+    }
+    const sharedPatternPaths = warmPaths.filter(
+      (pathname) => !options.individuallyProbedPathGroups?.has(pathname),
+    );
+    const [probePath, ...runtimeCheckWarmPaths] = sharedPatternPaths;
+    for (const paths of probeGroups.values()) {
+      const [pathname, ...probeGroupPaths] = paths;
+      result.push({
+        kind,
+        path: pathname,
+        pattern,
+        probePath: pathname,
+        warmPaths: [pathname],
+        ...(probeGroupPaths.length > 0
+          ? { probeGroupPaths, runtimeCheckWarmPaths: probeGroupPaths }
+          : {}),
+      });
+    }
+    if (!probePath) return;
+    result.push({
+      kind,
+      path: probePath,
+      pattern,
+      probePath,
+      warmPaths: [probePath],
+      ...(runtimeCheckWarmPaths.length > 0 ? { runtimeCheckWarmPaths } : {}),
+    });
+  };
+
+  for (const route of appRoutes) {
+    const renderEntryPath = getAppRouteRenderEntryPath(route);
+    if (!route.routePath && !renderEntryPath) continue;
+    const kind = route.routePath ? "app-route" : "app-page";
+    const key = `${kind}:${route.pattern}`;
+    const warmPaths = [...(pathsByRoute.get(key) ?? [])];
+    addProbeableRoute(kind, route.pattern, warmPaths);
+    if (warmPaths.length > 0) continue;
+
+    // Next.js can prerender a fixed GET route handler. Probe it independently
+    // and expose it as a final warm target; a dynamic handler remains an
+    // on-demand runtime check until generateStaticParams discovery is wired.
+    if (kind === "app-route" && !route.isDynamic && !options.excludedPaths?.has(route.pattern)) {
+      addProbeableRoute(kind, route.pattern, [route.pattern]);
+    } else {
+      result.push({
+        kind,
+        pattern: route.pattern,
+        fallbackState: "runtime-check",
+      });
+    }
+  }
+
+  const apiPatterns = new Set(apiRoutes.map((route) => route.pattern));
+  for (const route of pageRoutes) {
+    if (
+      apiPatterns.has(route.pattern) ||
+      BLOCKED_PAGES.includes(route.pattern) ||
+      route.pattern === "/404" ||
+      route.pattern === "/500" ||
+      route.pattern === "/_error"
+    ) {
+      continue;
+    }
+    const key = `pages-page:${route.pattern}`;
+    const isSsr = classifyPagesRoute(route.filePath).type === "ssr";
+    let warmPaths = [...(pathsByRoute.get(key) ?? [])];
+    if (isSsr && !route.isDynamic) {
+      const fixedPaths = options.i18n
+        ? options.i18n.locales.map((locale) =>
+            localizePagesPath(route.pattern, locale, options.i18n),
+          )
+        : [route.pattern];
+      warmPaths = fixedPaths.filter(
+        (pathname) => !options.excludedPaths?.has(pathname) && !options.isExcludedPath?.(pathname),
+      );
+    }
+    if (!isSsr || warmPaths.length > 0) {
+      addProbeableRoute("pages-page", route.pattern, warmPaths);
+    }
+    if (warmPaths.length === 0) {
+      result.push({
+        fallbackState: isSsr ? "dynamic" : "runtime-check",
+        kind: "pages-page",
+        pattern: route.pattern,
+      });
+    }
+  }
+
+  return result.sort((a, b) =>
+    `${a.kind}:${a.pattern}:${a.path ?? ""}`.localeCompare(
+      `${b.kind}:${b.pattern}:${b.path ?? ""}`,
+    ),
+  );
+}
+
+function configuredRuleMatchesWarmPath(
+  pathname: string,
+  rule: Parameters<typeof matchesRewriteSource>[1],
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
+): boolean {
+  const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
+  const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
+  return hostnames.some((hostname) =>
+    matchesRewriteSource(
+      normalizeDefaultLocalePathname(canonicalPathname, config.i18n, { hostname }),
+      rule,
+      {
+        basePath: config.basePath,
+        hadBasePath: true,
+      },
+    ),
+  );
+}
+
 function configuredRouteAffectsWarmPath(
   pathname: string,
   config: Pick<
     ResolvedNextConfig,
-    "basePath" | "i18n" | "redirects" | "rewrites" | "trailingSlash"
+    "basePath" | "headers" | "i18n" | "redirects" | "rewrites" | "trailingSlash"
   >,
 ): boolean {
-  const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
-  const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
-  const matchPathnames = new Set(
-    hostnames.map((hostname) =>
-      normalizeDefaultLocalePathname(canonicalPathname, config.i18n, { hostname }),
-    ),
-  );
   const rewrites = [
     ...config.rewrites.beforeFiles,
     ...config.rewrites.afterFiles,
     ...config.rewrites.fallback,
   ];
-  return [...rewrites, ...config.redirects].some((rule) =>
-    Array.from(matchPathnames).some((matchPathname) =>
-      matchesRewriteSource(matchPathname, rule, {
-        basePath: config.basePath,
-        hadBasePath: true,
-      }),
-    ),
+  const conditionalRules = [...rewrites, ...config.headers].filter(
+    (rule) => (rule.has?.length ?? 0) > 0 || (rule.missing?.length ?? 0) > 0,
   );
+  const externalRewrites = rewrites.filter((rewrite) => isExternalUrl(rewrite.destination));
+  return [...config.redirects, ...conditionalRules, ...externalRewrites].some((rule) =>
+    configuredRuleMatchesWarmPath(pathname, rule, config),
+  );
+}
+
+function deterministicInternalRewriteGroupForWarmPath(
+  pathname: string,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "rewrites" | "trailingSlash">,
+): string | null {
+  const phases = [
+    ["beforeFiles", config.rewrites.beforeFiles],
+    ["afterFiles", config.rewrites.afterFiles],
+    ["fallback", config.rewrites.fallback],
+  ] as const;
+  const matches: string[] = [];
+  for (const [phase, rewrites] of phases) {
+    rewrites.forEach((rewrite, index) => {
+      if (
+        !isExternalUrl(rewrite.destination) &&
+        (rewrite.has?.length ?? 0) === 0 &&
+        (rewrite.missing?.length ?? 0) === 0 &&
+        configuredRuleMatchesWarmPath(pathname, rewrite, config)
+      ) {
+        matches.push(`${phase}:${index}:${rewrite.source}:${rewrite.destination}`);
+      }
+    });
+  }
+  return matches.length > 0 ? matches.join("|") : null;
 }
 
 async function startPathDiscoveryServer(options: {
@@ -746,7 +1023,7 @@ export async function emitPrerenderPathManifest(
       pagesDir,
       pageExtensions: config.pageExtensions,
     });
-    if (needsServer) {
+    if (needsServer && !options.pathDiscoveryTarget) {
       try {
         prodServer = await startPathDiscoveryServer({
           serverDir: bundleServerDir,
@@ -761,19 +1038,39 @@ export async function emitPrerenderPathManifest(
       }
     }
 
-    const baseUrl = prodServer ? `http://127.0.0.1:${prodServer.port}` : null;
+    const baseUrl = options.pathDiscoveryTarget?.baseUrl
+      ? new URL(options.pathDiscoveryTarget.baseUrl).origin
+      : prodServer
+        ? `http://127.0.0.1:${prodServer.port}`
+        : null;
     const prerenderSecret =
       readPrerenderSecret(bundleServerDir) ?? readPrerenderSecret(manifestDir);
-    const secretHeaders: Record<string, string> = prerenderSecret
-      ? { [VINEXT_PRERENDER_SECRET_HEADER]: prerenderSecret }
-      : {};
+    if (needsServer && options.pathDiscoveryTarget && !prerenderSecret) {
+      throw new Error(
+        "Cannot discover warmup paths from the staged Worker because dist/server/vinext-server.json does not contain a prerender secret. Rebuild the app before deploying.",
+      );
+    }
+    const secretHeaders: Record<string, string> = Object.fromEntries(
+      new Headers(options.pathDiscoveryTarget?.headers),
+    );
+    if (prerenderSecret) {
+      secretHeaders[VINEXT_PRERENDER_SECRET_HEADER] = prerenderSecret;
+    }
 
     try {
       if (appDir) {
+        if (config.cacheComponents && options.pathDiscoveryTarget && baseUrl) {
+          await fetchDiscoveryEndpoint(
+            `${baseUrl}${VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH}`,
+            secretHeaders,
+            options.pathDiscoveryTarget,
+          );
+        }
         const appPathResult = await collectAppPaths({
           appDir,
           baseUrl,
           pageExtensions: config.pageExtensions,
+          retryOptions: options.pathDiscoveryTarget,
           secretHeaders,
         });
         for (const pathname of appPathResult.paths) {
@@ -791,6 +1088,7 @@ export async function emitPrerenderPathManifest(
           i18n: config.i18n,
           pagesDir,
           pageExtensions: config.pageExtensions,
+          retryOptions: options.pathDiscoveryTarget,
           secretHeaders,
         })) {
           addPath(paths, seen, pathname);
@@ -804,9 +1102,27 @@ export async function emitPrerenderPathManifest(
     }
   });
 
+  const routeConventionBase = path.dirname(appDir ?? pagesDir!);
+  const middlewareConventionDir =
+    routeConventionBase === path.join(root, "src") ? routeConventionBase : root;
+  const middlewarePath = findMiddlewareFile(
+    root,
+    createValidFileMatcher(config.pageExtensions),
+    middlewareConventionDir,
+  );
+  const middlewareMatcher = middlewarePath
+    ? extractMiddlewareMatcherConfig(middlewarePath)
+    : undefined;
   const excludedWarmPathSet = new Set(
     options.responseVary
-      ? paths.filter((pathname) => configuredRouteAffectsWarmPath(pathname, config))
+      ? paths.filter(
+          (pathname) =>
+            configuredRouteAffectsWarmPath(pathname, config) ||
+            Boolean(
+              middlewarePath &&
+              middlewareMatcherCanRunForPath(pathname, middlewareMatcher, config.i18n),
+            ),
+        )
       : [],
   );
   const configuredPagesWarmPaths = discoveredPagesPaths.filter(
@@ -822,6 +1138,11 @@ export async function emitPrerenderPathManifest(
         })
       : configuredPagesWarmPaths;
   const configuredCandidatePaths = paths.filter((pathname) => !excludedWarmPathSet.has(pathname));
+  const individuallyProbedRewritePathGroups = new Map<string, string>();
+  for (const pathname of configuredCandidatePaths) {
+    const group = deterministicInternalRewriteGroupForWarmPath(pathname, config);
+    if (group) individuallyProbedRewritePathGroups.set(pathname, group);
+  }
   const appOwnedWarmPaths = appDir
     ? await resolveAppWarmPaths({
         appDir,
@@ -836,6 +1157,23 @@ export async function emitPrerenderPathManifest(
         rscPaths: discoveredAppPaths,
       };
   const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : resolvedPagesWarmPaths;
+  const cacheabilityRoutes = await collectCacheabilityProbeRoutes({
+    appDir,
+    cacheComponents: config.cacheComponents,
+    excludedPaths: excludedWarmPathSet,
+    isExcludedPath: (pathname) =>
+      Boolean(
+        options.responseVary &&
+        (configuredRouteAffectsWarmPath(pathname, config) ||
+          (middlewarePath &&
+            middlewareMatcherCanRunForPath(pathname, middlewareMatcher, config.i18n))),
+      ),
+    i18n: config.i18n,
+    pagesDir,
+    pageExtensions: config.pageExtensions,
+    paths: paths.filter((pathname) => !excludedWarmPathSet.has(pathname)),
+    individuallyProbedPathGroups: individuallyProbedRewritePathGroups,
+  });
 
   const manifest: PrerenderPathManifest = {
     ...(config.basePath ? { basePath: config.basePath } : {}),
@@ -850,6 +1188,7 @@ export async function emitPrerenderPathManifest(
         }
       : {}),
     ...(excludedWarmPathSet.size > 0 ? { excludedWarmPaths: Array.from(excludedWarmPathSet) } : {}),
+    cacheabilityRoutes,
     ...(rscBuildId ? { rscBuildId } : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
     ...(options.responseVary ? { rscPaths: appOwnedWarmPaths.rscPaths } : {}),

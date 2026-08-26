@@ -3,6 +3,7 @@ import {
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
+  VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH,
 } from "./headers.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import type { RootParams } from "vinext/shims/root-params";
@@ -23,12 +24,17 @@ type HandleAppPrerenderEndpointOptions = {
   isPrerenderEnabled?: () => boolean;
   getMetadataRoutePaths?: () => Promise<unknown>;
   loadPagesRoutes?: () => Promise<unknown>;
+  validateAppRouteHandlers?: () => Promise<void>;
   pathname: string;
   rootParamNamesByPattern?: AppPrerenderRootParamNamesMap;
   staticParamsMap: AppPrerenderStaticParamsMap;
 };
 
-const JSON_HEADERS = { "content-type": "application/json" };
+const JSON_HEADERS = {
+  "cache-control": "no-store",
+  "content-type": "application/json",
+};
+const NO_STORE_HEADERS = { "cache-control": "no-store" };
 
 export async function handleAppPrerenderEndpoint(
   request: Request,
@@ -48,14 +54,33 @@ export async function handleAppPrerenderEndpoint(
     return handleMetadataRoutesEndpoint(options);
   }
 
+  if (options.pathname === VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH) {
+    if (!options.validateAppRouteHandlers) return null;
+    return handleAppRouteValidationEndpoint(options);
+  }
+
   return null;
+}
+
+async function handleAppRouteValidationEndpoint(
+  options: HandleAppPrerenderEndpointOptions,
+): Promise<Response> {
+  if (!isEnabled(options)) {
+    return notFoundResponse({ headers: NO_STORE_HEADERS });
+  }
+  try {
+    await options.validateAppRouteHandlers?.();
+    return jsonResponse({ valid: true });
+  } catch (error) {
+    return jsonResponse({ error: `[vinext] ${String(error)}` }, 500);
+  }
 }
 
 async function handleMetadataRoutesEndpoint(
   options: HandleAppPrerenderEndpointOptions,
 ): Promise<Response> {
   if (!isEnabled(options)) {
-    return notFoundResponse();
+    return notFoundResponse({ headers: NO_STORE_HEADERS });
   }
 
   try {
@@ -70,12 +95,12 @@ async function handleStaticParamsEndpoint(
   options: HandleAppPrerenderEndpointOptions,
 ): Promise<Response> {
   if (!isEnabled(options)) {
-    return notFoundResponse();
+    return notFoundResponse({ headers: NO_STORE_HEADERS });
   }
 
   const url = new URL(request.url);
   const pattern = url.searchParams.get("pattern");
-  if (!pattern) return new Response("missing pattern", { status: 400 });
+  if (!pattern) return new Response("missing pattern", { headers: NO_STORE_HEADERS, status: 400 });
 
   const generateStaticParams = options.staticParamsMap[pattern];
   if (typeof generateStaticParams !== "function") {
@@ -102,12 +127,12 @@ async function handlePagesStaticPathsEndpoint(
   options: HandleAppPrerenderEndpointOptions,
 ): Promise<Response> {
   if (!isEnabled(options)) {
-    return notFoundResponse();
+    return notFoundResponse({ headers: NO_STORE_HEADERS });
   }
 
   const url = new URL(request.url);
   const pattern = url.searchParams.get("pattern");
-  if (!pattern) return new Response("missing pattern", { status: 400 });
+  if (!pattern) return new Response("missing pattern", { headers: NO_STORE_HEADERS, status: 400 });
 
   try {
     const pageRoutes = await options.loadPagesRoutes?.();
@@ -138,7 +163,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function jsonNullResponse(): Response {
-  return new Response(null, { status: 204 });
+  return new Response(null, { headers: NO_STORE_HEADERS, status: 204 });
 }
 
 function parseParentParams(raw: string | null): RootParams {

@@ -47,6 +47,7 @@ import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import { _setRequestScopedCacheLife } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
@@ -60,6 +61,8 @@ import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import { VINEXT_INTERCEPTION_ID_HEADER } from "../packages/vinext/src/server/headers.js";
+import { createWorkerCacheabilityContext } from "../packages/vinext/src/server/cacheability-request.js";
+import { applyConfigHeadersToResponse } from "../packages/vinext/src/server/config-headers.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -103,6 +106,10 @@ function createStream(chunks: string[]): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+function capturedRscData(body: ArrayBuffer) {
+  return { body, release() {} };
 }
 
 function captureRecord(value: unknown): Record<string, unknown> {
@@ -691,6 +698,52 @@ describe("app page dispatch", () => {
 
     expect(probePage).not.toHaveBeenCalled();
     await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
+  it("makes uncached current time dynamic for Cache Components pages", async () => {
+    const isrSet = vi.fn(async () => {});
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrSet,
+      pprRuntime: appPagePprRuntime,
+      renderToReadableStream() {
+        Date.now();
+        return createStream(["flight"]);
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(isrSet).not.toHaveBeenCalled();
+    await response.text();
+  });
+
+  it("tracks current time while a Cache Components terminal fallback body drains", async () => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_HTTP_ERROR_FALLBACK;404" },
+      actionFailed: true,
+      isProduction: true,
+      pprRuntime: appPagePprRuntime,
+      revalidateSeconds: 60,
+    });
+    options.renderHttpAccessFallbackPage = async () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            Date.now();
+            controller.enqueue(new TextEncoder().encode("<html>not found</html>"));
+            controller.close();
+          },
+        }),
+        { status: 404 },
+      );
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(options.isrSet).not.toHaveBeenCalled();
+    await expect(response.text()).resolves.toBe("<html>not found</html>");
   });
 
   afterEach(() => {
@@ -1913,6 +1966,267 @@ describe("app page dispatch", () => {
     );
   });
 
+  it("applies the route ISR policy to a production static not-found response", async () => {
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_HTTP_ERROR_FALLBACK;404" },
+      actionFailed: true,
+      isProduction: true,
+      revalidateSeconds: 60,
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Cache-Control")).toContain("s-maxage=60");
+    expect(options.isrSet).toHaveBeenCalledOnce();
+    await expect(response.text()).resolves.toBe("<html>not found</html>");
+  });
+
+  it.each([
+    ["not-found", { digest: "NEXT_HTTP_ERROR_FALLBACK;404" }, 404],
+    ["redirect", { digest: "NEXT_REDIRECT;replace;/login;307" }, 307],
+  ])(
+    "lets next.config replace a default-KV App terminal %s framework policy",
+    async (_label, actionError, expectedStatus) => {
+      const request = new Request("https://example.test/posts/hello");
+      const context = createWorkerCacheabilityContext(
+        { hostRuntime: "worker", waitUntil() {} },
+        request,
+        null,
+      );
+      const { options } = createDispatchOptions({
+        actionError,
+        actionFailed: true,
+        isProduction: true,
+        request,
+        revalidateSeconds: 60,
+      });
+      if (expectedStatus === 404) {
+        options.renderHttpAccessFallbackPage = vi.fn(
+          async () => new Response("<html>not found</html>", { status: 404 }),
+        );
+      }
+
+      const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+      expect(response.status).toBe(expectedStatus);
+      expect(response.headers.get("cache-control")).toContain("s-maxage=60");
+
+      applyConfigHeadersToResponse(response.headers, {
+        configHeaders: [
+          {
+            source: "/posts/:slug",
+            headers: [{ key: "Cache-Control", value: "s-maxage=300" }],
+          },
+        ],
+        pathname: "/posts/hello",
+        requestContext: {
+          cookies: {},
+          headers: new Headers(),
+          host: "example.test",
+          query: new URLSearchParams(),
+        },
+      });
+
+      expect(response.headers.get("cache-control")).toBe("s-maxage=300");
+      await response.body?.cancel();
+    },
+  );
+
+  // Ported from Next.js middleware Cache-Control precedence coverage:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-duplicate-headers-middleware/no-duplicate-headers-middleware.test.ts
+  it.each([
+    ["not-found", { digest: "NEXT_HTTP_ERROR_FALLBACK;404" }, 404],
+    ["redirect", { digest: "NEXT_REDIRECT;replace;/login;307" }, 307],
+  ])(
+    "keeps cacheable middleware policy ahead of matching next.config on terminal %s",
+    async (_label, actionError, expectedStatus) => {
+      const middlewareHeaders = new Headers({ "Cache-Control": "public, s-maxage=120" });
+      const { options } = createDispatchOptions({
+        actionError,
+        actionFailed: true,
+        isProduction: true,
+        middlewareContext: { headers: middlewareHeaders, status: null },
+        revalidateSeconds: 60,
+      });
+      if (expectedStatus === 404) {
+        options.renderHttpAccessFallbackPage = vi.fn(
+          async () => new Response("<html>not found</html>", { status: 404 }),
+        );
+      }
+
+      const response = await dispatchAppPage(options);
+      expect(response.status).toBe(expectedStatus);
+      expect(response.headers.get("cache-control")).toBe("public, s-maxage=120");
+
+      applyConfigHeadersToResponse(response.headers, {
+        configHeaders: [
+          {
+            source: "/posts/:slug",
+            headers: [{ key: "Cache-Control", value: "s-maxage=300" }],
+          },
+        ],
+        middlewareHeaders,
+        pathname: "/posts/hello",
+        requestContext: {
+          cookies: {},
+          headers: new Headers(),
+          host: "example.test",
+          query: new URLSearchParams(),
+        },
+      });
+
+      expect(response.headers.get("cache-control")).toBe("public, s-maxage=120");
+      await response.body?.cancel();
+    },
+  );
+
+  it("stores only framework-owned metadata for a terminal redirect", async () => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_REDIRECT;replace;/login;307" },
+      actionFailed: true,
+      isProduction: true,
+      middlewareContext: {
+        headers: new Headers({ Link: "</request-a.css>; rel=preload; as=style" }),
+        status: null,
+      },
+      revalidateSeconds: 60,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/login");
+    expect(options.isrSet).toHaveBeenCalledOnce();
+    const stored = vi.mocked(options.isrSet).mock.calls[0]![1];
+    expect(stored.headers).toEqual({ location: "/login" });
+  });
+
+  it("does not persist a middleware Location override with a terminal redirect", async () => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_REDIRECT;replace;/route-login;307" },
+      actionFailed: true,
+      isProduction: true,
+      middlewareContext: {
+        headers: new Headers({ Location: "/request-login" }),
+        status: null,
+      },
+      revalidateSeconds: 60,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("location")).toBe("/request-login");
+    const stored = vi.mocked(options.isrSet).mock.calls[0]![1];
+    expect(stored.headers).toEqual({ location: "/route-login" });
+  });
+
+  it("stores a terminal RSC redirect only in the RSC artifact", async () => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_REDIRECT;replace;/login;307" },
+      actionFailed: true,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: 60,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(options.isrSet).toHaveBeenCalledOnce();
+    const [key, stored] = vi.mocked(options.isrSet).mock.calls[0]!;
+    expect(key).toContain("rsc:");
+    expect(key).not.toContain("html:");
+    expect(stored.html).toBe("");
+    expect(new TextDecoder().decode(stored.rscData)).toBe("flight");
+  });
+
+  it.each([
+    ["mounted slots", { mountedSlotsHeader: "slot:modal:/feed" }],
+    ["unverified interception", { bypassInterceptionContextCache: true }],
+  ])("does not cache a terminal RSC redirect for %s", async (_label, overrides) => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_REDIRECT;replace;/login;307" },
+      actionFailed: true,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: 60,
+      ...overrides,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(options.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("applies the completed render cache-life minimum to a static not-found response", async () => {
+    const renderHttpAccessFallbackPage = vi.fn(async () => {
+      _setRequestScopedCacheLife({ expire: 30, revalidate: 5 });
+      return new Response("<html>not found</html>", { status: 404 });
+    });
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_HTTP_ERROR_FALLBACK;404" },
+      actionFailed: true,
+      isProduction: true,
+      revalidateSeconds: 60,
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage(options),
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Cache-Control")).toBe("s-maxage=5, stale-while-revalidate=25");
+    expect(options.isrSet).toHaveBeenCalledOnce();
+  });
+
+  it("does not cache a terminal response that becomes dynamic while its body drains", async () => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_HTTP_ERROR_FALLBACK;404" },
+      actionFailed: true,
+      isProduction: true,
+      revalidateSeconds: 60,
+    });
+    options.renderHttpAccessFallbackPage = async () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            markDynamicUsage();
+            controller.enqueue(new TextEncoder().encode("<html>late dynamic</html>"));
+            controller.close();
+          },
+        }),
+        { status: 404 },
+      );
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(options.isrSet).not.toHaveBeenCalled();
+    await expect(response.text()).resolves.toBe("<html>late dynamic</html>");
+  });
+
+  it("does not make an authorization response cacheable", async () => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_HTTP_ERROR_FALLBACK;401" },
+      actionFailed: true,
+      isProduction: true,
+      revalidateSeconds: 60,
+    });
+    options.renderHttpAccessFallbackPage = async () =>
+      new Response("<html>unauthorized</html>", { status: 401 });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+  });
+
   it("does not bypass cached production HTML for arbitrary draft cookie values", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached</html>")),
@@ -2434,7 +2748,7 @@ describe("app page dispatch", () => {
         async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
           if (captureOptions?.capturedRscDataRef) {
             captureOptions.capturedRscDataRef.value = Promise.resolve(
-              new TextEncoder().encode("fresh-intercepted-flight").buffer,
+              capturedRscData(new TextEncoder().encode("fresh-intercepted-flight").buffer),
             );
           }
           void captureOptions?.sideStream?.cancel().catch(() => {});
@@ -2872,7 +3186,7 @@ describe("app page dispatch", () => {
           capturedFallbackToErrorDocument = captureOptions?.fallbackToErrorDocumentOnShellError;
           if (captureOptions?.capturedRscDataRef) {
             captureOptions.capturedRscDataRef.value = Promise.resolve(
-              new TextEncoder().encode("fresh-flight").buffer,
+              capturedRscData(new TextEncoder().encode("fresh-flight").buffer),
             );
           }
           void captureOptions?.sideStream?.cancel().catch(() => {});
@@ -2979,7 +3293,7 @@ describe("app page dispatch", () => {
           async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
             if (captureOptions?.capturedRscDataRef) {
               captureOptions.capturedRscDataRef.value = Promise.resolve(
-                new TextEncoder().encode("fresh-flight").buffer,
+                capturedRscData(new TextEncoder().encode("fresh-flight").buffer),
               );
             }
             void captureOptions?.sideStream?.cancel().catch(() => {});
@@ -3134,7 +3448,7 @@ describe("app page dispatch", () => {
         async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
           if (captureOptions?.capturedRscDataRef) {
             captureOptions.capturedRscDataRef.value = Promise.resolve(
-              new TextEncoder().encode("fresh-flight").buffer,
+              capturedRscData(new TextEncoder().encode("fresh-flight").buffer),
             );
           }
           void captureOptions?.sideStream?.cancel().catch(() => {});
@@ -3229,7 +3543,7 @@ describe("app page dispatch", () => {
         async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
           if (captureOptions?.capturedRscDataRef) {
             captureOptions.capturedRscDataRef.value = Promise.resolve(
-              new TextEncoder().encode("fresh-flight").buffer,
+              capturedRscData(new TextEncoder().encode("fresh-flight").buffer),
             );
           }
           void captureOptions?.sideStream?.cancel().catch(() => {});

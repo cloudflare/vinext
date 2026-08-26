@@ -14,6 +14,7 @@ import {
   MIDDLEWARE_SET_COOKIE_HEADER,
   MIDDLEWARE_SKIP_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "../utils/protocol-headers.js";
@@ -37,6 +38,9 @@ export const VINEXT_TIMING_HEADER = "x-vinext-timing";
 /** Expected Worker version asserted by vinext staged warmup requests. */
 export const VINEXT_EXPECTED_WORKER_VERSION_HEADER = "X-Vinext-Expected-Worker-Version";
 
+/** Authenticated staged-Worker request asking for a completed cacheability result. */
+export const VINEXT_CACHEABILITY_PROBE_HEADER = "X-Vinext-Cacheability-Probe";
+
 export {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -53,6 +57,9 @@ export const VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH = "/__vinext/prerender/pag
 
 /** Internal endpoint used to enumerate cached dynamic metadata route paths. */
 export const VINEXT_PRERENDER_METADATA_ROUTES_PATH = "/__vinext/prerender/metadata-routes";
+
+/** Internal endpoint used to validate staged App Route Handler modules. */
+export const VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH = "/__vinext/prerender/validate-app-routes";
 
 /** TPR (Tailored Per-Request) revalidation interval in seconds. */
 export const VINEXT_REVALIDATE_HEADER = "x-vinext-revalidate";
@@ -268,7 +275,9 @@ export const INTERNAL_HEADERS = [
 
 /** Vinext-only internal headers stripped alongside Next.js protocol internals. */
 export const VINEXT_INTERNAL_HEADERS = [
+  VINEXT_CACHEABILITY_PROBE_HEADER.toLowerCase(),
   VINEXT_EXPECTED_WORKER_VERSION_HEADER.toLowerCase(),
+  VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,

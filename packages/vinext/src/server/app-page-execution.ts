@@ -12,6 +12,7 @@ import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js
 import {
   copyLinkHeaderProvenance,
   hasFrameworkLinkHeaders,
+  markFrameworkLocationHeader,
   markFrameworkLinkHeaders,
 } from "./app-response-header-provenance.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
@@ -19,6 +20,11 @@ import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
 import { isPromiseLike } from "../utils/promise.js";
 import { formatNextRedirectDigest } from "./app-rsc-redirect-flight.js";
 import { runWithConnectionProbe } from "vinext/shims/headers";
+import {
+  CacheabilityClassificationError,
+  captureResponseBodyBounded,
+  recordRouteCacheabilityClassificationFailure,
+} from "./cacheability-request.js";
 
 export type { LayoutFlags };
 
@@ -418,10 +424,12 @@ export async function buildAppPageSpecialErrorResponse(
       headers.append("Set-Cookie", cookie);
     }
 
-    return new Response(null, {
+    const response = new Response(null, {
       headers,
       status: options.specialError.statusCode,
     });
+    markFrameworkLocationHeader(response.headers, location);
+    return response;
   }
 
   if (options.renderFallbackPage) {
@@ -632,30 +640,26 @@ export async function probeAppPageThrownError(
   });
 }
 
-export async function readAppPageBinaryStream(
-  stream: ReadableStream<Uint8Array>,
-): Promise<ArrayBuffer> {
+/** Drain a render stream without retaining its payload. */
+export async function drainAppPageBinaryStream(stream: ReadableStream<Uint8Array>): Promise<void> {
   const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalLength = 0;
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    chunks.push(value);
-    totalLength += value.byteLength;
+  while (!(await reader.read()).done) {
+    // Pulling the warmup render populates nested caches; its bytes are discarded.
   }
+}
 
-  const buffer = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    buffer.set(chunk, offset);
-    offset += chunk.byteLength;
+/** Collect a cache artifact within the same Worker-safe admission bounds. */
+export async function readAppPageBinaryStreamBounded(
+  stream: ReadableStream<Uint8Array>,
+): Promise<{ body: ArrayBuffer; release: () => void }> {
+  const captured = await captureResponseBodyBounded(new Response(stream));
+  if (captured.failClosed) {
+    void captured.fallback.cancel().catch(() => {});
+    recordRouteCacheabilityClassificationFailure(captured.reason);
+    throw new CacheabilityClassificationError(captured.reason);
   }
-
-  return buffer.buffer;
+  await captured.fallback?.cancel().catch(() => {});
+  return { body: captured.body ?? new ArrayBuffer(0), release: captured.release };
 }
 
 export async function bufferAppPageBinaryStream(

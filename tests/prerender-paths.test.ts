@@ -40,6 +40,20 @@ describe("prerender path manifest", () => {
         }
         if (
           url.pathname === "/__vinext/prerender/static-params" &&
+          url.searchParams.get("pattern") === "/cache-handler/:slug"
+        ) {
+          return Response.json([{ slug: "one" }, { slug: "two" }]);
+        }
+        if (
+          url.pathname === "/__vinext/prerender/static-params" &&
+          url.searchParams.get("pattern") === "/legacy/:slug"
+        ) {
+          return Response.json(
+            Array.from({ length: 100 }, (_, index) => ({ slug: `item-${index}` })),
+          );
+        }
+        if (
+          url.pathname === "/__vinext/prerender/static-params" &&
           url.searchParams.get("pattern") === "/:path+"
         ) {
           return Response.json([
@@ -94,6 +108,18 @@ describe("prerender path manifest", () => {
     );
     writeFile("app/cached/loading.tsx", "export default function Loading() { return null; }\n");
     writeFile(
+      "app/cache-route/route.ts",
+      "export const revalidate = 60; export function GET() { return new Response('cached'); }\n",
+    );
+    writeFile(
+      "app/cache-handler/[slug]/route.ts",
+      [
+        "export const revalidate = 60;",
+        "export function generateStaticParams() { return [{ slug: 'one' }, { slug: 'two' }]; }",
+        "export function GET() { return new Response('cached'); }",
+      ].join("\n"),
+    );
+    writeFile(
       "app/dynamic/page.tsx",
       "export const dynamic = 'force-dynamic'; export default function Page() { return null; }\n",
     );
@@ -110,6 +136,39 @@ describe("prerender path manifest", () => {
     expect(manifest).toEqual({
       buildId: "build-a",
       buildIdentity: "rsc-build-a",
+      cacheabilityRoutes: [
+        { kind: "app-page", path: "/", pattern: "/", probePath: "/", warmPaths: ["/"] },
+        {
+          kind: "app-page",
+          path: "/cached/intro",
+          pattern: "/cached/:slug",
+          probePath: "/cached/intro",
+          runtimeCheckWarmPaths: ["/cached/featured"],
+          warmPaths: ["/cached/intro"],
+        },
+        {
+          kind: "app-page",
+          path: "/dynamic",
+          pattern: "/dynamic",
+          probePath: "/dynamic",
+          warmPaths: ["/dynamic"],
+        },
+        {
+          kind: "app-route",
+          path: "/cache-handler/one",
+          pattern: "/cache-handler/:slug",
+          probePath: "/cache-handler/one",
+          runtimeCheckWarmPaths: ["/cache-handler/two"],
+          warmPaths: ["/cache-handler/one"],
+        },
+        {
+          kind: "app-route",
+          path: "/cache-route",
+          pattern: "/cache-route",
+          probePath: "/cache-route",
+          warmPaths: ["/cache-route"],
+        },
+      ],
       loadingShellPaths: ["/cached/intro", "/cached/featured"],
       rscBuildId: "rsc-build-a",
       responseVary: "verbatim",
@@ -127,6 +186,10 @@ describe("prerender path manifest", () => {
       "http://127.0.0.1:43210/__vinext/prerender/static-params?pattern=%2Fcached%2F%3Aslug",
       expect.any(Object),
     );
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:43210/__vinext/prerender/static-params?pattern=%2Fcache-handler%2F%3Aslug",
+      expect.any(Object),
+    );
     expect(startProdServerMock).toHaveBeenCalledOnce();
     expect(startProdServerMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -134,6 +197,314 @@ describe("prerender path manifest", () => {
       }),
     );
     expect(closeMock).toHaveBeenCalledOnce();
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+  it("probes one concrete request for each fixed Pages SSR route", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile(
+      "pages/configured.tsx",
+      [
+        "export async function getServerSideProps() { return { props: {} }; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "pages/user-policy.tsx",
+      [
+        "export async function getServerSideProps({ res }) {",
+        "  res.setHeader('Cache-Control', 's-maxage=60');",
+        "  return { props: {} };",
+        "}",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+
+    expect(manifest?.pagesPaths).toEqual([]);
+    expect(manifest?.cacheabilityRoutes).toEqual([
+      {
+        kind: "pages-page",
+        path: "/configured",
+        pattern: "/configured",
+        probePath: "/configured",
+        warmPaths: ["/configured"],
+      },
+      {
+        kind: "pages-page",
+        path: "/user-policy",
+        pattern: "/user-policy",
+        probePath: "/user-policy",
+        warmPaths: ["/user-policy"],
+      },
+    ]);
+  });
+
+  it("validates Cache Components Route Handler modules through the staged Worker", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("next.config.mjs", "export default { cacheComponents: true };\n");
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("dist/server/vinext-server.json", JSON.stringify({ prerenderSecret: "secret-a" }));
+    writeFile("app/api/status/route.ts", "export function GET() { return new Response('ok'); }\n");
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    await emitPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://staged.example.workers.dev/__vinext/prerender/validate-app-routes",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "x-vinext-prerender-secret": "secret-a" }),
+      }),
+    );
+  });
+
+  it("never probes a concrete path whose middleware source can match", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/guarded/page.tsx", "export default function Page() { return null; }\n");
+    writeFile("app/public/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "proxy.ts",
+      [
+        "export function proxy() {}",
+        "export const config = {",
+        "  matcher: [{ source: '/guarded', has: [{ type: 'header', key: 'authorization' }] }],",
+        "};",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.cacheabilityRoutes).toEqual([
+      {
+        kind: "app-page",
+        pattern: "/guarded",
+        fallbackState: "runtime-check",
+      },
+      {
+        kind: "app-page",
+        path: "/public",
+        pattern: "/public",
+        probePath: "/public",
+        warmPaths: ["/public"],
+      },
+    ]);
+  });
+
+  it("never synthesizes a fixed Pages SSR probe whose middleware source can match", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile(
+      "pages/guarded.tsx",
+      [
+        "export async function getServerSideProps() { return { props: {} }; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "proxy.ts",
+      ["export function proxy() {}", "export const config = { matcher: '/guarded' };"].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.cacheabilityRoutes).toEqual([
+      {
+        fallbackState: "dynamic",
+        kind: "pages-page",
+        pattern: "/guarded",
+      },
+    ]);
+  });
+
+  it("discovers dynamic paths from an uploaded Worker without loading its bundle in Node", async () => {
+    // No Next.js test port applies: staged Worker version overrides and
+    // cloudflare:workers bindings are Cloudflare-specific.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", 'import { env } from "cloudflare:workers";\n');
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      [
+        'import { env } from "cloudflare:workers";',
+        "export const revalidate = 60;",
+        "export async function generateStaticParams() { await env.KV.get('paths'); return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: {
+        baseUrl: "https://workers-cache.example.workers.dev/ignored-prefix",
+        headers: {
+          "Cloudflare-Workers-Version-Overrides": 'workers-cache="version-b"',
+          "X-Vinext-Expected-Worker-Version": "version-b",
+        },
+      },
+    });
+
+    expect(manifest?.paths).toEqual(["/cached/intro", "/cached/featured"]);
+    expect(startProdServerMock).not.toHaveBeenCalled();
+    const [requestUrl, requestInit] = vi.mocked(fetch).mock.calls[0];
+    const requestHeaders = new Headers(requestInit?.headers);
+    expect(requestUrl).toBe(
+      "https://workers-cache.example.workers.dev/__vinext/prerender/static-params?pattern=%2Fcached%2F%3Aslug",
+    );
+    expect(requestHeaders.get("Cloudflare-Workers-Version-Overrides")).toBe(
+      'workers-cache="version-b"',
+    );
+    expect(requestHeaders.get("X-Vinext-Expected-Worker-Version")).toBe("version-b");
+    expect(requestHeaders.get("x-vinext-prerender-secret")).toBe("staged-discovery-secret");
+  });
+
+  it("retries transient staged-version routing failures during remote discovery", async () => {
+    // No Next.js test port applies: Worker version propagation is Cloudflare-specific.
+    const remoteFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("old Worker", { status: 404 }))
+      .mockResolvedValueOnce(Response.json([{ slug: "intro" }]));
+    vi.stubGlobal("fetch", remoteFetch);
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", 'import { env } from "cloudflare:workers";\n');
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      [
+        "export const revalidate = 60;",
+        "export async function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: {
+        baseUrl: "https://workers-cache.example.workers.dev",
+        retries: 1,
+        retryDelayMs: 0,
+      },
+    });
+
+    expect(manifest?.paths).toEqual(["/cached/intro"]);
+    expect(remoteFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not replay user-code failures during remote discovery", async () => {
+    // No Next.js test port applies: staged Worker discovery is Cloudflare-specific.
+    const remoteFetch = vi.fn<typeof fetch>(async () =>
+      Response.json({ error: "binding lookup failed" }, { status: 500 }),
+    );
+    vi.stubGlobal("fetch", remoteFetch);
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "staged-discovery-secret" }),
+    );
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      "export async function generateStaticParams() { return []; } export default function Page() { return null; }",
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    await expect(
+      emitPrerenderPathManifest({
+        root: tmpDir,
+        pathDiscoveryTarget: {
+          baseUrl: "https://workers-cache.example.workers.dev",
+          retries: 3,
+          retryDelayMs: 0,
+        },
+      }),
+    ).rejects.toThrow("path discovery returned HTTP 500");
+    expect(remoteFetch).toHaveBeenCalledOnce();
+  });
+
+  it("discovers binding-backed Pages Router paths from the uploaded Worker", async () => {
+    // No Next.js test port applies: staged Worker version overrides and
+    // cloudflare:workers bindings are Cloudflare-specific.
+    const remoteFetch = vi.fn<typeof fetch>(async () =>
+      Response.json({ fallback: false, paths: [{ params: { slug: "intro" } }] }),
+    );
+    vi.stubGlobal("fetch", remoteFetch);
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "pages-build-a\n");
+    writeFile("dist/server/entry.js", 'import { env } from "cloudflare:workers";\n');
+    writeFile(
+      "dist/server/vinext-server.json",
+      JSON.stringify({ prerenderSecret: "pages-discovery-secret" }),
+    );
+    writeFile(
+      "pages/posts/[slug].tsx",
+      [
+        'import { env } from "cloudflare:workers";',
+        "export async function getStaticPaths() { await env.KV.get('paths'); return { fallback: false, paths: [] }; }",
+        "export function getStaticProps() { return { props: {} }; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: {
+        baseUrl: "https://pages-cache.example.workers.dev",
+        headers: { "Cloudflare-Workers-Version-Overrides": 'pages-cache="version-b"' },
+      },
+    });
+
+    expect(manifest?.paths).toEqual(["/posts/intro"]);
+    expect(manifest?.pagesPaths).toEqual(["/posts/intro"]);
+    expect(startProdServerMock).not.toHaveBeenCalled();
+    const [requestUrl, requestInit] = remoteFetch.mock.calls[0];
+    expect(requestUrl).toBe(
+      "https://pages-cache.example.workers.dev/__vinext/prerender/pages-static-paths?pattern=%2Fposts%2F%3Aslug",
+    );
+    expect(new Headers(requestInit?.headers).get("x-vinext-prerender-secret")).toBe(
+      "pages-discovery-secret",
+    );
   });
 
   it("discovers strict-Vary RSC paths without consulting completed prerender output", async () => {
@@ -214,6 +585,165 @@ describe("prerender path manifest", () => {
     expect(manifest?.excludedWarmPaths).toEqual(["/rewrite-me"]);
     expect(manifest?.rscPaths).toEqual(["/safe"]);
     expect(manifest?.loadingShellPaths).toEqual(["/safe"]);
+    expect(manifest?.cacheabilityRoutes?.find((route) => route.pattern === "/rewrite-me")).toEqual({
+      fallbackState: "runtime-check",
+      kind: "app-page",
+      pattern: "/rewrite-me",
+    });
+  });
+
+  it("probes deterministic rewrites through their public source path", async () => {
+    // Next.js applies config rewrites before filesystem Route Handlers:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/api/source/route.ts",
+      'export const revalidate = 60; export function GET() { return new Response("source"); }\n',
+    );
+    writeFile(
+      "app/api/target/route.ts",
+      'export function GET() { return new Response("target"); }\n',
+    );
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        rewrites: () => [{ source: "/api/source", destination: "/api/target" }],
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.excludedWarmPaths).toBeUndefined();
+    expect(manifest?.cacheabilityRoutes).toContainEqual(
+      expect.objectContaining({
+        kind: "app-route",
+        pattern: "/api/source",
+        probePath: "/api/source",
+      }),
+    );
+  });
+
+  it("groups high-cardinality deterministic rewrite paths into one render probe", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/legacy/[slug]/page.tsx",
+      "export function generateStaticParams() { return []; } export default function Page() {}\n",
+    );
+    writeFile("app/products/[slug]/page.tsx", "export default function Page() {}\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      { rewrites: () => [{ source: "/legacy/:slug", destination: "/products/:slug" }] },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+    const routes = manifest?.cacheabilityRoutes?.filter(
+      (route) => route.pattern === "/legacy/:slug" && route.probePath,
+    );
+
+    expect(routes).toHaveLength(1);
+    expect(routes?.[0]).toMatchObject({
+      probePath: "/legacy/item-0",
+      probeGroupPaths: expect.arrayContaining(["/legacy/item-99"]),
+    });
+    expect(routes?.[0].probeGroupPaths).toHaveLength(99);
+  });
+
+  it("excludes external rewrites from Worker route probing and warming", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/external/page.tsx", "export default function Page() {}\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        rewrites: () => [{ source: "/external", destination: "https://origin.example/resource" }],
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.excludedWarmPaths).toEqual(["/external"]);
+    expect(manifest?.paths).not.toContain("/external");
+    expect(manifest?.cacheabilityRoutes).toContainEqual({
+      fallbackState: "runtime-check",
+      kind: "app-page",
+      pattern: "/external",
+    });
+  });
+
+  it("excludes warm paths covered by request-conditional config headers", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/conditional/page.tsx", "export default function Page() {}\n");
+    writeFile("app/safe/page.tsx", "export default function Page() {}\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        headers: () => [
+          {
+            source: "/conditional",
+            has: [{ type: "cookie", key: "private" }],
+            headers: [{ key: "Cache-Control", value: "no-store" }],
+          },
+        ],
+      },
+      tmpDir,
+    );
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual(["/safe"]);
+    expect(manifest?.excludedWarmPaths).toEqual(["/conditional"]);
+    expect(manifest?.cacheabilityRoutes?.find((route) => route.pattern === "/conditional")).toEqual(
+      {
+        fallbackState: "runtime-check",
+        kind: "app-page",
+        pattern: "/conditional",
+      },
+    );
   });
 
   it("excludes warm paths shadowed by configured redirects", async () => {
@@ -366,7 +896,7 @@ describe("prerender path manifest", () => {
     expect(manifest?.rscBuildId).toBe("rsc-build-a");
   });
 
-  it("matches rewrites against the trailing-slash warm URL", async () => {
+  it("warms deterministic rewrites using the trailing-slash public URL", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
@@ -390,12 +920,12 @@ describe("prerender path manifest", () => {
       root: tmpDir,
     });
 
-    expect(manifest?.paths).toEqual([]);
-    expect(manifest?.rscPaths).toEqual([]);
-    expect(manifest?.excludedWarmPaths).toEqual(["/foo"]);
+    expect(manifest?.paths).toEqual(["/foo"]);
+    expect(manifest?.rscPaths).toEqual(["/foo"]);
+    expect(manifest?.excludedWarmPaths).toBeUndefined();
   });
 
-  it("checks rewrite identity for every configured domain default locale", async () => {
+  it("warms deterministic rewrites across configured domain default locales", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
@@ -423,9 +953,9 @@ describe("prerender path manifest", () => {
       root: tmpDir,
     });
 
-    expect(manifest?.paths).toEqual([]);
-    expect(manifest?.rscPaths).toEqual([]);
-    expect(manifest?.excludedWarmPaths).toEqual(["/foo"]);
+    expect(manifest?.paths).toEqual(["/foo"]);
+    expect(manifest?.rscPaths).toEqual(["/foo"]);
+    expect(manifest?.excludedWarmPaths).toBeUndefined();
   });
 
   it("excludes Pages-owned hybrid paths from App warm discovery", async () => {
@@ -627,6 +1157,39 @@ describe("prerender path manifest", () => {
 
     await expect(emitPrerenderPathManifest({ root: tmpDir })).rejects.toThrow(
       "Failed to discover warmup path(s) for /cached/:slug: path discovery timed out after 30000ms",
+    );
+  });
+
+  it("explains how to move cloudflare:workers path discovery out of Node", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: "Error [ERR_UNSUPPORTED_ESM_URL_SCHEME]: Received protocol 'cloudflare:'",
+          },
+          { status: 500 },
+        ),
+      ),
+    );
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      [
+        'import { env } from "cloudflare:workers";',
+        "export const revalidate = 60;",
+        "export async function generateStaticParams() { await env.KV.get('paths'); return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    await expect(emitPrerenderPathManifest({ root: tmpDir })).rejects.toThrow(
+      "Cloudflare runtime bindings cannot execute in the local Node prerender server. Use `vinext-cloudflare deploy --experimental-warm-cdn-cache`",
     );
   });
 
@@ -848,7 +1411,8 @@ describe("prerender path manifest", () => {
       "http://127.0.0.1:43210/__vinext/prerender/pages-static-paths?pattern=%2Fposts%2F%3Aslug&locales=%5B%22en%22%2C%22fr%22%5D&defaultLocale=en",
       expect.any(Object),
     );
-    expect(readPrerenderWarmPlan(tmpDir).paths).toEqual([
+    const warmPlan = readPrerenderWarmPlan(tmpDir);
+    expect(warmPlan.paths).toEqual([
       "/docs/about/",
       "/docs/fr/about/",
       "/docs/posts/hello/",
@@ -860,6 +1424,14 @@ describe("prerender path manifest", () => {
       "/docs/posts/%7Euser/",
       "/docs/posts/a%2fb/",
     ]);
+    expect(
+      new Set(
+        warmPlan.cacheabilityRoutes?.flatMap((route) => [
+          ...(route.warmPaths ?? []),
+          ...(route.runtimeCheckWarmPaths ?? []),
+        ]),
+      ),
+    ).toEqual(new Set(warmPlan.paths));
   });
 
   it("fails path discovery when getStaticPaths returns an HTTP error", async () => {
@@ -970,7 +1542,7 @@ describe("prerender path manifest", () => {
     );
   });
 
-  it("excludes only the locale-specific Pages key affected by a rewrite", async () => {
+  it("warms locale-specific deterministic Pages rewrites", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/entry.js", "export default {};\n");
@@ -994,9 +1566,9 @@ describe("prerender path manifest", () => {
       root: tmpDir,
     });
 
-    expect(manifest?.paths).toEqual(["/about"]);
-    expect(manifest?.pagesPaths).toEqual(["/about"]);
-    expect(manifest?.excludedWarmPaths).toEqual(["/fr/about"]);
+    expect(manifest?.paths).toEqual(["/about", "/fr/about"]);
+    expect(manifest?.pagesPaths).toEqual(["/about", "/fr/about"]);
+    expect(manifest?.excludedWarmPaths).toBeUndefined();
   });
 
   it("does not reload disk config when supplied resolved config", async () => {

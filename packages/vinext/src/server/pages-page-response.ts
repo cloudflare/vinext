@@ -35,6 +35,10 @@ import {
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER } from "./headers.js";
 import { matchesIfNoneMatch } from "./http-conditional.js";
+import {
+  markRouteCacheabilityPolicyProvisional,
+  markRouteCacheabilityResponsePolicyExplicit,
+} from "./cacheability-request.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -695,10 +699,17 @@ export async function renderPagesPageResponse(
   // responseHeaders/finalStatus are declared above so finalStatus can also feed
   // the ISR cache write; applyGsspHeaders is the only Cache-Control writer before
   // this point, so the captured value matches main's original capture site.
-  const userSetCacheControl = responseHeaders.has("Cache-Control");
+  const userSetCacheControl = [
+    "Cache-Control",
+    "CDN-Cache-Control",
+    "Cloudflare-CDN-Cache-Control",
+  ].some((name) => responseHeaders.has(name));
+  if (userSetCacheControl) markRouteCacheabilityResponsePolicyExplicit(responseHeaders);
 
+  let wroteFrameworkCachePolicy = false;
   if (options.scriptNonce) {
     responseHeaders.set("Cache-Control", ISR_NO_STORE_CACHE_CONTROL);
+    wroteFrameworkCachePolicy = true;
   } else if (options.isrRevalidateSeconds !== null) {
     // Fresh ISR (MISS) response: route through the CDN adapter with the path tag
     // used by Pages Router invalidation while the default emits Cache-Control.
@@ -708,6 +719,7 @@ export async function renderPagesPageResponse(
       cacheControl: buildMissIsrCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
       tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
     });
+    wroteFrameworkCachePolicy = true;
     if (options.isOnDemandRevalidate) {
       responseHeaders.set(NEXTJS_CACHE_HEADER, "REVALIDATED");
     } else {
@@ -715,12 +727,15 @@ export async function renderPagesPageResponse(
     }
   } else if (options.isStaticPropsRoute && shouldUseNextDeployCacheControl()) {
     responseHeaders.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
+    wroteFrameworkCachePolicy = true;
   } else if (options.gsspRes && !userSetCacheControl) {
     // Default for getServerSideProps responses, matching Next.js
     // pages-handler.ts (revalidate: 0 → getCacheControlHeader). Without this,
     // CDNs and browsers could cache per-request gssp responses.
     responseHeaders.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
+    wroteFrameworkCachePolicy = true;
   }
+  if (wroteFrameworkCachePolicy) markRouteCacheabilityPolicyProvisional(responseHeaders);
   if (options.fontLinkHeader) {
     responseHeaders.set("Link", options.fontLinkHeader);
   }
@@ -760,15 +775,19 @@ export async function renderPagesPageResponse(
     responseHeaders.set("ETag", etag);
     const noCacheRequested = requestsNoCache(options.requestCacheControl);
     if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
-      return new Response(null, {
+      const response = new Response(null, {
         status: 304,
         headers: responseHeaders,
       });
+      if (wroteFrameworkCachePolicy) markRouteCacheabilityPolicyProvisional(response.headers);
+      return response;
     }
-    return new Response(fullHtml, {
+    const response = new Response(fullHtml, {
       status: finalStatus,
       headers: responseHeaders,
     });
+    if (wroteFrameworkCachePolicy) markRouteCacheabilityPolicyProvisional(response.headers);
+    return response;
   }
 
   const response: PagesStreamedHtmlResponse = Object.assign(
@@ -780,6 +799,7 @@ export async function renderPagesPageResponse(
       __vinextStreamedHtmlResponse: true,
     },
   );
+  if (wroteFrameworkCachePolicy) markRouteCacheabilityPolicyProvisional(response.headers);
   // Mark the normal streamed HTML render so the Node prod server can strip
   // stale Content-Length only for this path, not for custom gSSP responses.
   return response;

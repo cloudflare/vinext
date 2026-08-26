@@ -1,5 +1,7 @@
 const frameworkLinkHeaders = new WeakSet<Headers>();
 const edgeRouteHandlerLinkHeaders = new WeakSet<Headers>();
+const appRouteHandlerResponseHeaders = new WeakSet<Headers>();
+const frameworkLocationHeaders = new WeakMap<Headers, string>();
 
 /** Mark response headers whose Link value was emitted by the App page renderer. */
 export function markFrameworkLinkHeaders(
@@ -14,6 +16,15 @@ export function markFrameworkLinkHeaders(
 /** Whether the response carries renderer-owned Link values that config may prepend to. */
 export function hasFrameworkLinkHeaders(headers: Headers): boolean {
   return frameworkLinkHeaders.has(headers);
+}
+
+/** Preserve redirect()'s target before middleware response headers can override it. */
+export function markFrameworkLocationHeader(headers: Headers, location: string): void {
+  frameworkLocationHeaders.set(headers, location);
+}
+
+export function getFrameworkLocationHeader(headers: Headers): string | undefined {
+  return frameworkLocationHeaders.get(headers);
 }
 
 /** Mark Link values returned by an Edge route handler after config and middleware. */
@@ -31,8 +42,20 @@ export function hasPostConfigLinkHeaders(headers: Headers): boolean {
   return frameworkLinkHeaders.has(headers) || edgeRouteHandlerLinkHeaders.has(headers);
 }
 
+/** Mark headers returned by an App Route Handler after middleware merging. */
+export function markAppRouteHandlerResponseHeaders(headers: Headers): void {
+  appRouteHandlerResponseHeaders.add(headers);
+}
+
+/** Whether next.config singular headers precede this Route Handler response. */
+export function isAppRouteHandlerResponseHeaders(headers: Headers): boolean {
+  return appRouteHandlerResponseHeaders.has(headers);
+}
+
 /** Preserve Link provenance when a response wrapper reconstructs a Response. */
 export function copyLinkHeaderProvenance(source: Headers, target: Headers): void {
   if (frameworkLinkHeaders.has(source)) frameworkLinkHeaders.add(target);
   if (edgeRouteHandlerLinkHeaders.has(source)) edgeRouteHandlerLinkHeaders.add(target);
+  const location = frameworkLocationHeaders.get(source);
+  if (location) frameworkLocationHeaders.set(target, location);
 }

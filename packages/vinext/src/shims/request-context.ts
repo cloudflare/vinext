@@ -41,6 +41,8 @@ export type ExecutionContextLike = {
   passThroughOnException?(): void;
   /** Host runtime executing the current request. */
   hostRuntime?: "node" | "worker";
+  /** True only for a platform Worker context, not the Node Worker-style adapter. */
+  isCloudflareWorker?: boolean;
   /**
    * Optional host-provided cache handle that some runtimes expose on the
    * execution context. Typed as `unknown` to keep this module runtime-agnostic;
@@ -53,6 +55,8 @@ export type ExecutionContextLike = {
   dispatchPagesRevalidate?: (request: Request) => Promise<Response>;
   /** Marks a request currently executing through the internal revalidation dispatcher. */
   isInternalPagesRevalidation?: boolean;
+  /** Marks a build-secret-authorized Worker request that may run prerender discovery hooks. */
+  isPrerenderPathDiscovery?: boolean;
 };
 
 // ---------------------------------------------------------------------------

@@ -29,11 +29,16 @@ import type {
   CachedImageValue,
   IncrementalCacheValue,
 } from "vinext/shims/cache";
+import { INFINITE_CACHE } from "vinext/shims/cache-constants";
 import {
   getRequestExecutionContext,
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
-import { isUnknownRecord, readCacheControlNumberField } from "../utils/cache-control-metadata.js";
+import {
+  isUnknownRecord,
+  readCacheControlNumberField,
+  readCacheControlRevalidateField,
+} from "../utils/cache-control-metadata.js";
 import type { KvDataAdapterOptions } from "./kv-data-adapter.js";
 import { createKvKeySpace, type KvKeySpace } from "./kv-key.js";
 
@@ -362,19 +367,28 @@ export class KVCacheHandler implements CacheHandler {
 
     // Resolve effective revalidate — data overrides ctx.
     // revalidate: 0 means "don't cache", so skip storage entirely.
-    let effectiveRevalidate: number | undefined;
+    let effectiveRevalidate: number | false | undefined;
     let effectiveExpire: number | undefined;
-    effectiveRevalidate = readCacheControlNumberField(ctx, "revalidate");
+    effectiveRevalidate = readCacheControlRevalidateField(ctx);
     effectiveExpire = readCacheControlNumberField(ctx, "expire");
     const effectiveStale = readCacheControlNumberField(ctx, "stale");
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
+    } else if (
+      effectiveRevalidate === undefined &&
+      data &&
+      "revalidate" in data &&
+      data.revalidate === false
+    ) {
+      effectiveRevalidate = false;
     }
     if (effectiveRevalidate === 0) return Promise.resolve();
 
     const now = Date.now();
     const revalidateAt =
-      typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
+      typeof effectiveRevalidate === "number" &&
+      effectiveRevalidate > 0 &&
+      effectiveRevalidate < INFINITE_CACHE
         ? now + effectiveRevalidate * 1000
         : null;
     const expireAt =
@@ -382,7 +396,7 @@ export class KVCacheHandler implements CacheHandler {
         ? now + effectiveExpire * 1000
         : null;
     const cacheControl: CacheControlMetadata | undefined =
-      typeof effectiveRevalidate === "number"
+      typeof effectiveRevalidate === "number" || effectiveRevalidate === false
         ? {
             revalidate: effectiveRevalidate,
             ...(effectiveExpire === undefined ? {} : { expire: effectiveExpire }),
@@ -576,7 +590,9 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
   }
   if (obj.cacheControl !== undefined) {
     if (!isUnknownRecord(obj.cacheControl)) return null;
-    if (typeof obj.cacheControl.revalidate !== "number") return null;
+    if (typeof obj.cacheControl.revalidate !== "number" && obj.cacheControl.revalidate !== false) {
+      return null;
+    }
     if (obj.cacheControl.expire !== undefined && typeof obj.cacheControl.expire !== "number") {
       return null;
     }

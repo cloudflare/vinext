@@ -13,6 +13,7 @@ import {
 } from "./app-page-render-observation.js";
 import {
   buildAppPageFontLinkHeader,
+  readAppPageBinaryStreamBounded,
   teeAppPageRscStreamForCapture,
   type AppPageFontPreload,
 } from "./app-page-execution.js";
@@ -20,9 +21,13 @@ import {
   buildAppPageLinkHeader,
   isAppSsrRenderResult,
   type AppPageSsrHandler,
+  type CapturedAppPageRscData,
 } from "./app-page-stream.js";
-import { readStreamAsText } from "../utils/text-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
+import {
+  CACHEABILITY_RESPONSE_BODY_LIMIT,
+  CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+} from "./cacheability-request.js";
 
 type AppPageRenderableElement = ReactNode | Record<string, ReactNode>;
 type AppPageCacheRoute = {
@@ -78,7 +83,7 @@ export async function renderAppPageCacheArtifacts(
     onError: options.onError,
   });
   const rscCapture = teeAppPageRscStreamForCapture(rscStream, options.captureRscData);
-  const capturedRscDataRef: { value: Promise<ArrayBuffer> | null } = { value: null };
+  const capturedRscDataRef: { value: Promise<CapturedAppPageRscData> | null } = { value: null };
   const fontPreloads = options.getFontPreloads();
   const ssrHandler = await options.loadSsrHandler();
   const htmlResult = await ssrHandler.handleSsr(
@@ -101,6 +106,11 @@ export async function renderAppPageCacheArtifacts(
         ? {
             sideStream: rscCapture.sideStream,
             capturedRscDataRef,
+            // Regeneration writes a programmatic Full Route Cache artifact,
+            // not a CDN probe response, so it retains the per-artifact bound
+            // without consuming the isolate-wide probe admission budget.
+            capturedRscDataLimitBytes: CACHEABILITY_RESPONSE_BODY_LIMIT,
+            capturedRscDataTimeoutMs: CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
           }
         : {}),
     },
@@ -112,7 +122,13 @@ export async function renderAppPageCacheArtifacts(
     buildAppPageFontLinkHeader(fontPreloads),
     options.reactMaxHeadersLength,
   );
-  const html = await readStreamAsText(htmlStream);
+  const capturedHtml = await readAppPageBinaryStreamBounded(htmlStream);
+  let html: string;
+  try {
+    html = new TextDecoder().decode(capturedHtml.body);
+  } finally {
+    capturedHtml.release();
+  }
 
   let rscData: ArrayBuffer | undefined;
   if (options.captureRscData) {
@@ -122,7 +138,9 @@ export async function renderAppPageCacheArtifacts(
         "[vinext] Expected captured RSC data while rendering app page cache artifacts",
       );
     }
-    rscData = await capturedPromise;
+    const captured = await capturedPromise;
+    rscData = captured.body;
+    captured.release();
   }
 
   const cacheLife = _consumeRequestScopedCacheLife();

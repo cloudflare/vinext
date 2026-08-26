@@ -13,7 +13,7 @@ import {
 } from "./app-page-cache-finalizer.js";
 import {
   buildAppPageFontLinkHeader,
-  readAppPageBinaryStream,
+  readAppPageBinaryStreamBounded,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
   type AppPageFontPreload,
@@ -37,6 +37,7 @@ import {
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
+  type CapturedAppPageRscData,
 } from "./app-page-stream.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import {
@@ -62,6 +63,7 @@ import {
   applyCdnResponseHeaders,
   NEVER_CACHE_CONTROL,
   NO_STORE_CACHE_CONTROL,
+  responseHasMatchingCachePolicy,
 } from "./cache-control.js";
 import {
   createClientReuseSkipTransportPlan,
@@ -76,6 +78,17 @@ import {
   createAppPageRscOutputScope,
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
+import {
+  CACHEABILITY_RESPONSE_BODY_LIMIT,
+  CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+  createCacheabilityCaptureReservation,
+  getRouteCacheabilityCaptureDeadline,
+  markRouteCacheabilityPolicyProvisional,
+  markRouteCacheabilityResponsePolicyExplicit,
+  recordRouteCacheability,
+  recordRouteCacheabilityCapturedBody,
+  retainRouteCacheabilityCapture,
+} from "./cacheability-request.js";
 import type {
   AppLayoutParamAccessTracker,
   StaticLayoutObservationSkipRejection,
@@ -762,7 +775,9 @@ export async function renderAppPageLifecycle(
 
   let pprFallbackShellRsc: Uint8Array | null = null;
   if (options.pprFallbackShellSignal) {
-    pprFallbackShellRsc = new Uint8Array(await readAppPageBinaryStream(rscStream));
+    const captured = await readAppPageBinaryStreamBounded(rscStream);
+    pprFallbackShellRsc = new Uint8Array(captured.body);
+    captured.release();
   }
 
   let revalidateSeconds = options.revalidateSeconds;
@@ -802,9 +817,15 @@ export async function renderAppPageLifecycle(
   // the sideStream directly. For HTML requests, handleSsr creates an embed
   // transform from it and fills capturedRscDataRef. The ref object is threaded
   // through so .value is read lazily after handleSsr completes.
-  const capturedRscDataRef: { value: Promise<ArrayBuffer> | null } = { value: null };
+  const capturedRscDataRef: { value: Promise<CapturedAppPageRscData> | null } = { value: null };
   if (rscCapture.sideStream && options.isRscRequest) {
-    capturedRscDataRef.value = readAppPageBinaryStream(rscCapture.sideStream);
+    capturedRscDataRef.value = readAppPageBinaryStreamBounded(rscCapture.sideStream).then(
+      (captured) => {
+        const transferred = recordRouteCacheabilityCapturedBody(captured.body, captured.release);
+        if (!transferred) captured.release();
+        return { body: captured.body, release: () => {} };
+      },
+    );
   }
 
   if (options.isRscRequest) {
@@ -937,6 +958,10 @@ export async function renderAppPageLifecycle(
         : completionResponse;
 
     return finalizeAppPageRscCacheResponse(devRscResponse, {
+      // force-static deliberately replaces request-derived values with empty
+      // values. Observing headers()/cookies()/searchParams on that path does
+      // not make the completed representation request-specific in Next.js.
+      allowRequestApis: options.isForceStatic,
       capturedRscDataPromise:
         options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
       bypassInterceptionContextCache: options.bypassInterceptionContextCache,
@@ -968,6 +993,7 @@ export async function renderAppPageLifecycle(
       interceptionContext: options.interceptionContext,
       interceptionId: options.interceptionId,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      middlewareHeaders: options.middlewareContext.headers,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       renderMode: options.renderMode,
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
@@ -1008,8 +1034,24 @@ export async function renderAppPageLifecycle(
     },
     async renderHtmlStream() {
       const ssrHandler = await options.loadSsrHandler();
+      const capturedRscDataReservation = shouldCaptureRscForCacheMetadata
+        ? createCacheabilityCaptureReservation()
+        : undefined;
       return renderAppPageHtmlStream({
         capturedRscDataRef,
+        capturedRscDataLimitBytes: capturedRscDataReservation
+          ? CACHEABILITY_RESPONSE_BODY_LIMIT
+          : undefined,
+        capturedRscDataTimeoutMs: capturedRscDataReservation
+          ? CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS
+          : undefined,
+        capturedRscDataDeadlineAt: capturedRscDataReservation
+          ? getRouteCacheabilityCaptureDeadline()
+          : undefined,
+        releaseCapturedRscDataBudget: capturedRscDataReservation?.releaseAll,
+        reserveCapturedRscDataBytes: capturedRscDataReservation?.tryReserve,
+        releaseCapturedRscDataBytes: capturedRscDataReservation?.release,
+        retainCapturedRscData: retainRouteCacheabilityCapture,
         getInitialNavigationCacheMetadata: () => {
           let kind: "dynamic" | "static";
           if (options.isForceStatic) {
@@ -1036,7 +1078,11 @@ export async function renderAppPageLifecycle(
           // non-destructive peek so the cache-write closure remains its owner.
           const requestCacheLife =
             options.isPrerender === true
-              ? requestCacheLifeForPrerender
+              ? // The fused Flight pump may finish before the outer prerender
+                // continuation copies this non-destructive value into the
+                // local. Fall back to the same peek instead of omitting the
+                // completed cacheLife claim from the done script.
+                (requestCacheLifeForPrerender ?? options.peekRequestCacheLife?.())
               : options.peekRequestCacheLife?.();
           const staleTimeSeconds = resolveClientStaleTimeSeconds(requestCacheLife);
           return {
@@ -1155,6 +1201,17 @@ export async function renderAppPageLifecycle(
   }
   dynamicUsedDuringRender = dynamicUsedDuringRender || consumeRenderDynamicUsage();
   dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
+  if (dynamicUsedDuringRender) {
+    // Dynamic usage can settle before this response enters the streaming cache
+    // finalizer. Record it now so a previously proven static, non-PPR route
+    // follows Next.js's static-to-dynamic invariant instead of silently
+    // returning a dynamic 200.
+    recordRouteCacheability({
+      cacheable: false,
+      dynamicUsage: true,
+      reason: "dynamic API used during render",
+    });
+  }
 
   const draftCookie = options.getDraftModeCookieHeader();
   let dynamicUsedBeforeContextCleanup = dynamicUsedDuringRender;
@@ -1207,6 +1264,7 @@ export async function renderAppPageLifecycle(
       timing: htmlResponseTiming,
     });
     applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
+    markRouteCacheabilityPolicyProvisional(response.headers);
     return response;
   }
 
@@ -1238,6 +1296,7 @@ export async function renderAppPageLifecycle(
     }
 
     return finalizeAppPageHtmlCacheResponse(isrResponse, {
+      allowRequestApis: options.isForceStatic,
       capturedDynamicUsageBeforeContextCleanup() {
         return dynamicUsedBeforeContextCleanup;
       },
@@ -1290,13 +1349,14 @@ export async function renderAppPageLifecycle(
         revalidateSeconds,
       }),
       linkHeader: linkHeader ?? null,
+      middlewareHeaders: options.middlewareContext.headers,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
       },
     });
   }
 
-  return buildAppPageHtmlResponse(safeHtmlStream, {
+  const response = buildAppPageHtmlResponse(safeHtmlStream, {
     cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
     draftCookie,
     linkHeader,
@@ -1306,10 +1366,16 @@ export async function renderAppPageLifecycle(
     requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
   });
+  if (responseHasMatchingCachePolicy(response.headers, options.middlewareContext.headers)) {
+    markRouteCacheabilityResponsePolicyExplicit(response.headers);
+  } else {
+    markRouteCacheabilityPolicyProvisional(response.headers);
+  }
+  return response;
 }
 
 async function settleCapturedRscRenderForCacheMetadata(
-  capturedRscDataPromise: Promise<ArrayBuffer> | null,
+  capturedRscDataPromise: Promise<CapturedAppPageRscData> | null,
   shouldStopWaiting?: () => boolean,
 ): Promise<void> {
   if (!capturedRscDataPromise) {

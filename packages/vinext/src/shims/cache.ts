@@ -31,8 +31,13 @@ import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
-import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
+import {
+  getDataCacheHandlerUntracked,
+  trackProspectiveCacheFill,
+  type CachedFetchValue,
+} from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
+import { isStagedCacheabilityProbeActive } from "./cacheability-classification.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
@@ -43,6 +48,7 @@ import {
   _setRequestScopedCacheLife,
   cacheLifeProfiles,
   getRegisteredCacheContext,
+  INFINITE_CACHE,
   markActionRevalidation,
   recordUnstableCacheObservation,
   shouldServeStaleUnstableCacheEntry,
@@ -53,6 +59,35 @@ export * from "./cache-handler.js";
 export * from "./cache-request-state.js";
 
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
+
+function canCommitRevalidation(expression: string): boolean {
+  if (
+    isStagedCacheabilityProbeActive() ||
+    (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1")
+  ) {
+    // Classification/prerender execution must be observational: a purge here
+    // would mutate shared state before the route has even been promoted.
+    _markDynamic();
+    return false;
+  }
+  const cacheContext = getRegisteredCacheContext();
+  if (cacheContext) {
+    throw new Error(
+      `Route used "${expression}" inside a "use cache" which is unsupported. ` +
+        "To ensure revalidation is performed consistently it must always happen outside of renders and cached functions.",
+    );
+  }
+  if (isInsideUnstableCacheScope()) {
+    throw new Error(
+      `Route used "${expression}" inside a function cached with "unstable_cache(...)" which is unsupported. ` +
+        "To ensure revalidation is performed consistently it must always happen outside of renders and cached functions.",
+    );
+  }
+  // A Route Handler containing a revalidation call is request-time behavior;
+  // it must never be admitted to the Full Route Cache.
+  if (getHeadersAccessPhase() !== "action") _markDynamic();
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Request-scoped ExecutionContext ALS
@@ -96,6 +131,7 @@ function scheduleRevalidation(promise: Promise<void>): undefined {
  * @param profile - cacheLife profile name (e.g. 'max', 'hours') or inline { expire: number }
  */
 export function revalidateTag(tag: string, profile?: string | { expire?: number }): undefined {
+  if (!canCommitRevalidation(`revalidateTag ${tag}`)) return undefined;
   // Resolve the profile to durations for the handler
   let durations: { expire?: number } | undefined;
   if (typeof profile === "string") {
@@ -131,7 +167,7 @@ async function _invalidateEncodedTag(
   encoded: string,
   durations?: { expire?: number },
 ): Promise<void> {
-  await getDataCacheHandler().revalidateTag(encoded, durations);
+  await getDataCacheHandlerUntracked().revalidateTag(encoded, durations);
   await getCdnCacheAdapter().revalidateTag(encoded, durations);
 }
 
@@ -151,6 +187,7 @@ async function _invalidateEncodedTag(
  * layout/page hierarchy tags, so only no-type invalidation applies there.
  */
 export function revalidatePath(path: string, type?: "page" | "layout"): undefined {
+  if (!canCommitRevalidation(`revalidatePath ${path}`)) return undefined;
   markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   // Strip trailing slash so root "/" becomes "" — avoids double-slash in _N_T_//layout
   const stem = path.endsWith("/") ? path.slice(0, -1) : path;
@@ -558,7 +595,7 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   args: Args,
   cacheKey: string,
   tags: string[],
-  revalidateSeconds: number | false | undefined,
+  revalidateSeconds: number | undefined,
 ): Promise<Result> {
   const result = await _unstableCacheAls.run(true, () => fn(...args));
 
@@ -570,14 +607,12 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
       url: cacheKey,
     },
     tags,
-    // revalidate: false means "cache indefinitely" (no time-based expiry).
-    // A positive number means time-based revalidation in seconds.
-    // When unset (undefined), default to false (indefinite) matching
-    // Next.js behavior for unstable_cache without explicit revalidate.
-    revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : false,
+    // Match Next: explicit false/Infinity use the JSON-safe infinite sentinel;
+    // an omitted lifetime retains the legacy one-year fetch-entry default.
+    revalidate: revalidateSeconds ?? 31_536_000,
   };
 
-  await getDataCacheHandler().set(cacheKey, cacheValue, {
+  await getDataCacheHandlerUntracked().set(cacheKey, cacheValue, {
     fetchCache: true,
     tags,
     revalidate: revalidateSeconds,
@@ -605,63 +640,86 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   // hash differently across builds. Always pass explicit keyParts in
   // production to get a stable, collision-free cache key.
   const tags = encodeCacheTags(options?.tags ?? []);
-  const revalidateSeconds = options?.revalidate;
+  const configuredRevalidate = options?.revalidate;
+  const revalidateSeconds =
+    configuredRevalidate === false || configuredRevalidate === Infinity
+      ? INFINITE_CACHE
+      : configuredRevalidate;
+  if (
+    typeof revalidateSeconds === "number" &&
+    (Number.isNaN(revalidateSeconds) || revalidateSeconds <= 0)
+  ) {
+    throw new Error(
+      `Invariant revalidate: ${revalidateSeconds} can not be less than or equal to zero for unstable_cache().`,
+    );
+  }
 
-  const cachedFn = async (...args: Parameters<T>) => {
-    const argsKey = JSON.stringify(args);
-    const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
-    addCollectedRequestTags(tags);
-    recordUnstableCacheObservation({
-      kind: "unstable_cache",
-      keyHash: fnv1a64(cacheKey),
-      revalidate:
-        typeof revalidateSeconds === "number"
-          ? revalidateSeconds
-          : revalidateSeconds === false
-            ? false
-            : null,
-      tagCount: tags.length,
-      tagHash: tags.length > 0 ? fnv1a64(JSON.stringify(tags)) : null,
-    });
+  // Keep lookup, refresh, and serialization in the cache work unit as well as
+  // the user callback. Next.js's synchronous platform-I/O wrappers no-op for
+  // the whole `unstable-cache` work unit, so cache-handler clock reads cannot
+  // accidentally make the enclosing Cache Components route dynamic.
+  const cachedFn = (...args: Parameters<T>) => {
+    const operation = _unstableCacheAls.run(true, async () => {
+      if (typeof revalidateSeconds === "number" && revalidateSeconds < INFINITE_CACHE) {
+        const life = { revalidate: revalidateSeconds };
+        _setRequestScopedCacheLife(life);
+        const cacheContext = getRegisteredCacheContext();
+        if (cacheContext && cacheContext.variant !== "private") {
+          cacheContext.lifeConfigs.push(life);
+        }
+      }
+      const argsKey = JSON.stringify(args);
+      const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
+      addCollectedRequestTags(tags);
+      recordUnstableCacheObservation({
+        kind: "unstable_cache",
+        keyHash: fnv1a64(cacheKey),
+        revalidate: revalidateSeconds ?? null,
+        tagCount: tags.length,
+        tagHash: tags.length > 0 ? fnv1a64(JSON.stringify(tags)) : null,
+      });
 
-    const isDraftMode = isDraftModeEnabled();
-    if (!isDraftMode) {
-      // Try to get from cache. Stale entries are usable in normal App Router
-      // requests, but foreground-refresh inside revalidation scopes so the
-      // regenerated page/route stores fresh data.
-      const softTags = getCurrentFetchSoftTags();
-      const existing = _hasPendingRevalidatedTag([...tags, ...softTags])
-        ? null
-        : await getDataCacheHandler().get(cacheKey, {
-            kind: "FETCH",
-            tags,
-            softTags,
-          });
-      if (existing?.value && existing.value.kind === "FETCH") {
-        const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
-        if (cached.ok) {
-          if (existing.cacheState === "stale") {
-            if (shouldServeStaleUnstableCacheEntry()) {
-              scheduleUnstableCacheBackgroundRevalidation(cacheKey, () =>
-                refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds),
-              );
+      const isDraftMode = isDraftModeEnabled();
+      if (!isDraftMode) {
+        // Try to get from cache. Stale entries are usable in normal App Router
+        // requests, but foreground-refresh inside revalidation scopes so the
+        // regenerated page/route stores fresh data.
+        const softTags = getCurrentFetchSoftTags();
+        const existing = _hasPendingRevalidatedTag([...tags, ...softTags])
+          ? null
+          : await getDataCacheHandlerUntracked().get(cacheKey, {
+              kind: "FETCH",
+              tags,
+              softTags,
+            });
+        if (existing?.value && existing.value.kind === "FETCH") {
+          const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
+          if (cached.ok) {
+            if (existing.cacheState === "stale") {
+              if (shouldServeStaleUnstableCacheEntry()) {
+                scheduleUnstableCacheBackgroundRevalidation(cacheKey, () =>
+                  refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds),
+                );
+                return cached.value;
+              }
+            } else {
               return cached.value;
             }
-          } else {
-            return cached.value;
           }
+          // Corrupted entries fall through to a foreground refresh.
         }
-        // Corrupted entries fall through to a foreground refresh.
       }
-    }
 
-    // Cache miss — call the function inside the unstable_cache ALS scope
-    // so that headers()/cookies()/connection() can detect they're in a
-    // cache scope and throw an appropriate error.
-    if (isDraftMode) {
-      return await _unstableCacheAls.run(true, () => fn(...args));
-    }
-    return await refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
+      // Cache miss — call the function inside the unstable_cache ALS scope
+      // so that headers()/cookies()/connection() can detect they're in a
+      // cache scope and throw an appropriate error.
+      if (isDraftMode) {
+        return await _unstableCacheAls.run(true, () => fn(...args));
+      }
+      return await refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
+    });
+    trackProspectiveCacheFill(operation);
+    return operation;
   };
 
   return cachedFn as T;

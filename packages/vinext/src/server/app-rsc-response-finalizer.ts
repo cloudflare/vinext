@@ -12,7 +12,11 @@ import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
-import { hasPostConfigLinkHeaders } from "./app-response-header-provenance.js";
+import {
+  hasPostConfigLinkHeaders,
+  isAppRouteHandlerResponseHeaders,
+} from "./app-response-header-provenance.js";
+import { markRouteCacheabilityPolicyProvisional } from "./cacheability-request.js";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -36,6 +40,11 @@ type FinalizeAppRscResponseOptions = {
 };
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
+const APP_ROUTE_HANDLER_CONFIG_HEADER_OVERRIDES = new Set([
+  "cache-control",
+  "cdn-cache-control",
+  "cloudflare-cdn-cache-control",
+]);
 const configHeadersAlreadyApplied = new WeakSet<Response>();
 
 function normalizeExplicitNonCacheablePolicy(headers: Headers): void {
@@ -79,6 +88,9 @@ export async function applyAppRscConfigHeaders(
     basePathState: { basePath: options.basePath, hadBasePath },
     appendToPostConfigLink: hasPostConfigLinkHeaders(headers),
     middlewareHeaders: options.middlewareHeaders,
+    overwriteExisting: isAppRouteHandlerResponseHeaders(headers)
+      ? APP_ROUTE_HANDLER_CONFIG_HEADER_OVERRIDES
+      : undefined,
   });
 }
 
@@ -123,6 +135,7 @@ export async function finalizeAppRscResponse(
   // already applied. Redirects are already skipped above.
   if (!response.headers.has("Cache-Control")) {
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
+    markRouteCacheabilityPolicyProvisional(response.headers);
   }
 
   if (configHeadersAlreadyApplied.has(response)) {

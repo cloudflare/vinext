@@ -408,6 +408,13 @@ declare global {
        * standalone code paths.
        */
       __VINEXT_SHARED_REVALIDATE_SECRET?: string;
+
+      /**
+       * Build-only coordination variable for the capability that authorizes
+       * remote prerender path discovery. Hybrid App + Pages builds must embed
+       * the same value in both Worker entries and vinext-server.json.
+       */
+      __VINEXT_SHARED_PRERENDER_SECRET?: string;
       __VINEXT_PREVIEW_MODE_ID?: string;
       __VINEXT_PREVIEW_MODE_SIGNING_KEY?: string;
       __VINEXT_PREVIEW_MODE_ENCRYPTION_KEY?: string;

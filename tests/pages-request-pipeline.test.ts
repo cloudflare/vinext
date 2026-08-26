@@ -8,6 +8,7 @@ import {
 } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
 import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
+import { markRouteCacheabilityPolicyProvisional } from "../packages/vinext/src/server/cacheability-request.js";
 
 // Helpers
 
@@ -827,6 +828,72 @@ describe("config headers", () => {
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(result.response.headers.get("X-Custom")).toBe("test");
+  });
+
+  it("replaces a framework cache policy without requiring CDN admission state", async () => {
+    const renderPage = vi.fn(async () => {
+      const response = new Response("cached", {
+        headers: { "Cache-Control": "s-maxage=60, stale-while-revalidate=240" },
+      });
+      markRouteCacheabilityPolicyProvisional(response.headers);
+      return response;
+    });
+    const result = await runPagesRequest(
+      makeRequest("/cached"),
+      baseDeps({
+        configHeaders: [
+          { source: "/cached", headers: [{ key: "Cache-Control", value: "s-maxage=300" }] },
+        ],
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("cache-control")).toBe("s-maxage=300");
+  });
+
+  it("preserves a framework cache policy when no staged cache policy matched", async () => {
+    const renderPage = vi.fn(async () => {
+      const response = new Response("cached", {
+        headers: { "Cache-Control": "s-maxage=60, stale-while-revalidate=240" },
+      });
+      markRouteCacheabilityPolicyProvisional(response.headers);
+      return response;
+    });
+    const result = await runPagesRequest(
+      makeRequest("/cached"),
+      baseDeps({
+        configHeaders: [
+          { source: "/other", headers: [{ key: "Cache-Control", value: "s-maxage=300" }] },
+        ],
+        renderPage,
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("cache-control")).toBe(
+      "s-maxage=60, stale-while-revalidate=240",
+    );
+  });
+
+  it("keeps a Pages user response cache policy over next.config", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/gssp"),
+      baseDeps({
+        configHeaders: [
+          { source: "/gssp", headers: [{ key: "Cache-Control", value: "s-maxage=300" }] },
+        ],
+        renderPage: vi.fn(
+          async () => new Response("gssp", { headers: { "Cache-Control": "s-maxage=10" } }),
+        ),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("cache-control")).toBe("s-maxage=10");
   });
 
   it("does not match percent-encoded static aliases", async () => {

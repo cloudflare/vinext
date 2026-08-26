@@ -430,6 +430,16 @@ function _isInsideUnstableCache(): boolean {
 }
 
 /**
+ * Whether synchronous platform I/O is executing inside a cache boundary.
+ * Next.js deliberately permits time/randomness inside public/private
+ * `"use cache"` and `unstable_cache` scopes because the scope's result, not
+ * the enclosing route, owns reuse and invalidation.
+ */
+export function isInsideAnyCacheScope(): boolean {
+  return _getUseCacheGuardContext() !== null || _isInsideUnstableCache();
+}
+
+/**
  * Throw if the current execution is inside a "use cache" or unstable_cache()
  * scope. Called by dynamic request APIs (headers, cookies, connection) to
  * prevent request-specific data from being frozen into cached results.

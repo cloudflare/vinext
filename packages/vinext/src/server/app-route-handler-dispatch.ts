@@ -3,7 +3,9 @@ import {
   getCollectedFetchTags,
   ensureFetchPatch,
   setCurrentFetchCacheMode,
+  setCurrentCacheComponentsEnabled,
   setCurrentFetchRevalidate,
+  setCurrentRouteStaticGeneration,
   setCurrentFetchSoftTags,
   setCurrentForceDynamicFetchDefault,
   type FetchCacheMode,
@@ -27,8 +29,10 @@ import {
 } from "vinext/shims/unified-request-context";
 import type { ISRCacheEntry } from "./isr-cache.js";
 import {
+  assertAppRouteCacheComponentsConfig,
   getAppRouteHandlerRevalidateSeconds,
   hasAppRouteHandlerDefaultExport,
+  hasNonStaticAppRouteHandlerMethods,
   resolveAppRouteHandlerMethod,
   shouldReadAppRouteHandlerCache,
   type AppRouteHandlerModule,
@@ -44,6 +48,14 @@ import {
 } from "./app-route-handler-execution.js";
 import { isKnownDynamicAppRoute, isValidHTTPMethod } from "./app-route-handler-runtime.js";
 import {
+  beginRouteCacheability,
+  isRouteCacheabilityAlreadyUncacheable,
+  isRouteCacheabilityIdentityProbe,
+  isRouteCacheabilityProbe,
+  isRouteManifestProvenDynamic,
+  recordRouteCacheability,
+} from "./cacheability-request.js";
+import {
   applyRouteHandlerMiddlewareContext,
   finalizeRouteHandlerResponse,
   type RouteHandlerMiddlewareContext,
@@ -51,10 +63,15 @@ import {
 import { resolveAppRouteHandlerFetchCacheMode } from "./app-segment-config.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
-import { makeThenableParams } from "vinext/shims/thenable-params";
+import { makeCacheabilityAwareRouteHandlerParams as makeThenableParams } from "./cacheability-route-params.js";
 import { reportRequestError } from "./instrumentation.js";
+import {
+  validateAppPageDynamicParams,
+  type ValidateAppPageDynamicParamsOptions,
+} from "./app-page-request.js";
 
 type AppRouteHandlerDispatchRoute = {
+  isDynamic?: boolean;
   pattern: string;
   routeHandler: AppRouteHandlerModule;
   routeSegments: string[];
@@ -74,6 +91,7 @@ type RouteHandlerBackgroundRegenerator = (
 
 type DispatchAppRouteHandlerOptions = {
   basePath?: string;
+  cacheComponents?: boolean;
   cleanPathname: string;
   clearRequestContext: () => void;
   draftModeSecret: string;
@@ -94,7 +112,10 @@ type DispatchAppRouteHandlerOptions = {
    * (`params ? await params : null`) resolves to `null`.
    */
   params: AppRouteParams | null;
+  dynamicParamsConfig?: boolean;
+  generateStaticParams?: ValidateAppPageDynamicParamsOptions["generateStaticParams"];
   request: Request;
+  renderedConcreteUrlPaths?: ReadonlySet<string>;
   route: AppRouteHandlerDispatchRoute;
   scheduleBackgroundRegeneration: RouteHandlerBackgroundRegenerator;
   searchParams: URLSearchParams;
@@ -114,6 +135,7 @@ function buildRouteHandlerPageCacheTags(
 
 async function runInRouteHandlerRevalidationContext(
   options: {
+    cacheComponents: boolean;
     cleanPathname: string;
     draftModeSecret: string;
     dynamicConfig?: string;
@@ -121,6 +143,7 @@ async function runInRouteHandlerRevalidationContext(
     revalidateSeconds: number | null;
     routePattern: string;
     routeSegments: string[];
+    staticGeneration: boolean;
   },
   renderFn: () => Promise<void>,
 ): Promise<void> {
@@ -144,15 +167,16 @@ async function runInRouteHandlerRevalidationContext(
     );
     // The revalidation render runs in a fresh request context, so the fetch
     // defaults applied by `dispatchAppRouteHandler` must be re-applied here.
+    setCurrentCacheComponentsEnabled(options.cacheComponents);
     setCurrentFetchCacheMode(options.fetchCacheMode);
     setCurrentFetchRevalidate(options.revalidateSeconds);
+    setCurrentRouteStaticGeneration(options.staticGeneration);
     setCurrentForceDynamicFetchDefault(options.dynamicConfig === "force-dynamic");
     try {
       await renderFn();
     } finally {
-      // Stale ISR regeneration invokes the route handler directly instead of
-      // going through executeAppRouteHandler(), so its fresh request context
-      // owns and drains any synchronous next/cache invalidations here.
+      // The fresh revalidation request context owns and drains synchronous
+      // next/cache invalidations before its response and ISR write settle.
       await _drainPendingRevalidations();
     }
   });
@@ -169,7 +193,32 @@ export async function dispatchAppRouteHandler(
   const { route } = options;
   const handler = route.routeHandler;
   const method = options.request.method.toUpperCase();
-  const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);
+  if (options.cacheComponents) assertAppRouteCacheComponentsConfig(handler);
+  const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler, options.cacheComponents);
+  const hasNonStaticMethods =
+    options.cacheComponents && hasNonStaticAppRouteHandlerMethods(handler);
+  const paramsRequireRuntimeFallback =
+    route.pattern.includes(":") &&
+    options.renderedConcreteUrlPaths?.has(options.cleanPathname) !== true;
+  // Next.js only admits GET Route Handler representations to its Full Route
+  // Cache. POST/PUT/etc. can still set their own HTTP cache headers, but must
+  // not inherit framework cacheability from a probed GET route pattern.
+  const routeCacheabilityStarted =
+    method === "GET" && beginRouteCacheability("app-route", route.pattern);
+  const manifestProvenDynamic = method === "GET" && isRouteManifestProvenDynamic();
+  if (method === "GET" && isRouteCacheabilityIdentityProbe()) return new Response(null);
+  if (method === "GET") {
+    if (hasNonStaticMethods || handler.dynamic === "force-dynamic" || revalidateSeconds === 0) {
+      recordRouteCacheability({
+        cacheable: false,
+        reason: hasNonStaticMethods
+          ? "route is configured with methods that cannot be statically generated"
+          : handler.dynamic === "force-dynamic"
+            ? "route handler uses dynamic = force-dynamic"
+            : "route handler uses revalidate = 0",
+      });
+    }
+  }
   const isDevelopment = options.isDevelopment ?? process.env.NODE_ENV === "development";
   const isProduction = options.isProduction ?? process.env.NODE_ENV === "production";
   const appendResponseLink = handler.runtime === "edge" || handler.runtime === "experimental-edge";
@@ -212,8 +261,30 @@ export async function dispatchAppRouteHandler(
     return finalizeFrameworkResponse(new Response(null, { status: 400 }));
   }
 
+  const dynamicParamsResponse = await validateAppPageDynamicParams({
+    enforceStaticParamsOnly: options.dynamicParamsConfig === false,
+    generateStaticParams: options.generateStaticParams,
+    isDynamicRoute: route.isDynamic ?? route.pattern.includes(":"),
+    params: options.params ?? {},
+  });
+  if (dynamicParamsResponse) {
+    recordRouteCacheability({
+      cacheable: false,
+      reason: "route parameters were not returned by generateStaticParams",
+    });
+    return finalizeFrameworkResponse(dynamicParamsResponse, method === "HEAD");
+  }
+
   const { allowHeaderForOptions, handlerFn, isAutoHead, shouldAutoRespondToOptions } =
     resolveAppRouteHandlerMethod(handler, method);
+  const isCacheEligibleMethod = (method === "GET" || isAutoHead) && !hasNonStaticMethods;
+
+  // Next.js aborts Route Handler prerendering before invoking GET when the
+  // module exports a non-static sibling method. The authenticated staged probe
+  // already recorded that outcome above, so avoid executing user side effects.
+  if (method === "GET" && hasNonStaticMethods && isRouteCacheabilityProbe()) {
+    return finalizeFrameworkResponse(new Response(null));
+  }
 
   if (shouldAutoRespondToOptions) {
     return finalizeFrameworkResponse(
@@ -234,12 +305,20 @@ export async function dispatchAppRouteHandler(
   // path (dispatch previously only set fetch soft tags), closing the gap
   // where handlers ignored their `fetchCache`/`force-dynamic` segment config.
   const fetchCacheMode = resolveAppRouteHandlerFetchCacheMode(handler);
+  setCurrentCacheComponentsEnabled(options.cacheComponents === true);
   setCurrentFetchCacheMode(fetchCacheMode);
   setCurrentFetchRevalidate(revalidateSeconds);
+  setCurrentRouteStaticGeneration(
+    !options.cacheComponents &&
+      !hasNonStaticMethods &&
+      revalidateSeconds !== null &&
+      revalidateSeconds !== 0,
+  );
   setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
 
   if (
     revalidateSeconds !== null &&
+    !hasNonStaticMethods &&
     shouldReadAppRouteHandlerCache({
       dynamicConfig: handler.dynamic,
       handlerFn: resolvedHandlerFn,
@@ -275,6 +354,59 @@ export async function dispatchAppRouteHandler(
       middlewareContext: options.middlewareContext,
       params: options.params,
       requestUrl: options.request.url,
+      async regenerate() {
+        await executeAppRouteHandler({
+          awaitCacheWrite: true,
+          basePath: options.basePath,
+          cacheComponents: options.cacheComponents,
+          buildPageCacheTags(pathname, extraTags) {
+            return buildRouteHandlerPageCacheTags(pathname, extraTags, route.routeSegments);
+          },
+          cleanPathname: options.cleanPathname,
+          clearRequestContext() {
+            setNavigationContext(null);
+          },
+          consumeDynamicUsage,
+          draftModeSecret: options.draftModeSecret,
+          executionContext: getRequestExecutionContext(),
+          getAndClearPendingCookies,
+          getCollectedFetchTags,
+          getActiveDraftModeState,
+          getDraftModeCookieHeader,
+          handler,
+          handlerFn: resolvedHandlerFn,
+          i18n: options.i18n,
+          trailingSlash: options.trailingSlash,
+          isAutoHead,
+          initialDraftModeCookie: null,
+          isDraftMode: false,
+          isProduction,
+          isrDebug: options.isrDebug,
+          isrRouteKey: options.isrRouteKey,
+          isrSet: options.isrSet,
+          markDynamicUsage,
+          method: "GET",
+          observeCompletedBody: true,
+          middlewareContext: { headers: null, status: null },
+          middlewareRequestHeaders: null,
+          params:
+            options.params === null
+              ? null
+              : makeThenableParams(
+                  options.params,
+                  options.cacheComponents === true,
+                  paramsRequireRuntimeFallback,
+                ),
+          reportRequestError(error, request, context) {
+            void reportRequestError(error, request, context);
+          },
+          request: new Request(options.request.url, { method: "GET" }),
+          expireSeconds: options.expireSeconds,
+          revalidateSeconds,
+          routePattern: route.pattern,
+          setHeadersAccessPhase,
+        });
+      },
       revalidateSearchParams: options.searchParams,
       expireSeconds: options.expireSeconds,
       revalidateSeconds,
@@ -282,6 +414,7 @@ export async function dispatchAppRouteHandler(
       runInRevalidationContext(renderFn) {
         return runInRouteHandlerRevalidationContext(
           {
+            cacheComponents: options.cacheComponents === true,
             cleanPathname: options.cleanPathname,
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: handler.dynamic,
@@ -289,6 +422,11 @@ export async function dispatchAppRouteHandler(
             revalidateSeconds,
             routePattern: route.pattern,
             routeSegments: route.routeSegments,
+            staticGeneration:
+              !options.cacheComponents &&
+              !hasNonStaticMethods &&
+              revalidateSeconds !== null &&
+              revalidateSeconds !== 0,
           },
           renderFn,
         );
@@ -311,6 +449,7 @@ export async function dispatchAppRouteHandler(
   if (resolvedHandlerFn) {
     return executeAppRouteHandler({
       basePath: options.basePath,
+      cacheComponents: options.cacheComponents,
       buildPageCacheTags(pathname, extraTags) {
         return buildRouteHandlerPageCacheTags(pathname, extraTags, route.routeSegments);
       },
@@ -336,9 +475,21 @@ export async function dispatchAppRouteHandler(
       isrSet: options.isrSet,
       markDynamicUsage,
       method,
+      observeCompletedBody:
+        isCacheEligibleMethod &&
+        !manifestProvenDynamic &&
+        !isRouteCacheabilityAlreadyUncacheable() &&
+        (routeCacheabilityStarted || revalidateSeconds !== null),
       middlewareContext: options.middlewareContext,
       middlewareRequestHeaders: options.middlewareRequestHeaders,
-      params: options.params === null ? null : makeThenableParams(options.params),
+      params:
+        options.params === null
+          ? null
+          : makeThenableParams(
+              options.params,
+              options.cacheComponents === true,
+              paramsRequireRuntimeFallback,
+            ),
       reportRequestError(error, request, context) {
         void reportRequestError(error, request, context);
       },

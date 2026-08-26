@@ -5,8 +5,17 @@ import {
   type RequestContext,
 } from "../config/config-matchers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
+import {
+  isRouteCacheabilityPolicyProvisional,
+  markRouteCacheabilityPolicyExplicit,
+} from "./cacheability-request.js";
 
 const ADDITIVE_CONFIG_HEADER_NAMES = new Set(["set-cookie", "vary"]);
+const CACHE_POLICY_HEADER_NAMES = new Set([
+  "cache-control",
+  "cdn-cache-control",
+  "cloudflare-cdn-cache-control",
+]);
 
 type ApplyConfigHeadersOptions = {
   configHeaders: NextHeader[];
@@ -91,6 +100,13 @@ export function applyConfigHeadersToResponse(
       options.basePathState,
     ),
   );
+  const hasMatchedCachePolicy = matched.some((header) =>
+    CACHE_POLICY_HEADER_NAMES.has(header.key.toLowerCase()),
+  );
+  if (hasMatchedCachePolicy && isRouteCacheabilityPolicyProvisional(responseHeaders)) {
+    for (const name of CACHE_POLICY_HEADER_NAMES) responseHeaders.delete(name);
+  }
+  let appliedCachePolicy = false;
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "link") {
@@ -103,8 +119,20 @@ export function applyConfigHeadersToResponse(
       );
     } else if (ADDITIVE_CONFIG_HEADER_NAMES.has(lowerName)) {
       responseHeaders.append(header.key, header.value);
-    } else if (options.overwriteExisting?.has(lowerName) || !responseHeaders.has(lowerName)) {
+    } else if (
+      (options.overwriteExisting?.has(lowerName) && !options.middlewareHeaders?.has(lowerName)) ||
+      !responseHeaders.has(lowerName)
+    ) {
       responseHeaders.set(header.key, header.value);
+      if (CACHE_POLICY_HEADER_NAMES.has(lowerName)) appliedCachePolicy = true;
+    }
+  }
+  if (appliedCachePolicy) {
+    const policy = ["Cloudflare-CDN-Cache-Control", "CDN-Cache-Control", "Cache-Control"]
+      .map((name) => ({ name, value: responseHeaders.get(name) }))
+      .find((candidate) => candidate.value !== null);
+    if (policy?.value !== null && policy?.value !== undefined) {
+      markRouteCacheabilityPolicyExplicit(policy.value, policy.name);
     }
   }
 }
@@ -122,6 +150,7 @@ export function applyConfigHeadersToHeaderRecord(
       options.basePathState,
     ),
   );
+  let appliedCachePolicy = false;
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "set-cookie") {
@@ -130,6 +159,18 @@ export function applyConfigHeadersToHeaderRecord(
       appendVaryHeaderRecord(headers, header.value);
     } else if (findHeaderRecordKey(headers, lowerName) === undefined) {
       headers[lowerName] = header.value;
+      if (CACHE_POLICY_HEADER_NAMES.has(lowerName)) appliedCachePolicy = true;
     }
+  }
+  if (appliedCachePolicy) {
+    const cachePolicies = new Map(
+      matched
+        .filter((header) => CACHE_POLICY_HEADER_NAMES.has(header.key.toLowerCase()))
+        .map((header) => [header.key.toLowerCase(), header.value]),
+    );
+    const policy = ["cloudflare-cdn-cache-control", "cdn-cache-control", "cache-control"]
+      .map((name) => ({ name, value: cachePolicies.get(name) }))
+      .find((candidate) => candidate.value !== undefined);
+    if (policy?.value !== undefined) markRouteCacheabilityPolicyExplicit(policy.value, policy.name);
   }
 }

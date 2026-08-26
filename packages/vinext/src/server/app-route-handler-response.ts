@@ -15,7 +15,11 @@ import { setCacheStateHeaders } from "./cache-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { getSetCookieName } from "./cookie-utils.js";
-import { markEdgeRouteHandlerLinkHeaders } from "./app-response-header-provenance.js";
+import {
+  markAppRouteHandlerResponseHeaders,
+  markEdgeRouteHandlerLinkHeaders,
+} from "./app-response-header-provenance.js";
+import { markRouteCacheabilityPolicyProvisional } from "./cacheability-request.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -56,6 +60,7 @@ export function applyRouteHandlerMiddlewareContext(
   const responseLink = options.appendResponseLink ? response.headers.get("link") : null;
   if (!middlewareContext.headers && middlewareContext.status == null) {
     markEdgeRouteHandlerLinkHeaders(response.headers, responseLink);
+    markAppRouteHandlerResponseHeaders(response.headers);
     return response;
   }
 
@@ -71,6 +76,7 @@ export function applyRouteHandlerMiddlewareContext(
     headers: responseHeaders,
   });
   markEdgeRouteHandlerLinkHeaders(result.headers, responseLink);
+  markAppRouteHandlerResponseHeaders(result.headers);
   return result;
 }
 
@@ -113,12 +119,19 @@ export function buildRouteHandlerCachedResponse(
     expireSeconds: options.expireSeconds,
     cacheControlMeta: options.cacheControl,
   });
-  applyCdnResponseHeaders(headers, { cacheControl });
-
-  return new Response(options.isHead ? null : cachedValue.body, {
+  if (
+    !headers.has("Cache-Control") &&
+    !headers.has("CDN-Cache-Control") &&
+    !headers.has("Cloudflare-CDN-Cache-Control")
+  ) {
+    applyCdnResponseHeaders(headers, { cacheControl });
+  }
+  const response = new Response(options.isHead ? null : cachedValue.body, {
     status: cachedValue.status,
     headers,
   });
+  markRouteCacheabilityPolicyProvisional(response.headers);
+  return response;
 }
 
 export function applyRouteHandlerRevalidateHeader(
@@ -136,6 +149,7 @@ export function applyRouteHandlerRevalidateHeader(
     cacheControl: buildAppRouteMissIsrCacheControl(revalidateSeconds, expireSeconds),
     tags,
   });
+  markRouteCacheabilityPolicyProvisional(response.headers);
 }
 
 export function markRouteHandlerCacheMiss(response: Response): void {
@@ -229,8 +243,15 @@ function applyMutableCookieFallbacks(headers: Headers, pendingCookies: string[])
   }
 }
 
-export async function buildAppRouteCacheValue(response: Response): Promise<CachedRouteValue> {
-  const body = await response.arrayBuffer();
+export async function buildAppRouteCacheValue(
+  response: Response,
+  capturedBody?: ArrayBuffer | null,
+  options: { preserveCacheControl?: boolean } = {},
+): Promise<CachedRouteValue> {
+  const body =
+    capturedBody === undefined
+      ? await response.arrayBuffer()
+      : (capturedBody ?? new ArrayBuffer(0));
   const headers: CachedRouteValue["headers"] = {};
 
   response.headers.forEach((value, key) => {
@@ -246,7 +267,7 @@ export async function buildAppRouteCacheValue(response: Response): Promise<Cache
       key === VINEXT_PRERENDER_CACHE_LIFE_HEADER ||
       key === VINEXT_CACHE_HEADER.toLowerCase() ||
       key === NEXTJS_CACHE_HEADER.toLowerCase() ||
-      key === "cache-control" ||
+      (key === "cache-control" && options.preserveCacheControl !== true) ||
       key.startsWith(MIDDLEWARE_HEADER_PREFIX)
     ) {
       return;

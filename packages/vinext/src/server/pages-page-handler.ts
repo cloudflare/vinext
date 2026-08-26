@@ -77,6 +77,10 @@ import {
   hasPagesGetInitialProps,
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
+import {
+  markRouteCacheabilityPolicyProvisional,
+  markRouteCacheabilityResponsePolicyExplicit,
+} from "./cacheability-request.js";
 
 export function finalizePagesPreviewResponse(
   response: Response,
@@ -970,6 +974,7 @@ export function createPagesPageHandler(
         // props like __N_SSP, __N_SSG) as JSON instead of the full HTML page.
         if (isDataReq) {
           const init: ResponseInit & { headers: Record<string, string> } = { headers: {} };
+          let wroteFrameworkCachePolicy = false;
           if (gsspRes && typeof gsspRes.getHeaders === "function") {
             const gsspHeaders = gsspRes.getHeaders();
             for (const k of Object.keys(gsspHeaders)) {
@@ -983,13 +988,20 @@ export function createPagesPageHandler(
             // skip when gSSP already set one via res.setHeader. Fixes #1461.
             let hasUserCacheControl = false;
             for (const headerKey of Object.keys(init.headers)) {
-              if (headerKey.toLowerCase() === "cache-control") {
+              if (
+                ["cache-control", "cdn-cache-control", "cloudflare-cdn-cache-control"].includes(
+                  headerKey.toLowerCase(),
+                )
+              ) {
                 hasUserCacheControl = true;
                 break;
               }
             }
             if (!hasUserCacheControl) {
               init.headers["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
+              wroteFrameworkCachePolicy = true;
+            } else {
+              markRouteCacheabilityResponsePolicyExplicit(new Headers(init.headers));
             }
           } else if (isStaticPropsRoute) {
             if (isrRevalidateSeconds !== null) {
@@ -1003,9 +1015,14 @@ export function createPagesPageHandler(
               for (const [key, value] of headers) {
                 init.headers[key] = value;
               }
+              wroteFrameworkCachePolicy = true;
             } else if (shouldUseNextDeployCacheControl()) {
               init.headers["Cache-Control"] = BROWSER_REVALIDATE_CACHE_CONTROL;
+              wroteFrameworkCachePolicy = true;
             }
+          }
+          if (wroteFrameworkCachePolicy) {
+            markRouteCacheabilityPolicyProvisional(new Headers(init.headers));
           }
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
           // every _next/data response so the client router can detect a new
@@ -1019,10 +1036,11 @@ export function createPagesPageHandler(
               init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
             }
           }
-          return finalizePagesPreviewResponse(
-            buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, init),
-            preview,
-          );
+          const dataResponse = buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, init);
+          if (wroteFrameworkCachePolicy) {
+            markRouteCacheabilityPolicyProvisional(dataResponse.headers);
+          }
+          return finalizePagesPreviewResponse(dataResponse, preview);
         }
 
         // Include both the global _app module and the matched page module.

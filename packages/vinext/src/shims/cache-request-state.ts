@@ -12,6 +12,9 @@ export type CacheLifeConfig = {
   expire?: number;
 };
 
+/** Next.js's JSON-safe internal representation of an effectively infinite lifetime. */
+export { INFINITE_CACHE } from "./cache-constants.js";
+
 export const cacheLifeProfiles: Record<string, CacheLifeConfig> = {
   default: { revalidate: 900, expire: 4294967294 },
   seconds: { stale: 30, revalidate: 1, expire: 60 },

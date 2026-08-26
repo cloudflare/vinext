@@ -50,6 +50,10 @@ const appRouteHandlerResponsePath = resolveEntryPath(
   "../server/app-route-handler-response.js",
   import.meta.url,
 );
+const appRouteHandlerPolicyPath = resolveEntryPath(
+  "../server/app-route-handler-policy.js",
+  import.meta.url,
+);
 const appServerActionExecutionPath = resolveEntryPath(
   "../server/app-server-action-execution.js",
   import.meta.url,
@@ -80,6 +84,11 @@ const appPagePprRuntimePath = resolveEntryPath(
   "../server/app-page-ppr-runtime.js",
   import.meta.url,
 );
+const cacheComponentsPlatformIoPreludePath = resolveEntryPath(
+  "../server/cache-components-platform-io-prelude.js",
+  import.meta.url,
+);
+const fetchCachePreludePath = resolveEntryPath("../server/fetch-cache-prelude.js", import.meta.url);
 const fileBasedMetadataPath = resolveEntryPath("../server/file-based-metadata.js", import.meta.url);
 const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
 const appSegmentConfigPath = resolveEntryPath("../server/app-segment-config.js", import.meta.url);
@@ -205,6 +214,8 @@ type AppRouterConfig = {
   publicFiles?: string[];
   /** Server-only token used to validate the draft-mode bypass cookie. */
   draftModeSecret?: string;
+  /** Server-only token used to authorize build-time prerender endpoints. */
+  prerenderSecret?: string;
 };
 
 /**
@@ -249,6 +260,7 @@ export function generateRscEntry(
   const hasPagesDir = config?.hasPagesDir ?? false;
   const publicFiles = config?.publicFiles ?? [];
   const draftModeSecret = config?.draftModeSecret ?? randomUUID();
+  const prerenderSecret = config?.prerenderSecret ?? randomUUID();
   const imageAllowedWidths = [
     ...(config?.imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
     ...(config?.imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
@@ -290,6 +302,16 @@ async function __loadPrerenderPagesRoutes() {
     : "";
 
   return `
+// Match Next.js bootstrap ordering: patch fetch before any user module can
+// capture the unpatched global at module scope.
+import ${JSON.stringify(fetchCachePreludePath)};
+${
+  cacheComponents
+    ? `// This async prelude must be the first generated dependency so its
+// platform-I/O wrappers are installed before user modules are evaluated.
+import ${JSON.stringify(cacheComponentsPlatformIoPreludePath)};`
+    : ""
+}
 ${
   hasAppRouteHandlers
     ? `// Capture the canonical Request surface before any user module can extend it.
@@ -453,7 +475,7 @@ import { suppressHookWarningAls } from ${JSON.stringify(appHookWarningSuppressio
 import { clearAppRequestContext as __clearRequestContext, setAppNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestContextPath)};
 __configureMemoryCacheHandler({ cacheMaxMemorySize: ${JSON.stringify(cacheMaxMemorySize)} });
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
-import { ensureAppRouteModulesLoaded as __ensureRouteLoaded, loadAppInterceptPage as __loadAppInterceptPage } from ${JSON.stringify(appRouteModuleLoaderPath)};
+import { ensureAppRouteModulesLoaded as __ensureRouteLoaded, loadAppInterceptPage as __loadAppInterceptPage, loadAppRouteHandlerModule as __loadRouteHandlerModule } from ${JSON.stringify(appRouteModuleLoaderPath)};
 import {
   getRenderedConcreteUrlPathsForRoute as __getRenderedConcreteUrlPathsForRoute,
   initPregeneratedPathsFromGlobals as __initPregeneratedPathsFromGlobals,
@@ -581,6 +603,9 @@ ${metaRouteEntries.join(",\n")}
 // Re-exported so the Cloudflare worker entry can strip basePath before
 // recognising /_next/static/* paths (parity with __assetPrefix below).
 export const __basePath = ${JSON.stringify(bp)};
+// Per-build capability used by Worker entries to authorize remote path
+// discovery. It is never included in responses or exposed to user modules.
+export const __prerenderSecret = ${JSON.stringify(prerenderSecret)};
 
 // Hoisted alongside __basePath so __fallbackRenderer / buildPageElements can
 // thread the configured trailingSlash flag through canonical URL rendering.
@@ -868,6 +893,8 @@ const __appRscHandler = createAppRscHandler({
           mountedSlotsHeader,
           renderMode,
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
+          observeParamsAccess: ${JSON.stringify(cacheComponents)},
+          paramsRequireRuntimeFallback: buildOptions?.paramsRequireRuntimeFallback === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
           serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
           isProduction: process.env.NODE_ENV === "production",
@@ -1031,14 +1058,29 @@ const __appRscHandler = createAppRscHandler({
     cleanPathname,
     middlewareContext,
     params,
+    renderedConcreteUrlPaths,
     request,
     route,
     searchParams,
   }) {
     const { dispatchAppRouteHandler: __dispatchAppRouteHandler } =
       await __loadAppRouteHandlerDispatch();
+    const __routeHandlerSegmentConfig = __resolveAppPageSegmentConfig({
+      layouts: route.layouts,
+      layoutTreePositions: route.layoutTreePositions,
+      page: route.routeHandler,
+      routeSegments: route.routeSegments,
+    });
+    const __routeHandlerGenerateStaticParams = __resolveAppPageGenerateStaticParamsSources({
+      layouts: route.layouts,
+      layoutTreePositions: route.layoutTreePositions,
+      page: route.routeHandler,
+      routePatternParts: route.patternParts,
+      routeSegments: route.routeSegments,
+    });
     return __dispatchAppRouteHandler({
       basePath: __basePath,
+      cacheComponents: ${JSON.stringify(cacheComponents)},
       cleanPathname,
       clearRequestContext() {
         __clearRequestContext();
@@ -1052,9 +1094,13 @@ const __appRscHandler = createAppRscHandler({
       isrSet: __isrSet,
       middlewareContext,
       middlewareRequestHeaders: middlewareContext.requestHeaders,
+      dynamicParamsConfig: __routeHandlerSegmentConfig.dynamicParamsConfig,
+      generateStaticParams: __routeHandlerGenerateStaticParams,
       params,
+      renderedConcreteUrlPaths,
       request,
       route: {
+        isDynamic: route.isDynamic,
         pattern: route.pattern,
         routeHandler: route.routeHandler,
         routeSegments: route.routeSegments,
@@ -1246,6 +1292,7 @@ const __appRscHandler = createAppRscHandler({
           mountedSlotsHeader: actionMountedSlotsHeader,
           renderMode: actionRenderMode,
           observeMetadataSearchParamsAccess: observeMetadataSearchParamsAccess === true,
+          observeParamsAccess: ${JSON.stringify(cacheComponents)},
           observePageSearchParamsAccess: observePageSearchParamsAccess === true,
         }, undefined, actionCleanPathname, targetScriptNonce ?? scriptNonce);
       },
@@ -1456,6 +1503,19 @@ const __appRscHandler = createAppRscHandler({
   rootParamNamesByPattern: rootParamNamesMap,
   setNavigationContext,
   staticParamsMap: generateStaticParamsMap,
+  ${
+    cacheComponents
+      ? `async validatePrerenderAppRouteHandlers() {
+    const { assertAppRouteCacheComponentsConfig: __assertCacheComponentsConfig } =
+      await import(${JSON.stringify(appRouteHandlerPolicyPath)});
+    for (const route of routes) {
+      if (!route.__loadRouteHandler) continue;
+      const handler = await __loadRouteHandlerModule(route);
+      __assertCacheComponentsConfig(handler);
+    }
+  },`
+      : ""
+  }
   trailingSlash: __trailingSlash,
   validateDevRequestOrigin: __validateDevRequestOrigin,
 });

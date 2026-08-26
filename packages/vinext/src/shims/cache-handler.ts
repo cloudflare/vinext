@@ -3,6 +3,12 @@ import {
   readCacheControlNumberField,
   readCacheControlRevalidateField,
 } from "../utils/cache-control-metadata.js";
+import { getOrCreateAls } from "./internal/als-registry.js";
+import { runWithoutPlatformIoTracking } from "./platform-io-tracking.js";
+
+function frameworkNow(): number {
+  return runWithoutPlatformIoTracking(() => Date.now());
+}
 
 export type CacheHandlerValue = {
   lastModified: number;
@@ -254,7 +260,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
     this.touchEntry(key, entry);
 
-    const now = Date.now();
+    const now = frameworkNow();
     if (entry.expireAt !== null && now > entry.expireAt) {
       return {
         lastModified: entry.lastModified,
@@ -313,7 +319,7 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return;
 
-    const now = Date.now();
+    const now = frameworkNow();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
         ? now + effectiveRevalidate * 1000
@@ -358,7 +364,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
   async revalidateTag(tags: string | string[]): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
-    const now = Date.now();
+    const now = frameworkNow();
     for (const tag of tagList) {
       this.tagRevalidatedAt.set(tag, now);
       while (this.tagRevalidatedAt.size > MAX_REVALIDATED_TAG_ENTRIES) {
@@ -374,6 +380,78 @@ export class MemoryCacheHandler implements CacheHandler {
 
 const HANDLER_KEY = Symbol.for("vinext.cacheHandler");
 const globalHandlers = globalThis as unknown as Record<PropertyKey, CacheHandler>;
+const prospectiveCacheHandlerAls = getOrCreateAls<CacheHandler>(
+  "vinext.cacheHandler.prospective.als",
+);
+const prospectiveCacheFillsAls = getOrCreateAls<Set<Promise<unknown>>>(
+  "vinext.cacheHandler.prospective.fills.als",
+);
+const untrackedCacheHandlers = new WeakMap<CacheHandler, CacheHandler>();
+
+function suppressHandlerPlatformIoTracking(handler: CacheHandler): CacheHandler {
+  const existing = untrackedCacheHandlers.get(handler);
+  if (existing) return existing;
+
+  // Cache handlers are adapter-owned and may be frozen or update their methods
+  // after registration. Delegate on every call instead of mutating or binding
+  // the configured object.
+  const facade = Object.create(Object.getPrototypeOf(handler)) as CacheHandler;
+  Object.defineProperties(facade, {
+    get: {
+      configurable: true,
+      value: (key: string, ctx?: Record<string, unknown>) =>
+        runWithoutPlatformIoTracking(() => handler.get(key, ctx)),
+    },
+    set: {
+      configurable: true,
+      value: (key: string, data: IncrementalCacheValue | null, ctx?: Record<string, unknown>) =>
+        runWithoutPlatformIoTracking(() => handler.set(key, data, ctx)),
+    },
+    revalidateTag: {
+      configurable: true,
+      value: (tags: string | string[], durations?: { expire?: number }) =>
+        runWithoutPlatformIoTracking(() => handler.revalidateTag(tags, durations)),
+    },
+    ...(handler.resetRequestCache
+      ? {
+          resetRequestCache: {
+            configurable: true,
+            value: () => runWithoutPlatformIoTracking(() => handler.resetRequestCache?.()),
+          },
+        }
+      : {}),
+  });
+  // Preserve adapter identity/introspection (including MemoryCacheHandler's
+  // test/debug store) without copying or mutating adapter-owned state.
+  for (const key of Reflect.ownKeys(handler)) {
+    if (key === "get" || key === "set" || key === "revalidateTag" || key === "resetRequestCache") {
+      continue;
+    }
+    Object.defineProperty(facade, key, {
+      configurable: true,
+      get: () => Reflect.get(handler, key),
+      set: (value) => {
+        Reflect.set(handler, key, value);
+      },
+    });
+  }
+  untrackedCacheHandlers.set(handler, facade);
+  return facade;
+}
+
+export function trackProspectiveCacheFill<T>(promise: Promise<T>): void {
+  const fills = prospectiveCacheFillsAls.getStore();
+  if (!fills) return;
+  fills.add(promise);
+  void promise.finally(() => fills.delete(promise)).catch(() => {});
+}
+
+export async function waitForProspectiveCacheFills(): Promise<void> {
+  const fills = prospectiveCacheFillsAls.getStore();
+  if (!fills) return;
+  await Promise.resolve();
+  while (fills.size > 0) await Promise.allSettled(fills);
+}
 
 function getActiveHandler(): CacheHandler {
   return globalHandlers[HANDLER_KEY] ?? (globalHandlers[HANDLER_KEY] = new MemoryCacheHandler());
@@ -390,7 +468,85 @@ export function setDataCacheHandler(handler: CacheHandler): void {
 }
 
 export function getDataCacheHandler(): CacheHandler {
-  return getActiveHandler();
+  return prospectiveCacheHandlerAls.getStore() ?? getActiveHandler();
+}
+
+/** @internal Framework cache I/O must not count as user platform I/O. */
+export function getDataCacheHandlerUntracked(): CacheHandler {
+  return suppressHandlerPlatformIoTracking(getDataCacheHandler());
+}
+
+/**
+ * Share cache fills between a Cache Components Route Handler's prospective
+ * pass and its final pass without replacing the configured persistent cache.
+ *
+ * Next.js uses a prerender resume-data cache for this exact boundary. The
+ * overlay writes through to the configured handler (so staged probes exercise
+ * real bindings) and also exposes the just-written value synchronously to the
+ * second pass. This keeps remote KV latency from looking like uncached I/O.
+ */
+export function runWithProspectiveDataCache<T>(fn: () => T): T {
+  const base = suppressHandlerPlatformIoTracking(getActiveHandler());
+  const entries = new Map<string, CacheHandlerValue>();
+  const handler: CacheHandler = {
+    get(key, ctx) {
+      const operation = (async () => {
+        const requestEntry = entries.get(key);
+        if (requestEntry !== undefined) return requestEntry;
+
+        const persistentEntry = await base.get(key, ctx);
+        // A remote handler can already contain this value before the prospective
+        // pass starts. Keep that hit request-local so the bounded final pass does
+        // not mistake a second KV/network round trip for uncached I/O.
+        if (persistentEntry !== null) entries.set(key, persistentEntry);
+        return persistentEntry;
+      })();
+      trackProspectiveCacheFill(operation);
+      return operation;
+    },
+    set(key, data, ctx) {
+      const operation = (async () => {
+        let revalidate = readCacheControlRevalidateField(ctx);
+        if (data && "revalidate" in data) {
+          if (typeof data.revalidate === "number") revalidate = data.revalidate;
+          else if (data.revalidate === false) revalidate ??= false;
+        }
+        if (revalidate !== 0) {
+          const expire = readCacheControlNumberField(ctx, "expire");
+          const stale = readCacheControlNumberField(ctx, "stale");
+          entries.set(key, {
+            lastModified: frameworkNow(),
+            value: data,
+            ...(typeof revalidate === "number" || revalidate === false
+              ? {
+                  cacheControl: {
+                    revalidate,
+                    ...(expire === undefined ? {} : { expire }),
+                    ...(stale === undefined ? {} : { stale }),
+                  },
+                }
+              : {}),
+          });
+        }
+        await base.set(key, data, ctx);
+      })();
+      trackProspectiveCacheFill(operation);
+      return operation;
+    },
+    revalidateTag(tags, durations) {
+      const operation = (async () => {
+        entries.clear();
+        await base.revalidateTag(tags, durations);
+      })();
+      trackProspectiveCacheFill(operation);
+      return operation;
+    },
+    resetRequestCache() {
+      entries.clear();
+      base.resetRequestCache?.();
+    },
+  };
+  return prospectiveCacheFillsAls.run(new Set(), () => prospectiveCacheHandlerAls.run(handler, fn));
 }
 
 export function setCacheHandler(handler: CacheHandler): void {

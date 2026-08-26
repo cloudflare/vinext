@@ -5914,6 +5914,42 @@ describe("next/cache shim", () => {
     setCacheHandler(new MemoryCacheHandler());
   });
 
+  it("rejects zero revalidation for unstable_cache", async () => {
+    const { unstable_cache } = await import("../packages/vinext/src/shims/cache.js");
+
+    expect(() => unstable_cache(async () => "value", [], { revalidate: 0 })).toThrow(
+      /less than or equal to zero/,
+    );
+  });
+
+  it("accepts infinite revalidation for unstable_cache", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+    let calls = 0;
+    const cached = unstable_cache(async () => ++calls, ["infinite-revalidate"], {
+      revalidate: Infinity,
+    });
+
+    await expect(cached()).resolves.toBe(1);
+    await expect(cached()).resolves.toBe(1);
+  });
+
+  it("propagates unstable_cache revalidation to the enclosing route lifetime", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { _peekRequestScopedCacheLife } =
+      await import("../packages/vinext/src/shims/cache-request-state.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      await unstable_cache(async () => "value", ["route-life"], { revalidate: 1 })();
+      expect(_peekRequestScopedCacheLife()?.revalidate).toBe(1);
+    });
+  });
+
   it("unstable_cache caches undefined results", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -6691,7 +6727,7 @@ describe("next/cache shim", () => {
     }
   });
 
-  it("unstable_cache with no revalidate option caches indefinitely", async () => {
+  it("unstable_cache with no revalidate option uses Next's one-year default", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
 
@@ -6719,8 +6755,7 @@ describe("next/cache shim", () => {
     const handler = (await import("../packages/vinext/src/shims/cache.js")).getCacheHandler();
     const store = (handler as any).store as Map<string, any>;
     for (const [, entry] of store) {
-      // revalidateAt should be null (indefinite) not 0 or past timestamp
-      expect(entry.revalidateAt).toBeNull();
+      expect(entry.revalidateAt).toBeGreaterThan(Date.now() + 31_535_000_000);
     }
 
     setCacheHandler(new MemoryCacheHandler());
@@ -7281,6 +7316,87 @@ describe('"use cache" runtime', () => {
         process.env.VINEXT_PRERENDER = previousPrerender;
       }
     }
+  });
+
+  it("private variant marks ordinary on-demand route output dynamic", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      const cached = registerCachedFunction(
+        async () => "request-private",
+        "test:private-on-demand",
+        "private",
+      );
+      await cached();
+
+      expect(consumeDynamicUsage()).toBe(true);
+    });
+  });
+
+  it("does not attribute cache-handler infrastructure clocks to user output", async () => {
+    const { getDataCacheHandlerUntracked, MemoryCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { runWithCacheComponentsPlatformIoTracking } =
+      await import("../packages/vinext/src/server/cache-components-platform-io.js");
+    const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
+    const handler = {
+      async get() {
+        Date.now();
+        await Promise.resolve();
+        Date.now();
+        return null;
+      },
+      async set() {
+        Date.now();
+      },
+      async revalidateTag() {
+        Date.now();
+      },
+    };
+    consumeDynamicUsage();
+    setCacheHandler(handler);
+
+    try {
+      await runWithCacheComponentsPlatformIoTracking(async () => {
+        const active = getDataCacheHandlerUntracked();
+        await active.get("key");
+        await active.set("key", null);
+        await active.revalidateTag("tag");
+      });
+      expect(consumeDynamicUsage()).toBe(false);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("does not mutate frozen cache handlers and delegates later method updates", async () => {
+    const { getCacheHandler, MemoryCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const calls: string[] = [];
+    const mutable = {
+      async get() {
+        calls.push("first");
+        return null;
+      },
+      async set() {},
+      async revalidateTag() {},
+    };
+    setCacheHandler(Object.freeze({ ...mutable }));
+    await expect(getCacheHandler().get("frozen")).resolves.toBeNull();
+
+    setCacheHandler(mutable);
+    const facade = getCacheHandler();
+    mutable.get = async () => {
+      calls.push("second");
+      return null;
+    };
+    await facade.get("updated");
+    expect(calls).toEqual(["first", "second"]);
+    setCacheHandler(new MemoryCacheHandler());
   });
 
   it('rejects "use cache: private" nested inside public "use cache"', async () => {

@@ -1,5 +1,5 @@
 import { createContext, runInContext } from "node:vm";
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import { createElement, Suspense, use } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import {
@@ -96,16 +96,40 @@ function createByteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
 
 function createNoopRscEmbedTransform() {
   return {
+    cancel: async () => {},
     flush: () => "",
     finalize: async () => "",
+    async drainFinal(emit: (scripts: string) => void) {
+      const scripts = await this.finalize();
+      if (scripts) emit(scripts);
+    },
     getRawBuffer: async () => new ArrayBuffer(0),
   };
 }
 
 describe("createRscEmbedTransform raw buffer (#981)", () => {
+  it("cancels a backpressured Flight source when the HTML consumer disconnects", async () => {
+    let cancelled = false;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(64 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const transform = createRscEmbedTransform(source);
+
+    await vi.waitFor(() => expect(transform.flush()).not.toBe(""));
+    await transform.cancel("client disconnected");
+
+    expect(cancelled).toBe(true);
+    await expect(transform.getRawBuffer()).rejects.toThrow("raw RSC capture was not enabled");
+  });
+
   it("accumulates raw bytes while producing embed scripts", async () => {
     const sideStream = createTextStream(["chunk1", "chunk2"]);
-    const transform = createRscEmbedTransform(sideStream);
+    const transform = createRscEmbedTransform(sideStream, { rawBufferLimitBytes: 1024 });
 
     // Let the reader pump all chunks
     const rawBuffer = await transform.getRawBuffer();
@@ -118,6 +142,49 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     expect(finalScripts).toContain(".done=true");
     expect(finalScripts).toContain('.rsc.push("chunk1")');
     expect(finalScripts).toContain('.rsc.push("chunk2")');
+  });
+
+  it("uses the remaining request deadline when raw capture starts late", async () => {
+    vi.useFakeTimers();
+    try {
+      const deadlineAt = Date.now() + 20_000;
+      await vi.advanceTimersByTimeAsync(19_000);
+      const transform = createRscEmbedTransform(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("partial"));
+          },
+        }),
+        { rawBufferDeadlineAt: deadlineAt, rawBufferLimitBytes: 1024 },
+      );
+      const captured = transform.getRawBuffer();
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(
+        await Promise.race([
+          captured.then(
+            () => "settled",
+            () => "settled",
+          ),
+          Promise.resolve("pending"),
+        ]),
+      ).toBe("pending");
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(captured).rejects.toThrow("request classification deadline");
+      await transform.cancel();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails raw capture immediately when the request deadline already elapsed", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["already rendered"]), {
+      rawBufferDeadlineAt: Date.now() - 1,
+      rawBufferLimitBytes: 1024,
+    });
+
+    await expect(transform.getRawBuffer()).rejects.toThrow("request classification deadline");
+    await transform.cancel();
   });
 
   it("optionally mirrors text chunks into the Next.js inline Flight transport", async () => {
@@ -278,13 +345,13 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
         controller.error(new Error("stream broke"));
       },
     });
-    const transform = createRscEmbedTransform(errorStream);
+    const transform = createRscEmbedTransform(errorStream, { rawBufferLimitBytes: 1024 });
     await expect(transform.getRawBuffer()).rejects.toThrow("stream broke");
   });
 
   it("preserves Flight bytes in both embedded and captured RSC data", async () => {
     const sideStream = createTextStream([':HL["/a.css","stylesheet"]']);
-    const transform = createRscEmbedTransform(sideStream);
+    const transform = createRscEmbedTransform(sideStream, { rawBufferLimitBytes: 1024 });
 
     const rawBuffer = await transform.getRawBuffer();
     const rawText = new TextDecoder().decode(rawBuffer);
@@ -293,6 +360,56 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const finalScripts = await transform.finalize();
     expect(finalScripts).toContain("stylesheet");
     expect(finalScripts).toContain(".done=true");
+  });
+
+  it("bounds raw capture without interrupting HTML Flight embedding", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["123", "456"]), {
+      rawBufferLimitBytes: 5,
+    });
+
+    await expect(transform.getRawBuffer()).rejects.toThrow("RSC body exceeded 5 bytes");
+    const finalScripts = await transform.finalize();
+    expect(finalScripts).toContain('.rsc.push("123")');
+    expect(finalScripts).toContain('.rsc.push("456")');
+    expect(finalScripts).toContain(".done=true");
+  });
+
+  it("times out stalled raw capture without leaving an unhandled rejection", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const transform = createRscEmbedTransform(
+      new ReadableStream({
+        start(value) {
+          controller = value;
+          controller.enqueue(new TextEncoder().encode("partial"));
+        },
+      }),
+      { rawBufferLimitBytes: 1024, rawBufferTimeoutMs: 5 },
+    );
+
+    await expect(transform.getRawBuffer()).rejects.toThrow("RSC body did not complete within 5ms");
+    controller.close();
+    await expect(transform.finalize()).resolves.toContain(".done=true");
+  });
+
+  it("backpressures pending embed chunks until the HTML consumer drains them", async () => {
+    let pulls = 0;
+    const totalChunks = 24;
+    const chunk = new Uint8Array(32 * 1024);
+    const transform = createRscEmbedTransform(
+      new ReadableStream({
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(chunk);
+          if (pulls === totalChunks) controller.close();
+        },
+      }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pulls).toBeLessThan(totalChunks);
+    const scripts = await transform.finalize();
+    expect(pulls).toBe(totalChunks);
+    expect(scripts).toContain(".done=true");
   });
 
   it("preserves a UTF-8 BOM at an embedded Flight chunk boundary", async () => {
@@ -566,8 +683,12 @@ describe("createTickBufferedTransform pre-head splice", () => {
       // Simulate React Fizz emitting the closing tags BEFORE flush appends
       // trailing flight chunks / preinit scripts.
       const rsc = {
+        cancel: async () => {},
         flush: () => "",
         finalize: async () => '<script id="trailing-rsc">rsc()</script>',
+        async drainFinal(emit: (scripts: string) => void) {
+          emit(await this.finalize());
+        },
         getRawBuffer: async () => new ArrayBuffer(0),
       };
       const transform = createTickBufferedTransform(rsc, "", "");
@@ -588,8 +709,10 @@ describe("createTickBufferedTransform pre-head splice", () => {
       // When `<head>` never appears, injectHTML falls back to end-of-stream
       // emission. The closing tags must still come last.
       const rsc = {
+        cancel: async () => {},
         flush: () => "",
         finalize: async () => "",
+        async drainFinal() {},
         getRawBuffer: async () => new ArrayBuffer(0),
       };
       const transform = createTickBufferedTransform(rsc, "<meta data-injected='1'/>", "");
@@ -606,8 +729,10 @@ describe("createTickBufferedTransform pre-head splice", () => {
       // Defense-in-depth: if React Fizz somehow ends without `</body></html>`,
       // we still emit a well-formed document close.
       const rsc = {
+        cancel: async () => {},
         flush: () => "",
         finalize: async () => "",
+        async drainFinal() {},
         getRawBuffer: async () => new ArrayBuffer(0),
       };
       const transform = createTickBufferedTransform(rsc, "", "");

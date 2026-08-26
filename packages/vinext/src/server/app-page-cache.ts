@@ -24,6 +24,7 @@ import { hasCompleteNegativeRequestApiProof, type RenderObservation } from "./ca
 import { isAppPprDynamicFallbackShellHtml } from "./app-ppr-fallback-shell.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
+import { markRouteCacheabilityPolicyProvisional } from "./cacheability-request.js";
 export {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -242,9 +243,19 @@ export function buildAppPageCachedResponse(
   cachedValue: CachedAppPageValue,
   options: BuildAppPageCachedResponseOptions,
 ): Response | null {
+  const middlewareHasCachePolicy = [
+    "Cache-Control",
+    "CDN-Cache-Control",
+    "Cloudflare-CDN-Cache-Control",
+  ].some((name) => options.middlewareHeaders?.has(name));
   // Preserve the legacy fallback semantics from the generated entry: invalid
   // falsy statuses still fall back to 200 rather than being forwarded through.
-  const status = options.middlewareStatus ?? (cachedValue.status || 200);
+  const isStoredTerminalResponse =
+    typeof cachedValue.status === "number" &&
+    ((cachedValue.status >= 300 && cachedValue.status < 400) || cachedValue.status === 404);
+  const status = isStoredTerminalResponse
+    ? cachedValue.status!
+    : (options.middlewareStatus ?? (cachedValue.status || 200));
   const { cacheControl } = decideIsr({
     cacheState: options.cacheState,
     kind: "app-page",
@@ -273,13 +284,18 @@ export function buildAppPageCachedResponse(
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
 
-    return new Response(cachedValue.rscData, {
+    const response = new Response(cachedValue.rscData, {
       status,
       headers: rscHeaders,
     });
+    if (!middlewareHasCachePolicy) markRouteCacheabilityPolicyProvisional(response.headers);
+    return response;
   }
 
-  if (typeof cachedValue.html !== "string" || cachedValue.html.length === 0) {
+  if (
+    typeof cachedValue.html !== "string" ||
+    (cachedValue.html.length === 0 && !isStoredTerminalResponse)
+  ) {
     return null;
   }
 
@@ -292,11 +308,18 @@ export function buildAppPageCachedResponse(
     middlewareHeaders: options.middlewareHeaders,
     staleTimeSeconds,
   });
+  const storedLocation = cachedValue.headers?.location;
+  if (typeof storedLocation === "string" && !options.middlewareHeaders?.has("location")) {
+    htmlHeaders.set("Location", storedLocation);
+  } else if (storedLocation?.[0] && !options.middlewareHeaders?.has("location")) {
+    htmlHeaders.set("Location", storedLocation[0]);
+  }
 
   const response = new Response(cachedValue.html, {
     status,
     headers: htmlHeaders,
   });
+  if (!middlewareHasCachePolicy) markRouteCacheabilityPolicyProvisional(response.headers);
   markFrameworkLinkHeaders(response.headers, cachedValue.headers?.link);
   return response;
 }

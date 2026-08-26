@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { dispatchAppRouteHandler } from "../packages/vinext/src/server/app-route-handler-dispatch.js";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import { revalidateTag } from "../packages/vinext/src/shims/cache.js";
@@ -9,6 +9,27 @@ import {
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import { draftMode, setHeadersContext } from "../packages/vinext/src/shims/headers.js";
 import { after } from "../packages/vinext/src/shims/server.js";
+import {
+  createWorkerCacheabilityContext,
+  finalizeWorkerCacheabilityResponse,
+  markRequestCacheabilityUnsafe,
+} from "../packages/vinext/src/server/cacheability-request.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import { resetEmbeddedCacheabilityManifestForTests } from "../packages/vinext/src/server/cacheability-manifest.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import { isKnownDynamicAppRoute } from "../packages/vinext/src/server/app-route-handler-runtime.js";
+
+const manifestGlobal = "__VINEXT_CACHEABILITY_MANIFEST__";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  resetEmbeddedCacheabilityManifestForTests();
+  setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+});
 
 function buildCachedRouteValue(body: string): CachedRouteValue {
   return {
@@ -32,6 +53,355 @@ function buildISRCacheEntry(value: CachedRouteValue, isStale = false): ISRCacheE
 }
 
 describe("app route handler dispatch", () => {
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+  it("returns 404 for Route Handler params excluded by dynamicParams=false", async () => {
+    const get = vi.fn(() => new Response("handler ran"));
+    const dispatch = (slug: string) =>
+      dispatchAppRouteHandler({
+        cacheComponents: true,
+        cleanPathname: `/api/products/${slug}`,
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        dynamicParamsConfig: false,
+        generateStaticParams: async () => [{ slug: "known" }],
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return null;
+        },
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: { slug },
+        request: new Request(`https://example.com/api/products/${slug}`),
+        route: {
+          isDynamic: true,
+          pattern: "/api/products/:slug",
+          routeHandler: { GET: get },
+          routeSegments: ["api", "products", "[slug]"],
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+
+    const unknown = await dispatch("unknown");
+    expect(unknown.status).toBe(404);
+    expect(get).not.toHaveBeenCalled();
+
+    const known = await dispatch("known");
+    expect(known.status).toBe(200);
+    await expect(known.text()).resolves.toBe("handler ran");
+    // Cache Components invokes the known handler once prospectively and once
+    // for the final task-bounded representation.
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("classifies force-dynamic GET handlers as dynamic despite public response headers", async () => {
+    const request = new Request("https://example.com/api/dynamic", {
+      headers: {
+        "X-Vinext-Cacheability-Probe": "1",
+        "X-Vinext-Prerender-Secret": "secret-a",
+      },
+    });
+    const ctx = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", waitUntil() {} },
+      request,
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      const routeResponse = await dispatchAppRouteHandler({
+        cleanPathname: "/api/dynamic",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return null;
+        },
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: null,
+        request,
+        route: {
+          pattern: "/api/dynamic",
+          routeHandler: {
+            dynamic: "force-dynamic",
+            GET() {
+              return new Response("dynamic", {
+                headers: {
+                  "CDN-Cache-Control": "public, max-age=60",
+                  Vary: "Accept",
+                },
+              });
+            },
+          },
+          routeSegments: ["api", "dynamic"],
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+      return finalizeWorkerCacheabilityResponse(routeResponse, ctx);
+    });
+
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "app-route",
+      pattern: "/api/dynamic",
+      state: "dynamic",
+    });
+  });
+
+  it("executes Cache Components POST streams once without poisoning sibling GET caching", async () => {
+    const pattern = "/api/cache-components-post-regression";
+    let pulls = 0;
+    const post = vi.fn((request: Request) => {
+      request.headers.get("authorization");
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            pulls += 1;
+            controller.enqueue(new TextEncoder().encode("posted"));
+            controller.close();
+          },
+        }),
+      );
+    });
+
+    const response = await dispatchAppRouteHandler({
+      cacheComponents: true,
+      cleanPathname: pattern,
+      clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
+      i18n: null,
+      isDevelopment: false,
+      isProduction: true,
+      async isrGet() {
+        return null;
+      },
+      isrRouteKey: (pathname) => `route:${pathname}`,
+      async isrSet() {},
+      middlewareContext: { headers: null, status: null },
+      middlewareRequestHeaders: null,
+      params: null,
+      request: new Request(`https://example.com${pattern}`, { method: "POST" }),
+      route: {
+        pattern,
+        routeHandler: { GET: () => new Response("get"), POST: post },
+        routeSegments: ["api", "cache-components-post-regression"],
+      },
+      scheduleBackgroundRegeneration() {},
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(post).toHaveBeenCalledOnce();
+    expect(response.body?.locked).toBe(false);
+    await expect(response.text()).resolves.toBe("posted");
+    expect(pulls).toBe(1);
+    expect(isKnownDynamicAppRoute(pattern)).toBe(false);
+  });
+
+  it("classifies Cache Components GET routes with non-static sibling methods as dynamic", async () => {
+    const request = new Request("https://example.com/api/mixed-methods", {
+      headers: {
+        "X-Vinext-Cacheability-Probe": "1",
+        "X-Vinext-Prerender-Secret": "secret-a",
+      },
+    });
+    const ctx = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", waitUntil() {} },
+      request,
+      "secret-a",
+    );
+    const get = vi.fn(() => new Response("get"));
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      const routeResponse = await dispatchAppRouteHandler({
+        cacheComponents: true,
+        cleanPathname: "/api/mixed-methods",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return null;
+        },
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: null,
+        request,
+        route: {
+          pattern: "/api/mixed-methods",
+          routeHandler: { GET: get, POST: () => new Response("post") },
+          routeSegments: ["api", "mixed-methods"],
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+      return finalizeWorkerCacheabilityResponse(routeResponse, ctx);
+    });
+
+    expect(get).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "app-route",
+      pattern: "/api/mixed-methods",
+      state: "dynamic",
+    });
+  });
+
+  it("streams manifest-proven dynamic Cache Components handlers without a prospective pass", async () => {
+    vi.stubGlobal(
+      manifestGlobal,
+      JSON.stringify({
+        routes: {
+          "app-route:/api/stream": {
+            kind: "app-route",
+            pattern: "/api/stream",
+            state: "dynamic",
+          },
+        },
+        version: 1,
+      }),
+    );
+    resetEmbeddedCacheabilityManifestForTests();
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/api/stream");
+    const context = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      request,
+      "secret-a",
+    );
+    let pulls = 0;
+    let cancellations = 0;
+    let releasePull!: () => void;
+    const pullGate = new Promise<void>((resolve) => {
+      releasePull = resolve;
+    });
+    const get = vi.fn(
+      () =>
+        new Response(
+          new ReadableStream(
+            {
+              cancel() {
+                cancellations += 1;
+              },
+              async pull(controller) {
+                pulls += 1;
+                await pullGate;
+                controller.enqueue(new TextEncoder().encode("streamed"));
+                controller.close();
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+        ),
+    );
+
+    const response = await runWithExecutionContext(context, () =>
+      dispatchAppRouteHandler({
+        cacheComponents: true,
+        cleanPathname: "/api/stream",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return null;
+        },
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: null,
+        request,
+        route: {
+          isDynamic: false,
+          pattern: "/api/stream",
+          routeHandler: { GET: get },
+          routeSegments: ["api", "stream"],
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      }),
+    );
+
+    expect(get).toHaveBeenCalledOnce();
+    expect(pulls).toBeLessThanOrEqual(1);
+    expect(cancellations).toBe(0);
+    releasePull();
+    await expect(response.text()).resolves.toBe("streamed");
+    expect(pulls).toBe(1);
+    expect(cancellations).toBe(0);
+  });
+
+  it("streams pre-route unsafe Cache Components GET handlers without observation", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/api/unsafe-stream");
+    const context = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      request,
+      "secret-a",
+    );
+    let pulls = 0;
+    const get = vi.fn(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              pulls += 1;
+              controller.enqueue(new TextEncoder().encode("unsafe"));
+              controller.close();
+            },
+          }),
+        ),
+    );
+
+    const response = await runWithExecutionContext(context, async () => {
+      markRequestCacheabilityUnsafe("request-conditional config can vary this pathname");
+      const routeResponse = await dispatchAppRouteHandler({
+        cacheComponents: true,
+        cleanPathname: "/api/unsafe-stream",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return null;
+        },
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: null,
+        request,
+        route: {
+          pattern: "/api/unsafe-stream",
+          routeHandler: { GET: get },
+          routeSegments: ["api", "unsafe-stream"],
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+      return finalizeWorkerCacheabilityResponse(routeResponse, context);
+    });
+
+    expect(get).toHaveBeenCalledOnce();
+    expect(response.body?.locked).toBe(false);
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("unsafe");
+    expect(pulls).toBe(1);
+  });
+
   it.each([
     {
       enabled: true,
@@ -654,10 +1024,51 @@ describe("app route handler dispatch", () => {
       expect(routeCacheWritten).toBe(false);
       releaseInvalidation();
       await regenerationPromise;
-      expect(routeCacheWritten).toBe(true);
+      expect(routeCacheWritten).toBe(false);
     } finally {
       releaseInvalidation();
       setDataCacheHandler(previousHandler);
     }
+  });
+
+  it("does not replace a stale Route Handler entry with a regenerated 500", async () => {
+    let scheduledRender: (() => Promise<void>) | undefined;
+    const isrSet = vi.fn(async () => {});
+    const response = await dispatchAppRouteHandler({
+      cleanPathname: "/api/stale-error",
+      clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
+      i18n: null,
+      isDevelopment: false,
+      isProduction: true,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
+      },
+      isrRouteKey: (pathname) => `route:${pathname}`,
+      isrSet,
+      middlewareContext: { headers: null, status: null },
+      middlewareRequestHeaders: null,
+      params: null,
+      request: new Request("https://example.com/api/stale-error"),
+      route: {
+        pattern: "/api/stale-error",
+        routeHandler: {
+          revalidate: 60,
+          GET() {
+            return new Response("failed", { status: 500 });
+          },
+        },
+        routeSegments: ["api", "stale-error"],
+      },
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(scheduledRender).toBeTypeOf("function");
+    await scheduledRender!();
+    expect(isrSet).not.toHaveBeenCalled();
   });
 });

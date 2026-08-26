@@ -9,7 +9,9 @@ export { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 
 export type AppRouteHandlerModule = {
   dynamic?: string;
+  dynamicParams?: unknown;
   fetchCache?: unknown;
+  generateStaticParams?: unknown;
   revalidate?: unknown;
   runtime?: string;
 } & RouteHandlerModule;
@@ -44,6 +46,7 @@ type AppRouteHandlerResponseCacheOptions = {
   isProduction: boolean;
   method: string;
   revalidateSeconds: number | null;
+  responseStatus: number;
 };
 
 type AppRouteHandlerSpecialError =
@@ -62,22 +65,59 @@ type AppRouteHandlerSpecialErrorOptions = {
 };
 
 export function getAppRouteHandlerRevalidateSeconds(
-  handler: Pick<AppRouteHandlerModule, "revalidate">,
+  handler: Pick<AppRouteHandlerModule, "dynamic" | "generateStaticParams" | "revalidate">,
+  cacheComponents = false,
 ): number | null {
+  if (cacheComponents) return Infinity;
   // 0 is a meaningful value ("never cache") and must be preserved so the
   // header path can emit a no-store Cache-Control.
   // revalidate = false means "cache indefinitely" (Next.js segment config
   // parity) — return Infinity to signal the cache-later path.
   const { revalidate } = handler;
   if (revalidate === false) return Infinity;
-  if (typeof revalidate !== "number" || !Number.isFinite(revalidate) || revalidate < 0) {
+  if (typeof revalidate === "number" && Number.isFinite(revalidate) && revalidate >= 0) {
+    return revalidate;
+  }
+  if (revalidate !== undefined) {
     return null;
   }
-  return revalidate;
+
+  // Next.js statically optimizes App Route handlers only after one of these
+  // explicit opt-ins. With no numeric revalidation window, their completed
+  // representation is immutable until invalidated or replaced by a deploy.
+  // Ported from Next.js:
+  // packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts
+  if (
+    handler.dynamic === "force-static" ||
+    handler.dynamic === "error" ||
+    typeof handler.generateStaticParams === "function"
+  ) {
+    return Infinity;
+  }
+
+  return null;
+}
+
+export function assertAppRouteCacheComponentsConfig(
+  handler: Pick<AppRouteHandlerModule, "dynamic" | "fetchCache" | "revalidate">,
+): void {
+  for (const name of ["dynamic", "revalidate", "fetchCache"] as const) {
+    if (handler[name] !== undefined) {
+      throw new Error(
+        `Route segment config "${name}" is not compatible with \`nextConfig.cacheComponents\`. Please remove it.`,
+      );
+    }
+  }
 }
 
 export function hasAppRouteHandlerDefaultExport(handler: RouteHandlerModule): boolean {
   return typeof handler.default === "function";
+}
+
+// Ported from Next.js:
+// packages/next/src/server/route-modules/app-route/module.ts#hasNonStaticMethods
+export function hasNonStaticAppRouteHandlerMethods(handler: RouteHandlerModule): boolean {
+  return Boolean(handler.POST || handler.PUT || handler.DELETE || handler.PATCH || handler.OPTIONS);
 }
 
 export function resolveAppRouteHandlerMethod(
@@ -120,7 +160,6 @@ export function shouldReadAppRouteHandlerCache(options: AppRouteHandlerCacheRead
     options.isProduction &&
     options.revalidateSeconds !== null &&
     options.revalidateSeconds > 0 &&
-    options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
     !options.isDraftMode &&
     !options.isKnownDynamic &&
@@ -136,6 +175,7 @@ export function shouldApplyAppRouteHandlerRevalidateHeader(
   // Cache-Control, which is exactly the header a never-cache handler
   // needs to suppress heuristic caching.
   return (
+    (options.responseStatus < 400 || options.responseStatus === 404) &&
     options.revalidateSeconds !== null &&
     !options.isDraftMode &&
     !options.dynamicUsedInHandler &&
@@ -153,10 +193,11 @@ export function shouldWriteAppRouteHandlerCache(
     options.isProduction &&
     options.revalidateSeconds !== null &&
     options.revalidateSeconds > 0 &&
-    options.revalidateSeconds !== Infinity &&
     options.dynamicConfig !== "force-dynamic" &&
     !options.isDraftMode &&
-    shouldApplyAppRouteHandlerRevalidateHeader(options)
+    !options.dynamicUsedInHandler &&
+    (options.method === "GET" || options.isAutoHead) &&
+    (options.responseStatus < 400 || options.responseStatus === 404)
   );
 }
 

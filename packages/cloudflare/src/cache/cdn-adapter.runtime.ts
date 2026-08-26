@@ -46,7 +46,6 @@ import { VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../version-headers.js";
 
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
-const WORKER_VERSION_OVERRIDE_HEADER = "Cloudflare-Workers-Version-Overrides";
 
 type WorkerVersionMetadata = {
   id: string;
@@ -189,12 +188,6 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     const expectedVersionId = request.headers.get(VINEXT_EXPECTED_WORKER_VERSION_HEADER);
     if (expectedVersionId === null) return null;
 
-    if (!request.headers.has(WORKER_VERSION_OVERRIDE_HEADER)) {
-      return versionValidationFailure(
-        `received ${VINEXT_EXPECTED_WORKER_VERSION_HEADER} without ${WORKER_VERSION_OVERRIDE_HEADER}.`,
-      );
-    }
-
     if (!this.versionMetadata) {
       return versionValidationFailure(
         `Cloudflare CDN prewarming requires the \`${this.versionMetadataBinding}\` version metadata binding. ` +
@@ -237,6 +230,16 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   }
 
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
+    // A streamed App Router MISS can discover dynamic APIs only after headers
+    // would normally have reached the edge. The two-stage cacheability manifest
+    // authorizes vinext's Worker boundary to buffer and re-apply this policy
+    // after the actual render completes; every other pending response stays
+    // uncacheable. This is fail-closed even when a manifest probe was incomplete
+    // or a route changes behavior based on params/request data.
+    if (input.pendingDynamicCheck) {
+      return clearCloudflareCdnResponseHeaders(NO_STORE);
+    }
+
     // No cacheable policy → nobody stores it.
     if (!input.cacheControl) {
       return clearCloudflareCdnResponseHeaders(NO_STORE);

@@ -29,7 +29,8 @@
  */
 
 import {
-  getDataCacheHandler,
+  getDataCacheHandlerUntracked,
+  trackProspectiveCacheFill,
   type CachedFetchValue,
   type CacheControlMetadata,
   type CacheHandlerValue,
@@ -592,8 +593,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   // it's scoped to a single request and doesn't persist across HMR.
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
 
-  const cachedFn = (...args: TArgs): Promise<TResult> =>
-    trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
+  const cachedFn = (...args: TArgs): Promise<TResult> => {
+    const operation = trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
       const rsc = await getRscModule();
       const keySeed = getUseCacheKeySeed();
       const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
@@ -608,6 +609,13 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         ? [captures, ...admittedArgs.slice(1)]
         : admittedArgs;
       const callArgs = executionArgs as TArgs;
+
+      if (cacheVariant === "private") {
+        // Do this before key construction: even a non-serializable argument
+        // that makes private caching fall back to direct execution still makes
+        // the enclosing route request-specific.
+        markDynamicUsage();
+      }
 
       // Build the cache key. Use encodeReply (RSC protocol) when available —
       // it correctly handles React elements as temporary references (excluded
@@ -650,13 +658,6 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           throwPrivateUseCacheInsidePublicUseCacheError();
         }
 
-        if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") {
-          // Next.js treats "use cache: private" as dynamic during prerendering:
-          // it is excluded from the static artifact and resolved per request.
-          // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
-          markDynamicUsage();
-        }
-
         const privateCache = _getPrivateState()._privateCache!;
         const privateHit = privateCache.get(cacheKey);
         if (privateHit !== undefined) {
@@ -679,7 +680,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       }
 
       // Shared cache ("use cache" / "use cache: remote")
-      const handler = getDataCacheHandler();
+      const handler = getDataCacheHandlerUntracked();
       const rootParams = getCurrentRootParams();
       const knownRootParamNames = knownRootParamsByFunctionId.get(id);
       const coarseCacheKey = cacheKey;
@@ -842,6 +843,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
       return collectedResult ? collectedResult.result : result;
     }, cacheVariant);
+    trackProspectiveCacheFill(operation);
+    return operation;
+  };
 
   // Preserve the original function's arity on the wrapper. The wrapper is
   // declared as `(...args)` (arity 0), which hides the original signature.

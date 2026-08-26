@@ -43,6 +43,11 @@ import {
   methodNotAllowedResponse,
   sanitizeMethodNotAllowedHeaders,
 } from "./http-error-responses.js";
+import { configRoutesCanVaryResponse } from "./config-cache-safety.js";
+import {
+  applyExplicitRouteCacheabilityPolicy,
+  markRequestCacheabilityUnsafe,
+} from "./cacheability-request.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -336,6 +341,18 @@ export async function runPagesRequest(
         hostname: requestHostname,
       })
     : requestConfigPathname;
+
+  if (
+    configRoutesCanVaryResponse({
+      basePathState,
+      headers: configHeaders,
+      pathname: requestConfigMatchPathname,
+      redirects: configRedirects,
+      rewrites: configRewrites,
+    })
+  ) {
+    markRequestCacheabilityUnsafe("request-conditional config can vary this pathname");
+  }
 
   // Step 4: Config redirects (before middleware)
   if (configRedirects.length) {
@@ -858,6 +875,17 @@ export async function runPagesRequest(
       matchedPathHeaders["x-nextjs-matched-path"] = matchedPathnameForRoute(
         renderPageMatch?.route.pattern,
       );
+    }
+    // Explicit next.config and middleware policies are staged before rendering.
+    // Replace only a renderer-generated cache default so it cannot suppress
+    // either earlier policy; leave the framework policy intact when no staged
+    // cache policy matched this request.
+    if (
+      ["cache-control", "cdn-cache-control", "cloudflare-cdn-cache-control"].some(
+        (name) => matchedPathHeaders[name] !== undefined,
+      )
+    ) {
+      applyExplicitRouteCacheabilityPolicy(response.headers);
     }
     const merged = mergeHeaders(response, matchedPathHeaders, middlewareStatus);
     // Preserve the streaming marker so the adapter can decide stream-vs-buffer.

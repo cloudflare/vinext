@@ -28,6 +28,9 @@ import {
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { withEnvVar } from "./env-test-helpers.js";
+import { applyConfigHeadersToResponse } from "../packages/vinext/src/server/config-headers.js";
+import { createWorkerCacheabilityContext } from "../packages/vinext/src/server/cacheability-request.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 function createHeaderClearingCdnAdapter(): CdnCacheAdapter {
   return {
@@ -51,6 +54,10 @@ function createHeaderClearingCdnAdapter(): CdnCacheAdapter {
 }
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
+
+function capturedRscData(body: ArrayBuffer) {
+  return { body, release() {} };
+}
 
 function buildISRCacheEntry(
   value: CachedAppPageValue,
@@ -153,6 +160,40 @@ describe("app page cache helpers", () => {
     expect(rscResponse?.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER)).toBe("compat-a");
     expect(rscResponse?.headers.get("x-nextjs-cache")).toBe("STALE");
     expect(await rscResponse?.arrayBuffer()).toEqual(rscData);
+  });
+
+  it("replays empty terminal redirects with framework Location and current middleware", async () => {
+    const cachedValue = buildCachedAppPageValue("", undefined, 307);
+    cachedValue.headers = { location: "/login" };
+    const middlewareHeaders = new Headers({ Link: "</current.css>; rel=preload; as=style" });
+
+    const response = buildAppPageCachedResponse(cachedValue, {
+      cacheState: "HIT",
+      isRscRequest: false,
+      middlewareHeaders,
+      revalidateSeconds: 60,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).toBe("/login");
+    expect(response?.headers.get("link")).toBe("</current.css>; rel=preload; as=style");
+    await expect(response?.text()).resolves.toBe("");
+  });
+
+  it("lets current middleware override a stored terminal Location without changing its status", () => {
+    const cachedValue = buildCachedAppPageValue("", undefined, 307);
+    cachedValue.headers = { location: "/route-login" };
+
+    const response = buildAppPageCachedResponse(cachedValue, {
+      cacheState: "HIT",
+      isRscRequest: false,
+      middlewareHeaders: new Headers({ Location: "/request-login" }),
+      middlewareStatus: 202,
+      revalidateSeconds: 60,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).toBe("/request-login");
   });
 
   it("replays the entry's client stale time on cache hits", async () => {
@@ -309,6 +350,192 @@ describe("app page cache helpers", () => {
     });
 
     expect(response?.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate=240");
+  });
+
+  it("lets next.config replace a cached App page framework policy without CDN admission state", () => {
+    const response = buildAppPageCachedResponse(buildCachedAppPageValue("<h1>cached</h1>"), {
+      cacheState: "HIT",
+      isRscRequest: false,
+      revalidateSeconds: 60,
+    });
+
+    applyConfigHeadersToResponse(response!.headers, {
+      configHeaders: [
+        { source: "/cached", headers: [{ key: "Cache-Control", value: "s-maxage=300" }] },
+      ],
+      pathname: "/cached",
+      requestContext: {
+        cookies: {},
+        headers: new Headers(),
+        host: "example.com",
+        query: new URLSearchParams(),
+      },
+    });
+
+    expect(response?.headers.get("cache-control")).toBe("s-maxage=300");
+  });
+
+  it.each([
+    ["HTML", false],
+    ["RSC", true],
+  ])(
+    "lets next.config replace an App %s MISS framework policy after default-KV rendering",
+    async (_label, isRscRequest) => {
+      const pendingCacheWrites: Promise<void>[] = [];
+      const context = createWorkerCacheabilityContext(
+        { hostRuntime: "worker", waitUntil() {} },
+        new Request("https://example.com/fresh"),
+        null,
+      );
+      const response = await runWithExecutionContext(context, async () => {
+        const options = {
+          capturedRscDataPromise: Promise.resolve(
+            capturedRscData(new TextEncoder().encode("flight").buffer),
+          ),
+          cleanPathname: "/fresh",
+          consumeDynamicUsage() {
+            return false;
+          },
+          dynamicUsedDuringBuild: false,
+          getPageTags() {
+            return ["/fresh"];
+          },
+          isrHtmlKey(pathname: string) {
+            return "html:" + pathname;
+          },
+          isrRscKey(pathname: string) {
+            return "rsc:" + pathname;
+          },
+          isrSet: vi.fn(async () => {}),
+          linkHeader: null,
+          revalidateSeconds: 60,
+          waitUntil(promise: Promise<void>) {
+            pendingCacheWrites.push(promise);
+          },
+        };
+        const source = new Response(isRscRequest ? "flight" : "<h1>fresh</h1>", {
+          headers: {
+            "Cache-Control": "s-maxage=60, stale-while-revalidate",
+            "Content-Type": isRscRequest ? "text/x-component" : "text/html; charset=utf-8",
+          },
+        });
+        return isRscRequest
+          ? finalizeAppPageRscCacheResponse(source, options)
+          : finalizeAppPageHtmlCacheResponse(source, options);
+      });
+
+      // Config headers are applied by the outer request pipeline after the
+      // response builder returns, so provenance must live on this Response's
+      // cloned Headers rather than only in request-local admission state.
+      applyConfigHeadersToResponse(response.headers, {
+        configHeaders: [
+          { source: "/fresh", headers: [{ key: "Cache-Control", value: "s-maxage=300" }] },
+        ],
+        pathname: "/fresh",
+        requestContext: {
+          cookies: {},
+          headers: new Headers(),
+          host: "example.com",
+          query: new URLSearchParams(),
+        },
+      });
+
+      expect(response.headers.get("cache-control")).toBe("s-maxage=300");
+      await response.body?.cancel();
+      await Promise.all(pendingCacheWrites);
+    },
+  );
+
+  // Ported from Next.js middleware Cache-Control precedence coverage:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-duplicate-headers-middleware/no-duplicate-headers-middleware.test.ts
+  it.each([
+    ["HTML", false],
+    ["RSC", true],
+  ])(
+    "keeps cacheable App %s middleware policy ahead of matching next.config",
+    async (_label, isRscRequest) => {
+      const pendingCacheWrites: Promise<void>[] = [];
+      const middlewareHeaders = new Headers({ "Cache-Control": "public, s-maxage=120" });
+      const options = {
+        capturedRscDataPromise: Promise.resolve(
+          capturedRscData(new TextEncoder().encode("flight").buffer),
+        ),
+        cleanPathname: "/fresh-middleware",
+        consumeDynamicUsage() {
+          return false;
+        },
+        dynamicUsedDuringBuild: false,
+        getPageTags() {
+          return ["/fresh-middleware"];
+        },
+        isrHtmlKey(pathname: string) {
+          return "html:" + pathname;
+        },
+        isrRscKey(pathname: string) {
+          return "rsc:" + pathname;
+        },
+        isrSet: vi.fn(async () => {}),
+        linkHeader: null,
+        middlewareHeaders,
+        revalidateSeconds: 60,
+        waitUntil(promise: Promise<void>) {
+          pendingCacheWrites.push(promise);
+        },
+      };
+      const source = new Response(isRscRequest ? "flight" : "<h1>fresh</h1>", {
+        headers: middlewareHeaders,
+      });
+      const response = isRscRequest
+        ? finalizeAppPageRscCacheResponse(source, options)
+        : finalizeAppPageHtmlCacheResponse(source, options);
+
+      applyConfigHeadersToResponse(response.headers, {
+        configHeaders: [
+          {
+            source: "/fresh-middleware",
+            headers: [{ key: "Cache-Control", value: "s-maxage=300" }],
+          },
+        ],
+        middlewareHeaders,
+        pathname: "/fresh-middleware",
+        requestContext: {
+          cookies: {},
+          headers: new Headers(),
+          host: "example.com",
+          query: new URLSearchParams(),
+        },
+      });
+
+      expect(response.headers.get("cache-control")).toBe("public, s-maxage=120");
+      await response.body?.cancel();
+      await Promise.all(pendingCacheWrites);
+    },
+  );
+
+  it("keeps middleware cache policy over next.config on a cached App page", () => {
+    const middlewareHeaders = new Headers({ "Cache-Control": "private, no-store" });
+    const response = buildAppPageCachedResponse(buildCachedAppPageValue("<h1>cached</h1>"), {
+      cacheState: "HIT",
+      isRscRequest: false,
+      middlewareHeaders,
+      revalidateSeconds: 60,
+    });
+
+    applyConfigHeadersToResponse(response!.headers, {
+      configHeaders: [
+        { source: "/cached", headers: [{ key: "Cache-Control", value: "s-maxage=300" }] },
+      ],
+      middlewareHeaders,
+      pathname: "/cached",
+      requestContext: {
+        cookies: {},
+        headers: new Headers(),
+        host: "example.com",
+        query: new URLSearchParams(),
+      },
+    });
+
+    expect(response?.headers.get("cache-control")).toBe("private, no-store");
   });
 
   it("emits static cache-control for cached indefinite app pages", async () => {
@@ -1143,7 +1370,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
-        capturedRscDataPromise: Promise.resolve(rscData),
+        capturedRscDataPromise: Promise.resolve(capturedRscData(rscData)),
         cleanPathname: "/fresh",
         consumeDynamicUsage() {
           return false;
@@ -1211,13 +1438,49 @@ describe("app page cache helpers", () => {
     expect(debugCalls).toEqual([["HTML cache written", "html:/fresh"]]);
   });
 
+  it("keeps origin-managed ISR writes eligible when only probe observations see a request API", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrSet = vi.fn(async () => {});
+
+    const response = finalizeAppPageHtmlCacheResponse(new Response("<h1>queryless</h1>"), {
+      capturedRscDataPromise: null,
+      cleanPathname: "/queryless-client-page",
+      consumeDynamicUsage: () => false,
+      consumeRenderObservationState: () => ({
+        dynamicFetches: [],
+        requestApis: ["searchParams"],
+      }),
+      getPageTags: () => ["/queryless-client-page"],
+      isrHtmlKey: (pathname) => `html:${pathname}`,
+      isrRscKey: (pathname) => `rsc:${pathname}`,
+      isrSet,
+      linkHeader: null,
+      revalidateSeconds: 60,
+      waitUntil(promise) {
+        pendingCacheWrites.push(promise);
+      },
+    });
+
+    await response.text();
+    await Promise.all(pendingCacheWrites);
+
+    expect(isrSet).toHaveBeenCalledOnce();
+    expect(isrSet).toHaveBeenCalledWith(
+      "html:/queryless-client-page",
+      expect.objectContaining({ html: "<h1>queryless</h1>" }),
+      expect.objectContaining({ cacheControl: expect.objectContaining({ revalidate: 60 }) }),
+    );
+  });
+
   it("skips HTML and RSC cache writes when dynamic usage appears during stream rendering", async () => {
     setCdnCacheAdapter(createHeaderClearingCdnAdapter());
     const pendingCacheWrites: Promise<void>[] = [];
     const debugCalls: Array<[string, string]> = [];
     const isrSet = vi.fn();
     const options = {
-      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      capturedRscDataPromise: Promise.resolve(
+        capturedRscData(new TextEncoder().encode("flight").buffer),
+      ),
       cleanPathname: "/dynamic-html",
       consumeDynamicUsage() {
         return true;
@@ -1291,7 +1554,9 @@ describe("app page cache helpers", () => {
         capturedDynamicUsageBeforeContextCleanup() {
           return true;
         },
-        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        capturedRscDataPromise: Promise.resolve(
+          capturedRscData(new TextEncoder().encode("flight").buffer),
+        ),
         cleanPathname: "/dynamic-html-cleanup",
         consumeDynamicUsage() {
           return false;
@@ -1341,7 +1606,9 @@ describe("app page cache helpers", () => {
     }> = [];
 
     const didSchedule = scheduleAppPageRscCacheWrite({
-      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      capturedRscDataPromise: Promise.resolve(
+        capturedRscData(new TextEncoder().encode("flight").buffer),
+      ),
       cleanPathname: "/fresh-rsc",
       consumeDynamicUsage() {
         return false;
@@ -1397,7 +1664,9 @@ describe("app page cache helpers", () => {
     const isrSet = vi.fn();
 
     const didSchedule = scheduleAppPageRscCacheWrite({
-      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      capturedRscDataPromise: Promise.resolve(
+        capturedRscData(new TextEncoder().encode("flight").buffer),
+      ),
       cleanPathname: "/fresh-rsc",
       consumeDynamicUsage() {
         return false;
@@ -1437,7 +1706,9 @@ describe("app page cache helpers", () => {
         },
       }),
       {
-        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        capturedRscDataPromise: Promise.resolve(
+          capturedRscData(new TextEncoder().encode("flight").buffer),
+        ),
         cleanPathname: "/fresh-rsc",
         consumeDynamicUsage() {
           return false;
@@ -1519,7 +1790,9 @@ describe("app page cache helpers", () => {
         },
       }),
       {
-        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        capturedRscDataPromise: Promise.resolve(
+          capturedRscData(new TextEncoder().encode("flight").buffer),
+        ),
         cleanPathname: "/fresh-rsc",
         consumeDynamicUsage() {
           return false;
@@ -1566,7 +1839,9 @@ describe("app page cache helpers", () => {
         },
       }),
       {
-        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        capturedRscDataPromise: Promise.resolve(
+          capturedRscData(new TextEncoder().encode("flight").buffer),
+        ),
         cleanPathname: "/fresh-rsc",
         consumeDynamicUsage() {
           return false;
@@ -1606,7 +1881,9 @@ describe("app page cache helpers", () => {
     const isrSet = vi.fn();
 
     const didSchedule = scheduleAppPageRscCacheWrite({
-      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      capturedRscDataPromise: Promise.resolve(
+        capturedRscData(new TextEncoder().encode("flight").buffer),
+      ),
       cleanPathname: "/dynamic-rsc",
       consumeDynamicUsage() {
         return true;
@@ -1645,7 +1922,9 @@ describe("app page cache helpers", () => {
     const isrSet = vi.fn();
 
     const didSchedule = scheduleAppPageRscCacheWrite({
-      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      capturedRscDataPromise: Promise.resolve(
+        capturedRscData(new TextEncoder().encode("flight").buffer),
+      ),
       cleanPathname: "/invalid-cache-life",
       consumeDynamicUsage() {
         return false;

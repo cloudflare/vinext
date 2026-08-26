@@ -41,7 +41,7 @@ import {
   waitAtLeastOneReactRenderTask,
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
-import type { AppSsrRenderResult } from "./app-page-stream.js";
+import type { AppSsrRenderResult, CapturedAppPageRscData } from "./app-page-stream.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
@@ -373,7 +373,21 @@ export async function handleSsr(
      *  The embed transform accumulates raw bytes. */
     sideStream?: ReadableStream<Uint8Array>;
     /** Out-parameter: filled with accumulated raw RSC bytes when sideStream is consumed. */
-    capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+    capturedRscDataRef?: { value: Promise<CapturedAppPageRscData> | null };
+    /** Maximum raw RSC bytes retained for a prospective cache artifact. */
+    capturedRscDataLimitBytes?: number;
+    /** Maximum time raw RSC capture may retain isolate-wide capacity. */
+    capturedRscDataTimeoutMs?: number;
+    /** Absolute authenticated-request deadline shared with every response capture. */
+    capturedRscDataDeadlineAt?: number;
+    /** Release isolate-wide capacity after retaining raw RSC bytes. */
+    releaseCapturedRscDataBudget?: () => void;
+    /** Charge each retained raw RSC chunk against isolate-wide capacity. */
+    reserveCapturedRscDataBytes?: (bytes: number) => boolean;
+    /** Release raw RSC capacity when chunk storage is replaced. */
+    releaseCapturedRscDataBytes?: (bytes: number) => void;
+    /** Transfer raw-capture capacity to the request-level admission owner. */
+    retainCapturedRscData?: (release: () => void) => boolean;
     pprFallbackShellSignal?: AbortSignal;
     formState?: ReactFormState | null;
     basePath?: string;
@@ -427,22 +441,48 @@ export async function handleSsr(
 
     const rootParams = options?.rootParams ?? {};
     return runWithRootParamsScope(rootParams, async () => {
+      let rscEmbed: ReturnType<typeof createRscEmbedTransform> | undefined;
       try {
         // Fused tee path (#981): caller pre-split the stream. No internal tee needed.
         // sideStream carries both the embed transform and raw byte accumulation.
         // rscStream is used directly for createFromReadableStream (SSR).
         let ssrStream: ReadableStream<Uint8Array>;
-        let rscEmbed;
-
         if (options?.sideStream) {
           ssrStream = rscStream;
-          rscEmbed = createRscEmbedTransform(options.sideStream, {
-            mirrorNextFlight: options?.mirrorNextFlight,
-            scriptNonce: options?.scriptNonce,
-            getInitialNavigationCacheMetadata: options?.getInitialNavigationCacheMetadata,
-          });
+          try {
+            rscEmbed = createRscEmbedTransform(options.sideStream, {
+              mirrorNextFlight: options?.mirrorNextFlight,
+              scriptNonce: options?.scriptNonce,
+              getInitialNavigationCacheMetadata: options?.getInitialNavigationCacheMetadata,
+              rawBufferLimitBytes: options.capturedRscDataLimitBytes,
+              rawBufferTimeoutMs: options.capturedRscDataTimeoutMs,
+              rawBufferDeadlineAt: options.capturedRscDataDeadlineAt,
+              reserveRawBufferBytes: options.reserveCapturedRscDataBytes,
+              releaseRawBufferBytes: options.releaseCapturedRscDataBytes,
+            });
+          } catch (error) {
+            options.releaseCapturedRscDataBudget?.();
+            throw error;
+          }
           if (options.capturedRscDataRef) {
-            options.capturedRscDataRef.value = rscEmbed.getRawBuffer();
+            const release = options.releaseCapturedRscDataBudget ?? (() => {});
+            const captured = rscEmbed.getRawBuffer().then(
+              (body) => {
+                const transferred = options.retainCapturedRscData?.(release) ?? false;
+                return { body, release: transferred ? () => {} : release };
+              },
+              (error) => {
+                release();
+                throw error;
+              },
+            );
+            // Dynamic/error branches may never consume the prospective cache
+            // artifact. Attach a sink immediately while preserving rejection
+            // for cache owners that do await it.
+            void captured.catch(() => {});
+            options.capturedRscDataRef.value = captured;
+          } else {
+            options.releaseCapturedRscDataBudget?.();
           }
         } else {
           const [s1, s2] = rscStream.tee();
@@ -742,7 +782,10 @@ export async function handleSsr(
               options?.scriptNonce,
             ),
           ),
-          cleanup,
+          () => {
+            void rscEmbed?.cancel("HTML response stream completed or cancelled").catch(() => {});
+            cleanup();
+          },
         );
 
         return {
@@ -761,6 +804,7 @@ export async function handleSsr(
           linkHeader: reactLinkHeader,
         };
       } catch (error) {
+        await rscEmbed?.cancel(error).catch(() => {});
         cleanup();
         throw error;
       }

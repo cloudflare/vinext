@@ -20,6 +20,10 @@ import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import {
+  CACHEABILITY_MANIFEST_MODULE_FILE,
+  CACHEABILITY_MANIFEST_PLACEHOLDER,
+} from "../packages/vinext/src/server/cacheability-manifest.js";
 import { APP_FIXTURE_DIR, createIsolatedFixture } from "./helpers.js";
 
 const CLOUDFLARE_NODE_MODULES = path.resolve(
@@ -107,6 +111,17 @@ export const config = { matcher: ["/robots.txt"] };
       logLevel: "silent",
     });
     await builder.buildApp();
+
+    const generatedConfigPath = path.join(root, "dist/server/wrangler.json");
+    const generatedConfig = JSON.parse(await fs.readFile(generatedConfigPath, "utf-8"));
+    expect(generatedConfig.rules).toContainEqual({
+      fallthrough: true,
+      globs: [CACHEABILITY_MANIFEST_MODULE_FILE],
+      type: "Text",
+    });
+    expect(
+      await fs.readFile(path.join(root, "dist/server", CACHEABILITY_MANIFEST_MODULE_FILE), "utf-8"),
+    ).toBe(CACHEABILITY_MANIFEST_PLACEHOLDER);
 
     const wranglerPath = path.join(root, "node_modules/wrangler/wrangler-dist/cli.js");
     const wrangler = (await import(pathToFileURL(wranglerPath).href)) as {

@@ -4,8 +4,13 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { CACHEABILITY_MANIFEST_PLACEHOLDER } from "../packages/vinext/src/server/cacheability-manifest.js";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
+const wranglerState = vi.hoisted(() => ({
+  uploadCount: 0,
+  versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+}));
 
 vi.mock("vinext/internal/build/run-prerender", () => ({
   runPrerender: runPrerenderMock,
@@ -25,16 +30,26 @@ vi.mock("node:child_process", async (importOriginal) => {
     ...actual,
     execFileSync: vi.fn((_file: string, args: string[]) => {
       if (args.includes("upload")) {
-        return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
+        const id =
+          wranglerState.uploadCount++ === 0
+            ? "22222222-2222-4222-8222-222222222222"
+            : "33333333-3333-4333-8333-333333333333";
+        return `Uploaded test-worker (1 sec)\nWorker Version ID: ${id}\nVersion Preview URL: https://${id.slice(0, 8)}-test-worker.example.workers.dev\n`;
       }
       if (args.includes("status")) {
-        return JSON.stringify({ versions: [] });
-      }
-      if (args.includes("deploy")) {
-        return "Deployed version\n";
+        return JSON.stringify({ versions: wranglerState.versions });
       }
       if (args.includes("triggers")) {
-        return "Triggers deployed\n";
+        return "Triggers deployed\n  https://app.example.workers.dev\n";
+      }
+      if (args.includes("deploy")) {
+        wranglerState.versions = args
+          .filter((arg) => /^[0-9a-f-]+@\d+%$/i.test(arg))
+          .map((arg) => {
+            const [version_id, percentage] = arg.split("@");
+            return { version_id, percentage: Number.parseInt(percentage, 10) };
+          });
+        return "Deployed version\n";
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     }),
@@ -58,6 +73,15 @@ function writeFile(relativePath: string, content: string): void {
   const fullPath = path.join(tmpDir, relativePath);
   fs.mkdirSync(path.dirname(fullPath), { recursive: true });
   fs.writeFileSync(fullPath, content, "utf-8");
+}
+
+function writeTwoStageArtifact(): void {
+  writeFile("dist/server/vinext-server.json", JSON.stringify({ prerenderSecret: "secret-a" }));
+  writeFile(
+    "dist/server/entry.js",
+    `const cacheabilityManifest = ${JSON.stringify(CACHEABILITY_MANIFEST_PLACEHOLDER)};`,
+  );
+  writeFile("dist/server/wrangler.json", JSON.stringify({ name: "test-worker" }));
 }
 
 function createMockChildProcess(output: string, code: number): ChildProcess {
@@ -85,7 +109,7 @@ function writeProject(prerenderConfig: string, cacheConfig?: string): void {
   );
   writeFile(
     "wrangler.jsonc",
-    '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
   );
   writeFile(
     "vite.config.ts",
@@ -118,7 +142,7 @@ function writeProjectWithInlineNextConfig(nextConfig: string): void {
   );
   writeFile(
     "wrangler.jsonc",
-    '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
   );
   writeFile(
     "vite.config.ts",
@@ -148,7 +172,7 @@ function writeApiOnlyProject(): void {
   );
   writeFile(
     "wrangler.jsonc",
-    '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
   );
   writeFile(
     "vite.config.ts",
@@ -165,6 +189,7 @@ function writeApiOnlyProject(): void {
   );
   writeFile("dist/server/BUILD_ID", "build-a\n");
   writeFile("dist/server/index.js", "export default {};\n");
+  writeTwoStageArtifact();
 }
 
 describe("deploy prerender config wiring", () => {
@@ -173,9 +198,31 @@ describe("deploy prerender config wiring", () => {
     runPrerenderMock.mockClear();
     vi.mocked(execFileSync).mockClear();
     vi.mocked(spawn).mockClear();
+    wranglerState.uploadCount = 0;
+    wranglerState.versions = [
+      { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        const headers = new Headers(init?.headers);
+        if (headers.get("X-Vinext-Cacheability-Probe") === "1") {
+          const kind = url.pathname.startsWith("/api/") ? "app-route" : "app-page";
+          return Response.json({
+            kind,
+            pattern: url.pathname,
+            state: "dynamic",
+            version: 1,
+          });
+        }
+        return new Response("ok", { status: 200 });
+      }),
+    );
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -244,6 +291,7 @@ describe("deploy prerender config wiring", () => {
     writeProject("true", '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/index.js", "export default {};\n");
+    writeTwoStageArtifact();
     runPrerenderMock.mockImplementationOnce(async () => {
       writeFile(
         "dist/server/vinext-prerender.json",
@@ -411,16 +459,34 @@ describe("deploy prerender config wiring", () => {
       ),
     ).toEqual({
       buildId: "build-a",
+      cacheabilityRoutes: [
+        {
+          kind: "app-route",
+          path: "/api/health",
+          pattern: "/api/health",
+          probePath: "/api/health",
+          warmPaths: ["/api/health"],
+        },
+      ],
       trailingSlash: false,
       paths: [],
     });
-    expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
-      expect.stringContaining("wrangler"),
-      "deploy",
-    ]);
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => {
+        const wranglerArgs = args as string[];
+        return wranglerArgs.includes("versions") && wranglerArgs.includes("upload");
+      }),
+    ).toBe(true);
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => {
+        const wranglerArgs = args as string[];
+        return wranglerArgs.includes("versions") && wranglerArgs.includes("deploy");
+      }),
+    ).toBe(true);
+    expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("rejects no-promote warmup when discovery finds no requests", async () => {
+  it("rejects no-promote warmup before two-stage discovery", async () => {
     writeApiOnlyProject();
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
@@ -431,7 +497,7 @@ describe("deploy prerender config wiring", () => {
         warmCdnCache: true,
         warmCdnPromote: false,
       }),
-    ).rejects.toThrow("no build-discovered requests were found to warm");
+    ).rejects.toThrow("--warm-cdn-no-promote is incompatible with two-stage cacheability probing");
     expect(spawn).not.toHaveBeenCalled();
   });
 });

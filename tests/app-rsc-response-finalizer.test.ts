@@ -9,6 +9,7 @@ import {
   markEdgeRouteHandlerLinkHeaders,
   markFrameworkLinkHeaders,
 } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import { applyRouteHandlerMiddlewareContext } from "../packages/vinext/src/server/app-route-handler-response.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -108,6 +109,53 @@ describe("finalizeAppRscResponse — config header application", () => {
     });
 
     expect(response.headers.get("x-added")).toBe("config");
+  });
+
+  it.each(["no-store", "s-maxage=10"])(
+    "lets next.config override a Route Handler %s policy",
+    async (handlerPolicy) => {
+      const response = applyRouteHandlerMiddlewareContext(
+        new Response("route", { headers: { "Cache-Control": handlerPolicy } }),
+        { headers: null, status: null },
+      );
+
+      await finalizeAppRscResponse(response, new Request("http://example.com/api/configured"), {
+        basePath: "",
+        configHeaders: [
+          {
+            source: "/api/configured",
+            headers: [{ key: "Cache-Control", value: "s-maxage=300" }],
+          },
+        ],
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      });
+
+      expect(response.headers.get("cache-control")).toBe("s-maxage=300");
+    },
+  );
+
+  it("keeps middleware cache policy after Route Handler and next.config policies", async () => {
+    const middlewareHeaders = new Headers({ "Cache-Control": "private, no-store" });
+    const response = applyRouteHandlerMiddlewareContext(
+      new Response("route", { headers: { "Cache-Control": "s-maxage=10" } }),
+      { headers: middlewareHeaders, status: null },
+    );
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/api/configured"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/api/configured",
+          headers: [{ key: "Cache-Control", value: "s-maxage=300" }],
+        },
+      ],
+      i18nConfig: null,
+      middlewareHeaders,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
   });
 
   it("does not reapply source config headers to an internally dispatched target response", async () => {
