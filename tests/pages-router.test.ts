@@ -9007,20 +9007,23 @@ describe("Static export (Pages Router)", () => {
     const { staticExportPages } = await import("../packages/vinext/src/build/static-export.js");
     const { pagesRouter, apiRouter } =
       await import("../packages/vinext/src/routing/pages-router.js");
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const { loadNextConfig, resolveNextConfig } =
+      await import("../packages/vinext/src/config/next-config.js");
 
     const pagesDir = path.resolve(FIXTURE_DIR, "pages");
     const routes = await pagesRouter(pagesDir);
     const apiRoutes = await apiRouter(pagesDir);
-    const config = await resolveNextConfig({
-      output: "export",
+    const trailingConfig = {
+      ...(await loadNextConfig(FIXTURE_DIR)),
       trailingSlash: true,
-    });
+    };
+    const trailingPagesBundlePath = await buildPagesFixture(FIXTURE_DIR, trailingConfig);
+    const config = await resolveNextConfig({ ...trailingConfig, output: "export" });
 
     const trailingDir = path.resolve(FIXTURE_DIR, "out-trailing");
     try {
       const result = await staticExportPages({
-        pagesBundlePath,
+        pagesBundlePath: trailingPagesBundlePath,
         routes,
         apiRoutes,
         pagesDir,
@@ -9031,6 +9034,14 @@ describe("Static export (Pages Router)", () => {
       // With trailingSlash, about → about/index.html
       expect(result.files).toContain("about/index.html");
       expect(fs.existsSync(path.join(trailingDir, "about", "index.html"))).toBe(true);
+
+      // Ported from Next.js: test/production/export-404/export-404.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/production/export-404/export-404.test.ts
+      expect(result.files).toContain("404.html");
+      expect(result.files).toContain("404/index.html");
+      expect(fs.readFileSync(path.join(trailingDir, "404.html"), "utf-8")).toBe(
+        fs.readFileSync(path.join(trailingDir, "404", "index.html"), "utf-8"),
+      );
     } finally {
       fs.rmSync(trailingDir, { recursive: true, force: true });
     }

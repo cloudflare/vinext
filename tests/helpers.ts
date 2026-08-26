@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 import { createServer, build, type ViteDevServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
+import type { NextConfigInput } from "../packages/vinext/src/config/next-config.js";
 
 // ── Fixture paths ─────────────────────────────────────────────
 export const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
@@ -248,7 +249,10 @@ export async function requestNodeServerWithHost(
  *
  * Returns the path to the built bundle (`entry.js`).
  */
-export async function buildPagesFixture(fixtureDir: string): Promise<string> {
+export async function buildPagesFixture(
+  fixtureDir: string,
+  nextConfig?: NextConfigInput,
+): Promise<string> {
   const serverOutDir = path.join(
     await fs.mkdtemp(path.join(os.tmpdir(), "vinext-pages-build-")),
     "server",
@@ -260,7 +264,7 @@ export async function buildPagesFixture(fixtureDir: string): Promise<string> {
   await build({
     root: fixtureDir,
     configFile: false,
-    plugins: [vinext({ disableAppRouter: true })],
+    plugins: [vinext({ disableAppRouter: true, nextConfig })],
     logLevel: "silent",
     build: {
       outDir: serverOutDir,
@@ -282,7 +286,10 @@ export async function buildPagesFixture(fixtureDir: string): Promise<string> {
  *
  * Returns the path to the built RSC bundle (`<tmp>/server/index.js`).
  */
-export async function buildAppFixture(fixtureDir: string): Promise<string> {
+export async function buildAppFixture(
+  fixtureDir: string,
+  nextConfig?: NextConfigInput,
+): Promise<string> {
   const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-app-build-"));
 
   const rscOutDir = path.join(outDir, "server");
@@ -293,7 +300,7 @@ export async function buildAppFixture(fixtureDir: string): Promise<string> {
   const builder = await createBuilder({
     root: fixtureDir,
     configFile: false,
-    plugins: [vinext({ appDir: fixtureDir, rscOutDir, ssrOutDir, clientOutDir })],
+    plugins: [vinext({ appDir: fixtureDir, rscOutDir, ssrOutDir, clientOutDir, nextConfig })],
     logLevel: "silent",
   });
   await builder.buildApp();

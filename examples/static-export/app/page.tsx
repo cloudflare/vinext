@@ -3,7 +3,7 @@ import { catalog } from "../lib/content";
 
 // Make the build-time contract explicit: request-time APIs used below would
 // be an error rather than silently changing this page into SSR.
-export const dynamic = "force-static";
+export const dynamic = "error";
 
 const capabilities = [
   ["Build-time React", "Server Components run during vinext build and become durable HTML plus static RSC payloads."],

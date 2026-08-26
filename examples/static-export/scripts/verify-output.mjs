@@ -17,6 +17,7 @@ const expected = new Map([
   ["products/atlas/index.html", "Atlas Field Kit"],
   ["products/lantern/index.html", "Low-light Lantern"],
   ["404.html", "This route was never in the map"],
+  ["404/index.html", "This route was never in the map"],
   ["robots.txt", "User-agent: *"],
   ["icon.svg", "<svg"],
   ["island-grid.svg", "<svg"],

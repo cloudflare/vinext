@@ -512,6 +512,19 @@ function emitStaticMetadataFiles(
   return outputFiles;
 }
 
+function emitStatic404Files(outDir: string, html: string, trailingSlash: boolean): string[] {
+  const outputFiles = ["404.html"];
+  if (trailingSlash) outputFiles.push("404/index.html");
+
+  for (const outputFile of outputFiles) {
+    const fullPath = path.join(outDir, ...outputFile.split("/"));
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    fs.writeFileSync(fullPath, html, "utf-8");
+  }
+
+  return outputFiles;
+}
+
 /** Map of route patterns to generateStaticParams functions (or null/undefined). */
 export type StaticParamsMap = Record<
   string,
@@ -981,12 +994,10 @@ export async function prerenderPages({
         const contentType = notFoundRes.headers.get("content-type") ?? "";
         if (notFoundRes.status === 404 && contentType.includes("text/html")) {
           const html404 = await notFoundRes.text();
-          const fullPath = path.join(outDir, "404.html");
-          fs.writeFileSync(fullPath, html404, "utf-8");
           results.push({
             route: "/404",
             status: "rendered",
-            outputFiles: ["404.html"],
+            outputFiles: emitStatic404Files(outDir, html404, config.trailingSlash),
             revalidate: false,
             router: "pages",
           });
@@ -1801,13 +1812,10 @@ export async function prerenderApp({
       );
       if (notFoundRes.status === 404) {
         const html404 = await notFoundRes.text();
-        const fullPath = path.join(outDir, "404.html");
-        fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-        fs.writeFileSync(fullPath, html404, "utf-8");
         results.push({
           route: "/404",
           status: "rendered",
-          outputFiles: ["404.html"],
+          outputFiles: emitStatic404Files(outDir, html404, config.trailingSlash),
           revalidate: false,
           router: "app",
         });

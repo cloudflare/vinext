@@ -17,6 +17,7 @@ pnpm preview
 dist/client/
 ├── index.html
 ├── 404.html
+├── 404/index.html
 ├── catalog/pocket-observatory/index.html
 ├── docs/deployment/cloudflare/index.html
 ├── legacy/index.html
