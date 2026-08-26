@@ -23,6 +23,7 @@ import {
   getHeadersAccessPhase,
   isDraftModeEnabled,
   markDynamicUsage as _markDynamic,
+  peekInvalidDynamicUsageError,
   recordInvalidDynamicUsageError,
 } from "./headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
@@ -486,13 +487,16 @@ const _unstableCacheAls = getOrCreateAls<boolean>("vinext.unstableCache.als");
 /**
  * Wrapper used to serialize `unstable_cache` results so that `undefined` can
  * round-trip through JSON without confusion.  Using a structural wrapper
- * avoids any sentinel-string collision risk.
+ * avoids any sentinel-string collision risk. The `v` / `undef` fields remain
+ * readable by the previous Worker during a staged rollout and rollback, while
+ * the version marker lets the new reader reject payloads written before the
+ * cache-ownership boundary was enforced.
  */
-type CacheResultWrapper = { version: 2; value: unknown } | { version: 2; undefined: true };
+type CacheResultWrapper = { version: 2; v: unknown } | { version: 2; undef: true };
 
 function serializeUnstableCacheResult(value: unknown): string {
   const wrapper: CacheResultWrapper =
-    value === undefined ? { version: 2, undefined: true } : { version: 2, value };
+    value === undefined ? { version: 2, undef: true } : { version: 2, v: value };
   return JSON.stringify(wrapper);
 }
 
@@ -501,8 +505,8 @@ function deserializeUnstableCacheResult(body: string): unknown {
   if (!wrapper || typeof wrapper !== "object" || Reflect.get(wrapper, "version") !== 2) {
     throw new Error("Unsupported unstable_cache entry version");
   }
-  if (Reflect.get(wrapper, "undefined") === true) return undefined;
-  if (Reflect.has(wrapper, "value")) return Reflect.get(wrapper, "value");
+  if (Reflect.get(wrapper, "undef") === true) return undefined;
+  if (Reflect.has(wrapper, "v")) return Reflect.get(wrapper, "v");
   throw new Error("Invalid unstable_cache entry");
 }
 
@@ -534,12 +538,17 @@ const _UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY = Symbol.for(
   "vinext.unstableCache.pendingRevalidations",
 );
 const _UNSTABLE_CACHE_PENDING_FILLS_KEY = Symbol.for("vinext.unstableCache.pendingFills");
+const _UNSTABLE_CACHE_POISONED_KEYS_KEY = Symbol.for("vinext.unstableCache.poisonedKeys");
+const _UNSTABLE_CACHE_PUBLICATION_DISABLED_KEY = Symbol.for(
+  "vinext.unstableCache.publicationDisabled",
+);
 
 // A shared fill is only a short-lived stampede guard, not ownership of the
 // callback's lifetime. Next.js defaults cache-fill detection to its static
 // generation timeout (60 seconds); after the same bounded lease, let a later
 // request replace a stalled fill without aborting the original caller.
 const UNSTABLE_CACHE_PENDING_FILL_LEASE_MS = 60_000;
+const MAX_POISONED_UNSTABLE_CACHE_KEYS = 10_000;
 
 type PendingUnstableCacheFill = {
   promise: Promise<unknown>;
@@ -565,6 +574,46 @@ function getPendingUnstableCacheFills(): Map<string, PendingUnstableCacheFill> {
   const pending = new Map<string, PendingUnstableCacheFill>();
   _g[_UNSTABLE_CACHE_PENDING_FILLS_KEY] = pending;
   return pending;
+}
+
+function getPoisonedUnstableCacheKeys(): Set<string> {
+  const existing = _g[_UNSTABLE_CACHE_POISONED_KEYS_KEY];
+  if (existing instanceof Set) return existing as Set<string>;
+
+  const poisoned = new Set<string>();
+  _g[_UNSTABLE_CACHE_POISONED_KEYS_KEY] = poisoned;
+  return poisoned;
+}
+
+function isUnstableCachePublicationDisabled(): boolean {
+  return _g[_UNSTABLE_CACHE_PUBLICATION_DISABLED_KEY] === true;
+}
+
+function isUnstableCacheKeyPoisoned(cacheKey: string): boolean {
+  return isUnstableCachePublicationDisabled() || getPoisonedUnstableCacheKeys().has(cacheKey);
+}
+
+/**
+ * Fail closed after a shared fill outlives its lease. CacheHandler has no CAS
+ * or portable abort primitive, so the expired writer may already be inside an
+ * adapter write when its replacement becomes eligible to run. Poisoning makes
+ * this isolate bypass shared reads and writes for the key; the expired writer
+ * installs a tombstone after any in-flight write settles.
+ *
+ * Keep the registry bounded. If it fills, disabling unstable-cache publication
+ * for the isolate is safer than forgetting an expired writer and later serving
+ * a value whose publication order can no longer be proven.
+ */
+function poisonUnstableCacheKey(cacheKey: string): void {
+  if (isUnstableCachePublicationDisabled()) return;
+  const poisoned = getPoisonedUnstableCacheKeys();
+  if (poisoned.has(cacheKey)) return;
+  if (poisoned.size >= MAX_POISONED_UNSTABLE_CACHE_KEYS) {
+    poisoned.clear();
+    _g[_UNSTABLE_CACHE_PUBLICATION_DISABLED_KEY] = true;
+    return;
+  }
+  poisoned.add(cacheKey);
 }
 
 function waitUntilUnstableCacheRevalidation(promise: Promise<void>): void {
@@ -600,8 +649,15 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   cacheKey: string,
   tags: string[],
   revalidateSeconds: number | false | undefined,
+  canPublish: () => boolean,
 ): Promise<Result> {
   const result = await _unstableCacheAls.run(true, () => fn(...args));
+  const invalidDynamicUsageError = peekInvalidDynamicUsageError();
+  if (invalidDynamicUsageError !== null && invalidDynamicUsageError !== undefined) {
+    throw invalidDynamicUsageError;
+  }
+
+  if (!canPublish()) return result;
 
   const cacheValue: CachedFetchValue = {
     kind: "FETCH",
@@ -618,11 +674,37 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
     revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : false,
   };
 
-  await getDataCacheHandler().set(cacheKey, cacheValue, {
+  const handler = getDataCacheHandler();
+  const context = {
     fetchCache: true,
     tags,
     revalidate: revalidateSeconds,
-  });
+  };
+  let writeError: unknown;
+  try {
+    await handler.set(cacheKey, cacheValue, context);
+  } catch (error) {
+    writeError = error;
+  }
+
+  if (!canPublish()) {
+    try {
+      // Both the built-in memory handler and the Cloudflare KV handler treat a
+      // stored null value as a miss. Write it after the expired write settles
+      // so that writer cannot remain observable or overwrite a newer result.
+      await handler.set(cacheKey, null, context);
+    } catch (tombstoneError) {
+      if (writeError !== undefined) {
+        throw new AggregateError(
+          [writeError, tombstoneError],
+          "unstable_cache write and fail-closed tombstone both failed",
+        );
+      }
+      throw tombstoneError;
+    }
+  }
+
+  if (writeError !== undefined) throw writeError;
 
   return result;
 }
@@ -641,11 +723,15 @@ function fillUnstableCacheResult<Args extends unknown[], Result>(
   }
   if (existing) {
     clearTimeout(existing.leaseTimer);
-    pending.delete(cacheKey);
+    if (pending.get(cacheKey) === existing) {
+      pending.delete(cacheKey);
+      poisonUnstableCacheKey(cacheKey);
+    }
   }
 
-  const fill = refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
   let entry: PendingUnstableCacheFill;
+  const canPublish = () => pending.get(cacheKey) === entry && !isUnstableCacheKeyPoisoned(cacheKey);
+  const fill = refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds, canPublish);
   const trackedFill = fill.finally(() => {
     if (pending.get(cacheKey) === entry) {
       pending.delete(cacheKey);
@@ -655,6 +741,7 @@ function fillUnstableCacheResult<Args extends unknown[], Result>(
   const leaseTimer = setTimeout(() => {
     if (pending.get(cacheKey) === entry) {
       pending.delete(cacheKey);
+      poisonUnstableCacheKey(cacheKey);
     }
   }, UNSTABLE_CACHE_PENDING_FILL_LEASE_MS);
   // Do not keep a Node.js process alive solely for an in-isolate stampede
@@ -721,7 +808,8 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     });
 
     const isDraftMode = isDraftModeEnabled();
-    if (!isDraftMode) {
+    const isPoisoned = isUnstableCacheKeyPoisoned(cacheKey);
+    if (!isDraftMode && !isPoisoned) {
       // Try to get from cache. Stale entries are usable in normal App Router
       // requests, but foreground-refresh inside revalidation scopes so the
       // regenerated page/route stores fresh data.
@@ -739,7 +827,14 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
           if (existing.cacheState === "stale") {
             if (shouldServeStaleUnstableCacheEntry()) {
               scheduleUnstableCacheBackgroundRevalidation(cacheKey, () =>
-                refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds),
+                refreshUnstableCacheResult(
+                  fn,
+                  args,
+                  cacheKey,
+                  tags,
+                  revalidateSeconds,
+                  () => !isUnstableCacheKeyPoisoned(cacheKey),
+                ),
               );
               return cached.value;
             }
@@ -754,8 +849,15 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     // Cache miss — call the function inside the unstable_cache ALS scope
     // so that headers()/cookies()/connection() can detect they're in a
     // cache scope and throw an appropriate error.
-    if (isDraftMode) {
-      return await _unstableCacheAls.run(true, () => fn(...args));
+    if (isDraftMode || isPoisoned) {
+      return await refreshUnstableCacheResult(
+        fn,
+        args,
+        cacheKey,
+        tags,
+        revalidateSeconds,
+        () => false,
+      );
     }
     return await fillUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
   };

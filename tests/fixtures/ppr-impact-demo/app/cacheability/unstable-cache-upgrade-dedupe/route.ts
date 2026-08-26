@@ -31,5 +31,14 @@ export async function POST() {
 
 export async function GET() {
   const values = await Promise.all([readValue(), readValue(), readValue()]);
-  return Response.json({ executions, values });
+  const entry = await getDataCacheHandler().get(cacheKey, { kind: "FETCH", tags: [] });
+  if (!entry?.value || entry.value.kind !== "FETCH") {
+    throw new Error("expected upgraded unstable_cache entry");
+  }
+  const wrapper = JSON.parse(entry.value.data.body) as Record<string, unknown>;
+  // Simulate the reader still deployed in the old Worker version. During a
+  // staged rollout it only understands `v` / `undef`, while the new reader
+  // requires the versioned fields and rejects old payloads.
+  const legacyReaderValue = "undef" in wrapper ? undefined : wrapper.v;
+  return Response.json({ executions, legacyReaderValue, storedVersion: wrapper.version, values });
 }

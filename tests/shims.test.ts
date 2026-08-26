@@ -5918,7 +5918,8 @@ describe("next/cache shim", () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
 
-    setCacheHandler(new MemoryCacheHandler());
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
 
     let callCount = 0;
     const cached = unstable_cache(async () => {
@@ -5928,6 +5929,17 @@ describe("next/cache shim", () => {
 
     await expect(cached()).resolves.toBeUndefined();
     expect(callCount).toBe(1);
+
+    const stored = await handler.get("unstable_cache:undefined-result-test:[]", {
+      kind: "FETCH",
+      tags: [],
+    });
+    expect(stored?.value?.kind).toBe("FETCH");
+    if (stored?.value?.kind !== "FETCH") throw new Error("expected cached fetch value");
+    expect(JSON.parse(stored.value.data.body)).toEqual({
+      version: 2,
+      undef: true,
+    });
 
     await expect(cached()).resolves.toBeUndefined();
     expect(callCount).toBe(1);
@@ -6034,6 +6046,10 @@ describe("next/cache shim", () => {
       expect(hangingExecutions).toBe(1);
 
       await vi.advanceTimersByTimeAsync(60_001);
+      const pending = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.pendingFills")) as
+        | Map<string, { leaseTimer?: ReturnType<typeof setTimeout> }>
+        | undefined;
+      expect(pending?.size).toBe(0);
       const replacement = hanging();
       await vi.advanceTimersByTimeAsync(0);
       expect(hangingExecutions).toBe(2);
@@ -6042,13 +6058,98 @@ describe("next/cache shim", () => {
       void first;
       void replacement;
     } finally {
-      const pending = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.pendingFills")) as
-        | Map<string, { leaseTimer?: ReturnType<typeof setTimeout> }>
-        | undefined;
-      for (const entry of pending?.values() ?? []) {
+      const pendingFills = Reflect.get(
+        globalThis,
+        Symbol.for("vinext.unstableCache.pendingFills"),
+      ) as Map<string, { leaseTimer?: ReturnType<typeof setTimeout> }> | undefined;
+      for (const entry of pendingFills?.values() ?? []) {
         if (entry.leaseTimer !== undefined) clearTimeout(entry.leaseTimer);
       }
-      pending?.clear();
+      pendingFills?.clear();
+      const poisoned = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.poisonedKeys")) as
+        | Set<string>
+        | undefined;
+      poisoned?.clear();
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("prevents a lease-expired unstable_cache writer from publishing late", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    let releaseFirstWrite!: () => void;
+    const firstWriteGate = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    let firstWriteStarted!: () => void;
+    const firstWriteStart = new Promise<void>((resolve) => {
+      firstWriteStarted = resolve;
+    });
+    class DelayedFirstWriteCacheHandler extends MemoryCacheHandler {
+      writes: Array<"value" | "tombstone"> = [];
+
+      override async set(
+        key: string,
+        data: IncrementalCacheValue | null,
+        ctx?: Record<string, unknown>,
+      ): Promise<void> {
+        if (data !== null && this.writes.length === 0) {
+          this.writes.push("value");
+          firstWriteStarted();
+          await firstWriteGate;
+        } else if (data === null) {
+          this.writes.push("tombstone");
+        }
+        await super.set(key, data, ctx);
+      }
+    }
+
+    const handler = new DelayedFirstWriteCacheHandler();
+    setCacheHandler(handler);
+    let executions = 0;
+    const cached = unstable_cache(async () => `result-${++executions}`, ["late-fill-publication"]);
+
+    vi.useFakeTimers();
+    try {
+      const expiredFill = cached();
+      await firstWriteStart;
+      await vi.advanceTimersByTimeAsync(60_001);
+
+      const pending = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.pendingFills")) as
+        | Map<string, unknown>
+        | undefined;
+      expect(pending?.size).toBe(0);
+
+      await expect(cached()).resolves.toBe("result-2");
+      releaseFirstWrite();
+      await expect(expiredFill).resolves.toBe("result-1");
+
+      const cacheKey = "unstable_cache:late-fill-publication:[]";
+      const stored = await handler.get(cacheKey, { kind: "FETCH", tags: [] });
+      expect(stored?.value).toBeNull();
+      expect(handler.writes).toEqual(["value", "tombstone"]);
+
+      // A poisoned key remains fail closed in this isolate: compute fresh and
+      // do not trust or republish through the shared handler.
+      await expect(cached()).resolves.toBe("result-3");
+      expect(handler.writes).toEqual(["value", "tombstone"]);
+    } finally {
+      releaseFirstWrite();
+      const pendingFills = Reflect.get(
+        globalThis,
+        Symbol.for("vinext.unstableCache.pendingFills"),
+      ) as Map<string, { leaseTimer?: ReturnType<typeof setTimeout> }> | undefined;
+      for (const entry of pendingFills?.values() ?? []) {
+        if (entry.leaseTimer !== undefined) clearTimeout(entry.leaseTimer);
+      }
+      pendingFills?.clear();
+      const poisoned = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.poisonedKeys")) as
+        | Set<string>
+        | undefined;
+      poisoned?.clear();
+      Reflect.deleteProperty(globalThis, Symbol.for("vinext.unstableCache.publicationDisabled"));
       vi.useRealTimers();
       setCacheHandler(new MemoryCacheHandler());
     }
@@ -6695,7 +6796,7 @@ describe("next/cache shim", () => {
             kind: "FETCH",
             data: {
               headers: {},
-              body: JSON.stringify({ version: 2, value: "stale-value" }),
+              body: JSON.stringify({ version: 2, v: "stale-value" }),
               url: "unstable_cache:stale-swr-test:[]",
             },
             tags: ["stale-swr"],
@@ -6748,7 +6849,7 @@ describe("next/cache shim", () => {
 
       await Promise.all(waitUntilPromises);
 
-      expect(setBodies).toEqual([JSON.stringify({ version: 2, value: "fresh-value" })]);
+      expect(setBodies).toEqual([JSON.stringify({ version: 2, v: "fresh-value" })]);
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
@@ -6770,7 +6871,7 @@ describe("next/cache shim", () => {
             kind: "FETCH",
             data: {
               headers: {},
-              body: JSON.stringify({ version: 2, value: "stale-value" }),
+              body: JSON.stringify({ version: 2, v: "stale-value" }),
               url: "unstable_cache:foreground-test:[]",
             },
             tags: ["foreground"],

@@ -8,7 +8,14 @@ async function readPrivateValue() {
 
 const readSharedValue = unstable_cache(async () => {
   await waitForPrivateFillRelease();
-  return readPrivateValue();
+  try {
+    return await readPrivateValue();
+  } catch {
+    // This catch is deliberately inside the shared callback. Next.js records
+    // framework-invalid cache nesting outside user catch boundaries, so the
+    // fallback must neither complete the request nor enter the shared cache.
+    return "caught-inside-unstable-cache";
+  }
 }, ["cacheability-use-cache-private-in-unstable-cache"]);
 
 export default async function PrivateInUnstableCachePage() {

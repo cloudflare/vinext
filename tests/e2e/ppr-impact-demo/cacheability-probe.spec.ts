@@ -56,6 +56,8 @@ test("classifies completed App Page renders inside workerd", async ({ request })
   const dedupedUpgrade = await request.get("/cacheability/unstable-cache-upgrade-dedupe");
   await expect(dedupedUpgrade.json()).resolves.toEqual({
     executions: 1,
+    legacyReaderValue: 1,
+    storedVersion: 2,
     values: [1, 1, 1],
   });
 
