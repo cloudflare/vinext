@@ -80,6 +80,22 @@
       "requestKey": "/cacheability/static-to-dynamic/runtime",
       "state": "static-candidate",
       "status": 200
+    },
+    "[\"app-page\",\"/cacheability/use-cache-private\",\"html\",\"/cacheability/use-cache-private\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/use-cache-private",
+      "representation": "html",
+      "requestKey": "/cacheability/use-cache-private",
+      "state": "dynamic",
+      "status": 200
+    },
+    "[\"app-page\",\"/cacheability/use-cache-public-no-store\",\"html\",\"/cacheability/use-cache-public-no-store\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/use-cache-public-no-store",
+      "representation": "html",
+      "requestKey": "/cacheability/use-cache-public-no-store",
+      "state": "static-candidate",
+      "status": 200
     }
   },
   "version": 1

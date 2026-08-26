@@ -70,6 +70,21 @@ test("admits only exact manifest-backed App Page responses after clean EOF", asy
   expect(knownDynamic.headers()["cache-control"]).toContain("no-store");
   expect(knownDynamic.headers()["cdn-cache-control"]).toBeUndefined();
 
+  const publicUseCache = await request.get("/cacheability/use-cache-public-no-store", {
+    headers: { Accept: "text/html" },
+  });
+  expect(publicUseCache.status()).toBe(200);
+  expect(await publicUseCache.text()).toContain("owned-by-public-use-cache");
+  expect(publicUseCache.headers()["cdn-cache-control"]).toContain("public");
+
+  const privateUseCache = await request.get("/cacheability/use-cache-private", {
+    headers: { Accept: "text/html" },
+  });
+  expect(privateUseCache.status()).toBe(200);
+  expect(await privateUseCache.text()).toContain("owned-by-private-use-cache");
+  expect(privateUseCache.headers()["cache-control"]).toContain("no-store");
+  expect(privateUseCache.headers()["cdn-cache-control"]).toBeUndefined();
+
   const staticToDynamic = await request.get("/cacheability/static-to-dynamic/runtime", {
     headers: { Accept: "text/html", "X-Probe-Value": "private-value" },
   });
