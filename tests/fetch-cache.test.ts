@@ -62,6 +62,7 @@ const { consumeDynamicUsage, setHeadersContext } =
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
 const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
+const { registerCachedFunction } = await import("../packages/vinext/src/shims/cache-runtime.js");
 
 describe("fetch cache shim", () => {
   let cleanup: (() => void) | null = null;
@@ -382,6 +383,46 @@ describe("fetch cache shim", () => {
     });
 
     expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
+  // "should override fetch with no-store in use cache properly"
+  it("keeps uncached fetch I/O inside public use cache scoped to that cache entry", async () => {
+    const cached = registerCachedFunction(async () => {
+      const response = await fetch("https://api.example.com/scoped-no-store", {
+        cache: "no-store",
+      });
+      return response.text();
+    }, "test:scoped-no-store-fetch");
+
+    await cached();
+
+    expect(consumeDynamicUsage()).toBe(false);
+    expect(consumeDynamicFetchObservations()).toEqual([]);
+  });
+
+  it("lowers a public use-cache entry to its finite cached-fetch lifetime", async () => {
+    const writes: Array<{ key: string; revalidate: unknown }> = [];
+    setCacheHandler({
+      async get() {
+        return null;
+      },
+      async set(key, _value, context) {
+        const cacheControl = context?.cacheControl as { revalidate?: unknown } | undefined;
+        writes.push({ key, revalidate: cacheControl?.revalidate });
+      },
+      async revalidateTag() {},
+    });
+    const cached = registerCachedFunction(async () => {
+      await fetch("https://api.example.com/scoped-revalidate", {
+        next: { revalidate: 1 },
+      });
+      return "cached";
+    }, "test:scoped-finite-fetch");
+
+    await cached();
+
+    expect(writes.find((write) => write.key.startsWith("use-cache:"))?.revalidate).toBe(1);
   });
 
   it("does not mark page output dynamic for auto/default pass-through fetches", async () => {

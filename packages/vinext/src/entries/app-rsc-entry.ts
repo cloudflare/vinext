@@ -84,10 +84,11 @@ const appPagePprRuntimePath = resolveEntryPath(
   "../server/app-page-ppr-runtime.js",
   import.meta.url,
 );
-const cacheComponentsPlatformIoPath = resolveEntryPath(
-  "../server/cache-components-platform-io.js",
+const cacheComponentsPlatformIoPreludePath = resolveEntryPath(
+  "../server/cache-components-platform-io-prelude.js",
   import.meta.url,
 );
+const fetchCachePreludePath = resolveEntryPath("../server/fetch-cache-prelude.js", import.meta.url);
 const fileBasedMetadataPath = resolveEntryPath("../server/file-based-metadata.js", import.meta.url);
 const appPageRequestPath = resolveEntryPath("../server/app-page-request.js", import.meta.url);
 const appSegmentConfigPath = resolveEntryPath("../server/app-segment-config.js", import.meta.url);
@@ -301,6 +302,16 @@ async function __loadPrerenderPagesRoutes() {
     : "";
 
   return `
+// Match Next.js bootstrap ordering: patch fetch before any user module can
+// capture the unpatched global at module scope.
+import ${JSON.stringify(fetchCachePreludePath)};
+${
+  cacheComponents
+    ? `// This async prelude must be the first generated dependency so its
+// platform-I/O wrappers are installed before user modules are evaluated.
+import ${JSON.stringify(cacheComponentsPlatformIoPreludePath)};`
+    : ""
+}
 ${
   hasAppRouteHandlers
     ? `// Capture the canonical Request surface before any user module can extend it.
@@ -417,12 +428,6 @@ ${
   appPagePprRuntime as __appPagePprRuntime,
   createAppPprFallbackShells as __createAppPprFallbackShells,
 } from ${JSON.stringify(appPagePprRuntimePath)};`
-    : ""
-}
-${
-  cacheComponents
-    ? `import { installCacheComponentsPlatformIoTracking as __installCacheComponentsPlatformIoTracking } from ${JSON.stringify(cacheComponentsPlatformIoPath)};
-await __installCacheComponentsPlatformIoTracking();`
     : ""
 }
 import {

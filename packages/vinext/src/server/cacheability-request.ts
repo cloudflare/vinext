@@ -20,6 +20,11 @@ import {
 import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { CACHEABILITY_REQUEST_STATE } from "vinext/shims/cacheability-classification";
+import { runWithoutPlatformIoTracking } from "vinext/shims/platform-io-tracking";
+
+function frameworkNow(): number {
+  return runWithoutPlatformIoTracking(() => Date.now());
+}
 
 type CacheabilityOutcome = {
   cacheControl?: string;
@@ -65,33 +70,46 @@ export const CACHEABILITY_RESPONSE_BODY_LIMIT = 4 * 1024 * 1024;
 // at once. Bound aggregate in-flight work per isolate as well as each request;
 // excess requests keep streaming but fail CDN admission closed.
 export const CACHEABILITY_RESPONSE_CAPTURE_BUDGET = 4 * CACHEABILITY_RESPONSE_BODY_LIMIT;
+// A response stream can yield a complete limit-sized chunk before its size is
+// known. Gate readers before teeing so high deploy/warm concurrency cannot make
+// every request retain one such chunk outside the byte reservation at once.
+export const CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY = Math.max(
+  1,
+  Math.floor(CACHEABILITY_RESPONSE_CAPTURE_BUDGET / CACHEABILITY_RESPONSE_BODY_LIMIT),
+);
 // Leave headroom below the deploy probe's 30s request timeout so a slow or
 // never-ending response can still return its fail-closed probe envelope.
 export const CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS = 20_000;
 
 let reservedCaptureBytes = 0;
+let activeCaptureReaders = 0;
+const pendingCaptureReaders: Array<{
+  resolve: (release: (() => void) | null) => void;
+  signal?: AbortSignal;
+  timeout: ReturnType<typeof setTimeout>;
+  onAbort?: () => void;
+}> = [];
 
 export type CacheabilityCaptureReservation = {
-  forceReserve(this: void, bytes: number): void;
   release(this: void, bytes: number): void;
   releaseAll(this: void): void;
   tryReserve(this: void, bytes: number): boolean;
 };
 
-export function createCacheabilityCaptureReservation(): CacheabilityCaptureReservation {
+function tracksWorkerCaptureMemory(): boolean {
   const context = getRequestExecutionContext();
-  const tracksWorkerMemory =
+  return (
     context?.hostRuntime === "worker" &&
     context.isCloudflareWorker === true &&
     context.trustedRevalidateOrigin === undefined &&
-    readState(context) !== null;
+    readState(context) !== null
+  );
+}
+
+export function createCacheabilityCaptureReservation(): CacheabilityCaptureReservation {
+  const tracksWorkerMemory = tracksWorkerCaptureMemory();
   let ownedBytes = 0;
   return {
-    forceReserve(bytes) {
-      if (!tracksWorkerMemory || bytes <= 0) return;
-      reservedCaptureBytes += bytes;
-      ownedBytes += bytes;
-    },
     release(bytes) {
       if (!tracksWorkerMemory || bytes <= 0) return;
       const released = Math.min(bytes, ownedBytes);
@@ -113,10 +131,66 @@ export function createCacheabilityCaptureReservation(): CacheabilityCaptureReser
   };
 }
 
+function releaseCaptureReader(): void {
+  const next = pendingCaptureReaders.shift();
+  if (next) {
+    clearTimeout(next.timeout);
+    if (next.signal && next.onAbort) next.signal.removeEventListener("abort", next.onAbort);
+    next.resolve(createCaptureReaderRelease());
+    return;
+  }
+  activeCaptureReaders = Math.max(0, activeCaptureReaders - 1);
+}
+
+function createCaptureReaderRelease(): () => void {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    releaseCaptureReader();
+  };
+}
+
+async function acquireCaptureReader(
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<(() => void) | null> {
+  if (!tracksWorkerCaptureMemory()) return () => {};
+  if (activeCaptureReaders < CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY) {
+    activeCaptureReaders += 1;
+    return createCaptureReaderRelease();
+  }
+  if (signal?.aborted || timeoutMs <= 0) return null;
+
+  return new Promise<(() => void) | null>((resolve) => {
+    const waiter: (typeof pendingCaptureReaders)[number] = {
+      resolve,
+      signal,
+      timeout: setTimeout(() => {
+        const index = pendingCaptureReaders.indexOf(waiter);
+        if (index >= 0) pendingCaptureReaders.splice(index, 1);
+        if (signal && waiter.onAbort) signal.removeEventListener("abort", waiter.onAbort);
+        resolve(null);
+      }, timeoutMs),
+    };
+    if (signal) {
+      waiter.onAbort = () => {
+        const index = pendingCaptureReaders.indexOf(waiter);
+        if (index >= 0) pendingCaptureReaders.splice(index, 1);
+        clearTimeout(waiter.timeout);
+        resolve(null);
+      };
+      signal.addEventListener("abort", waiter.onAbort, { once: true });
+    }
+    pendingCaptureReaders.push(waiter);
+  });
+}
+
 function streamCapturedPrefixThenReader(
   prefix: Uint8Array[],
   reader: ReadableStreamDefaultReader<Uint8Array>,
   releasePrefix: () => void,
+  sourceOwnedOverflow?: Uint8Array,
 ): ReadableStream<Uint8Array> {
   let index = 0;
   let released = false;
@@ -129,6 +203,7 @@ function streamCapturedPrefixThenReader(
     {
       async cancel(reason) {
         prefix.length = 0;
+        sourceOwnedOverflow = undefined;
         release();
         await reader.cancel(reason).catch(() => {});
       },
@@ -143,6 +218,12 @@ function streamCapturedPrefixThenReader(
             return;
           }
           release();
+          if (sourceOwnedOverflow) {
+            const chunk = sourceOwnedOverflow;
+            sourceOwnedOverflow = undefined;
+            controller.enqueue(chunk);
+            return;
+          }
           const result = await reader.read();
           if (result.done) controller.close();
           else controller.enqueue(result.value);
@@ -343,6 +424,22 @@ export async function captureResponseBodyBounded(
     };
   }
 
+  const captureStartedAt = frameworkNow();
+  const releaseReader = await acquireCaptureReader(
+    options.signal,
+    CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+  );
+  if (!releaseReader) {
+    if (options.signal?.aborted) {
+      throw options.signal.reason ?? new Error("response capture was aborted");
+    }
+    return {
+      failClosed: true,
+      fallback: response.body,
+      reason: `response capture did not acquire isolate capacity within ${CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS}ms`,
+    };
+  }
+
   const reservation = createCacheabilityCaptureReservation();
 
   let captureStream: ReadableStream<Uint8Array>;
@@ -350,6 +447,7 @@ export async function captureResponseBodyBounded(
   try {
     [captureStream, fallback] = response.body.tee();
   } catch (error) {
+    releaseReader();
     reservation.releaseAll();
     throw error;
   }
@@ -383,7 +481,13 @@ export async function captureResponseBodyBounded(
         }
       })(),
       new Promise<"timed-out">((resolve) => {
-        timeout = setTimeout(() => resolve("timed-out"), CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS);
+        timeout = setTimeout(
+          () => resolve("timed-out"),
+          Math.max(
+            0,
+            CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS - (frameworkNow() - captureStartedAt),
+          ),
+        );
       }),
       new Promise<"aborted">((resolve) => {
         const signal = options.signal;
@@ -395,6 +499,7 @@ export async function captureResponseBodyBounded(
     ]);
     if (readResult === "aborted") {
       await Promise.allSettled([reader.cancel(options.signal?.reason), fallback.cancel()]);
+      releaseReader();
       reservation.releaseAll();
       throw options.signal?.reason ?? new Error("response capture was aborted");
     }
@@ -405,13 +510,17 @@ export async function captureResponseBodyBounded(
         // stream the captured prefix plus the original reader instead.
         void fallback.cancel().catch(() => {});
         reservation.release(retainedChunkBytes);
-        if (overflowChunk) {
-          reservation.forceReserve(overflowChunk.byteLength);
-          chunks.push(overflowChunk);
-        }
         return {
           failClosed: true,
-          fallback: streamCapturedPrefixThenReader(chunks, reader, reservation.releaseAll),
+          fallback: streamCapturedPrefixThenReader(
+            chunks,
+            reader,
+            () => {
+              reservation.releaseAll();
+              releaseReader();
+            },
+            overflowChunk,
+          ),
           reason:
             readResult === "budget-exhausted"
               ? `response capture exceeded the ${CACHEABILITY_RESPONSE_CAPTURE_BUDGET} byte isolate budget`
@@ -419,6 +528,7 @@ export async function captureResponseBodyBounded(
         };
       }
       void reader.cancel().catch(() => {});
+      releaseReader();
       // Cancelling the capture branch drops one of the two retained copies;
       // the fallback keeps the other until its consumer drains or cancels it.
       reservation.release(retainedChunkBytes);
@@ -431,7 +541,9 @@ export async function captureResponseBodyBounded(
         reason: `response body did not complete within ${CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS}ms`,
       };
     }
+    releaseReader();
   } catch (error) {
+    releaseReader();
     void fallback.cancel().catch(() => {});
     reservation.releaseAll();
     throw error;

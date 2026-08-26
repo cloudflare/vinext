@@ -5914,6 +5914,29 @@ describe("next/cache shim", () => {
     setCacheHandler(new MemoryCacheHandler());
   });
 
+  it("rejects zero revalidation for unstable_cache", async () => {
+    const { unstable_cache } = await import("../packages/vinext/src/shims/cache.js");
+
+    expect(() => unstable_cache(async () => "value", [], { revalidate: 0 })).toThrow(
+      /less than or equal to zero/,
+    );
+  });
+
+  it("propagates unstable_cache revalidation to the enclosing route lifetime", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { _peekRequestScopedCacheLife } =
+      await import("../packages/vinext/src/shims/cache-request-state.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      await unstable_cache(async () => "value", ["route-life"], { revalidate: 1 })();
+      expect(_peekRequestScopedCacheLife()?.revalidate).toBe(1);
+    });
+  });
+
   it("unstable_cache caches undefined results", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -7280,6 +7303,61 @@ describe('"use cache" runtime', () => {
       } else {
         process.env.VINEXT_PRERENDER = previousPrerender;
       }
+    }
+  });
+
+  it("private variant marks ordinary on-demand route output dynamic", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      const cached = registerCachedFunction(
+        async () => "request-private",
+        "test:private-on-demand",
+        "private",
+      );
+      await cached();
+
+      expect(consumeDynamicUsage()).toBe(true);
+    });
+  });
+
+  it("does not attribute cache-handler infrastructure clocks to user output", async () => {
+    const { getCacheHandler, MemoryCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { runWithCacheComponentsPlatformIoTracking } =
+      await import("../packages/vinext/src/server/cache-components-platform-io.js");
+    const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
+    const handler = {
+      async get() {
+        Date.now();
+        await Promise.resolve();
+        Date.now();
+        return null;
+      },
+      async set() {
+        Date.now();
+      },
+      async revalidateTag() {
+        Date.now();
+      },
+    };
+    consumeDynamicUsage();
+    setCacheHandler(handler);
+
+    try {
+      await runWithCacheComponentsPlatformIoTracking(async () => {
+        const active = getCacheHandler();
+        await active.get("key");
+        await active.set("key", null);
+        await active.revalidateTag("tag");
+      });
+      expect(consumeDynamicUsage()).toBe(false);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
     }
   });
 

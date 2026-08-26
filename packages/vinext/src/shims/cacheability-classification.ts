@@ -3,7 +3,7 @@ import { getRequestExecutionContext } from "./request-context.js";
 export const CACHEABILITY_REQUEST_STATE = Symbol.for("vinext.cacheabilityRequestState");
 
 type CacheabilityClassificationState = {
-  mode?: "admit" | "admit-all" | "probe";
+  mode?: "admit" | "admit-all" | "identity" | "probe";
   route?: unknown;
 };
 
@@ -22,8 +22,8 @@ export function isRouteCacheabilityClassificationActive(): boolean {
   return readClassificationState()?.route !== undefined;
 }
 
-/** True only for the side-effect-free staged Worker probe pass. */
+/** True for every side-effect-free staged Worker observation request. */
 export function isStagedCacheabilityProbeActive(): boolean {
   const state = readClassificationState();
-  return state?.mode === "probe" && state.route !== undefined;
+  return state?.mode === "probe" || state?.mode === "identity";
 }

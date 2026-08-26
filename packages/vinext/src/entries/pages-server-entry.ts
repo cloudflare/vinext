@@ -27,6 +27,10 @@ const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", impor
 const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
 const _pagesPageHandlerPath = resolveEntryPath("../server/pages-page-handler.js", import.meta.url);
 const _isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
+const _fetchCachePreludePath = resolveEntryPath(
+  "../server/fetch-cache-prelude.js",
+  import.meta.url,
+);
 
 async function getPagesDataKind(filePath: string): Promise<"static" | "server" | "none"> {
   const source = await readFile(filePath, "utf8");
@@ -207,6 +211,7 @@ export async function runMiddleware(request) {
   // The server entry is a self-contained module that uses Web-standard APIs
   // (Request/Response, renderToReadableStream) so it runs on Cloudflare Workers.
   return `
+import ${JSON.stringify(_fetchCachePreludePath)};
 import ${JSON.stringify(_serverGlobalsPath)};
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
@@ -219,7 +224,7 @@ import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } 
 import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets as __setPagesClientAssets } from "vinext/server/pages-client-assets";
 import { runWithPrivateCache } from "vinext/cache-runtime";
-import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
+import { runWithFetchCache } from "vinext/fetch-cache";
 import "vinext/router-state";
 import { runWithServerInsertedHTMLState } from "vinext/navigation-state";
 import { runWithHeadState } from "vinext/head-state";

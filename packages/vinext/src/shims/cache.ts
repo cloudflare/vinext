@@ -642,6 +642,14 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   // production to get a stable, collision-free cache key.
   const tags = encodeCacheTags(options?.tags ?? []);
   const revalidateSeconds = options?.revalidate;
+  if (
+    typeof revalidateSeconds === "number" &&
+    (!Number.isFinite(revalidateSeconds) || revalidateSeconds <= 0)
+  ) {
+    throw new Error(
+      `Invariant revalidate: ${revalidateSeconds} can not be less than or equal to zero for unstable_cache().`,
+    );
+  }
 
   // Keep lookup, refresh, and serialization in the cache work unit as well as
   // the user callback. Next.js's synchronous platform-I/O wrappers no-op for
@@ -649,6 +657,14 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   // accidentally make the enclosing Cache Components route dynamic.
   const cachedFn = (...args: Parameters<T>) => {
     const operation = _unstableCacheAls.run(true, async () => {
+      if (typeof revalidateSeconds === "number") {
+        const life = { revalidate: revalidateSeconds };
+        _setRequestScopedCacheLife(life);
+        const cacheContext = getRegisteredCacheContext();
+        if (cacheContext && cacheContext.variant !== "private") {
+          cacheContext.lifeConfigs.push(life);
+        }
+      }
       const argsKey = JSON.stringify(args);
       const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
       addCollectedRequestTags(tags);

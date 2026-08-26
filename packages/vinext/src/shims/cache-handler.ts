@@ -386,6 +386,25 @@ const prospectiveCacheHandlerAls = getOrCreateAls<CacheHandler>(
 const prospectiveCacheFillsAls = getOrCreateAls<Set<Promise<unknown>>>(
   "vinext.cacheHandler.prospective.fills.als",
 );
+const untrackedCacheHandlers = new WeakSet<CacheHandler>();
+
+function suppressHandlerPlatformIoTracking(handler: CacheHandler): CacheHandler {
+  if (untrackedCacheHandlers.has(handler)) return handler;
+  untrackedCacheHandlers.add(handler);
+
+  const get = handler.get.bind(handler);
+  const set = handler.set.bind(handler);
+  const revalidateTag = handler.revalidateTag.bind(handler);
+  handler.get = (key, ctx) => runWithoutPlatformIoTracking(() => get(key, ctx));
+  handler.set = (key, data, ctx) => runWithoutPlatformIoTracking(() => set(key, data, ctx));
+  handler.revalidateTag = (tags, durations) =>
+    runWithoutPlatformIoTracking(() => revalidateTag(tags, durations));
+  if (handler.resetRequestCache) {
+    const resetRequestCache = handler.resetRequestCache.bind(handler);
+    handler.resetRequestCache = () => runWithoutPlatformIoTracking(() => resetRequestCache());
+  }
+  return handler;
+}
 
 export function trackProspectiveCacheFill<T>(promise: Promise<T>): void {
   const fills = prospectiveCacheFillsAls.getStore();
@@ -416,7 +435,9 @@ export function setDataCacheHandler(handler: CacheHandler): void {
 }
 
 export function getDataCacheHandler(): CacheHandler {
-  return prospectiveCacheHandlerAls.getStore() ?? getActiveHandler();
+  return suppressHandlerPlatformIoTracking(
+    prospectiveCacheHandlerAls.getStore() ?? getActiveHandler(),
+  );
 }
 
 /**
@@ -429,7 +450,7 @@ export function getDataCacheHandler(): CacheHandler {
  * second pass. This keeps remote KV latency from looking like uncached I/O.
  */
 export function runWithProspectiveDataCache<T>(fn: () => T): T {
-  const base = getActiveHandler();
+  const base = suppressHandlerPlatformIoTracking(getActiveHandler());
   const entries = new Map<string, CacheHandlerValue>();
   const handler: CacheHandler = {
     get(key, ctx) {

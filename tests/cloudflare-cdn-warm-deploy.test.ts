@@ -295,8 +295,13 @@ describe("Cloudflare CDN warmup deploy flow", () => {
             path.join(tmpDir, path.dirname(configArg), "entry.js"),
             "utf-8",
           );
-          expect(artifact).toContain("static-candidate");
-          expect(artifact).toContain("app-page:/products/:id");
+          const manifestArtifact = fs.readFileSync(
+            path.join(tmpDir, path.dirname(configArg), "__vinext_cacheability_manifest.js"),
+            "utf-8",
+          );
+          expect(artifact).toContain("__vinext_cacheability_manifest.js");
+          expect(manifestArtifact).toContain("static-candidate");
+          expect(manifestArtifact).toContain("app-page:/products/:id");
           expect(artifact).not.toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
         }
         return `Uploaded my-worker\nWorker Version ID: ${id}\nVersion Preview URL: https://${id.slice(0, 8)}-my-worker.example.workers.dev\n`;

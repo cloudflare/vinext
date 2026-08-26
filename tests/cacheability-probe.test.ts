@@ -37,6 +37,11 @@ import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import {
+  MemoryCacheHandler,
+  setDataCacheHandler,
+} from "../packages/vinext/src/shims/cache-handler.js";
+import { revalidateTag } from "../packages/vinext/src/shims/cache.js";
 
 const manifestGlobal = "__VINEXT_CACHEABILITY_MANIFEST__";
 
@@ -46,6 +51,7 @@ afterEach(() => {
   delete globalThis.__VINEXT_onRequestErrorHandler__;
   resetEmbeddedCacheabilityManifestForTests();
   setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+  setDataCacheHandler(new MemoryCacheHandler());
 });
 
 function createContext() {
@@ -101,6 +107,34 @@ function installExactPathManifest(): void {
 }
 
 describe("cacheability manifests", () => {
+  it.each(["1", "identity"])(
+    "keeps %s staged observations side-effect free before route selection",
+    async (mode) => {
+      const revalidate = vi.fn(async () => {});
+      setDataCacheHandler({
+        async get() {
+          return null;
+        },
+        async set() {},
+        revalidateTag: revalidate,
+      });
+      const request = new Request("https://example.com/middleware", {
+        headers: {
+          "X-Vinext-Cacheability-Probe": mode,
+          "X-Vinext-Prerender-Secret": "secret-a",
+        },
+      });
+      const ctx = createWorkerCacheabilityContext(createContext(), request, "secret-a");
+
+      await runWithExecutionContext(ctx, async () => {
+        revalidateTag("middleware-tag");
+        await Promise.resolve();
+      });
+
+      expect(revalidate).not.toHaveBeenCalled();
+    },
+  );
+
   it("treats request-varying config sources as unsafe independently of their conditions", () => {
     const base = {
       basePathState: { basePath: "", hadBasePath: true },
@@ -317,7 +351,12 @@ describe("cacheability manifests", () => {
       pattern: "/api/target",
       state: "static-candidate",
     });
-    expect(result.manifest.routes["app-route:/api/target"].generatedPaths).toHaveLength(10_000);
+    expect(
+      cacheabilityManifestHasGeneratedPath(
+        result.manifest.routes["app-route:/api/target"].generatedPaths,
+        "/api/source-9999",
+      ),
+    ).toBe(true);
     expect(result.resolutions).toHaveLength(1);
     expect(result.resolutions[0]).toMatchObject({
       exactPath: "/api/source",
@@ -368,7 +407,12 @@ describe("cacheability manifests", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(result.probed).toBe(1);
     expect(Object.keys(result.manifest.routes)).toHaveLength(2);
-    expect(result.manifest.routes["app-page:/catalog/:slug"].generatedPaths).toHaveLength(999);
+    expect(
+      cacheabilityManifestHasGeneratedPath(
+        result.manifest.routes["app-page:/catalog/:slug"].generatedPaths,
+        generatedPaths.at(-1)!,
+      ),
+    ).toBe(true);
     expect(JSON.stringify(result.manifest).length).toBeLessThan(25_000);
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -409,12 +453,17 @@ describe("cacheability manifests", () => {
     });
 
     expect(result.probed).toBe(1);
-    expect(result.manifest.routes["app-route:/api/products/:id"]).toEqual({
-      generatedPaths: ["/api/products/b"],
+    expect(result.manifest.routes["app-route:/api/products/:id"]).toMatchObject({
       kind: "app-route",
       pattern: "/api/products/:id",
       state: "runtime-check",
     });
+    expect(
+      cacheabilityManifestHasGeneratedPath(
+        result.manifest.routes["app-route:/api/products/:id"].generatedPaths,
+        "/api/products/b",
+      ),
+    ).toBe(true);
 
     vi.stubGlobal(manifestGlobal, JSON.stringify(result.manifest));
     resetEmbeddedCacheabilityManifestForTests();
@@ -480,9 +529,6 @@ describe("cacheability manifests", () => {
     });
 
     expect(Object.keys(result.manifest.routes)).toHaveLength(2);
-    expect(result.manifest.routes["app-route:/api/products/:id"].generatedPaths).toHaveLength(
-      99_999,
-    );
     const compactPaths = result.manifest.routes["app-route:/api/products/:id"].generatedPaths;
     expect(cacheabilityManifestHasGeneratedPath(compactPaths, "/api/products/item-99999")).toBe(
       true,
@@ -490,7 +536,7 @@ describe("cacheability manifests", () => {
     expect(cacheabilityManifestHasGeneratedPath(compactPaths, "/api/products/not-generated")).toBe(
       false,
     );
-    expect(JSON.stringify(result.manifest).length).toBeLessThan(3_500_000);
+    expect(JSON.stringify(result.manifest).length).toBeLessThan(900_000);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -616,11 +662,16 @@ describe("cacheability manifests", () => {
           isolatedConfigPath = path.join(root, configPath);
           const isolatedDirectory = path.dirname(isolatedConfigPath);
           const embedded = fs.readFileSync(path.join(isolatedDirectory, "entry.js"), "utf-8");
-          expect(embedded).toContain("app-page:/products/:id");
-          expect(embedded).not.toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
-          expect(fs.readFileSync(path.join(isolatedDirectory, "chunks/router.js"), "utf-8")).toBe(
-            embedded,
+          const manifestModule = fs.readFileSync(
+            path.join(isolatedDirectory, "__vinext_cacheability_manifest.js"),
+            "utf-8",
           );
+          expect(embedded).toContain("__vinext_cacheability_manifest.js");
+          expect(manifestModule).toContain("app-page:/products/:id");
+          expect(embedded).not.toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
+          expect(
+            fs.readFileSync(path.join(isolatedDirectory, "chunks/router.js"), "utf-8"),
+          ).toContain("../__vinext_cacheability_manifest.js");
           expect(fs.readFileSync(firstPath, "utf-8")).toBe(source);
           return "uploaded";
         },
@@ -665,6 +716,38 @@ describe("cacheability manifests", () => {
         ).not.toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
       },
     );
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("isolates a generated config at the dist root without recursive copying", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-dist-config-"));
+    fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "dist/server/entry.js"),
+      `export const value = ${JSON.stringify(CACHEABILITY_MANIFEST_PLACEHOLDER)};`,
+    );
+    fs.writeFileSync(
+      path.join(root, "dist/wrangler.json"),
+      JSON.stringify({ main: "server/entry.js" }),
+    );
+
+    expect(
+      withEmbeddedCacheabilityManifest(
+        root,
+        "dist/wrangler.json",
+        { routes: {}, version: 1 },
+        (configPath) => {
+          const isolated = path.join(root, configPath);
+          expect(JSON.parse(fs.readFileSync(isolated, "utf-8"))).toEqual({
+            main: "server/entry.js",
+          });
+          expect(
+            fs.readFileSync(path.join(path.dirname(isolated), "server/entry.js"), "utf-8"),
+          ).not.toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
+          return "uploaded";
+        },
+      ),
+    ).toBe("uploaded");
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -1435,7 +1518,7 @@ describe("buffered cache admission", () => {
     expect(returned[returned.length - 1]).toBe(2);
   });
 
-  it("fails excess concurrent captures closed before teeing another body", async () => {
+  it("queues excess concurrent captures before teeing another body", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const context = createWorkerCacheabilityContext(
       { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
@@ -1463,20 +1546,29 @@ describe("buffered cache admission", () => {
           controller.close();
         },
       });
-      const excess = await captureResponseBodyBounded(new Response(fallbackStream));
-      expect(excess).toMatchObject({
-        failClosed: true,
-        reason: expect.stringContaining("isolate budget"),
-      });
-      await expect(new Response(excess.fallback).arrayBuffer()).resolves.toEqual(
-        new Uint8Array([9]).buffer,
+      let excessSettled = false;
+      const excessPromise = captureResponseBodyBounded(new Response(fallbackStream)).then(
+        (capture) => {
+          excessSettled = true;
+          return capture;
+        },
       );
+      await Promise.resolve();
+      expect(excessSettled).toBe(false);
 
       for (const controller of controllers) controller.close();
       const completed = await Promise.all(pending);
       for (const capture of completed) {
         await capture.fallback?.cancel();
         if (!capture.failClosed) capture.release();
+      }
+
+      const excess = await excessPromise;
+      expect(excess.failClosed).toBe(false);
+      if (!excess.failClosed) {
+        expect(new Uint8Array(excess.body ?? new ArrayBuffer(0))).toEqual(new Uint8Array([9]));
+        await excess.fallback?.cancel();
+        excess.release();
       }
     });
   });
@@ -1543,7 +1635,7 @@ describe("buffered cache admission", () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it("retains failed tee captures in the aggregate budget until fallback cancellation", async () => {
+  it("retains failed tee reader slots until fallback cancellation", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const context = createWorkerCacheabilityContext(
       { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
@@ -1570,20 +1662,25 @@ describe("buffered cache admission", () => {
       }
       expect(failed.every((capture) => capture.failClosed)).toBe(true);
 
-      const excess = await captureResponseBodyBounded(
+      let excessSettled = false;
+      const excessPromise = captureResponseBodyBounded(
         new Response(new Uint8Array(CACHEABILITY_RESPONSE_BODY_LIMIT)),
-      );
-      expect(excess).toMatchObject({
-        failClosed: true,
-        reason: expect.stringContaining("isolate budget"),
+      ).then((capture) => {
+        excessSettled = true;
+        return capture;
       });
+      await Promise.resolve();
+      expect(excessSettled).toBe(false);
 
       await Promise.all(
         failed.map((capture) =>
           capture.failClosed ? capture.fallback.cancel() : Promise.resolve(),
         ),
       );
+      const excess = await excessPromise;
+      expect(excess.failClosed).toBe(false);
       await excess.fallback?.cancel();
+      if (!excess.failClosed) excess.release();
       const afterCancellation = await captureResponseBodyBounded(new Response(new Uint8Array([3])));
       expect(afterCancellation.failClosed).toBe(false);
       if (!afterCancellation.failClosed) {

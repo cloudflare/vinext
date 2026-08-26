@@ -1244,12 +1244,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         return options.renderErrorBoundaryPage(buildError);
       },
       renderSpecialError(specialError) {
-        return renderPageSpecialError(
-          options,
-          specialError,
-          serveStreamingMetadata,
-          interceptResult.interceptOpts,
-        ).then(classifyTerminalResponse);
+        return runCacheComponentsUserCode(async () =>
+          classifyTerminalResponse(
+            await renderPageSpecialError(
+              options,
+              specialError,
+              serveStreamingMetadata,
+              interceptResult.interceptOpts,
+            ),
+          ),
+        );
       },
       resolveSpecialError: resolveAppPageSpecialError,
     });
@@ -1413,20 +1417,28 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         return options.renderErrorBoundaryPage(renderError, errorOrigin);
       },
       renderLayoutSpecialError(specialError, layoutIndex) {
-        return renderLayoutSpecialError(
-          options,
-          specialError,
-          layoutIndex,
-          serveStreamingMetadata,
-        ).then(classifyTerminalResponse);
+        return runCacheComponentsUserCode(async () =>
+          classifyTerminalResponse(
+            await renderLayoutSpecialError(
+              options,
+              specialError,
+              layoutIndex,
+              serveStreamingMetadata,
+            ),
+          ),
+        );
       },
       renderPageSpecialError(specialError) {
-        return renderPageSpecialError(
-          options,
-          specialError,
-          serveStreamingMetadata,
-          interceptResult.interceptOpts,
-        ).then(classifyTerminalResponse);
+        return runCacheComponentsUserCode(async () =>
+          classifyTerminalResponse(
+            await renderPageSpecialError(
+              options,
+              specialError,
+              serveStreamingMetadata,
+              interceptResult.interceptOpts,
+            ),
+          ),
+        );
       },
       renderToReadableStream: options.renderToReadableStream,
       hasCustomGlobalError: options.hasCustomGlobalError,

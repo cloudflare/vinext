@@ -57,6 +57,26 @@ test("classifies bundled Cache Components handlers through staged probe requests
     status: 200,
     version: 1,
   });
+
+  const moduleAliasProbe = await request.get("/cache-probe/module-alias", { headers });
+  expect(moduleAliasProbe.ok()).toBe(true);
+  await expect(moduleAliasProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cache-probe/module-alias",
+    state: "dynamic",
+    status: 200,
+    version: 1,
+  });
+
+  const fetchAliasProbe = await request.get("/cache-probe/fetch-alias", { headers });
+  expect(fetchAliasProbe.ok()).toBe(true);
+  await expect(fetchAliasProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cache-probe/fetch-alias",
+    state: "dynamic",
+    status: 200,
+    version: 1,
+  });
 });
 
 test("identity probes skip rendering and non-GET handlers keep streaming", async ({ request }) => {

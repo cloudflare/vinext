@@ -54,7 +54,6 @@ import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
 import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
 import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
 import { getCurrentRootParams, type RootParams } from "./root-params.js";
-import { isRouteCacheabilityClassificationActive } from "./cacheability-classification.js";
 
 export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
@@ -611,6 +610,13 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         : admittedArgs;
       const callArgs = executionArgs as TArgs;
 
+      if (cacheVariant === "private") {
+        // Do this before key construction: even a non-serializable argument
+        // that makes private caching fall back to direct execution still makes
+        // the enclosing route request-specific.
+        markDynamicUsage();
+      }
+
       // Build the cache key. Use encodeReply (RSC protocol) when available —
       // it correctly handles React elements as temporary references (excluded
       // from key). Falls back to stableStringify when RSC is unavailable.
@@ -650,16 +656,6 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         const parentCtx = cacheContextStorage.getStore();
         if (parentCtx && parentCtx.variant !== "private") {
           throwPrivateUseCacheInsidePublicUseCacheError();
-        }
-
-        if (
-          (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") ||
-          isRouteCacheabilityClassificationActive()
-        ) {
-          // Next.js treats "use cache: private" as dynamic during prerendering:
-          // it is excluded from the static artifact and resolved per request.
-          // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
-          markDynamicUsage();
         }
 
         const privateCache = _getPrivateState()._privateCache!;

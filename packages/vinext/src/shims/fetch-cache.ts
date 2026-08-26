@@ -29,11 +29,12 @@ import {
 } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
-import { getHeadersContext, markDynamicUsage } from "./headers.js";
+import { getHeadersContext, isInsideAnyCacheScope, markDynamicUsage } from "./headers.js";
 import {
   _hasPendingRevalidatedTag,
   _queuePendingRevalidation,
   _setRequestScopedCacheLife,
+  getRegisteredCacheContext,
 } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
@@ -646,6 +647,7 @@ function getFetchObservationUrl(input: string | URL | Request): string {
 }
 
 function markUncachedFetchForPageOutput(input: string | URL | Request): void {
+  if (isInsideAnyCacheScope()) return;
   recordDynamicFetchObservation(input);
   // Next.js lowers the active prerender store to zero when an uncached fetch
   // makes the render dynamic. `force-static` is the exception: dynamic usage
@@ -657,6 +659,11 @@ function markUncachedFetchForPageOutput(input: string | URL | Request): void {
   markDynamicUsage();
 }
 
+function recordDynamicFetchForPageOutput(input: string | URL | Request): void {
+  if (isInsideAnyCacheScope()) return;
+  recordDynamicFetchObservation(input);
+}
+
 function recordCacheableFetchObservation(input: string | URL | Request): void {
   _getState().cacheableFetchUrls.add(getFetchObservationUrl(input));
 }
@@ -664,6 +671,10 @@ function recordCacheableFetchObservation(input: string | URL | Request): void {
 function recordFiniteFetchRevalidate(revalidateSeconds: number): void {
   if (Number.isFinite(revalidateSeconds) && revalidateSeconds > 0) {
     _setRequestScopedCacheLife({ revalidate: revalidateSeconds });
+    const cacheContext = getRegisteredCacheContext();
+    if (cacheContext && cacheContext.variant !== "private") {
+      cacheContext.lifeConfigs.push({ revalidate: revalidateSeconds });
+    }
   }
 }
 
@@ -1145,7 +1156,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
       // If no caching options at all, just pass through to original fetch
       if (!nextOpts && !cacheDirective) {
-        recordDynamicFetchObservation(input);
+        recordDynamicFetchForPageOutput(input);
         return dedupeFetch(input, init);
       }
 
@@ -1185,7 +1196,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
       if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
         const cleanInit = stripNextFromInit(init, cacheDirective);
-        recordDynamicFetchObservation(input);
+        recordDynamicFetchForPageOutput(input);
         return dedupeFetch(input, cleanInit);
       }
 
@@ -1220,7 +1231,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         } else {
           // next: {} with no revalidate or tags — pass through
           const cleanInit = stripNextFromInit(init, cacheDirective);
-          recordDynamicFetchObservation(input);
+          recordDynamicFetchForPageOutput(input);
           return dedupeFetch(input, cleanInit);
         }
       }
@@ -1269,7 +1280,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
           // limitation, not an explicit uncached-fetch decision, so record only
           // the observation (downgrading the page output to fresh render)
           // without marking the whole page dynamic.
-          recordDynamicFetchObservation(input);
+          recordDynamicFetchForPageOutput(input);
           return dedupeFetch(input, fetchInit);
         }
         throw err;

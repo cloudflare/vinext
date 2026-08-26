@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { CacheabilityProbeRoute } from "vinext/internal/build/prerender-paths";
 import {
   cacheabilityRouteKey,
+  encodeCacheabilityGeneratedPaths,
   type CacheabilityManifest,
   type CacheabilityManifestRoute,
   type CacheabilityRouteKind,
@@ -289,7 +290,7 @@ export async function probeStagedWorkerCacheability(options: {
     ];
     if (generatedSiblingPaths.length > 0) {
       routes[patternKey].generatedPaths = mergeGeneratedPaths(
-        routes[patternKey].generatedPaths ?? [],
+        Array.isArray(routes[patternKey].generatedPaths) ? routes[patternKey].generatedPaths : [],
         generatedSiblingPaths,
       );
     }
@@ -381,7 +382,9 @@ export async function probeStagedWorkerCacheability(options: {
           state: "runtime-check",
         });
         resolvedPatternRoute.generatedPaths = mergeGeneratedPaths(
-          resolvedPatternRoute.generatedPaths ?? [],
+          Array.isArray(resolvedPatternRoute.generatedPaths)
+            ? resolvedPatternRoute.generatedPaths
+            : [],
           route.probeGroupPaths,
         );
       }
@@ -393,6 +396,12 @@ export async function probeStagedWorkerCacheability(options: {
   // individual large response still fails classification closed.
   const fullProbeConcurrency = Math.max(1, Math.min(concurrency, probeRoutes.length || 1));
   await Promise.all(Array.from({ length: fullProbeConcurrency }, () => worker()));
+
+  for (const route of Object.values(routes)) {
+    if (Array.isArray(route.generatedPaths)) {
+      route.generatedPaths = encodeCacheabilityGeneratedPaths(route.generatedPaths);
+    }
+  }
 
   return {
     failures,

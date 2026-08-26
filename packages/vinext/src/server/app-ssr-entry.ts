@@ -439,13 +439,12 @@ export async function handleSsr(
 
     const rootParams = options?.rootParams ?? {};
     return runWithRootParamsScope(rootParams, async () => {
+      let rscEmbed: ReturnType<typeof createRscEmbedTransform> | undefined;
       try {
         // Fused tee path (#981): caller pre-split the stream. No internal tee needed.
         // sideStream carries both the embed transform and raw byte accumulation.
         // rscStream is used directly for createFromReadableStream (SSR).
         let ssrStream: ReadableStream<Uint8Array>;
-        let rscEmbed;
-
         if (options?.sideStream) {
           ssrStream = rscStream;
           try {
@@ -781,7 +780,7 @@ export async function handleSsr(
             ),
           ),
           () => {
-            void rscEmbed.cancel("HTML response stream completed or cancelled").catch(() => {});
+            void rscEmbed?.cancel("HTML response stream completed or cancelled").catch(() => {});
             cleanup();
           },
         );
@@ -802,6 +801,7 @@ export async function handleSsr(
           linkHeader: reactLinkHeader,
         };
       } catch (error) {
+        await rscEmbed?.cancel(error).catch(() => {});
         cleanup();
         throw error;
       }
