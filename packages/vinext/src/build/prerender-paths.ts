@@ -881,14 +881,10 @@ function configuredRouteAffectsWarmPath(
   );
   return [...rewrites, ...config.redirects, ...conditionalHeaders].some((rule) =>
     Array.from(matchPathnames).some((matchPathname) =>
-      matchesRewriteSource(
-        matchPathname,
-        { basePath: rule.basePath, destination: "/", source: rule.source },
-        {
-          basePath: config.basePath,
-          hadBasePath: true,
-        },
-      ),
+      matchesRewriteSource(matchPathname, rule, {
+        basePath: config.basePath,
+        hadBasePath: true,
+      }),
     ),
   );
 }

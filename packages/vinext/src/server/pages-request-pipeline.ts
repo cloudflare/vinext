@@ -43,6 +43,8 @@ import {
   methodNotAllowedResponse,
   sanitizeMethodNotAllowedHeaders,
 } from "./http-error-responses.js";
+import { configRoutesCanVaryResponse } from "./config-cache-safety.js";
+import { markRequestCacheabilityUnsafe } from "./cacheability-request.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -336,6 +338,18 @@ export async function runPagesRequest(
         hostname: requestHostname,
       })
     : requestConfigPathname;
+
+  if (
+    configRoutesCanVaryResponse({
+      basePathState,
+      headers: configHeaders,
+      pathname: requestConfigMatchPathname,
+      redirects: configRedirects,
+      rewrites: configRewrites,
+    })
+  ) {
+    markRequestCacheabilityUnsafe("request-conditional config can vary this pathname");
+  }
 
   // Step 4: Config redirects (before middleware)
   if (configRedirects.length) {

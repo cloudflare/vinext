@@ -410,8 +410,19 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
     "cache-probe static params on-demand",
   );
 
-  const staticRouteResponse = await waitForCdnHit(request, `${baseURL}/cache-probe/route-static`);
+  const staticRouteResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}/cache-probe/route-static`,
+  );
+  expect(staticRouteResponse.headers()["cf-cache-status"]).toBe("HIT");
   expect(await staticRouteResponse.text()).toBe("cache-probe static route handler");
+
+  const generatedStaticRouteResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}/cache-probe/route-static/known`,
+  );
+  expect(generatedStaticRouteResponse.headers()["cf-cache-status"]).toBe("HIT");
+  expect(await generatedStaticRouteResponse.text()).toBe("cache-probe static route handler known");
 
   const expectDynamic = async (
     pathname: string,

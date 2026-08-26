@@ -649,6 +649,23 @@ export function omitProvenDynamicWarmPaths(
   };
 }
 
+export function includeProvenStaticRouteHandlerWarmPaths(
+  plan: CdnWarmRequestPlan,
+  routes: NonNullable<PrerenderWarmPlan["cacheabilityRoutes"]>,
+  manifest: CacheabilityManifest,
+): CdnWarmRequestPlan {
+  const paths = new Set(plan.paths);
+  for (const route of routes) {
+    if (route.kind !== "app-route") continue;
+    const exactPath = route.path ?? route.probePath;
+    if (!exactPath) continue;
+    const result = manifest.routes[cacheabilityRouteKey(route.kind, route.pattern, exactPath)];
+    if (result?.state !== "static-candidate") continue;
+    for (const pathname of route.warmPaths ?? [exactPath]) paths.add(pathname);
+  }
+  return { ...plan, paths: Array.from(paths) };
+}
+
 function validateTwoStageCacheabilityArtifact(
   root: string,
   configuredPath: string | undefined,
@@ -930,7 +947,11 @@ export async function deployWithCdnWarmup(
             cacheabilityRoutes,
             probeResult.manifest,
           );
-          remainingWarmPlan = filteredWarmPlan.plan;
+          remainingWarmPlan = includeProvenStaticRouteHandlerWarmPaths(
+            filteredWarmPlan.plan,
+            cacheabilityRoutes,
+            probeResult.manifest,
+          );
           if (filteredWarmPlan.omitted > 0) {
             console.log(
               `  CDN warmup: omitted ${filteredWarmPlan.omitted} concrete path(s) belonging to proven-dynamic route patterns.`,

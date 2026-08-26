@@ -162,6 +162,54 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     });
   });
 
+  it("adds only proven-static Route Handler representations to the final warm plan", async () => {
+    const { includeProvenStaticRouteHandlerWarmPaths } =
+      await import("../packages/cloudflare/src/deploy.js");
+
+    expect(
+      includeProvenStaticRouteHandlerWarmPaths(
+        { loadingShellPaths: [], paths: ["/page"], rscPaths: ["/page"] },
+        [
+          {
+            kind: "app-route",
+            path: "/api/static",
+            pattern: "/api/:kind",
+            probePath: "/api/static",
+            warmPaths: ["/api/static"],
+          },
+          {
+            kind: "app-route",
+            path: "/api/dynamic",
+            pattern: "/api/:kind",
+            probePath: "/api/dynamic",
+            warmPaths: ["/api/dynamic"],
+          },
+        ],
+        {
+          routes: {
+            '["app-route","/api/:kind","/api/static"]': {
+              kind: "app-route",
+              path: "/api/static",
+              pattern: "/api/:kind",
+              state: "static-candidate",
+            },
+            '["app-route","/api/:kind","/api/dynamic"]': {
+              kind: "app-route",
+              path: "/api/dynamic",
+              pattern: "/api/:kind",
+              state: "dynamic",
+            },
+          },
+          version: 1,
+        },
+      ),
+    ).toEqual({
+      loadingShellPaths: [],
+      paths: ["/page", "/api/static"],
+      rscPaths: ["/page"],
+    });
+  });
+
   it("uploads a probe Worker, builds a route manifest, then warms and promotes a second Worker", async () => {
     const events: string[] = [];
     writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker", workers_dev: true }));

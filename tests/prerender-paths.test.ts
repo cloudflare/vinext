@@ -40,6 +40,12 @@ describe("prerender path manifest", () => {
         }
         if (
           url.pathname === "/__vinext/prerender/static-params" &&
+          url.searchParams.get("pattern") === "/cache-handler/:slug"
+        ) {
+          return Response.json([{ slug: "one" }, { slug: "two" }]);
+        }
+        if (
+          url.pathname === "/__vinext/prerender/static-params" &&
           url.searchParams.get("pattern") === "/:path+"
         ) {
           return Response.json([
@@ -98,6 +104,14 @@ describe("prerender path manifest", () => {
       "export const revalidate = 60; export function GET() { return new Response('cached'); }\n",
     );
     writeFile(
+      "app/cache-handler/[slug]/route.ts",
+      [
+        "export const revalidate = 60;",
+        "export function generateStaticParams() { return [{ slug: 'one' }, { slug: 'two' }]; }",
+        "export function GET() { return new Response('cached'); }",
+      ].join("\n"),
+    );
+    writeFile(
       "app/dynamic/page.tsx",
       "export const dynamic = 'force-dynamic'; export default function Page() { return null; }\n",
     );
@@ -139,6 +153,20 @@ describe("prerender path manifest", () => {
         },
         {
           kind: "app-route",
+          path: "/cache-handler/one",
+          pattern: "/cache-handler/:slug",
+          probePath: "/cache-handler/one",
+          warmPaths: ["/cache-handler/one"],
+        },
+        {
+          kind: "app-route",
+          path: "/cache-handler/two",
+          pattern: "/cache-handler/:slug",
+          probePath: "/cache-handler/two",
+          warmPaths: ["/cache-handler/two"],
+        },
+        {
+          kind: "app-route",
           path: "/cache-route",
           pattern: "/cache-route",
           probePath: "/cache-route",
@@ -160,6 +188,10 @@ describe("prerender path manifest", () => {
     ).toEqual(manifest);
     expect(fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:43210/__vinext/prerender/static-params?pattern=%2Fcached%2F%3Aslug",
+      expect.any(Object),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:43210/__vinext/prerender/static-params?pattern=%2Fcache-handler%2F%3Aslug",
       expect.any(Object),
     );
     expect(startProdServerMock).toHaveBeenCalledOnce();

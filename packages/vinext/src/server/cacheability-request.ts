@@ -31,7 +31,9 @@ type CacheabilityRequestState = {
   mode: "admit" | "admit-all" | "probe";
   outcome?: CacheabilityOutcome;
   provisionalPolicy?: CacheabilityPolicySnapshot;
+  requestPathname: string;
   route?: CacheabilityRequestRoute;
+  unsafeReason?: string;
 };
 
 type CacheabilityPolicySnapshot = {
@@ -236,6 +238,7 @@ export function createWorkerCacheabilityContext(
 
   const state: CacheabilityRequestState = {
     mode: authorizedProbe ? "probe" : manifest ? "admit" : "admit-all",
+    requestPathname: new URL(request.url).pathname,
   };
   return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
     [CACHEABILITY_STATE]: state,
@@ -256,18 +259,37 @@ export function beginRouteCacheability(
   // the completed artifact programmatically and must retain streaming parity.
   if (state.mode !== "probe" && getCdnCacheAdapter().ownsBackgroundRevalidation) return false;
 
+  const manifestRoutes = getEmbeddedCacheabilityManifest()?.routes;
   const manifestRoute =
-    getEmbeddedCacheabilityManifest()?.routes[cacheabilityRouteKey(kind, pattern)];
+    manifestRoutes?.[cacheabilityRouteKey(kind, pattern, state.requestPathname)] ??
+    manifestRoutes?.[cacheabilityRouteKey(kind, pattern)];
+  state.route = { kind, pattern, partialPrerender: options.partialPrerender === true };
+  state.manifestRoute = manifestRoute;
+
+  if (state.unsafeReason) {
+    state.outcome = { cacheable: false, reason: state.unsafeReason };
+    return true;
+  }
   if (
     state.mode === "admit" &&
     (manifestRoute?.state === "dynamic" || manifestRoute?.state === "probe-failed")
   ) {
+    state.route = undefined;
+    state.manifestRoute = undefined;
     return false;
   }
 
-  state.route = { kind, pattern, partialPrerender: options.partialPrerender === true };
-  state.manifestRoute = manifestRoute;
   return true;
+}
+
+/** Prevent whole-response CDN admission when an earlier request phase can vary this URL. */
+export function markRequestCacheabilityUnsafe(reason: string): void {
+  const state = readState(getRequestExecutionContext());
+  if (!state || state.unsafeReason) return;
+  state.unsafeReason = reason;
+  if (state.route) {
+    recordRouteCacheability({ cacheable: false, reason });
+  }
 }
 
 export function deferRouteCacheability(): ((outcome: CacheabilityOutcome) => void) | null {

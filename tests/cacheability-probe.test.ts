@@ -18,11 +18,14 @@ import {
   createWorkerCacheabilityContext,
   deferRouteCacheability,
   finalizeWorkerCacheabilityResponse,
+  markRequestCacheabilityUnsafe,
   markRouteCacheabilityPolicyProvisional,
 } from "../packages/vinext/src/server/cacheability-request.js";
 import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
 import { finalizeAppPageHtmlCacheResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 import { applyConfigHeadersToResponse } from "../packages/vinext/src/server/config-headers.js";
+import { configRoutesCanVaryResponse } from "../packages/vinext/src/server/config-cache-safety.js";
+import { executeMiddleware } from "../packages/vinext/src/server/middleware-runtime.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
   DefaultCdnCacheAdapter,
@@ -61,7 +64,68 @@ function installManifest(
   resetEmbeddedCacheabilityManifestForTests();
 }
 
+function installExactPathManifest(): void {
+  vi.stubGlobal(
+    manifestGlobal,
+    JSON.stringify({
+      routes: {
+        "app-page:/products/:id": {
+          kind: "app-page",
+          pattern: "/products/:id",
+          state: "runtime-check",
+        },
+        [cacheabilityRouteKey("app-page", "/products/:id", "/products/static")]: {
+          kind: "app-page",
+          path: "/products/static",
+          pattern: "/products/:id",
+          state: "static-candidate",
+        },
+        [cacheabilityRouteKey("app-page", "/products/:id", "/products/dynamic")]: {
+          kind: "app-page",
+          path: "/products/dynamic",
+          pattern: "/products/:id",
+          state: "dynamic",
+        },
+      },
+      version: 1,
+    }),
+  );
+  resetEmbeddedCacheabilityManifestForTests();
+}
+
 describe("cacheability manifests", () => {
+  it("treats request-varying config sources as unsafe independently of their conditions", () => {
+    const base = {
+      basePathState: { basePath: "", hadBasePath: true },
+      pathname: "/account",
+      redirects: [],
+      rewrites: { afterFiles: [], beforeFiles: [], fallback: [] },
+    };
+    expect(
+      configRoutesCanVaryResponse({
+        ...base,
+        headers: [
+          {
+            source: "/account",
+            has: [{ type: "cookie", key: "session" }],
+            headers: [{ key: "Cache-Control", value: "no-store" }],
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      configRoutesCanVaryResponse({
+        ...base,
+        headers: [
+          {
+            source: "/account",
+            headers: [{ key: "X-Static", value: "same-for-every-request" }],
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
   it("rejects malformed and key-inconsistent route entries", () => {
     expect(parseCacheabilityManifest("not-json")).toBeNull();
     expect(
@@ -308,6 +372,101 @@ describe("buffered cache admission", () => {
   // Next.js decides static eligibility from the completed render and throws on
   // static-to-dynamic transitions rather than caching request-specific output:
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/app-page-runtime.ts
+  it("uses an exact path classification before the route-pattern fallback", async () => {
+    installExactPathManifest();
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+
+    const dynamicContext = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/dynamic"),
+      "secret-a",
+    );
+    await runWithExecutionContext(dynamicContext, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(false);
+    });
+
+    const staticContext = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/static"),
+      "secret-a",
+    );
+    await runWithExecutionContext(staticContext, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+    });
+
+    const fallbackContext = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/on-demand"),
+      "secret-a",
+    );
+    await runWithExecutionContext(fallbackContext, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+    });
+  });
+
+  it("fails closed when an earlier request phase can vary the route", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/conditional"),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      markRequestCacheabilityUnsafe("request-conditional config can vary this pathname");
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      return finalizeWorkerCacheabilityResponse(
+        new Response("public-looking", {
+          headers: { "Cache-Control": "public, s-maxage=60" },
+        }),
+        ctx,
+      );
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    await expect(response.text()).resolves.toBe("public-looking");
+  });
+
+  it("disables admission when a middleware source matches but its request condition does not", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/products/conditional");
+    const ctx = createWorkerCacheabilityContext(createContext(), request, "secret-a");
+    const middleware = vi.fn(() => new Response(null));
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      const middlewareResult = await executeMiddleware({
+        isProxy: false,
+        module: {
+          config: {
+            matcher: [
+              {
+                source: "/products/:id",
+                has: [{ type: "header", key: "authorization" }],
+              },
+            ],
+          },
+          middleware,
+        },
+        request,
+      });
+      expect(middlewareResult.continue).toBe(true);
+      expect(middleware).not.toHaveBeenCalled();
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      return finalizeWorkerCacheabilityResponse(
+        new Response("public-looking", {
+          headers: { "Cache-Control": "public, s-maxage=60" },
+        }),
+        ctx,
+      );
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+  });
+
   it("restores edge cache headers only after a candidate response completes static", async () => {
     installManifest();
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());

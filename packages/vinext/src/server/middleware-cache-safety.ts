@@ -5,9 +5,9 @@ export type MiddlewareCacheSafetyMatcher =
   | string
   | Array<
       | {
-          has?: Array<Record<string, string>>;
+          has?: readonly unknown[];
           locale?: false;
-          missing?: Array<Record<string, string>>;
+          missing?: readonly unknown[];
           source: string;
         }
       | string

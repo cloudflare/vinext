@@ -106,6 +106,8 @@ import {
   type AppRouteTreePrefetchRoute,
   type PrefetchInliningConfig,
 } from "./app-route-tree-prefetch.js";
+import { configRoutesCanVaryResponse } from "./config-cache-safety.js";
+import { markRequestCacheabilityUnsafe } from "./cacheability-request.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -821,6 +823,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // `/rewrite`, unlike Next.js. Dynamic captures must likewise retain their
   // original percent-encoding for Location substitution.
   const redirectPathname = matchPathname(requestCleanPathname);
+  if (
+    configRoutesCanVaryResponse({
+      basePathState,
+      headers: options.configHeaders,
+      pathname: redirectPathname,
+      redirects: options.configRedirects,
+      rewrites: options.configRewrites,
+    })
+  ) {
+    markRequestCacheabilityUnsafe("request-conditional config can vary this pathname");
+  }
   const configMatchers =
     HAS_CONFIG_REDIRECTS && options.configRedirects.length
       ? await import("../config/config-matchers.js")
