@@ -5,7 +5,7 @@
  * and 404 handling. Used by the Playwright webServer config to serve
  * the static export output without requiring external dependencies.
  *
- * Usage: node serve-static.mjs <root-dir> <port>
+ * Usage: node serve-static.mjs <root-dir> <port> [mount-path]
  */
 import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
@@ -13,18 +13,25 @@ import { join, extname, resolve, sep } from "node:path";
 
 const rawRoot = process.argv[2];
 const rawPort = process.argv[3];
+const rawMountPath = process.argv[4] ?? "";
 
 if (!rawRoot || !rawPort) {
-  console.error("Usage: node serve-static.mjs <root-dir> <port>");
+  console.error("Usage: node serve-static.mjs <root-dir> <port> [mount-path]");
   process.exit(1);
 }
 
 const rootDir = resolve(rawRoot);
 const rootPrefix = rootDir.endsWith(sep) ? rootDir : rootDir + sep;
 const port = parseInt(rawPort, 10);
+const mountPath = rawMountPath === "/" ? "" : rawMountPath.replace(/\/$/, "");
 
 if (!Number.isInteger(port) || port < 1 || port > 65535) {
   console.error(`Invalid port: "${rawPort}". Must be an integer between 1 and 65535.`);
+  process.exit(1);
+}
+
+if (mountPath !== "" && (!mountPath.startsWith("/") || mountPath.includes("?"))) {
+  console.error(`Invalid mount path: "${rawMountPath}". Must be an absolute URL pathname.`);
   process.exit(1);
 }
 
@@ -79,6 +86,20 @@ const server = createServer(async (req, res) => {
   try {
     const parsed = new URL(req.url ?? "/", "http://localhost");
     let pathname = decodeURIComponent(parsed.pathname);
+
+    if (mountPath !== "") {
+      if (pathname !== mountPath && !pathname.startsWith(`${mountPath}/`)) {
+        res.writeHead(404);
+        res.end("Not Found");
+        return;
+      }
+      // vinext writes basePath-prefixed `_next` assets to disk so they can be
+      // served verbatim, while exported page and Flight artifacts stay rooted
+      // at the export directory and are mounted below basePath by the host.
+      if (!pathname.startsWith(`${mountPath}/_next/`)) {
+        pathname = pathname.slice(mountPath.length) || "/";
+      }
+    }
 
     // Directory index
     if (pathname.endsWith("/")) pathname += "index.html";

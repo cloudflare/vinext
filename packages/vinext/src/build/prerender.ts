@@ -1591,8 +1591,9 @@ export async function prerenderApp({
         // Keep urlPath unchanged for manifest and output-file identity.
         // Ported from Next.js: packages/next/src/export/worker.ts
         // https://github.com/vercel/next.js/blob/canary/packages/next/src/export/worker.ts
-        const requestPath =
+        const routeRequestPath =
           config.trailingSlash && !urlPath.endsWith("/") ? `${urlPath}/` : urlPath;
+        const requestPath = `${config.basePath ?? ""}${routeRequestPath}`;
         const htmlRequest = new Request(`http://localhost${requestPath}`, {
           headers: htmlHeaders,
         });

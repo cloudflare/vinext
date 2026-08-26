@@ -443,7 +443,13 @@ export async function createRscRequestUrl(href: string, headers: Headers): Promi
     // Static hosts cannot select Flight with request headers, so exported App
     // Router navigations address the prebuilt payload directly. The bytes are
     // still RSC; `.txt` supplies a portable MIME type across asset hosts.
-    url.pathname += url.pathname.endsWith("/") ? "index.txt" : ".txt";
+    const basePath = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+    const isBasePathRoot = basePath !== "" && url.pathname === basePath;
+    if (url.pathname.endsWith("/")) {
+      url.pathname += "index.txt";
+    } else {
+      url.pathname += isBasePathRoot ? "/index.txt" : ".txt";
+    }
     return `${url.pathname}${url.search}`;
   }
   const hash = await computeRscCacheBustingSearchParam(headers);

@@ -246,6 +246,65 @@ describe("extractRscPayloadFromPrerenderedHtml", () => {
 });
 
 describe("prerenderApp — RSC extraction", () => {
+  it("requests App pages through basePath while writing basePath-free artifacts", async () => {
+    const root = tmpDir("vinext-prerender-app-basepath-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "page.tsx"),
+      "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
+    );
+
+    const requestedPaths: string[] = [];
+    const rscPayload = '0:["$","main",null,{"children":"basePath page"}]\n';
+    const server = createServer((req, res) => {
+      requestedPaths.push(req.url ?? "");
+      if (req.url !== "/docs/") {
+        res.statusCode = 404;
+        res.end("<html>not found</html>");
+        return;
+      }
+      res.setHeader("content-type", "text/html");
+      res.end(
+        "<html><body>" +
+          runtimeRscChunkScript(rscPayload) +
+          runtimeRscDoneScript() +
+          "</body></html>",
+      );
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await appRouter(appDir);
+      const config = await resolveNextConfig({ basePath: "/docs" });
+
+      const result = await prerenderApp({
+        mode: "export",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes,
+        outDir,
+        config,
+        _prodServer: { server, port },
+      });
+
+      expect(requestedPaths).toContain("/docs/");
+      expect(requestedPaths).not.toContain("/");
+      expect(findRoute(result.routes, "/")).toMatchObject({
+        route: "/",
+        status: "rendered",
+      });
+      expect(fs.readFileSync(path.join(outDir, "index.txt"), "utf8")).toBe(rscPayload);
+      expect(fs.existsSync(path.join(outDir, "docs", "index.txt"))).toBe(false);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("requests metadata routes through basePath while writing basePath-free artifacts", async () => {
     const root = tmpDir("vinext-prerender-metadata-basepath-");
     const outDir = path.join(root, "out");

@@ -163,6 +163,15 @@ describe("App Router RSC cache-busting", () => {
           await expect(createRscRequestUrl("/docs?tab=api", headers)).resolves.toBe(
             "/docs.txt?tab=api",
           );
+          await withEnvVar("__NEXT_ROUTER_BASEPATH", "/docs", async () => {
+            await expect(createRscRequestUrl("/docs", headers)).resolves.toBe("/docs/index.txt");
+            await expect(createRscRequestUrl("/docs?tab=api", headers)).resolves.toBe(
+              "/docs/index.txt?tab=api",
+            );
+            await expect(createRscRequestUrl("/docs/about", headers)).resolves.toBe(
+              "/docs/about.txt",
+            );
+          });
         });
       });
     } finally {
