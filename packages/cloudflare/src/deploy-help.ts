@@ -32,7 +32,8 @@ export function formatDeployHelp(): string {
     --warm-cdn-discovery-timeout <ms>
                              Total staged path-discovery deadline (default: 120000)
     --warm-cdn-discovery-retries <n>
-                             Staged path-discovery retries (default: 60)
+                             Optional staged path-discovery retry limit
+                             (default: derived from the discovery deadline)
     --warm-cdn-readiness-timeout <ms>
                              Total staged-readiness deadline (default: 120000)
     --warm-cdn-readiness-retries <n>
