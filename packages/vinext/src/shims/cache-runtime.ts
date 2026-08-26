@@ -53,6 +53,11 @@ import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
 import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
 import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
 import { getCurrentRootParams, type RootParams } from "./root-params.js";
+import {
+  isRouteCacheabilityProbe,
+  recordRouteCacheability,
+} from "./cacheability-classification.js";
+import { DynamicServerError } from "./navigation-errors.js";
 
 export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
@@ -592,8 +597,22 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   // it's scoped to a single request and doesn't persist across HMR.
   const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
 
-  const cachedFn = (...args: TArgs): Promise<TResult> =>
-    trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
+  const cachedFn = (...args: TArgs): Promise<TResult> => {
+    if (cacheVariant === "private") {
+      // Next.js decides that a private cache requires request-time execution at
+      // the cache boundary, before key serialization or any private user code.
+      markDynamicUsage();
+      if (isRouteCacheabilityProbe()) {
+        recordRouteCacheability({
+          cacheable: false,
+          dynamicUsage: true,
+          reason: '"use cache: private" requires request-time execution',
+        });
+        throw new DynamicServerError('"use cache: private" requires request-time execution');
+      }
+    }
+
+    return trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
       const rsc = await getRscModule();
       const keySeed = getUseCacheKeySeed();
       const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
@@ -608,13 +627,6 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         ? [captures, ...admittedArgs.slice(1)]
         : admittedArgs;
       const callArgs = executionArgs as TArgs;
-
-      if (cacheVariant === "private") {
-        // Private cache results are request-specific. Mark the enclosing route
-        // before key construction so a direct-execution fallback cannot make
-        // the response look reusable.
-        markDynamicUsage();
-      }
 
       // Build the cache key. Use encodeReply (RSC protocol) when available —
       // it correctly handles React elements as temporary references (excluded
@@ -842,6 +854,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
       return collectedResult ? collectedResult.result : result;
     }, cacheVariant);
+  };
 
   // Preserve the original function's arity on the wrapper. The wrapper is
   // declared as `(...args)` (arity 0), which hides the original signature.

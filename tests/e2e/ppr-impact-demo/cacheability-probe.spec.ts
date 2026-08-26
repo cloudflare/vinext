@@ -75,7 +75,6 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     kind: "app-page",
     pattern: "/cacheability/use-cache-private",
     state: "dynamic",
-    status: 200,
     version: 1,
   });
 
