@@ -169,6 +169,62 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toThrow(`Worker main module to import ${CACHEABILITY_MANIFEST_MODULE}`);
   });
 
+  it.each([
+    ["comment", `// import "./${CACHEABILITY_MANIFEST_MODULE}";\nexport default {};\n`],
+    [
+      "string",
+      `const marker = 'import "./${CACHEABILITY_MANIFEST_MODULE}"';\nexport default {};\n`,
+    ],
+    [
+      "template",
+      `const marker = \`import "./${CACHEABILITY_MANIFEST_MODULE}"\`;\nexport default {};\n`,
+    ],
+    [
+      "regular expression",
+      `/import "\\.\\/${CACHEABILITY_MANIFEST_MODULE}"/;\nexport default {};\n`,
+    ],
+    ["dynamic import", `void import("./${CACHEABILITY_MANIFEST_MODULE}");\nexport default {};\n`],
+    [
+      "longer specifier",
+      `import "./${CACHEABILITY_MANIFEST_MODULE}.backup";\nexport default {};\n`,
+    ],
+  ])("rejects a manifest filename mentioned only by a %s", (_label, mainSource) => {
+    writeTwoStageWorkerArtifact();
+    writeFile("dist/server/index.js", mainSource);
+
+    expect(() =>
+      withCacheabilityManifestArtifact(
+        tmpDir,
+        "dist/server/wrangler.json",
+        { buildId: "build-a", routes: {}, version: 1 },
+        () => undefined,
+      ),
+    ).toThrow(`Worker main module to import ${CACHEABILITY_MANIFEST_MODULE}`);
+  });
+
+  it.each([
+    [
+      "static import",
+      `import manifest from "./${CACHEABILITY_MANIFEST_MODULE}";\nexport default manifest;\n`,
+    ],
+    [
+      "static re-export",
+      `export { default as manifest } from "./${CACHEABILITY_MANIFEST_MODULE}";\n`,
+    ],
+  ])("accepts a manifest reached by a %s", (_label, mainSource) => {
+    writeTwoStageWorkerArtifact();
+    writeFile("dist/server/index.js", mainSource);
+
+    expect(() =>
+      withCacheabilityManifestArtifact(
+        tmpDir,
+        "dist/server/wrangler.json",
+        { buildId: "build-a", routes: {}, version: 1 },
+        () => undefined,
+      ),
+    ).not.toThrow();
+  });
+
   it("rejects a manifest with more exact identities than the deployment bound", () => {
     writeTwoStageWorkerArtifact();
     const route = {
