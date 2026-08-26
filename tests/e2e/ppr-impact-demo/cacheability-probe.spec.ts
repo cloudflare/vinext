@@ -49,6 +49,36 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/use-cache/use-cache.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache/use-cache.test.ts
+  const publicUseCacheProbe = await request.get("/cacheability/use-cache-public-no-store", {
+    headers,
+  });
+  expect(publicUseCacheProbe.ok()).toBe(true);
+  await expect(publicUseCacheProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cacheability/use-cache-public-no-store",
+    state: "static-candidate",
+    status: 200,
+    version: 1,
+  });
+
+  // Ported from Next.js:
+  // packages/next/src/server/use-cache/use-cache-wrapper.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  const privateUseCacheProbe = await request.get("/cacheability/use-cache-private", {
+    headers,
+  });
+  expect(privateUseCacheProbe.ok()).toBe(true);
+  await expect(privateUseCacheProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cacheability/use-cache-private",
+    state: "dynamic",
+    status: 200,
+    version: 1,
+  });
+
   const identityProbe = await request.get("/cacheability/static", {
     headers: { ...headers, [probeHeader]: "identity" },
   });
