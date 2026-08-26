@@ -394,24 +394,18 @@ type UseCacheGuardContext = {
   invalidDynamicUsageError?: unknown;
 };
 
-type CacheScopeStorage = {
-  getStore: () => unknown;
-};
-
-function _getGlobalCacheScopeStorage(key: symbol): CacheScopeStorage | null {
+function _getGlobalCacheScopeStore(key: symbol): unknown {
   const value = Reflect.get(globalThis, key);
   if (!value || typeof value !== "object") return null;
 
   const getStore = Reflect.get(value, "getStore");
   if (typeof getStore !== "function") return null;
 
-  return {
-    getStore: () => getStore.call(value),
-  };
+  return getStore.call(value);
 }
 
 function _getUseCacheGuardContext(): UseCacheGuardContext | null {
-  const store = _getGlobalCacheScopeStorage(_USE_CACHE_ALS_KEY)?.getStore();
+  const store = _getGlobalCacheScopeStore(_USE_CACHE_ALS_KEY);
   if (!store || typeof store !== "object") return null;
   return store;
 }
@@ -426,7 +420,7 @@ function _isInsidePublicUseCache(): boolean {
 }
 
 function _isInsideUnstableCache(): boolean {
-  return _getGlobalCacheScopeStorage(_UNSTABLE_CACHE_ALS_KEY)?.getStore() === true;
+  return _getGlobalCacheScopeStore(_UNSTABLE_CACHE_ALS_KEY) === true;
 }
 
 /** Whether work is executing inside a cache boundary that owns its reuse. */
