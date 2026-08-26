@@ -101,12 +101,14 @@ import {
   recordRouteCacheabilityClassificationFailure,
   recordRouteCacheabilityCapturedBody,
   markRouteCacheabilityPolicyProvisional,
+  markRouteCacheabilityResponsePolicyExplicit,
 } from "./cacheability-request.js";
 import {
   applyCdnResponseHeaders,
   buildRevalidateCacheControl,
   hasExplicitNonCacheableResponsePolicy,
   NO_STORE_CACHE_CONTROL,
+  responseHasMatchingCachePolicy,
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
 import {
@@ -753,6 +755,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       const explicitlyUncacheable =
         response.headers.has("set-cookie") ||
         hasExplicitNonCacheableResponsePolicy(response.headers);
+      const middlewareOwnsCachePolicy =
+        !response.headers.has("set-cookie") &&
+        responseHasMatchingCachePolicy(response.headers, options.middlewareContext.headers);
       const uncacheableRscVariant =
         options.isRscRequest &&
         (Boolean(options.mountedSlotsHeader) || options.bypassInterceptionContextCache === true);
@@ -777,7 +782,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         completedRevalidateSeconds !== 0;
       const headers = new Headers(response.headers);
       if (!canCacheTerminalResponse || completedRevalidateSeconds === null) {
-        applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+        if (!middlewareOwnsCachePolicy) {
+          applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+        }
         recordRouteCacheability({
           cacheable: false,
           ...(dynamicUsage ? { dynamicUsage: true } : {}),
@@ -798,7 +805,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           getCollectedFetchTags(),
           route.routeSegments,
         );
-        applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader, tags });
+        if (!middlewareOwnsCachePolicy) {
+          applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader, tags });
+        }
         // Middleware is request-specific and runs again on cache replay. Persist
         // only terminal metadata owned by the route renderer itself.
         const storedHeaders: Record<string, string> = {};
@@ -849,7 +858,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         status: response.status,
         statusText: response.statusText,
       });
-      markRouteCacheabilityPolicyProvisional(terminalResponse.headers);
+      if (middlewareOwnsCachePolicy) {
+        markRouteCacheabilityResponsePolicyExplicit(terminalResponse.headers);
+      } else {
+        markRouteCacheabilityPolicyProvisional(terminalResponse.headers);
+      }
       return terminalResponse;
     } finally {
       if (!transferredCapture) captured.release();

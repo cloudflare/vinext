@@ -4,6 +4,7 @@ import {
   buildRevalidateCacheControl,
   hasExplicitNonCacheableResponsePolicy,
   NO_STORE_CACHE_CONTROL,
+  responseHasMatchingCachePolicy,
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -22,6 +23,7 @@ import {
   deferRouteCacheability,
   isCacheabilityClassificationError,
   markRouteCacheabilityPolicyProvisional,
+  markRouteCacheabilityResponsePolicyExplicit,
   recordRouteCacheabilityCapturedBody,
 } from "./cacheability-request.js";
 import type { CapturedAppPageRscData } from "./app-page-stream.js";
@@ -73,6 +75,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   expireSeconds?: number;
   revalidateSeconds: number | null;
   linkHeader: string | null;
+  middlewareHeaders?: Headers | null;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
@@ -93,6 +96,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   interceptionContext?: string | null;
   interceptionId?: string | null;
   mountedSlotsHeader?: string | null;
+  middlewareHeaders?: Headers | null;
   omitPendingDynamicCacheState?: boolean;
   renderMode?: AppRscRenderMode;
   preserveClientResponseHeaders?: boolean;
@@ -210,6 +214,9 @@ export function finalizeAppPageHtmlCacheResponse(
   const clientHeaders = new Headers(response.headers);
   const responseExplicitlyUncacheable =
     response.headers.has("set-cookie") || hasExplicitNonCacheableResponsePolicy(response.headers);
+  const middlewareOwnsCachePolicy =
+    !response.headers.has("set-cookie") &&
+    responseHasMatchingCachePolicy(response.headers, options.middlewareHeaders);
   const completeCacheability = deferRouteCacheability();
   let clientPolicyIsFrameworkProvisional = false;
   let cacheabilityCompleted = false;
@@ -219,11 +226,17 @@ export function finalizeAppPageHtmlCacheResponse(
     completeCacheability(outcome);
   };
   if (options.preserveClientResponseHeaders !== true) {
-    applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
-      omitCacheState: options.omitPendingDynamicCacheState === true,
-    });
-    if (!responseExplicitlyUncacheable) {
-      clientPolicyIsFrameworkProvisional = true;
+    if (middlewareOwnsCachePolicy) {
+      finalizePendingCacheStateHeaders(clientHeaders, {
+        omitCacheState: options.omitPendingDynamicCacheState === true,
+      });
+    } else {
+      applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
+        omitCacheState: options.omitPendingDynamicCacheState === true,
+      });
+      if (!responseExplicitlyUncacheable) {
+        clientPolicyIsFrameworkProvisional = true;
+      }
     }
   }
 
@@ -351,7 +364,9 @@ export function finalizeAppPageHtmlCacheResponse(
     statusText: response.statusText,
     headers: clientHeaders,
   });
-  if (clientPolicyIsFrameworkProvisional) {
+  if (middlewareOwnsCachePolicy) {
+    markRouteCacheabilityResponsePolicyExplicit(clientResponse.headers);
+  } else if (clientPolicyIsFrameworkProvisional) {
     markRouteCacheabilityPolicyProvisional(clientResponse.headers);
   }
   markFrameworkLinkHeaders(clientResponse.headers, options.linkHeader);
@@ -370,6 +385,9 @@ export function finalizeAppPageRscCacheResponse(
   // edge-managed adapters may cache pending-dynamic responses.
   const responseExplicitlyUncacheable =
     response.headers.has("set-cookie") || hasExplicitNonCacheableResponsePolicy(response.headers);
+  const middlewareOwnsCachePolicy =
+    !response.headers.has("set-cookie") &&
+    responseHasMatchingCachePolicy(response.headers, options.middlewareHeaders);
   scheduleAppPageRscCacheWrite({
     ...options,
     responseExplicitlyUncacheable,
@@ -378,6 +396,11 @@ export function finalizeAppPageRscCacheResponse(
   const isUncacheableVariant =
     Boolean(options.mountedSlotsHeader) || options.bypassInterceptionContextCache === true;
   if (options.preserveClientResponseHeaders === true && !isUncacheableVariant) {
+    if (middlewareOwnsCachePolicy) {
+      markRouteCacheabilityResponsePolicyExplicit(response.headers);
+    } else if (!responseExplicitlyUncacheable) {
+      markRouteCacheabilityPolicyProvisional(response.headers);
+    }
     return response;
   }
 
@@ -385,6 +408,10 @@ export function finalizeAppPageRscCacheResponse(
   let clientPolicyIsFrameworkProvisional = false;
   if (isUncacheableVariant) {
     applyUncacheableRscVariantNoStoreHeaders(clientHeaders, {
+      omitCacheState: options.omitPendingDynamicCacheState === true,
+    });
+  } else if (middlewareOwnsCachePolicy) {
+    finalizePendingCacheStateHeaders(clientHeaders, {
       omitCacheState: options.omitPendingDynamicCacheState === true,
     });
   } else {
@@ -401,7 +428,9 @@ export function finalizeAppPageRscCacheResponse(
     statusText: response.statusText,
     headers: clientHeaders,
   });
-  if (clientPolicyIsFrameworkProvisional) {
+  if (middlewareOwnsCachePolicy) {
+    markRouteCacheabilityResponsePolicyExplicit(clientResponse.headers);
+  } else if (clientPolicyIsFrameworkProvisional) {
     markRouteCacheabilityPolicyProvisional(clientResponse.headers);
   }
   return clientResponse;

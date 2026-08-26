@@ -16,6 +16,32 @@ const STALE_REVALIDATE_CACHE_CONTROL = "s-maxage=0, stale-while-revalidate";
 
 export const NO_STORE_CACHE_CONTROL = "no-store, must-revalidate";
 
+const RESPONSE_CACHE_POLICY_HEADER_NAMES = [
+  "Cloudflare-CDN-Cache-Control",
+  "CDN-Cache-Control",
+  "Cache-Control",
+] as const;
+
+/** Whether the final response still carries a cache policy supplied by a later response layer. */
+export function responseHasMatchingCachePolicy(
+  responseHeaders: Headers,
+  layerHeaders: Headers | null | undefined,
+): boolean {
+  if (!layerHeaders) return false;
+  const effectivePolicy = (headers: Headers) =>
+    RESPONSE_CACHE_POLICY_HEADER_NAMES.map((name) => ({ name, value: headers.get(name) })).find(
+      (candidate) => candidate.value !== null,
+    );
+  const responsePolicy = effectivePolicy(responseHeaders);
+  const layerPolicy = effectivePolicy(layerHeaders);
+  return Boolean(
+    responsePolicy &&
+    layerPolicy &&
+    responsePolicy.name === layerPolicy.name &&
+    responsePolicy.value === layerPolicy.value,
+  );
+}
+
 const SHARED_CACHE_DIRECTIVE_RE = /(?:^|,)\s*s-maxage\s*=/i;
 export function shouldUseNextDeployCacheControl(): boolean {
   return process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL === "1";

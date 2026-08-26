@@ -2036,6 +2036,54 @@ describe("app page dispatch", () => {
     },
   );
 
+  // Ported from Next.js middleware Cache-Control precedence coverage:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-duplicate-headers-middleware/no-duplicate-headers-middleware.test.ts
+  it.each([
+    ["not-found", { digest: "NEXT_HTTP_ERROR_FALLBACK;404" }, 404],
+    ["redirect", { digest: "NEXT_REDIRECT;replace;/login;307" }, 307],
+  ])(
+    "keeps cacheable middleware policy ahead of matching next.config on terminal %s",
+    async (_label, actionError, expectedStatus) => {
+      const middlewareHeaders = new Headers({ "Cache-Control": "public, s-maxage=120" });
+      const { options } = createDispatchOptions({
+        actionError,
+        actionFailed: true,
+        isProduction: true,
+        middlewareContext: { headers: middlewareHeaders, status: null },
+        revalidateSeconds: 60,
+      });
+      if (expectedStatus === 404) {
+        options.renderHttpAccessFallbackPage = vi.fn(
+          async () => new Response("<html>not found</html>", { status: 404 }),
+        );
+      }
+
+      const response = await dispatchAppPage(options);
+      expect(response.status).toBe(expectedStatus);
+      expect(response.headers.get("cache-control")).toBe("public, s-maxage=120");
+
+      applyConfigHeadersToResponse(response.headers, {
+        configHeaders: [
+          {
+            source: "/posts/:slug",
+            headers: [{ key: "Cache-Control", value: "s-maxage=300" }],
+          },
+        ],
+        middlewareHeaders,
+        pathname: "/posts/hello",
+        requestContext: {
+          cookies: {},
+          headers: new Headers(),
+          host: "example.test",
+          query: new URLSearchParams(),
+        },
+      });
+
+      expect(response.headers.get("cache-control")).toBe("public, s-maxage=120");
+      await response.body?.cancel();
+    },
+  );
+
   it("stores only framework-owned metadata for a terminal redirect", async () => {
     const { options } = createDispatchOptions({
       actionError: { digest: "NEXT_REDIRECT;replace;/login;307" },

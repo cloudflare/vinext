@@ -63,6 +63,7 @@ import {
   applyCdnResponseHeaders,
   NEVER_CACHE_CONTROL,
   NO_STORE_CACHE_CONTROL,
+  responseHasMatchingCachePolicy,
 } from "./cache-control.js";
 import {
   createClientReuseSkipTransportPlan,
@@ -83,6 +84,7 @@ import {
   createCacheabilityCaptureReservation,
   getRouteCacheabilityCaptureDeadline,
   markRouteCacheabilityPolicyProvisional,
+  markRouteCacheabilityResponsePolicyExplicit,
   recordRouteCacheability,
   recordRouteCacheabilityCapturedBody,
   retainRouteCacheabilityCapture,
@@ -955,8 +957,6 @@ export async function renderAppPageLifecycle(
           )
         : completionResponse;
 
-    markRouteCacheabilityPolicyProvisional(devRscResponse.headers);
-
     return finalizeAppPageRscCacheResponse(devRscResponse, {
       // force-static deliberately replaces request-derived values with empty
       // values. Observing headers()/cookies()/searchParams on that path does
@@ -993,6 +993,7 @@ export async function renderAppPageLifecycle(
       interceptionContext: options.interceptionContext,
       interceptionId: options.interceptionId,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      middlewareHeaders: options.middlewareContext.headers,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       renderMode: options.renderMode,
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
@@ -1344,6 +1345,7 @@ export async function renderAppPageLifecycle(
         revalidateSeconds,
       }),
       linkHeader: linkHeader ?? null,
+      middlewareHeaders: options.middlewareContext.headers,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
       },
@@ -1360,7 +1362,11 @@ export async function renderAppPageLifecycle(
     requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
   });
-  markRouteCacheabilityPolicyProvisional(response.headers);
+  if (responseHasMatchingCachePolicy(response.headers, options.middlewareContext.headers)) {
+    markRouteCacheabilityResponsePolicyExplicit(response.headers);
+  } else {
+    markRouteCacheabilityPolicyProvisional(response.headers);
+  }
   return response;
 }
 

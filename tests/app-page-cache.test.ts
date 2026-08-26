@@ -446,6 +446,72 @@ describe("app page cache helpers", () => {
     },
   );
 
+  // Ported from Next.js middleware Cache-Control precedence coverage:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-duplicate-headers-middleware/no-duplicate-headers-middleware.test.ts
+  it.each([
+    ["HTML", false],
+    ["RSC", true],
+  ])(
+    "keeps cacheable App %s middleware policy ahead of matching next.config",
+    async (_label, isRscRequest) => {
+      const pendingCacheWrites: Promise<void>[] = [];
+      const middlewareHeaders = new Headers({ "Cache-Control": "public, s-maxage=120" });
+      const options = {
+        capturedRscDataPromise: Promise.resolve(
+          capturedRscData(new TextEncoder().encode("flight").buffer),
+        ),
+        cleanPathname: "/fresh-middleware",
+        consumeDynamicUsage() {
+          return false;
+        },
+        dynamicUsedDuringBuild: false,
+        getPageTags() {
+          return ["/fresh-middleware"];
+        },
+        isrHtmlKey(pathname: string) {
+          return "html:" + pathname;
+        },
+        isrRscKey(pathname: string) {
+          return "rsc:" + pathname;
+        },
+        isrSet: vi.fn(async () => {}),
+        linkHeader: null,
+        middlewareHeaders,
+        revalidateSeconds: 60,
+        waitUntil(promise: Promise<void>) {
+          pendingCacheWrites.push(promise);
+        },
+      };
+      const source = new Response(isRscRequest ? "flight" : "<h1>fresh</h1>", {
+        headers: middlewareHeaders,
+      });
+      const response = isRscRequest
+        ? finalizeAppPageRscCacheResponse(source, options)
+        : finalizeAppPageHtmlCacheResponse(source, options);
+
+      applyConfigHeadersToResponse(response.headers, {
+        configHeaders: [
+          {
+            source: "/fresh-middleware",
+            headers: [{ key: "Cache-Control", value: "s-maxage=300" }],
+          },
+        ],
+        middlewareHeaders,
+        pathname: "/fresh-middleware",
+        requestContext: {
+          cookies: {},
+          headers: new Headers(),
+          host: "example.com",
+          query: new URLSearchParams(),
+        },
+      });
+
+      expect(response.headers.get("cache-control")).toBe("public, s-maxage=120");
+      await response.body?.cancel();
+      await Promise.all(pendingCacheWrites);
+    },
+  );
+
   it("keeps middleware cache policy over next.config on a cached App page", () => {
     const middlewareHeaders = new Headers({ "Cache-Control": "private, no-store" });
     const response = buildAppPageCachedResponse(buildCachedAppPageValue("<h1>cached</h1>"), {
