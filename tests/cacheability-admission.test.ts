@@ -153,6 +153,65 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe("dynamic");
   });
 
+  it.each([undefined, "*/*", "application/json"])(
+    "creates fail-closed request state without an HTML Accept header (%s)",
+    (accept) => {
+      const base = { waitUntil() {} };
+      const headers = new Headers();
+      if (accept !== undefined) headers.set("Accept", accept);
+      const context = createWorkerCacheabilityAdmissionContext(
+        base,
+        new Request("https://example.com/page", { headers }),
+        null,
+        "build-a",
+        true,
+      );
+
+      expect(context).not.toBe(base);
+      expect(cacheabilityState(context).admission).toEqual({ policy: "deny" });
+    },
+  );
+
+  it("applies a pre-dispatch veto to an otherwise public Route Handler response", async () => {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/api/data", { headers: { Accept: "*/*" } }),
+      null,
+      "build-a",
+      true,
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-route", pattern: "/api/data" };
+    state.forcedDynamicReason = "middleware is eligible for this pathname";
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("private", { headers: { "Cache-Control": "public, s-maxage=60" } }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("private");
+  });
+
+  it("preserves a safely completed Route Handler public policy", async () => {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/api/data", { headers: { Accept: "*/*" } }),
+      null,
+      "build-a",
+      true,
+    );
+    cacheabilityState(context).route = { kind: "app-route", pattern: "/api/data" };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("public", { headers: { "Cache-Control": "public, s-maxage=60" } }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+    await expect(response.text()).resolves.toBe("public");
+  });
+
   it("preserves an independently classified hybrid Pages response", async () => {
     const context = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },

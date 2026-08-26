@@ -56,7 +56,6 @@ import {
 import {
   NEXT_ACTION_HEADER,
   RSC_ACTION_HEADER,
-  RSC_HEADER,
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -93,9 +92,7 @@ function isPotentialCompletedAdmissionRequest(request: Request): boolean {
   if (request.method !== "GET" && request.method !== "HEAD") return false;
   if (request.headers.has(NEXT_ACTION_HEADER) || request.headers.has(RSC_ACTION_HEADER))
     return false;
-  if (request.headers.get(RSC_HEADER) === "1") return true;
-  if (request.headers.get("Accept")?.toLowerCase().includes("text/html")) return true;
-  return new URL(request.url).pathname.endsWith(".rsc");
+  return true;
 }
 
 export default {

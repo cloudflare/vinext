@@ -38,7 +38,7 @@ export type RouteCacheabilityState = {
   outcome?: RouteCacheabilityOutcome;
   preserveResponseCachePolicy?: boolean;
   route?: {
-    kind: "app-page";
+    kind: "app-page" | "app-route";
     pattern: string;
   };
 };
@@ -58,7 +58,7 @@ export function readRouteCacheabilityState(): RouteCacheabilityState | null {
   );
 }
 
-export function beginRouteCacheability(kind: "app-page", pattern: string): boolean {
+export function beginRouteCacheability(kind: "app-page" | "app-route", pattern: string): boolean {
   const state = readRouteCacheabilityState();
   if (!state) return false;
   state.route = { kind, pattern };
@@ -70,6 +70,22 @@ export function markRouteCacheabilityDynamic(reason: string): void {
   const state = readRouteCacheabilityState();
   if (!state) return;
   state.forcedDynamicReason = reason;
+}
+
+/** Read a request-specific routing veto without making the route globally dynamic. */
+export function getRouteCacheabilityDynamicReason(): string | null {
+  return readRouteCacheabilityState()?.forcedDynamicReason ?? null;
+}
+
+/** Reuse the active request's bounded response-capture envelope when available. */
+export function getRouteCacheabilityCaptureOptions(): Pick<
+  RouteCacheabilityState,
+  "captureBudget" | "captureDeadlineAt"
+> | null {
+  const state = readRouteCacheabilityState();
+  return state
+    ? { captureBudget: state.captureBudget, captureDeadlineAt: state.captureDeadlineAt }
+    : null;
 }
 
 /** Keep a completed response private without treating it as static-to-dynamic. */

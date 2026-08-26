@@ -25,6 +25,12 @@ import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import { createWorkerCacheabilityAdmissionContext } from "../packages/vinext/src/server/cacheability-request.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
 
 // The fetch-cache shim captures `originalFetch` from globalThis at import
 // time, so stub fetch BEFORE importing it (same pattern as
@@ -520,10 +526,145 @@ describe("app route handler execution helpers", () => {
     });
 
     expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
-    expect(response.headers.get("cache-control")).toBeNull();
+    expect(response.headers.get("cache-control")).toContain("no-store");
     expect(response.headers.get("x-vinext-cache")).toBeNull();
     expect(wroteCache).toBe(false);
     await expect(response.json()).resolves.toEqual({ ping: "from-header" });
+  });
+
+  it("completes a statically eligible custom-cache response before preserving its policy", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const response = await executeAppRouteHandler({
+      buildPageCacheTags() {
+        return [];
+      },
+      cleanPathname: "/api/custom-cache-late-dynamic",
+      clearRequestContext() {},
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      executionContext: null,
+      getAndClearPendingCookies() {
+        return [];
+      },
+      getCollectedFetchTags() {
+        return [];
+      },
+      getDraftModeCookieHeader() {
+        return null;
+      },
+      handler: { dynamic: "auto", revalidate: 60 },
+      handlerFn(request) {
+        return new Response(
+          new ReadableStream<Uint8Array>(
+            {
+              pull(controller) {
+                controller.enqueue(
+                  new TextEncoder().encode(request.headers.get("x-tenant") ?? "missing"),
+                );
+                controller.close();
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+          { headers: { "Cache-Control": "public, s-maxage=60" } },
+        );
+      },
+      isAutoHead: false,
+      isProduction: true,
+      isrRouteKey(pathname) {
+        return pathname;
+      },
+      async isrSet() {
+        throw new Error("dynamic response must not be persisted");
+      },
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      method: "GET",
+      middlewareContext: { headers: null, status: null },
+      params: null,
+      reportRequestError() {},
+      request: new Request("https://example.com/api/custom-cache-late-dynamic", {
+        headers: { "x-tenant": "tenant-a" },
+      }),
+      revalidateSeconds: 60,
+      routePattern: "/api/custom-cache-late-dynamic",
+      setHeadersAccessPhase() {
+        return "render";
+      },
+    });
+
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("tenant-a");
+  });
+
+  it("falls back to private streaming and defers cleanup when bounded completion overflows", async () => {
+    const request = new Request("https://example.com/api/large", {
+      headers: { Accept: "*/*" },
+    });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+    );
+    const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
+    state.captureBudget = { maxBytes: 1, reservedBytes: 0 };
+    let cleared = false;
+    const phaseCalls: string[] = [];
+
+    const response = await runWithExecutionContext(context, () =>
+      executeAppRouteHandler({
+        buildPageCacheTags() {
+          return [];
+        },
+        cleanPathname: "/api/large",
+        clearRequestContext() {
+          cleared = true;
+        },
+        consumeDynamicUsage() {
+          return false;
+        },
+        executionContext: null,
+        getAndClearPendingCookies() {
+          return [];
+        },
+        getCollectedFetchTags() {
+          return [];
+        },
+        getDraftModeCookieHeader() {
+          return null;
+        },
+        handler: { dynamic: "auto", revalidate: 60 },
+        handlerFn() {
+          return new Response("large");
+        },
+        isAutoHead: false,
+        isProduction: true,
+        isrRouteKey(pathname) {
+          return pathname;
+        },
+        async isrSet() {
+          throw new Error("overflow response must not be persisted");
+        },
+        markDynamicUsage() {},
+        method: "GET",
+        middlewareContext: { headers: null, status: null },
+        params: null,
+        reportRequestError() {},
+        request,
+        revalidateSeconds: 60,
+        routePattern: "/api/large",
+        setHeadersAccessPhase(phase) {
+          phaseCalls.push(phase);
+          return "render";
+        },
+      }),
+    );
+
+    expect(cleared).toBe(false);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("large");
+    expect(cleared).toBe(true);
+    expect(phaseCalls).toEqual(["route-handler", "render"]);
   });
 
   it("applies the draft cache policy to responses with immutable headers", async () => {
@@ -743,7 +884,7 @@ describe("app route handler execution helpers", () => {
       expect(fetchMock.mock.calls[0]?.[1]?.cache).toBe("no-store");
       expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
       expect(wroteCache).toBe(false);
-      expect(response.headers.get("cache-control")).toBeNull();
+      expect(response.headers.get("cache-control")).toContain("no-store");
       expect(response.headers.get("x-vinext-cache")).toBeNull();
       await expect(response.json()).resolves.toEqual({ ok: true });
     } finally {

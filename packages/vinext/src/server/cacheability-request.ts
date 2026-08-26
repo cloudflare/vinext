@@ -37,7 +37,7 @@ type CacheabilityProbeRouteState =
 
 type CacheabilityProbeResult = {
   cacheControl?: string;
-  kind?: "app-page";
+  kind?: "app-page" | "app-route";
   pattern?: string;
   reason?: string;
   state: CacheabilityProbeRouteState;
@@ -104,9 +104,9 @@ export function createWorkerCacheabilityAdmissionContext(
 ): ExecutionContextLike {
   const identity = cacheabilityRequestIdentity(request);
   if (!rawManifest) {
-    if (!requiresCompletedResponseAdmission || !identity) return base;
+    if (!requiresCompletedResponseAdmission) return base;
     const state: RouteCacheabilityState = {
-      admission: { policy: "runtime", ...identity },
+      admission: identity ? { policy: "runtime", ...identity } : { policy: "deny" },
       captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
       mode: "admit",
     };
@@ -431,6 +431,21 @@ async function finalizeWorkerCacheabilityAdmission(
   // independently computed cache policy until Pages probing is introduced by
   // its own stack layer.
   if (state.preserveResponseCachePolicy) return response;
+
+  // Route Handlers prove body completion inside their execution boundary.
+  // This outer state still carries middleware/config routing vetoes that were
+  // observed before dispatch and must win over a handler's public policy.
+  if (state.route?.kind === "app-route") {
+    if (
+      response.status >= 500 ||
+      state.forcedDynamicReason ||
+      hasStrictFinalResponseVeto(response, state) ||
+      hasUnsupportedCacheabilityVary(response.headers)
+    ) {
+      return responseWithCachePolicy(response, response.body, null);
+    }
+    return response;
+  }
 
   const admission = state.admission;
   if (

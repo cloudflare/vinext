@@ -44,6 +44,10 @@ import {
 } from "./app-route-handler-execution.js";
 import { isKnownDynamicAppRoute, isValidHTTPMethod } from "./app-route-handler-runtime.js";
 import {
+  beginRouteCacheability,
+  getRouteCacheabilityDynamicReason,
+} from "vinext/shims/cacheability-classification";
+import {
   applyRouteHandlerMiddlewareContext,
   finalizeRouteHandlerResponse,
   type RouteHandlerMiddlewareContext,
@@ -169,6 +173,9 @@ export async function dispatchAppRouteHandler(
   const { route } = options;
   const handler = route.routeHandler;
   const method = options.request.method.toUpperCase();
+  if (method === "GET" || method === "HEAD") {
+    beginRouteCacheability("app-route", route.pattern);
+  }
   const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);
   const isDevelopment = options.isDevelopment ?? process.env.NODE_ENV === "development";
   const isProduction = options.isProduction ?? process.env.NODE_ENV === "production";
@@ -240,6 +247,7 @@ export async function dispatchAppRouteHandler(
 
   if (
     revalidateSeconds !== null &&
+    !getRouteCacheabilityDynamicReason() &&
     shouldReadAppRouteHandlerCache({
       dynamicConfig: handler.dynamic,
       handlerFn: resolvedHandlerFn,

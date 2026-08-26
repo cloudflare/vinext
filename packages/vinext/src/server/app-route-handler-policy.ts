@@ -10,6 +10,7 @@ export { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 export type AppRouteHandlerModule = {
   dynamic?: string;
   fetchCache?: unknown;
+  generateStaticParams?: unknown;
   revalidate?: unknown;
   runtime?: string;
 } & RouteHandlerModule;
@@ -62,7 +63,7 @@ type AppRouteHandlerSpecialErrorOptions = {
 };
 
 export function getAppRouteHandlerRevalidateSeconds(
-  handler: Pick<AppRouteHandlerModule, "revalidate">,
+  handler: Pick<AppRouteHandlerModule, "dynamic" | "generateStaticParams" | "revalidate">,
 ): number | null {
   // 0 is a meaningful value ("never cache") and must be preserved so the
   // header path can emit a no-store Cache-Control.
@@ -70,10 +71,24 @@ export function getAppRouteHandlerRevalidateSeconds(
   // parity) — return Infinity to signal the cache-later path.
   const { revalidate } = handler;
   if (revalidate === false) return Infinity;
-  if (typeof revalidate !== "number" || !Number.isFinite(revalidate) || revalidate < 0) {
+  if (typeof revalidate === "number" && Number.isFinite(revalidate) && revalidate >= 0) {
+    return revalidate;
+  }
+  if (revalidate !== undefined) {
     return null;
   }
-  return revalidate;
+
+  // Ported from Next.js static eligibility:
+  // packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts
+  if (
+    handler.dynamic === "force-static" ||
+    handler.dynamic === "error" ||
+    typeof handler.generateStaticParams === "function"
+  ) {
+    return Infinity;
+  }
+
+  return null;
 }
 
 export function hasAppRouteHandlerDefaultExport(handler: RouteHandlerModule): boolean {
@@ -141,6 +156,26 @@ export function shouldApplyAppRouteHandlerRevalidateHeader(
     !options.dynamicUsedInHandler &&
     (options.method === "GET" || options.isAutoHead) &&
     !options.handlerSetCacheControl
+  );
+}
+
+/**
+ * Next.js consumes the full body before completing static generation for an
+ * App Route. Keep that completion boundary for every response that can still
+ * receive a public framework cache policy, including
+ * `revalidate = false` (represented by Infinity).
+ */
+export function shouldCompleteAppRouteHandlerResponse(
+  options: AppRouteHandlerResponseCacheOptions,
+): boolean {
+  return (
+    options.isProduction &&
+    options.revalidateSeconds !== null &&
+    options.revalidateSeconds > 0 &&
+    options.dynamicConfig !== "force-dynamic" &&
+    !options.isDraftMode &&
+    !options.dynamicUsedInHandler &&
+    (options.method === "GET" || options.isAutoHead)
   );
 }
 
