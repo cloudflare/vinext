@@ -61,6 +61,18 @@ test("preserves Cache Components ownership while probing inside workerd", async 
   expect(privateRuntime.headers()["cache-control"]).toContain("no-store");
   expect(privateRuntime.headers()["cdn-cache-control"]).toBeUndefined();
 
+  // Ported from Next.js: packages/next/src/server/request/io.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/io.ts
+  // The hanging promise must notify the outer probe owner before suspending;
+  // otherwise a Suspense fallback can complete and be certified as static.
+  const explicitIoProbe = await request.get("/explicit-io", { headers });
+  await expect(explicitIoProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/explicit-io",
+    state: "dynamic",
+    version: 1,
+  });
+
   const dynamicErrorProbe = await request.get("/dynamic-error", { headers });
   await expect(dynamicErrorProbe.json()).resolves.toMatchObject({
     kind: "app-page",

@@ -274,8 +274,10 @@ export function io(): Promise<void> {
       case "prerender-client":
       case "prerender-runtime":
         // Prevent execution past the IO boundary during prerendering.
-        // The hanging promise suspends React's render indefinitely until
-        // the prerender is aborted or completed.
+        // Notify the render owner before returning the hanging promise. The
+        // owner can then finish an authenticated cacheability probe as
+        // dynamic without exposing a catchable framework error to user code.
+        workUnitStore.signalPrerenderBailout?.("`io()`");
         return makeHangingPromise(
           workUnitStore.renderSignal,
           /* route */ workUnitStore.route ?? "unknown",
