@@ -189,6 +189,7 @@ describe("prerender path manifest", () => {
     const remoteFetch = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response("old Worker", { status: 404 }))
+      .mockResolvedValueOnce(new Response("version still propagating", { status: 500 }))
       .mockResolvedValueOnce(Response.json([{ slug: "intro" }]));
     vi.stubGlobal("fetch", remoteFetch);
     writeFile("package.json", JSON.stringify({ type: "module" }));
@@ -213,13 +214,13 @@ describe("prerender path manifest", () => {
       root: tmpDir,
       pathDiscoveryTarget: {
         baseUrl: "https://workers-cache.example.workers.dev",
-        retries: 1,
+        retries: 2,
         retryDelayMs: 0,
       },
     });
 
     expect(manifest?.paths).toEqual(["/cached/intro"]);
-    expect(remoteFetch).toHaveBeenCalledTimes(2);
+    expect(remoteFetch).toHaveBeenCalledTimes(3);
   });
 
   it("uses the full discovery phase when no retry limit is configured", async () => {
@@ -361,7 +362,7 @@ describe("prerender path manifest", () => {
           retryDelayMs: 0,
         },
       }),
-    ).rejects.toThrow("path discovery returned HTTP 500");
+    ).rejects.toThrow("path discovery returned HTTP 500: binding lookup failed");
     expect(remoteFetch).toHaveBeenCalledOnce();
   });
 

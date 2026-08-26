@@ -67,6 +67,23 @@ type PathDiscoveryRetryOptions = {
   retryDelayMs?: number;
 };
 
+function readDiscoveryUserFailure(response: Response, text: string): string | null {
+  if (
+    response.status !== 500 ||
+    !response.headers.get("content-type")?.includes("application/json")
+  ) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(text) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const error = (value as { error?: unknown }).error;
+    return typeof error === "string" && error.length > 0 ? error : null;
+  } catch {
+    return null;
+  }
+}
+
 type EmitPrerenderPathManifestOptions = {
   root: string;
   /** Fully resolved Next.js config. Loaded from disk when omitted. */
@@ -339,14 +356,21 @@ async function fetchDiscoveryEndpoint(
         return text;
       }
 
-      const detail = /cloudflare:|ERR_UNSUPPORTED_ESM_URL_SCHEME/i.test(text) ? text.trim() : "";
+      const userFailure = readDiscoveryUserFailure(res, text);
+      const detail =
+        userFailure ??
+        (/cloudflare:|ERR_UNSUPPORTED_ESM_URL_SCHEME/i.test(text) ? text.trim() : "");
       lastError = new Error(
         `path discovery returned HTTP ${res.status}${detail ? `: ${detail}` : ""}`,
       );
       // A newly applied route can briefly reach the previous Worker (404), and
-      // version-metadata validation rejects that mismatch with 503. User-code
-      // failures use 500 and should surface immediately instead of being replayed.
-      if (res.status !== 404 && res.status !== 503) {
+      // version-metadata validation rejects that mismatch with 503. Cloudflare
+      // can also return an unshaped 5xx while the uploaded version propagates.
+      // The authenticated endpoint's JSON { error } envelope is instead a real
+      // generateStaticParams/getStaticPaths failure and must surface once.
+      const transient =
+        res.status === 404 || (res.status >= 500 && res.status <= 599 && userFailure === null);
+      if (!transient) {
         shouldRetry = false;
         throw lastError;
       }
