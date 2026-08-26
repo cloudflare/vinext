@@ -5,8 +5,7 @@
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
     "strict": true,
-    "skipLibCheck": true,
-    "types": ["@cloudflare/workers-types"]
+    "skipLibCheck": true
   },
-  "include": ["app", "*.ts"]
+  "include": ["app"]
 }

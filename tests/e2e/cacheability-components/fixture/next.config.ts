@@ -1,3 +1,6 @@
+// @ts-nocheck
+// This isolated non-workspace fixture receives its dependencies from the
+// Playwright web-server setup immediately before the production build.
 import type { NextConfig } from "vinext";
 
 export default {
