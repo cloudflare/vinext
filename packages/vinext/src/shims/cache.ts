@@ -538,22 +538,37 @@ const _UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY = Symbol.for(
   "vinext.unstableCache.pendingRevalidations",
 );
 const _UNSTABLE_CACHE_PENDING_FILLS_KEY = Symbol.for("vinext.unstableCache.pendingFills");
+const _UNSTABLE_CACHE_PENDING_FILL_KEY_CHARS_KEY = Symbol.for(
+  "vinext.unstableCache.pendingFillKeyChars",
+);
 const _UNSTABLE_CACHE_POISONED_KEYS_KEY = Symbol.for("vinext.unstableCache.poisonedKeys");
 const _UNSTABLE_CACHE_PUBLICATION_DISABLED_KEY = Symbol.for(
   "vinext.unstableCache.publicationDisabled",
 );
+const _UNSTABLE_CACHE_POISON_OVERFLOW_COUNT_KEY = Symbol.for(
+  "vinext.unstableCache.poisonOverflowCount",
+);
 
 // A shared fill is only a short-lived stampede guard, not ownership of the
 // callback's lifetime. Next.js defaults cache-fill detection to its static
-// generation timeout (60 seconds); after the same bounded lease, let a later
-// request replace a stalled fill without aborting the original caller.
+// generation timeout (60 seconds); after the same bounded lease, later callers
+// compute without waiting while the validated original retains publication
+// ownership.
 const UNSTABLE_CACHE_PENDING_FILL_LEASE_MS = 60_000;
+const MAX_PENDING_UNSTABLE_CACHE_FILLS = 1_000;
+const MAX_PENDING_UNSTABLE_CACHE_KEY_CHARS = 1_000_000;
 const MAX_POISONED_UNSTABLE_CACHE_KEYS = 10_000;
 
 type PendingUnstableCacheFill = {
   promise: Promise<unknown>;
   expiresAt: number;
   leaseTimer: ReturnType<typeof setTimeout>;
+  poisonRegistration?: PoisonedUnstableCacheRegistration;
+};
+
+type PoisonedUnstableCacheRegistration = {
+  overflow: boolean;
+  token: string;
 };
 
 function getPendingUnstableCacheRevalidations(): Map<string, Promise<void>> {
@@ -576,11 +591,53 @@ function getPendingUnstableCacheFills(): Map<string, PendingUnstableCacheFill> {
   return pending;
 }
 
-function getPoisonedUnstableCacheKeys(): Set<string> {
-  const existing = _g[_UNSTABLE_CACHE_POISONED_KEYS_KEY];
-  if (existing instanceof Set) return existing as Set<string>;
+function getPendingUnstableCacheKeyChars(pending: Map<string, PendingUnstableCacheFill>): number {
+  const existing = _g[_UNSTABLE_CACHE_PENDING_FILL_KEY_CHARS_KEY];
+  if (typeof existing === "number" && existing >= 0) return existing;
+  let total = 0;
+  for (const key of pending.keys()) total += key.length;
+  _g[_UNSTABLE_CACHE_PENDING_FILL_KEY_CHARS_KEY] = total;
+  return total;
+}
 
-  const poisoned = new Set<string>();
+function addPendingUnstableCacheFill(
+  pending: Map<string, PendingUnstableCacheFill>,
+  cacheKey: string,
+  entry: PendingUnstableCacheFill,
+): void {
+  const previousTotal = getPendingUnstableCacheKeyChars(pending);
+  pending.set(cacheKey, entry);
+  _g[_UNSTABLE_CACHE_PENDING_FILL_KEY_CHARS_KEY] = previousTotal + cacheKey.length;
+}
+
+function deletePendingUnstableCacheFill(
+  pending: Map<string, PendingUnstableCacheFill>,
+  cacheKey: string,
+  entry: PendingUnstableCacheFill,
+): boolean {
+  if (pending.get(cacheKey) !== entry) return false;
+  const previousTotal = getPendingUnstableCacheKeyChars(pending);
+  pending.delete(cacheKey);
+  _g[_UNSTABLE_CACHE_PENDING_FILL_KEY_CHARS_KEY] = Math.max(0, previousTotal - cacheKey.length);
+  return true;
+}
+
+function canRetainPendingUnstableCacheFill(
+  pending: Map<string, PendingUnstableCacheFill>,
+  cacheKey: string,
+): boolean {
+  return (
+    pending.size < MAX_PENDING_UNSTABLE_CACHE_FILLS &&
+    getPendingUnstableCacheKeyChars(pending) + cacheKey.length <=
+      MAX_PENDING_UNSTABLE_CACHE_KEY_CHARS
+  );
+}
+
+function getPoisonedUnstableCacheKeys(): Map<string, number> {
+  const existing = _g[_UNSTABLE_CACHE_POISONED_KEYS_KEY];
+  if (existing instanceof Map) return existing as Map<string, number>;
+
+  const poisoned = new Map<string, number>();
   _g[_UNSTABLE_CACHE_POISONED_KEYS_KEY] = poisoned;
   return poisoned;
 }
@@ -590,30 +647,54 @@ function isUnstableCachePublicationDisabled(): boolean {
 }
 
 function isUnstableCacheKeyPoisoned(cacheKey: string): boolean {
-  return isUnstableCachePublicationDisabled() || getPoisonedUnstableCacheKeys().has(cacheKey);
+  if (isUnstableCachePublicationDisabled()) return true;
+  const poisoned = _g[_UNSTABLE_CACHE_POISONED_KEYS_KEY];
+  return poisoned instanceof Map && poisoned.size > 0 && poisoned.has(fnv1a64(cacheKey));
 }
 
 /**
- * Fail closed after a shared fill outlives its lease. CacheHandler has no CAS
- * or portable abort primitive, so the expired writer may already be inside an
- * adapter write when its replacement becomes eligible to run. Poisoning makes
- * this isolate bypass shared reads and writes for the key; the expired writer
- * installs a tombstone after any in-flight write settles.
+ * Fail closed after a shared fill outlives its lease. The lease only bounds
+ * single-flight sharing; it does not revoke a validated original fill's right
+ * to publish. New callers bypass shared reads and writes until that original
+ * settles, so no replacement publication can be overwritten by the old fill.
  *
- * Keep the registry bounded. If it fills, disabling unstable-cache publication
- * for the isolate is safer than forgetting an expired writer and later serving
- * a value whose publication order can no longer be proven.
+ * Fixed-size key tokens bound retained memory; collisions only cause a safe,
+ * temporary extra bypass. If the registry fills, disable publication until all
+ * overflow registrations settle rather than forgetting an outstanding writer.
  */
-function poisonUnstableCacheKey(cacheKey: string): void {
-  if (isUnstableCachePublicationDisabled()) return;
+function poisonUnstableCacheKey(cacheKey: string): PoisonedUnstableCacheRegistration {
+  const token = fnv1a64(cacheKey);
   const poisoned = getPoisonedUnstableCacheKeys();
-  if (poisoned.has(cacheKey)) return;
+  const existingCount = poisoned.get(token);
+  if (existingCount !== undefined) {
+    poisoned.set(token, existingCount + 1);
+    return { overflow: false, token };
+  }
   if (poisoned.size >= MAX_POISONED_UNSTABLE_CACHE_KEYS) {
-    poisoned.clear();
+    const overflowCount = _g[_UNSTABLE_CACHE_POISON_OVERFLOW_COUNT_KEY];
+    _g[_UNSTABLE_CACHE_POISON_OVERFLOW_COUNT_KEY] =
+      (typeof overflowCount === "number" ? overflowCount : 0) + 1;
     _g[_UNSTABLE_CACHE_PUBLICATION_DISABLED_KEY] = true;
+    return { overflow: true, token };
+  }
+  poisoned.set(token, 1);
+  return { overflow: false, token };
+}
+
+function releasePoisonedUnstableCacheKey(registration: PoisonedUnstableCacheRegistration): void {
+  if (registration.overflow) {
+    const current = _g[_UNSTABLE_CACHE_POISON_OVERFLOW_COUNT_KEY];
+    const next = Math.max(0, (typeof current === "number" ? current : 0) - 1);
+    _g[_UNSTABLE_CACHE_POISON_OVERFLOW_COUNT_KEY] = next;
+    if (next === 0) _g[_UNSTABLE_CACHE_PUBLICATION_DISABLED_KEY] = false;
     return;
   }
-  poisoned.add(cacheKey);
+
+  const poisoned = getPoisonedUnstableCacheKeys();
+  const current = poisoned.get(registration.token);
+  if (current === undefined) return;
+  if (current === 1) poisoned.delete(registration.token);
+  else poisoned.set(registration.token, current - 1);
 }
 
 function waitUntilUnstableCacheRevalidation(promise: Promise<void>): void {
@@ -680,31 +761,7 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
     tags,
     revalidate: revalidateSeconds,
   };
-  let writeError: unknown;
-  try {
-    await handler.set(cacheKey, cacheValue, context);
-  } catch (error) {
-    writeError = error;
-  }
-
-  if (!canPublish()) {
-    try {
-      // Both the built-in memory handler and the Cloudflare KV handler treat a
-      // stored null value as a miss. Write it after the expired write settles
-      // so that writer cannot remain observable or overwrite a newer result.
-      await handler.set(cacheKey, null, context);
-    } catch (tombstoneError) {
-      if (writeError !== undefined) {
-        throw new AggregateError(
-          [writeError, tombstoneError],
-          "unstable_cache write and fail-closed tombstone both failed",
-        );
-      }
-      throw tombstoneError;
-    }
-  }
-
-  if (writeError !== undefined) throw writeError;
+  await handler.set(cacheKey, cacheValue, context);
 
   return result;
 }
@@ -723,25 +780,29 @@ function fillUnstableCacheResult<Args extends unknown[], Result>(
   }
   if (existing) {
     clearTimeout(existing.leaseTimer);
-    if (pending.get(cacheKey) === existing) {
-      pending.delete(cacheKey);
-      poisonUnstableCacheKey(cacheKey);
+    if (deletePendingUnstableCacheFill(pending, cacheKey, existing)) {
+      existing.poisonRegistration = poisonUnstableCacheKey(cacheKey);
     }
+    return refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds, () => false);
+  }
+
+  if (!canRetainPendingUnstableCacheFill(pending, cacheKey)) {
+    return refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds, () => false);
   }
 
   let entry: PendingUnstableCacheFill;
-  const canPublish = () => pending.get(cacheKey) === entry && !isUnstableCacheKeyPoisoned(cacheKey);
+  const canPublish = () => !isUnstableCachePublicationDisabled();
   const fill = refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds, canPublish);
   const trackedFill = fill.finally(() => {
-    if (pending.get(cacheKey) === entry) {
-      pending.delete(cacheKey);
-    }
+    deletePendingUnstableCacheFill(pending, cacheKey, entry);
     clearTimeout(entry.leaseTimer);
+    if (entry.poisonRegistration) {
+      releasePoisonedUnstableCacheKey(entry.poisonRegistration);
+    }
   });
   const leaseTimer = setTimeout(() => {
-    if (pending.get(cacheKey) === entry) {
-      pending.delete(cacheKey);
-      poisonUnstableCacheKey(cacheKey);
+    if (deletePendingUnstableCacheFill(pending, cacheKey, entry)) {
+      entry.poisonRegistration = poisonUnstableCacheKey(cacheKey);
     }
   }, UNSTABLE_CACHE_PENDING_FILL_LEASE_MS);
   // Do not keep a Node.js process alive solely for an in-isolate stampede
@@ -754,7 +815,7 @@ function fillUnstableCacheResult<Args extends unknown[], Result>(
     expiresAt: Date.now() + UNSTABLE_CACHE_PENDING_FILL_LEASE_MS,
     leaseTimer,
   };
-  pending.set(cacheKey, entry);
+  addPendingUnstableCacheFill(pending, cacheKey, entry);
   return observeUnstableCacheFill(trackedFill);
 }
 

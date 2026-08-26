@@ -49,8 +49,9 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
-  // Reject legacy payloads in place, then coalesce the simultaneous cold fill
-  // so a deployment-wide schema cutover does not stampede the origin.
+  // Reject legacy payloads in place, then coalesce simultaneous cold fills in
+  // this isolate. Cross-isolate single-flight requires adapter coordination and
+  // is intentionally outside the in-process unstable_cache contract.
   const seedLegacyDedupeResult = await request.post("/cacheability/unstable-cache-upgrade-dedupe");
   expect(seedLegacyDedupeResult.status()).toBe(204);
   const dedupedUpgrade = await request.get("/cacheability/unstable-cache-upgrade-dedupe");

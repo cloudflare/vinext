@@ -6067,15 +6067,16 @@ describe("next/cache shim", () => {
       }
       pendingFills?.clear();
       const poisoned = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.poisonedKeys")) as
-        | Set<string>
+        | Map<string, number>
         | undefined;
       poisoned?.clear();
+      Reflect.deleteProperty(globalThis, Symbol.for("vinext.unstableCache.pendingFillKeyChars"));
       vi.useRealTimers();
       setCacheHandler(new MemoryCacheHandler());
     }
   });
 
-  it("prevents a lease-expired unstable_cache writer from publishing late", async () => {
+  it("preserves publication ownership after an unstable_cache fill lease expires", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
 
@@ -6125,16 +6126,21 @@ describe("next/cache shim", () => {
       await expect(cached()).resolves.toBe("result-2");
       releaseFirstWrite();
       await expect(expiredFill).resolves.toBe("result-1");
+      const poisoned = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.poisonedKeys")) as
+        | Map<string, number>
+        | undefined;
+      expect(poisoned?.size).toBe(0);
 
       const cacheKey = "unstable_cache:late-fill-publication:[]";
       const stored = await handler.get(cacheKey, { kind: "FETCH", tags: [] });
-      expect(stored?.value).toBeNull();
-      expect(handler.writes).toEqual(["value", "tombstone"]);
+      expect(stored?.value?.kind).toBe("FETCH");
+      expect(handler.writes).toEqual(["value"]);
 
-      // A poisoned key remains fail closed in this isolate: compute fresh and
-      // do not trust or republish through the shared handler.
-      await expect(cached()).resolves.toBe("result-3");
-      expect(handler.writes).toEqual(["value", "tombstone"]);
+      // Once the original writer settles, the temporary bypass is released
+      // and its validated result becomes the shared cache value.
+      await expect(cached()).resolves.toBe("result-1");
+      expect(executions).toBe(2);
+      expect(handler.writes).toEqual(["value"]);
     } finally {
       releaseFirstWrite();
       const pendingFills = Reflect.get(
@@ -6146,10 +6152,59 @@ describe("next/cache shim", () => {
       }
       pendingFills?.clear();
       const poisoned = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.poisonedKeys")) as
-        | Set<string>
+        | Map<string, number>
         | undefined;
       poisoned?.clear();
+      Reflect.deleteProperty(globalThis, Symbol.for("vinext.unstableCache.pendingFillKeyChars"));
       Reflect.deleteProperty(globalThis, Symbol.for("vinext.unstableCache.publicationDisabled"));
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("bounds retained unstable_cache fill keys while excess calls bypass publication", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+    const never = new Promise<never>(() => {});
+    let executions = 0;
+    const cached = unstable_cache(
+      async (_key: string | number) => {
+        executions++;
+        return never;
+      },
+      ["bounded-pending-fills"],
+    );
+
+    vi.useFakeTimers();
+    try {
+      const calls: Array<Promise<unknown>> = [];
+      for (let index = 0; index <= 1_000; index++) calls.push(cached(index));
+      calls.push(cached("x".repeat(1_000_001)));
+      await vi.advanceTimersByTimeAsync(0);
+
+      const pending = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.pendingFills")) as
+        | Map<string, unknown>
+        | undefined;
+      expect(executions).toBe(1_002);
+      expect(pending?.size).toBe(1_000);
+      expect(
+        Reflect.get(globalThis, Symbol.for("vinext.unstableCache.pendingFillKeyChars")),
+      ).toBeLessThanOrEqual(1_000_000);
+
+      // Keep the intentionally unresolved calls observed without awaiting.
+      void calls;
+    } finally {
+      const pendingFills = Reflect.get(
+        globalThis,
+        Symbol.for("vinext.unstableCache.pendingFills"),
+      ) as Map<string, { leaseTimer?: ReturnType<typeof setTimeout> }> | undefined;
+      for (const entry of pendingFills?.values() ?? []) {
+        if (entry.leaseTimer !== undefined) clearTimeout(entry.leaseTimer);
+      }
+      pendingFills?.clear();
+      Reflect.deleteProperty(globalThis, Symbol.for("vinext.unstableCache.pendingFillKeyChars"));
       vi.useRealTimers();
       setCacheHandler(new MemoryCacheHandler());
     }
