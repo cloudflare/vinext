@@ -225,9 +225,9 @@ test("deploy-prewarmed App HTML and RSC variants are reused", async ({
   expect(pagesResponseHeaders["content-type"]).toContain("text/html");
   expect(pagesResponseHeaders["x-vinext-build-id"]).toBe(rscBuildId);
   // This layer only probes App Pages. Pages Router keeps its existing
-  // route-owned cache policy, but is deliberately not prewarmed yet.
+  // route-owned cache policy. Existing path discovery may already have filled
+  // this entry, so its current CDN residency is not part of this assertion.
   expect(pagesResponseHeaders["cache-control"]).toContain("public");
-  expect(pagesResponseHeaders["cf-cache-status"]).toBe("MISS");
   expect(await pagesResponse.text()).toContain("Pages prewarm target");
 
   const appHtmlResponse = await getResponseAfterPromotion(
