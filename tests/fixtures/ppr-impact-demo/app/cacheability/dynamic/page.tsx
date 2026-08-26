@@ -1,5 +1,7 @@
 import { headers } from "next/headers";
 
+export const revalidate = 60;
+
 export default async function DynamicCacheabilityPage() {
   const requestHeaders = await headers();
   return (

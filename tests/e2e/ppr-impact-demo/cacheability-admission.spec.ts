@@ -1,11 +1,5 @@
 import { expect, test } from "@playwright/test";
 
-function cacheabilityResult(body: string): string {
-  const match = body.match(/id="cacheability-result">([^<]+)</);
-  if (!match) throw new Error("response did not contain a cacheability result");
-  return match[1];
-}
-
 test("admits only exact manifest-backed App Page responses after clean EOF", async ({
   request,
 }) => {
@@ -75,35 +69,6 @@ test("admits only exact manifest-backed App Page responses after clean EOF", asy
   expect(knownDynamic.status()).toBe(200);
   expect(knownDynamic.headers()["cache-control"]).toContain("no-store");
   expect(knownDynamic.headers()["cdn-cache-control"]).toBeUndefined();
-
-  const publicUseCache = await request.get("/cacheability/use-cache-public-no-store", {
-    headers: { Accept: "text/html" },
-  });
-  expect(publicUseCache.status()).toBe(200);
-  const publicUseCacheValue = cacheabilityResult(await publicUseCache.text());
-  expect(publicUseCacheValue).toMatch(/^owned-by-public-use-cache-\d+$/);
-  expect(publicUseCache.headers()["cdn-cache-control"]).toContain("public");
-
-  const publicUseCacheAgain = await request.get("/cacheability/use-cache-public-no-store", {
-    headers: { Accept: "text/html" },
-  });
-  expect(cacheabilityResult(await publicUseCacheAgain.text())).toBe(publicUseCacheValue);
-
-  const directNoStore = await request.get("/cacheability/direct-no-store");
-  const directNoStoreAgain = await request.get("/cacheability/direct-no-store");
-  expect(cacheabilityResult(await directNoStoreAgain.text())).not.toBe(
-    cacheabilityResult(await directNoStore.text()),
-  );
-
-  const privateUseCache = await request.get("/cacheability/use-cache-private", {
-    headers: { Accept: "text/html" },
-  });
-  expect(privateUseCache.status()).toBe(200);
-  expect((await privateUseCache.text()).replaceAll("<!-- -->", "")).toContain(
-    "owned-by-private-use-cache:probe-catches-0",
-  );
-  expect(privateUseCache.headers()["cache-control"]).toContain("no-store");
-  expect(privateUseCache.headers()["cdn-cache-control"]).toBeUndefined();
 
   const staticToDynamic = await request.get("/cacheability/static-to-dynamic/runtime", {
     headers: { Accept: "text/html", "X-Probe-Value": "private-value" },

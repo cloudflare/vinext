@@ -3,7 +3,6 @@ import { recordPrivateExecution } from "./state";
 
 async function readPrivateValue() {
   "use cache: private";
-
   return `private-execution-${recordPrivateExecution()}`;
 }
 

@@ -1,5 +1,7 @@
 import { headers } from "next/headers";
 
+export const revalidate = 3;
+
 export function generateStaticParams() {
   return process.env.NEXT_PHASE === "phase-production-build" ? [{ slug: "known" }] : [];
 }
