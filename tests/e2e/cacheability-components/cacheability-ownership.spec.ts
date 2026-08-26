@@ -87,9 +87,7 @@ test("preserves Cache Components ownership while probing inside workerd", async 
   // Seed the physical key used before vinext rejected this invalid nesting.
   // The fixed runtime must not serve private output persisted by an older
   // deployment without ever reaching the new boundary check.
-  const seedLegacyPrivateResult = await request.post(
-    "/use-cache-private-in-unstable-cache/state",
-  );
+  const seedLegacyPrivateResult = await request.post("/use-cache-private-in-unstable-cache/state");
   expect(seedLegacyPrivateResult.status()).toBe(204);
   const nestedPrivateProbe = await request.get("/use-cache-private-in-unstable-cache", {
     headers,
@@ -123,9 +121,7 @@ test("preserves Cache Components ownership while probing inside workerd", async 
   try {
     await expect
       .poll(async () => {
-        const fillState = await request.get(
-          "/use-cache-private-in-unstable-cache/state?details=1",
-        );
+        const fillState = await request.get("/use-cache-private-in-unstable-cache/state?details=1");
         return (await fillState.json()).privateFillWaiting;
       })
       .toBe(true);
