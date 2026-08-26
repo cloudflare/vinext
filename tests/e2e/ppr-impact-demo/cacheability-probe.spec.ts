@@ -178,6 +178,39 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/cache-components-errors/use-cache-private.util.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components-errors/use-cache-private.util.ts
+  const privateInUnstableCacheProbe = await request.get(
+    "/cacheability/use-cache-private-in-unstable-cache",
+    { headers },
+  );
+  expect(privateInUnstableCacheProbe.ok()).toBe(true);
+  await expect(privateInUnstableCacheProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cacheability/use-cache-private-in-unstable-cache",
+    reason: "route returned HTTP 500",
+    state: "probe-failed",
+    status: 500,
+    version: 1,
+  });
+
+  // Runtime requests must fail on every attempt. In particular, the first
+  // request must not persist a private result in the outer shared cache and
+  // let the second request bypass the invalid boundary.
+  const firstInvalidRuntime = await request.get(
+    "/cacheability/use-cache-private-in-unstable-cache",
+  );
+  expect(firstInvalidRuntime.status()).toBe(500);
+  const secondInvalidRuntime = await request.get(
+    "/cacheability/use-cache-private-in-unstable-cache",
+  );
+  expect(secondInvalidRuntime.status()).toBe(500);
+  const invalidNestingState = await request.get(
+    "/cacheability/use-cache-private-in-unstable-cache/state",
+  );
+  await expect(invalidNestingState.json()).resolves.toEqual({ privateExecutions: 0 });
+
   const identityProbe = await request.get("/cacheability/static", {
     headers: { ...headers, [probeHeader]: "identity" },
   });
