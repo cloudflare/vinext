@@ -33,6 +33,9 @@ test("classifies Pages data contracts inside the staged Worker", async ({ reques
     [probeHeader]: "1",
     [secretHeader]: readPrerenderSecret(),
   };
+  const html = await (await request.get(`${BASE}/revalidate-target`)).text();
+  const runtimeBuildId = html.match(/"buildId":"([^"]+)"/)?.[1];
+  expect(runtimeBuildId).toBeDefined();
 
   // Ported from Next.js: test/e2e/prerender.test.ts and
   // test/e2e/getserversideprops/test/index.test.ts.
@@ -42,6 +45,19 @@ test("classifies Pages data contracts inside the staged Worker", async ({ reques
     const response = await request.get(`${BASE}${pathname}`, { headers });
     expect(response.ok(), pathname).toBe(true);
     await expect(response.json(), pathname).resolves.toMatchObject({
+      kind: "pages-page",
+      pattern: pathname,
+      state: "static-candidate",
+      status: 200,
+      version: 1,
+    });
+  }
+
+  for (const pathname of ["/revalidate-target"]) {
+    const dataPath = `/_next/data/${runtimeBuildId}${pathname}.json`;
+    const response = await request.get(`${BASE}${dataPath}`, { headers });
+    expect(response.ok(), dataPath).toBe(true);
+    await expect(response.json(), dataPath).resolves.toMatchObject({
       kind: "pages-page",
       pattern: pathname,
       state: "static-candidate",
@@ -61,4 +77,15 @@ test("classifies Pages data contracts inside the staged Worker", async ({ reques
       version: 1,
     });
   }
+
+  const ssrDataPath = `/_next/data/${runtimeBuildId}/ssr.json`;
+  const ssrData = await request.get(`${BASE}${ssrDataPath}`, { headers });
+  expect(ssrData.ok(), ssrDataPath).toBe(true);
+  await expect(ssrData.json(), ssrDataPath).resolves.toMatchObject({
+    kind: "pages-page",
+    pattern: "/ssr",
+    state: "dynamic",
+    status: 204,
+    version: 1,
+  });
 });

@@ -83,7 +83,12 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
 /** Apply adapter-owned build identity to an HTML or RSC page response. */
 export function applyCdnResponseIdentityHeaders(response: Response, request: Request): Response {
   const accept = request.headers.get("Accept")?.toLowerCase() ?? "";
-  if (request.headers.get("RSC") !== "1" && !accept.includes("text/html")) return response;
+  const isPagesDataRequest = /(?:^|\/)_next\/data\/[^/]+\/.+\.json$/.test(
+    new URL(request.url).pathname,
+  );
+  if (request.headers.get("RSC") !== "1" && !accept.includes("text/html") && !isPagesDataRequest) {
+    return response;
+  }
   const map = getCdnCacheAdapter().buildResponseIdentityHeaders?.();
   if (!map || Object.keys(map).length === 0) return response;
 

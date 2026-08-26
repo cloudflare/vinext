@@ -89,6 +89,14 @@
       "state": "static-candidate",
       "status": 200
     },
+    "[\"pages-page\",\"/cacheability-pages/isr\",\"pages-data\",\"/_next/data/ppr-impact-demo-cacheability/cacheability-pages/isr.json\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/isr",
+      "representation": "pages-data",
+      "requestKey": "/_next/data/ppr-impact-demo-cacheability/cacheability-pages/isr.json",
+      "state": "static-candidate",
+      "status": 200
+    },
     "[\"pages-page\",\"/cacheability-pages/middleware\",\"html\",\"/cacheability-pages/middleware\"]": {
       "kind": "pages-page",
       "pattern": "/cacheability-pages/middleware",
@@ -126,6 +134,14 @@
       "pattern": "/cacheability-pages/posts/:slug",
       "representation": "html",
       "requestKey": "/cacheability-pages/posts/known",
+      "state": "static-candidate",
+      "status": 200
+    },
+    "[\"pages-page\",\"/cacheability-pages/posts/:slug\",\"pages-data\",\"/_next/data/ppr-impact-demo-cacheability/cacheability-pages/posts/known.json\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/posts/:slug",
+      "representation": "pages-data",
+      "requestKey": "/_next/data/ppr-impact-demo-cacheability/cacheability-pages/posts/known.json",
       "state": "static-candidate",
       "status": 200
     }

@@ -89,6 +89,16 @@ describe("cacheability manifest", () => {
     ).toEqual({ representation: "html", requestKey: "/products/one?currency=gbp" });
     expect(
       cacheabilityRequestIdentity(
+        new Request("https://example.com/docs/_next/data/build-a/products/one.json?currency=gbp", {
+          headers: { Accept: "application/json" },
+        }),
+      ),
+    ).toEqual({
+      representation: "pages-data",
+      requestKey: "/docs/_next/data/build-a/products/one.json?currency=gbp",
+    });
+    expect(
+      cacheabilityRequestIdentity(
         new Request("https://example.com/products/one?_rsc", {
           headers: { Accept: "text/x-component", RSC: "1" },
         }),

@@ -1162,6 +1162,16 @@ describe("prerender path manifest", () => {
       "/posts/a%2fb",
     ]);
     expect(manifest?.pagesPaths).toEqual(manifest?.paths);
+    expect(manifest?.pagesDataPaths).toEqual([
+      "/docs/_next/data/build-a/posts/hello.json",
+      "/docs/_next/data/build-a/fr/posts/bonjour.json",
+      "/docs/_next/data/build-a/fr/posts/string-fr.json",
+      "/docs/_next/data/build-a/FR/posts/string-fr-upper.json",
+      "/docs/_next/data/build-a/en/posts/string-en-explicit.json",
+      "/docs/_next/data/build-a/posts/string-en.json",
+      "/docs/_next/data/build-a/posts/%7Euser.json",
+      "/docs/_next/data/build-a/posts/a%2fb.json",
+    ]);
     expect(fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:43210/__vinext/prerender/pages-static-paths?pattern=%2Fposts%2F%3Aslug&locales=%5B%22en%22%2C%22fr%22%5D&defaultLocale=en",
       expect.any(Object),

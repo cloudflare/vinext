@@ -659,6 +659,7 @@ export function classifyLayoutSegmentConfig(code: string): LayoutBuildClassifica
  * API routes (files under pages/api/) are always `api`.
  */
 export function classifyPagesRoute(filePath: string): {
+  hasStaticProps?: boolean;
   type: RouteType;
   revalidate?: number;
 } {
@@ -685,13 +686,13 @@ export function classifyPagesRoute(filePath: string): {
     const revalidate = extractGetStaticPropsRevalidateFromProgram(program, code);
 
     if (revalidate === null || revalidate === false || revalidate === Infinity) {
-      return { type: "static" };
+      return { hasStaticProps: true, type: "static" };
     }
     if (revalidate === 0) {
       return { type: "ssr" };
     }
     // Positive number → ISR
-    return { type: "isr", revalidate };
+    return { hasStaticProps: true, type: "isr", revalidate };
   }
 
   return { type: "static" };

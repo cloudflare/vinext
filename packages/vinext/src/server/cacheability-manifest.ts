@@ -17,7 +17,7 @@ import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "./app-rsc-render-mod
 export const CACHEABILITY_MANIFEST_MODULE = "__vinext_cacheability_manifest.js";
 
 export type CacheabilityRouteKind = "app-page" | "pages-page";
-export type CacheabilityRepresentation = "html" | "rsc-full" | "rsc-loading-shell";
+export type CacheabilityRepresentation = "html" | "pages-data" | "rsc-full" | "rsc-loading-shell";
 type CacheabilityManifestRouteState =
   | "static-candidate"
   | "runtime-check"
@@ -49,7 +49,12 @@ export function cacheabilityManifestRouteKey(
 }
 
 function isRepresentation(value: unknown): value is CacheabilityRepresentation {
-  return value === "html" || value === "rsc-full" || value === "rsc-loading-shell";
+  return (
+    value === "html" ||
+    value === "pages-data" ||
+    value === "rsc-full" ||
+    value === "rsc-loading-shell"
+  );
 }
 
 function isRouteState(value: unknown): value is CacheabilityManifestRouteState {
@@ -147,6 +152,9 @@ export function cacheabilityRequestIdentity(request: Request): {
 
   const url = new URL(request.url);
   const requestKey = `${url.pathname}${url.search}`;
+  if (/(?:^|\/)_next\/data\/[^/]+\/.+\.json$/.test(url.pathname)) {
+    return { representation: "pages-data", requestKey };
+  }
   const isRsc = request.headers.get(RSC_HEADER) === "1" || url.pathname.endsWith(".rsc");
   if (!isRsc) {
     const accept = request.headers.get("Accept")?.toLowerCase() ?? "";

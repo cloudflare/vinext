@@ -191,6 +191,14 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toBe("https://example.com/target");
     expect(response.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("build-a");
+
+    const pagesData = applyCdnResponseIdentityHeaders(
+      Response.json({ pageProps: {} }),
+      new Request("https://example.com/_next/data/build-a/source.json", {
+        headers: { Accept: "application/json" },
+      }),
+    );
+    expect(pagesData.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("build-a");
   });
 
   it("get returns null so the origin always renders fresh", async () => {

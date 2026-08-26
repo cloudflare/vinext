@@ -567,8 +567,7 @@ export function createPagesPageHandler(
       hasRewrites,
     });
     const isCacheabilityProbe = isRouteCacheabilityProbe();
-    const isTopLevelPageRoute =
-      !isDataReq && !isRouteMissErrorRender && options?.__forcedRoute === undefined;
+    const isTopLevelPageRoute = !isRouteMissErrorRender && options?.__forcedRoute === undefined;
     const hasRequestTimeData =
       pagesReadiness.gssp === true || pagesReadiness.gip === true || pagesReadiness.appGip === true;
 

@@ -28,6 +28,8 @@ import { VINEXT_CDN_BUILD_ID_HEADER } from "./cache/cdn-build-id.js";
 export type CdnWarmOptions = {
   targetUrl: string;
   paths: readonly string[];
+  /** Pages Router JSON data identities used by client navigation. */
+  pagesDataPaths?: readonly string[];
   /** App Router ISR paths whose definitive client-navigation payload is warmed. */
   rscPaths?: readonly string[];
   /** App Router paths whose deterministic loading-boundary payload is warmed. */
@@ -79,6 +81,7 @@ export type CdnWarmResult = {
 
 export type CdnWarmRequestPlan = {
   loadingShellPaths: string[];
+  pagesDataPaths: string[];
   paths: string[];
   rscPaths: string[];
 };
@@ -91,6 +94,7 @@ export type PrerenderWarmPlan = {
   buildIdentity?: string;
   deploymentId?: string;
   loadingShellPaths: string[];
+  pagesDataPaths?: string[];
   pagesPaths?: string[];
   paths: string[];
   rscBuildId?: string;
@@ -137,6 +141,9 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
       (manifest.pagesPaths !== undefined &&
         (!Array.isArray(manifest.pagesPaths) ||
           !manifest.pagesPaths.every((pathname) => typeof pathname === "string"))) ||
+      (manifest.pagesDataPaths !== undefined &&
+        (!Array.isArray(manifest.pagesDataPaths) ||
+          !manifest.pagesDataPaths.every((pathname) => typeof pathname === "string"))) ||
       (manifest.excludedWarmPaths !== undefined &&
         (!Array.isArray(manifest.excludedWarmPaths) ||
           !manifest.excludedWarmPaths.every((pathname) => typeof pathname === "string"))) ||
@@ -242,6 +249,7 @@ export function readPrerenderWarmPlan(
     loadingShellPaths: supportsCanonicalRsc
       ? (manifest.loadingShellPaths ?? []).map(applyConfig)
       : [],
+    ...(manifest.pagesDataPaths ? { pagesDataPaths: manifest.pagesDataPaths } : {}),
     ...(manifest.pagesPaths ? { pagesPaths: manifest.pagesPaths.map(applyConfig) } : {}),
     paths: htmlPaths,
     ...(supportsCanonicalRsc ? { rscBuildId: manifest.rscBuildId } : {}),
@@ -356,7 +364,7 @@ async function fetchHeadersWithTimeout(
 
 export type CdnWarmTarget = {
   headers?: HeadersInit;
-  kind: "html" | "rsc-full" | "rsc-loading-shell";
+  kind: "html" | "pages-data" | "rsc-full" | "rsc-loading-shell";
   label: string;
   pathname: string;
   sourcePathname: string;
@@ -365,7 +373,7 @@ export type CdnWarmTarget = {
 export async function createCdnWarmTargets(
   options: Pick<
     CdnWarmOptions,
-    "deploymentId" | "headers" | "loadingShellPaths" | "paths" | "rscPaths"
+    "deploymentId" | "headers" | "loadingShellPaths" | "pagesDataPaths" | "paths" | "rscPaths"
   >,
 ): Promise<CdnWarmTarget[]> {
   const requests: CdnWarmTarget[] = [];
@@ -411,6 +419,17 @@ export async function createCdnWarmTargets(
       headers: htmlHeaders,
       kind: "html",
       label: pathname,
+      pathname,
+      sourcePathname: pathname,
+    });
+  }
+  for (const pathname of new Set(options.pagesDataPaths ?? [])) {
+    const dataHeaders = new Headers(commonHeaders);
+    dataHeaders.set("Accept", "application/json");
+    requests.push({
+      headers: dataHeaders,
+      kind: "pages-data",
+      label: `${pathname} (Pages data)`,
       pathname,
       sourcePathname: pathname,
     });
@@ -683,9 +702,22 @@ function validateHtmlWarmResponse(
   return { outcome: "warmed" };
 }
 
+function validatePagesDataWarmResponse(
+  response: Response,
+  expectedBuildId?: string,
+  requireCacheHit = false,
+): WarmValidation {
+  const validation = validateHtmlWarmResponse(response, expectedBuildId, requireCacheHit);
+  if (validation.outcome !== "warmed") return validation;
+  if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
+    return { outcome: "failed", error: "expected application/json response" };
+  }
+  return validation;
+}
+
 function validateReadinessResponse(
   response: Response,
-  kind: "html" | "rsc",
+  kind: "html" | "pages-data" | "rsc",
   expectedBuildId?: string,
   expectedRscBuildId?: string,
 ): string | null {
@@ -700,13 +732,14 @@ function validateReadinessResponse(
   }
   if (response.redirected) return "redirected response";
   if (response.status >= 500) return `HTTP ${response.status}`;
-  if (
-    response.status >= 200 &&
-    response.status < 300 &&
-    kind === "rsc" &&
-    !response.headers.get("Content-Type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE)
-  ) {
-    return `expected ${VINEXT_RSC_CONTENT_TYPE} response`;
+  if (response.status >= 200 && response.status < 300) {
+    const contentType = response.headers.get("Content-Type")?.toLowerCase();
+    if (kind === "rsc" && !contentType?.startsWith(VINEXT_RSC_CONTENT_TYPE)) {
+      return `expected ${VINEXT_RSC_CONTENT_TYPE} response`;
+    }
+    if (kind === "pages-data" && !contentType?.startsWith("application/json")) {
+      return "expected application/json response";
+    }
   }
   // Readiness proves only that version overrides consistently reach the
   // uploaded build. The real warm pass validates status, representation, and
@@ -740,8 +773,9 @@ export async function waitForCdnWarmTargetReadiness(
 ): Promise<CdnWarmReadinessResult> {
   const rscPath = options.plan.rscPaths[0] ?? options.plan.loadingShellPaths[0];
   const htmlPath = options.plan.paths[0];
-  const kind = rscPath ? "rsc" : "html";
-  const pathname = rscPath ?? htmlPath;
+  const pagesDataPath = options.plan.pagesDataPaths[0];
+  const kind = rscPath ? "rsc" : htmlPath ? "html" : "pages-data";
+  const pathname = rscPath ?? htmlPath ?? pagesDataPath;
   if (!pathname) return { ready: true };
   if (options.expectedBuildId === undefined && options.expectedRscBuildId === undefined) {
     return {
@@ -756,8 +790,10 @@ export async function waitForCdnWarmTargetReadiness(
     for (const [name, value] of createCanonicalRscRequestHeaders(options.deploymentId)) {
       headers.set(name, value);
     }
-  } else {
+  } else if (kind === "html") {
     headers.set("Accept", "text/html");
+  } else {
+    headers.set("Accept", "application/json");
   }
   headers.set("Cache-Control", "no-cache");
   headers.set("Pragma", "no-cache");
@@ -871,7 +907,7 @@ function shouldRetryValidationFailure(
     options.expectedBuildId === undefined
       ? null
       : response.headers.get(VINEXT_CDN_BUILD_ID_HEADER) === options.expectedBuildId,
-    target.kind === "html" || options.expectedRscBuildId === undefined
+    !target.kind.startsWith("rsc-") || options.expectedRscBuildId === undefined
       ? null
       : response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) === options.expectedRscBuildId,
   ].filter((matches): matches is boolean => matches !== null);
@@ -966,7 +1002,7 @@ async function warmOnePath(
         );
       }
 
-      if (target.kind !== "html") {
+      if (target.kind.startsWith("rsc-")) {
         const validation = validateRscWarmResponse(
           response,
           options.expectedBuildId,
@@ -994,11 +1030,14 @@ async function warmOnePath(
         continue;
       }
 
-      const validation = validateHtmlWarmResponse(
-        response,
-        options.expectedBuildId,
-        options.requireCacheHit,
-      );
+      const validation =
+        target.kind === "pages-data"
+          ? validatePagesDataWarmResponse(
+              response,
+              options.expectedBuildId,
+              options.requireCacheHit,
+            )
+          : validateHtmlWarmResponse(response, options.expectedBuildId, options.requireCacheHit);
       if (validation.outcome === "warmed") {
         return { path: target.label, ok: true, skipped: false };
       }
@@ -1082,8 +1121,8 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       skipped: 0,
       failed: 0,
       failures: [],
-      warmedPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
-      retryPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
+      warmedPlan: { loadingShellPaths: [], pagesDataPaths: [], paths: [], rscPaths: [] },
+      retryPlan: { loadingShellPaths: [], pagesDataPaths: [], paths: [], rscPaths: [] },
     };
   }
 
@@ -1229,6 +1268,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       loadingShellPaths: warmedRequests
         .filter((target) => target.kind === "rsc-loading-shell")
         .map((target) => target.sourcePathname),
+      pagesDataPaths: warmedRequests
+        .filter((target) => target.kind === "pages-data")
+        .map((target) => target.sourcePathname),
       paths: warmedRequests
         .filter((target) => target.kind === "html")
         .map((target) => target.sourcePathname),
@@ -1239,6 +1281,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     retryPlan: {
       loadingShellPaths: failedRequests
         .filter(({ target }) => target.kind === "rsc-loading-shell")
+        .map(({ target }) => target.sourcePathname),
+      pagesDataPaths: failedRequests
+        .filter(({ target }) => target.kind === "pages-data")
         .map(({ target }) => target.sourcePathname),
       paths: failedRequests
         .filter(({ target }) => target.kind === "html")
@@ -1269,6 +1314,7 @@ export async function warmCdnCacheFromPrerender(
   const warmPlan = {
     deploymentId: plan.deploymentId,
     loadingShellPaths: plan.loadingShellPaths,
+    pagesDataPaths: plan.pagesDataPaths,
     paths: plan.paths,
     rscPaths: plan.rscPaths,
   };
