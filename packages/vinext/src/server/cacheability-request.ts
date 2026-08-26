@@ -16,6 +16,8 @@ import {
   VINEXT_RSC_VARY_HEADER,
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
+  INTERNAL_HEADERS,
+  VINEXT_INTERNAL_HEADERS,
 } from "./headers.js";
 import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
@@ -28,6 +30,10 @@ import {
   CACHEABILITY_RESPONSE_CAPTURE_PENDING_LIMIT,
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
 } from "./cacheability-limits.js";
+export {
+  CacheabilityClassificationError,
+  isCacheabilityClassificationError,
+} from "./cacheability-classification-error.js";
 
 export {
   CACHEABILITY_RESPONSE_BODY_LIMIT,
@@ -62,6 +68,7 @@ type CacheabilityRequestState = {
   releaseCapturedBodies?: Set<() => void>;
   complete?: (outcome: CacheabilityOutcome) => void;
   completion?: Promise<CacheabilityOutcome>;
+  explicitCachePolicy?: string;
   manifestRoute?: CacheabilityManifestRoute;
   mode: "admit" | "admit-all" | "identity" | "probe" | "warm";
   outcome?: CacheabilityOutcome;
@@ -330,6 +337,29 @@ function responsePolicyIsCacheable(response: Response): boolean {
     .some((match) => match !== null && Number(match[1]) > 0);
 }
 
+function responseCachePolicy(response: Response): string | undefined {
+  return (
+    response.headers.get("CDN-Cache-Control") ??
+    response.headers.get("Cloudflare-CDN-Cache-Control") ??
+    response.headers.get("Cache-Control") ??
+    undefined
+  );
+}
+
+function explicitCachePolicyOutcome(
+  response: Response,
+  state: CacheabilityRequestState,
+): CacheabilityOutcome | undefined {
+  if (
+    state.unsafeReason ||
+    state.explicitCachePolicy === undefined ||
+    !responsePolicyIsCacheable(response)
+  ) {
+    return undefined;
+  }
+  return { cacheable: true, cacheControl: state.explicitCachePolicy };
+}
+
 function responseHasUnsupportedVary(response: Response): boolean {
   return (response.headers.get("Vary") ?? "")
     .split(",")
@@ -419,16 +449,6 @@ export type CapturedResponseBody =
       failClosed: true;
       reason: string;
     };
-
-export class CacheabilityClassificationError extends Error {
-  override name = "CacheabilityClassificationError";
-}
-
-export function isCacheabilityClassificationError(
-  error: unknown,
-): error is CacheabilityClassificationError {
-  return error instanceof CacheabilityClassificationError;
-}
 
 /**
  * Collect a response body only while it remains within the Worker-safe size
@@ -662,6 +682,10 @@ export function createWorkerCacheabilityContext(
     return base;
   }
 
+  const diagnosticHeaders = new Headers(request.headers);
+  for (const name of [...INTERNAL_HEADERS, ...VINEXT_INTERNAL_HEADERS]) {
+    diagnosticHeaders.delete(name);
+  }
   const state: CacheabilityRequestState = {
     mode: authorizedCapability
       ? probeMode === "identity"
@@ -672,7 +696,7 @@ export function createWorkerCacheabilityContext(
       : manifest
         ? "admit"
         : "admit-all",
-    requestHeaders: Object.fromEntries(request.headers),
+    requestHeaders: Object.fromEntries(diagnosticHeaders),
     requestIsRsc: request.headers.get(RSC_HEADER) === "1",
     requestMethod: request.method,
     requestPathname: new URL(request.url).pathname,
@@ -729,11 +753,18 @@ export function beginRouteCacheability(
     state.mode === "admit" &&
     (manifestRoute?.state === "dynamic" || manifestRoute?.state === "probe-failed")
   ) {
-    state.unsafeReason =
+    const reason =
       manifestRoute.state === "dynamic"
         ? "staged probe classified this route as dynamic"
         : "staged probe could not certify this route";
-    state.outcome = { cacheable: false, reason: state.unsafeReason };
+    // This is an automatic framework classification, not a request-safety
+    // veto. A matching unconditional next.config.js cache policy remains
+    // authoritative, matching Next.js's custom Cache-Control behavior.
+    state.outcome = {
+      cacheable: false,
+      ...(manifestRoute.state === "probe-failed" ? { classificationFailure: true } : {}),
+      reason,
+    };
     return false;
   }
 
@@ -866,15 +897,26 @@ export function retainRouteCacheabilityCapture(release: () => void): boolean {
 /** Record the exact adapter policy used only while an App render is unproven. */
 export function markRouteCacheabilityPolicyProvisional(headers: Headers): void {
   const state = readState(getRequestExecutionContext());
-  if (!state?.route || !state.completion) return;
+  if (!state?.route) return;
   state.provisionalPolicy = snapshotCachePolicy(headers);
 }
 
-/** Ensure a later explicit config policy cannot be mistaken for the provisional policy. */
-export function invalidateRouteCacheabilityProvisionalPolicy(): void {
+/** Whether the current cache headers are still exactly framework-generated. */
+export function isRouteCacheabilityPolicyProvisional(headers: Headers): boolean {
+  const state = readState(getRequestExecutionContext());
+  return Boolean(
+    state?.route &&
+    state.provisionalPolicy &&
+    cachePoliciesMatch(state.provisionalPolicy, snapshotCachePolicy(headers)),
+  );
+}
+
+/** Record a matching final next.config.js cache policy as user-authoritative. */
+export function markRouteCacheabilityPolicyExplicit(cacheControl: string): void {
   const state = readState(getRequestExecutionContext());
   if (!state?.route) return;
   state.provisionalPolicy = undefined;
+  state.explicitCachePolicy = cacheControl;
 }
 
 function probeResponse(
@@ -969,8 +1011,10 @@ async function finalizeWorkerCacheabilityResponseWithState(
     );
   }
 
+  const authoritativePolicyOutcome = explicitCachePolicyOutcome(response, state);
   const staticCandidateBecameDynamic = (outcome: CacheabilityOutcome | undefined): boolean =>
     state.mode !== "probe" &&
+    authoritativePolicyOutcome === undefined &&
     state.manifestRoute?.state === "static-candidate" &&
     state.route?.partialPrerender !== true &&
     outcome?.dynamicUsage === true;
@@ -997,7 +1041,7 @@ async function finalizeWorkerCacheabilityResponseWithState(
   if (
     isEventStream ||
     unsupportedVary ||
-    explicitOutcome?.cacheable === false ||
+    (authoritativePolicyOutcome === undefined && explicitOutcome?.cacheable === false) ||
     responseHasFinalCacheOptOut(response, state) ||
     (!state.completion && !responsePolicyIsCacheable(response))
   ) {
@@ -1021,6 +1065,35 @@ async function finalizeWorkerCacheabilityResponseWithState(
   }
 
   const deferredOutcome = state.completion ? await state.completion : undefined;
+  const classificationFailureOutcome =
+    deferredOutcome?.classificationFailure === true
+      ? deferredOutcome
+      : state.outcome?.classificationFailure === true
+        ? state.outcome
+        : undefined;
+  const completedOutcome =
+    classificationFailureOutcome ?? authoritativePolicyOutcome ?? deferredOutcome ?? state.outcome;
+  if (state.mode === "warm" && completedOutcome?.classificationFailure === true) {
+    void response.body?.cancel().catch(() => {});
+    return captureCapacityUnavailableResponse();
+  }
+  if (staticCandidateBecameDynamic(completedOutcome)) {
+    void response.body?.cancel().catch(() => {});
+    return staticToDynamicErrorResponse(completedOutcome!);
+  }
+  if (completedOutcome?.cacheable === false) {
+    if (state.mode === "probe") {
+      void response.body?.cancel().catch(() => {});
+      return probeResponse(
+        state,
+        completedOutcome.classificationFailure === true ? "probe-failed" : "dynamic",
+        completedOutcome,
+        response.status,
+      );
+    }
+    return uncacheableStreamingResponse(response);
+  }
+
   let captured: CapturedResponseBody;
   if (state.capturedBody !== undefined) {
     captured = { body: state.capturedBody, fallback: null, failClosed: false, release: () => {} };
@@ -1065,15 +1138,10 @@ async function finalizeWorkerCacheabilityResponseWithState(
     }
 
     const outcome =
-      deferredOutcome ??
-      state.outcome ??
+      completedOutcome ??
       ({
         cacheable: responsePolicyIsCacheable(response),
-        cacheControl:
-          response.headers.get("CDN-Cache-Control") ??
-          response.headers.get("Cloudflare-CDN-Cache-Control") ??
-          response.headers.get("Cache-Control") ??
-          undefined,
+        cacheControl: responseCachePolicy(response),
       } satisfies CacheabilityOutcome);
     const cacheable =
       !state.unsafeReason && outcome.cacheable && !responseHasFinalCacheOptOut(response, state);

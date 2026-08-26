@@ -10,7 +10,7 @@ import {
   type CacheabilityRouteKind,
   type CacheabilityRouteState,
 } from "vinext/internal/server/cacheability-manifest";
-import { CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT } from "vinext/internal/server/cacheability-limits";
+import { CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY } from "vinext/internal/server/cacheability-limits";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -399,12 +399,12 @@ export async function probeStagedWorkerCacheability(options: {
     }
   };
 
-  // The Worker charges the isolate budget incrementally for bytes actually
-  // retained, so small responses keep deploy-level concurrency while an
-  // individual large response still fails classification closed.
+  // Do not consume the Worker's bounded waiter queue as deploy throughput.
+  // Every full probe can need the maximum artifact budget, so limit ingress to
+  // the number of captures that can actively make progress in one isolate.
   const fullProbeConcurrency = Math.max(
     1,
-    Math.min(concurrency, CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT, probeRoutes.length || 1),
+    Math.min(concurrency, CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY, probeRoutes.length || 1),
   );
   await Promise.all(Array.from({ length: fullProbeConcurrency }, () => worker()));
 

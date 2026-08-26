@@ -9,6 +9,7 @@ import {
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
 import { CACHEABILITY_MANIFEST_PLACEHOLDER } from "../packages/vinext/src/server/cacheability-manifest.js";
+import { CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY } from "../packages/vinext/src/server/cacheability-limits.js";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
 const delayMock = vi.hoisted(() => vi.fn());
@@ -273,6 +274,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
   it("uploads a probe Worker, builds a route manifest, then warms and promotes a second Worker", async () => {
     const events: string[] = [];
+    const warmPaths = Array.from({ length: 9 }, (_, index) => `/products/${index}`);
     writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker", workers_dev: true }));
     writeTwoStageArtifact();
     let uploadCount = 0;
@@ -353,8 +355,23 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     });
     let probeAttempts = 0;
     let warmAttempts = 0;
+    let activeCacheRequests = 0;
+    let peakWarmRequests = 0;
+    let peakVerificationRequests = 0;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const headers = new Headers(init?.headers);
+      if (headers.get("X-Vinext-Cacheability-Probe") === "identity") {
+        expect(headers.get("X-Vinext-Prerender-Secret")).toBe("secret-a");
+        expect(headers.get("Cloudflare-Workers-Version-Overrides")).toContain(
+          "22222222-2222-4222-8222-222222222222",
+        );
+        return Response.json({
+          kind: "app-page",
+          pattern: "/products/:id",
+          status: 200,
+          version: 1,
+        });
+      }
       if (headers.get("X-Vinext-Cacheability-Probe") === "1") {
         probeAttempts += 1;
         if (probeAttempts === 1) {
@@ -381,14 +398,23 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         );
       } else {
         warmAttempts += 1;
-        events.push(warmAttempts === 1 ? "warm:final" : "verify:final");
+        const isVerification = warmAttempts > warmPaths.length;
+        if (warmAttempts === 1) events.push("warm:final");
+        if (warmAttempts === warmPaths.length + 1) events.push("verify:final");
         expect(headers.get("Cloudflare-Workers-Version-Overrides")).toBeNull();
-        expect(headers.get("X-Vinext-Cacheability-Probe")).toBe(warmAttempts === 1 ? "warm" : null);
-        expect(headers.get("X-Vinext-Prerender-Secret")).toBe(
-          warmAttempts === 1 ? "secret-a" : null,
-        );
+        expect(headers.get("X-Vinext-Cacheability-Probe")).toBe("warm");
+        expect(headers.get("X-Vinext-Prerender-Secret")).toBe("secret-a");
+        activeCacheRequests += 1;
+        if (isVerification) {
+          peakVerificationRequests = Math.max(peakVerificationRequests, activeCacheRequests);
+        } else {
+          peakWarmRequests = Math.max(peakWarmRequests, activeCacheRequests);
+        }
+        await Promise.resolve();
+        activeCacheRequests -= 1;
+        return cacheableHtml("ok", isVerification ? "HIT" : "MISS");
       }
-      return cacheableHtml("ok", warmAttempts > 1 ? "HIT" : "MISS");
+      return cacheableHtml();
     });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
@@ -399,13 +425,22 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           buildId: "build-a",
           buildIdentity: "app-build-a",
           cacheabilityRoutes: [
-            { kind: "app-page", pattern: "/products/:id", probePath: "/products/known" },
+            {
+              kind: "app-page",
+              path: warmPaths[0],
+              pattern: "/products/:id",
+              probePath: warmPaths[0],
+              probeGroupPaths: warmPaths.slice(1),
+              runtimeCheckWarmPaths: warmPaths.slice(1),
+              warmPaths,
+            },
           ],
           loadingShellPaths: [],
-          paths: ["/products/known"],
+          paths: warmPaths,
           rscPaths: [],
         };
       },
+      warmCdnConcurrency: 100,
       warmCdnPromotionDelay: 0,
       warmCdnReadinessProbes: 1,
       twoStageCacheability: true,
@@ -431,6 +466,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status",
     ]);
     expect(delayMock).toHaveBeenCalledWith(1_000);
+    expect(peakWarmRequests).toBe(CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY);
+    expect(peakVerificationRequests).toBe(CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY);
     expect(fs.readFileSync(path.join(tmpDir, "dist/server/entry.js"), "utf-8")).toContain(
       CACHEABILITY_MANIFEST_PLACEHOLDER,
     );

@@ -13,6 +13,7 @@ import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
 import { hasPostConfigLinkHeaders } from "./app-response-header-provenance.js";
+import { markRouteCacheabilityPolicyProvisional } from "./cacheability-request.js";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -123,6 +124,7 @@ export async function finalizeAppRscResponse(
   // already applied. Redirects are already skipped above.
   if (!response.headers.has("Cache-Control")) {
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
+    markRouteCacheabilityPolicyProvisional(response.headers);
   }
 
   if (configHeadersAlreadyApplied.has(response)) {

@@ -17,7 +17,6 @@ import {
   CACHEABILITY_RESPONSE_BODY_LIMIT,
   CACHEABILITY_RESPONSE_CAPTURE_BUDGET,
   CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
-  CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT,
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
   captureResponseBodyBounded,
   createWorkerCacheabilityContext,
@@ -32,6 +31,7 @@ import {
 } from "../packages/vinext/src/server/cacheability-request.js";
 import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
 import { finalizeAppPageHtmlCacheResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
+import { createRscEmbedTransform } from "../packages/vinext/src/server/app-ssr-stream.js";
 import { executeAppRouteHandler } from "../packages/vinext/src/server/app-route-handler-execution.js";
 import { applyConfigHeadersToResponse } from "../packages/vinext/src/server/config-headers.js";
 import { configRoutesCanVaryResponse } from "../packages/vinext/src/server/config-cache-safety.js";
@@ -635,7 +635,7 @@ describe("cacheability manifests", () => {
 
     expect(result.failures).toEqual([]);
     expect(result.probed).toBe(patterns.length);
-    expect(peak).toBe(CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT);
+    expect(peak).toBe(CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -1357,6 +1357,70 @@ describe("buffered cache admission", () => {
     await expect(response.text()).resolves.toBe("provider policy");
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+  it.each([
+    ["probe", "1", undefined],
+    ["final admission", undefined, "dynamic"],
+  ])(
+    "lets an unconditional next.config.js policy authorize a force-dynamic page during %s",
+    async (_label, probeMode, manifestState) => {
+      if (manifestState) installManifest(manifestState as "dynamic");
+      setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+      const request = new Request("https://example.com/products/app-ssr", {
+        headers: probeMode
+          ? {
+              "X-Vinext-Cacheability-Probe": probeMode,
+              "X-Vinext-Prerender-Secret": "secret-a",
+            }
+          : undefined,
+      });
+      const ctx = createWorkerCacheabilityContext(createContext(), request, "secret-a");
+
+      const response = await runWithExecutionContext(ctx, async () => {
+        expect(beginRouteCacheability("app-page", "/products/:id")).toBe(probeMode === "1");
+        recordRouteCacheability({
+          cacheable: false,
+          dynamicUsage: true,
+          reason: "dynamic = force-dynamic",
+        });
+        const headers = new Headers();
+        applyConfigHeadersToResponse(headers, {
+          configHeaders: [
+            {
+              source: "/products/:id",
+              headers: [{ key: "Cache-Control", value: "s-maxage=32" }],
+            },
+          ],
+          pathname: "/products/app-ssr",
+          requestContext: {
+            cookies: {},
+            headers: new Headers(),
+            host: "example.com",
+            query: new URLSearchParams(),
+          },
+        });
+        return finalizeWorkerCacheabilityResponse(
+          new Response("force dynamic but explicitly cacheable", { headers }),
+          ctx,
+        );
+      });
+
+      if (probeMode) {
+        await expect(response.json()).resolves.toMatchObject({
+          cacheControl: "s-maxage=32",
+          state: "static-candidate",
+        });
+      } else {
+        expect(response.status).toBe(200);
+        expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=32");
+        expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+        await expect(response.text()).resolves.toBe("force dynamic but explicitly cacheable");
+      }
+    },
+  );
+
   it.each([400, 401, 403, 405, 410, 429, 500])(
     "does not admit status %i even when the completed render is cacheable",
     async (status) => {
@@ -1417,7 +1481,13 @@ describe("buffered cache admission", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const ctx = createWorkerCacheabilityContext(
       createContext(),
-      new Request("https://example.com/products/changed", { headers: { "x-test": "value" } }),
+      new Request("https://example.com/products/changed", {
+        headers: {
+          "x-test": "value",
+          "X-Vinext-Cacheability-Probe": "warm",
+          "X-Vinext-Prerender-Secret": "secret-a",
+        },
+      }),
       "secret-a",
     );
 
@@ -1959,6 +2029,113 @@ describe("buffered cache admission", () => {
     expect(response.status).toBe(503);
     expect(response.headers.get("Retry-After")).toBe("1");
   });
+
+  it("returns a probe failure without capturing the response again after deferred classification fails", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/products/deferred-failure", {
+      headers: {
+        "X-Vinext-Cacheability-Probe": "1",
+        "X-Vinext-Prerender-Secret": "secret-a",
+      },
+    });
+    const context = createWorkerCacheabilityContext(createContext(), request, "secret-a");
+    const pull = vi.fn();
+    const cancel = vi.fn();
+
+    const response = await runWithExecutionContext(context, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      const complete = deferRouteCacheability();
+      queueMicrotask(() =>
+        complete?.({
+          cacheable: false,
+          classificationFailure: true,
+          reason: "inner RSC capture failed",
+        }),
+      );
+      return finalizeWorkerCacheabilityResponse(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              pull();
+              if (pull.mock.calls.length === 1) controller.enqueue(new Uint8Array([1]));
+            },
+            cancel,
+          }),
+        ),
+        context,
+      );
+    });
+
+    expect(pull).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    await expect(response.json()).resolves.toMatchObject({
+      reason: "inner RSC capture failed",
+      state: "probe-failed",
+    });
+  });
+
+  it.each([
+    ["probe", "1", "probe-failed", 200],
+    ["authenticated warm", "warm", undefined, 503],
+  ])(
+    "treats fused HTML/RSC capture pressure as infrastructure failure during %s",
+    async (_label, mode, expectedState, expectedStatus) => {
+      if (mode === "warm") installManifest("static-candidate");
+      setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+      const request = new Request("https://example.com/products/fused-capture", {
+        headers: {
+          "X-Vinext-Cacheability-Probe": mode,
+          "X-Vinext-Prerender-Secret": "secret-a",
+        },
+      });
+      const context = createWorkerCacheabilityContext(createContext(), request, "secret-a");
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const response = await runWithExecutionContext(context, async () => {
+        expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+        const transform = createRscEmbedTransform(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("too large"));
+              controller.close();
+            },
+          }),
+          { rawBufferLimitBytes: 1 },
+        );
+        const capturedRscDataPromise = transform.getRawBuffer().then((body) => ({
+          body,
+          release() {},
+        }));
+        const appResponse = finalizeAppPageHtmlCacheResponse(new Response("<h1>page</h1>"), {
+          capturedRscDataPromise,
+          cleanPathname: "/products/fused-capture",
+          consumeDynamicUsage: () => false,
+          getPageTags: () => ["/products/fused-capture"],
+          isrHtmlKey: (pathname) => `html:${pathname}`,
+          isrRscKey: (pathname) => `rsc:${pathname}`,
+          isrSet: vi.fn(async () => {}),
+          revalidateSeconds: 60,
+          linkHeader: null,
+          waitUntil() {},
+        });
+        return finalizeWorkerCacheabilityResponse(appResponse, context);
+      });
+
+      expect(response.status).toBe(expectedStatus);
+      if (expectedState) {
+        await expect(response.json()).resolves.toMatchObject({
+          reason: "RSC body exceeded 1 bytes",
+          state: expectedState,
+        });
+      } else {
+        expect(response.headers.get("Retry-After")).toBe("1");
+      }
+      expect(consoleError).toHaveBeenCalledWith(
+        "[vinext] ISR cache write error:",
+        expect.objectContaining({ code: "VINEXT_CACHEABILITY_CLASSIFICATION_FAILURE" }),
+      );
+    },
+  );
 
   it("bounds overflow retention while ordinary excess captures fail closed immediately", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());

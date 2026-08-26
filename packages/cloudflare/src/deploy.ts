@@ -88,7 +88,7 @@ import {
   probeStagedWorkerCacheability,
   type CacheabilityProbeResolution,
 } from "./cacheability-probe.js";
-import { CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT } from "vinext/internal/server/cacheability-limits";
+import { CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY } from "vinext/internal/server/cacheability-limits";
 import { withEmbeddedCacheabilityManifest } from "./cacheability-artifact.js";
 
 export const DEFAULT_CDN_WARM_PROMOTION_DELAY_MS = 15_000;
@@ -978,7 +978,7 @@ export async function deployWithCdnWarmup(
       concurrency: authenticatedCacheabilityWarm
         ? Math.min(
             options.warmCdnConcurrency ?? DEFAULT_CDN_WARM_CONCURRENCY,
-            CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT,
+            CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
           )
         : options.warmCdnConcurrency,
       timeoutMs: options.warmCdnTimeout,
@@ -993,7 +993,7 @@ export async function deployWithCdnWarmup(
     warmCdnCache({
       targetUrl,
       paths: plan.paths,
-      headers,
+      headers: options.twoStageCacheability ? buildCacheabilityWarmHeaders(root, headers) : headers,
       propagatingTarget: true,
       requireCacheHit: true,
       deploymentId,
@@ -1001,7 +1001,12 @@ export async function deployWithCdnWarmup(
       expectedRscBuildId,
       loadingShellPaths: plan.loadingShellPaths,
       rscPaths: plan.rscPaths,
-      concurrency: options.warmCdnConcurrency,
+      concurrency: options.twoStageCacheability
+        ? Math.min(
+            options.warmCdnConcurrency ?? DEFAULT_CDN_WARM_CONCURRENCY,
+            CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
+          )
+        : options.warmCdnConcurrency,
       timeoutMs: options.warmCdnTimeout,
       retries: options.warmCdnRetries,
       strict: !options.dangerouslyPromoteOnCdnWarmError,

@@ -11,6 +11,7 @@ import {
   type RscEmbeddedChunk,
 } from "./app-rsc-embedded-chunks.js";
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/navigation-runtime.js";
+import { CacheabilityClassificationError } from "./cacheability-classification-error.js";
 
 type RscEmbedTransform = {
   /** Stop the independent Flight pump when the HTML consumer disconnects. */
@@ -192,7 +193,11 @@ export function createRscEmbedTransform(
   };
   if (rawChunks && options.rawBufferTimeoutMs !== undefined) {
     rawBufferTimeout = setTimeout(() => {
-      failRawBuffer(new Error(`RSC body did not complete within ${options.rawBufferTimeoutMs}ms`));
+      failRawBuffer(
+        new CacheabilityClassificationError(
+          `RSC body did not complete within ${options.rawBufferTimeoutMs}ms`,
+        ),
+      );
     }, options.rawBufferTimeoutMs);
   }
 
@@ -216,7 +221,7 @@ export function createRscEmbedTransform(
             // response. Stop retaining bytes and make only the prospective
             // cache artifact fail closed.
             failRawBuffer(
-              new Error(
+              new CacheabilityClassificationError(
                 rawLength > options.rawBufferLimitBytes!
                   ? `RSC body exceeded ${options.rawBufferLimitBytes} bytes`
                   : "RSC body exceeded the isolate capture budget",
@@ -341,7 +346,9 @@ export function createRscEmbedTransform(
       }
       if (rawBufferFailure) throw rawBufferFailure;
       if (!(options.reserveRawBufferBytes?.(rawLength) ?? true)) {
-        failRawBuffer(new Error("RSC body exceeded the isolate capture budget"));
+        failRawBuffer(
+          new CacheabilityClassificationError("RSC body exceeded the isolate capture budget"),
+        );
         throw rawBufferFailure;
       }
       const buffer = concatUint8Arrays(rawChunks);

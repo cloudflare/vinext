@@ -12,6 +12,8 @@ import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../../../packages/cloudfl
 
 const TARGET_PATH = "/prewarm-target";
 const PAGES_TARGET_PATH = "/pages-prewarm";
+const CACHEABILITY_PROBE_HEADER = "X-Vinext-Cacheability-Probe";
+const PRERENDER_SECRET_HEADER = "X-Vinext-Prerender-Secret";
 const LOADING_SHELL_RSC_SEARCH = "?_rsc=9qLBDIU2NgN178cB";
 const PROMOTION_STABILITY_WINDOW_MS = 60_000;
 const PROMOTION_READINESS_TIMEOUT_MS = 120_000;
@@ -176,6 +178,11 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   const rscBuildId = fs
     .readFileSync("examples/workers-cache/dist/server/RSC_BUILD_ID", "utf-8")
     .trim();
+  const prerenderSecret = (
+    JSON.parse(
+      fs.readFileSync("examples/workers-cache/dist/server/vinext-server.json", "utf-8"),
+    ) as { prerenderSecret: string }
+  ).prerenderSecret;
 
   const fullHeaders = { accept: "text/x-component", rsc: "1" };
   const shellHeaders = {
@@ -191,6 +198,23 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   // no-store version endpoint. This proves the promoted build is stable
   // without touching either canonical cache entry before its HIT assertion.
   await waitForStablePromotion({ baseURL, buildId, playwright, rscBuildId });
+
+  // Exercise authenticated warm mode inside workerd on a fresh, unmanifested
+  // concrete path. This is the same runtime path the final deploy uses after
+  // promotion, including late body classification and CDN header admission.
+  const warmPath = `/cache-probe/bare-fetch/e2e-warm-${Date.now()}`;
+  const warmResponse = await request.get(`${baseURL}${warmPath}`, {
+    headers: {
+      [CACHEABILITY_PROBE_HEADER]: "warm",
+      [PRERENDER_SECRET_HEADER]: prerenderSecret,
+    },
+  });
+  expect(warmResponse.ok()).toBe(true);
+  expect(warmResponse.headers()["cf-cache-status"]).toBe("MISS");
+  expect(await warmResponse.text()).toContain("Bare fetch cache probe");
+  const warmedResponse = await request.get(`${baseURL}${warmPath}`);
+  expect(warmedResponse.headers()["cf-cache-status"]).toBe("HIT");
+  await warmedResponse.dispose();
 
   const workerName = new URL(baseURL).hostname.split(".")[0];
   const downstreamOnlyOverride = await request.get(`${baseURL}/api/prewarm-version?downstream=1`, {
@@ -232,6 +256,21 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
     `App HTML response headers: ${JSON.stringify(appHtmlResponseHeaders)}`,
   ).toBe("HIT");
   expect(await appHtmlResponse.text()).toContain("Prewarm target");
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+  // An unconditional config policy remains authoritative even when the App
+  // page deliberately renders dynamically.
+  const explicitPolicyResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}/cache-probe/config-cache`,
+  );
+  const explicitPolicyHeaders = explicitPolicyResponse.headers();
+  expect(explicitPolicyResponse.ok(), JSON.stringify(explicitPolicyHeaders)).toBe(true);
+  expect(explicitPolicyHeaders["cf-cache-status"]).toBe("HIT");
+  expect(await explicitPolicyResponse.text()).toContain(
+    "Force-dynamic page with an explicit config cache policy",
+  );
 
   const fullResponse = await getResponseAfterPromotion(
     request,

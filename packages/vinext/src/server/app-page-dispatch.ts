@@ -100,6 +100,7 @@ import {
   recordRouteCacheability,
   recordRouteCacheabilityClassificationFailure,
   recordRouteCacheabilityCapturedBody,
+  markRouteCacheabilityPolicyProvisional,
 } from "./cacheability-request.js";
 import {
   applyCdnResponseHeaders,
@@ -733,6 +734,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       recordRouteCacheabilityClassificationFailure(captured.reason);
       const headers = new Headers(response.headers);
       applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+      markRouteCacheabilityPolicyProvisional(headers);
       return new Response(captured.fallback, {
         headers,
         status: response.status,
@@ -775,6 +777,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       const headers = new Headers(response.headers);
       if (!canCacheTerminalResponse || completedRevalidateSeconds === null) {
         applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+        markRouteCacheabilityPolicyProvisional(headers);
         recordRouteCacheability({
           cacheable: false,
           ...(dynamicUsage ? { dynamicUsage: true } : {}),
@@ -796,6 +799,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           route.routeSegments,
         );
         applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader, tags });
+        markRouteCacheabilityPolicyProvisional(headers);
         // Middleware is request-specific and runs again on cache replay. Persist
         // only terminal metadata owned by the route renderer itself.
         const storedHeaders: Record<string, string> = {};

@@ -81,6 +81,7 @@ import {
   CACHEABILITY_RESPONSE_BODY_LIMIT,
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
   createCacheabilityCaptureReservation,
+  markRouteCacheabilityPolicyProvisional,
   recordRouteCacheability,
   recordRouteCacheabilityCapturedBody,
   retainRouteCacheabilityCapture,
@@ -953,6 +954,8 @@ export async function renderAppPageLifecycle(
           )
         : completionResponse;
 
+    markRouteCacheabilityPolicyProvisional(devRscResponse.headers);
+
     return finalizeAppPageRscCacheResponse(devRscResponse, {
       // force-static deliberately replaces request-derived values with empty
       // values. Observing headers()/cookies()/searchParams on that path does
@@ -1252,6 +1255,7 @@ export async function renderAppPageLifecycle(
       timing: htmlResponseTiming,
     });
     applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
+    markRouteCacheabilityPolicyProvisional(response.headers);
     return response;
   }
 
@@ -1342,7 +1346,7 @@ export async function renderAppPageLifecycle(
     });
   }
 
-  return buildAppPageHtmlResponse(safeHtmlStream, {
+  const response = buildAppPageHtmlResponse(safeHtmlStream, {
     cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
     draftCookie,
     linkHeader,
@@ -1352,6 +1356,8 @@ export async function renderAppPageLifecycle(
     requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
   });
+  markRouteCacheabilityPolicyProvisional(response.headers);
+  return response;
 }
 
 async function settleCapturedRscRenderForCacheMetadata(

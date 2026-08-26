@@ -49,6 +49,14 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
+  beginRouteCacheability,
+  createWorkerCacheabilityContext,
+  finalizeWorkerCacheabilityResponse,
+  recordRouteCacheability,
+} from "../packages/vinext/src/server/cacheability-request.js";
+import { applyConfigHeadersToResponse } from "../packages/vinext/src/server/config-headers.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 function captureRecord(value: ReactNode | AppOutgoingElements): Record<string, unknown> {
   if (!isAppElementsRecord(value)) {
@@ -1472,6 +1480,57 @@ describe("app page render lifecycle", () => {
     // no pending cacheLife claim to advertise.
     expect(response.headers.get(VINEXT_STALE_TIME_PENDING_HEADER)).toBeNull();
     await expect(response.text()).resolves.toBe("flight-data");
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+  it("lets config Cache-Control replace a force-dynamic page's framework policy", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const request = new Request("https://example.com/posts/post");
+      const context = createWorkerCacheabilityContext(
+        { hostRuntime: "worker", waitUntil() {} },
+        request,
+        "secret-a",
+      );
+      const common = createCommonOptions();
+
+      const response = await runWithExecutionContext(context, async () => {
+        expect(beginRouteCacheability("app-page", "/posts/:slug")).toBe(true);
+        recordRouteCacheability({
+          cacheable: false,
+          dynamicUsage: true,
+          reason: "dynamic = force-dynamic",
+        });
+        const rendered = await renderAppPageLifecycle({
+          ...common.options,
+          isForceDynamic: true,
+          isProduction: true,
+        });
+        applyConfigHeadersToResponse(rendered.headers, {
+          configHeaders: [
+            {
+              source: "/posts/:slug",
+              headers: [{ key: "Cache-Control", value: "s-maxage=32" }],
+            },
+          ],
+          pathname: "/posts/post",
+          requestContext: {
+            cookies: {},
+            headers: new Headers(),
+            host: "example.com",
+            query: new URLSearchParams(),
+          },
+        });
+        return finalizeWorkerCacheabilityResponse(rendered, context);
+      });
+
+      expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+      expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=32");
+      await expect(response.text()).resolves.toBe("<html>page</html>");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("omits the dynamic stale time header on static production default-config RSC responses", async () => {

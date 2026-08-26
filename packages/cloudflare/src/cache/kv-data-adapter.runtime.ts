@@ -29,7 +29,7 @@ import type {
   CachedImageValue,
   IncrementalCacheValue,
 } from "vinext/shims/cache";
-import { INFINITE_CACHE } from "vinext/shims/cache";
+import { INFINITE_CACHE } from "vinext/shims/cache-constants";
 import {
   getRequestExecutionContext,
   type ExecutionContextLike,

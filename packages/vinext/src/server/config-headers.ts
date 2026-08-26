@@ -5,7 +5,10 @@ import {
   type RequestContext,
 } from "../config/config-matchers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
-import { invalidateRouteCacheabilityProvisionalPolicy } from "./cacheability-request.js";
+import {
+  isRouteCacheabilityPolicyProvisional,
+  markRouteCacheabilityPolicyExplicit,
+} from "./cacheability-request.js";
 
 const ADDITIVE_CONFIG_HEADER_NAMES = new Set(["set-cookie", "vary"]);
 const CACHE_POLICY_HEADER_NAMES = new Set([
@@ -97,9 +100,13 @@ export function applyConfigHeadersToResponse(
       options.basePathState,
     ),
   );
-  if (matched.some((header) => CACHE_POLICY_HEADER_NAMES.has(header.key.toLowerCase()))) {
-    invalidateRouteCacheabilityProvisionalPolicy();
+  const hasMatchedCachePolicy = matched.some((header) =>
+    CACHE_POLICY_HEADER_NAMES.has(header.key.toLowerCase()),
+  );
+  if (hasMatchedCachePolicy && isRouteCacheabilityPolicyProvisional(responseHeaders)) {
+    for (const name of CACHE_POLICY_HEADER_NAMES) responseHeaders.delete(name);
   }
+  let appliedCachePolicy = false;
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "link") {
@@ -114,7 +121,15 @@ export function applyConfigHeadersToResponse(
       responseHeaders.append(header.key, header.value);
     } else if (options.overwriteExisting?.has(lowerName) || !responseHeaders.has(lowerName)) {
       responseHeaders.set(header.key, header.value);
+      if (CACHE_POLICY_HEADER_NAMES.has(lowerName)) appliedCachePolicy = true;
     }
+  }
+  if (appliedCachePolicy) {
+    const cacheControl =
+      responseHeaders.get("CDN-Cache-Control") ??
+      responseHeaders.get("Cloudflare-CDN-Cache-Control") ??
+      responseHeaders.get("Cache-Control");
+    if (cacheControl !== null) markRouteCacheabilityPolicyExplicit(cacheControl);
   }
 }
 
