@@ -474,6 +474,12 @@ export function unstable_cacheTag(...tags: string[]): void {
 // unstable_cache — the older caching API
 // ---------------------------------------------------------------------------
 
+// Version the physical namespace whenever a runtime security invariant makes
+// entries produced by an older implementation unsafe to reuse. Version 2
+// prevents results created before private-in-unstable-cache validation from
+// bypassing the new synchronous boundary check after an application upgrade.
+const UNSTABLE_CACHE_KEY_PREFIX = "unstable_cache:v2";
+
 /**
  * AsyncLocalStorage to track whether we're inside an unstable_cache() callback.
  * Stored on globalThis via Symbol so headers.ts can detect the scope without
@@ -618,7 +624,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
 
   const cachedFn = async (...args: Parameters<T>) => {
     const argsKey = JSON.stringify(args);
-    const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
+    const cacheKey = `${UNSTABLE_CACHE_KEY_PREFIX}:${baseKey}:${argsKey}`;
     addCollectedRequestTags(tags);
     recordUnstableCacheObservation({
       kind: "unstable_cache",
