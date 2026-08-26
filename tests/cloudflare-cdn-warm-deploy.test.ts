@@ -103,7 +103,12 @@ function appPageProbeResponse(state: "static-candidate" | "probe-failed" = "stat
       status: 200,
       version: 1,
     },
-    { headers: { "Cache-Control": "no-store" } },
+    {
+      headers: {
+        "Cache-Control": "no-store",
+        [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a",
+      },
+    },
   );
 }
 

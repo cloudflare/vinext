@@ -57,6 +57,7 @@ import {
   NEXT_ACTION_HEADER,
   RSC_ACTION_HEADER,
   VINEXT_CACHEABILITY_PROBE_HEADER,
+  VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
@@ -138,6 +139,15 @@ async function handleRequest(
     if (probeContext !== ctx) {
       ctx = probeContext;
       finalizeCacheabilityResponse = cacheability.finalizeWorkerCacheabilityResponse;
+      // A staged version can propagate at different times for different edge
+      // cache keys. The deploy client varies this reserved query value on each
+      // retry, but application routing and dynamic API observation must see
+      // the original request identity.
+      const probeUrl = new URL(request.url);
+      if (probeUrl.searchParams.has(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM)) {
+        probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
+        request = new Request(probeUrl, request);
+      }
     }
   }
   const requiresCompletedResponseAdmission =

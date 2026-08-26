@@ -153,6 +153,19 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     status: 200,
     version: 1,
   });
+
+  const hiddenQueryProbe = await request.get(
+    "/cacheability/probe-query?__vinext_cacheability_probe=test-attempt",
+    { headers },
+  );
+  expect(hiddenQueryProbe.ok()).toBe(true);
+  await expect(hiddenQueryProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cacheability/probe-query",
+    state: "dynamic",
+    status: 200,
+    version: 1,
+  });
 });
 
 test("rejects forged probes without exposing capability headers to user code", async ({

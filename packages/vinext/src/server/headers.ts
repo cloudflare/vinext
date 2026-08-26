@@ -40,6 +40,12 @@ export const VINEXT_EXPECTED_WORKER_VERSION_HEADER = "X-Vinext-Expected-Worker-V
 /** Authenticated staged-Worker request asking for a completed App Page classification. */
 export const VINEXT_CACHEABILITY_PROBE_HEADER = "X-Vinext-Cacheability-Probe";
 
+/**
+ * Per-attempt cache buster used while a newly staged Worker version propagates.
+ * Authenticated probe requests remove it before middleware or route code runs.
+ */
+export const VINEXT_CACHEABILITY_PROBE_QUERY_PARAM = "__vinext_cacheability_probe";
+
 export {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,

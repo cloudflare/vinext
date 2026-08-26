@@ -1184,6 +1184,7 @@ async function deployWithCacheabilityProbe(
     const probe = await probeStagedWorkerCacheability({
       buildId: discovered.buildId,
       concurrency: options.warmCdnConcurrency,
+      expectedResponseBuildId: plan.buildIdentity,
       retries: options.warmCdnRetries ?? 1,
       retryDelayMs: options.warmCdnReadinessProbeDelay ?? DEFAULT_STAGED_READINESS_INTERVAL_MS,
       root,
