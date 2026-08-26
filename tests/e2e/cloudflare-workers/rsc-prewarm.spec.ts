@@ -202,7 +202,8 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   // Exercise authenticated warm mode inside workerd on a fresh, unmanifested
   // concrete path. This is the same runtime path the final deploy uses after
   // promotion, including late body classification and CDN header admission.
-  const warmPath = `/cache-probe/bare-fetch/e2e-warm-${Date.now()}`;
+  const warmSlug = `e2e-warm-${Date.now()}`;
+  const warmPath = `/cache-probe/bare-fetch/${warmSlug}`;
   const warmResponse = await request.get(`${baseURL}${warmPath}`, {
     headers: {
       [CACHEABILITY_PROBE_HEADER]: "warm",
@@ -211,7 +212,7 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   });
   expect(warmResponse.ok()).toBe(true);
   expect(warmResponse.headers()["cf-cache-status"]).toBe("MISS");
-  expect(await warmResponse.text()).toContain("Bare fetch cache probe");
+  expect(await warmResponse.text()).toContain(`cache-probe bare fetch ${warmSlug}`);
   const warmedResponse = await request.get(`${baseURL}${warmPath}`);
   expect(warmedResponse.headers()["cf-cache-status"]).toBe("HIT");
   await warmedResponse.dispose();
@@ -271,6 +272,19 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   expect(await explicitPolicyResponse.text()).toContain(
     "Force-dynamic page with an explicit config cache policy",
   );
+
+  for (const [pathname, marker] of [
+    ["/cache-probe/config-pages-ssr", "Pages SSR with an explicit config cache policy"],
+    ["/cache-probe/user-pages-ssr", "Pages SSR with a response cache policy"],
+    ["/cache-probe/config-route", "Route Handler with an explicit config cache policy"],
+    ["/cache-probe/route-user-cache", "Dynamic Route Handler with a response cache policy"],
+  ] as const) {
+    const response = await getResponseAfterPromotion(request, `${baseURL}${pathname}`);
+    const headers = response.headers();
+    expect(response.ok(), `${pathname}: ${JSON.stringify(headers)}`).toBe(true);
+    expect(headers["cf-cache-status"], `${pathname}: ${JSON.stringify(headers)}`).toBe("HIT");
+    expect(await response.text()).toContain(marker);
+  }
 
   const fullResponse = await getResponseAfterPromotion(
     request,

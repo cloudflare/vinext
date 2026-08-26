@@ -48,6 +48,7 @@ import {
 import {
   captureResponseBodyBounded,
   isRouteCacheabilityProbe,
+  markRouteCacheabilityResponsePolicyExplicit,
   recordRouteCacheabilityCapturedBody,
   recordRouteCacheabilityClassificationFailure,
   recordRouteCacheability,
@@ -397,7 +398,12 @@ async function executeAppRouteHandlerInner(
       response = handlerResult.response;
     }
     assertSupportedAppRouteHandlerResponse(response);
-    const handlerSetCacheControl = response.headers.has("cache-control");
+    const handlerSetCacheControl = [
+      "cache-control",
+      "cdn-cache-control",
+      "cloudflare-cdn-cache-control",
+    ].some((name) => response.headers.has(name));
+    if (handlerSetCacheControl) markRouteCacheabilityResponsePolicyExplicit(response.headers);
 
     let completedRouteCacheValue: CachedRouteValue | null = null;
     let completedBodyFailure: string | null = null;

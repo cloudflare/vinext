@@ -9,7 +9,10 @@ import {
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
 import { CACHEABILITY_MANIFEST_PLACEHOLDER } from "../packages/vinext/src/server/cacheability-manifest.js";
-import { CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY } from "../packages/vinext/src/server/cacheability-limits.js";
+import {
+  CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
+  CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+} from "../packages/vinext/src/server/cacheability-limits.js";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
 const delayMock = vi.hoisted(() => vi.fn());
@@ -113,6 +116,19 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(hasCdnWarmRequests({ loadingShellPaths: [], paths: [], rscPaths: [] })).toBe(false);
   });
 
+  it("keeps two-stage request deadlines beyond the Worker capture lease", async () => {
+    const { resolveCacheabilityDeployRequestTimeoutMs } =
+      await import("../packages/cloudflare/src/deploy.js");
+
+    expect(resolveCacheabilityDeployRequestTimeoutMs()).toBeGreaterThan(
+      CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+    );
+    expect(resolveCacheabilityDeployRequestTimeoutMs(1_000)).toBeGreaterThan(
+      CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+    );
+    expect(resolveCacheabilityDeployRequestTimeoutMs(45_000)).toBe(45_000);
+  });
+
   it("removes only the proven-dynamic HTML key and runtime-checks other representations", async () => {
     const { omitProvenDynamicWarmPaths } = await import("../packages/cloudflare/src/deploy.js");
 
@@ -163,7 +179,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     });
   });
 
-  it("adds only proven-static Route Handler representations to the final warm plan", async () => {
+  it("adds every newly proven-static representation to the final warm plan", async () => {
     const { includeProvenStaticRouteHandlerWarmPaths } =
       await import("../packages/cloudflare/src/deploy.js");
 
@@ -185,6 +201,13 @@ describe("Cloudflare CDN warmup deploy flow", () => {
             probePath: "/api/dynamic",
             warmPaths: ["/api/dynamic"],
           },
+          {
+            kind: "pages-page",
+            path: "/pages-ssr",
+            pattern: "/pages-ssr",
+            probePath: "/pages-ssr",
+            warmPaths: ["/pages-ssr"],
+          },
         ],
         {
           routes: {
@@ -200,13 +223,18 @@ describe("Cloudflare CDN warmup deploy flow", () => {
               pattern: "/api/:kind",
               state: "dynamic",
             },
+            "pages-page:/pages-ssr": {
+              kind: "pages-page",
+              pattern: "/pages-ssr",
+              state: "static-candidate",
+            },
           },
           version: 1,
         },
       ),
     ).toEqual({
       loadingShellPaths: [],
-      paths: ["/page", "/api/static"],
+      paths: ["/page", "/api/static", "/pages-ssr"],
       rscPaths: ["/page"],
     });
   });

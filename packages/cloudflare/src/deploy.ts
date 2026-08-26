@@ -54,6 +54,7 @@ import { parseWranglerConfig, runTPR } from "./tpr.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
 import {
   DEFAULT_CDN_WARM_CONCURRENCY,
+  DEFAULT_CDN_WARM_TIMEOUT_MS,
   DEFAULT_STAGED_READINESS_INTERVAL_MS,
   DEFAULT_STAGED_READINESS_RETRIES,
   readPrerenderWarmPlan,
@@ -88,10 +89,21 @@ import {
   probeStagedWorkerCacheability,
   type CacheabilityProbeResolution,
 } from "./cacheability-probe.js";
-import { CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY } from "vinext/internal/server/cacheability-limits";
+import {
+  CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
+  CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+} from "vinext/internal/server/cacheability-limits";
 import { withEmbeddedCacheabilityManifest } from "./cacheability-artifact.js";
 
 export const DEFAULT_CDN_WARM_PROMOTION_DELAY_MS = 15_000;
+const CACHEABILITY_DEPLOY_TIMEOUT_MARGIN_MS = 5_000;
+
+export function resolveCacheabilityDeployRequestTimeoutMs(configuredTimeout?: number): number {
+  return Math.max(
+    configuredTimeout ?? DEFAULT_CDN_WARM_TIMEOUT_MS,
+    CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS + CACHEABILITY_DEPLOY_TIMEOUT_MARGIN_MS,
+  );
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -665,8 +677,9 @@ export function includeProvenStaticRouteHandlerWarmPaths(
 ): CdnWarmRequestPlan {
   const paths = new Set(plan.paths);
   for (const route of routes) {
-    if (route.kind !== "app-route") continue;
-    for (const pathname of route.runtimeCheckWarmPaths ?? []) paths.add(pathname);
+    if (route.kind === "app-route") {
+      for (const pathname of route.runtimeCheckWarmPaths ?? []) paths.add(pathname);
+    }
     const exactPath = route.path ?? route.probePath;
     if (!exactPath) continue;
     const result =
@@ -878,6 +891,12 @@ export async function deployWithCdnWarmup(
     }
     validateTwoStageCacheabilityArtifact(root, options.config);
   }
+  // A client retry must not begin while the prior Worker can still retain a
+  // bounded response-capture slot. Keep ordinary readiness/warming semantics,
+  // but give authenticated probe/warm requests a deadline beyond that lease.
+  const cacheabilityRequestTimeoutMs = resolveCacheabilityDeployRequestTimeoutMs(
+    options.warmCdnTimeout,
+  );
   let deploymentId = options.deploymentId;
   let expectedBuildId = options.expectedBuildId;
   let expectedRscBuildId = options.expectedRscBuildId;
@@ -981,7 +1000,10 @@ export async function deployWithCdnWarmup(
             CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
           )
         : options.warmCdnConcurrency,
-      timeoutMs: options.warmCdnTimeout,
+      timeoutMs:
+        authenticatedCacheabilityWarm && options.twoStageCacheability
+          ? cacheabilityRequestTimeoutMs
+          : options.warmCdnTimeout,
       retries: options.warmCdnRetries,
       strict: !options.dangerouslyPromoteOnCdnWarmError,
     });
@@ -1007,7 +1029,9 @@ export async function deployWithCdnWarmup(
             CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
           )
         : options.warmCdnConcurrency,
-      timeoutMs: options.warmCdnTimeout,
+      timeoutMs: options.twoStageCacheability
+        ? cacheabilityRequestTimeoutMs
+        : options.warmCdnTimeout,
       retries: options.warmCdnRetries,
       strict: !options.dangerouslyPromoteOnCdnWarmError,
     });
@@ -1072,7 +1096,7 @@ export async function deployWithCdnWarmup(
             root,
             routes: cacheabilityRoutes,
             targetUrl,
-            timeoutMs: options.warmCdnTimeout,
+            timeoutMs: cacheabilityRequestTimeoutMs,
             retries: options.warmCdnRetries ?? DEFAULT_STAGED_READINESS_RETRIES,
             retryDelayMs:
               options.warmCdnReadinessProbeDelay ?? DEFAULT_STAGED_READINESS_INTERVAL_MS,

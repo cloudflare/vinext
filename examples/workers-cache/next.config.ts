@@ -5,7 +5,15 @@ export default {
     return [
       {
         source: "/cache-probe/config-cache",
-        headers: [{ key: "Cache-Control", value: "s-maxage=60" }],
+        headers: [{ key: "Cache-Control", value: "s-maxage=300" }],
+      },
+      {
+        source: "/cache-probe/config-pages-ssr",
+        headers: [{ key: "Cache-Control", value: "s-maxage=300" }],
+      },
+      {
+        source: "/cache-probe/config-route",
+        headers: [{ key: "Cache-Control", value: "s-maxage=300" }],
       },
     ];
   },

@@ -199,6 +199,54 @@ describe("prerender path manifest", () => {
     expect(closeMock).toHaveBeenCalledOnce();
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+  it("probes one concrete request for each fixed Pages SSR route", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile(
+      "pages/configured.tsx",
+      [
+        "export async function getServerSideProps() { return { props: {} }; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "pages/user-policy.tsx",
+      [
+        "export async function getServerSideProps({ res }) {",
+        "  res.setHeader('Cache-Control', 's-maxage=60');",
+        "  return { props: {} };",
+        "}",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+
+    expect(manifest?.pagesPaths).toEqual([]);
+    expect(manifest?.cacheabilityRoutes).toEqual([
+      {
+        kind: "pages-page",
+        path: "/configured",
+        pattern: "/configured",
+        probePath: "/configured",
+        warmPaths: ["/configured"],
+      },
+      {
+        kind: "pages-page",
+        path: "/user-policy",
+        pattern: "/user-policy",
+        probePath: "/user-policy",
+        warmPaths: ["/user-policy"],
+      },
+    ]);
+  });
+
   it("validates Cache Components Route Handler modules through the staged Worker", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("next.config.mjs", "export default { cacheComponents: true };\n");

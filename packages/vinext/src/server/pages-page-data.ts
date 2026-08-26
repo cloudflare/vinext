@@ -47,6 +47,8 @@ import { setCurrentRouteStaticGeneration } from "vinext/shims/fetch-cache";
 import {
   beginRouteCacheability,
   isRouteCacheabilityIdentityProbe,
+  markRouteCacheabilityPolicyProvisional,
+  markRouteCacheabilityResponsePolicyExplicit,
 } from "./cacheability-request.js";
 
 export type PagesRedirectResult = {
@@ -468,6 +470,7 @@ export function mergePagesNotFoundSourceHeaders(
   if (!sourceHeaders) return response;
 
   const headers = new Headers(response.headers);
+  const sourcePolicyHeaders = new Headers();
 
   for (const [name, value] of Object.entries(sourceHeaders)) {
     const lowerName = name.toLowerCase();
@@ -477,9 +480,17 @@ export function mergePagesNotFoundSourceHeaders(
       for (const cookie of cookies) headers.append("set-cookie", String(cookie));
     } else {
       headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
+      if (
+        lowerName === "cache-control" ||
+        lowerName === "cdn-cache-control" ||
+        lowerName === "cloudflare-cdn-cache-control"
+      ) {
+        sourcePolicyHeaders.set(name, Array.isArray(value) ? value.join(", ") : String(value));
+      }
     }
   }
 
+  markRouteCacheabilityResponsePolicyExplicit(sourcePolicyHeaders);
   return new Response(response.body, {
     headers,
     status: response.status,
@@ -498,6 +509,7 @@ function applyPagesTerminalMissHeaders(
     cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
     tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
   });
+  markRouteCacheabilityPolicyProvisional(response.headers);
   for (const [name, value] of Object.entries(buildCacheStateHeaders("MISS"))) {
     response.headers.set(name, value);
   }
@@ -520,6 +532,7 @@ function applyCachedPagesRepresentationHeaders(
     cacheControlMeta: entry.cacheControl,
   });
   applyCdnResponseHeaders(response.headers, { cacheControl });
+  markRouteCacheabilityPolicyProvisional(response.headers);
   for (const [name, value] of Object.entries(buildCacheStateHeaders(cacheState))) {
     response.headers.set(name, value);
   }
@@ -757,6 +770,7 @@ function buildPagesRedirectResponse(
   method: "getStaticProps" | "getServerSideProps" = "getStaticProps",
   responseHeaders?: Headers,
 ): Response {
+  if (responseHeaders) markRouteCacheabilityResponsePolicyExplicit(responseHeaders);
   const resolved = resolvePagesRedirect(redirect, {
     method,
     routeUrl: options.routeUrl,
@@ -997,6 +1011,7 @@ function buildPagesCacheResponse(
     ...buildCacheStateHeaders(cacheState),
   });
   applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader });
+  markRouteCacheabilityPolicyProvisional(headers);
 
   if (fontLinkHeader) {
     headers.set("Link", fontLinkHeader);
@@ -1361,9 +1376,11 @@ export async function resolvePagesPageData(
     });
 
     if (isResponseSent(res)) {
+      const response = await responsePromise;
+      markRouteCacheabilityResponsePolicyExplicit(response.headers);
       return {
         kind: "response",
-        response: await responsePromise,
+        response,
       };
     }
 

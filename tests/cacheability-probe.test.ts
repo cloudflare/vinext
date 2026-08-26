@@ -1280,7 +1280,7 @@ describe("buffered cache admission", () => {
   });
 
   it.each(["no-store", "private, max-age=0", "no-cache"])(
-    "honors a final generic %s policy even alongside a cacheable provider policy",
+    "lets a cacheable edge policy coexist with generic browser %s",
     async (cacheControl) => {
       installManifest("runtime-check");
       setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
@@ -1303,11 +1303,38 @@ describe("buffered cache admission", () => {
         );
       });
 
-      expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
-      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+      expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+      expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=60");
       await expect(response.text()).resolves.toBe("private");
     },
   );
+
+  it("uses Cloudflare-CDN-Cache-Control ahead of the generic CDN policy", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/provider-precedence"),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      return finalizeWorkerCacheabilityResponse(
+        new Response("provider precedence", {
+          headers: {
+            "Cache-Control": "no-store",
+            "CDN-Cache-Control": "no-store",
+            "Cloudflare-CDN-Cache-Control": "public, max-age=90",
+          },
+        }),
+        ctx,
+      );
+    });
+
+    expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=90");
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+  });
 
   it("does not treat a policy without a positive cache lifetime as cacheable", async () => {
     installManifest("runtime-check");
@@ -1420,6 +1447,31 @@ describe("buffered cache admission", () => {
       }
     },
   );
+
+  it("does not promote a manifest-dynamic route after a later static completion", async () => {
+    installManifest("dynamic");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/conditional"),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(false);
+      const complete = deferRouteCacheability();
+      const headers = new Headers();
+      applyCdnResponseHeaders(headers, { cacheControl: "s-maxage=60" });
+      queueMicrotask(() => complete?.({ cacheable: true, cacheControl: "s-maxage=60" }));
+      return finalizeWorkerCacheabilityResponse(
+        new Response("conditionally static", { headers }),
+        ctx,
+      );
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+  });
 
   it.each([400, 401, 403, 405, 410, 429, 500])(
     "does not admit status %i even when the completed render is cacheable",

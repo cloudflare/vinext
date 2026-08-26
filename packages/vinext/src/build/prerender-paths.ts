@@ -866,9 +866,19 @@ async function collectCacheabilityProbeRoutes(options: {
     }
     const key = `pages-page:${route.pattern}`;
     const isSsr = classifyPagesRoute(route.filePath).type === "ssr";
-    const warmPaths = [...(pathsByRoute.get(key) ?? [])];
-    if (!isSsr) addProbeableRoute("pages-page", route.pattern, warmPaths);
-    if (warmPaths.length === 0 || isSsr) {
+    let warmPaths = [...(pathsByRoute.get(key) ?? [])];
+    if (isSsr && !route.isDynamic) {
+      const fixedPaths = options.i18n
+        ? options.i18n.locales.map((locale) =>
+            localizePagesPath(route.pattern, locale, options.i18n),
+          )
+        : [route.pattern];
+      warmPaths = fixedPaths.filter((pathname) => !options.excludedPaths?.has(pathname));
+    }
+    if (!isSsr || warmPaths.length > 0) {
+      addProbeableRoute("pages-page", route.pattern, warmPaths);
+    }
+    if (warmPaths.length === 0) {
       result.push({
         fallbackState: isSsr ? "dynamic" : "runtime-check",
         kind: "pages-page",

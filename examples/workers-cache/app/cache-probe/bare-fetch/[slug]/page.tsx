@@ -1,4 +1,4 @@
-export const revalidate = 60;
+export const revalidate = 300;
 
 export function generateStaticParams() {
   return [{ slug: "known" }];

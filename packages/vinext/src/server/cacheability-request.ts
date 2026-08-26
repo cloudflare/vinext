@@ -69,6 +69,8 @@ type CacheabilityRequestState = {
   complete?: (outcome: CacheabilityOutcome) => void;
   completion?: Promise<CacheabilityOutcome>;
   explicitCachePolicy?: string;
+  explicitCachePolicyHeader?: string;
+  manifestOutcome?: CacheabilityOutcome;
   manifestRoute?: CacheabilityManifestRoute;
   mode: "admit" | "admit-all" | "identity" | "probe" | "warm";
   outcome?: CacheabilityOutcome;
@@ -301,12 +303,22 @@ export function isAdmissibleCacheStatus(status: number): boolean {
   return (status >= 200 && status < 400) || status === 404;
 }
 
+function effectiveResponseCachePolicy(
+  headers: Headers,
+): { name: string; value: string } | undefined {
+  // Cloudflare-CDN-Cache-Control is the provider-specific override and wins
+  // over the generic CDN policy, which in turn wins over browser policy.
+  // A browser no-store may intentionally coexist with a cacheable edge policy.
+  for (const name of ["Cloudflare-CDN-Cache-Control", "CDN-Cache-Control", "Cache-Control"]) {
+    const value = headers.get(name);
+    if (value !== null) return { name, value };
+  }
+  return undefined;
+}
+
 function hasNonCacheablePolicy(headers: Headers): boolean {
-  return [
-    headers.get("Cache-Control"),
-    headers.get("CDN-Cache-Control"),
-    headers.get("Cloudflare-CDN-Cache-Control"),
-  ].some((policy) => policy !== null && isNonCacheableCacheControl(policy));
+  const policy = effectiveResponseCachePolicy(headers);
+  return policy !== undefined && isNonCacheableCacheControl(policy.value);
 }
 
 function responseHasFinalCacheOptOut(response: Response, state: CacheabilityRequestState): boolean {
@@ -326,10 +338,7 @@ function responseHasFinalCacheOptOut(response: Response, state: CacheabilityRequ
 function responsePolicyIsCacheable(response: Response): boolean {
   if (!isAdmissibleCacheStatus(response.status) || response.headers.has("set-cookie")) return false;
   if (hasNonCacheablePolicy(response.headers)) return false;
-  const policy =
-    response.headers.get("CDN-Cache-Control") ??
-    response.headers.get("Cloudflare-CDN-Cache-Control") ??
-    response.headers.get("Cache-Control");
+  const policy = effectiveResponseCachePolicy(response.headers)?.value;
   if (!policy) return false;
   return policy
     .split(",")
@@ -338,12 +347,7 @@ function responsePolicyIsCacheable(response: Response): boolean {
 }
 
 function responseCachePolicy(response: Response): string | undefined {
-  return (
-    response.headers.get("CDN-Cache-Control") ??
-    response.headers.get("Cloudflare-CDN-Cache-Control") ??
-    response.headers.get("Cache-Control") ??
-    undefined
-  );
+  return effectiveResponseCachePolicy(response.headers)?.value;
 }
 
 function explicitCachePolicyOutcome(
@@ -353,6 +357,7 @@ function explicitCachePolicyOutcome(
   if (
     state.unsafeReason ||
     state.explicitCachePolicy === undefined ||
+    responseCachePolicy(response) !== state.explicitCachePolicy ||
     !responsePolicyIsCacheable(response)
   ) {
     return undefined;
@@ -760,7 +765,7 @@ export function beginRouteCacheability(
     // This is an automatic framework classification, not a request-safety
     // veto. A matching unconditional next.config.js cache policy remains
     // authoritative, matching Next.js's custom Cache-Control behavior.
-    state.outcome = {
+    state.manifestOutcome = {
       cacheable: false,
       ...(manifestRoute.state === "probe-failed" ? { classificationFailure: true } : {}),
       reason,
@@ -912,11 +917,38 @@ export function isRouteCacheabilityPolicyProvisional(headers: Headers): boolean 
 }
 
 /** Record a matching final next.config.js cache policy as user-authoritative. */
-export function markRouteCacheabilityPolicyExplicit(cacheControl: string): void {
+export function markRouteCacheabilityPolicyExplicit(
+  cacheControl: string,
+  headerName = "Cache-Control",
+): void {
   const state = readState(getRequestExecutionContext());
-  if (!state?.route) return;
+  if (!state) return;
   state.provisionalPolicy = undefined;
   state.explicitCachePolicy = cacheControl;
+  state.explicitCachePolicyHeader = headerName;
+}
+
+/** Record the final user-authored policy carried by a Response/Node response. */
+export function markRouteCacheabilityResponsePolicyExplicit(headers: Headers): void {
+  const policy = effectiveResponseCachePolicy(headers);
+  if (policy) markRouteCacheabilityPolicyExplicit(policy.value, policy.name);
+}
+
+/** Replace only the framework policy that an earlier explicit config policy supersedes. */
+export function applyExplicitRouteCacheabilityPolicy(headers: Headers): void {
+  const state = readState(getRequestExecutionContext());
+  if (
+    !state?.explicitCachePolicy ||
+    !state.explicitCachePolicyHeader ||
+    !isRouteCacheabilityPolicyProvisional(headers)
+  ) {
+    return;
+  }
+  headers.delete("Cache-Control");
+  headers.delete("CDN-Cache-Control");
+  headers.delete("Cloudflare-CDN-Cache-Control");
+  headers.set(state.explicitCachePolicyHeader, state.explicitCachePolicy);
+  state.provisionalPolicy = undefined;
 }
 
 function probeResponse(
@@ -1023,7 +1055,7 @@ async function finalizeWorkerCacheabilityResponseWithState(
     return syntheticErrorResponse(response);
   };
 
-  const explicitOutcome = state.outcome;
+  const explicitOutcome = state.manifestOutcome ?? state.outcome;
   if (staticCandidateBecameDynamic(explicitOutcome)) {
     void response.body?.cancel().catch(() => {});
     return staticToDynamicErrorResponse(explicitOutcome!);
@@ -1066,13 +1098,19 @@ async function finalizeWorkerCacheabilityResponseWithState(
 
   const deferredOutcome = state.completion ? await state.completion : undefined;
   const classificationFailureOutcome =
-    deferredOutcome?.classificationFailure === true
-      ? deferredOutcome
-      : state.outcome?.classificationFailure === true
-        ? state.outcome
-        : undefined;
+    state.manifestOutcome?.classificationFailure === true
+      ? state.manifestOutcome
+      : deferredOutcome?.classificationFailure === true
+        ? deferredOutcome
+        : state.outcome?.classificationFailure === true
+          ? state.outcome
+          : undefined;
   const completedOutcome =
-    classificationFailureOutcome ?? authoritativePolicyOutcome ?? deferredOutcome ?? state.outcome;
+    classificationFailureOutcome ??
+    authoritativePolicyOutcome ??
+    state.manifestOutcome ??
+    deferredOutcome ??
+    state.outcome;
   if (state.mode === "warm" && completedOutcome?.classificationFailure === true) {
     void response.body?.cancel().catch(() => {});
     return captureCapacityUnavailableResponse();

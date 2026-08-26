@@ -44,7 +44,10 @@ import {
   sanitizeMethodNotAllowedHeaders,
 } from "./http-error-responses.js";
 import { configRoutesCanVaryResponse } from "./config-cache-safety.js";
-import { markRequestCacheabilityUnsafe } from "./cacheability-request.js";
+import {
+  applyExplicitRouteCacheabilityPolicy,
+  markRequestCacheabilityUnsafe,
+} from "./cacheability-request.js";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -873,6 +876,9 @@ export async function runPagesRequest(
         renderPageMatch?.route.pattern,
       );
     }
+    // Explicit next.config policy is staged before rendering. Replace only a
+    // renderer-generated cache default so it cannot suppress that policy.
+    applyExplicitRouteCacheabilityPolicy(response.headers);
     const merged = mergeHeaders(response, matchedPathHeaders, middlewareStatus);
     // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
     // mergeHeaders may create a new Response object (losing non-standard properties),

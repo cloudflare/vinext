@@ -125,11 +125,12 @@ export function applyConfigHeadersToResponse(
     }
   }
   if (appliedCachePolicy) {
-    const cacheControl =
-      responseHeaders.get("CDN-Cache-Control") ??
-      responseHeaders.get("Cloudflare-CDN-Cache-Control") ??
-      responseHeaders.get("Cache-Control");
-    if (cacheControl !== null) markRouteCacheabilityPolicyExplicit(cacheControl);
+    const policy = ["Cloudflare-CDN-Cache-Control", "CDN-Cache-Control", "Cache-Control"]
+      .map((name) => ({ name, value: responseHeaders.get(name) }))
+      .find((candidate) => candidate.value !== null);
+    if (policy?.value !== null && policy?.value !== undefined) {
+      markRouteCacheabilityPolicyExplicit(policy.value, policy.name);
+    }
   }
 }
 
@@ -146,6 +147,7 @@ export function applyConfigHeadersToHeaderRecord(
       options.basePathState,
     ),
   );
+  let appliedCachePolicy = false;
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "set-cookie") {
@@ -154,6 +156,18 @@ export function applyConfigHeadersToHeaderRecord(
       appendVaryHeaderRecord(headers, header.value);
     } else if (findHeaderRecordKey(headers, lowerName) === undefined) {
       headers[lowerName] = header.value;
+      if (CACHE_POLICY_HEADER_NAMES.has(lowerName)) appliedCachePolicy = true;
     }
+  }
+  if (appliedCachePolicy) {
+    const cachePolicies = new Map(
+      matched
+        .filter((header) => CACHE_POLICY_HEADER_NAMES.has(header.key.toLowerCase()))
+        .map((header) => [header.key.toLowerCase(), header.value]),
+    );
+    const policy = ["cloudflare-cdn-cache-control", "cdn-cache-control", "cache-control"]
+      .map((name) => ({ name, value: cachePolicies.get(name) }))
+      .find((candidate) => candidate.value !== undefined);
+    if (policy?.value !== undefined) markRouteCacheabilityPolicyExplicit(policy.value, policy.name);
   }
 }

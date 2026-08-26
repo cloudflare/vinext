@@ -16,6 +16,7 @@ import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { getSetCookieName } from "./cookie-utils.js";
 import { markEdgeRouteHandlerLinkHeaders } from "./app-response-header-provenance.js";
+import { markRouteCacheabilityPolicyProvisional } from "./cacheability-request.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -142,6 +143,7 @@ export function applyRouteHandlerRevalidateHeader(
     cacheControl: buildAppRouteMissIsrCacheControl(revalidateSeconds, expireSeconds),
     tags,
   });
+  markRouteCacheabilityPolicyProvisional(response.headers);
 }
 
 export function markRouteHandlerCacheMiss(response: Response): void {
