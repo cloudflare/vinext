@@ -25,6 +25,37 @@ test("classifies completed App Page renders inside workerd", async ({ request })
   });
   expect(staticProbe.headers()["cache-control"]).toContain("no-store");
 
+  const fullRscProbe = await request.get("/cacheability/static?_rsc", {
+    headers: { ...headers, Accept: "text/x-component", RSC: "1" },
+  });
+  expect(fullRscProbe.ok()).toBe(true);
+  await expect(fullRscProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cacheability/static",
+    state: "static-candidate",
+    status: 200,
+    version: 1,
+  });
+
+  const loadingShellProbe = await request.get("/cacheability/static?_rsc=9qLBDIU2NgN178cB", {
+    headers: {
+      ...headers,
+      Accept: "text/x-component",
+      RSC: "1",
+      "Next-Router-Prefetch": "1",
+      "Next-Router-Segment-Prefetch": "1",
+      "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell",
+    },
+  });
+  expect(loadingShellProbe.ok()).toBe(true);
+  await expect(loadingShellProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cacheability/static",
+    state: "static-candidate",
+    status: 200,
+    version: 1,
+  });
+
   const dynamicProbe = await request.get("/cacheability/dynamic", { headers });
   expect(dynamicProbe.ok()).toBe(true);
   await expect(dynamicProbe.json()).resolves.toMatchObject({
