@@ -69,6 +69,10 @@ export default {
         "src/server/app-page-ppr-runtime.ts",
         "src/server/app-prerender-static-params.ts",
         "src/server/app-route-module-loader.ts",
+        // Loaded through absolute paths emitted into generated entries so the
+        // patches are installed before user modules evaluate.
+        "src/server/cache-components-platform-io-prelude.ts",
+        "src/server/fetch-cache-prelude.ts",
         // Client-side instrumentation bundle: loaded as a side-effect module
         // by the generated hydration entries (import "vinext/instrumentation-client"),
         // so its public surface (clientInstrumentationHooks, getClientInstrumentationHooks)

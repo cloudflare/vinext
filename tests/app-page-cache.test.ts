@@ -1438,6 +1438,40 @@ describe("app page cache helpers", () => {
     expect(debugCalls).toEqual([["HTML cache written", "html:/fresh"]]);
   });
 
+  it("keeps origin-managed ISR writes eligible when only probe observations see a request API", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrSet = vi.fn(async () => {});
+
+    const response = finalizeAppPageHtmlCacheResponse(new Response("<h1>queryless</h1>"), {
+      capturedRscDataPromise: null,
+      cleanPathname: "/queryless-client-page",
+      consumeDynamicUsage: () => false,
+      consumeRenderObservationState: () => ({
+        dynamicFetches: [],
+        requestApis: ["searchParams"],
+      }),
+      getPageTags: () => ["/queryless-client-page"],
+      isrHtmlKey: (pathname) => `html:${pathname}`,
+      isrRscKey: (pathname) => `rsc:${pathname}`,
+      isrSet,
+      linkHeader: null,
+      revalidateSeconds: 60,
+      waitUntil(promise) {
+        pendingCacheWrites.push(promise);
+      },
+    });
+
+    await response.text();
+    await Promise.all(pendingCacheWrites);
+
+    expect(isrSet).toHaveBeenCalledOnce();
+    expect(isrSet).toHaveBeenCalledWith(
+      "html:/queryless-client-page",
+      expect.objectContaining({ html: "<h1>queryless</h1>" }),
+      expect.objectContaining({ cacheControl: expect.objectContaining({ revalidate: 60 }) }),
+    );
+  });
+
   it("skips HTML and RSC cache writes when dynamic usage appears during stream rendering", async () => {
     setCdnCacheAdapter(createHeaderClearingCdnAdapter());
     const pendingCacheWrites: Promise<void>[] = [];

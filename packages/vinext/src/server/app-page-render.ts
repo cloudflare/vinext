@@ -1078,7 +1078,11 @@ export async function renderAppPageLifecycle(
           // non-destructive peek so the cache-write closure remains its owner.
           const requestCacheLife =
             options.isPrerender === true
-              ? requestCacheLifeForPrerender
+              ? // The fused Flight pump may finish before the outer prerender
+                // continuation copies this non-destructive value into the
+                // local. Fall back to the same peek instead of omitting the
+                // completed cacheLife claim from the done script.
+                (requestCacheLifeForPrerender ?? options.peekRequestCacheLife?.())
               : options.peekRequestCacheLife?.();
           const staleTimeSeconds = resolveClientStaleTimeSeconds(requestCacheLife);
           return {

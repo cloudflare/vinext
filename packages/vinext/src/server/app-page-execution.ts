@@ -640,32 +640,6 @@ export async function probeAppPageThrownError(
   });
 }
 
-export async function readAppPageBinaryStream(
-  stream: ReadableStream<Uint8Array>,
-): Promise<ArrayBuffer> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  let totalLength = 0;
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    chunks.push(value);
-    totalLength += value.byteLength;
-  }
-
-  const buffer = new Uint8Array(totalLength);
-  let offset = 0;
-  for (const chunk of chunks) {
-    buffer.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-
-  return buffer.buffer;
-}
-
 /** Drain a render stream without retaining its payload. */
 export async function drainAppPageBinaryStream(stream: ReadableStream<Uint8Array>): Promise<void> {
   const reader = stream.getReader();

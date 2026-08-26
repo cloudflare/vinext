@@ -61,7 +61,14 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     });
     expect(forged.status()).toBe(200);
     expect(await forged.json()).toMatchObject({ draftMode: false });
-    expect(forged.headers()["cache-control"]).not.toContain("no-store");
+    // This fixture's middleware matches every pathname and can enable draft
+    // mode from the query string. A Workers Cache HIT would bypass that
+    // middleware, so the whole response must remain private even when this
+    // particular request carries only an invalid draft cookie.
+    expect(forged.headers()["cache-control"]).toContain("no-store");
+    expect(forged.headers()["cdn-cache-control"]).toBeUndefined();
+    expect(forged.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+    expect(forged.headers()["cache-tag"]).toBeUndefined();
 
     await setDraftMode(request, true);
     const draftFirstScenario = `draft-first-${Date.now()}`;

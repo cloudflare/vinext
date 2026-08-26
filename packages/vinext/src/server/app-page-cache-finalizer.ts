@@ -282,7 +282,15 @@ export function finalizeAppPageHtmlCacheResponse(
       const pageTags = options.getPageTags();
       const observationState =
         options.consumeRenderObservationState?.() ?? createEmptyAppPageRenderObservationState();
-      if (renderObservationRequiresRuntime(observationState, options.allowRequestApis === true)) {
+      // Render observations are a second, conservative signal used by the
+      // staged CDN classifier. The origin-managed Full Route Cache continues
+      // to use the established dynamic-usage signal: request APIs such as the
+      // queryless client-page searchParams plumbing are observable without
+      // making that completed artifact request-specific.
+      if (
+        completeCacheability !== null &&
+        renderObservationRequiresRuntime(observationState, options.allowRequestApis === true)
+      ) {
         complete({
           cacheable: false,
           dynamicUsage: true,
@@ -492,7 +500,10 @@ export function scheduleAppPageRscCacheWrite(
       const pageTags = options.getPageTags();
       const observationState =
         options.consumeRenderObservationState?.() ?? createEmptyAppPageRenderObservationState();
-      if (renderObservationRequiresRuntime(observationState, options.allowRequestApis === true)) {
+      if (
+        completeCacheability !== null &&
+        renderObservationRequiresRuntime(observationState, options.allowRequestApis === true)
+      ) {
         complete({
           cacheable: false,
           dynamicUsage: true,
