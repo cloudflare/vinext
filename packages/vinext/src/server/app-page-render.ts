@@ -1027,16 +1027,17 @@ export async function renderAppPageLifecycle(
           // Runs after the RSC embed drains, so this peek observes the
           // completed render's minimum. Peek, not consume — the cache-write
           // closure owns the consuming read.
-          // Prerendering drains the captured RSC stream and consumes the
-          // completed request cache life before the HTML stream reaches this
-          // done-script callback. Reuse that captured value here; peeking the
-          // now-cleared request state would omit the client stale claim from
-          // the prerendered HTML even though the seeded cache entry retains it.
+          // During prerendering the done-script callback can run immediately
+          // after the RSC capture drains, before the outer lifecycle performs
+          // its consuming cacheLife read. Use the live non-destructive peek in
+          // that window, then reuse the captured value after the outer read;
+          // peeking only after consumption would omit the client stale claim
+          // even though the seeded cache entry retains it.
           // Runtime renders have not consumed the state yet and still use the
           // non-destructive peek so the cache-write closure remains its owner.
           const requestCacheLife =
             options.isPrerender === true
-              ? requestCacheLifeForPrerender
+              ? (requestCacheLifeForPrerender ?? options.peekRequestCacheLife?.())
               : options.peekRequestCacheLife?.();
           const staleTimeSeconds = resolveClientStaleTimeSeconds(requestCacheLife);
           return {
