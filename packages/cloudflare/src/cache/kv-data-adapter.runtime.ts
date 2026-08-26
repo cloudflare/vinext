@@ -29,6 +29,7 @@ import type {
   CachedImageValue,
   IncrementalCacheValue,
 } from "vinext/shims/cache";
+import { INFINITE_CACHE } from "vinext/shims/cache";
 import {
   getRequestExecutionContext,
   type ExecutionContextLike,
@@ -385,7 +386,9 @@ export class KVCacheHandler implements CacheHandler {
 
     const now = Date.now();
     const revalidateAt =
-      typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
+      typeof effectiveRevalidate === "number" &&
+      effectiveRevalidate > 0 &&
+      effectiveRevalidate < INFINITE_CACHE
         ? now + effectiveRevalidate * 1000
         : null;
     const expireAt =

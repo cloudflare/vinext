@@ -22,7 +22,7 @@
 import { Buffer } from "node:buffer";
 
 import {
-  getDataCacheHandler,
+  getDataCacheHandlerUntracked,
   trackProspectiveCacheFill,
   type CachedFetchValue,
   type CacheHandler,
@@ -35,11 +35,9 @@ import {
   _queuePendingRevalidation,
   _setRequestScopedCacheLife,
   getRegisteredCacheContext,
+  INFINITE_CACHE,
 } from "./cache-request-state.js";
-import {
-  isRouteCacheabilityCertifiedStatic,
-  isStagedCacheabilityProbeActive,
-} from "./cacheability-classification.js";
+import { isStagedCacheabilityProbeActive } from "./cacheability-classification.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
   isInsideUnifiedScope,
@@ -67,9 +65,6 @@ const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 // Cache key version — bump when changing the key format to bust stale entries
 const CACHE_KEY_PREFIX = "v5";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
-
-// "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
-const ONE_YEAR_SECONDS = 31536000;
 
 class BodyTooLargeForCacheKeyError extends Error {
   constructor() {
@@ -592,6 +587,7 @@ export type FetchCacheState = {
   currentFetchCacheMode: FetchCacheMode | null;
   currentCacheComponentsEnabled: boolean;
   currentFetchRevalidate: number | null;
+  currentRouteStaticGeneration: boolean;
   currentForceDynamicFetchDefault: boolean;
   dynamicFetchUrls: Set<string>;
   refreshStaleFetchesInForeground: boolean;
@@ -631,6 +627,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   currentFetchCacheMode: null,
   currentCacheComponentsEnabled: false,
   currentFetchRevalidate: null,
+  currentRouteStaticGeneration: false,
   currentForceDynamicFetchDefault: false,
   dynamicFetchUrls: new Set<string>(),
   refreshStaleFetchesInForeground: false,
@@ -656,6 +653,7 @@ function _resetFallbackState(isFetchDedupeActive: boolean): void {
   _fallbackState.currentFetchCacheMode = null;
   _fallbackState.currentCacheComponentsEnabled = false;
   _fallbackState.currentFetchRevalidate = null;
+  _fallbackState.currentRouteStaticGeneration = false;
   _fallbackState.currentForceDynamicFetchDefault = false;
   _fallbackState.dynamicFetchUrls = new Set<string>();
   resetDynamicFetchObservations();
@@ -687,10 +685,10 @@ function recordDynamicFetchForPageOutput(input: string | URL | Request): void {
 }
 
 function recordAutomaticNoCacheFetchForPageOutput(input: string | URL | Request): void {
-  // Next's runtime auto-no-cache fetches do not demote an already-prerendered
-  // ISR route during regeneration. Our probe manifest is the equivalent proof;
-  // unknown/unlisted requests still record the observation and stay dynamic.
-  if (isRouteCacheabilityCertifiedStatic()) return;
+  // Next's auto-no-cache default does not demote an active static-generation
+  // work unit. This includes on-demand fallback params and independent RSC
+  // representations, neither of which needs an exact probe-manifest entry.
+  if (_getState().currentRouteStaticGeneration) return;
   recordDynamicFetchForPageOutput(input);
 }
 
@@ -699,7 +697,11 @@ function recordCacheableFetchObservation(input: string | URL | Request): void {
 }
 
 function recordFiniteFetchRevalidate(revalidateSeconds: number): void {
-  if (Number.isFinite(revalidateSeconds) && revalidateSeconds > 0) {
+  if (
+    Number.isFinite(revalidateSeconds) &&
+    revalidateSeconds > 0 &&
+    revalidateSeconds < INFINITE_CACHE
+  ) {
     _setRequestScopedCacheLife({ revalidate: revalidateSeconds });
     const cacheContext = getRegisteredCacheContext();
     if (cacheContext && cacheContext.variant !== "private") {
@@ -866,6 +868,10 @@ export function setCurrentFetchRevalidate(revalidate: number | null): void {
   _getState().currentFetchRevalidate = revalidate;
 }
 
+export function setCurrentRouteStaticGeneration(enabled: boolean): void {
+  _getState().currentRouteStaticGeneration = enabled;
+}
+
 export function setCurrentForceDynamicFetchDefault(enabled: boolean): void {
   _getState().currentForceDynamicFetchDefault = enabled;
 }
@@ -909,7 +915,7 @@ function hasExplicitRevalidateValue(nextOpts: NextFetchOptions | undefined): boo
 // noFetchConfigAndForceDynamic.  `false` and `0` are both falsy, so they
 // count as "no fetch revalidate config" for the force-dynamic default path.
 function isFalsyRevalidate(nextOpts: NextFetchOptions | undefined): boolean {
-  return !nextOpts?.revalidate;
+  return !nextOpts?.revalidate || nextOpts.revalidate === INFINITE_CACHE;
 }
 
 function resolveSegmentCacheDirective(
@@ -1174,9 +1180,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
         | NextFetchOptions
         | undefined;
       const rawRevalidate = (rawNextOpts as { revalidate?: unknown } | undefined)?.revalidate;
-      let normalizedRevalidate: number | false | undefined;
+      let normalizedRevalidate: number | undefined;
       if (rawRevalidate === false || rawRevalidate === Infinity) {
-        normalizedRevalidate = false;
+        // Next uses a finite sentinel so fetch entries survive JSON-backed adapters.
+        normalizedRevalidate = INFINITE_CACHE;
       } else if (
         typeof rawRevalidate === "number" &&
         !Number.isNaN(rawRevalidate) &&
@@ -1209,6 +1216,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       const implicitBuildTimeCache =
         isStagedCacheabilityProbeActive() &&
         !_getState().currentCacheComponentsEnabled &&
+        _getState().currentRouteStaticGeneration &&
         (_getState().currentFetchCacheMode === null ||
           _getState().currentFetchCacheMode === "auto") &&
         (cacheDirective === undefined || cacheDirective === "default") &&
@@ -1254,9 +1262,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // fetches that would otherwise be implicitly cacheable.
       const hasExplicitCacheOpt =
         cacheDirective === "force-cache" ||
-        nextOpts?.revalidate === false ||
         (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
-      if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
+      if (!implicitBuildTimeCache && !hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
         const cleanInit = stripNextFromInit(init, cacheDirective);
         recordDynamicFetchForPageOutput(input);
         return dedupeFetch(input, cleanInit);
@@ -1273,17 +1280,14 @@ function createPatchedFetch(): typeof globalThis.fetch {
         }
         revalidateSeconds =
           routeRevalidate === null || routeRevalidate === Infinity
-            ? ONE_YEAR_SECONDS
+            ? INFINITE_CACHE
             : routeRevalidate;
       } else if (cacheDirective === "force-cache") {
-        // force-cache means cache indefinitely (we use a very large number)
+        // force-cache means cache indefinitely.
         revalidateSeconds =
           nextOpts?.revalidate && typeof nextOpts.revalidate === "number"
             ? nextOpts.revalidate
-            : ONE_YEAR_SECONDS;
-      } else if (nextOpts?.revalidate === false) {
-        // revalidate: false means cache indefinitely
-        revalidateSeconds = ONE_YEAR_SECONDS;
+            : INFINITE_CACHE;
       } else if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
         revalidateSeconds = nextOpts.revalidate;
       } else {
@@ -1299,7 +1303,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
           }
           revalidateSeconds =
             routeRevalidate === null || routeRevalidate === Infinity
-              ? ONE_YEAR_SECONDS
+              ? INFINITE_CACHE
               : routeRevalidate;
         } else {
           // next: {} with no revalidate or tags — pass through
@@ -1358,7 +1362,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         }
         throw err;
       }
-      const handler = getDataCacheHandler();
+      const handler = getDataCacheHandlerUntracked();
       let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
 
       // Try cache first
@@ -1568,6 +1572,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
     return await runWithUnifiedStateMutation((uCtx) => {
       uCtx.cacheableFetchUrls = new Set<string>();
       uCtx.currentCacheComponentsEnabled = false;
+      uCtx.currentRouteStaticGeneration = false;
       uCtx.currentRequestTags = [];
       uCtx.currentFetchSoftTags = [];
       uCtx.dynamicFetchUrls = new Set<string>();
@@ -1580,6 +1585,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
     {
       cacheableFetchUrls: new Set<string>(),
       currentCacheComponentsEnabled: false,
+      currentRouteStaticGeneration: false,
       currentRequestTags: [],
       currentFetchSoftTags: [],
       currentFetchCacheMode: null,

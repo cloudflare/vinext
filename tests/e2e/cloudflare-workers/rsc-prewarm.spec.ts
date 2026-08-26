@@ -387,6 +387,23 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   expect((await bareFetchResponse.text()).replaceAll("<!-- -->", "")).toContain(
     "cache-probe bare fetch known",
   );
+  const bareFetchRscResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}/cache-probe/bare-fetch/known?_rsc`,
+    fullHeaders,
+  );
+  expect(bareFetchRscResponse.headers()["cf-cache-status"]).toBe("HIT");
+  expect(bareFetchRscResponse.headers()["content-type"]).toContain("text/x-component");
+
+  const onDemandBareFetchSlug = `on-demand-bare-${buildId.slice(0, 8)}`;
+  const onDemandBareFetchUrl = `${baseURL}/cache-probe/bare-fetch/${onDemandBareFetchSlug}`;
+  const onDemandBareFetchMiss = await getResponseAfterPromotion(request, onDemandBareFetchUrl);
+  expect(onDemandBareFetchMiss.headers()["cf-cache-status"]).toBe("MISS");
+  expect((await onDemandBareFetchMiss.text()).replaceAll("<!-- -->", "")).toContain(
+    `cache-probe bare fetch ${onDemandBareFetchSlug}`,
+  );
+  const onDemandBareFetchHit = await getResponseAfterPromotion(request, onDemandBareFetchUrl);
+  expect(onDemandBareFetchHit.headers()["cf-cache-status"]).toBe("HIT");
 
   // Only `known` was discovered and warmed. Like Next.js fallback blocking,
   // another parameter is checked from its completed first render and then

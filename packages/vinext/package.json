@@ -84,6 +84,10 @@
       "types": "./dist/server/cacheability-manifest.d.ts",
       "import": "./dist/server/cacheability-manifest.js"
     },
+    "./internal/server/cacheability-limits": {
+      "types": "./dist/server/cacheability-limits.d.ts",
+      "import": "./dist/server/cacheability-limits.js"
+    },
     "./internal/server/isr-cache": {
       "types": "./dist/server/isr-cache.d.ts",
       "import": "./dist/server/isr-cache.js"

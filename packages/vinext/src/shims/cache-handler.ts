@@ -468,9 +468,12 @@ export function setDataCacheHandler(handler: CacheHandler): void {
 }
 
 export function getDataCacheHandler(): CacheHandler {
-  return suppressHandlerPlatformIoTracking(
-    prospectiveCacheHandlerAls.getStore() ?? getActiveHandler(),
-  );
+  return prospectiveCacheHandlerAls.getStore() ?? getActiveHandler();
+}
+
+/** @internal Framework cache I/O must not count as user platform I/O. */
+export function getDataCacheHandlerUntracked(): CacheHandler {
+  return suppressHandlerPlatformIoTracking(getDataCacheHandler());
 }
 
 /**

@@ -3,8 +3,7 @@ import { getRequestExecutionContext } from "./request-context.js";
 export const CACHEABILITY_REQUEST_STATE = Symbol.for("vinext.cacheabilityRequestState");
 
 type CacheabilityClassificationState = {
-  manifestRoute?: { state?: string };
-  mode?: "admit" | "admit-all" | "identity" | "probe";
+  mode?: "admit" | "admit-all" | "identity" | "probe" | "warm";
   route?: unknown;
 };
 
@@ -27,10 +26,4 @@ export function isRouteCacheabilityClassificationActive(): boolean {
 export function isStagedCacheabilityProbeActive(): boolean {
   const state = readClassificationState();
   return state?.mode === "probe" || state?.mode === "identity";
-}
-
-/** A staged probe already certified this route representation as static. */
-export function isRouteCacheabilityCertifiedStatic(): boolean {
-  const state = readClassificationState();
-  return state?.mode === "admit" && state.manifestRoute?.state === "static-candidate";
 }

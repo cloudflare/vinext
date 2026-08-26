@@ -20,7 +20,11 @@ import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
 import { isPromiseLike } from "../utils/promise.js";
 import { formatNextRedirectDigest } from "./app-rsc-redirect-flight.js";
 import { runWithConnectionProbe } from "vinext/shims/headers";
-import { captureResponseBodyBounded } from "./cacheability-request.js";
+import {
+  CacheabilityClassificationError,
+  captureResponseBodyBounded,
+  recordRouteCacheabilityClassificationFailure,
+} from "./cacheability-request.js";
 
 export type { LayoutFlags };
 
@@ -677,7 +681,8 @@ export async function readAppPageBinaryStreamBounded(
   const captured = await captureResponseBodyBounded(new Response(stream));
   if (captured.failClosed) {
     void captured.fallback.cancel().catch(() => {});
-    throw new Error(captured.reason);
+    recordRouteCacheabilityClassificationFailure(captured.reason);
+    throw new CacheabilityClassificationError(captured.reason);
   }
   await captured.fallback?.cancel().catch(() => {});
   return { body: captured.body ?? new ArrayBuffer(0), release: captured.release };

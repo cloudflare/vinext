@@ -6727,7 +6727,7 @@ describe("next/cache shim", () => {
     }
   });
 
-  it("unstable_cache with no revalidate option caches indefinitely", async () => {
+  it("unstable_cache with no revalidate option uses Next's one-year default", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
 
@@ -6755,8 +6755,7 @@ describe("next/cache shim", () => {
     const handler = (await import("../packages/vinext/src/shims/cache.js")).getCacheHandler();
     const store = (handler as any).store as Map<string, any>;
     for (const [, entry] of store) {
-      // revalidateAt should be null (indefinite) not 0 or past timestamp
-      expect(entry.revalidateAt).toBeNull();
+      expect(entry.revalidateAt).toBeGreaterThan(Date.now() + 31_535_000_000);
     }
 
     setCacheHandler(new MemoryCacheHandler());
@@ -7339,7 +7338,7 @@ describe('"use cache" runtime', () => {
   });
 
   it("does not attribute cache-handler infrastructure clocks to user output", async () => {
-    const { getCacheHandler, MemoryCacheHandler, setCacheHandler } =
+    const { getDataCacheHandlerUntracked, MemoryCacheHandler, setCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
     const { runWithCacheComponentsPlatformIoTracking } =
       await import("../packages/vinext/src/server/cache-components-platform-io.js");
@@ -7363,7 +7362,7 @@ describe('"use cache" runtime', () => {
 
     try {
       await runWithCacheComponentsPlatformIoTracking(async () => {
-        const active = getCacheHandler();
+        const active = getDataCacheHandlerUntracked();
         await active.get("key");
         await active.set("key", null);
         await active.revalidateTag("tag");

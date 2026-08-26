@@ -14,6 +14,7 @@ import {
   revalidatePath,
   revalidateTag,
   setCacheHandler,
+  unstable_cache,
   MemoryCacheHandler,
 } from "../packages/vinext/src/shims/cache.js";
 import { buildAppPageCacheTags } from "../packages/vinext/src/server/app-page-cache.js";
@@ -591,6 +592,29 @@ describe("KVCacheHandler", () => {
       const hit = await handler.get("static-route");
       expect(hit?.cacheControl).toEqual({ revalidate: false });
       expect(hit?.value?.kind).toBe("APP_ROUTE");
+    });
+
+    it("round-trips unstable_cache Infinity through JSON-backed KV", async () => {
+      setCacheHandler(handler);
+      let calls = 0;
+      const cached = unstable_cache(async () => ++calls, ["kv-infinite-revalidate"], {
+        revalidate: Infinity,
+      });
+
+      try {
+        await expect(cached()).resolves.toBe(1);
+        await expect(cached()).resolves.toBe(1);
+        expect(calls).toBe(1);
+        const raw = [...store.entries()].find(([key]) =>
+          key.startsWith("cache:unstable_cache:"),
+        )?.[1];
+        expect(raw).toBeDefined();
+        const parsed = JSON.parse(raw!);
+        expect(parsed.value.revalidate).toBe(0xfffffffe);
+        expect(parsed.revalidateAt).toBeNull();
+      } finally {
+        setCacheHandler(new MemoryCacheHandler());
+      }
     });
 
     it("serves stale when a shorter read-time revalidate has elapsed", async () => {

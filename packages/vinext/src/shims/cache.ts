@@ -32,7 +32,7 @@ import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import {
-  getDataCacheHandler,
+  getDataCacheHandlerUntracked,
   trackProspectiveCacheFill,
   type CachedFetchValue,
 } from "./cache-handler.js";
@@ -48,6 +48,7 @@ import {
   _setRequestScopedCacheLife,
   cacheLifeProfiles,
   getRegisteredCacheContext,
+  INFINITE_CACHE,
   markActionRevalidation,
   recordUnstableCacheObservation,
   shouldServeStaleUnstableCacheEntry,
@@ -166,7 +167,7 @@ async function _invalidateEncodedTag(
   encoded: string,
   durations?: { expire?: number },
 ): Promise<void> {
-  await getDataCacheHandler().revalidateTag(encoded, durations);
+  await getDataCacheHandlerUntracked().revalidateTag(encoded, durations);
   await getCdnCacheAdapter().revalidateTag(encoded, durations);
 }
 
@@ -594,7 +595,7 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   args: Args,
   cacheKey: string,
   tags: string[],
-  revalidateSeconds: number | false | undefined,
+  revalidateSeconds: number | undefined,
 ): Promise<Result> {
   const result = await _unstableCacheAls.run(true, () => fn(...args));
 
@@ -606,14 +607,12 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
       url: cacheKey,
     },
     tags,
-    // revalidate: false means "cache indefinitely" (no time-based expiry).
-    // A positive number means time-based revalidation in seconds.
-    // When unset (undefined), default to false (indefinite) matching
-    // Next.js behavior for unstable_cache without explicit revalidate.
-    revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : false,
+    // Match Next: explicit false/Infinity use the JSON-safe infinite sentinel;
+    // an omitted lifetime retains the legacy one-year fetch-entry default.
+    revalidate: revalidateSeconds ?? 31_536_000,
   };
 
-  await getDataCacheHandler().set(cacheKey, cacheValue, {
+  await getDataCacheHandlerUntracked().set(cacheKey, cacheValue, {
     fetchCache: true,
     tags,
     revalidate: revalidateSeconds,
@@ -641,7 +640,11 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   // hash differently across builds. Always pass explicit keyParts in
   // production to get a stable, collision-free cache key.
   const tags = encodeCacheTags(options?.tags ?? []);
-  const revalidateSeconds = options?.revalidate;
+  const configuredRevalidate = options?.revalidate;
+  const revalidateSeconds =
+    configuredRevalidate === false || configuredRevalidate === Infinity
+      ? INFINITE_CACHE
+      : configuredRevalidate;
   if (
     typeof revalidateSeconds === "number" &&
     (Number.isNaN(revalidateSeconds) || revalidateSeconds <= 0)
@@ -657,7 +660,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   // accidentally make the enclosing Cache Components route dynamic.
   const cachedFn = (...args: Parameters<T>) => {
     const operation = _unstableCacheAls.run(true, async () => {
-      if (typeof revalidateSeconds === "number") {
+      if (typeof revalidateSeconds === "number" && revalidateSeconds < INFINITE_CACHE) {
         const life = { revalidate: revalidateSeconds };
         _setRequestScopedCacheLife(life);
         const cacheContext = getRegisteredCacheContext();
@@ -671,12 +674,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       recordUnstableCacheObservation({
         kind: "unstable_cache",
         keyHash: fnv1a64(cacheKey),
-        revalidate:
-          typeof revalidateSeconds === "number"
-            ? revalidateSeconds
-            : revalidateSeconds === false
-              ? false
-              : null,
+        revalidate: revalidateSeconds ?? null,
         tagCount: tags.length,
         tagHash: tags.length > 0 ? fnv1a64(JSON.stringify(tags)) : null,
       });
@@ -689,7 +687,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
         const softTags = getCurrentFetchSoftTags();
         const existing = _hasPendingRevalidatedTag([...tags, ...softTags])
           ? null
-          : await getDataCacheHandler().get(cacheKey, {
+          : await getDataCacheHandlerUntracked().get(cacheKey, {
               kind: "FETCH",
               tags,
               softTags,

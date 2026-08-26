@@ -383,6 +383,10 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         warmAttempts += 1;
         events.push(warmAttempts === 1 ? "warm:final" : "verify:final");
         expect(headers.get("Cloudflare-Workers-Version-Overrides")).toBeNull();
+        expect(headers.get("X-Vinext-Cacheability-Probe")).toBe(warmAttempts === 1 ? "warm" : null);
+        expect(headers.get("X-Vinext-Prerender-Secret")).toBe(
+          warmAttempts === 1 ? "secret-a" : null,
+        );
       }
       return cacheableHtml("ok", warmAttempts > 1 ? "HIT" : "MISS");
     });

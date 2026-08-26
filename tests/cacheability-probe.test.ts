@@ -16,6 +16,8 @@ import {
   beginRouteCacheability,
   CACHEABILITY_RESPONSE_BODY_LIMIT,
   CACHEABILITY_RESPONSE_CAPTURE_BUDGET,
+  CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
+  CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT,
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
   captureResponseBodyBounded,
   createWorkerCacheabilityContext,
@@ -24,11 +26,13 @@ import {
   markRequestCacheabilityUnsafe,
   markRouteCacheabilityPolicyProvisional,
   recordRouteCacheabilityCapturedBody,
+  recordRouteCacheabilityClassificationFailure,
   recordRouteCacheability,
   type CapturedResponseBody,
 } from "../packages/vinext/src/server/cacheability-request.js";
 import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
 import { finalizeAppPageHtmlCacheResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
+import { executeAppRouteHandler } from "../packages/vinext/src/server/app-route-handler-execution.js";
 import { applyConfigHeadersToResponse } from "../packages/vinext/src/server/config-headers.js";
 import { configRoutesCanVaryResponse } from "../packages/vinext/src/server/config-cache-safety.js";
 import { executeMiddleware } from "../packages/vinext/src/server/middleware-runtime.js";
@@ -584,6 +588,54 @@ describe("cacheability manifests", () => {
       state: "static-candidate",
     });
     expect(JSON.stringify(result.manifest)).not.toContain('["app-page","/fixed-199"');
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("bounds full probe concurrency to the Worker capture-reader limit", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-concurrency-"));
+    fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "dist/server/vinext-server.json"),
+      JSON.stringify({ prerenderSecret: "secret-a" }),
+    );
+    let active = 0;
+    let peak = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: URL | RequestInfo) => {
+        active++;
+        peak = Math.max(peak, active);
+        await Promise.resolve();
+        active--;
+        const pathname = new URL(
+          input instanceof URL ? input : typeof input === "string" ? input : input.url,
+        ).pathname;
+        return Response.json({
+          kind: "app-page",
+          pattern: pathname,
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        });
+      }),
+    );
+    const patterns = Array.from({ length: 50 }, (_, index) => `/fixed-${index}`);
+
+    const result = await probeStagedWorkerCacheability({
+      concurrency: 100,
+      root,
+      routes: patterns.map((pattern) => ({
+        kind: "app-page" as const,
+        path: pattern,
+        pattern,
+        probePath: pattern,
+      })),
+      targetUrl: "https://shop.example.com",
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.probed).toBe(patterns.length);
+    expect(peak).toBe(CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -1573,6 +1625,238 @@ describe("buffered cache admission", () => {
     });
   });
 
+  it("lets an authenticated final warm request wait for capture capacity", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const occupancyContext = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      new Request("https://example.com/capture-occupancy"),
+      "secret-a",
+    );
+    await runWithExecutionContext(occupancyContext, async () => {
+      const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+      const occupied = Array.from({ length: CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY }, () =>
+        captureResponseBodyBounded(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controllers.push(controller);
+                controller.enqueue(new Uint8Array([1]));
+              },
+            }),
+          ),
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(controllers).toHaveLength(CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY),
+      );
+
+      const warmRequest = new Request("https://example.com/products/warm", {
+        headers: {
+          "X-Vinext-Cacheability-Probe": "warm",
+          "X-Vinext-Prerender-Secret": "secret-a",
+        },
+      });
+      const warmContext = createWorkerCacheabilityContext(createContext(), warmRequest, "secret-a");
+      let settled = false;
+      const warmResponsePromise = runWithExecutionContext(warmContext, async () => {
+        expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+        return finalizeWorkerCacheabilityResponse(
+          new Response("warm", { headers: { "CDN-Cache-Control": "public, max-age=60" } }),
+          warmContext,
+        );
+      }).then((response) => {
+        settled = true;
+        return response;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      controllers[0].close();
+      const first = await occupied[0];
+      await first.fallback?.cancel();
+      if (!first.failClosed) first.release();
+
+      const warmResponse = await warmResponsePromise;
+      expect(warmResponse.status).toBe(200);
+      expect(await warmResponse.text()).toBe("warm");
+
+      for (const controller of controllers.slice(1)) controller.close();
+      const remaining = await Promise.all(occupied.slice(1));
+      for (const capture of remaining) {
+        await capture.fallback?.cancel();
+        if (!capture.failClosed) capture.release();
+      }
+    });
+  });
+
+  it("does not misclassify an App Page probe while its cache owner waits for capacity", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const occupancyContext = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      new Request("https://example.com/capture-occupancy"),
+      "secret-a",
+    );
+    await runWithExecutionContext(occupancyContext, async () => {
+      const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+      const occupied = Array.from({ length: CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY }, () =>
+        captureResponseBodyBounded(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controllers.push(controller);
+                controller.enqueue(new Uint8Array([1]));
+              },
+            }),
+          ),
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(controllers).toHaveLength(CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY),
+      );
+
+      const probeRequest = new Request("https://example.com/products/page-owner", {
+        headers: {
+          "X-Vinext-Cacheability-Probe": "1",
+          "X-Vinext-Prerender-Secret": "secret-a",
+        },
+      });
+      const probeContext = createWorkerCacheabilityContext(
+        createContext(),
+        probeRequest,
+        "secret-a",
+      );
+      let settled = false;
+      const probeResponsePromise = runWithExecutionContext(probeContext, async () => {
+        expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+        const response = finalizeAppPageHtmlCacheResponse(new Response("page-owner"), {
+          capturedRscDataPromise: null,
+          cleanPathname: "/products/page-owner",
+          consumeDynamicUsage: () => false,
+          getPageTags: () => ["/products/page-owner"],
+          isrHtmlKey: (pathname) => `html:${pathname}`,
+          isrRscKey: (pathname) => `rsc:${pathname}`,
+          isrSet: vi.fn(async () => {}),
+          linkHeader: null,
+          revalidateSeconds: 60,
+        });
+        return finalizeWorkerCacheabilityResponse(response, probeContext);
+      }).then((response) => {
+        settled = true;
+        return response;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      controllers[0].close();
+      const first = await occupied[0];
+      await first.fallback?.cancel();
+      if (!first.failClosed) first.release();
+
+      const probeResponse = await probeResponsePromise;
+      expect(await probeResponse.json()).toMatchObject({ state: "static-candidate" });
+
+      for (const controller of controllers.slice(1)) controller.close();
+      const remaining = await Promise.all(occupied.slice(1));
+      for (const capture of remaining) {
+        await capture.fallback?.cancel();
+        if (!capture.failClosed) capture.release();
+      }
+    });
+  });
+
+  it("starts an App Route probe's task-boundary clock after capture capacity is acquired", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const occupancyContext = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      new Request("https://example.com/capture-occupancy"),
+      "secret-a",
+    );
+    await runWithExecutionContext(occupancyContext, async () => {
+      const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+      const occupied = Array.from({ length: CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY }, () =>
+        captureResponseBodyBounded(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controllers.push(controller);
+                controller.enqueue(new Uint8Array([1]));
+              },
+            }),
+          ),
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(controllers).toHaveLength(CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY),
+      );
+
+      const probeRequest = new Request("https://example.com/api/route-owner", {
+        headers: {
+          "X-Vinext-Cacheability-Probe": "1",
+          "X-Vinext-Prerender-Secret": "secret-a",
+        },
+      });
+      const probeContext = createWorkerCacheabilityContext(
+        createContext(),
+        probeRequest,
+        "secret-a",
+      );
+      let settled = false;
+      const probeResponsePromise = runWithExecutionContext(probeContext, async () => {
+        expect(beginRouteCacheability("app-route", "/api/route-owner")).toBe(true);
+        const response = await executeAppRouteHandler({
+          buildPageCacheTags: () => [],
+          cleanPathname: "/api/route-owner",
+          clearRequestContext() {},
+          consumeDynamicUsage: () => false,
+          executionContext: null,
+          getAndClearPendingCookies: () => [],
+          getCollectedFetchTags: () => [],
+          getDraftModeCookieHeader: () => null,
+          handler: {},
+          handlerFn: () => new Response("route-owner"),
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey: (pathname) => `route:${pathname}`,
+          isrSet: vi.fn(async () => {}),
+          markDynamicUsage() {},
+          method: "GET",
+          middlewareContext: { headers: null, status: null },
+          observeCompletedBody: true,
+          params: null,
+          reportRequestError() {},
+          request: probeRequest,
+          revalidateSeconds: 60,
+          routePattern: "/api/route-owner",
+          setHeadersAccessPhase: () => "render",
+        });
+        return finalizeWorkerCacheabilityResponse(response, probeContext);
+      }).then((response) => {
+        settled = true;
+        return response;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      controllers[0].close();
+      const first = await occupied[0];
+      await first.fallback?.cancel();
+      if (!first.failClosed) first.release();
+
+      const probeResponse = await probeResponsePromise;
+      expect(await probeResponse.json()).toMatchObject({ state: "static-candidate" });
+
+      for (const controller of controllers.slice(1)) controller.close();
+      const remaining = await Promise.all(occupied.slice(1));
+      for (const capture of remaining) {
+        await capture.fallback?.cancel();
+        if (!capture.failClosed) capture.release();
+      }
+    });
+  });
+
   it("keeps completed captures in the aggregate budget until their owners release them", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const context = createWorkerCacheabilityContext(
@@ -1633,6 +1917,47 @@ describe("buffered cache admission", () => {
     });
 
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("preserves ordinary bodies when classification infrastructure fails", async () => {
+    installManifest("static-candidate");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const context = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/infrastructure-pressure"),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(context, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      recordRouteCacheabilityClassificationFailure("capture capacity unavailable");
+      return finalizeWorkerCacheabilityResponse(new Response("still-streamed"), context);
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("still-streamed");
+  });
+
+  it("makes authenticated warm classification failures retryable", async () => {
+    installManifest("static-candidate");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/products/infrastructure-pressure", {
+      headers: {
+        "X-Vinext-Cacheability-Probe": "warm",
+        "X-Vinext-Prerender-Secret": "secret-a",
+      },
+    });
+    const context = createWorkerCacheabilityContext(createContext(), request, "secret-a");
+
+    const response = await runWithExecutionContext(context, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      recordRouteCacheabilityClassificationFailure("capture capacity unavailable");
+      return finalizeWorkerCacheabilityResponse(new Response("discarded-warm-body"), context);
+    });
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
   });
 
   it("bounds overflow retention while ordinary excess captures fail closed immediately", async () => {

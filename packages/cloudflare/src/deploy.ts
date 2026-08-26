@@ -53,6 +53,7 @@ import {
 import { parseWranglerConfig, runTPR } from "./tpr.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
 import {
+  DEFAULT_CDN_WARM_CONCURRENCY,
   DEFAULT_STAGED_READINESS_INTERVAL_MS,
   DEFAULT_STAGED_READINESS_RETRIES,
   readPrerenderWarmPlan,
@@ -83,9 +84,11 @@ import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
 import {
+  buildCacheabilityWarmHeaders,
   probeStagedWorkerCacheability,
   type CacheabilityProbeResolution,
 } from "./cacheability-probe.js";
+import { CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT } from "vinext/internal/server/cacheability-limits";
 import { withEmbeddedCacheabilityManifest } from "./cacheability-artifact.js";
 
 export const DEFAULT_CDN_WARM_PROMOTION_DELAY_MS = 15_000;
@@ -957,18 +960,27 @@ export async function deployWithCdnWarmup(
       paths: remainingWarmPlan.paths,
       rscPaths: remainingWarmPlan.rscPaths,
     },
+    authenticatedCacheabilityWarm = false,
   ) =>
     warmCdnCache({
       targetUrl,
       paths: plan.paths,
-      headers,
+      headers:
+        authenticatedCacheabilityWarm && options.twoStageCacheability
+          ? buildCacheabilityWarmHeaders(root, headers)
+          : headers,
       propagatingTarget,
       deploymentId,
       expectedBuildId,
       expectedRscBuildId,
       loadingShellPaths: plan.loadingShellPaths,
       rscPaths: plan.rscPaths,
-      concurrency: options.warmCdnConcurrency,
+      concurrency: authenticatedCacheabilityWarm
+        ? Math.min(
+            options.warmCdnConcurrency ?? DEFAULT_CDN_WARM_CONCURRENCY,
+            CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT,
+          )
+        : options.warmCdnConcurrency,
       timeoutMs: options.warmCdnTimeout,
       retries: options.warmCdnRetries,
       strict: !options.dangerouslyPromoteOnCdnWarmError,
@@ -1310,7 +1322,13 @@ export async function deployWithCdnWarmup(
     const targetUrl = postPromotionTargetUrl;
     if (targetUrl) {
       try {
-        const warmResult = await warmUploadedVersion(targetUrl, undefined, true, remainingWarmPlan);
+        const warmResult = await warmUploadedVersion(
+          targetUrl,
+          undefined,
+          true,
+          remainingWarmPlan,
+          options.twoStageCacheability === true,
+        );
         remainingWarmPlan = warmResult.retryPlan;
         if (options.twoStageCacheability && warmResult.warmed > 0) {
           console.log(

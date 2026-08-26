@@ -20,6 +20,7 @@ import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 import {
   captureResponseBodyBounded,
   deferRouteCacheability,
+  isCacheabilityClassificationError,
   markRouteCacheabilityPolicyProvisional,
   recordRouteCacheabilityCapturedBody,
 } from "./cacheability-request.js";
@@ -231,7 +232,7 @@ export function finalizeAppPageHtmlCacheResponse(
       const captured = await captureResponseBodyBounded(new Response(streamForCache));
       if (captured.failClosed) {
         void captured.fallback.cancel().catch(() => {});
-        complete({ cacheable: false, dynamicUsage: true, reason: captured.reason });
+        complete({ cacheable: false, classificationFailure: true, reason: captured.reason });
         options.isrDebug?.("HTML cache write skipped (bounded capture failed)", htmlKey);
         return;
       }
@@ -332,6 +333,7 @@ export function finalizeAppPageHtmlCacheResponse(
     } catch (cacheError) {
       complete({
         cacheable: false,
+        ...(isCacheabilityClassificationError(cacheError) ? { classificationFailure: true } : {}),
         reason: cacheError instanceof Error ? cacheError.message : String(cacheError),
       });
       console.error("[vinext] ISR cache write error:", cacheError);
@@ -486,6 +488,7 @@ export function scheduleAppPageRscCacheWrite(
     } catch (cacheError) {
       complete({
         cacheable: false,
+        ...(isCacheabilityClassificationError(cacheError) ? { classificationFailure: true } : {}),
         reason: cacheError instanceof Error ? cacheError.message : String(cacheError),
       });
       console.error("[vinext] ISR RSC cache write error:", cacheError);

@@ -43,6 +43,7 @@ import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
+import { setCurrentRouteStaticGeneration } from "vinext/shims/fetch-cache";
 import {
   beginRouteCacheability,
   isRouteCacheabilityIdentityProbe,
@@ -1222,6 +1223,9 @@ export async function resolvePagesPageData(
   let shouldPersistFallbackData = false;
   let onDemandPreviousCacheEntry: ISRCacheEntry | null | undefined;
   const previewData = options.isOnDemandRevalidate ? false : (options.previewData ?? false);
+  setCurrentRouteStaticGeneration(
+    options.pageModule.getStaticProps !== undefined && previewData === false,
+  );
 
   if (typeof options.pageModule.getStaticPaths === "function" && options.route.isDynamic) {
     const pathsResult = await options.pageModule.getStaticPaths({

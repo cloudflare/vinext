@@ -29,7 +29,7 @@
  */
 
 import {
-  getDataCacheHandler,
+  getDataCacheHandlerUntracked,
   trackProspectiveCacheFill,
   type CachedFetchValue,
   type CacheControlMetadata,
@@ -680,7 +680,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       }
 
       // Shared cache ("use cache" / "use cache: remote")
-      const handler = getDataCacheHandler();
+      const handler = getDataCacheHandlerUntracked();
       const rootParams = getCurrentRootParams();
       const knownRootParamNames = knownRootParamsByFunctionId.get(id);
       const coarseCacheKey = cacheKey;

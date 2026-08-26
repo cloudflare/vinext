@@ -5,6 +5,7 @@ import {
   setCurrentFetchCacheMode,
   setCurrentCacheComponentsEnabled,
   setCurrentFetchRevalidate,
+  setCurrentRouteStaticGeneration,
   setCurrentFetchSoftTags,
   setCurrentForceDynamicFetchDefault,
   type FetchCacheMode,
@@ -142,6 +143,7 @@ async function runInRouteHandlerRevalidationContext(
     revalidateSeconds: number | null;
     routePattern: string;
     routeSegments: string[];
+    staticGeneration: boolean;
   },
   renderFn: () => Promise<void>,
 ): Promise<void> {
@@ -168,6 +170,7 @@ async function runInRouteHandlerRevalidationContext(
     setCurrentCacheComponentsEnabled(options.cacheComponents);
     setCurrentFetchCacheMode(options.fetchCacheMode);
     setCurrentFetchRevalidate(options.revalidateSeconds);
+    setCurrentRouteStaticGeneration(options.staticGeneration);
     setCurrentForceDynamicFetchDefault(options.dynamicConfig === "force-dynamic");
     try {
       await renderFn();
@@ -305,6 +308,12 @@ export async function dispatchAppRouteHandler(
   setCurrentCacheComponentsEnabled(options.cacheComponents === true);
   setCurrentFetchCacheMode(fetchCacheMode);
   setCurrentFetchRevalidate(revalidateSeconds);
+  setCurrentRouteStaticGeneration(
+    !options.cacheComponents &&
+      !hasNonStaticMethods &&
+      revalidateSeconds !== null &&
+      revalidateSeconds !== 0,
+  );
   setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
 
   if (
@@ -413,6 +422,11 @@ export async function dispatchAppRouteHandler(
             revalidateSeconds,
             routePattern: route.pattern,
             routeSegments: route.routeSegments,
+            staticGeneration:
+              !options.cacheComponents &&
+              !hasNonStaticMethods &&
+              revalidateSeconds !== null &&
+              revalidateSeconds !== 0,
           },
           renderFn,
         );

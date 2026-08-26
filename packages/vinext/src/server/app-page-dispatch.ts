@@ -32,6 +32,7 @@ import {
   setCurrentCacheComponentsEnabled,
   setCurrentFetchCacheMode,
   setCurrentFetchRevalidate,
+  setCurrentRouteStaticGeneration,
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
@@ -97,6 +98,7 @@ import {
   isAdmissibleCacheStatus,
   isRouteCacheabilityIdentityProbe,
   recordRouteCacheability,
+  recordRouteCacheabilityClassificationFailure,
   recordRouteCacheabilityCapturedBody,
 } from "./cacheability-request.js";
 import {
@@ -602,6 +604,11 @@ async function runAppPageRevalidationContext<
   const revalidation = runWithRequestContext(requestContext, async () => {
     ensureFetchPatch();
     setCurrentCacheComponentsEnabled(options.cacheComponents);
+    setCurrentRouteStaticGeneration(
+      !options.cacheComponents &&
+        options.dynamicConfig !== "force-dynamic" &&
+        options.currentFetchRevalidate !== 0,
+    );
     setRefreshStaleFetchesInForeground(process.env.VINEXT_PRERENDER === "1");
     setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], options.routeSegments));
     options.setNavigationContext({
@@ -723,11 +730,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
     const captured = await captureResponseBodyBounded(response);
     if (captured.failClosed) {
-      recordRouteCacheability({
-        cacheable: false,
-        dynamicUsage: true,
-        reason: captured.reason,
-      });
+      recordRouteCacheabilityClassificationFailure(captured.reason);
       const headers = new Headers(response.headers);
       applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
       return new Response(captured.fallback, {
@@ -852,6 +855,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   setCurrentCacheComponentsEnabled(options.pprRuntime !== undefined);
   setCurrentFetchCacheMode(options.fetchCache ?? null);
   setCurrentFetchRevalidate(currentRevalidateSeconds);
+  setCurrentRouteStaticGeneration(
+    options.pprRuntime === undefined && !isForceDynamic && currentRevalidateSeconds !== 0,
+  );
   setCurrentForceDynamicFetchDefault(isForceDynamic);
 
   if (options.hasPageModule && !options.hasPageDefaultExport) {

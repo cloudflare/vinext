@@ -21,6 +21,22 @@ import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { CACHEABILITY_REQUEST_STATE } from "vinext/shims/cacheability-classification";
 import { runWithoutPlatformIoTracking } from "vinext/shims/platform-io-tracking";
+import {
+  CACHEABILITY_RESPONSE_BODY_LIMIT,
+  CACHEABILITY_RESPONSE_CAPTURE_BUDGET,
+  CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
+  CACHEABILITY_RESPONSE_CAPTURE_PENDING_LIMIT,
+  CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+} from "./cacheability-limits.js";
+
+export {
+  CACHEABILITY_RESPONSE_BODY_LIMIT,
+  CACHEABILITY_RESPONSE_CAPTURE_BUDGET,
+  CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
+  CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT,
+  CACHEABILITY_RESPONSE_CAPTURE_PENDING_LIMIT,
+  CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+} from "./cacheability-limits.js";
 
 function frameworkNow(): number {
   return runWithoutPlatformIoTracking(() => Date.now());
@@ -29,6 +45,8 @@ function frameworkNow(): number {
 type CacheabilityOutcome = {
   cacheControl?: string;
   cacheable: boolean;
+  /** Infrastructure prevented a complete classification; user code was not dynamic. */
+  classificationFailure?: boolean;
   dynamicUsage?: boolean;
   reason?: string;
   tags?: readonly string[];
@@ -45,7 +63,7 @@ type CacheabilityRequestState = {
   complete?: (outcome: CacheabilityOutcome) => void;
   completion?: Promise<CacheabilityOutcome>;
   manifestRoute?: CacheabilityManifestRoute;
-  mode: "admit" | "admit-all" | "identity" | "probe";
+  mode: "admit" | "admit-all" | "identity" | "probe" | "warm";
   outcome?: CacheabilityOutcome;
   provisionalPolicy?: CacheabilityPolicySnapshot;
   requestHeaders: Record<string, string>;
@@ -61,26 +79,6 @@ type CacheabilityPolicySnapshot = {
   cdnCacheControl: string | null;
   cloudflareCdnCacheControl: string | null;
 };
-
-// Runtime-check responses are temporarily represented by the source stream,
-// an unread tee branch, and the final contiguous buffer. Keep the per-request
-// ceiling low enough to leave useful headroom in a Worker isolate.
-export const CACHEABILITY_RESPONSE_BODY_LIMIT = 4 * 1024 * 1024;
-// Capturing keeps a tee branch, chunk views, and a contiguous artifact alive
-// at once. Bound aggregate in-flight work per isolate as well as each request;
-// excess requests keep streaming but fail CDN admission closed.
-export const CACHEABILITY_RESPONSE_CAPTURE_BUDGET = 4 * CACHEABILITY_RESPONSE_BODY_LIMIT;
-// A response stream can yield a complete limit-sized chunk before its size is
-// known. Gate readers before teeing so high deploy/warm concurrency cannot make
-// every request retain one such chunk outside the byte reservation at once.
-export const CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY = Math.max(
-  1,
-  Math.floor(CACHEABILITY_RESPONSE_CAPTURE_BUDGET / CACHEABILITY_RESPONSE_BODY_LIMIT),
-);
-export const CACHEABILITY_RESPONSE_CAPTURE_PENDING_LIMIT = 32;
-// Leave headroom below the deploy probe's 30s request timeout so a slow or
-// never-ending response can still return its fail-closed probe envelope.
-export const CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS = 20_000;
 
 let reservedCaptureBytes = 0;
 let activeCaptureReaders = 0;
@@ -353,6 +351,13 @@ function syntheticErrorResponse(response: Response): Response {
   return new Response("Internal Server Error", { headers, status: 500 });
 }
 
+function captureCapacityUnavailableResponse(): Response {
+  return new Response("Cacheability capture capacity is temporarily unavailable", {
+    headers: { "Cache-Control": NO_STORE_CACHE_CONTROL, "Retry-After": "1" },
+    status: 503,
+  });
+}
+
 function createStaticToDynamicError(
   state: CacheabilityRequestState,
   outcome: CacheabilityOutcome,
@@ -415,6 +420,16 @@ export type CapturedResponseBody =
       reason: string;
     };
 
+export class CacheabilityClassificationError extends Error {
+  override name = "CacheabilityClassificationError";
+}
+
+export function isCacheabilityClassificationError(
+  error: unknown,
+): error is CacheabilityClassificationError {
+  return error instanceof CacheabilityClassificationError;
+}
+
 /**
  * Collect a response body only while it remains within the Worker-safe size
  * and time bounds. The fallback branch preserves every byte when collection
@@ -423,7 +438,11 @@ export type CapturedResponseBody =
  */
 export async function captureResponseBodyBounded(
   response: Response,
-  options: { signal?: AbortSignal; waitForCapacity?: boolean } = {},
+  options: {
+    onCaptureStart?: () => void;
+    signal?: AbortSignal;
+    waitForCapacity?: boolean;
+  } = {},
 ): Promise<CapturedResponseBody> {
   if (options.signal?.aborted) {
     throw options.signal.reason ?? new Error("response capture was aborted");
@@ -443,9 +462,15 @@ export async function captureResponseBodyBounded(
   }
 
   const captureStartedAt = frameworkNow();
+  const waitForCapacity =
+    options.waitForCapacity ??
+    (() => {
+      const mode = readState(getRequestExecutionContext())?.mode;
+      return mode === "probe" || mode === "warm";
+    })();
   const releaseReader = await acquireCaptureReader(
     options.signal,
-    options.waitForCapacity === true ? CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS : 0,
+    waitForCapacity ? CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS : 0,
   );
   if (!releaseReader) {
     if (options.signal?.aborted) {
@@ -455,11 +480,16 @@ export async function captureResponseBodyBounded(
       failure: "capacity",
       failClosed: true,
       fallback: response.body,
-      reason:
-        options.waitForCapacity === true
-          ? `response capture did not acquire isolate capacity within ${CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS}ms`
-          : "response capture isolate capacity is currently unavailable",
+      reason: waitForCapacity
+        ? `response capture did not acquire isolate capacity within ${CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS}ms`
+        : "response capture isolate capacity is currently unavailable",
     };
+  }
+  try {
+    options.onCaptureStart?.();
+  } catch (error) {
+    releaseReader();
+    throw error;
   }
 
   const reservation = createCacheabilityCaptureReservation();
@@ -616,9 +646,9 @@ export function createWorkerCacheabilityContext(
   expectedSecret: string | null | undefined,
 ): ExecutionContextLike {
   const probeMode = request.headers.get(VINEXT_CACHEABILITY_PROBE_HEADER);
-  const requestedProbe = probeMode === "1" || probeMode === "identity";
-  const authorizedProbe =
-    requestedProbe &&
+  const requestedCapability = probeMode === "1" || probeMode === "identity" || probeMode === "warm";
+  const authorizedCapability =
+    requestedCapability &&
     Boolean(expectedSecret) &&
     workerCapabilityMatches(
       request.headers.get(VINEXT_PRERENDER_SECRET_HEADER) ?? "",
@@ -626,17 +656,19 @@ export function createWorkerCacheabilityContext(
     );
   const manifest = getEmbeddedCacheabilityManifest();
   if (
-    !authorizedProbe &&
+    !authorizedCapability &&
     (base.hostRuntime !== "worker" || getCdnCacheAdapter().ownsBackgroundRevalidation)
   ) {
     return base;
   }
 
   const state: CacheabilityRequestState = {
-    mode: authorizedProbe
+    mode: authorizedCapability
       ? probeMode === "identity"
         ? "identity"
-        : "probe"
+        : probeMode === "warm"
+          ? "warm"
+          : "probe"
       : manifest
         ? "admit"
         : "admit-all",
@@ -789,6 +821,11 @@ export function recordRouteCacheability(outcome: CacheabilityOutcome): void {
     : outcome;
   state.outcome = finalOutcome;
   state.complete?.(finalOutcome);
+}
+
+/** Fail admission without claiming that user code crossed a dynamic boundary. */
+export function recordRouteCacheabilityClassificationFailure(reason: string): void {
+  recordRouteCacheability({ cacheable: false, classificationFailure: true, reason });
 }
 
 /**
@@ -947,6 +984,10 @@ async function finalizeWorkerCacheabilityResponseWithState(
     void response.body?.cancel().catch(() => {});
     return staticToDynamicErrorResponse(explicitOutcome!);
   }
+  if (state.mode === "warm" && explicitOutcome?.classificationFailure === true) {
+    void response.body?.cancel().catch(() => {});
+    return captureCapacityUnavailableResponse();
+  }
 
   const isEventStream = response.headers
     .get("content-type")
@@ -964,7 +1005,7 @@ async function finalizeWorkerCacheabilityResponseWithState(
       void response.body?.cancel().catch(() => {});
       return probeResponse(
         state,
-        "dynamic",
+        explicitOutcome?.classificationFailure === true ? "probe-failed" : "dynamic",
         explicitOutcome ?? {
           cacheable: false,
           reason: isEventStream
@@ -985,9 +1026,7 @@ async function finalizeWorkerCacheabilityResponseWithState(
     captured = { body: state.capturedBody, fallback: null, failClosed: false, release: () => {} };
   } else {
     try {
-      captured = await captureResponseBodyBounded(response, {
-        waitForCapacity: state.mode === "probe",
-      });
+      captured = await captureResponseBodyBounded(response);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       if (state.mode === "probe") {
@@ -1012,6 +1051,10 @@ async function finalizeWorkerCacheabilityResponseWithState(
           response.status,
         );
       }
+      if (state.mode === "warm") {
+        void captured.fallback.cancel().catch(() => {});
+        return captureCapacityUnavailableResponse();
+      }
       return uncacheableStreamingResponse(
         new Response(captured.fallback, {
           headers: response.headers,
@@ -1035,11 +1078,20 @@ async function finalizeWorkerCacheabilityResponseWithState(
     const cacheable =
       !state.unsafeReason && outcome.cacheable && !responseHasFinalCacheOptOut(response, state);
 
+    if (state.mode === "warm" && outcome.classificationFailure === true) {
+      await captured.fallback?.cancel().catch(() => {});
+      return captureCapacityUnavailableResponse();
+    }
+
     if (state.mode === "probe") {
       await captured.fallback?.cancel().catch(() => {});
       return probeResponse(
         state,
-        cacheable ? "static-candidate" : "dynamic",
+        cacheable
+          ? "static-candidate"
+          : outcome.classificationFailure === true
+            ? "probe-failed"
+            : "dynamic",
         outcome,
         response.status,
       );

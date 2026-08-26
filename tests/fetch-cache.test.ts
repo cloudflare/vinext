@@ -47,6 +47,7 @@ const {
   setCurrentFetchCacheMode,
   setCurrentCacheComponentsEnabled,
   setCurrentFetchRevalidate,
+  setCurrentRouteStaticGeneration,
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
@@ -128,6 +129,8 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  // Ported from Next.js: packages/next/src/server/lib/patch-fetch.ts validateRevalidate.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/patch-fetch.ts
   it("validates next.revalidate and normalizes Infinity like Next.js", async () => {
     for (const value of [-1, Number.NaN, "60"]) {
       await expect(
@@ -148,6 +151,8 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  // Ported from Next.js build-time implicit cache handling in patch-fetch.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/patch-fetch.ts
   it("uses implicit build-time fetch caching only for non-Cache-Components staged probes", async () => {
     const probeContext = {
       [CACHEABILITY_REQUEST_STATE]: { mode: "probe", route: {} },
@@ -157,6 +162,7 @@ describe("fetch cache shim", () => {
       runWithExecutionContext(probeContext, () =>
         runWithFetchCache(async () => {
           setCurrentCacheComponentsEnabled(cacheComponents);
+          setCurrentRouteStaticGeneration(!cacheComponents);
           setCurrentFetchRevalidate(60);
           return fetch("https://api.example.com/implicit-build-cache");
         }),
@@ -174,28 +180,46 @@ describe("fetch cache shim", () => {
     ]);
   });
 
-  it("keeps runtime bare fetch dynamic unless the manifest certified the concrete route", async () => {
-    const render = (state: Record<string, unknown>) =>
-      runWithExecutionContext({ [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} }, () =>
+  it("keeps runtime bare fetch dynamic unless the route is in static generation", async () => {
+    const render = (staticGeneration: boolean) =>
+      runWithExecutionContext(
+        { [CACHEABILITY_REQUEST_STATE]: { mode: "admit-all", route: {} }, waitUntil() {} },
+        () =>
+          runWithFetchCache(async () => {
+            setCurrentCacheComponentsEnabled(false);
+            setCurrentRouteStaticGeneration(staticGeneration);
+            setCurrentFetchRevalidate(60);
+            await fetch("https://api.example.com/runtime-auto-no-cache");
+            return peekDynamicFetchObservations();
+          }),
+      );
+
+    await expect(render(false)).resolves.toEqual(["https://api.example.com/runtime-auto-no-cache"]);
+    consumeDynamicFetchObservations();
+    await expect(render(true)).resolves.toEqual([]);
+  });
+
+  it("implicitly caches fixed authorization fetches during staged static generation", async () => {
+    const probeContext = {
+      [CACHEABILITY_REQUEST_STATE]: { mode: "probe", route: {} },
+      waitUntil() {},
+    };
+    const render = () =>
+      runWithExecutionContext(probeContext, () =>
         runWithFetchCache(async () => {
           setCurrentCacheComponentsEnabled(false);
+          setCurrentRouteStaticGeneration(true);
           setCurrentFetchRevalidate(60);
-          await fetch("https://api.example.com/runtime-auto-no-cache");
-          return peekDynamicFetchObservations();
+          return fetch("https://api.example.com/fixed-auth", {
+            headers: { authorization: "Bearer fixed-build-token" },
+          });
         }),
       );
 
-    await expect(render({ mode: "admit-all", route: {} })).resolves.toEqual([
-      "https://api.example.com/runtime-auto-no-cache",
-    ]);
-    consumeDynamicFetchObservations();
-    await expect(
-      render({
-        manifestRoute: { state: "static-candidate" },
-        mode: "admit",
-        route: {},
-      }),
-    ).resolves.toEqual([]);
+    await render();
+    await render();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(consumeDynamicFetchObservations()).toEqual([]);
   });
 
   // Next.js stores CachedFetchData.body as base64:
@@ -1024,7 +1048,7 @@ describe("fetch cache shim", () => {
     const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
     const store = (handler as any).store as Map<string, any>;
     expect([...store.values()].map((entry) => entry.value.revalidate)).toEqual([
-      31_536_000, 31_536_000,
+      0xfffffffe, 0xfffffffe,
     ]);
   });
 
@@ -1039,7 +1063,7 @@ describe("fetch cache shim", () => {
 
     const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
     const store = (handler as any).store as Map<string, any>;
-    expect([...store.values()][0].value.revalidate).toBe(31_536_000);
+    expect([...store.values()][0].value.revalidate).toBe(0xfffffffe);
   });
 
   it("tags-only fetch is uncached when the active route revalidate is zero", async () => {

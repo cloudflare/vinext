@@ -49,6 +49,7 @@ import {
   captureResponseBodyBounded,
   isRouteCacheabilityProbe,
   recordRouteCacheabilityCapturedBody,
+  recordRouteCacheabilityClassificationFailure,
   recordRouteCacheability,
   type CapturedResponseBody,
 } from "./cacheability-request.js";
@@ -400,6 +401,7 @@ async function executeAppRouteHandlerInner(
 
     let completedRouteCacheValue: CachedRouteValue | null = null;
     let completedBodyFailure: string | null = null;
+    let completedBodyClassificationFailure = false;
     if (options.observeCompletedBody) {
       const contentType = response.headers.get("content-type")?.toLowerCase();
       const streamingOnly =
@@ -417,20 +419,24 @@ async function executeAppRouteHandlerInner(
         const bodyBoundaryReached = new Promise<void>((resolve) => {
           reachBodyBoundary = resolve;
         });
-        const probeBodyAbortController =
-          (options.isCacheabilityProbe ?? isRouteCacheabilityProbe())
-            ? new AbortController()
-            : null;
-        const bodyBoundaryTimer = setTimeout(() => {
-          bodyCrossedTaskBoundary = true;
-          probeBodyAbortController?.abort(new Error("Cache Components body crossed task boundary"));
-          reachBodyBoundary?.();
-        }, 0);
+        const cacheabilityProbe = options.isCacheabilityProbe ?? isRouteCacheabilityProbe();
+        const probeBodyAbortController = cacheabilityProbe ? new AbortController() : null;
+        let bodyBoundaryTimer: ReturnType<typeof setTimeout> | undefined;
         const capturePromise = captureResponseBodyBounded(response, {
+          onCaptureStart() {
+            bodyBoundaryTimer = setTimeout(() => {
+              bodyCrossedTaskBoundary = true;
+              probeBodyAbortController?.abort(
+                new Error("Cache Components body crossed task boundary"),
+              );
+              reachBodyBoundary?.();
+            }, 0);
+          },
           signal: probeBodyAbortController?.signal,
+          waitForCapacity: cacheabilityProbe || undefined,
         });
         let captured: CapturedResponseBody | null;
-        if (options.isCacheabilityProbe ?? isRouteCacheabilityProbe()) {
+        if (cacheabilityProbe) {
           const captureOutcome = await Promise.race([
             capturePromise.then((value) => ({ kind: "captured" as const, value })),
             bodyBoundaryReached.then(() => ({ kind: "boundary" as const })),
@@ -456,7 +462,7 @@ async function executeAppRouteHandlerInner(
         } else {
           captured = await capturePromise;
         }
-        clearTimeout(bodyBoundaryTimer);
+        if (bodyBoundaryTimer !== undefined) clearTimeout(bodyBoundaryTimer);
         if (bodyCrossedTaskBoundary) crossedTaskBoundary = true;
         if (captured === null) {
           // The task-bound probe outcome is finalized below without waiting for
@@ -473,6 +479,7 @@ async function executeAppRouteHandlerInner(
               consumeDynamicFetchObservations().length > 0;
             if (captured.failClosed) {
               completedBodyFailure = captured.reason;
+              completedBodyClassificationFailure = true;
               response = new Response(captured.fallback, {
                 headers: response.headers,
                 status: response.status,
@@ -513,16 +520,15 @@ async function executeAppRouteHandlerInner(
           : "dynamic API used by route handler",
       });
     } else if (completedBodyFailure && isCacheEligibleMethod) {
-      recordRouteCacheability({
-        cacheable: false,
-        // A manifest-certified Full Route Cache response must complete as a
-        // bounded artifact, as it does during Next.js prerender collection.
-        // Mark an incomplete body as a static-to-dynamic transition so the
-        // outer Worker finalizer returns 500 instead of exposing a changed
-        // streamed representation under a previously static URL.
-        dynamicUsage: true,
-        reason: completedBodyFailure,
-      });
+      if (completedBodyClassificationFailure) {
+        recordRouteCacheabilityClassificationFailure(completedBodyFailure);
+      } else {
+        recordRouteCacheability({
+          cacheable: false,
+          dynamicUsage: true,
+          reason: completedBodyFailure,
+        });
+      }
     }
 
     const cacheabilityBlocked =

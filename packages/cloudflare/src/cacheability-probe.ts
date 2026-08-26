@@ -10,6 +10,7 @@ import {
   type CacheabilityRouteKind,
   type CacheabilityRouteState,
 } from "vinext/internal/server/cacheability-manifest";
+import { CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT } from "vinext/internal/server/cacheability-limits";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -84,6 +85,13 @@ function readPrerenderSecret(root: string): string {
     );
   }
   return secret;
+}
+
+export function buildCacheabilityWarmHeaders(root: string, headers?: HeadersInit): Headers {
+  const result = new Headers(headers);
+  result.set(VINEXT_CACHEABILITY_PROBE_HEADER, "warm");
+  result.set(VINEXT_PRERENDER_SECRET_HEADER, readPrerenderSecret(root));
+  return result;
 }
 
 async function probeRoute(options: {
@@ -394,7 +402,10 @@ export async function probeStagedWorkerCacheability(options: {
   // The Worker charges the isolate budget incrementally for bytes actually
   // retained, so small responses keep deploy-level concurrency while an
   // individual large response still fails classification closed.
-  const fullProbeConcurrency = Math.max(1, Math.min(concurrency, probeRoutes.length || 1));
+  const fullProbeConcurrency = Math.max(
+    1,
+    Math.min(concurrency, CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT, probeRoutes.length || 1),
+  );
   await Promise.all(Array.from({ length: fullProbeConcurrency }, () => worker()));
 
   for (const route of Object.values(routes)) {
