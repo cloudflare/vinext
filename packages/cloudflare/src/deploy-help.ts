@@ -22,8 +22,9 @@ export function formatDeployHelp(): string {
     --prerender-concurrency <count>
                              Maximum number of routes to pre-render in parallel
     --experimental-warm-cdn-cache
-                             Upload a Worker version, warm build-discovered paths
-                             through the production URL, then promote it (experimental)
+                             Stage a probe Worker at 0%, discover and verify
+                             cacheable routes, embed the result in a final Worker,
+                             promote it, then warm and certify CDN entries (experimental)
     --warm-cdn-concurrency <count>
                              Maximum number of CDN warmup requests in parallel (default: 25)
     --warm-cdn-timeout <ms>  Per-request CDN warmup timeout (default: 10000)
@@ -36,9 +37,6 @@ export function formatDeployHelp(): string {
                              Delay between staged-readiness probes (default: 1000)
     --dangerously-promote-on-cdn-warm-error
                              Promote even when staged warmup cannot be verified
-    --warm-cdn-no-promote    Leave the warmed Worker version staged at 0% traffic
-    --warm-cdn-promotion-delay <ms>
-                             Delay before promotion after warmup (default: 15000)
     --warm-cdn-include-fallbacks
                              Also warm PPR fallback-shell placeholder paths
     -h, --help               Show this help
