@@ -77,6 +77,8 @@ import {
 import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
+import { probeStagedWorkerCacheability } from "./cacheability-probe.js";
+import { withEmbeddedCacheabilityManifest } from "./cacheability-artifact.js";
 
 export const DEFAULT_CDN_WARM_PROMOTION_DELAY_MS = 15_000;
 
@@ -640,6 +642,8 @@ export async function deployWithCdnWarmup(
         headers?: HeadersInit;
         targetUrl: string;
       }) => Promise<PrerenderWarmPlan>;
+      /** Upload a probe version, then a final version with the observed route manifest. */
+      twoStageCacheability?: boolean;
     },
 ): Promise<string> {
   if (options.warmCdnReadinessProbes !== undefined) {
@@ -664,6 +668,8 @@ export async function deployWithCdnWarmup(
     remainingWarmPlan.paths.length +
     remainingWarmPlan.rscPaths.length +
     remainingWarmPlan.loadingShellPaths.length;
+  let cacheabilityRoutes: NonNullable<PrerenderWarmPlan["cacheabilityRoutes"]> = [];
+  let cacheabilityBuildId: string | undefined;
 
   const prepareWarmPlan = (plan: CdnWarmRequestPlan): CdnWarmRequestPlan => {
     if (plan.paths.length === 0 || expectedBuildId !== undefined) return plan;
@@ -690,6 +696,8 @@ export async function deployWithCdnWarmup(
       paths: [...plan.paths],
       rscPaths: [...plan.rscPaths],
     };
+    cacheabilityRoutes = [...(plan.cacheabilityRoutes ?? [])];
+    cacheabilityBuildId = plan.buildId;
     discoveredWarmRequests =
       remainingWarmPlan.paths.length +
       remainingWarmPlan.rscPaths.length +
@@ -701,7 +709,8 @@ export async function deployWithCdnWarmup(
     remainingWarmPlan = prepareWarmPlan(remainingWarmPlan);
   }
 
-  const upload = runWranglerVersionUpload(root, options);
+  const probeUpload = runWranglerVersionUpload(root, options);
+  let finalUpload = probeUpload;
   const warmUploadedVersion = (
     targetUrl: string,
     headers?: HeadersInit,
@@ -730,7 +739,7 @@ export async function deployWithCdnWarmup(
 
   const wranglerConfig = parseWranglerConfig(root, options.config);
   const deploymentStatus = runWranglerDeploymentStatus(root, options);
-  const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
+  const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, probeUpload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let triggersDeployedUrl: string | null = null;
   let stagedCacheFilled = false;
@@ -759,9 +768,9 @@ export async function deployWithCdnWarmup(
       resolveCdnWarmupTargetUrl(root, triggersDeployedUrl, options) ?? staged.deployedUrl;
     const workerName =
       options.name ??
-      upload.workerName ??
+      probeUpload.workerName ??
       resolveWorkerNameForVersionOverride(wranglerConfig, options);
-    const headers = buildVersionOverrideHeaders(workerName, upload.versionId);
+    let headers = buildVersionOverrideHeaders(workerName, probeUpload.versionId);
     if (targetUrl && headers) {
       try {
         if (!warmPlanDiscovered) {
@@ -771,6 +780,49 @@ export async function deployWithCdnWarmup(
           console.log(
             `  CDN warmup: discovered ${remainingWarmPlan.paths.length} HTML, ${remainingWarmPlan.rscPaths.length} RSC, and ${remainingWarmPlan.loadingShellPaths.length} loading-shell request(s).`,
           );
+        }
+        if (options.twoStageCacheability) {
+          console.log(
+            `  CDN warmup: probing ${cacheabilityRoutes.filter((route) => route.probePath).length} route pattern(s) on the staged Worker...`,
+          );
+          const probeResult = await probeStagedWorkerCacheability({
+            buildId: cacheabilityBuildId,
+            concurrency: options.warmCdnConcurrency,
+            headers,
+            root,
+            routes: cacheabilityRoutes,
+            targetUrl,
+            timeoutMs: options.warmCdnTimeout,
+          });
+          if (probeResult.failures.length > 0) {
+            throw new Error(
+              `Cacheability probing failed; refusing to upload or promote the final Worker:\n${probeResult.failures
+                .map((failure) => `  - ${failure}`)
+                .join("\n")}`,
+            );
+          }
+          console.log(
+            `  CDN warmup: ${probeResult.probed} probe(s) completed; uploading the final Worker with an explicit ${Object.keys(probeResult.manifest.routes).length}-route cacheability manifest...`,
+          );
+          finalUpload = withEmbeddedCacheabilityManifest(root, probeResult.manifest, (config) =>
+            runWranglerVersionUpload(root, { ...options, config }),
+          );
+          const finalStagingTraffic = getZeroPercentStagingTraffic(
+            deploymentStatus,
+            finalUpload.versionId,
+          );
+          if (!finalStagingTraffic) {
+            throw new Error(
+              "CDN warmup could not stage the final manifest-bearing Worker version at 0% traffic.",
+            );
+          }
+          staged = runWranglerVersionDeploy(root, finalStagingTraffic, options, "stage");
+          headers = buildVersionOverrideHeaders(workerName, finalUpload.versionId);
+          if (!headers) {
+            throw new Error(
+              "CDN warmup could not build a version override for the final manifest-bearing Worker.",
+            );
+          }
         }
         const stagedWarmPlan: CdnWarmRequestPlan = {
           loadingShellPaths: remainingWarmPlan.loadingShellPaths,
@@ -875,7 +927,7 @@ export async function deployWithCdnWarmup(
     return (
       staged.deployedUrl ??
       triggersDeployedUrl ??
-      upload.previewUrl ??
+      finalUpload.previewUrl ??
       "(URL not detected in wrangler output)"
     );
   }
@@ -893,7 +945,7 @@ export async function deployWithCdnWarmup(
     }
     deployed = runWranglerVersionDeploy(
       root,
-      [{ versionId: upload.versionId, percentage: 100 }],
+      [{ versionId: finalUpload.versionId, percentage: 100 }],
       options,
       stagedCacheFilled ? "promote-warmed" : "promote-uploaded",
     );
@@ -942,7 +994,7 @@ export async function deployWithCdnWarmup(
     deployed.deployedUrl ??
     triggersDeployedUrl ??
     staged?.deployedUrl ??
-    upload.previewUrl ??
+    finalUpload.previewUrl ??
     "(URL not detected in wrangler output)"
   );
 }
@@ -1261,6 +1313,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       dangerouslyPromoteOnCdnWarmError: options.dangerouslyPromoteOnCdnWarmError,
       warmCdnPromote: options.warmCdnPromote,
       warmCdnPromotionDelay: options.warmCdnPromotionDelay,
+      twoStageCacheability: true,
     });
   } else {
     url = await runWranglerDeploy(root, wranglerOptions);

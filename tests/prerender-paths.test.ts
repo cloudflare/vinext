@@ -110,6 +110,11 @@ describe("prerender path manifest", () => {
     expect(manifest).toEqual({
       buildId: "build-a",
       buildIdentity: "rsc-build-a",
+      cacheabilityRoutes: [
+        { kind: "app-page", pattern: "/", probePath: "/" },
+        { kind: "app-page", pattern: "/cached/:slug", probePath: "/cached/intro" },
+        { kind: "app-page", pattern: "/dynamic", probePath: "/dynamic" },
+      ],
       loadingShellPaths: ["/cached/intro", "/cached/featured"],
       rscBuildId: "rsc-build-a",
       responseVary: "verbatim",

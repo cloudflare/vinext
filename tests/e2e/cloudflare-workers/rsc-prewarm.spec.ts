@@ -57,6 +57,27 @@ async function getResponseAfterPromotion(
   );
 }
 
+async function waitForCdnHit(
+  request: APIRequestContext,
+  url: string,
+  timeoutMs = 15_000,
+): Promise<APIResponse> {
+  const deadline = Date.now() + timeoutMs;
+  let lastCacheStatus: string | undefined;
+
+  do {
+    const response = await getResponseAfterPromotion(request, url);
+    lastCacheStatus = response.headers()["cf-cache-status"];
+    if (lastCacheStatus === "HIT") return response;
+    await response.dispose();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  } while (Date.now() < deadline);
+
+  throw new Error(
+    `CDN response did not become a HIT (last status: ${lastCacheStatus ?? "missing"})`,
+  );
+}
+
 async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<ObservedRsc> {
   const responsePromise = page.waitForResponse(
     (response) => {
@@ -364,4 +385,51 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
     expect(dynamic.headers()["cache-control"]).toContain("no-store");
     expect(dynamic.headers()["cf-cache-status"]).toBe("BYPASS");
   });
+
+  // Cacheability expectations mirror Next.js's completed-render classification:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic-data/dynamic-data.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts
+  const staticParamsResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}/cache-probe/static/known`,
+  );
+  expect(staticParamsResponse.ok()).toBe(true);
+  expect(staticParamsResponse.headers()["cf-cache-status"]).toBe("HIT");
+  expect((await staticParamsResponse.text()).replaceAll("<!-- -->", "")).toContain(
+    "cache-probe static params known",
+  );
+
+  const staticRouteResponse = await waitForCdnHit(request, `${baseURL}/cache-probe/route-static`);
+  expect(await staticRouteResponse.text()).toBe("cache-probe static route handler");
+
+  const expectDynamic = async (
+    pathname: string,
+    expectedBody: string,
+    headers?: Record<string, string>,
+  ): Promise<void> => {
+    const response = await getResponseAfterPromotion(request, `${baseURL}${pathname}`, headers);
+    const responseHeaders = response.headers();
+    expect(response.ok(), JSON.stringify(responseHeaders)).toBe(true);
+    expect(responseHeaders["cache-control"]).toContain("no-store");
+    expect(responseHeaders["cf-cache-status"]).toBe("BYPASS");
+    expect((await response.text()).replaceAll("<!-- -->", "")).toContain(expectedBody);
+  };
+
+  await expectDynamic("/cache-probe/cookies", "cache-probe cookie first", {
+    cookie: "cache-probe=first",
+  });
+  await expectDynamic("/cache-probe/cookies", "cache-probe cookie second", {
+    cookie: "cache-probe=second",
+  });
+  await expectDynamic("/cache-probe/headers", "cache-probe header first", {
+    "x-cache-probe": "first",
+  });
+  await expectDynamic("/cache-probe/headers", "cache-probe header second", {
+    "x-cache-probe": "second",
+  });
+  await expectDynamic("/cache-probe/search?value=first", "cache-probe search first");
+  await expectDynamic("/cache-probe/search?value=second", "cache-probe search second");
+  await expectDynamic("/cache-probe/no-store", "cache-probe no-store fetch");
+  await expectDynamic("/cache-probe/route-request?value=first", '"value":"first"');
+  await expectDynamic("/cache-probe/route-request?value=second", '"value":"second"');
 });

@@ -16,7 +16,7 @@ export function isWorkerPrerenderDiscoveryPath(pathname: string): boolean {
   return PRERENDER_DISCOVERY_PATHS.has(pathname);
 }
 
-function secretsMatch(provided: string, expected: string): boolean {
+export function workerCapabilityMatches(provided: string, expected: string): boolean {
   // The generated secret is fixed-width hex, so always scan the full expected
   // value and fold the length mismatch into the result. Do not use ordinary
   // string equality for this externally supplied capability.
@@ -42,7 +42,10 @@ export function createWorkerPrerenderDiscoveryContext(
   if (
     !expectedSecret ||
     !isWorkerPrerenderDiscoveryPath(pathname) ||
-    !secretsMatch(request.headers.get(VINEXT_PRERENDER_SECRET_HEADER) ?? "", expectedSecret)
+    !workerCapabilityMatches(
+      request.headers.get(VINEXT_PRERENDER_SECRET_HEADER) ?? "",
+      expectedSecret,
+    )
   ) {
     return base;
   }

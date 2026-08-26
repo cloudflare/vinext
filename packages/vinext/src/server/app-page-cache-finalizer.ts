@@ -1,5 +1,10 @@
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
-import { applyCdnResponseHeaders, NO_STORE_CACHE_CONTROL } from "./cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  buildRevalidateCacheControl,
+  NO_STORE_CACHE_CONTROL,
+  STATIC_CACHE_CONTROL,
+} from "./cache-control.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_CACHE_HEADER } from "./headers.js";
 import {
@@ -12,6 +17,7 @@ import type { RenderObservation } from "./cache-proof.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
+import { deferRouteCacheability } from "./cacheability-request.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageRscCacheKeyBuilder = (
@@ -157,6 +163,12 @@ function resolveAppPageCacheControl(options: {
   });
 }
 
+function appPageCacheControlHeader(cacheControl: CacheControlMetadata): string {
+  return cacheControl.revalidate === Infinity
+    ? STATIC_CACHE_CONTROL
+    : buildRevalidateCacheControl(cacheControl.revalidate, cacheControl.expire);
+}
+
 export function finalizeAppPageHtmlCacheResponse(
   response: Response,
   options: FinalizeAppPageHtmlCacheResponseOptions,
@@ -175,6 +187,13 @@ export function finalizeAppPageHtmlCacheResponse(
     options.interceptionId,
   );
   const clientHeaders = new Headers(response.headers);
+  const completeCacheability = deferRouteCacheability();
+  let cacheabilityCompleted = false;
+  const complete = (outcome: Parameters<NonNullable<typeof completeCacheability>>[0]): void => {
+    if (!completeCacheability || cacheabilityCompleted) return;
+    cacheabilityCompleted = true;
+    completeCacheability(outcome);
+  };
   if (options.preserveClientResponseHeaders !== true) {
     applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
       omitCacheState: options.omitPendingDynamicCacheState === true,
@@ -189,6 +208,7 @@ export function finalizeAppPageHtmlCacheResponse(
         options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
         options.consumeDynamicUsage()
       ) {
+        complete({ cacheable: false, reason: "dynamic API used during render" });
         options.isrDebug?.("HTML cache write skipped (dynamic usage during render)", htmlKey);
         return;
       }
@@ -199,6 +219,7 @@ export function finalizeAppPageHtmlCacheResponse(
         revalidateSeconds: options.revalidateSeconds,
       });
       if (!cacheControl) {
+        complete({ cacheable: false, reason: "render did not produce a cache policy" });
         options.isrDebug?.("HTML cache write skipped (no cache policy)", htmlKey);
         return;
       }
@@ -241,9 +262,20 @@ export function finalizeAppPageHtmlCacheResponse(
       }
 
       await Promise.all(writes);
+      complete({
+        cacheable: true,
+        cacheControl: appPageCacheControlHeader(cacheControl),
+        tags: pageTags,
+      });
       options.isrDebug?.("HTML cache written", htmlKey);
     } catch (cacheError) {
+      complete({
+        cacheable: false,
+        reason: cacheError instanceof Error ? cacheError.message : String(cacheError),
+      });
       console.error("[vinext] ISR cache write error:", cacheError);
+    } finally {
+      complete({ cacheable: false, reason: "cacheability finalizer did not complete" });
     }
   })();
 
@@ -314,11 +346,19 @@ export function scheduleAppPageRscCacheWrite(
     options.interceptionContext,
     options.interceptionId,
   );
+  const completeCacheability = deferRouteCacheability();
+  let cacheabilityCompleted = false;
+  const complete = (outcome: Parameters<NonNullable<typeof completeCacheability>>[0]): void => {
+    if (!completeCacheability || cacheabilityCompleted) return;
+    cacheabilityCompleted = true;
+    completeCacheability(outcome);
+  };
   const cachePromise = (async () => {
     try {
       const rscData = await capturedRscDataPromise;
 
       if (options.consumeDynamicUsage()) {
+        complete({ cacheable: false, reason: "dynamic API used during render" });
         options.isrDebug?.("RSC cache write skipped (dynamic usage during render)", rscKey);
         return;
       }
@@ -329,6 +369,7 @@ export function scheduleAppPageRscCacheWrite(
         revalidateSeconds: options.revalidateSeconds,
       });
       if (!cacheControl) {
+        complete({ cacheable: false, reason: "render did not produce a cache policy" });
         options.isrDebug?.("RSC cache write skipped (no cache policy)", rscKey);
         return;
       }
@@ -344,9 +385,20 @@ export function scheduleAppPageRscCacheWrite(
         cacheControl,
         tags: pageTags,
       });
+      complete({
+        cacheable: true,
+        cacheControl: appPageCacheControlHeader(cacheControl),
+        tags: pageTags,
+      });
       options.isrDebug?.("RSC cache written", rscKey);
     } catch (cacheError) {
+      complete({
+        cacheable: false,
+        reason: cacheError instanceof Error ? cacheError.message : String(cacheError),
+      });
       console.error("[vinext] ISR RSC cache write error:", cacheError);
+    } finally {
+      complete({ cacheable: false, reason: "cacheability finalizer did not complete" });
     }
   })();
 

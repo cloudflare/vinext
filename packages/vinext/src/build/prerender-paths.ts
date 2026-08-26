@@ -49,8 +49,16 @@ export type PrerenderPathManifest = {
   pagesPaths?: string[];
   /** Public paths omitted because configured routes can replace their page response. */
   excludedWarmPaths?: string[];
+  /** One representative deployed probe per route pattern; missing paths are explicitly dynamic. */
+  cacheabilityRoutes?: CacheabilityProbeRoute[];
   trailingSlash?: boolean;
   paths: string[];
+};
+
+export type CacheabilityProbeRoute = {
+  kind: "app-page" | "app-route" | "pages-page";
+  pattern: string;
+  probePath?: string;
 };
 
 export const PRERENDER_PATH_DISCOVERY_ENV = "__VINEXT_PRERENDER_PATH_DISCOVERY";
@@ -708,6 +716,85 @@ async function resolveAppWarmPaths(options: {
   return { htmlPaths, loadingShellPaths, rscPaths };
 }
 
+async function collectCacheabilityProbeRoutes(options: {
+  appDir: string | null;
+  i18n: ResolvedNextConfig["i18n"];
+  pagesDir: string | null;
+  pageExtensions: readonly string[];
+  paths: readonly string[];
+}): Promise<CacheabilityProbeRoute[]> {
+  const appRoutes = options.appDir ? await appRouter(options.appDir, options.pageExtensions) : [];
+  const [pageRoutes, apiRoutes] = options.pagesDir
+    ? await Promise.all([
+        pagesRouter(options.pagesDir, options.pageExtensions),
+        apiRouter(options.pagesDir, options.pageExtensions),
+      ])
+    : [[], []];
+  const probePathByRoute = new Map<string, string>();
+
+  for (const pathname of options.paths) {
+    const appMatch = matchAppRoute(pathname, appRoutes);
+    const pagesPathname = options.i18n
+      ? extractLocaleFromUrl(pathname, options.i18n).url
+      : pathname;
+    const isPagesApiRequest = pathname === "/api" || pathname.startsWith("/api/");
+    const pagesMatch = matchRoute(pagesPathname, isPagesApiRequest ? apiRoutes : pageRoutes);
+    if (
+      pagesMatch &&
+      (!appMatch || pagesRouteHasPriorityOverAppRoute(pagesMatch.route, appMatch.route))
+    ) {
+      if (!isPagesApiRequest) {
+        probePathByRoute.set(`pages-page:${pagesMatch.route.pattern}`, pathname);
+      }
+      continue;
+    }
+    if (appMatch) {
+      const kind = appMatch.route.routePath ? "app-route" : "app-page";
+      const key = `${kind}:${appMatch.route.pattern}`;
+      if (!probePathByRoute.has(key)) probePathByRoute.set(key, pathname);
+    }
+  }
+
+  const result: CacheabilityProbeRoute[] = [];
+  for (const route of appRoutes) {
+    const renderEntryPath = getAppRouteRenderEntryPath(route);
+    if (!renderEntryPath) continue;
+    const kind = route.routePath ? "app-route" : "app-page";
+    const key = `${kind}:${route.pattern}`;
+    // Dynamic route handlers are conservatively ineligible until vinext wires
+    // their generateStaticParams export into deployed discovery. Fixed route
+    // handlers are cheap to execute once and the runtime still re-checks every
+    // admitted cache miss.
+    const fixedRouteHandlerProbe =
+      kind === "app-route" && !route.isDynamic ? route.pattern : undefined;
+    const probePath = probePathByRoute.get(key) ?? fixedRouteHandlerProbe;
+    result.push({ kind, pattern: route.pattern, ...(probePath ? { probePath } : {}) });
+  }
+
+  const apiPatterns = new Set(apiRoutes.map((route) => route.pattern));
+  for (const route of pageRoutes) {
+    if (
+      apiPatterns.has(route.pattern) ||
+      BLOCKED_PAGES.includes(route.pattern) ||
+      route.pattern === "/404" ||
+      route.pattern === "/500" ||
+      route.pattern === "/_error"
+    ) {
+      continue;
+    }
+    const key = `pages-page:${route.pattern}`;
+    const probePath =
+      classifyPagesRoute(route.filePath).type === "ssr" ? undefined : probePathByRoute.get(key);
+    result.push({
+      kind: "pages-page",
+      pattern: route.pattern,
+      ...(probePath ? { probePath } : {}),
+    });
+  }
+
+  return result.sort((a, b) => `${a.kind}:${a.pattern}`.localeCompare(`${b.kind}:${b.pattern}`));
+}
+
 function configuredRouteAffectsWarmPath(
   pathname: string,
   config: Pick<
@@ -902,6 +989,13 @@ export async function emitPrerenderPathManifest(
         rscPaths: discoveredAppPaths,
       };
   const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : resolvedPagesWarmPaths;
+  const cacheabilityRoutes = await collectCacheabilityProbeRoutes({
+    appDir,
+    i18n: config.i18n,
+    pagesDir,
+    pageExtensions: config.pageExtensions,
+    paths,
+  });
 
   const manifest: PrerenderPathManifest = {
     ...(config.basePath ? { basePath: config.basePath } : {}),
@@ -916,6 +1010,7 @@ export async function emitPrerenderPathManifest(
         }
       : {}),
     ...(excludedWarmPathSet.size > 0 ? { excludedWarmPaths: Array.from(excludedWarmPathSet) } : {}),
+    cacheabilityRoutes,
     ...(rscBuildId ? { rscBuildId } : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
     ...(options.responseVary ? { rscPaths: appOwnedWarmPaths.rscPaths } : {}),

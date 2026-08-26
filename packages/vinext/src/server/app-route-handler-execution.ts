@@ -36,6 +36,7 @@ import {
   createTrackedAppRouteRequest,
   markKnownDynamicAppRoute,
 } from "./app-route-handler-runtime.js";
+import { recordRouteCacheability } from "./cacheability-request.js";
 
 export type AppRouteParams = Record<string, string | string[]>;
 export type AppRouteDynamicUsageFn = () => boolean;
@@ -218,6 +219,7 @@ export async function executeAppRouteHandler(
 
     if (dynamicUsedInHandler) {
       markKnownDynamicAppRoute(options.routePattern);
+      recordRouteCacheability({ cacheable: false, reason: "dynamic API used by route handler" });
     }
 
     const pendingCookies = options.getAndClearPendingCookies();

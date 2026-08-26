@@ -80,6 +80,10 @@
       "types": "./dist/server/headers.d.ts",
       "import": "./dist/server/headers.js"
     },
+    "./internal/server/cacheability-manifest": {
+      "types": "./dist/server/cacheability-manifest.d.ts",
+      "import": "./dist/server/cacheability-manifest.js"
+    },
     "./internal/server/isr-cache": {
       "types": "./dist/server/isr-cache.d.ts",
       "import": "./dist/server/isr-cache.js"

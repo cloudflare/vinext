@@ -102,6 +102,189 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(hasCdnWarmRequests({ loadingShellPaths: [], paths: [], rscPaths: [] })).toBe(false);
   });
 
+  it("uploads a probe Worker, builds a route manifest, then warms and promotes a second Worker", async () => {
+    const events: string[] = [];
+    writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker", workers_dev: true }));
+    writeFile("dist/server/vinext-server.json", JSON.stringify({ prerenderSecret: "secret-a" }));
+    writeFile(
+      "dist/server/entry.js",
+      "const cacheabilityManifest = __VINEXT_CACHEABILITY_MANIFEST__;",
+    );
+    writeFile("dist/server/wrangler.json", "{}");
+    let uploadCount = 0;
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        uploadCount += 1;
+        const id =
+          uploadCount === 1
+            ? "22222222-2222-4222-8222-222222222222"
+            : "33333333-3333-4333-8333-333333333333";
+        events.push(`upload:${uploadCount}`);
+        if (uploadCount === 1) {
+          expect(fs.readFileSync(path.join(tmpDir, "dist/server/entry.js"), "utf-8")).toContain(
+            "__VINEXT_CACHEABILITY_MANIFEST__",
+          );
+        } else {
+          const configArg = args[args.indexOf("--config") + 1];
+          const artifact = fs.readFileSync(
+            path.join(tmpDir, path.dirname(configArg), "entry.js"),
+            "utf-8",
+          );
+          expect(artifact).toContain("static-candidate");
+          expect(artifact).toContain("app-page:/products/:id");
+          expect(artifact).not.toContain("__VINEXT_CACHEABILITY_MANIFEST__");
+        }
+        return `Uploaded my-worker\nWorker Version ID: ${id}\n`;
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        events.push("stage:probe");
+        return "Staged version\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("33333333-3333-4333-8333-333333333333@0%")) {
+        events.push("stage:final");
+        return "Staged version\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("33333333-3333-4333-8333-333333333333@100%")) {
+        events.push("promote:final");
+        return "Deployed version\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\nhttps://my-worker.example.workers.dev\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const headers = new Headers(init?.headers);
+      if (headers.get("X-Vinext-Cacheability-Probe") === "1") {
+        events.push("probe-route");
+        expect(headers.get("X-Vinext-Prerender-Secret")).toBe("secret-a");
+        expect(headers.get("Cloudflare-Workers-Version-Overrides")).toContain(
+          "22222222-2222-4222-8222-222222222222",
+        );
+        return Response.json({
+          kind: "app-page",
+          pattern: "/products/:id",
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        });
+      }
+      if (isReadinessFetch(input)) events.push("readiness:final");
+      else events.push("warm:final");
+      expect(headers.get("Cloudflare-Workers-Version-Overrides")).toContain(
+        "33333333-3333-4333-8333-333333333333",
+      );
+      return cacheableHtml();
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, [], {
+      discoverWarmPlan: async () => {
+        events.push("discover");
+        return {
+          buildId: "build-a",
+          buildIdentity: "app-build-a",
+          cacheabilityRoutes: [
+            { kind: "app-page", pattern: "/products/:id", probePath: "/products/known" },
+          ],
+          loadingShellPaths: [],
+          paths: ["/products/known"],
+          rscPaths: [],
+        };
+      },
+      warmCdnPromotionDelay: 0,
+      warmCdnReadinessProbeDelay: 0,
+      warmCdnReadinessProbes: 1,
+      twoStageCacheability: true,
+    });
+
+    expect(events).toEqual([
+      "upload:1",
+      "status",
+      "stage:probe",
+      "triggers",
+      "discover",
+      "probe-route",
+      "upload:2",
+      "stage:final",
+      "readiness:final",
+      "warm:final",
+      "promote:final",
+    ]);
+    expect(fs.readFileSync(path.join(tmpDir, "dist/server/entry.js"), "utf-8")).toContain(
+      "__VINEXT_CACHEABILITY_MANIFEST__",
+    );
+  });
+
+  it("does not upload or promote the final Worker when a route probe fails", async () => {
+    const events: string[] = [];
+    writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker", workers_dev: true }));
+    writeFile("dist/server/vinext-server.json", JSON.stringify({ prerenderSecret: "secret-a" }));
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload:probe");
+        return "Uploaded my-worker\nWorker Version ID: 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        events.push("stage:probe");
+        return "Staged version\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\nhttps://my-worker.example.workers.dev\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    vi.mocked(fetch).mockImplementation(async (_input, init) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("X-Vinext-Cacheability-Probe")).toBe("1");
+      events.push("probe-failed");
+      return Response.json({
+        kind: "app-page",
+        pattern: "/products/:id",
+        reason: "render stream failed",
+        state: "probe-failed",
+        status: 500,
+        version: 1,
+      });
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        discoverWarmPlan: async () => ({
+          buildId: "build-a",
+          buildIdentity: "app-build-a",
+          cacheabilityRoutes: [
+            { kind: "app-page", pattern: "/products/:id", probePath: "/products/known" },
+          ],
+          loadingShellPaths: [],
+          paths: ["/products/known"],
+          rscPaths: [],
+        }),
+        warmCdnPromotionDelay: 0,
+        twoStageCacheability: true,
+      }),
+    ).rejects.toThrow(
+      "Cacheability probing failed; refusing to upload or promote the final Worker",
+    );
+
+    expect(events).toEqual(["upload:probe", "status", "stage:probe", "triggers", "probe-failed"]);
+  });
+
   it("rejects promotion delays that Node timers cannot represent before deploying", async () => {
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 

@@ -86,6 +86,7 @@ import type { AppPageSsrHandler } from "./app-page-stream.js";
 import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
+import { beginRouteCacheability } from "./cacheability-request.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
 import {
   createAppLayoutParamAccessTracker,
@@ -632,6 +633,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
   const route = options.route;
+  beginRouteCacheability("app-page", route.pattern);
   const dynamicConfig = options.dynamicConfig;
   const currentRevalidateSeconds = options.revalidateSeconds;
   const interceptionId = options.isRscRequest

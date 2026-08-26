@@ -214,15 +214,14 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
   });
 
-  it("uses max-age (not s-maxage) and public on the edge directive, even pending-dynamic", () => {
+  it("keeps pending-dynamic streams out of the edge cache until admission completes", () => {
     const headers = adapter.buildResponseHeaders({
       cacheControl: "s-maxage=60, stale-while-revalidate=540",
       pendingDynamicCheck: true,
     });
-    // Edge caches + SWRs via CDN-Cache-Control; the browser always revalidates.
-    // An already-valued stale-while-revalidate is passed through unchanged.
-    expect(headers["CDN-Cache-Control"]).toBe("public, max-age=60, stale-while-revalidate=540");
-    expect(headers["Cache-Control"]).toBe("public, max-age=0, must-revalidate");
+    expect(headers["CDN-Cache-Control"]).toBeNull();
+    expect(headers["Cloudflare-CDN-Cache-Control"]).toBeNull();
+    expect(headers["Cache-Control"]).toBe("no-store");
   });
 
   it("adds a Cache-Tag header from the page tags", () => {
@@ -359,12 +358,10 @@ describe("CloudflareCdnCacheAdapter", () => {
       },
     );
 
-    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
-    expect(response.headers.get("CDN-Cache-Control")).toBe(
-      "public, max-age=60, stale-while-revalidate=31536000",
-    );
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
-    expect(response.headers.get("Cache-Tag")).toBe("/dynamic-html");
+    expect(response.headers.get("Cache-Tag")).toBeNull();
     await expect(response.text()).resolves.toBe("<h1>personalized</h1>");
     await Promise.all(pendingCacheWrites);
     expect(isrSet).not.toHaveBeenCalled();
@@ -495,14 +492,14 @@ describe("CloudflareCdnCacheAdapter", () => {
     await expect(response.text()).resolves.toBe("dynamic-slot-flight");
   });
 
-  it("applies the Cloudflare pending edge policy in a separate adapter case", async () => {
+  it("applies fail-closed pending headers in a separate adapter case", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const response = finalizePendingDynamicRscResponse();
 
-    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
-    expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=60");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
-    expect(response.headers.get("Cache-Tag")).toBe("/dashboard");
+    expect(response.headers.get("Cache-Tag")).toBeNull();
     expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
     await expect(response.text()).resolves.toBe("pending-dynamic-flight");
   });

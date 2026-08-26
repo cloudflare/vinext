@@ -237,6 +237,16 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   }
 
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
+    // A streamed App Router MISS can discover dynamic APIs only after headers
+    // would normally have reached the edge. The two-stage cacheability manifest
+    // authorizes vinext's Worker boundary to buffer and re-apply this policy
+    // after the actual render completes; every other pending response stays
+    // uncacheable. This is fail-closed even when a manifest probe was incomplete
+    // or a route changes behavior based on params/request data.
+    if (input.pendingDynamicCheck) {
+      return clearCloudflareCdnResponseHeaders(NO_STORE);
+    }
+
     // No cacheable policy → nobody stores it.
     if (!input.cacheControl) {
       return clearCloudflareCdnResponseHeaders(NO_STORE);

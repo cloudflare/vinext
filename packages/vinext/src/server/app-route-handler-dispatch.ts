@@ -43,6 +43,7 @@ import {
   type RouteHandlerCacheSetter,
 } from "./app-route-handler-execution.js";
 import { isKnownDynamicAppRoute, isValidHTTPMethod } from "./app-route-handler-runtime.js";
+import { beginRouteCacheability } from "./cacheability-request.js";
 import {
   applyRouteHandlerMiddlewareContext,
   finalizeRouteHandlerResponse,
@@ -167,6 +168,7 @@ export async function dispatchAppRouteHandler(
   options: DispatchAppRouteHandlerOptions,
 ): Promise<Response> {
   const { route } = options;
+  beginRouteCacheability("app-route", route.pattern);
   const handler = route.routeHandler;
   const method = options.request.method.toUpperCase();
   const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);

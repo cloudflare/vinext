@@ -45,6 +45,10 @@ import {
   isWorkerPrerenderDiscoveryPath,
 } from "./worker-prerender-discovery.js";
 import { handleAppPrerenderEndpoint } from "./app-prerender-endpoints.js";
+import {
+  createWorkerCacheabilityContext,
+  finalizeWorkerCacheabilityResponse,
+} from "./cacheability-request.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -120,11 +124,12 @@ async function handleRequest(
   const requestCtx = createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
     handleRequest(internalRequest, env, internalCtx),
   );
-  const ctx = createWorkerPrerenderDiscoveryContext(
+  const discoveryCtx = createWorkerPrerenderDiscoveryContext(
     requestCtx,
     request,
     pagesEntry.prerenderSecret,
   );
+  const ctx = createWorkerCacheabilityContext(discoveryCtx, request, pagesEntry.prerenderSecret);
 
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
   // can resolve their configured bindings before request handling begins.
@@ -264,14 +269,20 @@ async function handleRequest(
 
     const result = await runPagesRequest(request, deps);
     if (result.type === "response") {
-      return finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
+      return finalizeWorkerCacheabilityResponse(
+        finalizeMissingStaticAssetResponse(result.response, missingBuildAsset),
+        ctx,
+      );
     }
 
     // Should not reach here for a production Worker because all callbacks are
     // supplied by virtual:vinext-server-entry.
-    return missingBuildAsset
-      ? notFoundStaticAssetResponse()
-      : new Response("This page could not be found", { status: 404 });
+    return finalizeWorkerCacheabilityResponse(
+      missingBuildAsset
+        ? notFoundStaticAssetResponse()
+        : new Response("This page could not be found", { status: 404 }),
+      ctx,
+    );
   } catch (error) {
     console.error("[vinext] Worker error:", error);
     return new Response("Internal Server Error", { status: 500 });

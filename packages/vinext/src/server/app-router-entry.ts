@@ -64,6 +64,10 @@ import {
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import { createWorkerPrerenderDiscoveryContext } from "./worker-prerender-discovery.js";
+import {
+  createWorkerCacheabilityContext,
+  finalizeWorkerCacheabilityResponse,
+} from "./cacheability-request.js";
 
 // Precompute the path components used for `_next/static/*` 404 short-circuit
 // detection. Both `__basePath` and `__assetPrefix` are inlined as
@@ -103,7 +107,12 @@ async function handleRequest(
     : createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
         handleRequest(internalRequest, env, internalCtx),
       );
-  const ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, __rscPrerenderSecret);
+  const discoveryCtx = createWorkerPrerenderDiscoveryContext(
+    requestCtx,
+    request,
+    __rscPrerenderSecret,
+  );
+  const ctx = createWorkerCacheabilityContext(discoveryCtx, request, __rscPrerenderSecret);
 
   // Register config-driven cache adapters before any rendering touches the cache.
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
@@ -199,12 +208,16 @@ async function handleRequest(
       });
       if (assetResponse) response = assetResponse;
     }
-    return finalizeMissingStaticAssetResponse(response, missingBuildAsset);
+    response = finalizeMissingStaticAssetResponse(response, missingBuildAsset);
+    return finalizeWorkerCacheabilityResponse(response, ctx);
   }
 
   if (result === null || result === undefined) {
-    return missingBuildAsset ? notFoundStaticAssetResponse() : notFoundResponse();
+    return finalizeWorkerCacheabilityResponse(
+      missingBuildAsset ? notFoundStaticAssetResponse() : notFoundResponse(),
+      ctx,
+    );
   }
 
-  return new Response(String(result), { status: 200 });
+  return finalizeWorkerCacheabilityResponse(new Response(String(result), { status: 200 }), ctx);
 }

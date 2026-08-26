@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   PRERENDER_PATHS_MANIFEST,
+  type CacheabilityProbeRoute,
   type PrerenderPathManifest,
 } from "vinext/internal/build/prerender-paths";
 import {
@@ -87,6 +88,7 @@ export type PrerenderWarmPlan = {
   paths: string[];
   rscBuildId?: string;
   rscPaths: string[];
+  cacheabilityRoutes?: CacheabilityProbeRoute[];
 };
 
 function applyWarmPathConfig(
@@ -129,6 +131,17 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
       (manifest.excludedWarmPaths !== undefined &&
         (!Array.isArray(manifest.excludedWarmPaths) ||
           !manifest.excludedWarmPaths.every((pathname) => typeof pathname === "string"))) ||
+      (manifest.cacheabilityRoutes !== undefined &&
+        (!Array.isArray(manifest.cacheabilityRoutes) ||
+          !manifest.cacheabilityRoutes.every(
+            (route) =>
+              route &&
+              (route.kind === "app-page" ||
+                route.kind === "app-route" ||
+                route.kind === "pages-page") &&
+              typeof route.pattern === "string" &&
+              (route.probePath === undefined || typeof route.probePath === "string"),
+          ))) ||
       (manifest.rscPaths !== undefined &&
         (!Array.isArray(manifest.rscPaths) ||
           !manifest.rscPaths.every((pathname) => typeof pathname === "string"))) ||
@@ -233,6 +246,14 @@ export function readPrerenderWarmPlan(
     paths: htmlPaths,
     ...(supportsCanonicalRsc ? { rscBuildId: manifest.rscBuildId } : {}),
     rscPaths: supportsCanonicalRsc ? manifest.rscPaths!.map(applyConfig) : [],
+    ...(manifest.cacheabilityRoutes
+      ? {
+          cacheabilityRoutes: manifest.cacheabilityRoutes.map((route) => ({
+            ...route,
+            ...(route.probePath ? { probePath: applyConfig(route.probePath) } : {}),
+          })),
+        }
+      : {}),
   };
 }
 
