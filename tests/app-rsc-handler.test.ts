@@ -2555,7 +2555,13 @@ describe("createAppRscHandler", () => {
   it("uses encoded prerender route params for rendering while retaining decoded params for static validation", async () => {
     const previousPrerender = process.env.VINEXT_PRERENDER;
     process.env.VINEXT_PRERENDER = "1";
-    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
+    let dispatchedRequest: Request | undefined;
+    const dispatchMatchedPage = vi.fn(
+      async (...args: Parameters<NonNullable<HandlerOptions["dispatchMatchedPage"]>>) => {
+        dispatchedRequest = args[0].request;
+        return new Response("page", { status: 200 });
+      },
+    );
     const prerenderRoute = createPageRoute({
       isDynamic: true,
       pattern: "/prerender-encoding/:id",
@@ -2595,6 +2601,8 @@ describe("createAppRscHandler", () => {
           staticParamsValidationParams: { id: "sticks & stones" },
         }),
       );
+      expect(dispatchedRequest?.headers.has("x-vinext-prerender-secret")).toBe(false);
+      expect(dispatchedRequest?.headers.has("x-vinext-prerender-route-params")).toBe(false);
     } finally {
       if (previousPrerender === undefined) {
         delete process.env.VINEXT_PRERENDER;

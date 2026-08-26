@@ -22,7 +22,6 @@ import {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
-  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
@@ -95,7 +94,7 @@ import {
 import {
   matchPrerenderRouteParamsPayload,
   readTrustedPrerenderRouteParams,
-  serializePrerenderRouteParamsHeader,
+  type PrerenderRouteParamsPayload,
 } from "./prerender-route-params.js";
 import {
   createServerActionNotFoundResponse,
@@ -615,6 +614,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   dispatchInternalRequest: (request: Request) => Promise<Response>,
   allowInternalRscDocumentFallback: boolean,
   setInterceptionResponseUncacheable: (uncacheable: boolean) => void,
+  prerenderRouteParamsPayload: PrerenderRouteParamsPayload | null,
 ): Promise<Response> {
   const handlerStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
 
@@ -1661,7 +1661,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     options.clearRequestContext();
     return applyMiddlewareContextToResponse(response, middlewareContext);
   }
-  const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(request);
   const prerenderRouteParamsMatch = matchPrerenderRouteParamsPayload(
     prerenderRouteParamsPayload,
     route.pattern,
@@ -1875,14 +1874,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     const executionContext = isExecutionContextLike(ctx)
       ? ctx
       : (getRequestExecutionContext() ?? null);
-    // Read the trusted prerender route params before filtering strips the
-    // route-params header (it IS in VINEXT_INTERNAL_HEADERS), then re-attach the
-    // validated value below so the second read in handleAppRscRequest still sees
-    // it. The secret was already verified upstream at prod-server's
-    // nodeToWebRequest boundary; the surviving secret header (NOT in either
-    // internal-header list) lets readTrustedPrerenderRouteParams's
-    // VINEXT_PRERENDER gate pass on the reconstructed request. If the secret
-    // header is ever added to VINEXT_INTERNAL_HEADERS, that second read breaks.
+    // Capture the trusted payload before filtering strips both transport
+    // headers. Pass the validated value directly into route dispatch so neither
+    // the capability nor the encoded payload is visible to middleware/user code.
     const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(rawRequest);
     const isTrustedSpeculativePrerender =
       process.env.VINEXT_PRERENDER === "1" &&
@@ -1897,12 +1891,6 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     }
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
-    }
-    const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
-      prerenderRouteParamsPayload,
-    );
-    if (prerenderRouteParamsHeader !== null) {
-      filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
     }
     if (isTrustedSpeculativePrerender) {
       filteredHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
@@ -1954,6 +1942,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
               (uncacheable) => {
                 interceptionResponseUncacheable = uncacheable;
               },
+              prerenderRouteParamsPayload,
             );
           } catch (error) {
             if (process.env.NODE_ENV !== "production") {

@@ -51,7 +51,11 @@ import {
   filterInternalHeaders,
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
-import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
+import {
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
+} from "./headers.js";
 import {
   readTrustedPrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
@@ -182,6 +186,10 @@ async function handleRequest(
     );
     if (prerenderRouteParamsHeader !== null) {
       filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+      // Carry the capability only across this server-owned boundary so the RSC
+      // handler can validate the re-serialized payload once more. That handler
+      // strips both headers before middleware or user code receives the request.
+      filteredHeaders.set(VINEXT_PRERENDER_SECRET_HEADER, __rscPrerenderSecret);
     }
     request = cloneRequestWithHeaders(request, filteredHeaders);
   }
