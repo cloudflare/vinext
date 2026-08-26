@@ -41,7 +41,11 @@ export function createWorkerPrerenderDiscoveryContext(
   // Ordinary traffic never carries this capability. Reject it before URL
   // parsing so staged discovery adds no URL work to the common request path.
   const providedSecret = request.headers.get(VINEXT_PRERENDER_SECRET_HEADER);
-  if (!expectedSecret || !providedSecret || !workerCapabilityMatches(providedSecret, expectedSecret)) {
+  if (
+    !expectedSecret ||
+    !providedSecret ||
+    !workerCapabilityMatches(providedSecret, expectedSecret)
+  ) {
     return base;
   }
 
