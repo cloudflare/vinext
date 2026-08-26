@@ -3,7 +3,7 @@ import { headers } from "next/headers";
 export const revalidate = 3;
 
 export function generateStaticParams() {
-  return [{ slug: "known" }];
+  return process.env.NEXT_PHASE === "phase-production-build" ? [{ slug: "known" }] : [];
 }
 
 export default async function PrerenderPhasePage({

@@ -62,7 +62,10 @@ export function installServerGlobals(): void {
       get() {
         const context = getRequestExecutionContext();
         const state = context ? Reflect.get(context, CACHEABILITY_REQUEST_STATE) : undefined;
-        if (Reflect.get(state ?? {}, "mode") === "probe") {
+        if (
+          context?.isPrerenderPathDiscovery === true ||
+          Reflect.get(state ?? {}, "mode") === "probe"
+        ) {
           return PHASE_PRODUCTION_BUILD;
         }
         return Reflect.get(process.env, "NEXT_PHASE");

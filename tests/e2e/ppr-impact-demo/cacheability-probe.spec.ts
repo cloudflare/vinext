@@ -14,6 +14,15 @@ function prerenderSecret(): string {
 test("classifies completed App Page renders inside workerd", async ({ request }) => {
   const headers = { [probeHeader]: "1", [secretHeader]: prerenderSecret() };
 
+  // Next.js evaluates generateStaticParams during phase-production-build:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
+  const discovery = await request.get(
+    "/__vinext/prerender/static-params?pattern=%2Fcacheability%2Fprerender-phase%2F%3Aslug",
+    { headers: { [secretHeader]: prerenderSecret() } },
+  );
+  expect(discovery.ok()).toBe(true);
+  await expect(discovery.json()).resolves.toEqual([{ slug: "known" }]);
+
   const staticProbe = await request.get("/cacheability/static", { headers });
   expect(staticProbe.ok()).toBe(true);
   await expect(staticProbe.json()).resolves.toMatchObject({
