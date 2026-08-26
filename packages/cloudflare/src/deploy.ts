@@ -689,6 +689,16 @@ export function hasCdnWarmRequests(plan: CdnWarmRequestPlan): boolean {
   return plan.paths.length + plan.rscPaths.length + plan.loadingShellPaths.length > 0;
 }
 
+export function projectRequiresRouteCacheabilityProbeManifest(
+  project: Pick<ProjectInfo, "isAppRouter" | "isPagesRouter">,
+  cacheConfig: VinextCacheConfig | null,
+): boolean {
+  return (
+    (project.isAppRouter || project.isPagesRouter) &&
+    requiresRouteCacheabilityProbeManifest(cacheConfig)
+  );
+}
+
 type CdnWarmDeployOptions = Pick<
   DeployOptions,
   | "preview"
@@ -1708,8 +1718,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
   });
   const hasStrictResponseVary = hasVerbatimResponseVary(viteConfigMetadata.cacheConfig);
   const hasBuildIdentityHeader = hasBuildIdentityResponseHeader(viteConfigMetadata.cacheConfig);
-  const needsCacheabilityProbeManifest =
-    info.isAppRouter && requiresRouteCacheabilityProbeManifest(viteConfigMetadata.cacheConfig);
+  const needsCacheabilityProbeManifest = projectRequiresRouteCacheabilityProbeManifest(
+    info,
+    viteConfigMetadata.cacheConfig,
+  );
   const shouldEmitPrerenderPathManifest = !options.skipBuild && prerenderDecision;
 
   // Step 5: Build

@@ -43,6 +43,7 @@ import {
   methodNotAllowedResponse,
   sanitizeMethodNotAllowedHeaders,
 } from "./http-error-responses.js";
+import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
 
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
@@ -101,6 +102,8 @@ export async function fetchWorkerFilesystemRoute(
 
 export type MiddlewareResult = {
   continue: boolean;
+  /** The pathname matches middleware, irrespective of request `has`/`missing` conditions. */
+  pathnameEligible?: boolean;
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
@@ -412,6 +415,10 @@ export async function runPagesRequest(
     const result = await deps.runMiddleware(deps.middlewareRequest ?? request, deps.ctx ?? null, {
       isDataRequest,
     });
+
+    if (result.pathnameEligible) {
+      markRouteCacheabilityDynamic("middleware can match this pathname");
+    }
 
     // Bubble waitUntil promises
     if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {

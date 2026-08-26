@@ -62,3 +62,58 @@ test("admits only exact manifest-backed Pages Router responses", async ({ reques
     expect(response.headers()["cdn-cache-control"], pathname).toBeUndefined();
   }
 });
+
+test("keeps middleware cookie variants private", async ({ request }) => {
+  // Next.js middleware matcher conditions are request-specific, but the route
+  // cacheability decision must be stable for the pathname.
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers/test/index.test.ts
+  const middlewarePublic = await request.get("/cacheability-pages/middleware", {
+    headers: { Accept: "text/html" },
+  });
+  expect(middlewarePublic.status()).toBe(200);
+  expect(middlewarePublic.headers()["x-cacheability-middleware"]).toBeUndefined();
+  expect(middlewarePublic.headers()["cache-control"]).toContain("no-store");
+  expect(middlewarePublic.headers()["cdn-cache-control"]).toBeUndefined();
+
+  const middlewarePrivate = await request.get("/cacheability-pages/middleware", {
+    headers: { Accept: "text/html", Cookie: "variant=private" },
+  });
+  expect(middlewarePrivate.status()).toBe(200);
+  expect(middlewarePrivate.headers()["x-cacheability-middleware"]).toBe("matched");
+  expect(middlewarePrivate.headers()["cache-control"]).toContain("no-store");
+  expect(middlewarePrivate.headers()["cdn-cache-control"]).toBeUndefined();
+});
+
+test("keeps config-header cookie variants private", async ({ request }) => {
+  const configPublic = await request.get("/cacheability-pages/config-header", {
+    headers: { Accept: "text/html" },
+  });
+  expect(configPublic.status()).toBe(200);
+  expect(configPublic.headers()["x-cacheability-config"]).toBeUndefined();
+  expect(configPublic.headers()["cache-control"]).toContain("no-store");
+  expect(configPublic.headers()["cdn-cache-control"]).toBeUndefined();
+
+  const configPrivate = await request.get("/cacheability-pages/config-header", {
+    headers: { Accept: "text/html", Cookie: "variant=private" },
+  });
+  expect(configPrivate.status()).toBe(200);
+  expect(configPrivate.headers()["x-cacheability-config"]).toBe("private");
+  expect(configPrivate.headers()["cache-control"]).toContain("no-store");
+  expect(configPrivate.headers()["cdn-cache-control"]).toBeUndefined();
+});
+
+test("keeps invalid preview-cookie cleanup private", async ({ request }) => {
+  // Ported from Next.js: test/e2e/prerender-preview/prerender-preview.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender-preview/prerender-preview.test.ts
+  const response = await request.get("/cacheability-pages/isr", {
+    headers: {
+      Accept: "text/html",
+      Cookie: "__prerender_bypass=invalid; __next_preview_data=invalid",
+    },
+  });
+
+  expect(response.status()).toBe(200);
+  expect(response.headers()["set-cookie"]).toBeDefined();
+  expect(response.headers()["cache-control"]).toContain("no-store");
+  expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+});

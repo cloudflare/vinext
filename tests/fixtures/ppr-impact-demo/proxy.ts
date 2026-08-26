@@ -17,5 +17,9 @@ export const config = {
       source: "/cacheability/conditional-middleware-header",
       has: [{ type: "header", key: "x-cacheability-middleware", value: "enabled" }],
     },
+    {
+      source: "/cacheability-pages/middleware",
+      has: [{ type: "cookie", key: "variant", value: "private" }],
+    },
   ],
 };

@@ -455,7 +455,12 @@ function completedRouteOutcome(
     return inferFinalAppPageCacheability(response, state) ?? rendererOutcome;
   }
   if (state.route?.kind !== "pages-page") return rendererOutcome;
-  if (hasExplicitNonCacheableResponsePolicy(response.headers)) return { cacheable: false };
+  if (
+    response.headers.has("set-cookie") ||
+    hasExplicitNonCacheableResponsePolicy(response.headers)
+  ) {
+    return { cacheable: false };
+  }
   return rendererOutcome ?? inferPagesPageCacheability(response);
 }
 

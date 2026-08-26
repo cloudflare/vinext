@@ -13,6 +13,7 @@ import {
   buildWranglerDeployArgs,
   getZeroPercentStagingTraffic,
   parseDeployArgs,
+  projectRequiresRouteCacheabilityProbeManifest,
   resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
   runWranglerKVBulkPut,
@@ -1083,6 +1084,32 @@ describe("detectProject", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "next.config.ts", "export default { cacheComponents: true };");
     expect(detectProject(tmpDir).hasISR).toBe(true);
+  });
+});
+
+describe("route cacheability probe manifest deployment", () => {
+  const cacheConfig = {
+    cdn: {
+      adapter: "cloudflare-cdn-adapter",
+      capabilities: { routeCacheability: "probe-manifest" as const },
+    },
+  };
+
+  it.each([
+    [{ isAppRouter: true, isPagesRouter: false }, true],
+    [{ isAppRouter: false, isPagesRouter: true }, true],
+    [{ isAppRouter: false, isPagesRouter: false }, false],
+  ])("requires the two-stage flow for router project %#", (project, expected) => {
+    expect(projectRequiresRouteCacheabilityProbeManifest(project, cacheConfig)).toBe(expected);
+  });
+
+  it("does not require probing without a manifest-capable CDN adapter", () => {
+    expect(
+      projectRequiresRouteCacheabilityProbeManifest(
+        { isAppRouter: false, isPagesRouter: true },
+        null,
+      ),
+    ).toBe(false);
   });
 });
 

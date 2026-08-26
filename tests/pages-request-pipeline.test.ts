@@ -8,6 +8,11 @@ import {
 } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
 import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
 
 // Helpers
 
@@ -237,6 +242,30 @@ describe("config redirects", () => {
 
 // 4. Middleware redirect short-circuit → {type:"response"} status 307
 describe("middleware", () => {
+  it("fails cacheability closed for a middleware-eligible pathname", async () => {
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "admit",
+    };
+    const context = {
+      [CACHEABILITY_REQUEST_STATE]: state,
+      waitUntil() {},
+    };
+
+    await runWithExecutionContext(context, () =>
+      runPagesRequest(
+        makeRequest("/conditional"),
+        baseDeps({
+          hasMiddleware: true,
+          renderPage: makeRenderPage(),
+          runMiddleware: makeMiddleware({ continue: true, pathnameEligible: true }),
+        }),
+      ),
+    );
+
+    expect(state.forcedDynamicReason).toBe("middleware can match this pathname");
+  });
+
   it("can present the raw data URL to middleware while routing the normalized page", async () => {
     // Ported from Next.js: packages/next/src/server/next-server.ts
     // (`skipProxyUrlNormalize` selects request meta `initURL` for middleware).

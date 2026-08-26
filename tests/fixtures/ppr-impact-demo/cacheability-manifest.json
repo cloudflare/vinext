@@ -89,6 +89,22 @@
       "state": "static-candidate",
       "status": 200
     },
+    "[\"pages-page\",\"/cacheability-pages/middleware\",\"html\",\"/cacheability-pages/middleware\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/middleware",
+      "representation": "html",
+      "requestKey": "/cacheability-pages/middleware",
+      "state": "static-candidate",
+      "status": 200
+    },
+    "[\"pages-page\",\"/cacheability-pages/config-header\",\"html\",\"/cacheability-pages/config-header\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/config-header",
+      "representation": "html",
+      "requestKey": "/cacheability-pages/config-header",
+      "state": "static-candidate",
+      "status": 200
+    },
     "[\"pages-page\",\"/cacheability-pages/gssp\",\"html\",\"/cacheability-pages/gssp\"]": {
       "kind": "pages-page",
       "pattern": "/cacheability-pages/gssp",

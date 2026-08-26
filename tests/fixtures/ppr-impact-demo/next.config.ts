@@ -23,5 +23,10 @@ export default {
       has: [{ type: "query", key: "late-policy", value: "cloudflare-cdn-cache-control" }],
       headers: [{ key: "Cloudflare-CDN-Cache-Control", value: "private" }],
     },
+    {
+      source: "/cacheability-pages/config-header",
+      has: [{ type: "cookie" as const, key: "variant", value: "private" }],
+      headers: [{ key: "X-Cacheability-Config", value: "private" }],
+    },
   ],
 } satisfies NextConfig;

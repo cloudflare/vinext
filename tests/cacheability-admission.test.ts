@@ -111,6 +111,27 @@ function staticManifestRoute(): { raw: string; route: CacheabilityManifestRoute 
   };
 }
 
+function staticPagesManifestRoute(): { raw: string; route: CacheabilityManifestRoute } {
+  const route: CacheabilityManifestRoute = {
+    kind: "pages-page",
+    pattern: "/pages-route",
+    representation: "html",
+    requestKey: "/pages-route",
+    state: "static-candidate",
+    status: 200,
+  };
+  const key = cacheabilityManifestRouteKey(
+    route.kind,
+    route.pattern,
+    route.representation,
+    route.requestKey,
+  );
+  return {
+    raw: JSON.stringify({ buildId: "build-a", routes: { [key]: route }, version: 1 }),
+    route,
+  };
+}
+
 describe("single-request cacheability admission", () => {
   const request = new Request("https://example.com/page", {
     headers: { Accept: "text/html" },
@@ -411,6 +432,38 @@ describe("single-request cacheability admission", () => {
     );
 
     expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("pages");
+  });
+
+  it("keeps manifest-backed Pages responses with a late Set-Cookie private", async () => {
+    const { raw } = staticPagesManifestRoute();
+    const pagesRequest = new Request("https://example.com/pages-route", {
+      headers: { Accept: "text/html" },
+    });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      pagesRequest,
+      raw,
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "pages-page", pattern: "/pages-route" };
+    state.outcome = {
+      cacheable: true,
+      cacheControl: "public, s-maxage=60, stale-while-revalidate=540",
+    };
+    const setCookie = "__prerender_bypass=; Max-Age=0; Path=/";
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("pages", { headers: { "Set-Cookie": setCookie } }),
+      context,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Set-Cookie")).toBe(setCookie);
     await expect(response.text()).resolves.toBe("pages");
   });
 });

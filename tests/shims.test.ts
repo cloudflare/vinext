@@ -13551,6 +13551,20 @@ describe("matchHeaders", () => {
     expect(matched).toEqual([]);
   });
 
+  it("reports pathname eligibility before request conditions are evaluated", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rule: any = {
+      source: "/about",
+      has: [{ type: "cookie", key: "variant", value: "private" }],
+      headers: [{ key: "x-variant", value: "private" }],
+    };
+    const onRulePathnameMatch = vi.fn();
+
+    expect(matchHeaders("/about", [rule], makeCtx(), undefined, onRulePathnameMatch)).toEqual([]);
+    expect(onRulePathnameMatch).toHaveBeenCalledOnce();
+    expect(onRulePathnameMatch).toHaveBeenCalledWith(rule);
+  });
+
   // Regression for #1331: under `trailingSlash: true` the incoming pathname
   // arrives as `/about/`, but header source patterns are written without a
   // trailing slash. `matchHeaders` must strip the slash before matching.
