@@ -428,6 +428,7 @@ describe("deploy prerender config wiring", () => {
         fs.readFileSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"), "utf-8"),
       ),
     ).toEqual({
+      appPaths: [],
       buildId: "build-a",
       trailingSlash: false,
       paths: [],

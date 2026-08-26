@@ -291,6 +291,7 @@ describe("cdnAdapter builder + factory", () => {
     expect(descriptor.capabilities).toEqual({
       buildIdentity: "response-header",
       responseVary: "verbatim",
+      routeCacheability: "probe-manifest",
     });
     expect(hasBuildIdentityResponseHeader({ cdn: descriptor })).toBe(true);
     expect(hasVerbatimResponseVary({ cdn: descriptor })).toBe(true);

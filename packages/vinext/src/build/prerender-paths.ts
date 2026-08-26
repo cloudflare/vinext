@@ -735,7 +735,12 @@ async function resolveAppWarmPaths(options: {
   pagesDir: string | null;
   pageExtensions: readonly string[];
   paths: readonly string[];
-}): Promise<{ htmlPaths: string[]; loadingShellPaths: string[]; rscPaths: string[] }> {
+}): Promise<{
+  appPaths: string[];
+  htmlPaths: string[];
+  loadingShellPaths: string[];
+  rscPaths: string[];
+}> {
   const appRoutes = await appRouter(options.appDir, options.pageExtensions);
   const [pageRoutes, apiRoutes] = options.pagesDir
     ? await Promise.all([
@@ -745,6 +750,7 @@ async function resolveAppWarmPaths(options: {
     : [[], []];
 
   const rscPaths: string[] = [];
+  const appPaths: string[] = [];
   const htmlPaths: string[] = [];
   const loadingShellPaths: string[] = [];
   for (const pathname of options.paths) {
@@ -783,13 +789,14 @@ async function resolveAppWarmPaths(options: {
       continue;
     }
 
+    appPaths.push(pathname);
     htmlPaths.push(pathname);
     rscPaths.push(pathname);
     if (appRouteHasMainTreeLoadingBoundary(matchedAppRoute)) {
       loadingShellPaths.push(pathname);
     }
   }
-  return { htmlPaths, loadingShellPaths, rscPaths };
+  return { appPaths, htmlPaths, loadingShellPaths, rscPaths };
 }
 
 function configuredRouteAffectsWarmPath(
@@ -995,6 +1002,7 @@ export async function emitPrerenderPathManifest(
         paths: configuredCandidatePaths,
       })
     : {
+        appPaths: [],
         htmlPaths: discoveredAppPaths,
         loadingShellPaths: discoveredLoadingShellPaths,
         rscPaths: discoveredAppPaths,
@@ -1002,7 +1010,7 @@ export async function emitPrerenderPathManifest(
   const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : resolvedPagesWarmPaths;
 
   const manifest: PrerenderPathManifest = {
-    ...(appDir ? { appPaths: appOwnedWarmPaths.htmlPaths } : {}),
+    ...(appDir ? { appPaths: appOwnedWarmPaths.appPaths } : {}),
     ...(config.basePath ? { basePath: config.basePath } : {}),
     buildId: config.buildId,
     ...(rscBuildId && options.buildIdentity === "response-header"
