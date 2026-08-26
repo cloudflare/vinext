@@ -247,6 +247,11 @@ export function recordInvalidDynamicUsageError(error: unknown): void {
   propagateInvalidDynamicUsageError(state, error);
 }
 
+/** Read a fatal cache-scope marker without consuming request ownership. */
+export function peekInvalidDynamicUsageError(): unknown {
+  return _getState().invalidDynamicUsageError;
+}
+
 /**
  * Measure dynamic usage in a child async scope without clearing the parent.
  * Concurrent work that already belongs to the request (such as deferred

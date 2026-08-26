@@ -23,14 +23,13 @@ import {
   getHeadersAccessPhase,
   isDraftModeEnabled,
   markDynamicUsage as _markDynamic,
-  recordInvalidDynamicUsageError,
+  peekInvalidDynamicUsageError,
 } from "./headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { fnv1a64 } from "../utils/hash.js";
 import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
-import { isInvalidDynamicUsageError } from "./internal/invalid-dynamic-usage-error.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
@@ -485,14 +484,16 @@ const _unstableCacheAls = getOrCreateAls<boolean>("vinext.unstableCache.als");
 
 /**
  * Wrapper used to serialize `unstable_cache` results so that `undefined` can
- * round-trip through JSON without confusion.  Using a structural wrapper
- * avoids any sentinel-string collision risk.
+ * round-trip through JSON without confusion. Using a structural wrapper
+ * avoids any sentinel-string collision risk. The legacy `v` / `undef` fields
+ * keep entries readable by the previous Worker during a staged rollback,
+ * while the version marker lets this Worker reject unsafe older payloads.
  */
-type CacheResultWrapper = { version: 2; value: unknown } | { version: 2; undefined: true };
+type CacheResultWrapper = { version: 2; v: unknown } | { version: 2; undef: true };
 
 function serializeUnstableCacheResult(value: unknown): string {
   const wrapper: CacheResultWrapper =
-    value === undefined ? { version: 2, undefined: true } : { version: 2, value };
+    value === undefined ? { version: 2, undef: true } : { version: 2, v: value };
   return JSON.stringify(wrapper);
 }
 
@@ -501,8 +502,8 @@ function deserializeUnstableCacheResult(body: string): unknown {
   if (!wrapper || typeof wrapper !== "object" || Reflect.get(wrapper, "version") !== 2) {
     throw new Error("Unsupported unstable_cache entry version");
   }
-  if (Reflect.get(wrapper, "undefined") === true) return undefined;
-  if (Reflect.has(wrapper, "value")) return Reflect.get(wrapper, "value");
+  if (Reflect.get(wrapper, "undef") === true) return undefined;
+  if (Reflect.has(wrapper, "v")) return Reflect.get(wrapper, "v");
   throw new Error("Invalid unstable_cache entry");
 }
 
@@ -533,19 +534,6 @@ type UnstableCacheOptions = {
 const _UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY = Symbol.for(
   "vinext.unstableCache.pendingRevalidations",
 );
-const _UNSTABLE_CACHE_PENDING_FILLS_KEY = Symbol.for("vinext.unstableCache.pendingFills");
-
-// A shared fill is only a short-lived stampede guard, not ownership of the
-// callback's lifetime. Next.js defaults cache-fill detection to its static
-// generation timeout (60 seconds); after the same bounded lease, let a later
-// request replace a stalled fill without aborting the original caller.
-const UNSTABLE_CACHE_PENDING_FILL_LEASE_MS = 60_000;
-
-type PendingUnstableCacheFill = {
-  promise: Promise<unknown>;
-  expiresAt: number;
-  leaseTimer: ReturnType<typeof setTimeout>;
-};
 
 function getPendingUnstableCacheRevalidations(): Map<string, Promise<void>> {
   const existing = _g[_UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY];
@@ -553,17 +541,6 @@ function getPendingUnstableCacheRevalidations(): Map<string, Promise<void>> {
 
   const pending = new Map<string, Promise<void>>();
   _g[_UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY] = pending;
-  return pending;
-}
-
-function getPendingUnstableCacheFills(): Map<string, PendingUnstableCacheFill> {
-  const existing = _g[_UNSTABLE_CACHE_PENDING_FILLS_KEY];
-  if (existing instanceof Map) {
-    return existing as Map<string, PendingUnstableCacheFill>;
-  }
-
-  const pending = new Map<string, PendingUnstableCacheFill>();
-  _g[_UNSTABLE_CACHE_PENDING_FILLS_KEY] = pending;
   return pending;
 }
 
@@ -600,8 +577,15 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   cacheKey: string,
   tags: string[],
   revalidateSeconds: number | false | undefined,
+  publish = true,
 ): Promise<Result> {
   const result = await _unstableCacheAls.run(true, () => fn(...args));
+  const invalidDynamicUsageError = peekInvalidDynamicUsageError();
+  if (invalidDynamicUsageError !== null && invalidDynamicUsageError !== undefined) {
+    throw invalidDynamicUsageError;
+  }
+
+  if (!publish) return result;
 
   const cacheValue: CachedFetchValue = {
     kind: "FETCH",
@@ -625,61 +609,6 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   });
 
   return result;
-}
-
-function fillUnstableCacheResult<Args extends unknown[], Result>(
-  fn: (...args: Args) => Promise<Result>,
-  args: Args,
-  cacheKey: string,
-  tags: string[],
-  revalidateSeconds: number | false | undefined,
-): Promise<Result> {
-  const pending = getPendingUnstableCacheFills();
-  const existing = pending.get(cacheKey);
-  if (existing && existing.expiresAt > Date.now()) {
-    return observeUnstableCacheFill(existing.promise as Promise<Result>);
-  }
-  if (existing) {
-    clearTimeout(existing.leaseTimer);
-    pending.delete(cacheKey);
-  }
-
-  const fill = refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
-  let entry: PendingUnstableCacheFill;
-  const trackedFill = fill.finally(() => {
-    if (pending.get(cacheKey) === entry) {
-      pending.delete(cacheKey);
-    }
-    clearTimeout(entry.leaseTimer);
-  });
-  const leaseTimer = setTimeout(() => {
-    if (pending.get(cacheKey) === entry) {
-      pending.delete(cacheKey);
-    }
-  }, UNSTABLE_CACHE_PENDING_FILL_LEASE_MS);
-  // Do not keep a Node.js process alive solely for an in-isolate stampede
-  // lease. Cloudflare's numeric timer handle intentionally has no `unref`.
-  if (typeof leaseTimer === "object" && "unref" in leaseTimer) {
-    leaseTimer.unref();
-  }
-  entry = {
-    promise: trackedFill,
-    expiresAt: Date.now() + UNSTABLE_CACHE_PENDING_FILL_LEASE_MS,
-    leaseTimer,
-  };
-  pending.set(cacheKey, entry);
-  return observeUnstableCacheFill(trackedFill);
-}
-
-async function observeUnstableCacheFill<Result>(fill: Promise<Result>): Promise<Result> {
-  try {
-    return await fill;
-  } catch (error) {
-    if (isInvalidDynamicUsageError(error)) {
-      recordInvalidDynamicUsageError(error);
-    }
-    throw error;
-  }
 }
 
 /**
@@ -755,9 +684,11 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     // so that headers()/cookies()/connection() can detect they're in a
     // cache scope and throw an appropriate error.
     if (isDraftMode) {
-      return await _unstableCacheAls.run(true, () => fn(...args));
+      return await refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds, false);
     }
-    return await fillUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
+    // Match Next.js: concurrent cold misses execute independently. The cache
+    // adapter decides which completed value wins the physical write race.
+    return await refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
   };
 
   return cachedFn as T;

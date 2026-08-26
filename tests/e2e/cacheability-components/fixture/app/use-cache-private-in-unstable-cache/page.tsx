@@ -1,5 +1,5 @@
 import { unstable_cache } from "next/cache";
-import { recordPrivateExecution, waitForPrivateFillRelease } from "./state";
+import { recordPrivateExecution } from "./state";
 
 async function readPrivateValue() {
   "use cache: private";
@@ -7,8 +7,13 @@ async function readPrivateValue() {
 }
 
 const readSharedValue = unstable_cache(async () => {
-  await waitForPrivateFillRelease();
-  return readPrivateValue();
+  try {
+    return await readPrivateValue();
+  } catch {
+    // The request-owned fatal marker must prevent this fallback from entering
+    // the shared cache even though user code caught the immediate error.
+    return "caught-inside-unstable-cache";
+  }
 }, ["cacheability-use-cache-private-in-unstable-cache"]);
 
 export default async function PrivateInUnstableCachePage() {

@@ -121,15 +121,24 @@ test("classifies completed App Page renders inside workerd", async ({ request })
       version: 1,
     });
   }
-  // Reject legacy payloads in place, then coalesce the simultaneous cold fill
-  // so a deployment-wide schema cutover does not stampede the origin.
-  const seedLegacyDedupeResult = await request.post("/cacheability/unstable-cache-upgrade-dedupe");
-  expect(seedLegacyDedupeResult.status()).toBe(204);
-  const dedupedUpgrade = await request.get("/cacheability/unstable-cache-upgrade-dedupe");
-  await expect(dedupedUpgrade.json()).resolves.toEqual({
-    executions: 1,
-    values: [1, 1, 1],
+  // Reject an unsafe legacy payload in place. Concurrent cold misses execute
+  // independently like Next.js, and every replacement uses an envelope that
+  // remains readable by the previous Worker during rollback.
+  const seedLegacyResult = await request.post("/cacheability/unstable-cache-upgrade");
+  expect(seedLegacyResult.status()).toBe(204);
+  const upgradedResponse = await request.get("/cacheability/unstable-cache-upgrade");
+  const upgraded = (await upgradedResponse.json()) as {
+    executions: number;
+    legacyReaderValue: number;
+    storedVersion: number;
+    values: number[];
+  };
+  expect(upgraded).toMatchObject({
+    executions: 3,
+    storedVersion: 2,
+    values: [1, 2, 3],
   });
+  expect(upgraded.values).toContain(upgraded.legacyReaderValue);
 
   const identityProbe = await request.get("/cacheability/static", {
     headers: { ...headers, [probeHeader]: "identity" },
