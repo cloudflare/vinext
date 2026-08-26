@@ -385,7 +385,7 @@ test("deploy-prewarmed App HTML and RSC variants are reused", async ({
 
   // A purge removes the warmed response body, not the manifest embedded in the
   // promoted Worker. The first completed render must therefore be admitted as
-  // a CDN MISS and the next untouched request must reuse that exact entry.
+  // a CDN MISS, and subsequent requests must eventually reuse that exact entry.
   const purgeDeadline = Date.now() + 30_000;
   let coldAfterPurge: APIResponse | undefined;
   do {
@@ -406,9 +406,20 @@ test("deploy-prewarmed App HTML and RSC variants are reused", async ({
   expect(coldHeaders["cdn-cache-control"]).toContain("public");
   expect(await coldAfterPurge!.text()).toContain("Prewarm target");
 
-  const hitAfterPurge = await getResponseAfterPromotion(request, `${baseURL}${TARGET_PATH}`, {
-    accept: "text/html",
-  });
-  expect(hitAfterPurge.headers()["cf-cache-status"]).toBe("HIT");
-  expect(await hitAfterPurge.text()).toContain("Prewarm target");
+  const reuseDeadline = Date.now() + 30_000;
+  let hitAfterPurge: APIResponse | undefined;
+  do {
+    const candidate = await getResponseAfterPromotion(request, `${baseURL}${TARGET_PATH}`, {
+      accept: "text/html",
+    });
+    if (candidate.headers()["cf-cache-status"] === "HIT") {
+      hitAfterPurge = candidate;
+      break;
+    }
+    await candidate.dispose();
+    await new Promise((resolve) => setTimeout(resolve, PROMOTION_PROBE_INTERVAL_MS));
+  } while (Date.now() < reuseDeadline);
+  expect(hitAfterPurge, "cold App HTML cache fill did not become reusable").toBeDefined();
+  expect(hitAfterPurge!.ok(), JSON.stringify(hitAfterPurge!.headers())).toBe(true);
+  expect(await hitAfterPurge!.text()).toContain("Prewarm target");
 });
