@@ -429,6 +429,11 @@ function _isInsideUnstableCache(): boolean {
   return _getGlobalCacheScopeStorage(_UNSTABLE_CACHE_ALS_KEY)?.getStore() === true;
 }
 
+/** Whether work is executing inside a cache boundary that owns its reuse. */
+export function isInsideAnyCacheScope(): boolean {
+  return _getUseCacheGuardContext() !== null || _isInsideUnstableCache();
+}
+
 /**
  * Throw if the current execution is inside a "use cache" or unstable_cache()
  * scope. Called by dynamic request APIs (headers, cookies, connection) to
