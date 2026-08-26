@@ -2317,22 +2317,22 @@ describe("dev error reporting for invalid dynamic usage — issue #1195", () => 
     consoleErrorSpy.mockRestore();
   });
 
-  it("does not apply the wrapper for HTML (non-RSC) requests", async () => {
+  it("keeps invalid dynamic usage fatal for HTML when user code catches it", async () => {
     const common = createCommonOptions();
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const errorWithoutDigest = new Error("cookies() inside use cache");
     const consumeInvalidDynamicUsageError = vi.fn(() => errorWithoutDigest);
 
-    const response = await renderAppPageLifecycle({
-      ...common.options,
-      consumeInvalidDynamicUsageError,
-      isRscRequest: false,
-    });
+    await expect(
+      renderAppPageLifecycle({
+        ...common.options,
+        consumeInvalidDynamicUsageError,
+        isRscRequest: false,
+      }),
+    ).rejects.toBe(errorWithoutDigest);
 
-    await response.text();
-    // HTML path intentionally defers dev error reporting
-    expect(consumeInvalidDynamicUsageError).not.toHaveBeenCalled();
+    expect(consumeInvalidDynamicUsageError).toHaveBeenCalled();
     expect(consoleErrorSpy).not.toHaveBeenCalled();
 
     consoleErrorSpy.mockRestore();

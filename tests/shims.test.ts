@@ -5935,6 +5935,125 @@ describe("next/cache shim", () => {
     setCacheHandler(new MemoryCacheHandler());
   });
 
+  it("replays framework-invalid errors into every concurrent unstable_cache request", async () => {
+    // Next.js records cache-scope violations on the current request work store:
+    // packages/next/src/server/request/headers.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/headers.ts
+    // Vinext additionally coalesces cold fills across requests, so each joiner
+    // must receive that request-local marker even though the Error is shared.
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { headers } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    let cacheReads = 0;
+    let resolveSecondRead!: () => void;
+    const secondRead = new Promise<void>((resolve) => {
+      resolveSecondRead = resolve;
+    });
+    class ObservedMemoryCacheHandler extends MemoryCacheHandler {
+      override async get(key: string, ctx?: Record<string, unknown>) {
+        cacheReads++;
+        if (cacheReads === 2) resolveSecondRead();
+        return super.get(key, ctx);
+      }
+    }
+
+    setCacheHandler(new ObservedMemoryCacheHandler());
+    let resolveFill!: () => void;
+    const fillGate = new Promise<void>((resolve) => {
+      resolveFill = resolve;
+    });
+    let resolveFillStarted!: () => void;
+    const fillStarted = new Promise<void>((resolve) => {
+      resolveFillStarted = resolve;
+    });
+    const cached = unstable_cache(async () => {
+      resolveFillStarted();
+      await fillGate;
+      await headers();
+    }, ["concurrent-invalid-dynamic-usage"]);
+
+    const ownerContext = createRequestContext({
+      headersContext: { headers: new Headers(), cookies: new Map() },
+    });
+    const joinerContext = createRequestContext({
+      headersContext: { headers: new Headers(), cookies: new Map() },
+    });
+    const runCaught = async (context: typeof ownerContext) =>
+      runWithRequestContext(context, async () => {
+        try {
+          await cached();
+        } catch {
+          // The final request boundary must still see this error.
+        }
+        return context.invalidDynamicUsageError;
+      });
+
+    const owner = runCaught(ownerContext);
+    await fillStarted;
+    const joiner = runCaught(joinerContext);
+    await secondRead;
+    resolveFill();
+
+    const [ownerError, joinerError] = await Promise.all([owner, joiner]);
+    expect(ownerError).toBeInstanceOf(Error);
+    expect(joinerError).toBe(ownerError);
+    expect((joinerError as Error).message).toContain("unstable_cache");
+
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("releases rejected and expired unstable_cache fill leases", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+    let rejectedExecutions = 0;
+    const rejected = unstable_cache(async () => {
+      rejectedExecutions++;
+      throw new Error("expected fill failure");
+    }, ["rejected-fill-cleanup"]);
+
+    await expect(rejected()).rejects.toThrow("expected fill failure");
+    await expect(rejected()).rejects.toThrow("expected fill failure");
+    expect(rejectedExecutions).toBe(2);
+
+    vi.useFakeTimers();
+    try {
+      let hangingExecutions = 0;
+      const never = new Promise<never>(() => {});
+      const hanging = unstable_cache(async () => {
+        hangingExecutions++;
+        return never;
+      }, ["expired-fill-cleanup"]);
+
+      const first = hanging();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hangingExecutions).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(60_001);
+      const replacement = hanging();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hangingExecutions).toBe(2);
+
+      // Keep the intentionally unresolved promises observed without awaiting.
+      void first;
+      void replacement;
+    } finally {
+      const pending = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.pendingFills")) as
+        | Map<string, { leaseTimer?: ReturnType<typeof setTimeout> }>
+        | undefined;
+      for (const entry of pending?.values() ?? []) {
+        if (entry.leaseTimer !== undefined) clearTimeout(entry.leaseTimer);
+      }
+      pending?.clear();
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("revalidateTag invalidates cached entries", async () => {
     const { unstable_cache, revalidateTag, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");

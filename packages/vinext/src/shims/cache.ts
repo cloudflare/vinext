@@ -23,12 +23,14 @@ import {
   getHeadersAccessPhase,
   isDraftModeEnabled,
   markDynamicUsage as _markDynamic,
+  recordInvalidDynamicUsageError,
 } from "./headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { fnv1a64 } from "../utils/hash.js";
 import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
+import { isInvalidDynamicUsageError } from "./internal/invalid-dynamic-usage-error.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
@@ -533,6 +535,18 @@ const _UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY = Symbol.for(
 );
 const _UNSTABLE_CACHE_PENDING_FILLS_KEY = Symbol.for("vinext.unstableCache.pendingFills");
 
+// A shared fill is only a short-lived stampede guard, not ownership of the
+// callback's lifetime. Next.js defaults cache-fill detection to its static
+// generation timeout (60 seconds); after the same bounded lease, let a later
+// request replace a stalled fill without aborting the original caller.
+const UNSTABLE_CACHE_PENDING_FILL_LEASE_MS = 60_000;
+
+type PendingUnstableCacheFill = {
+  promise: Promise<unknown>;
+  expiresAt: number;
+  leaseTimer: ReturnType<typeof setTimeout>;
+};
+
 function getPendingUnstableCacheRevalidations(): Map<string, Promise<void>> {
   const existing = _g[_UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY];
   if (existing instanceof Map) return existing;
@@ -542,11 +556,13 @@ function getPendingUnstableCacheRevalidations(): Map<string, Promise<void>> {
   return pending;
 }
 
-function getPendingUnstableCacheFills(): Map<string, Promise<unknown>> {
+function getPendingUnstableCacheFills(): Map<string, PendingUnstableCacheFill> {
   const existing = _g[_UNSTABLE_CACHE_PENDING_FILLS_KEY];
-  if (existing instanceof Map) return existing;
+  if (existing instanceof Map) {
+    return existing as Map<string, PendingUnstableCacheFill>;
+  }
 
-  const pending = new Map<string, Promise<unknown>>();
+  const pending = new Map<string, PendingUnstableCacheFill>();
   _g[_UNSTABLE_CACHE_PENDING_FILLS_KEY] = pending;
   return pending;
 }
@@ -620,16 +636,50 @@ function fillUnstableCacheResult<Args extends unknown[], Result>(
 ): Promise<Result> {
   const pending = getPendingUnstableCacheFills();
   const existing = pending.get(cacheKey);
-  if (existing) return existing as Promise<Result>;
+  if (existing && existing.expiresAt > Date.now()) {
+    return observeUnstableCacheFill(existing.promise as Promise<Result>);
+  }
+  if (existing) {
+    clearTimeout(existing.leaseTimer);
+    pending.delete(cacheKey);
+  }
 
   const fill = refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
+  let entry: PendingUnstableCacheFill;
   const trackedFill = fill.finally(() => {
-    if (pending.get(cacheKey) === trackedFill) {
+    if (pending.get(cacheKey) === entry) {
       pending.delete(cacheKey);
     }
+    clearTimeout(entry.leaseTimer);
   });
-  pending.set(cacheKey, trackedFill);
-  return trackedFill;
+  const leaseTimer = setTimeout(() => {
+    if (pending.get(cacheKey) === entry) {
+      pending.delete(cacheKey);
+    }
+  }, UNSTABLE_CACHE_PENDING_FILL_LEASE_MS);
+  // Do not keep a Node.js process alive solely for an in-isolate stampede
+  // lease. Cloudflare's numeric timer handle intentionally has no `unref`.
+  if (typeof leaseTimer === "object" && "unref" in leaseTimer) {
+    leaseTimer.unref();
+  }
+  entry = {
+    promise: trackedFill,
+    expiresAt: Date.now() + UNSTABLE_CACHE_PENDING_FILL_LEASE_MS,
+    leaseTimer,
+  };
+  pending.set(cacheKey, entry);
+  return observeUnstableCacheFill(trackedFill);
+}
+
+async function observeUnstableCacheFill<Result>(fill: Promise<Result>): Promise<Result> {
+  try {
+    return await fill;
+  } catch (error) {
+    if (isInvalidDynamicUsageError(error)) {
+      recordInvalidDynamicUsageError(error);
+    }
+    throw error;
+  }
 }
 
 /**

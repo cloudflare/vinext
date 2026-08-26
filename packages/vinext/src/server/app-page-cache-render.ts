@@ -132,7 +132,10 @@ export async function renderAppPageCacheArtifacts(
     options.route.routeSegments,
   );
   const observationState = consumeAppPageRenderObservationState();
-  consumeInvalidDynamicUsageError();
+  const invalidDynamicUsageError = consumeInvalidDynamicUsageError();
+  if (invalidDynamicUsageError) {
+    throw invalidDynamicUsageError;
+  }
   consumeDynamicUsage();
 
   const htmlRenderObservation = createAppPageRenderObservation({

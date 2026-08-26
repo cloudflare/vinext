@@ -68,6 +68,7 @@ import {
 } from "./prerender-route-params.js";
 import {
   badRequestResponse,
+  internalServerErrorResponse,
   notFoundResponse,
   notFoundStaticAssetResponse,
 } from "./http-error-responses.js";
@@ -247,7 +248,14 @@ async function handleRequest(
   // wrapping in the ExecutionContext ALS scope so downstream code can reach
   // ctx.waitUntil() without having ctx threaded through every call site.
   const handleFn = () => rscHandler(request, ctx);
-  const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
+  let result: Awaited<ReturnType<typeof rscHandler>>;
+  try {
+    result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
+  } catch (error) {
+    if (!finalizeCacheabilityResponse) throw error;
+    console.error(error);
+    return finalizeCacheabilityResponse(internalServerErrorResponse(), ctx);
+  }
 
   if (result instanceof Response) {
     let response = result;
