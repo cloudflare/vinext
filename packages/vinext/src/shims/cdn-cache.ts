@@ -101,6 +101,14 @@ export function isNonCacheableCacheControl(cacheControl: string): boolean {
 // equivalent and stay CDN-specific.
 export type CdnCacheAdapter = {
   /**
+   * Fresh App Page responses must reach clean EOF before this adapter may emit
+   * shared-cache headers. Used by edge adapters whose cache sits in front of
+   * the Worker; origin-managed adapters can stream privately and persist only
+   * the completed artifact.
+   */
+  readonly requiresCompletedResponseAdmission?: boolean;
+
+  /**
    * Validate provider-specific request routing before the application handles
    * the request. Returning a response short-circuits the request pipeline;
    * returning `null` continues normally.
