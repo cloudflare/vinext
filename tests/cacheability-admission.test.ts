@@ -391,6 +391,28 @@ describe("single-request cacheability admission", () => {
       base,
     );
   });
+
+  it("fails closed for request identities absent from the embedded manifest", async () => {
+    const base = { waitUntil() {} };
+    const request = new Request("https://example.com/pages-route");
+    const context = createWorkerCacheabilityAdmissionContext(
+      base,
+      request,
+      JSON.stringify({ buildId: "build-a", routes: {}, version: 1 }),
+      "build-a",
+    );
+
+    expect(context).not.toBe(base);
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("pages", {
+        headers: { "Cache-Control": "public, max-age=0, must-revalidate" },
+      }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("pages");
+  });
 });
 
 describe("cacheability probe finalization", () => {
