@@ -42,7 +42,7 @@ export type StaticExportOptions = {
 };
 
 export type StaticExportResult = {
-  /** Number of HTML files generated */
+  /** Number of rendered route entries */
   pageCount: number;
   /** Generated file paths (relative to outDir) */
   files: string[];
