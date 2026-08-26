@@ -44,7 +44,6 @@ import {
   createWorkerPrerenderDiscoveryContext,
   isWorkerPrerenderDiscoveryPath,
 } from "./worker-prerender-discovery.js";
-import { handleAppPrerenderEndpoint } from "./app-prerender-endpoints.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -139,6 +138,9 @@ async function handleRequest(
     let pathname = url.pathname;
 
     if (ctx.isPrerenderPathDiscovery && isWorkerPrerenderDiscoveryPath(pathname)) {
+      // This App Router runtime is only needed by authenticated staged discovery.
+      // Keep it out of the ordinary Pages Router startup and request path.
+      const { handleAppPrerenderEndpoint } = await import("./app-prerender-endpoints.js");
       const response = await runWithExecutionContext(ctx, () =>
         handleAppPrerenderEndpoint(request, {
           isPrerenderEnabled: () => true,
