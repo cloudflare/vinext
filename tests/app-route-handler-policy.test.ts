@@ -126,11 +126,9 @@ describe("app route handler policy helpers", () => {
     expect(shouldReadAppRouteHandlerCache({ ...base, method: "HEAD", isAutoHead: false })).toBe(
       false,
     );
-    // Infinity (from revalidate = false) disables ISR reads because the
-    // handler is fully static — the response is cached indefinitely with
-    // no revalidation window. ISR reads would introduce KV cache churn for
-    // a handler that never needs to revalidate.
-    expect(shouldReadAppRouteHandlerCache({ ...base, revalidateSeconds: Infinity })).toBe(false);
+    // Next persists revalidate:false as a Full Route Cache entry whose cache
+    // policy has an infinite revalidation lifetime.
+    expect(shouldReadAppRouteHandlerCache({ ...base, revalidateSeconds: Infinity })).toBe(true);
   });
 
   it("determines when route handler cache headers and writes are allowed", () => {
@@ -156,11 +154,7 @@ describe("app route handler policy helpers", () => {
     expect(shouldWriteAppRouteHandlerCache({ ...base, dynamicConfig: "force-dynamic" })).toBe(
       false,
     );
-    // Infinity (from revalidate = false) disables ISR writes because the
-    // response is meant to be cached indefinitely — persisting to ISR
-    // would introduce unnecessary KV writes and risk broken entries from
-    // Infinity serialization.
-    expect(shouldWriteAppRouteHandlerCache({ ...base, revalidateSeconds: Infinity })).toBe(false);
+    expect(shouldWriteAppRouteHandlerCache({ ...base, revalidateSeconds: Infinity })).toBe(true);
     // Infinity still emits a revalidate header for the static Cache-Control.
     expect(
       shouldApplyAppRouteHandlerRevalidateHeader({ ...base, revalidateSeconds: Infinity }),

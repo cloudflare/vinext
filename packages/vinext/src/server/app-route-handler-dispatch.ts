@@ -43,7 +43,7 @@ import {
   type RouteHandlerCacheSetter,
 } from "./app-route-handler-execution.js";
 import { isKnownDynamicAppRoute, isValidHTTPMethod } from "./app-route-handler-runtime.js";
-import { beginRouteCacheability } from "./cacheability-request.js";
+import { beginRouteCacheability, recordRouteCacheability } from "./cacheability-request.js";
 import {
   applyRouteHandlerMiddlewareContext,
   finalizeRouteHandlerResponse,
@@ -170,13 +170,22 @@ export async function dispatchAppRouteHandler(
   const { route } = options;
   const handler = route.routeHandler;
   const method = options.request.method.toUpperCase();
+  const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);
   // Next.js only admits GET Route Handler representations to its Full Route
   // Cache. POST/PUT/etc. can still set their own HTTP cache headers, but must
   // not inherit framework cacheability from a probed GET route pattern.
   if (method === "GET") {
     beginRouteCacheability("app-route", route.pattern);
+    if (handler.dynamic === "force-dynamic" || revalidateSeconds === 0) {
+      recordRouteCacheability({
+        cacheable: false,
+        reason:
+          handler.dynamic === "force-dynamic"
+            ? "route handler uses dynamic = force-dynamic"
+            : "route handler uses revalidate = 0",
+      });
+    }
   }
-  const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);
   const isDevelopment = options.isDevelopment ?? process.env.NODE_ENV === "development";
   const isProduction = options.isProduction ?? process.env.NODE_ENV === "production";
   const appendResponseLink = handler.runtime === "edge" || handler.runtime === "experimental-edge";

@@ -136,155 +136,161 @@ async function handleRequest(
   registerConfiguredCacheAdapters(env);
   registerConfiguredImageOptimizer(env);
 
-  try {
-    const cdnValidationResponse = await validateCdnRequest(request);
-    if (cdnValidationResponse) return cdnValidationResponse;
-
-    const url = new URL(request.url);
-    let pathname = url.pathname;
-
-    if (ctx.isPrerenderPathDiscovery && isWorkerPrerenderDiscoveryPath(pathname)) {
-      const response = await runWithExecutionContext(ctx, () =>
-        handleAppPrerenderEndpoint(request, {
-          isPrerenderEnabled: () => true,
-          loadPagesRoutes: async () => pagesEntry.pageRoutes,
-          pathname,
-          staticParamsMap: {},
-        }),
-      );
-      if (response) return response;
-    }
-
-    // Block protocol-relative URL open redirects in all shapes:
-    //   literal  //evil.com, /\\evil.com
-    //   encoded  /%5Cevil.com, /%2F/evil.com
-    // Browsers normalize backslash to forward slash, and percent-decode
-    // Location headers, so encoded variants must be rejected before any
-    // downstream redirect can echo them.
-    if (isOpenRedirectShaped(pathname)) {
-      return new Response("This page could not be found", { status: 404 });
-    }
+  return runWithExecutionContext(ctx, async () => {
     try {
-      normalizePathnameForRouteMatchStrict(pathname);
-    } catch {
-      return new Response("Bad Request", { status: 400 });
-    }
+      const cdnValidationResponse = await validateCdnRequest(request);
+      if (cdnValidationResponse) return cdnValidationResponse;
 
-    // Valid assets are served by Cloudflare's ASSETS binding before the worker
-    // is invoked. Missing asset-shaped requests still need to reach middleware
-    // so it can rewrite/respond; a final 404 is converted back below.
-    const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix);
+      const url = new URL(request.url);
+      let pathname = url.pathname;
 
-    // Strip internal headers from inbound requests so callers cannot forge
-    // framework state. Request.headers is immutable in Workers.
-    const filteredHeaders = ctx.isInternalPagesRevalidation
-      ? new Headers(request.headers)
-      : filterInternalHeaders(request.headers);
-    filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
-    request = cloneRequestWithHeaders(request, filteredHeaders);
-
-    // Track basePath presence on the original request so matcher gating can
-    // distinguish requests inside basePath from requests outside it.
-    const hadBasePath = !basePath || hasBasePath(pathname, basePath);
-    {
-      const stripped = stripBasePath(pathname, basePath);
-      if (stripped !== pathname) {
-        const strippedUrl = new URL(request.url);
-        strippedUrl.pathname = stripped;
-        request = cloneRequestWithUrl(request, strippedUrl.toString());
-        pathname = stripped;
-      }
-    }
-
-    const middlewareRequest = request;
-    const dataNorm = normalizeDataRequest(request);
-    if (dataNorm.notFoundResponse && !vinextConfig?.skipProxyUrlNormalize) {
-      return dataNorm.notFoundResponse;
-    }
-    const isDataReq = dataNorm.isDataReq;
-    if (isDataReq && dataNorm.normalizedPathname) {
-      request = dataNorm.request;
-      pathname = dataNorm.normalizedPathname;
-    }
-
-    const deps: PagesPipelineDeps = {
-      basePath,
-      trailingSlash,
-      i18nConfig,
-      configRedirects,
-      configRewrites,
-      configHeaders,
-      hadBasePath,
-      isDataReq,
-      isDataRequest: isDataReq,
-      hasMiddleware,
-      ctx,
-      middlewareRequest:
-        isDataReq && vinextConfig?.skipProxyUrlNormalize ? middlewareRequest : undefined,
-      dataNotFoundResponse: vinextConfig?.skipProxyUrlNormalize ? dataNorm.notFoundResponse : null,
-      authorizeOnDemandRevalidate:
-        typeof authorizeOnDemandRevalidate === "function" ? authorizeOnDemandRevalidate : undefined,
-      matchApiRoute: typeof matchApiRoute === "function" ? matchApiRoute : null,
-      matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
-      runMiddleware:
-        typeof runMiddleware === "function"
-          ? wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)
-          : null,
-      renderPage:
-        typeof renderPage === "function"
-          ? (req, resolvedUrl, options, stagedHeaders) =>
-              renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)
-          : null,
-      handleApi:
-        typeof handleApiRoute === "function"
-          ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin, "worker")
-          : null,
-      serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase, resolvedUrl) => {
-        if (!env?.ASSETS) return false;
-        if (isImageOptimizationPath(requestPathname)) {
-          const imageUrl = new URL(resolvedUrl, request.url);
-          const imageRequest = new Request(imageUrl, request);
-          const allowedWidths = [
-            ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
-            ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
-          ];
-          return handleConfiguredImageOptimization(
-            imageRequest,
-            (assetPath) =>
-              Promise.resolve(env.ASSETS!.fetch(new Request(new URL(assetPath, request.url)))),
-            allowedWidths,
-            imageConfig,
-          );
-        }
-        return fetchWorkerFilesystemRoute(
-          request,
-          requestPathname,
-          phase,
-          (assetRequest) => Promise.resolve(env.ASSETS!.fetch(assetRequest)),
-          publicFiles,
-          missingBuildAsset,
+      if (ctx.isPrerenderPathDiscovery && isWorkerPrerenderDiscoveryPath(pathname)) {
+        const response = await runWithExecutionContext(ctx, () =>
+          handleAppPrerenderEndpoint(request, {
+            isPrerenderEnabled: () => true,
+            loadPagesRoutes: async () => pagesEntry.pageRoutes,
+            pathname,
+            staticParamsMap: {},
+          }),
         );
-      },
-    };
+        if (response) return response;
+      }
 
-    const result = await runPagesRequest(request, deps);
-    if (result.type === "response") {
+      // Block protocol-relative URL open redirects in all shapes:
+      //   literal  //evil.com, /\\evil.com
+      //   encoded  /%5Cevil.com, /%2F/evil.com
+      // Browsers normalize backslash to forward slash, and percent-decode
+      // Location headers, so encoded variants must be rejected before any
+      // downstream redirect can echo them.
+      if (isOpenRedirectShaped(pathname)) {
+        return new Response("This page could not be found", { status: 404 });
+      }
+      try {
+        normalizePathnameForRouteMatchStrict(pathname);
+      } catch {
+        return new Response("Bad Request", { status: 400 });
+      }
+
+      // Valid assets are served by Cloudflare's ASSETS binding before the worker
+      // is invoked. Missing asset-shaped requests still need to reach middleware
+      // so it can rewrite/respond; a final 404 is converted back below.
+      const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix);
+
+      // Strip internal headers from inbound requests so callers cannot forge
+      // framework state. Request.headers is immutable in Workers.
+      const filteredHeaders = ctx.isInternalPagesRevalidation
+        ? new Headers(request.headers)
+        : filterInternalHeaders(request.headers);
+      filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
+      request = cloneRequestWithHeaders(request, filteredHeaders);
+
+      // Track basePath presence on the original request so matcher gating can
+      // distinguish requests inside basePath from requests outside it.
+      const hadBasePath = !basePath || hasBasePath(pathname, basePath);
+      {
+        const stripped = stripBasePath(pathname, basePath);
+        if (stripped !== pathname) {
+          const strippedUrl = new URL(request.url);
+          strippedUrl.pathname = stripped;
+          request = cloneRequestWithUrl(request, strippedUrl.toString());
+          pathname = stripped;
+        }
+      }
+
+      const middlewareRequest = request;
+      const dataNorm = normalizeDataRequest(request);
+      if (dataNorm.notFoundResponse && !vinextConfig?.skipProxyUrlNormalize) {
+        return dataNorm.notFoundResponse;
+      }
+      const isDataReq = dataNorm.isDataReq;
+      if (isDataReq && dataNorm.normalizedPathname) {
+        request = dataNorm.request;
+        pathname = dataNorm.normalizedPathname;
+      }
+
+      const deps: PagesPipelineDeps = {
+        basePath,
+        trailingSlash,
+        i18nConfig,
+        configRedirects,
+        configRewrites,
+        configHeaders,
+        hadBasePath,
+        isDataReq,
+        isDataRequest: isDataReq,
+        hasMiddleware,
+        ctx,
+        middlewareRequest:
+          isDataReq && vinextConfig?.skipProxyUrlNormalize ? middlewareRequest : undefined,
+        dataNotFoundResponse: vinextConfig?.skipProxyUrlNormalize
+          ? dataNorm.notFoundResponse
+          : null,
+        authorizeOnDemandRevalidate:
+          typeof authorizeOnDemandRevalidate === "function"
+            ? authorizeOnDemandRevalidate
+            : undefined,
+        matchApiRoute: typeof matchApiRoute === "function" ? matchApiRoute : null,
+        matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
+        runMiddleware:
+          typeof runMiddleware === "function"
+            ? wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)
+            : null,
+        renderPage:
+          typeof renderPage === "function"
+            ? (req, resolvedUrl, options, stagedHeaders) =>
+                renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)
+            : null,
+        handleApi:
+          typeof handleApiRoute === "function"
+            ? (req, apiUrl) => handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin, "worker")
+            : null,
+        serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase, resolvedUrl) => {
+          if (!env?.ASSETS) return false;
+          if (isImageOptimizationPath(requestPathname)) {
+            const imageUrl = new URL(resolvedUrl, request.url);
+            const imageRequest = new Request(imageUrl, request);
+            const allowedWidths = [
+              ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
+              ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
+            ];
+            return handleConfiguredImageOptimization(
+              imageRequest,
+              (assetPath) =>
+                Promise.resolve(env.ASSETS!.fetch(new Request(new URL(assetPath, request.url)))),
+              allowedWidths,
+              imageConfig,
+            );
+          }
+          return fetchWorkerFilesystemRoute(
+            request,
+            requestPathname,
+            phase,
+            (assetRequest) => Promise.resolve(env.ASSETS!.fetch(assetRequest)),
+            publicFiles,
+            missingBuildAsset,
+          );
+        },
+      };
+
+      const result = await runPagesRequest(request, deps);
+      if (result.type === "response") {
+        return finalizeWorkerCacheabilityResponse(
+          finalizeMissingStaticAssetResponse(result.response, missingBuildAsset),
+          ctx,
+        );
+      }
+
+      // Should not reach here for a production Worker because all callbacks are
+      // supplied by virtual:vinext-server-entry.
       return finalizeWorkerCacheabilityResponse(
-        finalizeMissingStaticAssetResponse(result.response, missingBuildAsset),
+        missingBuildAsset
+          ? notFoundStaticAssetResponse()
+          : new Response("This page could not be found", { status: 404 }),
         ctx,
       );
+    } catch (error) {
+      console.error("[vinext] Worker error:", error);
+      return new Response("Internal Server Error", { status: 500 });
     }
-
-    // Should not reach here for a production Worker because all callbacks are
-    // supplied by virtual:vinext-server-entry.
-    return finalizeWorkerCacheabilityResponse(
-      missingBuildAsset
-        ? notFoundStaticAssetResponse()
-        : new Response("This page could not be found", { status: 404 }),
-      ctx,
-    );
-  } catch (error) {
-    console.error("[vinext] Worker error:", error);
-    return new Response("Internal Server Error", { status: 500 });
-  }
+  });
 }

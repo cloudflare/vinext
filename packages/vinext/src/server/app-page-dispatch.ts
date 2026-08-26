@@ -86,11 +86,16 @@ import type { AppPageSsrHandler } from "./app-page-stream.js";
 import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
-import { beginRouteCacheability, recordRouteCacheability } from "./cacheability-request.js";
+import {
+  beginRouteCacheability,
+  isAdmissibleCacheStatus,
+  recordRouteCacheability,
+} from "./cacheability-request.js";
 import {
   applyCdnResponseHeaders,
   buildRevalidateCacheControl,
   hasExplicitNonCacheableResponsePolicy,
+  NO_STORE_CACHE_CONTROL,
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
@@ -645,6 +650,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     // Eligibility belongs to the route (Cache Components), not just the
     // internal request currently generating a fallback shell.
     partialPrerender: options.pprRuntime !== undefined,
+    // Deploy probes classify full HTML. RSC and PPR loading-shell variants
+    // perform their own completed-render check so one representation cannot
+    // suppress or certify another.
+    useManifestClassification: !options.isRscRequest,
   });
   const dynamicConfig = options.dynamicConfig;
   const currentRevalidateSeconds = options.revalidateSeconds;
@@ -676,6 +685,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const layoutParamAccess = createAppLayoutParamAccessTracker();
   const activeLoadingTreePositions = getActiveLoadingTreePositions(route);
   const hasActiveLoadingBoundary = activeLoadingTreePositions.length > 0;
+  const requestCacheLife = _captureRequestScopedCacheLifeAccessors();
   const classifiedTerminalResponses = new WeakSet<Response>();
   const classifyTerminalResponse = (response: Response): Response => {
     if (classifiedTerminalResponses.has(response)) return response;
@@ -684,6 +694,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     const dynamicUsage = consumeDynamicUsage();
     const explicitlyUncacheable =
       response.headers.has("set-cookie") || hasExplicitNonCacheableResponsePolicy(response.headers);
+    const completedCacheLife = requestCacheLife.peek();
+    const completedRevalidateSeconds =
+      completedCacheLife?.revalidate === undefined
+        ? currentRevalidateSeconds
+        : currentRevalidateSeconds === null
+          ? completedCacheLife.revalidate
+          : Math.min(currentRevalidateSeconds, completedCacheLife.revalidate);
+    const completedExpireSeconds = completedCacheLife?.expire ?? options.expireSeconds;
     const canCacheTerminalResponse =
       !dynamicUsage &&
       !explicitlyUncacheable &&
@@ -692,13 +710,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       !isForceDynamic &&
       !options.scriptNonce &&
       options.isProgressiveActionRender !== true &&
-      response.status >= 200 &&
-      response.status < 500 &&
-      currentRevalidateSeconds !== 0;
+      isAdmissibleCacheStatus(response.status) &&
+      completedRevalidateSeconds !== 0;
     const cacheControl =
-      currentRevalidateSeconds === null
+      completedRevalidateSeconds === null || completedRevalidateSeconds === Infinity
         ? STATIC_CACHE_CONTROL
-        : buildRevalidateCacheControl(currentRevalidateSeconds, options.expireSeconds);
+        : buildRevalidateCacheControl(completedRevalidateSeconds, completedExpireSeconds);
     const tags = buildAppPageTags(
       options.cleanPathname,
       getCollectedFetchTags(),
@@ -706,6 +723,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     );
     if (canCacheTerminalResponse) {
       applyCdnResponseHeaders(response.headers, { cacheControl, tags });
+    } else {
+      applyCdnResponseHeaders(response.headers, { cacheControl: NO_STORE_CACHE_CONTROL });
     }
     recordRouteCacheability(
       canCacheTerminalResponse
@@ -1166,7 +1185,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const pprFallbackShellReactSignal = activeFallbackShellState?.reactAbortController.signal;
   const isSpeculativePrerender =
     isPrerender && options.request.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
-  const requestCacheLife = _captureRequestScopedCacheLifeAccessors();
 
   return renderAppPageLifecycle({
     basePath: options.basePath,

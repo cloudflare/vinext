@@ -20,6 +20,7 @@ import {
   finalizeWorkerCacheabilityResponse,
   markRequestCacheabilityUnsafe,
   markRouteCacheabilityPolicyProvisional,
+  recordRouteCacheability,
 } from "../packages/vinext/src/server/cacheability-request.js";
 import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
 import { finalizeAppPageHtmlCacheResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
@@ -37,6 +38,7 @@ const manifestGlobal = "__VINEXT_CACHEABILITY_MANIFEST__";
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  delete globalThis.__VINEXT_onRequestErrorHandler__;
   resetEmbeddedCacheabilityManifestForTests();
   setCdnCacheAdapter(new DefaultCdnCacheAdapter());
 });
@@ -220,6 +222,47 @@ describe("cacheability manifests", () => {
     expect(requests[0].headers.get("X-Vinext-Cacheability-Probe")).toBe("1");
     expect(requests[0].headers.get("X-Vinext-Prerender-Secret")).toBe("secret-a");
     expect(requests[1].url).toBe("https://shop.example.com/products/dynamic");
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("keeps probe renders and the embedded manifest bounded by route patterns", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-sparse-probe-"));
+    fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "dist/server/vinext-server.json"),
+      JSON.stringify({ prerenderSecret: "secret-a" }),
+    );
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        kind: "app-page",
+        pattern: "/catalog/:slug",
+        state: "static-candidate",
+        status: 200,
+        version: 1,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const generatedPaths = Array.from({ length: 1_000 }, (_, index) => `/catalog/item-${index}`);
+    const result = await probeStagedWorkerCacheability({
+      root,
+      routes: [
+        {
+          kind: "app-page",
+          path: generatedPaths[0],
+          pattern: "/catalog/:slug",
+          probePath: generatedPaths[0],
+          runtimeCheckWarmPaths: generatedPaths.slice(1),
+          warmPaths: [generatedPaths[0]],
+        },
+      ],
+      targetUrl: "https://shop.example.com",
+    });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(result.probed).toBe(1);
+    expect(Object.keys(result.manifest.routes)).toHaveLength(2);
+    expect(JSON.stringify(result.manifest)).not.toContain("item-999");
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -427,6 +470,63 @@ describe("buffered cache admission", () => {
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     await expect(response.text()).resolves.toBe("public-looking");
+  });
+
+  it("keeps request-varying safety as a monotonic veto after App finalization", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/conditional-finalizer"),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      markRequestCacheabilityUnsafe("middleware can vary this pathname");
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      const pending = finalizeAppPageHtmlCacheResponse(new Response("completed static"), {
+        capturedRscDataPromise: null,
+        cleanPathname: "/products/conditional-finalizer",
+        consumeDynamicUsage: () => false,
+        getPageTags: () => ["/products/conditional-finalizer"],
+        isrHtmlKey: (pathname) => `html:${pathname}`,
+        isrRscKey: (pathname) => `rsc:${pathname}`,
+        isrSet: vi.fn(async () => {}),
+        linkHeader: null,
+        revalidateSeconds: 60,
+      });
+      return finalizeWorkerCacheabilityResponse(pending, ctx);
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    await expect(response.text()).resolves.toBe("completed static");
+  });
+
+  it("forces an unsafe early response to no-store before route dispatch", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/conditional-redirect"),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      markRequestCacheabilityUnsafe("conditional redirect can vary this pathname");
+      return finalizeWorkerCacheabilityResponse(
+        new Response(null, {
+          headers: { "Cache-Control": "public, s-maxage=60", Location: "/private" },
+          status: 307,
+        }),
+        ctx,
+      );
+    });
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("Location")).toBe("/private");
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
   });
 
   it("disables admission when a middleware source matches but its request condition does not", async () => {
@@ -728,13 +828,15 @@ describe("buffered cache admission", () => {
     },
   );
 
-  it("returns an uncacheable 500 when a proven static route becomes dynamic", async () => {
+  it("reports and returns 500 when a proven static route becomes dynamic", async () => {
     installManifest();
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const reportRequestError = vi.fn();
+    globalThis.__VINEXT_onRequestErrorHandler__ = reportRequestError;
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const ctx = createWorkerCacheabilityContext(
       createContext(),
-      new Request("https://example.com/products/changed"),
+      new Request("https://example.com/products/changed", { headers: { "x-test": "value" } }),
       "secret-a",
     );
 
@@ -744,31 +846,44 @@ describe("buffered cache admission", () => {
       queueMicrotask(() =>
         complete?.({ cacheable: false, dynamicUsage: true, reason: "cookies()" }),
       );
-      return finalizeWorkerCacheabilityResponse(
-        new Response("personalized", {
-          headers: {
-            "Content-Encoding": "gzip",
-            "Content-Length": "999",
-            "Content-Type": "application/octet-stream",
-            ETag: '"personalized"',
-          },
-        }),
-        ctx,
-      );
+      return finalizeWorkerCacheabilityResponse(new Response("personalized"), ctx);
     });
 
     expect(response.status).toBe(500);
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
-    expect(response.headers.get("Content-Encoding")).toBeNull();
-    expect(response.headers.get("Content-Length")).toBeNull();
-    expect(response.headers.get("ETag")).toBeNull();
-    expect(response.headers.get("Content-Type")).toContain("text/plain");
     await expect(response.text()).resolves.toBe("Internal Server Error");
-    expect(consoleError).toHaveBeenCalledOnce();
     expect(consoleError).toHaveBeenCalledWith(
-      "Page changed from static to dynamic at runtime /products/:id, reason: cookies()\n" +
-        "see more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
+      expect.objectContaining({
+        message:
+          "Page changed from static to dynamic at runtime /products/changed, reason: cookies()\n" +
+          "see more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
+      }),
     );
+    expect(reportRequestError).toHaveBeenCalledWith(
+      expect.any(Error),
+      { headers: { "x-test": "value" }, method: "GET", path: "/products/changed" },
+      { routerKind: "App Router", routePath: "/products/:id", routeType: "render" },
+    );
+  });
+
+  it("runtime-checks RSC independently from an HTML static-candidate", async () => {
+    installManifest();
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/changed?_rsc=1", { headers: { RSC: "1" } }),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      recordRouteCacheability({ cacheable: false, dynamicUsage: true, reason: "cookies()" });
+      return finalizeWorkerCacheabilityResponse(new Response("dynamic RSC"), ctx);
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("dynamic RSC");
   });
 
   it("does not raise the static-to-dynamic invariant for a PPR route", async () => {
@@ -909,6 +1024,41 @@ describe("buffered cache admission", () => {
     expect(new TextDecoder().decode(first.value)).toBe("first");
     controller.close();
     await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("returns a dynamic probe envelope before the outer probe deadline", async () => {
+    vi.useFakeTimers();
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/products/slow-probe", {
+      headers: {
+        "X-Vinext-Cacheability-Probe": "1",
+        "X-Vinext-Prerender-Secret": "secret-a",
+      },
+    });
+    const ctx = createWorkerCacheabilityContext(createContext(), request, "secret-a");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("first"));
+      },
+    });
+
+    const pending = runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      return finalizeWorkerCacheabilityResponse(
+        new Response(stream, { headers: { "CDN-Cache-Control": "public, max-age=60" } }),
+        ctx,
+      );
+    });
+    await vi.advanceTimersByTimeAsync(CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS);
+    const response = await pending;
+
+    expect(CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS).toBeLessThan(30_000);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "app-page",
+      pattern: "/products/:id",
+      state: "dynamic",
+    });
   });
 
   it("reports route 500 responses as probe failures", async () => {

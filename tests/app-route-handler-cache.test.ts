@@ -4,6 +4,11 @@ import { isKnownDynamicAppRoute } from "../packages/vinext/src/server/app-route-
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import type { HeadersAccessPhase } from "../packages/vinext/src/shims/headers.js";
+import { _setRequestScopedCacheLife } from "../packages/vinext/src/shims/cache-request-state.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 
 function createDynamicUsageState(): {
   consumeDynamicUsage: () => boolean;
@@ -196,6 +201,7 @@ describe("app route handler cache helpers", () => {
         return ["tag:regen"];
       },
       handlerFn() {
+        _setRequestScopedCacheLife({ revalidate: 5 });
         return Response.json({
           ok: true,
         });
@@ -226,7 +232,7 @@ describe("app route handler cache helpers", () => {
       revalidateSeconds: 60,
       routePattern: "/api/stale",
       async runInRevalidationContext(renderFn) {
-        await renderFn();
+        await runWithRequestContext(createRequestContext(), renderFn);
       },
       scheduleBackgroundRegeneration(_key, renderFn) {
         scheduledRegenerations.push(renderFn);
@@ -249,7 +255,7 @@ describe("app route handler cache helpers", () => {
       {
         key: "route:/api/stale",
         expireSeconds: 300,
-        revalidateSeconds: 60,
+        revalidateSeconds: 5,
         tags: ["/api/stale", "tag:regen"],
       },
     ]);

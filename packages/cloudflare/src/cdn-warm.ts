@@ -45,6 +45,8 @@ export type CdnWarmOptions = {
   retryDelayMs?: number;
   /** Retry a newly staged version or preview alias until its routing has propagated. */
   propagatingTarget?: boolean;
+  /** Require the response to come from a reusable cache entry, not merely an eligible MISS. */
+  requireCacheHit?: boolean;
   strict?: boolean;
   fetchImpl?: typeof fetch;
 };
@@ -69,6 +71,7 @@ export type CdnWarmResult = {
   skipped: number;
   failed: number;
   failures: Array<{ path: string; error: string }>;
+  warmedPlan: CdnWarmRequestPlan;
   retryPlan: CdnWarmRequestPlan;
 };
 
@@ -147,7 +150,10 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
               (route.probePath === undefined || typeof route.probePath === "string") &&
               (route.warmPaths === undefined ||
                 (Array.isArray(route.warmPaths) &&
-                  route.warmPaths.every((pathname) => typeof pathname === "string"))),
+                  route.warmPaths.every((pathname) => typeof pathname === "string"))) &&
+              (route.runtimeCheckWarmPaths === undefined ||
+                (Array.isArray(route.runtimeCheckWarmPaths) &&
+                  route.runtimeCheckWarmPaths.every((pathname) => typeof pathname === "string"))),
           ))) ||
       (manifest.rscPaths !== undefined &&
         (!Array.isArray(manifest.rscPaths) ||
@@ -261,6 +267,13 @@ export function readPrerenderWarmPlan(
             ...(route.probePath ? { probePath: applyConfig(route.probePath) } : {}),
             ...(route.warmPaths
               ? { warmPaths: route.warmPaths.map((pathname) => applyConfig(pathname)) }
+              : {}),
+            ...(route.runtimeCheckWarmPaths
+              ? {
+                  runtimeCheckWarmPaths: route.runtimeCheckWarmPaths.map((pathname) =>
+                    applyConfig(pathname),
+                  ),
+                }
               : {}),
           })),
         }
@@ -409,6 +422,7 @@ const REQUIRED_RSC_VARY_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =
   name.trim().toLowerCase(),
 );
 const ADMITTED_CF_CACHE_STATUSES = new Set(["HIT", "MISS", "EXPIRED", "REVALIDATED", "UPDATING"]);
+const REUSABLE_CF_CACHE_STATUSES = new Set(["HIT", "REVALIDATED", "UPDATING"]);
 const NON_CACHEABLE_CF_CACHE_STATUSES = new Set(["BYPASS"]);
 const CDN_CACHE_POLICY_HEADERS = [
   "Cloudflare-CDN-Cache-Control",
@@ -456,7 +470,11 @@ type WarmValidation =
   | { outcome: "skipped"; reason: string }
   | { outcome: "failed"; error: string };
 
-function validateCachePolicy(response: Response, requireCacheStatus: boolean): WarmValidation {
+function validateCachePolicy(
+  response: Response,
+  requireCacheStatus: boolean,
+  requireCacheHit = false,
+): WarmValidation {
   const effectivePolicy = CDN_CACHE_POLICY_HEADERS.map((name) => ({
     name,
     value: response.headers.get(name),
@@ -483,6 +501,12 @@ function validateCachePolicy(response: Response, requireCacheStatus: boolean): W
       return {
         outcome: "failed",
         error: "response sets a cookie without an observable field-qualified cache policy",
+      };
+    }
+    if (requireCacheHit && !REUSABLE_CF_CACHE_STATUSES.has(cacheStatus)) {
+      return {
+        outcome: "failed",
+        error: `CF-Cache-Status is ${cacheStatus}; the cache fill is not yet reusable`,
       };
     }
     return { outcome: "warmed" };
@@ -552,6 +576,7 @@ function validateRscWarmResponse(
   response: Response,
   expectedBuildId?: string,
   expectedRscBuildId?: string,
+  requireCacheHit = false,
 ): WarmValidation {
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
@@ -580,7 +605,7 @@ function validateRscWarmResponse(
   ) {
     return { outcome: "failed", error: `expected ${VINEXT_RSC_CONTENT_TYPE} response` };
   }
-  const cachePolicyValidation = validateCachePolicy(response, true);
+  const cachePolicyValidation = validateCachePolicy(response, true, requireCacheHit);
   if (cachePolicyValidation.outcome !== "warmed") return cachePolicyValidation;
   if (
     terminalResponse &&
@@ -605,7 +630,11 @@ function validateRscWarmResponse(
   return { outcome: "warmed" };
 }
 
-function validateHtmlWarmResponse(response: Response, expectedBuildId?: string): WarmValidation {
+function validateHtmlWarmResponse(
+  response: Response,
+  expectedBuildId?: string,
+  requireCacheHit = false,
+): WarmValidation {
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
   if (response.redirected) {
@@ -617,7 +646,7 @@ function validateHtmlWarmResponse(response: Response, expectedBuildId?: string):
       return { outcome: "failed", error: `HTTP ${response.status}` };
     }
   }
-  const cachePolicyValidation = validateCachePolicy(response, true);
+  const cachePolicyValidation = validateCachePolicy(response, true, requireCacheHit);
   if (cachePolicyValidation.outcome !== "warmed") return cachePolicyValidation;
   const extraVary = (response.headers.get("Vary") ?? "")
     .split(",")
@@ -815,6 +844,7 @@ async function warmOnePath(
     retryPropagationFailures: boolean;
     retryDelayMs: number;
     retryNotFound: boolean;
+    requireCacheHit: boolean;
   },
 ): Promise<
   | { path: string; ok: true; skipped: false }
@@ -858,6 +888,7 @@ async function warmOnePath(
           response,
           options.expectedBuildId,
           options.expectedRscBuildId,
+          options.requireCacheHit,
         );
         if (validation.outcome === "warmed") {
           return { path: target.label, ok: true, skipped: false };
@@ -866,14 +897,26 @@ async function warmOnePath(
           return { path: target.label, ok: true, skipped: true, reason: validation.reason };
         }
         lastError = validation.error;
-        lastRetryable = shouldRetryValidationFailure(response, target, options);
+        lastRetryable =
+          (options.requireCacheHit &&
+            ADMITTED_CF_CACHE_STATUSES.has(
+              response.headers.get("CF-Cache-Status")?.trim().toUpperCase() ?? "",
+            ) &&
+            !REUSABLE_CF_CACHE_STATUSES.has(
+              response.headers.get("CF-Cache-Status")?.trim().toUpperCase() ?? "",
+            )) ||
+          shouldRetryValidationFailure(response, target, options);
         if (!lastRetryable) break;
         if (!canRetry(attempt)) break;
         await waitBeforeRetry();
         continue;
       }
 
-      const validation = validateHtmlWarmResponse(response, options.expectedBuildId);
+      const validation = validateHtmlWarmResponse(
+        response,
+        options.expectedBuildId,
+        options.requireCacheHit,
+      );
       if (validation.outcome === "warmed") {
         return { path: target.label, ok: true, skipped: false };
       }
@@ -881,7 +924,15 @@ async function warmOnePath(
         return { path: target.label, ok: true, skipped: true, reason: validation.reason };
       }
       lastError = validation.error;
-      lastRetryable = shouldRetryValidationFailure(response, target, options);
+      lastRetryable =
+        (options.requireCacheHit &&
+          ADMITTED_CF_CACHE_STATUSES.has(
+            response.headers.get("CF-Cache-Status")?.trim().toUpperCase() ?? "",
+          ) &&
+          !REUSABLE_CF_CACHE_STATUSES.has(
+            response.headers.get("CF-Cache-Status")?.trim().toUpperCase() ?? "",
+          )) ||
+        shouldRetryValidationFailure(response, target, options);
       if (!lastRetryable) break;
     } catch (error) {
       lastRetryable = true;
@@ -989,6 +1040,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       skipped: 0,
       failed: 0,
       failures: [],
+      warmedPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
       retryPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
     };
   }
@@ -1019,6 +1071,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       retryPropagationFailures: isPropagationRequest,
       retryDelayMs: isPropagationRequest ? propagationRetryDelayMs : normalRetryDelayMs,
       retryNotFound: isPropagationRequest,
+      requireCacheHit: options.requireCacheHit === true,
     });
   };
 
@@ -1101,6 +1154,10 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     );
   const failures = failedRequests.map(({ result: { path, error } }) => ({ path, error }));
   const skippedResults = results.filter((result) => result.ok && result.skipped);
+  const warmedRequests = requests.filter((_target, index) => {
+    const result = results[index];
+    return result.ok && !result.skipped;
+  });
   const warmed = results.length - failures.length - skippedResults.length;
 
   console.log(
@@ -1124,6 +1181,17 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     skipped: skippedResults.length,
     failed: failures.length,
     failures,
+    warmedPlan: {
+      loadingShellPaths: warmedRequests
+        .filter((target) => target.kind === "rsc-loading-shell")
+        .map((target) => target.sourcePathname),
+      paths: warmedRequests
+        .filter((target) => target.kind === "html")
+        .map((target) => target.sourcePathname),
+      rscPaths: warmedRequests
+        .filter((target) => target.kind === "rsc-full")
+        .map((target) => target.sourcePathname),
+    },
     retryPlan: {
       loadingShellPaths: failedRequests
         .filter(({ target }) => target.kind === "rsc-loading-shell")

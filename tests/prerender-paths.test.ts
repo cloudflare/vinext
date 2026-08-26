@@ -132,16 +132,10 @@ describe("prerender path manifest", () => {
         { kind: "app-page", path: "/", pattern: "/", probePath: "/", warmPaths: ["/"] },
         {
           kind: "app-page",
-          path: "/cached/featured",
-          pattern: "/cached/:slug",
-          probePath: "/cached/featured",
-          warmPaths: ["/cached/featured"],
-        },
-        {
-          kind: "app-page",
           path: "/cached/intro",
           pattern: "/cached/:slug",
           probePath: "/cached/intro",
+          runtimeCheckWarmPaths: ["/cached/featured"],
           warmPaths: ["/cached/intro"],
         },
         {
@@ -156,14 +150,8 @@ describe("prerender path manifest", () => {
           path: "/cache-handler/one",
           pattern: "/cache-handler/:slug",
           probePath: "/cache-handler/one",
+          runtimeCheckWarmPaths: ["/cache-handler/two"],
           warmPaths: ["/cache-handler/one"],
-        },
-        {
-          kind: "app-route",
-          path: "/cache-handler/two",
-          pattern: "/cache-handler/:slug",
-          probePath: "/cache-handler/two",
-          warmPaths: ["/cache-handler/two"],
         },
         {
           kind: "app-route",
@@ -222,15 +210,16 @@ describe("prerender path manifest", () => {
 
     const { emitPrerenderPathManifest } =
       await import("../packages/vinext/src/build/prerender-paths.js");
-    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
 
     expect(manifest?.cacheabilityRoutes).toEqual([
       {
-        fallbackState: "dynamic",
         kind: "app-page",
-        path: "/guarded",
         pattern: "/guarded",
-        warmPaths: ["/guarded"],
+        fallbackState: "runtime-check",
       },
       {
         kind: "app-page",
@@ -490,6 +479,50 @@ describe("prerender path manifest", () => {
       kind: "app-page",
       pattern: "/rewrite-me",
     });
+  });
+
+  it("does not reintroduce a config-shadowed fixed Route Handler as a probe target", async () => {
+    // Next.js applies config rewrites before filesystem Route Handlers:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/api/source/route.ts",
+      'export const revalidate = 60; export function GET() { return new Response("source"); }\n',
+    );
+    writeFile(
+      "app/api/target/route.ts",
+      'export function GET() { return new Response("target"); }\n',
+    );
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        rewrites: () => [{ source: "/api/source", destination: "/api/target" }],
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.excludedWarmPaths).toEqual(["/api/source"]);
+    expect(manifest?.cacheabilityRoutes).toContainEqual({
+      fallbackState: "runtime-check",
+      kind: "app-route",
+      pattern: "/api/source",
+    });
+    expect(manifest?.cacheabilityRoutes).not.toContainEqual(
+      expect.objectContaining({ pattern: "/api/source", probePath: "/api/source" }),
+    );
   });
 
   it("excludes warm paths covered by request-conditional config headers", async () => {
@@ -1218,9 +1251,14 @@ describe("prerender path manifest", () => {
       "/docs/posts/%7Euser/",
       "/docs/posts/a%2fb/",
     ]);
-    expect(new Set(warmPlan.cacheabilityRoutes?.flatMap((route) => route.path ?? []))).toEqual(
-      new Set(warmPlan.paths),
-    );
+    expect(
+      new Set(
+        warmPlan.cacheabilityRoutes?.flatMap((route) => [
+          ...(route.warmPaths ?? []),
+          ...(route.runtimeCheckWarmPaths ?? []),
+        ]),
+      ),
+    ).toEqual(new Set(warmPlan.paths));
   });
 
   it("fails path discovery when getStaticPaths returns an HTTP error", async () => {

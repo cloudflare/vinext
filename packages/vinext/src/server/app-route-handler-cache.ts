@@ -10,6 +10,7 @@ import {
 } from "./app-route-handler-response.js";
 import { markKnownDynamicAppRoute } from "./app-route-handler-runtime.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
+import { _captureRequestScopedCacheLifeAccessors } from "vinext/shims/cache-request-state";
 import {
   runAppRouteHandler,
   type AppRouteDebugLogger,
@@ -108,6 +109,7 @@ export async function readAppRouteHandlerCacheResponse(
 
       options.scheduleBackgroundRegeneration(routeKey, async () => {
         await options.runInRevalidationContext(async () => {
+          const requestCacheLife = _captureRequestScopedCacheLifeAccessors();
           options.setNavigationContext({
             pathname: options.cleanPathname,
             searchParams: revalidateSearchParams,
@@ -141,10 +143,16 @@ export async function readAppRouteHandlerCacheResponse(
             options.cleanPathname,
             options.getCollectedFetchTags(),
           );
+          const completedCacheLife = requestCacheLife.peek();
+          const revalidateSeconds =
+            completedCacheLife?.revalidate === undefined
+              ? options.revalidateSeconds
+              : Math.min(options.revalidateSeconds, completedCacheLife.revalidate);
+          const expireSeconds = completedCacheLife?.expire ?? options.expireSeconds;
           const routeCacheValue = await buildAppRouteCacheValue(response);
           await options.isrSet(routeKey, routeCacheValue, {
-            cacheControl: isrCacheControl(options.revalidateSeconds, {
-              expireSeconds: options.expireSeconds,
+            cacheControl: isrCacheControl(revalidateSeconds, {
+              expireSeconds,
             }),
             tags: routeTags,
           });

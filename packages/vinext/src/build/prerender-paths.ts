@@ -23,7 +23,6 @@ import {
   classifyAppRoute,
   classifyPagesRoute,
   extractMiddlewareMatcherConfig,
-  type StaticMiddlewareMatcher,
 } from "./report.js";
 import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
@@ -73,6 +72,8 @@ export type CacheabilityProbeRoute = {
   probePath?: string;
   /** Concrete warm targets owned by this exact classification item. */
   warmPaths?: string[];
+  /** Additional paths warmed once with the final Worker's runtime check. */
+  runtimeCheckWarmPaths?: string[];
 };
 
 export const PRERENDER_PATH_DISCOVERY_ENV = "__VINEXT_PRERENDER_PATH_DISCOVERY";
@@ -730,8 +731,8 @@ async function resolveAppWarmPaths(options: {
 
 async function collectCacheabilityProbeRoutes(options: {
   appDir: string | null;
+  excludedPaths?: ReadonlySet<string>;
   i18n: ResolvedNextConfig["i18n"];
-  middleware?: { matcher: StaticMiddlewareMatcher | undefined };
   pagesDir: string | null;
   pageExtensions: readonly string[];
   paths: readonly string[];
@@ -777,23 +778,20 @@ async function collectCacheabilityProbeRoutes(options: {
   }
 
   const result: CacheabilityProbeRoute[] = [];
-  const addConcreteRoute = (
+  const addProbeableRoute = (
     kind: CacheabilityProbeRoute["kind"],
     pattern: string,
-    pathname: string,
-    optionsForPath: { intrinsicallyDynamic?: boolean } = {},
+    warmPaths: readonly string[],
   ): void => {
-    const middlewareCovered = Boolean(
-      options.middleware &&
-      middlewareMatcherCanRunForPath(pathname, options.middleware.matcher, options.i18n),
-    );
-    const dynamic = middlewareCovered || optionsForPath.intrinsicallyDynamic === true;
+    const [probePath, ...runtimeCheckWarmPaths] = warmPaths;
+    if (!probePath) return;
     result.push({
-      ...(dynamic ? { fallbackState: "dynamic" as const } : { probePath: pathname }),
       kind,
-      path: pathname,
+      path: probePath,
       pattern,
-      warmPaths: [pathname],
+      probePath,
+      warmPaths: [probePath],
+      ...(runtimeCheckWarmPaths.length > 0 ? { runtimeCheckWarmPaths } : {}),
     });
   };
 
@@ -803,16 +801,14 @@ async function collectCacheabilityProbeRoutes(options: {
     const kind = route.routePath ? "app-route" : "app-page";
     const key = `${kind}:${route.pattern}`;
     const warmPaths = pathsByRoute.get(key) ?? [];
-    for (const pathname of warmPaths) {
-      addConcreteRoute(kind, route.pattern, pathname);
-    }
+    addProbeableRoute(kind, route.pattern, warmPaths);
     if (warmPaths.length > 0) continue;
 
     // Next.js can prerender a fixed GET route handler. Probe it independently
     // and expose it as a final warm target; a dynamic handler remains an
     // on-demand runtime check until generateStaticParams discovery is wired.
-    if (kind === "app-route" && !route.isDynamic) {
-      addConcreteRoute(kind, route.pattern, route.pattern);
+    if (kind === "app-route" && !route.isDynamic && !options.excludedPaths?.has(route.pattern)) {
+      addProbeableRoute(kind, route.pattern, [route.pattern]);
     } else {
       result.push({ kind, pattern: route.pattern, fallbackState: "runtime-check" });
     }
@@ -832,11 +828,7 @@ async function collectCacheabilityProbeRoutes(options: {
     const key = `pages-page:${route.pattern}`;
     const isSsr = classifyPagesRoute(route.filePath).type === "ssr";
     const warmPaths = pathsByRoute.get(key) ?? [];
-    for (const pathname of warmPaths) {
-      addConcreteRoute("pages-page", route.pattern, pathname, {
-        intrinsicallyDynamic: isSsr,
-      });
-    }
+    if (!isSsr) addProbeableRoute("pages-page", route.pattern, warmPaths);
     if (warmPaths.length === 0 || isSsr) {
       result.push({
         fallbackState: isSsr ? "dynamic" : "runtime-check",
@@ -1022,9 +1014,27 @@ export async function emitPrerenderPathManifest(
     }
   });
 
+  const routeConventionBase = path.dirname(appDir ?? pagesDir!);
+  const middlewareConventionDir =
+    routeConventionBase === path.join(root, "src") ? routeConventionBase : root;
+  const middlewarePath = findMiddlewareFile(
+    root,
+    createValidFileMatcher(config.pageExtensions),
+    middlewareConventionDir,
+  );
+  const middlewareMatcher = middlewarePath
+    ? extractMiddlewareMatcherConfig(middlewarePath)
+    : undefined;
   const excludedWarmPathSet = new Set(
     options.responseVary
-      ? paths.filter((pathname) => configuredRouteAffectsWarmPath(pathname, config))
+      ? paths.filter(
+          (pathname) =>
+            configuredRouteAffectsWarmPath(pathname, config) ||
+            Boolean(
+              middlewarePath &&
+              middlewareMatcherCanRunForPath(pathname, middlewareMatcher, config.i18n),
+            ),
+        )
       : [],
   );
   const configuredPagesWarmPaths = discoveredPagesPaths.filter(
@@ -1054,20 +1064,10 @@ export async function emitPrerenderPathManifest(
         rscPaths: discoveredAppPaths,
       };
   const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : resolvedPagesWarmPaths;
-  const routeConventionBase = path.dirname(appDir ?? pagesDir!);
-  const middlewareConventionDir =
-    routeConventionBase === path.join(root, "src") ? routeConventionBase : root;
-  const middlewarePath = findMiddlewareFile(
-    root,
-    createValidFileMatcher(config.pageExtensions),
-    middlewareConventionDir,
-  );
   const cacheabilityRoutes = await collectCacheabilityProbeRoutes({
     appDir,
+    excludedPaths: excludedWarmPathSet,
     i18n: config.i18n,
-    ...(middlewarePath
-      ? { middleware: { matcher: extractMiddlewareMatcherConfig(middlewarePath) } }
-      : {}),
     pagesDir,
     pageExtensions: config.pageExtensions,
     paths: paths.filter((pathname) => !excludedWarmPathSet.has(pathname)),

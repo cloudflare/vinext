@@ -9,7 +9,11 @@ import {
   type CacheabilityRouteKind,
   type CacheabilityRouteState,
 } from "./cacheability-manifest.js";
-import { VINEXT_CACHEABILITY_PROBE_HEADER, VINEXT_PRERENDER_SECRET_HEADER } from "./headers.js";
+import {
+  RSC_HEADER,
+  VINEXT_CACHEABILITY_PROBE_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+} from "./headers.js";
 import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
 
 type CacheabilityOutcome = {
@@ -31,6 +35,9 @@ type CacheabilityRequestState = {
   mode: "admit" | "admit-all" | "probe";
   outcome?: CacheabilityOutcome;
   provisionalPolicy?: CacheabilityPolicySnapshot;
+  requestHeaders: Record<string, string>;
+  requestIsRsc: boolean;
+  requestMethod: string;
   requestPathname: string;
   route?: CacheabilityRequestRoute;
   unsafeReason?: string;
@@ -44,7 +51,9 @@ type CacheabilityPolicySnapshot = {
 
 const CACHEABILITY_STATE = Symbol.for("vinext.cacheabilityRequestState");
 export const CACHEABILITY_RESPONSE_BODY_LIMIT = 16 * 1024 * 1024;
-export const CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS = 30_000;
+// Leave headroom below the deploy probe's 30s request timeout so a slow or
+// never-ending response can still return its fail-closed probe envelope.
+export const CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS = 20_000;
 
 const REPRESENTATION_HEADERS = [
   "accept-ranges",
@@ -84,7 +93,7 @@ function cachePoliciesMatch(a: CacheabilityPolicySnapshot, b: CacheabilityPolicy
   );
 }
 
-function isAdmissibleStatus(status: number): boolean {
+export function isAdmissibleCacheStatus(status: number): boolean {
   return (status >= 200 && status < 400) || status === 404;
 }
 
@@ -97,7 +106,7 @@ function hasNonCacheablePolicy(headers: Headers): boolean {
 }
 
 function responseHasFinalCacheOptOut(response: Response, state: CacheabilityRequestState): boolean {
-  if (!isAdmissibleStatus(response.status) || response.headers.has("set-cookie")) return true;
+  if (!isAdmissibleCacheStatus(response.status) || response.headers.has("set-cookie")) return true;
   if (!hasNonCacheablePolicy(response.headers)) return false;
 
   // App-page candidates deliberately carry an adapter-generated private policy
@@ -111,7 +120,7 @@ function responseHasFinalCacheOptOut(response: Response, state: CacheabilityRequ
 }
 
 function responsePolicyIsCacheable(response: Response): boolean {
-  if (!isAdmissibleStatus(response.status) || response.headers.has("set-cookie")) return false;
+  if (!isAdmissibleCacheStatus(response.status) || response.headers.has("set-cookie")) return false;
   if (hasNonCacheablePolicy(response.headers)) return false;
   return Boolean(
     response.headers.get("CDN-Cache-Control") ??
@@ -135,14 +144,41 @@ function syntheticErrorResponse(response: Response): Response {
   return new Response("Internal Server Error", { headers, status: 500 });
 }
 
-function reportStaticToDynamicError(
+function createStaticToDynamicError(
   state: CacheabilityRequestState,
   outcome: CacheabilityOutcome,
-): void {
+): Error {
   const reason = outcome.reason ? `, reason: ${outcome.reason}` : "";
-  console.error(
-    `Page changed from static to dynamic at runtime ${state.route?.pattern ?? "unknown"}${reason}` +
+  return new Error(
+    `Page changed from static to dynamic at runtime ${state.requestPathname}${reason}` +
       "\nsee more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
+  );
+}
+
+async function reportStaticToDynamicError(
+  state: CacheabilityRequestState,
+  outcome: CacheabilityOutcome,
+): Promise<void> {
+  const error = createStaticToDynamicError(state, outcome);
+  console.error(error);
+  if (!globalThis.__VINEXT_onRequestErrorHandler__) return;
+
+  // Static-to-dynamic is exceptional and rare. Keep instrumentation runtime
+  // code out of the common cache-admission chunk, but report through the same
+  // hook and request metadata as other Next.js-compatible request failures.
+  const { reportRequestError } = await import("./instrumentation.js");
+  void reportRequestError(
+    error,
+    {
+      headers: state.requestHeaders,
+      method: state.requestMethod,
+      path: state.requestPathname,
+    },
+    {
+      routerKind: state.route?.kind === "pages-page" ? "Pages Router" : "App Router",
+      routePath: state.route?.pattern ?? state.requestPathname,
+      routeType: state.route?.kind === "app-route" ? "route" : "render",
+    },
   );
 }
 
@@ -238,6 +274,9 @@ export function createWorkerCacheabilityContext(
 
   const state: CacheabilityRequestState = {
     mode: authorizedProbe ? "probe" : manifest ? "admit" : "admit-all",
+    requestHeaders: Object.fromEntries(request.headers),
+    requestIsRsc: request.headers.get(RSC_HEADER) === "1",
+    requestMethod: request.method,
     requestPathname: new URL(request.url).pathname,
   };
   return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
@@ -248,7 +287,7 @@ export function createWorkerCacheabilityContext(
 export function beginRouteCacheability(
   kind: CacheabilityRouteKind,
   pattern: string,
-  options: { partialPrerender?: boolean } = {},
+  options: { partialPrerender?: boolean; useManifestClassification?: boolean } = {},
 ): boolean {
   const state = readState(getRequestExecutionContext());
   if (!state) return false;
@@ -259,10 +298,16 @@ export function beginRouteCacheability(
   // the completed artifact programmatically and must retain streaming parity.
   if (state.mode !== "probe" && getCdnCacheAdapter().ownsBackgroundRevalidation) return false;
 
-  const manifestRoutes = getEmbeddedCacheabilityManifest()?.routes;
-  const manifestRoute =
-    manifestRoutes?.[cacheabilityRouteKey(kind, pattern, state.requestPathname)] ??
-    manifestRoutes?.[cacheabilityRouteKey(kind, pattern)];
+  const manifestRoutes =
+    options.useManifestClassification === false || (kind === "app-page" && state.requestIsRsc)
+      ? undefined
+      : getEmbeddedCacheabilityManifest()?.routes;
+  // The staged probe certifies the HTML document representation. Full RSC
+  // and loading-shell responses can execute a different part of a PPR tree,
+  // so they retain their own completed-response runtime check.
+  const exactManifestRoute =
+    manifestRoutes?.[cacheabilityRouteKey(kind, pattern, state.requestPathname)];
+  const manifestRoute = exactManifestRoute ?? manifestRoutes?.[cacheabilityRouteKey(kind, pattern)];
   state.route = { kind, pattern, partialPrerender: options.partialPrerender === true };
   state.manifestRoute = manifestRoute;
 
@@ -298,8 +343,11 @@ export function deferRouteCacheability(): ((outcome: CacheabilityOutcome) => voi
 
   state.completion = new Promise<CacheabilityOutcome>((resolve) => {
     state.complete = (outcome) => {
-      state.outcome = outcome;
-      resolve(outcome);
+      const finalOutcome = state.unsafeReason
+        ? { cacheable: false, reason: state.unsafeReason }
+        : outcome;
+      state.outcome = finalOutcome;
+      resolve(finalOutcome);
     };
   });
   return (outcome) => state.complete?.(outcome);
@@ -308,8 +356,11 @@ export function deferRouteCacheability(): ((outcome: CacheabilityOutcome) => voi
 export function recordRouteCacheability(outcome: CacheabilityOutcome): void {
   const state = readState(getRequestExecutionContext());
   if (!state?.route) return;
-  state.outcome = outcome;
-  state.complete?.(outcome);
+  const finalOutcome = state.unsafeReason
+    ? { cacheable: false, reason: state.unsafeReason }
+    : outcome;
+  state.outcome = finalOutcome;
+  state.complete?.(finalOutcome);
 }
 
 /** Record the exact adapter policy used only while an App render is unproven. */
@@ -357,13 +408,16 @@ export async function finalizeWorkerCacheabilityResponse(
   const state = readState(ctx);
   if (!state) return response;
   if (!state.route) {
-    return state.mode === "probe"
-      ? probeResponse(
-          state,
-          "probe-failed",
-          { cacheable: false, reason: "request did not resolve to a probeable route" },
-          response.status,
-        )
+    if (state.mode === "probe") {
+      return probeResponse(
+        state,
+        "probe-failed",
+        { cacheable: false, reason: "request did not resolve to a probeable route" },
+        response.status,
+      );
+    }
+    return state.unsafeReason && !isUpgradeResponse(response)
+      ? uncacheableStreamingResponse(response)
       : response;
   }
 
@@ -395,15 +449,15 @@ export async function finalizeWorkerCacheabilityResponse(
     state.manifestRoute?.state === "static-candidate" &&
     state.route?.partialPrerender !== true &&
     outcome?.dynamicUsage === true;
-  const staticToDynamicError = (outcome: CacheabilityOutcome): Response => {
-    reportStaticToDynamicError(state, outcome);
+  const staticToDynamicErrorResponse = async (outcome: CacheabilityOutcome): Promise<Response> => {
+    await reportStaticToDynamicError(state, outcome);
     return syntheticErrorResponse(response);
   };
 
   const explicitOutcome = state.outcome;
   if (staticCandidateBecameDynamic(explicitOutcome)) {
     void response.body?.cancel().catch(() => {});
-    return staticToDynamicError(explicitOutcome!);
+    return staticToDynamicErrorResponse(explicitOutcome!);
   }
 
   const isEventStream = response.headers
@@ -470,7 +524,8 @@ export async function finalizeWorkerCacheabilityResponse(
           response.headers.get("Cache-Control") ??
           undefined,
       });
-  const cacheable = outcome.cacheable && !responseHasFinalCacheOptOut(response, state);
+  const cacheable =
+    !state.unsafeReason && outcome.cacheable && !responseHasFinalCacheOptOut(response, state);
 
   if (state.mode === "probe") {
     void captured.fallback?.cancel().catch(() => {});
@@ -484,7 +539,7 @@ export async function finalizeWorkerCacheabilityResponse(
 
   if (staticCandidateBecameDynamic(outcome)) {
     void captured.fallback?.cancel().catch(() => {});
-    return staticToDynamicError(outcome);
+    return staticToDynamicErrorResponse(outcome);
   }
 
   void captured.fallback?.cancel().catch(() => {});

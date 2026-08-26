@@ -47,6 +47,7 @@ import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import { _setRequestScopedCacheLife } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
@@ -1930,6 +1931,43 @@ describe("app page dispatch", () => {
     expect(response.status).toBe(404);
     expect(response.headers.get("Cache-Control")).toContain("s-maxage=60");
     await expect(response.text()).resolves.toBe("<html>not found</html>");
+  });
+
+  it("applies the completed render cache-life minimum to a static not-found response", async () => {
+    const renderHttpAccessFallbackPage = vi.fn(async () => {
+      _setRequestScopedCacheLife({ expire: 30, revalidate: 5 });
+      return new Response("<html>not found</html>", { status: 404 });
+    });
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_HTTP_ERROR_FALLBACK;404" },
+      actionFailed: true,
+      isProduction: true,
+      revalidateSeconds: 60,
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage(options),
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Cache-Control")).toBe("s-maxage=5, stale-while-revalidate=25");
+  });
+
+  it("does not make an authorization response cacheable", async () => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_HTTP_ERROR_FALLBACK;401" },
+      actionFailed: true,
+      isProduction: true,
+      revalidateSeconds: 60,
+    });
+    options.renderHttpAccessFallbackPage = async () =>
+      new Response("<html>unauthorized</html>", { status: 401 });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
   });
 
   it("does not bypass cached production HTML for arbitrary draft cookie values", async () => {

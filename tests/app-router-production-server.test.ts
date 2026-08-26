@@ -2038,6 +2038,21 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
   });
 
+  // Ported from Next.js static App Route eligibility and Full Route Cache:
+  // packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts
+  // packages/next/src/build/templates/app-route.ts
+  it("route handler ISR: revalidate=false persists an immutable Full Route entry", async () => {
+    const first = await fetch(`${baseUrl}/api/static-forever`);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("x-vinext-cache")).toBe("MISS");
+    const firstBody = await first.json();
+
+    const second = await fetch(`${baseUrl}/api/static-forever`);
+    expect(second.headers.get("x-vinext-cache")).toBe("HIT");
+    const secondBody = await second.json();
+    expect(secondBody.timestamp).toBe(firstBody.timestamp);
+  });
+
   it("route handler ISR: POST bypasses cache", async () => {
     // POST should never be cached even with revalidate set on GET
     const res = await fetch(`${baseUrl}/api/static-data`, { method: "POST" });

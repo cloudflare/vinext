@@ -294,6 +294,126 @@ describe("app route handler execution helpers", () => {
     expect(reportCalls).toEqual([]);
   });
 
+  it("persists revalidate=false route handlers as immutable Full Route Cache entries", async () => {
+    const writes: Array<number | false> = [];
+    const pendingWrites: Promise<unknown>[] = [];
+    const response = await executeAppRouteHandler({
+      buildPageCacheTags(pathname, extraTags) {
+        return [pathname, ...extraTags];
+      },
+      cleanPathname: "/api/immutable",
+      clearRequestContext() {},
+      consumeDynamicUsage() {
+        return false;
+      },
+      executionContext: {
+        waitUntil(promise) {
+          pendingWrites.push(promise);
+        },
+      },
+      getAndClearPendingCookies() {
+        return [];
+      },
+      getCollectedFetchTags() {
+        return [];
+      },
+      getDraftModeCookieHeader() {
+        return null;
+      },
+      handler: { dynamic: "auto", revalidate: false },
+      handlerFn() {
+        return new Response("immutable");
+      },
+      isAutoHead: false,
+      isProduction: true,
+      isrRouteKey(pathname) {
+        return `route:${pathname}`;
+      },
+      async isrSet(_key, _value, policy) {
+        writes.push(policy.cacheControl.revalidate);
+      },
+      markDynamicUsage() {},
+      method: "GET",
+      middlewareContext: { headers: null, status: null },
+      params: {},
+      reportRequestError(error) {
+        throw error;
+      },
+      request: new Request("https://example.com/api/immutable"),
+      revalidateSeconds: Infinity,
+      routePattern: "/api/immutable",
+      setHeadersAccessPhase() {
+        return "render";
+      },
+    });
+    await Promise.all(pendingWrites);
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
+    expect(writes).toEqual([false]);
+  });
+
+  it("uses the completed fetch revalidation minimum for the response and cache entry", async () => {
+    // Ported from Next.js App Route cache collection:
+    // packages/next/src/build/templates/app-route.ts (`collectedRevalidate`).
+    const dynamicUsage = createDynamicUsageState();
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const writes: Array<{ expire?: number; revalidate: number | false }> = [];
+    const restoreFetchCache = withFetchCache();
+    fetchMock.mockClear();
+
+    try {
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        executeAppRouteHandler({
+          buildPageCacheTags: () => [],
+          cleanPathname: "/api/minimum",
+          clearRequestContext() {},
+          consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+          executionContext: {
+            waitUntil(promise) {
+              waitUntilPromises.push(promise);
+            },
+          },
+          getAndClearPendingCookies: () => [],
+          getCollectedFetchTags: () => [],
+          getDraftModeCookieHeader: () => null,
+          handler: { dynamic: "auto" },
+          async handlerFn() {
+            await fetch("https://api.example.com/minimum", {
+              next: { revalidate: 5 },
+            });
+            return new Response("minimum");
+          },
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey: (pathname) => `route:${pathname}`,
+          async isrSet(_key, _value, policy) {
+            writes.push({
+              expire: policy.cacheControl.expire,
+              revalidate: policy.cacheControl.revalidate,
+            });
+          },
+          markDynamicUsage: dynamicUsage.markDynamicUsage,
+          method: "GET",
+          middlewareContext: { headers: null, status: null },
+          params: {},
+          reportRequestError() {},
+          request: new Request("https://example.com/api/minimum"),
+          expireSeconds: 300,
+          revalidateSeconds: 60,
+          routePattern: "/api/minimum",
+          setHeadersAccessPhase: () => "render",
+        }),
+      );
+
+      await Promise.all(waitUntilPromises);
+      expect(response.headers.get("cache-control")).toBe("s-maxage=5, stale-while-revalidate=295");
+      expect(writes).toEqual([{ expire: 300, revalidate: 5 }]);
+    } finally {
+      restoreFetchCache();
+      fetchMock.mockClear();
+    }
+  });
+
   it.each([
     { enabled: true, initialDraftMode: false, expectedCookie: "__prerender_bypass=draft-secret" },
     { enabled: false, initialDraftMode: true, expectedCookie: "__prerender_bypass=;" },

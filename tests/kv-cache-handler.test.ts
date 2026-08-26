@@ -573,6 +573,26 @@ describe("KVCacheHandler", () => {
       expect(hit?.cacheControl).toEqual({ revalidate: 60, expire: 300, stale: 30 });
     });
 
+    it("round-trips an indefinitely cached route without a revalidation deadline", async () => {
+      await handler.set(
+        "static-route",
+        {
+          body: new TextEncoder().encode("static").buffer,
+          headers: { "content-type": "text/plain" },
+          kind: "APP_ROUTE",
+          status: 200,
+        },
+        { cacheControl: { revalidate: false } },
+      );
+
+      const stored = JSON.parse(store.get("cache:static-route")!);
+      expect(stored.revalidateAt).toBeNull();
+      expect(stored.cacheControl).toEqual({ revalidate: false });
+      const hit = await handler.get("static-route");
+      expect(hit?.cacheControl).toEqual({ revalidate: false });
+      expect(hit?.value?.kind).toBe("APP_ROUTE");
+    });
+
     it("serves stale when a shorter read-time revalidate has elapsed", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(1_000);

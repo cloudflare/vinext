@@ -57,27 +57,6 @@ async function getResponseAfterPromotion(
   );
 }
 
-async function waitForCdnHit(
-  request: APIRequestContext,
-  url: string,
-  timeoutMs = 15_000,
-): Promise<APIResponse> {
-  const deadline = Date.now() + timeoutMs;
-  let lastCacheStatus: string | undefined;
-
-  do {
-    const response = await getResponseAfterPromotion(request, url);
-    lastCacheStatus = response.headers()["cf-cache-status"];
-    if (lastCacheStatus === "HIT") return response;
-    await response.dispose();
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  } while (Date.now() < deadline);
-
-  throw new Error(
-    `CDN response did not become a HIT (last status: ${lastCacheStatus ?? "missing"})`,
-  );
-}
-
 async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<ObservedRsc> {
   const responsePromise = page.waitForResponse(
     (response) => {
@@ -402,13 +381,15 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
   // Only `known` was discovered and warmed. Like Next.js fallback blocking,
   // another parameter is checked from its completed first render and then
   // admitted without requiring a second deploy or a manifest entry per path.
-  const onDemandStaticResponse = await waitForCdnHit(
-    request,
-    `${baseURL}/cache-probe/static/on-demand`,
+  const onDemandSlug = `on-demand-${buildId.slice(0, 8)}`;
+  const onDemandUrl = `${baseURL}/cache-probe/static/${onDemandSlug}`;
+  const onDemandMiss = await getResponseAfterPromotion(request, onDemandUrl);
+  expect(onDemandMiss.headers()["cf-cache-status"]).toBe("MISS");
+  expect((await onDemandMiss.text()).replaceAll("<!-- -->", "")).toContain(
+    `cache-probe static params ${onDemandSlug}`,
   );
-  expect((await onDemandStaticResponse.text()).replaceAll("<!-- -->", "")).toContain(
-    "cache-probe static params on-demand",
-  );
+  const onDemandHit = await getResponseAfterPromotion(request, onDemandUrl);
+  expect(onDemandHit.headers()["cf-cache-status"]).toBe("HIT");
 
   const staticRouteResponse = await getResponseAfterPromotion(
     request,
@@ -421,7 +402,10 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
     request,
     `${baseURL}/cache-probe/route-static/known`,
   );
-  expect(generatedStaticRouteResponse.headers()["cf-cache-status"]).toBe("HIT");
+  // This route revalidates after 60 seconds, the same duration as the
+  // promotion-stability window. UPDATING is a cached stale response while the
+  // edge refreshes it in the background; only MISS/BYPASS would be a failure.
+  expect(["HIT", "UPDATING"]).toContain(generatedStaticRouteResponse.headers()["cf-cache-status"]);
   expect(await generatedStaticRouteResponse.text()).toBe("cache-probe static route handler known");
 
   const expectDynamic = async (

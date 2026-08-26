@@ -9,6 +9,11 @@ import {
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import { draftMode, setHeadersContext } from "../packages/vinext/src/shims/headers.js";
 import { after } from "../packages/vinext/src/shims/server.js";
+import {
+  createWorkerCacheabilityContext,
+  finalizeWorkerCacheabilityResponse,
+} from "../packages/vinext/src/server/cacheability-request.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 function buildCachedRouteValue(body: string): CachedRouteValue {
   return {
@@ -32,6 +37,64 @@ function buildISRCacheEntry(value: CachedRouteValue, isStale = false): ISRCacheE
 }
 
 describe("app route handler dispatch", () => {
+  it("classifies force-dynamic GET handlers as dynamic despite public response headers", async () => {
+    const request = new Request("https://example.com/api/dynamic", {
+      headers: {
+        "X-Vinext-Cacheability-Probe": "1",
+        "X-Vinext-Prerender-Secret": "secret-a",
+      },
+    });
+    const ctx = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", waitUntil() {} },
+      request,
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      const routeResponse = await dispatchAppRouteHandler({
+        cleanPathname: "/api/dynamic",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return null;
+        },
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: null,
+        request,
+        route: {
+          pattern: "/api/dynamic",
+          routeHandler: {
+            dynamic: "force-dynamic",
+            GET() {
+              return new Response("dynamic", {
+                headers: {
+                  "CDN-Cache-Control": "public, max-age=60",
+                  Vary: "Accept",
+                },
+              });
+            },
+          },
+          routeSegments: ["api", "dynamic"],
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+      return finalizeWorkerCacheabilityResponse(routeResponse, ctx);
+    });
+
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "app-route",
+      pattern: "/api/dynamic",
+      state: "dynamic",
+    });
+  });
+
   it.each([
     {
       enabled: true,

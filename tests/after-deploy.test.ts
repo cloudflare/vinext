@@ -138,6 +138,14 @@ describe("after() in deploy mode — ctx.waitUntil wiring", () => {
 });
 
 describe("after() in deploy mode — Pages Router worker entry", () => {
+  it("keeps config and middleware cache-safety markers in the Worker request context", () => {
+    const content = readPagesRouterEntrySource();
+    expect(content).toContain("return runWithExecutionContext(ctx, async () => {");
+    expect(content.indexOf("return runWithExecutionContext(ctx, async () => {")).toBeLessThan(
+      content.indexOf("const result = await runPagesRequest(request, deps)"),
+    );
+  });
+
   it("forwards ctx to handleApiRoute so api routes can call after()", () => {
     // Regression for #1365: handleApiRoute previously ignored ctx, leaving
     // after() inside Pages Router api routes without a way to call

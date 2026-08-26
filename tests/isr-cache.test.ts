@@ -16,6 +16,7 @@ import {
   appIsrRouteKey,
   isrGet,
   isrSet,
+  isrCacheControl,
   buildPagesCacheValue,
   buildAppPageCacheValue,
   normalizeMountedSlotsHeader,
@@ -446,6 +447,10 @@ describe("ISR expire ceiling", () => {
     const cached = await isrGet("static-test");
     expect(cached?.isStale).toBe(false);
     expect(cached?.value.cacheControl).toEqual({ revalidate: false });
+  });
+
+  it("normalizes the Infinity request sentinel to serializable static metadata", () => {
+    expect(isrCacheControl(Infinity)).toEqual({ revalidate: false });
   });
 
   it("retains expired entries surfaced by custom cache handlers", async () => {

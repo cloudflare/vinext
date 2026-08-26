@@ -7,7 +7,10 @@ import {
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import type { CachedRouteValue } from "vinext/shims/cache-handler";
 import type { NextRequest } from "vinext/shims/server";
-import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
+import {
+  _drainPendingRevalidations,
+  _peekRequestScopedCacheLife,
+} from "vinext/shims/cache-request-state";
 import { runWithRootParamsUsage } from "vinext/shims/root-params";
 import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
 import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
@@ -245,6 +248,14 @@ export async function executeAppRouteHandler(
       options.cleanPathname,
       options.getCollectedFetchTags(),
     );
+    const requestCacheLife = _peekRequestScopedCacheLife();
+    const effectiveRevalidateSeconds =
+      requestCacheLife?.revalidate === undefined
+        ? options.revalidateSeconds
+        : options.revalidateSeconds === null
+          ? requestCacheLife.revalidate
+          : Math.min(options.revalidateSeconds, requestCacheLife.revalidate);
+    const effectiveExpireSeconds = requestCacheLife?.expire ?? options.expireSeconds;
 
     if (
       shouldApplyAppRouteHandlerRevalidateHeader({
@@ -253,17 +264,17 @@ export async function executeAppRouteHandler(
         isAutoHead: options.isAutoHead,
         isDraftMode: shouldApplyDraftPolicy,
         method: options.method,
-        revalidateSeconds: options.revalidateSeconds,
+        revalidateSeconds: effectiveRevalidateSeconds,
       })
     ) {
-      const revalidateSeconds = options.revalidateSeconds;
+      const revalidateSeconds = effectiveRevalidateSeconds;
       if (revalidateSeconds == null) {
         throw new Error("Expected route handler revalidate seconds");
       }
       applyRouteHandlerRevalidateHeader(
         response,
         revalidateSeconds,
-        options.expireSeconds,
+        effectiveExpireSeconds,
         routeTags,
       );
     }
@@ -277,13 +288,13 @@ export async function executeAppRouteHandler(
         isDraftMode: shouldApplyDraftPolicy,
         isProduction: options.isProduction,
         method: options.method,
-        revalidateSeconds: options.revalidateSeconds,
+        revalidateSeconds: effectiveRevalidateSeconds,
       })
     ) {
       markRouteHandlerCacheMiss(response);
       const routeClone = response.clone();
       const routeKey = options.isrRouteKey(options.cleanPathname);
-      const revalidateSeconds = options.revalidateSeconds;
+      const revalidateSeconds = effectiveRevalidateSeconds;
       if (revalidateSeconds == null) {
         throw new Error("Expected route handler cache revalidate seconds");
       }
@@ -292,7 +303,7 @@ export async function executeAppRouteHandler(
           const routeCacheValue = await buildAppRouteCacheValue(routeClone);
           await options.isrSet(routeKey, routeCacheValue, {
             cacheControl: isrCacheControl(revalidateSeconds, {
-              expireSeconds: options.expireSeconds,
+              expireSeconds: effectiveExpireSeconds,
             }),
             tags: routeTags,
           });

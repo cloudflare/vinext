@@ -215,6 +215,11 @@ describe("Cloudflare CDN warmup", () => {
       skipped: 0,
       failed: 0,
       failures: [],
+      warmedPlan: {
+        loadingShellPaths: ["/search?q=x"],
+        paths: ["/search?q=x"],
+        rscPaths: ["/search?q=x"],
+      },
       retryPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
     });
     expect(fetchImpl).toHaveBeenCalledTimes(3);
@@ -292,8 +297,34 @@ describe("Cloudflare CDN warmup", () => {
       skipped: 2,
       failed: 0,
       failures: [],
+      warmedPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
       retryPlan: { loadingShellPaths: [], paths: [], rscPaths: [] },
     });
+  });
+
+  it("does not certify a staged cache fill until the entry is reusable", async () => {
+    let attempt = 0;
+    const fetchImpl = vi.fn(async () => {
+      attempt += 1;
+      const response = cacheableHtml();
+      response.headers.set("cf-cache-status", attempt === 1 ? "MISS" : "HIT");
+      return response;
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/staged"],
+        propagatingTarget: true,
+        requireCacheHit: true,
+        retries: 1,
+        retryDelayMs: 0,
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ warmed: 1, failed: 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("uses Cloudflare cache-control precedence when validating admission", async () => {

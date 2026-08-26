@@ -60,10 +60,10 @@ function getRealWarmFetchCalls() {
   return vi.mocked(fetch).mock.calls.filter(([url]) => !isReadinessFetch(url));
 }
 
-function cacheableHtml(body = "ok"): Response {
+function cacheableHtml(body = "ok", cacheStatus = "MISS"): Response {
   return new Response(body, {
     headers: {
-      "cf-cache-status": "MISS",
+      "cf-cache-status": cacheStatus,
       "content-type": "text/html",
       [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a",
     },
@@ -112,7 +112,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(hasCdnWarmRequests({ loadingShellPaths: [], paths: [], rscPaths: [] })).toBe(false);
   });
 
-  it("removes every known warm key for a proven-dynamic pattern", async () => {
+  it("removes only the proven-dynamic HTML key and runtime-checks other representations", async () => {
     const { omitProvenDynamicWarmPaths } = await import("../packages/cloudflare/src/deploy.js");
 
     expect(
@@ -155,9 +155,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toEqual({
       omitted: 2,
       plan: {
-        loadingShellPaths: ["/static"],
+        loadingShellPaths: ["/products/one", "/static"],
         paths: ["/static"],
-        rscPaths: ["/static"],
+        rscPaths: ["/products/one", "/products/two", "/static"],
       },
     });
   });
@@ -215,6 +215,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker", workers_dev: true }));
     writeTwoStageArtifact();
     let uploadCount = 0;
+    let statusCount = 0;
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
         uploadCount += 1;
@@ -240,9 +241,20 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         return `Uploaded my-worker\nWorker Version ID: ${id}\nVersion Preview URL: https://${id.slice(0, 8)}-my-worker.example.workers.dev\n`;
       }
       if (args.includes("status")) {
+        statusCount += 1;
         events.push("status");
         return JSON.stringify({
-          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+          versions: [
+            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+            ...(statusCount === 3
+              ? [
+                  {
+                    version_id: "33333333-3333-4333-8333-333333333333",
+                    percentage: 0,
+                  },
+                ]
+              : []),
+          ],
         });
       }
       if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
@@ -264,6 +276,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
     let probeAttempts = 0;
+    let warmAttempts = 0;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const headers = new Headers(init?.headers);
       if (headers.get("X-Vinext-Cacheability-Probe") === "1") {
@@ -285,12 +298,17 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           version: 1,
         });
       }
-      if (isReadinessFetch(input)) events.push("readiness:final");
-      else events.push("warm:final");
-      expect(headers.get("Cloudflare-Workers-Version-Overrides")).toContain(
-        "33333333-3333-4333-8333-333333333333",
-      );
-      return cacheableHtml();
+      if (isReadinessFetch(input)) {
+        events.push("readiness:final");
+        expect(headers.get("Cloudflare-Workers-Version-Overrides")).toContain(
+          "33333333-3333-4333-8333-333333333333",
+        );
+      } else {
+        warmAttempts += 1;
+        events.push(warmAttempts === 1 ? "warm:final" : "verify:final");
+        expect(headers.get("Cloudflare-Workers-Version-Overrides")).toBeNull();
+      }
+      return cacheableHtml("ok", warmAttempts > 1 ? "HIT" : "MISS");
     });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
@@ -324,9 +342,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status",
       "stage:final",
       "readiness:final",
-      "warm:final",
       "triggers",
+      "status",
       "promote:final",
+      "warm:final",
+      "verify:final",
     ]);
     expect(delayMock).toHaveBeenCalledWith(1_000);
     expect(fs.readFileSync(path.join(tmpDir, "dist/server/entry.js"), "utf-8")).toContain(
@@ -520,6 +540,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
     writeTwoStageArtifact();
     let uploadCount = 0;
+    let statusCount = 0;
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
         uploadCount += 1;
@@ -531,9 +552,20 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         return `Uploaded my-worker\nWorker Version ID: ${id}\nVersion Preview URL: https://${id.slice(0, 8)}-my-worker.example.workers.dev\n`;
       }
       if (args.includes("status")) {
+        statusCount += 1;
         events.push("status");
         return JSON.stringify({
-          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+          versions: [
+            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+            ...(statusCount === 3
+              ? [
+                  {
+                    version_id: "33333333-3333-4333-8333-333333333333",
+                    percentage: 0,
+                  },
+                ]
+              : []),
+          ],
         });
       }
       if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
@@ -604,7 +636,100 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "stage:final",
       "readiness:final",
       "triggers",
+      "status",
       "promote:final",
+    ]);
+  });
+
+  it("does not overwrite a concurrent deployment after final staging", async () => {
+    const events: string[] = [];
+    writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
+    writeTwoStageArtifact();
+    let uploadCount = 0;
+    let statusCount = 0;
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        uploadCount += 1;
+        const id =
+          uploadCount === 1
+            ? "22222222-2222-4222-8222-222222222222"
+            : "33333333-3333-4333-8333-333333333333";
+        events.push(`upload:${uploadCount}`);
+        return `Uploaded my-worker\nWorker Version ID: ${id}\nVersion Preview URL: https://${id.slice(0, 8)}-my-worker.example.workers.dev\n`;
+      }
+      if (args.includes("status")) {
+        statusCount += 1;
+        events.push(`status:${statusCount}`);
+        const versions =
+          statusCount < 3
+            ? [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }]
+            : [{ version_id: "44444444-4444-4444-8444-444444444444", percentage: 100 }];
+        return JSON.stringify({ versions });
+      }
+      if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        events.push("stage:probe");
+        return "Staged probe\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("33333333-3333-4333-8333-333333333333@0%")) {
+        events.push("stage:final");
+        return "Staged final\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("33333333-3333-4333-8333-333333333333@100%")) {
+        events.push("promote:final");
+        return "Promoted final\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Triggers deployed\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const headers = new Headers(init?.headers);
+      if (headers.get("X-Vinext-Cacheability-Probe") === "1") {
+        events.push("probe");
+        return Response.json({
+          kind: "app-page",
+          pattern: "/products/:id",
+          state: "static-candidate",
+          version: 1,
+        });
+      }
+      expect(isReadinessFetch(input)).toBe(true);
+      events.push("readiness");
+      return cacheableHtml();
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        discoverWarmPlan: async () => ({
+          buildId: "build-a",
+          buildIdentity: "app-build-a",
+          cacheabilityRoutes: [
+            { kind: "app-page", pattern: "/products/:id", probePath: "/products/known" },
+          ],
+          loadingShellPaths: [],
+          paths: ["/products/known"],
+          rscPaths: [],
+        }),
+        warmCdnPromotionDelay: 0,
+        warmCdnReadinessProbes: 1,
+        twoStageCacheability: true,
+      }),
+    ).rejects.toThrow("detected a concurrent Worker deployment after staging");
+
+    expect(events).toEqual([
+      "upload:1",
+      "status:1",
+      "stage:probe",
+      "probe",
+      "upload:2",
+      "status:2",
+      "stage:final",
+      "readiness",
+      "triggers",
+      "status:3",
     ]);
   });
 
