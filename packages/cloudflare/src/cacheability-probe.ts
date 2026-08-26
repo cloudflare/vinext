@@ -27,6 +27,7 @@ export const DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS = 120_000;
 export const DEFAULT_CACHEABILITY_PROBE_RETRIES = 2;
 export const DEFAULT_CACHEABILITY_PROBE_RETRY_DELAY_MS = 1_000;
 const DEFAULT_CACHEABILITY_PROBE_REQUEST_TIMEOUT_MS = 30_000;
+const MAX_CACHEABILITY_PROBE_ENVELOPE_BYTES = 64 * 1024;
 
 type ProbePayload = {
   kind?: string;
@@ -62,6 +63,46 @@ function readPrerenderSecret(root: string): string {
     );
   }
   return secret;
+}
+
+async function readProbeEnvelope(response: Response): Promise<ProbePayload> {
+  if (!response.body) {
+    return { reason: "probe returned invalid JSON", state: "probe-failed", version: 1 };
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      bytes += result.value.byteLength;
+      if (bytes > MAX_CACHEABILITY_PROBE_ENVELOPE_BYTES) {
+        await reader.cancel().catch(() => {});
+        return {
+          reason: `probe response exceeded ${MAX_CACHEABILITY_PROBE_ENVELOPE_BYTES} bytes`,
+          state: "probe-failed",
+          version: 1,
+        };
+      }
+      chunks.push(result.value);
+    }
+  } catch (error) {
+    return {
+      reason: error instanceof Error ? error.message : String(error),
+      state: "probe-failed",
+      version: 1,
+    };
+  } finally {
+    reader.releaseLock();
+  }
+
+  try {
+    return JSON.parse(Buffer.concat(chunks, bytes).toString("utf8")) as ProbePayload;
+  } catch {
+    return { reason: "probe returned invalid JSON", state: "probe-failed", version: 1 };
+  }
 }
 
 async function probeTarget(options: {
@@ -127,19 +168,7 @@ async function probeTarget(options: {
             retryable: response.status === 404 || response.status === 503,
           };
         }
-        const text = await response.text();
-        try {
-          return { kind: "complete" as const, payload: JSON.parse(text) as ProbePayload };
-        } catch {
-          return {
-            kind: "complete" as const,
-            payload: {
-              reason: "probe returned invalid JSON",
-              state: "probe-failed",
-              version: 1,
-            },
-          };
-        }
+        return { kind: "complete" as const, payload: await readProbeEnvelope(response) };
       })();
       const timedOut = new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {

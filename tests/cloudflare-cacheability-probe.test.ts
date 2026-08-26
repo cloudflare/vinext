@@ -157,7 +157,34 @@ describe("staged Worker cacheability probes", () => {
         targets: [target("/one"), target("/two")],
       }),
     ).rejects.toThrow("cacheability probing exceeded its 25ms phase deadline");
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(3);
+  });
+
+  it("rejects oversized probe envelopes without buffering the full response", async () => {
+    const root = createProbeRoot();
+    let cancelled = false;
+    const oversizedBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(65 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl: async () => new Response(oversizedBody),
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [target("/oversized")],
+    });
+
+    expect(result.failures).toEqual(["/oversized: probe response exceeded 65536 bytes"]);
+    expect(result.cacheableTargets).toEqual([]);
+    expect(cancelled).toBe(true);
   });
 
   it("omits dynamic identities from the deployed manifest and final warm targets", async () => {

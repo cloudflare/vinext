@@ -12,8 +12,6 @@ import {
   MAX_CACHEABILITY_MANIFEST_ROUTES,
 } from "./cacheability-manifest-limits.js";
 
-export { MAX_CACHEABILITY_MANIFEST_BYTES, MAX_CACHEABILITY_MANIFEST_ROUTES };
-
 type JavaScriptToken = {
   kind: "identifier" | "punctuator" | "string";
   value: string;
