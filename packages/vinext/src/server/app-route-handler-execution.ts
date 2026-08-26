@@ -283,7 +283,6 @@ export async function runAppRouteHandler(
         if (prospective.dynamicUsedInHandler) {
           return prospective;
         }
-        void prospective.response.body?.cancel().catch(() => {});
       }
       return runPass(true);
     });
@@ -296,6 +295,17 @@ export async function runAppRouteHandler(
 }
 
 export async function executeAppRouteHandler(
+  options: ExecuteAppRouteHandlerOptions,
+): Promise<Response> {
+  if (options.cacheComponents) {
+    const { runWithCacheComponentsPlatformIoTracking } =
+      await import("./cache-components-platform-io.js");
+    return runWithCacheComponentsPlatformIoTracking(() => executeAppRouteHandlerInner(options));
+  }
+  return executeAppRouteHandlerInner(options);
+}
+
+async function executeAppRouteHandlerInner(
   options: ExecuteAppRouteHandlerOptions,
 ): Promise<Response> {
   const previousHeadersPhase = options.setHeadersAccessPhase("route-handler");
@@ -362,33 +372,41 @@ export async function executeAppRouteHandler(
           : "route handler returned an upgrade response";
       } else {
         const captured = await captureResponseBodyBounded(response);
-        // Stream pulls can also enqueue cache invalidations, uncached fetches,
-        // or dynamic API reads. Include all of them before cache admission.
-        await _drainPendingRevalidations();
-        dynamicUsedInHandler =
-          dynamicUsedInHandler ||
-          options.consumeDynamicUsage() ||
-          consumeDynamicFetchObservations().length > 0;
-        if (captured.failClosed) {
-          completedBodyFailure = captured.reason;
-          response = new Response(captured.fallback, {
-            headers: response.headers,
-            status: response.status,
-            statusText: response.statusText,
-          });
-        } else {
-          completedRouteCacheValue = await buildAppRouteCacheValue(response, captured.body, {
-            preserveCacheControl: handlerSetCacheControl,
-          });
-          recordRouteCacheabilityCapturedBody(captured.body);
-          if (captured.body !== null) {
-            response = new Response(captured.body, {
+        let transferredCapture = false;
+        try {
+          // Stream pulls can also enqueue cache invalidations, uncached fetches,
+          // or dynamic API reads. Include all of them before cache admission.
+          await _drainPendingRevalidations();
+          dynamicUsedInHandler =
+            dynamicUsedInHandler ||
+            options.consumeDynamicUsage() ||
+            consumeDynamicFetchObservations().length > 0;
+          if (captured.failClosed) {
+            completedBodyFailure = captured.reason;
+            response = new Response(captured.fallback, {
               headers: response.headers,
               status: response.status,
               statusText: response.statusText,
             });
+          } else {
+            completedRouteCacheValue = await buildAppRouteCacheValue(response, captured.body, {
+              preserveCacheControl: handlerSetCacheControl,
+            });
+            transferredCapture = recordRouteCacheabilityCapturedBody(
+              captured.body,
+              captured.release,
+            );
+            if (captured.body !== null) {
+              response = new Response(captured.body, {
+                headers: response.headers,
+                status: response.status,
+                statusText: response.statusText,
+              });
+            }
+            await captured.fallback?.cancel().catch(() => {});
           }
-          void captured.fallback?.cancel().catch(() => {});
+        } finally {
+          if (!captured.failClosed && !transferredCapture) captured.release();
         }
       }
     }

@@ -547,6 +547,39 @@ describe("prerender path manifest", () => {
     );
   });
 
+  it("excludes external rewrites from Worker route probing and warming", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/external/page.tsx", "export default function Page() {}\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        rewrites: () => [{ source: "/external", destination: "https://origin.example/resource" }],
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.excludedWarmPaths).toEqual(["/external"]);
+    expect(manifest?.paths).not.toContain("/external");
+    expect(manifest?.cacheabilityRoutes).toContainEqual({
+      fallbackState: "runtime-check",
+      kind: "app-page",
+      pattern: "/external",
+    });
+  });
+
   it("excludes warm paths covered by request-conditional config headers", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");

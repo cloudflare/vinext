@@ -335,7 +335,10 @@ describe("CloudflareCdnCacheAdapter", () => {
         },
       }),
       {
-        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        capturedRscDataPromise: Promise.resolve({
+          body: new TextEncoder().encode("flight").buffer,
+          release() {},
+        }),
         cleanPathname: "/dynamic-html",
         consumeDynamicUsage() {
           return true;
@@ -384,9 +387,10 @@ describe("CloudflareCdnCacheAdapter", () => {
           },
         }),
         {
-          capturedRscDataPromise: Promise.resolve(
-            new TextEncoder().encode("slot-specific-flight").buffer,
-          ),
+          capturedRscDataPromise: Promise.resolve({
+            body: new TextEncoder().encode("slot-specific-flight").buffer,
+            release() {},
+          }),
           cleanPathname: "/dashboard",
           consumeDynamicUsage() {
             return false;
@@ -426,9 +430,10 @@ describe("CloudflareCdnCacheAdapter", () => {
         },
       }),
       {
-        capturedRscDataPromise: Promise.resolve(
-          new TextEncoder().encode("slot-specific-flight").buffer,
-        ),
+        capturedRscDataPromise: Promise.resolve({
+          body: new TextEncoder().encode("slot-specific-flight").buffer,
+          release() {},
+        }),
         cleanPathname: "/dashboard",
         consumeDynamicUsage() {
           return false;

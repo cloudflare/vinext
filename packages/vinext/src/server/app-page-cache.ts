@@ -244,7 +244,12 @@ export function buildAppPageCachedResponse(
 ): Response | null {
   // Preserve the legacy fallback semantics from the generated entry: invalid
   // falsy statuses still fall back to 200 rather than being forwarded through.
-  const status = options.middlewareStatus ?? (cachedValue.status || 200);
+  const isStoredTerminalResponse =
+    typeof cachedValue.status === "number" &&
+    ((cachedValue.status >= 300 && cachedValue.status < 400) || cachedValue.status === 404);
+  const status = isStoredTerminalResponse
+    ? cachedValue.status!
+    : (options.middlewareStatus ?? (cachedValue.status || 200));
   const { cacheControl } = decideIsr({
     cacheState: options.cacheState,
     kind: "app-page",
@@ -279,8 +284,6 @@ export function buildAppPageCachedResponse(
     });
   }
 
-  const isStoredTerminalResponse =
-    typeof cachedValue.status === "number" && cachedValue.status !== 200;
   if (
     typeof cachedValue.html !== "string" ||
     (cachedValue.html.length === 0 && !isStoredTerminalResponse)
@@ -298,9 +301,9 @@ export function buildAppPageCachedResponse(
     staleTimeSeconds,
   });
   const storedLocation = cachedValue.headers?.location;
-  if (typeof storedLocation === "string") {
+  if (typeof storedLocation === "string" && !options.middlewareHeaders?.has("location")) {
     htmlHeaders.set("Location", storedLocation);
-  } else if (storedLocation?.[0]) {
+  } else if (storedLocation?.[0] && !options.middlewareHeaders?.has("location")) {
     htmlHeaders.set("Location", storedLocation[0]);
   }
 

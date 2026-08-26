@@ -298,6 +298,16 @@ describe("cacheability manifests", () => {
       pattern: "/api/target",
       state: "static-candidate",
     });
+    expect(result.resolutions).toEqual([
+      {
+        exactPath: "/api/source",
+        kind: "app-route",
+        pattern: "/api/target",
+        sourceKind: "app-route",
+        sourcePattern: "/api/source",
+        state: "static-candidate",
+      },
+    ]);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -992,7 +1002,10 @@ describe("buffered cache admission", () => {
       const pending = finalizeAppPageHtmlCacheResponse(
         new Response("policy response", { headers: responseHeaders }),
         {
-          capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+          capturedRscDataPromise: Promise.resolve({
+            body: new TextEncoder().encode("flight").buffer,
+            release() {},
+          }),
           cleanPathname: "/products/policy",
           consumeDynamicUsage() {
             return false;
@@ -1396,6 +1409,44 @@ describe("buffered cache admission", () => {
       for (const capture of completed) {
         expect(capture.failClosed).toBe(false);
         void capture.fallback?.cancel();
+        if (!capture.failClosed) capture.release();
+      }
+    });
+  });
+
+  it("keeps completed captures in the aggregate budget until their owners release them", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const context = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      new Request("https://example.com/retained-capture-budget"),
+      "secret-a",
+    );
+    await runWithExecutionContext(context, async () => {
+      const captureCount = CACHEABILITY_RESPONSE_CAPTURE_BUDGET / CACHEABILITY_RESPONSE_BODY_LIMIT;
+      const retained = await Promise.all(
+        Array.from({ length: captureCount }, () =>
+          captureResponseBodyBounded(new Response(new Uint8Array([1]))),
+        ),
+      );
+      expect(retained.every((capture) => !capture.failClosed)).toBe(true);
+
+      const excess = await captureResponseBodyBounded(new Response(new Uint8Array([2])));
+      expect(excess).toMatchObject({
+        failClosed: true,
+        reason: expect.stringContaining("isolate budget"),
+      });
+
+      for (const capture of retained) {
+        if (!capture.failClosed) {
+          await capture.fallback?.cancel();
+          capture.release();
+        }
+      }
+      const afterRelease = await captureResponseBodyBounded(new Response(new Uint8Array([3])));
+      expect(afterRelease.failClosed).toBe(false);
+      if (!afterRelease.failClosed) {
+        await afterRelease.fallback?.cancel();
+        afterRelease.release();
       }
     });
   });

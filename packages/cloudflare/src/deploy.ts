@@ -82,7 +82,10 @@ import {
 import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
-import { probeStagedWorkerCacheability } from "./cacheability-probe.js";
+import {
+  probeStagedWorkerCacheability,
+  type CacheabilityProbeResolution,
+} from "./cacheability-probe.js";
 import { withEmbeddedCacheabilityManifest } from "./cacheability-artifact.js";
 
 export const DEFAULT_CDN_WARM_PROMOTION_DELAY_MS = 15_000;
@@ -672,6 +675,60 @@ export function includeProvenStaticRouteHandlerWarmPaths(
   return { ...plan, paths: Array.from(paths) };
 }
 
+/**
+ * Rebuild each rewritten public path's request family from the route that the
+ * staged Worker actually resolved. This keeps page -> Route Handler rewrites
+ * from issuing meaningless Flight requests and Route Handler -> page rewrites
+ * from omitting the page's Flight/loading representations.
+ */
+export function applyResolvedCacheabilityWarmKinds(
+  plan: CdnWarmRequestPlan,
+  routes: NonNullable<PrerenderWarmPlan["cacheabilityRoutes"]>,
+  resolutions: readonly CacheabilityProbeResolution[],
+): CdnWarmRequestPlan {
+  const paths = new Set(plan.paths);
+  const rscPaths = new Set(plan.rscPaths);
+  const loadingShellPaths = new Set(plan.loadingShellPaths);
+  const targetPatternsWithLoadingShells = new Set(
+    routes
+      .filter((route) => {
+        if (route.kind !== "app-page") return false;
+        return [...(route.warmPaths ?? []), ...(route.runtimeCheckWarmPaths ?? [])].some(
+          (pathname) => loadingShellPaths.has(pathname),
+        );
+      })
+      .map((route) => route.pattern),
+  );
+
+  for (const resolution of resolutions) {
+    if (
+      resolution.kind === resolution.sourceKind &&
+      resolution.pattern === resolution.sourcePattern
+    ) {
+      continue;
+    }
+    const pathname = resolution.exactPath;
+    paths.delete(pathname);
+    rscPaths.delete(pathname);
+    loadingShellPaths.delete(pathname);
+    if (resolution.state === "dynamic") continue;
+
+    paths.add(pathname);
+    if (resolution.kind === "app-page") {
+      rscPaths.add(pathname);
+      if (targetPatternsWithLoadingShells.has(resolution.pattern)) {
+        loadingShellPaths.add(pathname);
+      }
+    }
+  }
+
+  return {
+    loadingShellPaths: Array.from(loadingShellPaths),
+    paths: Array.from(paths),
+    rscPaths: Array.from(rscPaths),
+  };
+}
+
 function validateTwoStageCacheabilityArtifact(
   root: string,
   configuredPath: string | undefined,
@@ -1018,6 +1075,11 @@ export async function deployWithCdnWarmup(
             filteredWarmPlan.plan,
             cacheabilityRoutes,
             probeResult.manifest,
+          );
+          remainingWarmPlan = applyResolvedCacheabilityWarmKinds(
+            remainingWarmPlan,
+            cacheabilityRoutes,
+            probeResult.resolutions,
           );
           if (filteredWarmPlan.omitted > 0) {
             console.log(

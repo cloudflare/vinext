@@ -98,6 +98,10 @@ function createNoopRscEmbedTransform() {
   return {
     flush: () => "",
     finalize: async () => "",
+    async drainFinal(emit: (scripts: string) => void) {
+      const scripts = await this.finalize();
+      if (scripts) emit(scripts);
+    },
     getRawBuffer: async () => new ArrayBuffer(0),
   };
 }
@@ -305,6 +309,44 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     expect(finalScripts).toContain('.rsc.push("123")');
     expect(finalScripts).toContain('.rsc.push("456")');
     expect(finalScripts).toContain(".done=true");
+  });
+
+  it("times out stalled raw capture without leaving an unhandled rejection", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const transform = createRscEmbedTransform(
+      new ReadableStream({
+        start(value) {
+          controller = value;
+          controller.enqueue(new TextEncoder().encode("partial"));
+        },
+      }),
+      { rawBufferLimitBytes: 1024, rawBufferTimeoutMs: 5 },
+    );
+
+    await expect(transform.getRawBuffer()).rejects.toThrow("RSC body did not complete within 5ms");
+    controller.close();
+    await expect(transform.finalize()).resolves.toContain(".done=true");
+  });
+
+  it("backpressures pending embed chunks until the HTML consumer drains them", async () => {
+    let pulls = 0;
+    const totalChunks = 24;
+    const chunk = new Uint8Array(32 * 1024);
+    const transform = createRscEmbedTransform(
+      new ReadableStream({
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(chunk);
+          if (pulls === totalChunks) controller.close();
+        },
+      }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pulls).toBeLessThan(totalChunks);
+    const scripts = await transform.finalize();
+    expect(pulls).toBe(totalChunks);
+    expect(scripts).toContain(".done=true");
   });
 
   it("preserves a UTF-8 BOM at an embedded Flight chunk boundary", async () => {
@@ -580,6 +622,9 @@ describe("createTickBufferedTransform pre-head splice", () => {
       const rsc = {
         flush: () => "",
         finalize: async () => '<script id="trailing-rsc">rsc()</script>',
+        async drainFinal(emit: (scripts: string) => void) {
+          emit(await this.finalize());
+        },
         getRawBuffer: async () => new ArrayBuffer(0),
       };
       const transform = createTickBufferedTransform(rsc, "", "");
@@ -602,6 +647,7 @@ describe("createTickBufferedTransform pre-head splice", () => {
       const rsc = {
         flush: () => "",
         finalize: async () => "",
+        async drainFinal() {},
         getRawBuffer: async () => new ArrayBuffer(0),
       };
       const transform = createTickBufferedTransform(rsc, "<meta data-injected='1'/>", "");
@@ -620,6 +666,7 @@ describe("createTickBufferedTransform pre-head splice", () => {
       const rsc = {
         flush: () => "",
         finalize: async () => "",
+        async drainFinal() {},
         getRawBuffer: async () => new ArrayBuffer(0),
       };
       const transform = createTickBufferedTransform(rsc, "", "");

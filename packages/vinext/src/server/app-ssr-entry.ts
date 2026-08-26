@@ -41,7 +41,7 @@ import {
   waitAtLeastOneReactRenderTask,
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
-import type { AppSsrRenderResult } from "./app-page-stream.js";
+import type { AppSsrRenderResult, CapturedAppPageRscData } from "./app-page-stream.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
@@ -373,9 +373,11 @@ export async function handleSsr(
      *  The embed transform accumulates raw bytes. */
     sideStream?: ReadableStream<Uint8Array>;
     /** Out-parameter: filled with accumulated raw RSC bytes when sideStream is consumed. */
-    capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+    capturedRscDataRef?: { value: Promise<CapturedAppPageRscData> | null };
     /** Maximum raw RSC bytes retained for a prospective cache artifact. */
     capturedRscDataLimitBytes?: number;
+    /** Maximum time raw RSC capture may retain isolate-wide capacity. */
+    capturedRscDataTimeoutMs?: number;
     /** Release isolate-wide capacity after retaining raw RSC bytes. */
     releaseCapturedRscDataBudget?: () => void;
     pprFallbackShellSignal?: AbortSignal;
@@ -446,15 +448,26 @@ export async function handleSsr(
               scriptNonce: options?.scriptNonce,
               getInitialNavigationCacheMetadata: options?.getInitialNavigationCacheMetadata,
               rawBufferLimitBytes: options.capturedRscDataLimitBytes,
+              rawBufferTimeoutMs: options.capturedRscDataTimeoutMs,
             });
           } catch (error) {
             options.releaseCapturedRscDataBudget?.();
             throw error;
           }
           if (options.capturedRscDataRef) {
-            options.capturedRscDataRef.value = rscEmbed
-              .getRawBuffer()
-              .finally(() => options.releaseCapturedRscDataBudget?.());
+            const release = options.releaseCapturedRscDataBudget ?? (() => {});
+            const captured = rscEmbed.getRawBuffer().then(
+              (body) => ({ body, release }),
+              (error) => {
+                release();
+                throw error;
+              },
+            );
+            // Dynamic/error branches may never consume the prospective cache
+            // artifact. Attach a sink immediately while preserving rejection
+            // for cache owners that do await it.
+            void captured.catch(() => {});
+            options.capturedRscDataRef.value = captured;
           } else {
             options.releaseCapturedRscDataBudget?.();
           }

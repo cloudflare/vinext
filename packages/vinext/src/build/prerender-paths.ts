@@ -42,6 +42,7 @@ import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { findMiddlewareFile } from "../server/middleware.js";
 import { middlewareMatcherCanRunForPath } from "../server/middleware-cache-safety.js";
+import { isExternalUrl } from "../utils/external-url.js";
 
 export type PrerenderPathManifest = {
   basePath?: string;
@@ -743,6 +744,7 @@ async function collectCacheabilityProbeRoutes(options: {
   pagesDir: string | null;
   pageExtensions: readonly string[];
   paths: readonly string[];
+  individuallyProbedPaths?: ReadonlySet<string>;
 }): Promise<CacheabilityProbeRoute[]> {
   const appRoutes = options.appDir ? await appRouter(options.appDir, options.pageExtensions) : [];
   const [pageRoutes, apiRoutes] = options.pagesDir
@@ -790,7 +792,22 @@ async function collectCacheabilityProbeRoutes(options: {
     pattern: string,
     warmPaths: readonly string[],
   ): void => {
-    const [probePath, ...runtimeCheckWarmPaths] = warmPaths;
+    const individuallyProbed = warmPaths.filter((pathname) =>
+      options.individuallyProbedPaths?.has(pathname),
+    );
+    const sharedPatternPaths = warmPaths.filter(
+      (pathname) => !options.individuallyProbedPaths?.has(pathname),
+    );
+    const [probePath, ...runtimeCheckWarmPaths] = sharedPatternPaths;
+    for (const pathname of individuallyProbed) {
+      result.push({
+        kind,
+        path: pathname,
+        pattern,
+        probePath: pathname,
+        warmPaths: [pathname],
+      });
+    }
     if (!probePath) return;
     result.push({
       kind,
@@ -856,6 +873,25 @@ async function collectCacheabilityProbeRoutes(options: {
   );
 }
 
+function configuredRuleMatchesWarmPath(
+  pathname: string,
+  rule: Parameters<typeof matchesRewriteSource>[1],
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
+): boolean {
+  const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
+  const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
+  return hostnames.some((hostname) =>
+    matchesRewriteSource(
+      normalizeDefaultLocalePathname(canonicalPathname, config.i18n, { hostname }),
+      rule,
+      {
+        basePath: config.basePath,
+        hadBasePath: true,
+      },
+    ),
+  );
+}
+
 function configuredRouteAffectsWarmPath(
   pathname: string,
   config: Pick<
@@ -863,27 +899,36 @@ function configuredRouteAffectsWarmPath(
     "basePath" | "headers" | "i18n" | "redirects" | "rewrites" | "trailingSlash"
   >,
 ): boolean {
-  const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
-  const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
-  const matchPathnames = new Set(
-    hostnames.map((hostname) =>
-      normalizeDefaultLocalePathname(canonicalPathname, config.i18n, { hostname }),
-    ),
-  );
-  const conditionalRules = [
+  const rewrites = [
     ...config.rewrites.beforeFiles,
     ...config.rewrites.afterFiles,
     ...config.rewrites.fallback,
-    ...config.headers,
-  ].filter((rule) => (rule.has?.length ?? 0) > 0 || (rule.missing?.length ?? 0) > 0);
-  return [...config.redirects, ...conditionalRules].some((rule) =>
-    Array.from(matchPathnames).some((matchPathname) =>
-      matchesRewriteSource(matchPathname, rule, {
-        basePath: config.basePath,
-        hadBasePath: true,
-      }),
-    ),
+  ];
+  const conditionalRules = [...rewrites, ...config.headers].filter(
+    (rule) => (rule.has?.length ?? 0) > 0 || (rule.missing?.length ?? 0) > 0,
   );
+  const externalRewrites = rewrites.filter((rewrite) => isExternalUrl(rewrite.destination));
+  return [...config.redirects, ...conditionalRules, ...externalRewrites].some((rule) =>
+    configuredRuleMatchesWarmPath(pathname, rule, config),
+  );
+}
+
+function deterministicInternalRewriteAffectsWarmPath(
+  pathname: string,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "rewrites" | "trailingSlash">,
+): boolean {
+  return [
+    ...config.rewrites.beforeFiles,
+    ...config.rewrites.afterFiles,
+    ...config.rewrites.fallback,
+  ]
+    .filter(
+      (rewrite) =>
+        !isExternalUrl(rewrite.destination) &&
+        (rewrite.has?.length ?? 0) === 0 &&
+        (rewrite.missing?.length ?? 0) === 0,
+    )
+    .some((rewrite) => configuredRuleMatchesWarmPath(pathname, rewrite, config));
 }
 
 async function startPathDiscoveryServer(options: {
@@ -1062,6 +1107,11 @@ export async function emitPrerenderPathManifest(
         })
       : configuredPagesWarmPaths;
   const configuredCandidatePaths = paths.filter((pathname) => !excludedWarmPathSet.has(pathname));
+  const individuallyProbedRewritePaths = new Set(
+    configuredCandidatePaths.filter((pathname) =>
+      deterministicInternalRewriteAffectsWarmPath(pathname, config),
+    ),
+  );
   const appOwnedWarmPaths = appDir
     ? await resolveAppWarmPaths({
         appDir,
@@ -1084,6 +1134,7 @@ export async function emitPrerenderPathManifest(
     pagesDir,
     pageExtensions: config.pageExtensions,
     paths: paths.filter((pathname) => !excludedWarmPathSet.has(pathname)),
+    individuallyProbedPaths: individuallyProbedRewritePaths,
   });
 
   const manifest: PrerenderPathManifest = {

@@ -23,6 +23,7 @@ import {
   markRouteCacheabilityPolicyProvisional,
   recordRouteCacheabilityCapturedBody,
 } from "./cacheability-request.js";
+import type { CapturedAppPageRscData } from "./app-page-stream.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageRscCacheKeyBuilder = (
@@ -52,7 +53,7 @@ function renderObservationRequiresRuntime(
 type FinalizeAppPageHtmlCacheResponseOptions = {
   allowRequestApis?: boolean;
   capturedDynamicUsageBeforeContextCleanup?: () => boolean;
-  capturedRscDataPromise: Promise<ArrayBuffer> | null;
+  capturedRscDataPromise: Promise<CapturedAppPageRscData> | null;
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
   consumeRenderObservationState?: () => AppPageRenderObservationState;
@@ -77,7 +78,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
 type ScheduleAppPageRscCacheWriteOptions = {
   allowRequestApis?: boolean;
   bypassInterceptionContextCache?: boolean;
-  capturedRscDataPromise: Promise<ArrayBuffer> | null;
+  capturedRscDataPromise: Promise<CapturedAppPageRscData> | null;
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
   consumeRenderObservationState?: () => AppPageRenderObservationState;
@@ -225,6 +226,7 @@ export function finalizeAppPageHtmlCacheResponse(
   }
 
   const cachePromise = (async () => {
+    let releaseCapturedHtml: (() => void) | null = null;
     try {
       const captured = await captureResponseBodyBounded(new Response(streamForCache));
       if (captured.failClosed) {
@@ -233,8 +235,9 @@ export function finalizeAppPageHtmlCacheResponse(
         options.isrDebug?.("HTML cache write skipped (bounded capture failed)", htmlKey);
         return;
       }
-      void captured.fallback?.cancel().catch(() => {});
-      recordRouteCacheabilityCapturedBody(captured.body);
+      await captured.fallback?.cancel().catch(() => {});
+      const transferred = recordRouteCacheabilityCapturedBody(captured.body, captured.release);
+      if (!transferred) releaseCapturedHtml = captured.release;
       const cachedHtml = captured.body === null ? "" : new TextDecoder().decode(captured.body);
 
       if (
@@ -298,12 +301,20 @@ export function finalizeAppPageHtmlCacheResponse(
 
       if (options.capturedRscDataPromise) {
         writes.push(
-          options.capturedRscDataPromise.then((rscData) =>
-            options.isrSet(rscKey, buildAppPageCacheValue("", rscData, 200, rscRenderObservation), {
-              cacheControl,
-              tags: pageTags,
-            }),
-          ),
+          options.capturedRscDataPromise.then(async (capturedRscData) => {
+            try {
+              await options.isrSet(
+                rscKey,
+                buildAppPageCacheValue("", capturedRscData.body, 200, rscRenderObservation),
+                {
+                  cacheControl,
+                  tags: pageTags,
+                },
+              );
+            } finally {
+              capturedRscData.release();
+            }
+          }),
         );
       }
 
@@ -325,6 +336,7 @@ export function finalizeAppPageHtmlCacheResponse(
       });
       console.error("[vinext] ISR cache write error:", cacheError);
     } finally {
+      releaseCapturedHtml?.();
       complete({ cacheable: false, reason: "cacheability finalizer did not complete" });
     }
   })();
@@ -412,8 +424,9 @@ export function scheduleAppPageRscCacheWrite(
     completeCacheability(outcome);
   };
   const cachePromise = (async () => {
+    let capturedRscData: CapturedAppPageRscData | null = null;
     try {
-      const rscData = await capturedRscDataPromise;
+      capturedRscData = await capturedRscDataPromise;
 
       if (options.consumeDynamicUsage()) {
         complete({
@@ -452,10 +465,14 @@ export function scheduleAppPageRscCacheWrite(
         cacheTags: pageTags,
         state: observationState,
       });
-      await options.isrSet(rscKey, buildAppPageCacheValue("", rscData, 200, rscRenderObservation), {
-        cacheControl,
-        tags: pageTags,
-      });
+      await options.isrSet(
+        rscKey,
+        buildAppPageCacheValue("", capturedRscData.body, 200, rscRenderObservation),
+        {
+          cacheControl,
+          tags: pageTags,
+        },
+      );
       complete(
         options.responseExplicitlyUncacheable
           ? { cacheable: false, reason: "response explicitly opts out of shared caching" }
@@ -473,6 +490,7 @@ export function scheduleAppPageRscCacheWrite(
       });
       console.error("[vinext] ISR RSC cache write error:", cacheError);
     } finally {
+      capturedRscData?.release();
       complete({ cacheable: false, reason: "cacheability finalizer did not complete" });
     }
   })();

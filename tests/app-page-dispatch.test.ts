@@ -106,6 +106,10 @@ function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   });
 }
 
+function capturedRscData(body: ArrayBuffer) {
+  return { body, release() {} };
+}
+
 function captureRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !React.isValidElement(value) && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -692,6 +696,25 @@ describe("app page dispatch", () => {
 
     expect(probePage).not.toHaveBeenCalled();
     await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
+  it("makes uncached current time dynamic for Cache Components pages", async () => {
+    const isrSet = vi.fn(async () => {});
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrSet,
+      pprRuntime: appPagePprRuntime,
+      renderToReadableStream() {
+        Date.now();
+        return createStream(["flight"]);
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(isrSet).not.toHaveBeenCalled();
+    await response.text();
   });
 
   afterEach(() => {
@@ -1955,6 +1978,25 @@ describe("app page dispatch", () => {
     expect(stored.headers).toEqual({ location: "/login" });
   });
 
+  it("does not persist a middleware Location override with a terminal redirect", async () => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_REDIRECT;replace;/route-login;307" },
+      actionFailed: true,
+      isProduction: true,
+      middlewareContext: {
+        headers: new Headers({ Location: "/request-login" }),
+        status: null,
+      },
+      revalidateSeconds: 60,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("location")).toBe("/request-login");
+    const stored = vi.mocked(options.isrSet).mock.calls[0]![1];
+    expect(stored.headers).toEqual({ location: "/route-login" });
+  });
+
   it("stores a terminal RSC redirect only in the RSC artifact", async () => {
     const { options } = createDispatchOptions({
       actionError: { digest: "NEXT_REDIRECT;replace;/login;307" },
@@ -1973,6 +2015,25 @@ describe("app page dispatch", () => {
     expect(key).not.toContain("html:");
     expect(stored.html).toBe("");
     expect(new TextDecoder().decode(stored.rscData)).toBe("flight");
+  });
+
+  it.each([
+    ["mounted slots", { mountedSlotsHeader: "slot:modal:/feed" }],
+    ["unverified interception", { bypassInterceptionContextCache: true }],
+  ])("does not cache a terminal RSC redirect for %s", async (_label, overrides) => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_REDIRECT;replace;/login;307" },
+      actionFailed: true,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: 60,
+      ...overrides,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(options.isrSet).not.toHaveBeenCalled();
   });
 
   it("applies the completed render cache-life minimum to a static not-found response", async () => {
@@ -2560,7 +2621,7 @@ describe("app page dispatch", () => {
         async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
           if (captureOptions?.capturedRscDataRef) {
             captureOptions.capturedRscDataRef.value = Promise.resolve(
-              new TextEncoder().encode("fresh-intercepted-flight").buffer,
+              capturedRscData(new TextEncoder().encode("fresh-intercepted-flight").buffer),
             );
           }
           void captureOptions?.sideStream?.cancel().catch(() => {});
@@ -2998,7 +3059,7 @@ describe("app page dispatch", () => {
           capturedFallbackToErrorDocument = captureOptions?.fallbackToErrorDocumentOnShellError;
           if (captureOptions?.capturedRscDataRef) {
             captureOptions.capturedRscDataRef.value = Promise.resolve(
-              new TextEncoder().encode("fresh-flight").buffer,
+              capturedRscData(new TextEncoder().encode("fresh-flight").buffer),
             );
           }
           void captureOptions?.sideStream?.cancel().catch(() => {});
@@ -3105,7 +3166,7 @@ describe("app page dispatch", () => {
           async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
             if (captureOptions?.capturedRscDataRef) {
               captureOptions.capturedRscDataRef.value = Promise.resolve(
-                new TextEncoder().encode("fresh-flight").buffer,
+                capturedRscData(new TextEncoder().encode("fresh-flight").buffer),
               );
             }
             void captureOptions?.sideStream?.cancel().catch(() => {});
@@ -3260,7 +3321,7 @@ describe("app page dispatch", () => {
         async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
           if (captureOptions?.capturedRscDataRef) {
             captureOptions.capturedRscDataRef.value = Promise.resolve(
-              new TextEncoder().encode("fresh-flight").buffer,
+              capturedRscData(new TextEncoder().encode("fresh-flight").buffer),
             );
           }
           void captureOptions?.sideStream?.cancel().catch(() => {});
@@ -3355,7 +3416,7 @@ describe("app page dispatch", () => {
         async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
           if (captureOptions?.capturedRscDataRef) {
             captureOptions.capturedRscDataRef.value = Promise.resolve(
-              new TextEncoder().encode("fresh-flight").buffer,
+              capturedRscData(new TextEncoder().encode("fresh-flight").buffer),
             );
           }
           void captureOptions?.sideStream?.cancel().catch(() => {});

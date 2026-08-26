@@ -91,9 +91,10 @@ describe("renderAppPageCacheArtifacts", () => {
       loadSsrHandler: async () => ({
         async handleSsr(_rscStream, _navigationContext, _fontData, options) {
           receivedLimit = options?.capturedRscDataLimitBytes;
-          options!.capturedRscDataRef!.value = Promise.resolve(
-            new TextEncoder().encode("flight-data").buffer,
-          );
+          options!.capturedRscDataRef!.value = Promise.resolve({
+            body: new TextEncoder().encode("flight-data").buffer,
+            release() {},
+          });
           return createStream(["<html>page</html>"]);
         },
       }),
@@ -104,5 +105,30 @@ describe("renderAppPageCacheArtifacts", () => {
     });
 
     expect(receivedLimit).toBe(CACHEABILITY_RESPONSE_BODY_LIMIT);
+  });
+
+  it("rejects oversized regenerated HTML cache artifacts", async () => {
+    const oversized = "x".repeat(CACHEABILITY_RESPONSE_BODY_LIMIT + 1);
+
+    await expect(
+      renderAppPageCacheArtifacts({
+        captureRscData: false,
+        cleanPathname: "/posts/large",
+        element: React.createElement("div", null, "page"),
+        getFontLinks: () => [],
+        getFontPreloads: () => [],
+        getFontStyles: () => [],
+        getNavigationContext: () => null,
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            return createStream([oversized]);
+          },
+        }),
+        navigationParams: {},
+        onError: () => undefined,
+        renderToReadableStream: () => createStream(["flight-data"]),
+        route: { pattern: "/posts/[slug]", routeSegments: [] },
+      }),
+    ).rejects.toThrow(`response body exceeded ${CACHEABILITY_RESPONSE_BODY_LIMIT} bytes`);
   });
 });

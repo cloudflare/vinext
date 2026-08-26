@@ -607,62 +607,67 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   const tags = encodeCacheTags(options?.tags ?? []);
   const revalidateSeconds = options?.revalidate;
 
-  const cachedFn = async (...args: Parameters<T>) => {
-    const argsKey = JSON.stringify(args);
-    const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
-    addCollectedRequestTags(tags);
-    recordUnstableCacheObservation({
-      kind: "unstable_cache",
-      keyHash: fnv1a64(cacheKey),
-      revalidate:
-        typeof revalidateSeconds === "number"
-          ? revalidateSeconds
-          : revalidateSeconds === false
-            ? false
-            : null,
-      tagCount: tags.length,
-      tagHash: tags.length > 0 ? fnv1a64(JSON.stringify(tags)) : null,
-    });
+  // Keep lookup, refresh, and serialization in the cache work unit as well as
+  // the user callback. Next.js's synchronous platform-I/O wrappers no-op for
+  // the whole `unstable-cache` work unit, so cache-handler clock reads cannot
+  // accidentally make the enclosing Cache Components route dynamic.
+  const cachedFn = (...args: Parameters<T>) =>
+    _unstableCacheAls.run(true, async () => {
+      const argsKey = JSON.stringify(args);
+      const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
+      addCollectedRequestTags(tags);
+      recordUnstableCacheObservation({
+        kind: "unstable_cache",
+        keyHash: fnv1a64(cacheKey),
+        revalidate:
+          typeof revalidateSeconds === "number"
+            ? revalidateSeconds
+            : revalidateSeconds === false
+              ? false
+              : null,
+        tagCount: tags.length,
+        tagHash: tags.length > 0 ? fnv1a64(JSON.stringify(tags)) : null,
+      });
 
-    const isDraftMode = isDraftModeEnabled();
-    if (!isDraftMode) {
-      // Try to get from cache. Stale entries are usable in normal App Router
-      // requests, but foreground-refresh inside revalidation scopes so the
-      // regenerated page/route stores fresh data.
-      const softTags = getCurrentFetchSoftTags();
-      const existing = _hasPendingRevalidatedTag([...tags, ...softTags])
-        ? null
-        : await getDataCacheHandler().get(cacheKey, {
-            kind: "FETCH",
-            tags,
-            softTags,
-          });
-      if (existing?.value && existing.value.kind === "FETCH") {
-        const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
-        if (cached.ok) {
-          if (existing.cacheState === "stale") {
-            if (shouldServeStaleUnstableCacheEntry()) {
-              scheduleUnstableCacheBackgroundRevalidation(cacheKey, () =>
-                refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds),
-              );
+      const isDraftMode = isDraftModeEnabled();
+      if (!isDraftMode) {
+        // Try to get from cache. Stale entries are usable in normal App Router
+        // requests, but foreground-refresh inside revalidation scopes so the
+        // regenerated page/route stores fresh data.
+        const softTags = getCurrentFetchSoftTags();
+        const existing = _hasPendingRevalidatedTag([...tags, ...softTags])
+          ? null
+          : await getDataCacheHandler().get(cacheKey, {
+              kind: "FETCH",
+              tags,
+              softTags,
+            });
+        if (existing?.value && existing.value.kind === "FETCH") {
+          const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
+          if (cached.ok) {
+            if (existing.cacheState === "stale") {
+              if (shouldServeStaleUnstableCacheEntry()) {
+                scheduleUnstableCacheBackgroundRevalidation(cacheKey, () =>
+                  refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds),
+                );
+                return cached.value;
+              }
+            } else {
               return cached.value;
             }
-          } else {
-            return cached.value;
           }
+          // Corrupted entries fall through to a foreground refresh.
         }
-        // Corrupted entries fall through to a foreground refresh.
       }
-    }
 
-    // Cache miss — call the function inside the unstable_cache ALS scope
-    // so that headers()/cookies()/connection() can detect they're in a
-    // cache scope and throw an appropriate error.
-    if (isDraftMode) {
-      return await _unstableCacheAls.run(true, () => fn(...args));
-    }
-    return await refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
-  };
+      // Cache miss — call the function inside the unstable_cache ALS scope
+      // so that headers()/cookies()/connection() can detect they're in a
+      // cache scope and throw an appropriate error.
+      if (isDraftMode) {
+        return await _unstableCacheAls.run(true, () => fn(...args));
+      }
+      return await refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
+    });
 
   return cachedFn as T;
 }

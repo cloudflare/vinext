@@ -210,6 +210,67 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     });
   });
 
+  it("derives rewritten warm representations from the staged Worker's resolved route kind", async () => {
+    const { applyResolvedCacheabilityWarmKinds } =
+      await import("../packages/cloudflare/src/deploy.js");
+    const routes = [
+      {
+        kind: "app-page" as const,
+        path: "/page-to-api",
+        pattern: "/page-to-api",
+        probePath: "/page-to-api",
+        warmPaths: ["/page-to-api"],
+      },
+      {
+        kind: "app-route" as const,
+        path: "/api-to-page",
+        pattern: "/api-to-page",
+        probePath: "/api-to-page",
+        warmPaths: ["/api-to-page"],
+      },
+      {
+        kind: "app-page" as const,
+        path: "/target-page",
+        pattern: "/target-page",
+        probePath: "/target-page",
+        warmPaths: ["/target-page"],
+      },
+    ];
+
+    expect(
+      applyResolvedCacheabilityWarmKinds(
+        {
+          loadingShellPaths: ["/page-to-api", "/target-page"],
+          paths: ["/page-to-api", "/api-to-page", "/target-page"],
+          rscPaths: ["/page-to-api", "/target-page"],
+        },
+        routes,
+        [
+          {
+            exactPath: "/page-to-api",
+            kind: "app-route",
+            pattern: "/target-api",
+            sourceKind: "app-page",
+            sourcePattern: "/page-to-api",
+            state: "static-candidate",
+          },
+          {
+            exactPath: "/api-to-page",
+            kind: "app-page",
+            pattern: "/target-page",
+            sourceKind: "app-route",
+            sourcePattern: "/api-to-page",
+            state: "static-candidate",
+          },
+        ],
+      ),
+    ).toEqual({
+      loadingShellPaths: ["/target-page", "/api-to-page"],
+      paths: ["/target-page", "/page-to-api", "/api-to-page"],
+      rscPaths: ["/target-page", "/api-to-page"],
+    });
+  });
+
   it("uploads a probe Worker, builds a route manifest, then warms and promotes a second Worker", async () => {
     const events: string[] = [];
     writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker", workers_dev: true }));

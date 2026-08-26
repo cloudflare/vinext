@@ -361,6 +361,74 @@ describe("app route handler execution helpers", () => {
     expect(result.crossedTaskBoundary).toBe(true);
   });
 
+  it("uses synchronous platform I/O to decide Cache Components route eligibility", async () => {
+    const execute = (
+      routePattern: string,
+      handlerFn: () => Response | Promise<Response>,
+      isrSet: Parameters<typeof executeAppRouteHandler>[0]["isrSet"],
+    ) =>
+      executeAppRouteHandler({
+        buildPageCacheTags: () => [],
+        cacheComponents: true,
+        cleanPathname: routePattern,
+        clearRequestContext() {},
+        consumeDynamicUsage,
+        executionContext: null,
+        getAndClearPendingCookies: () => [],
+        getCollectedFetchTags: () => [],
+        getDraftModeCookieHeader: () => null,
+        handler: {},
+        handlerFn,
+        isAutoHead: false,
+        isCacheabilityProbe: true,
+        isProduction: true,
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        isrSet,
+        markDynamicUsage,
+        method: "GET",
+        middlewareContext: { headers: null, status: null },
+        observeCompletedBody: true,
+        params: null,
+        reportRequestError() {},
+        request: new Request(`https://example.com${routePattern}`),
+        revalidateSeconds: Infinity,
+        routePattern,
+        setHeadersAccessPhase: () => "render",
+      });
+
+    consumeDynamicUsage();
+    const dynamicPattern = `/api/platform-dynamic-${Date.now()}`;
+    const dynamicSet = vi.fn(async () => {});
+    let dynamicExecutions = 0;
+    const dynamicResponse = await execute(
+      dynamicPattern,
+      () => {
+        dynamicExecutions += 1;
+        return new Response(String(Date.now()));
+      },
+      dynamicSet,
+    );
+    expect(dynamicExecutions).toBe(1);
+    expect(dynamicSet).not.toHaveBeenCalled();
+    expect(isKnownDynamicAppRoute(dynamicPattern)).toBe(true);
+    await dynamicResponse.text();
+
+    consumeDynamicUsage();
+    const cachedPattern = `/api/platform-cached-${Date.now()}`;
+    const cachedTime = unstable_cache(async () => Date.now(), [cachedPattern]);
+    const cachedSet = vi.fn(async () => {});
+    const cachedResponse = await execute(
+      cachedPattern,
+      async () => new Response(String(await cachedTime())),
+      cachedSet,
+    );
+    expect(cachedSet).toHaveBeenCalledOnce();
+    expect(isKnownDynamicAppRoute(cachedPattern)).toBe(false);
+    expect(cachedResponse.headers.get("cache-control")).toContain("s-maxage=31536000");
+    await cachedResponse.text();
+    consumeDynamicUsage();
+  });
+
   it.each([
     ["synchronously", false],
     ["after a microtask", true],
@@ -531,13 +599,13 @@ describe("app route handler execution helpers", () => {
           return new Response(
             new ReadableStream(
               {
+                cancel() {
+                  cancellations += 1;
+                },
                 async pull(controller) {
                   pulls += 1;
                   controller.enqueue(new TextEncoder().encode(await cached()));
                   controller.close();
-                },
-                cancel() {
-                  cancellations += 1;
                 },
               },
               { highWaterMark: 0 },
@@ -561,8 +629,8 @@ describe("app route handler execution helpers", () => {
         setHeadersAccessPhase: () => "render",
       });
 
-      expect(cancellations).toBe(1);
       expect(pulls).toBe(1);
+      expect(cancellations).toBe(0);
       expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
       await expect(response.text()).resolves.toBe("deferred");
     } finally {

@@ -37,6 +37,7 @@ import {
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
+  type CapturedAppPageRscData,
 } from "./app-page-stream.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import {
@@ -78,6 +79,7 @@ import {
 } from "./app-page-render-observation.js";
 import {
   CACHEABILITY_RESPONSE_BODY_LIMIT,
+  CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
   recordRouteCacheability,
   recordRouteCacheabilityCapturedBody,
   reserveCacheabilityResponseCapture,
@@ -768,7 +770,9 @@ export async function renderAppPageLifecycle(
 
   let pprFallbackShellRsc: Uint8Array | null = null;
   if (options.pprFallbackShellSignal) {
-    pprFallbackShellRsc = new Uint8Array(await readAppPageBinaryStreamBounded(rscStream));
+    const captured = await readAppPageBinaryStreamBounded(rscStream);
+    pprFallbackShellRsc = new Uint8Array(captured.body);
+    captured.release();
   }
 
   let revalidateSeconds = options.revalidateSeconds;
@@ -808,12 +812,13 @@ export async function renderAppPageLifecycle(
   // the sideStream directly. For HTML requests, handleSsr creates an embed
   // transform from it and fills capturedRscDataRef. The ref object is threaded
   // through so .value is read lazily after handleSsr completes.
-  const capturedRscDataRef: { value: Promise<ArrayBuffer> | null } = { value: null };
+  const capturedRscDataRef: { value: Promise<CapturedAppPageRscData> | null } = { value: null };
   if (rscCapture.sideStream && options.isRscRequest) {
     capturedRscDataRef.value = readAppPageBinaryStreamBounded(rscCapture.sideStream).then(
-      (body) => {
-        recordRouteCacheabilityCapturedBody(body);
-        return body;
+      (captured) => {
+        const transferred = recordRouteCacheabilityCapturedBody(captured.body, captured.release);
+        if (!transferred) captured.release();
+        return { body: captured.body, release: () => {} };
       },
     );
   }
@@ -1030,6 +1035,9 @@ export async function renderAppPageLifecycle(
         capturedRscDataRef,
         capturedRscDataLimitBytes: releaseCapturedRscDataBudget
           ? CACHEABILITY_RESPONSE_BODY_LIMIT
+          : undefined,
+        capturedRscDataTimeoutMs: releaseCapturedRscDataBudget
+          ? CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS
           : undefined,
         releaseCapturedRscDataBudget: releaseCapturedRscDataBudget ?? undefined,
         getInitialNavigationCacheMetadata: () => {
@@ -1343,7 +1351,7 @@ export async function renderAppPageLifecycle(
 }
 
 async function settleCapturedRscRenderForCacheMetadata(
-  capturedRscDataPromise: Promise<ArrayBuffer> | null,
+  capturedRscDataPromise: Promise<CapturedAppPageRscData> | null,
   shouldStopWaiting?: () => boolean,
 ): Promise<void> {
   if (!capturedRscDataPromise) {

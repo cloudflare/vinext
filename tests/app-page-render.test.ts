@@ -38,6 +38,7 @@ import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import type { IsrWritePolicy } from "../packages/vinext/src/server/isr-cache.js";
 import type { InitialNavigationCacheMetadata } from "../packages/vinext/src/server/app-ssr-stream.js";
+import type { CapturedAppPageRscData } from "../packages/vinext/src/server/app-page-stream.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -77,6 +78,10 @@ function createDeferred<T = void>() {
   return { promise, reject, resolve };
 }
 
+function capturedRscData(body: ArrayBuffer): CapturedAppPageRscData {
+  return { body, release() {} };
+}
+
 function createCommonOptions() {
   const waitUntilPromises: Promise<void>[] = [];
   const renderToReadableStream = vi.fn(() => createStream(["flight-data"]));
@@ -89,7 +94,7 @@ function createCommonOptions() {
         formState?: unknown;
         scriptNonce?: string;
         sideStream?: ReadableStream<Uint8Array>;
-        capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+        capturedRscDataRef?: { value: Promise<CapturedAppPageRscData> | null };
       },
     ) {
       // Fill capturedRscDataRef so the ISR cache write path can verify paired
@@ -97,7 +102,7 @@ function createCommonOptions() {
       // that by providing a resolved promise with test fixture data.
       if (options?.capturedRscDataRef) {
         options.capturedRscDataRef.value = Promise.resolve(
-          new TextEncoder().encode("flight-data").buffer,
+          capturedRscData(new TextEncoder().encode("flight-data").buffer),
         );
         // Consume the sideStream so the stream is not left hanging
         if (options.sideStream) {
@@ -898,7 +903,7 @@ describe("app page render lifecycle", () => {
         async handleSsr(_rscStream, _navigationContext, _fontData, options) {
           if (options?.capturedRscDataRef) {
             options.capturedRscDataRef.value = Promise.resolve(
-              new TextEncoder().encode("flight-data").buffer,
+              capturedRscData(new TextEncoder().encode("flight-data").buffer),
             );
           }
           if (options?.sideStream) {
@@ -1067,7 +1072,7 @@ describe("app page render lifecycle", () => {
       requestCacheLife = null;
       return value;
     });
-    const releaseRscData = createDeferred<ArrayBuffer>();
+    const releaseRscData = createDeferred<CapturedAppPageRscData>();
 
     const responsePromise = renderAppPageLifecycle({
       ...common.options,
@@ -1080,7 +1085,7 @@ describe("app page render lifecycle", () => {
           _navContext: unknown,
           _fontData: unknown,
           options?: {
-            capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+            capturedRscDataRef?: { value: Promise<CapturedAppPageRscData> | null };
             fallbackToErrorDocumentOnShellError?: boolean;
             sideStream?: ReadableStream<Uint8Array>;
             waitForAllReady?: boolean;
@@ -1104,7 +1109,7 @@ describe("app page render lifecycle", () => {
     await Promise.resolve();
     expect(getRequestCacheLife).not.toHaveBeenCalled();
     requestCacheLife = { revalidate: 1, expire: 3 };
-    releaseRscData.resolve(new ArrayBuffer(0));
+    releaseRscData.resolve(capturedRscData(new ArrayBuffer(0)));
     const response = await responsePromise;
 
     expect(capturedWaitForAllReady).toBe(false);
@@ -1121,7 +1126,7 @@ describe("app page render lifecycle", () => {
     const common = createCommonOptions();
     let dynamicUsed = false;
     const getRequestCacheLife = vi.fn(() => null);
-    const pendingRscData = new Promise<ArrayBuffer>(() => {});
+    const pendingRscData = new Promise<CapturedAppPageRscData>(() => {});
 
     const response = await renderAppPageLifecycle({
       ...common.options,
@@ -1139,7 +1144,7 @@ describe("app page render lifecycle", () => {
           _navContext: unknown,
           _fontData: unknown,
           options?: {
-            capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+            capturedRscDataRef?: { value: Promise<CapturedAppPageRscData> | null };
             sideStream?: ReadableStream<Uint8Array>;
           },
         ) {
@@ -1222,13 +1227,15 @@ describe("app page render lifecycle", () => {
           _fontData: unknown,
           options?: {
             sideStream?: ReadableStream<Uint8Array>;
-            capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+            capturedRscDataRef?: { value: Promise<CapturedAppPageRscData> | null };
           },
         ) {
           const stream = options?.sideStream ?? rscStream;
-          const capturedRscData = new Response(stream).arrayBuffer();
+          const capturedRscDataPromise = new Response(stream)
+            .arrayBuffer()
+            .then((body) => capturedRscData(body));
           if (options?.capturedRscDataRef) {
-            options.capturedRscDataRef.value = capturedRscData;
+            options.capturedRscDataRef.value = capturedRscDataPromise;
           }
 
           const htmlStream = new ReadableStream<Uint8Array>({
@@ -1240,8 +1247,8 @@ describe("app page render lifecycle", () => {
 
           return {
             htmlStream,
-            metadataReady: capturedRscData.then(() => {}),
-            capturedRscData,
+            metadataReady: capturedRscDataPromise.then(() => {}),
+            capturedRscData: capturedRscDataPromise,
           };
         },
       }),

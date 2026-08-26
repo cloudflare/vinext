@@ -52,6 +52,10 @@ function createHeaderClearingCdnAdapter(): CdnCacheAdapter {
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
+function capturedRscData(body: ArrayBuffer) {
+  return { body, release() {} };
+}
+
 function buildISRCacheEntry(
   value: CachedAppPageValue,
   isStale = false,
@@ -171,6 +175,22 @@ describe("app page cache helpers", () => {
     expect(response?.headers.get("location")).toBe("/login");
     expect(response?.headers.get("link")).toBe("</current.css>; rel=preload; as=style");
     await expect(response?.text()).resolves.toBe("");
+  });
+
+  it("lets current middleware override a stored terminal Location without changing its status", () => {
+    const cachedValue = buildCachedAppPageValue("", undefined, 307);
+    cachedValue.headers = { location: "/route-login" };
+
+    const response = buildAppPageCachedResponse(cachedValue, {
+      cacheState: "HIT",
+      isRscRequest: false,
+      middlewareHeaders: new Headers({ Location: "/request-login" }),
+      middlewareStatus: 202,
+      revalidateSeconds: 60,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).toBe("/request-login");
   });
 
   it("replays the entry's client stale time on cache hits", async () => {
@@ -1161,7 +1181,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
-        capturedRscDataPromise: Promise.resolve(rscData),
+        capturedRscDataPromise: Promise.resolve(capturedRscData(rscData)),
         cleanPathname: "/fresh",
         consumeDynamicUsage() {
           return false;
@@ -1235,7 +1255,9 @@ describe("app page cache helpers", () => {
     const debugCalls: Array<[string, string]> = [];
     const isrSet = vi.fn();
     const options = {
-      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      capturedRscDataPromise: Promise.resolve(
+        capturedRscData(new TextEncoder().encode("flight").buffer),
+      ),
       cleanPathname: "/dynamic-html",
       consumeDynamicUsage() {
         return true;
@@ -1309,7 +1331,9 @@ describe("app page cache helpers", () => {
         capturedDynamicUsageBeforeContextCleanup() {
           return true;
         },
-        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        capturedRscDataPromise: Promise.resolve(
+          capturedRscData(new TextEncoder().encode("flight").buffer),
+        ),
         cleanPathname: "/dynamic-html-cleanup",
         consumeDynamicUsage() {
           return false;
@@ -1359,7 +1383,9 @@ describe("app page cache helpers", () => {
     }> = [];
 
     const didSchedule = scheduleAppPageRscCacheWrite({
-      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      capturedRscDataPromise: Promise.resolve(
+        capturedRscData(new TextEncoder().encode("flight").buffer),
+      ),
       cleanPathname: "/fresh-rsc",
       consumeDynamicUsage() {
         return false;
@@ -1415,7 +1441,9 @@ describe("app page cache helpers", () => {
     const isrSet = vi.fn();
 
     const didSchedule = scheduleAppPageRscCacheWrite({
-      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      capturedRscDataPromise: Promise.resolve(
+        capturedRscData(new TextEncoder().encode("flight").buffer),
+      ),
       cleanPathname: "/fresh-rsc",
       consumeDynamicUsage() {
         return false;
@@ -1455,7 +1483,9 @@ describe("app page cache helpers", () => {
         },
       }),
       {
-        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        capturedRscDataPromise: Promise.resolve(
+          capturedRscData(new TextEncoder().encode("flight").buffer),
+        ),
         cleanPathname: "/fresh-rsc",
         consumeDynamicUsage() {
           return false;
@@ -1537,7 +1567,9 @@ describe("app page cache helpers", () => {
         },
       }),
       {
-        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        capturedRscDataPromise: Promise.resolve(
+          capturedRscData(new TextEncoder().encode("flight").buffer),
+        ),
         cleanPathname: "/fresh-rsc",
         consumeDynamicUsage() {
           return false;
@@ -1584,7 +1616,9 @@ describe("app page cache helpers", () => {
         },
       }),
       {
-        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        capturedRscDataPromise: Promise.resolve(
+          capturedRscData(new TextEncoder().encode("flight").buffer),
+        ),
         cleanPathname: "/fresh-rsc",
         consumeDynamicUsage() {
           return false;
@@ -1624,7 +1658,9 @@ describe("app page cache helpers", () => {
     const isrSet = vi.fn();
 
     const didSchedule = scheduleAppPageRscCacheWrite({
-      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      capturedRscDataPromise: Promise.resolve(
+        capturedRscData(new TextEncoder().encode("flight").buffer),
+      ),
       cleanPathname: "/dynamic-rsc",
       consumeDynamicUsage() {
         return true;
@@ -1663,7 +1699,9 @@ describe("app page cache helpers", () => {
     const isrSet = vi.fn();
 
     const didSchedule = scheduleAppPageRscCacheWrite({
-      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      capturedRscDataPromise: Promise.resolve(
+        capturedRscData(new TextEncoder().encode("flight").buffer),
+      ),
       cleanPathname: "/invalid-cache-life",
       consumeDynamicUsage() {
         return false;

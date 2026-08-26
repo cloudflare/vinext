@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { dispatchAppRouteHandler } from "../packages/vinext/src/server/app-route-handler-dispatch.js";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import { revalidateTag } from "../packages/vinext/src/shims/cache.js";
@@ -14,6 +14,20 @@ import {
   finalizeWorkerCacheabilityResponse,
 } from "../packages/vinext/src/server/cacheability-request.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import { resetEmbeddedCacheabilityManifestForTests } from "../packages/vinext/src/server/cacheability-manifest.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+
+const manifestGlobal = "__VINEXT_CACHEABILITY_MANIFEST__";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  resetEmbeddedCacheabilityManifestForTests();
+  setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+});
 
 function buildCachedRouteValue(body: string): CachedRouteValue {
   return {
@@ -139,6 +153,92 @@ describe("app route handler dispatch", () => {
       pattern: "/api/dynamic",
       state: "dynamic",
     });
+  });
+
+  it("streams manifest-proven dynamic Cache Components handlers without a prospective pass", async () => {
+    vi.stubGlobal(
+      manifestGlobal,
+      JSON.stringify({
+        routes: {
+          "app-route:/api/stream": {
+            kind: "app-route",
+            pattern: "/api/stream",
+            state: "dynamic",
+          },
+        },
+        version: 1,
+      }),
+    );
+    resetEmbeddedCacheabilityManifestForTests();
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/api/stream");
+    const context = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      request,
+      "secret-a",
+    );
+    let pulls = 0;
+    let cancellations = 0;
+    let releasePull!: () => void;
+    const pullGate = new Promise<void>((resolve) => {
+      releasePull = resolve;
+    });
+    const get = vi.fn(
+      () =>
+        new Response(
+          new ReadableStream(
+            {
+              cancel() {
+                cancellations += 1;
+              },
+              async pull(controller) {
+                pulls += 1;
+                await pullGate;
+                controller.enqueue(new TextEncoder().encode("streamed"));
+                controller.close();
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+        ),
+    );
+
+    const response = await runWithExecutionContext(context, () =>
+      dispatchAppRouteHandler({
+        cacheComponents: true,
+        cleanPathname: "/api/stream",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return null;
+        },
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: null,
+        request,
+        route: {
+          isDynamic: false,
+          pattern: "/api/stream",
+          routeHandler: { GET: get },
+          routeSegments: ["api", "stream"],
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      }),
+    );
+
+    expect(get).toHaveBeenCalledOnce();
+    expect(pulls).toBeLessThanOrEqual(1);
+    expect(cancellations).toBe(0);
+    releasePull();
+    await expect(response.text()).resolves.toBe("streamed");
+    expect(pulls).toBe(1);
+    expect(cancellations).toBe(0);
   });
 
   it.each([

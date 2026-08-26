@@ -32,6 +32,7 @@ type CacheabilityRequestRoute = Pick<CacheabilityManifestRoute, "kind" | "patter
 
 type CacheabilityRequestState = {
   capturedBody?: ArrayBuffer | null;
+  releaseCapturedBody?: () => void;
   complete?: (outcome: CacheabilityOutcome) => void;
   completion?: Promise<CacheabilityOutcome>;
   manifestRoute?: CacheabilityManifestRoute;
@@ -246,7 +247,12 @@ function uncacheableStreamingResponse(response: Response): Response {
 }
 
 export type CapturedResponseBody =
-  | { body: ArrayBuffer | null; fallback: ReadableStream<Uint8Array> | null; failClosed: false }
+  | {
+      body: ArrayBuffer | null;
+      fallback: ReadableStream<Uint8Array> | null;
+      failClosed: false;
+      release: () => void;
+    }
   | { fallback: ReadableStream<Uint8Array>; failClosed: true; reason: string };
 
 /**
@@ -258,7 +264,9 @@ export type CapturedResponseBody =
 export async function captureResponseBodyBounded(
   response: Response,
 ): Promise<CapturedResponseBody> {
-  if (!response.body) return { body: null, fallback: null, failClosed: false };
+  if (!response.body) {
+    return { body: null, fallback: null, failClosed: false, release: () => {} };
+  }
 
   const declaredLength = Number(response.headers.get("Content-Length"));
   if (Number.isFinite(declaredLength) && declaredLength > CACHEABILITY_RESPONSE_BODY_LIMIT) {
@@ -333,9 +341,11 @@ export async function captureResponseBodyBounded(
       body.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    return { body: body.buffer, fallback, failClosed: false };
-  } finally {
+    return { body: body.buffer, fallback, failClosed: false, release: releaseCapture };
+  } catch (error) {
     releaseCapture();
+    void fallback.cancel().catch(() => {});
+    throw error;
   }
 }
 
@@ -429,6 +439,15 @@ export function isRouteCacheabilityProbe(): boolean {
   return readState(getRequestExecutionContext())?.mode === "probe";
 }
 
+/** A final manifest has already proven this concrete route representation dynamic. */
+export function isRouteManifestProvenDynamic(): boolean {
+  const state = readState(getRequestExecutionContext());
+  return (
+    state?.mode === "admit" &&
+    (state.manifestRoute?.state === "dynamic" || state.manifestRoute?.state === "probe-failed")
+  );
+}
+
 /** Prevent whole-response CDN admission when an earlier request phase can vary this URL. */
 export function markRequestCacheabilityUnsafe(reason: string): void {
   const state = readState(getRequestExecutionContext());
@@ -466,10 +485,16 @@ export function recordRouteCacheability(outcome: CacheabilityOutcome): void {
 }
 
 /** Reuse a body already collected by the route's Full Route Cache owner. */
-export function recordRouteCacheabilityCapturedBody(body: ArrayBuffer | null): void {
+export function recordRouteCacheabilityCapturedBody(
+  body: ArrayBuffer | null,
+  release?: () => void,
+): boolean {
   const state = readState(getRequestExecutionContext());
-  if (!state?.route) return;
+  if (!state?.route) return false;
+  state.releaseCapturedBody?.();
   state.capturedBody = body;
+  state.releaseCapturedBody = release;
+  return true;
 }
 
 /** Record the exact adapter policy used only while an App render is unproven. */
@@ -516,6 +541,18 @@ export async function finalizeWorkerCacheabilityResponse(
 ): Promise<Response> {
   const state = readState(ctx);
   if (!state) return response;
+  try {
+    return await finalizeWorkerCacheabilityResponseWithState(response, state);
+  } finally {
+    state.releaseCapturedBody?.();
+    state.releaseCapturedBody = undefined;
+  }
+}
+
+async function finalizeWorkerCacheabilityResponseWithState(
+  response: Response,
+  state: CacheabilityRequestState,
+): Promise<Response> {
   if (!state.route) {
     if (state.mode === "probe") {
       return probeResponse(
@@ -603,7 +640,7 @@ export async function finalizeWorkerCacheabilityResponse(
   const deferredOutcome = state.completion ? await state.completion : undefined;
   let captured: CapturedResponseBody;
   if (state.capturedBody !== undefined) {
-    captured = { body: state.capturedBody, fallback: null, failClosed: false };
+    captured = { body: state.capturedBody, fallback: null, failClosed: false, release: () => {} };
   } else {
     try {
       captured = await captureResponseBodyBounded(response);
@@ -616,83 +653,88 @@ export async function finalizeWorkerCacheabilityResponse(
     }
   }
 
-  if (captured.failClosed) {
-    if (
-      state.mode !== "probe" &&
-      state.manifestRoute?.state === "static-candidate" &&
-      state.route.partialPrerender !== true
-    ) {
-      void captured.fallback.cancel().catch(() => {});
-      return staticToDynamicErrorResponse({
-        cacheable: false,
-        dynamicUsage: true,
-        reason: captured.reason,
-      });
+  const releaseCaptured = captured.failClosed ? null : captured.release;
+  try {
+    if (captured.failClosed) {
+      if (
+        state.mode !== "probe" &&
+        state.manifestRoute?.state === "static-candidate" &&
+        state.route.partialPrerender !== true
+      ) {
+        void captured.fallback.cancel().catch(() => {});
+        return staticToDynamicErrorResponse({
+          cacheable: false,
+          dynamicUsage: true,
+          reason: captured.reason,
+        });
+      }
+      if (state.mode === "probe") {
+        void captured.fallback.cancel().catch(() => {});
+        return probeResponse(
+          state,
+          "dynamic",
+          {
+            cacheable: false,
+            reason: captured.reason,
+          },
+          response.status,
+        );
+      }
+      return uncacheableStreamingResponse(
+        new Response(captured.fallback, {
+          headers: response.headers,
+          status: response.status,
+          statusText: response.statusText,
+        }),
+      );
     }
+
+    const outcome =
+      deferredOutcome ??
+      state.outcome ??
+      ({
+        cacheable: responsePolicyIsCacheable(response),
+        cacheControl:
+          response.headers.get("CDN-Cache-Control") ??
+          response.headers.get("Cloudflare-CDN-Cache-Control") ??
+          response.headers.get("Cache-Control") ??
+          undefined,
+      } satisfies CacheabilityOutcome);
+    const cacheable =
+      !state.unsafeReason && outcome.cacheable && !responseHasFinalCacheOptOut(response, state);
+
     if (state.mode === "probe") {
-      void captured.fallback.cancel().catch(() => {});
+      await captured.fallback?.cancel().catch(() => {});
       return probeResponse(
         state,
-        "dynamic",
-        {
-          cacheable: false,
-          reason: captured.reason,
-        },
+        cacheable ? "static-candidate" : "dynamic",
+        outcome,
         response.status,
       );
     }
-    return uncacheableStreamingResponse(
-      new Response(captured.fallback, {
-        headers: response.headers,
-        status: response.status,
-        statusText: response.statusText,
-      }),
-    );
-  }
 
-  const outcome =
-    deferredOutcome ??
-    state.outcome ??
-    ({
-      cacheable: responsePolicyIsCacheable(response),
-      cacheControl:
-        response.headers.get("CDN-Cache-Control") ??
-        response.headers.get("Cloudflare-CDN-Cache-Control") ??
-        response.headers.get("Cache-Control") ??
-        undefined,
-    } satisfies CacheabilityOutcome);
-  const cacheable =
-    !state.unsafeReason && outcome.cacheable && !responseHasFinalCacheOptOut(response, state);
+    if (staticCandidateBecameDynamic(outcome)) {
+      await captured.fallback?.cancel().catch(() => {});
+      return staticToDynamicErrorResponse(outcome);
+    }
 
-  if (state.mode === "probe") {
-    void captured.fallback?.cancel().catch(() => {});
-    return probeResponse(
-      state,
-      cacheable ? "static-candidate" : "dynamic",
-      outcome,
-      response.status,
-    );
-  }
+    await captured.fallback?.cancel().catch(() => {});
 
-  if (staticCandidateBecameDynamic(outcome)) {
-    void captured.fallback?.cancel().catch(() => {});
-    return staticToDynamicErrorResponse(outcome);
-  }
-
-  void captured.fallback?.cancel().catch(() => {});
-
-  const headers = new Headers(response.headers);
-  if (cacheable && outcome.cacheControl) {
-    applyCdnResponseHeaders(headers, {
-      cacheControl: outcome.cacheControl,
-      tags: outcome.tags,
+    const headers = new Headers(response.headers);
+    if (cacheable && outcome.cacheControl) {
+      applyCdnResponseHeaders(headers, {
+        cacheControl: outcome.cacheControl,
+        tags: outcome.tags,
+      });
+    } else {
+      applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+    }
+    return new Response(captured.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
     });
-  } else {
-    applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+  } finally {
+    releaseCaptured?.();
   }
-  return new Response(captured.body, {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
 }

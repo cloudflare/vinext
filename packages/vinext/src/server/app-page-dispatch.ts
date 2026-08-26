@@ -35,7 +35,10 @@ import {
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
 } from "vinext/shims/fetch-cache";
-import { hasFrameworkLinkHeaders } from "./app-response-header-provenance.js";
+import {
+  getFrameworkLocationHeader,
+  hasFrameworkLinkHeaders,
+} from "./app-response-header-provenance.js";
 import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { WarmPprFallbackShellCachesOptions } from "./app-ppr-fallback-shell-render.js";
@@ -648,6 +651,16 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   return await options.pprRuntime.run(options.pprFallbackShell, dispatch);
 }
 
+async function runWithPlatformIoTrackingIfCacheComponents<T>(
+  enabled: boolean,
+  fn: () => T | Promise<T>,
+): Promise<T> {
+  if (!enabled) return fn();
+  const { runWithCacheComponentsPlatformIoTracking } =
+    await import("./cache-components-platform-io.js");
+  return runWithCacheComponentsPlatformIoTracking(fn);
+}
+
 async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
@@ -715,108 +728,116 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         statusText: response.statusText,
       });
     }
-    void captured.fallback?.cancel().catch(() => {});
-    recordRouteCacheabilityCapturedBody(captured.body);
-
-    const observationState = consumeAppPageRenderObservationState();
-    const dynamicUsage =
-      consumeDynamicUsage() ||
-      observationState.dynamicFetches.length > 0 ||
-      (!isForceStatic && observationState.requestApis.length > 0);
-    const explicitlyUncacheable =
-      response.headers.has("set-cookie") || hasExplicitNonCacheableResponsePolicy(response.headers);
-    const completedCacheLife = requestCacheLife.peek();
-    const completedRevalidateSeconds =
-      completedCacheLife?.revalidate === undefined
-        ? currentRevalidateSeconds
-        : currentRevalidateSeconds === null
-          ? completedCacheLife.revalidate
-          : Math.min(currentRevalidateSeconds, completedCacheLife.revalidate);
-    const completedExpireSeconds = completedCacheLife?.expire ?? options.expireSeconds;
-    const canCacheTerminalResponse =
-      !dynamicUsage &&
-      !explicitlyUncacheable &&
-      options.isProduction &&
-      !isDraftMode &&
-      !isForceDynamic &&
-      !options.scriptNonce &&
-      options.isProgressiveActionRender !== true &&
-      isAdmissibleCacheStatus(response.status) &&
-      completedRevalidateSeconds !== 0;
-    const headers = new Headers(response.headers);
-    if (!canCacheTerminalResponse || completedRevalidateSeconds === null) {
-      applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
-      recordRouteCacheability({
-        cacheable: false,
-        ...(dynamicUsage ? { dynamicUsage: true } : {}),
-        reason: dynamicUsage
-          ? "dynamic API used while rendering a terminal App page response"
-          : "terminal App page response is not eligible for shared caching",
-      });
-    } else {
-      const cacheControl = isrCacheControl(completedRevalidateSeconds, {
-        expireSeconds: completedExpireSeconds,
-      });
-      const cacheControlHeader =
-        completedRevalidateSeconds === Infinity
-          ? STATIC_CACHE_CONTROL
-          : buildRevalidateCacheControl(completedRevalidateSeconds, completedExpireSeconds);
-      const tags = buildAppPageTags(
-        options.cleanPathname,
-        getCollectedFetchTags(),
-        route.routeSegments,
-      );
-      applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader, tags });
-      // Middleware is request-specific and runs again on cache replay. Persist
-      // only terminal metadata owned by the route renderer itself.
-      const storedHeaders: Record<string, string> = {};
-      const location = response.headers.get("location");
-      if (response.status >= 300 && response.status < 400 && location) {
-        storedHeaders.location = location;
-      }
-      if (hasFrameworkLinkHeaders(response.headers)) {
-        const frameworkLink = response.headers.get("link");
-        if (frameworkLink) storedHeaders.link = frameworkLink;
-      }
-      const cacheValue = options.isRscRequest
-        ? buildAppPageCacheValue(
-            "",
-            captured.body ?? new ArrayBuffer(0),
-            response.status,
-            undefined,
-          )
-        : buildAppPageCacheValue(
-            captured.body === null ? "" : new TextDecoder().decode(captured.body),
-            undefined,
-            response.status,
-            undefined,
-            Object.keys(storedHeaders).length > 0 ? storedHeaders : undefined,
-          );
-      const cacheKey = options.isRscRequest
-        ? options.isrRscKey(
-            options.cleanPathname,
-            options.mountedSlotsHeader,
-            options.renderMode,
-            options.interceptionContext,
-            interceptionId,
-          )
-        : options.isrHtmlKey(options.cleanPathname);
-      if (!terminalCacheCommitted) {
-        terminalCacheCommitted = true;
-        try {
-          await options.isrSet(cacheKey, cacheValue, { cacheControl, tags });
-        } catch (error) {
-          console.error("[vinext] ISR terminal page cache write error:", error);
+    await captured.fallback?.cancel().catch(() => {});
+    const transferredCapture = recordRouteCacheabilityCapturedBody(captured.body, captured.release);
+    try {
+      const observationState = consumeAppPageRenderObservationState();
+      const dynamicUsage =
+        consumeDynamicUsage() ||
+        observationState.dynamicFetches.length > 0 ||
+        (!isForceStatic && observationState.requestApis.length > 0);
+      const explicitlyUncacheable =
+        response.headers.has("set-cookie") ||
+        hasExplicitNonCacheableResponsePolicy(response.headers);
+      const uncacheableRscVariant =
+        options.isRscRequest &&
+        (Boolean(options.mountedSlotsHeader) || options.bypassInterceptionContextCache === true);
+      const completedCacheLife = requestCacheLife.peek();
+      const completedRevalidateSeconds =
+        completedCacheLife?.revalidate === undefined
+          ? currentRevalidateSeconds
+          : currentRevalidateSeconds === null
+            ? completedCacheLife.revalidate
+            : Math.min(currentRevalidateSeconds, completedCacheLife.revalidate);
+      const completedExpireSeconds = completedCacheLife?.expire ?? options.expireSeconds;
+      const canCacheTerminalResponse =
+        !dynamicUsage &&
+        !explicitlyUncacheable &&
+        !uncacheableRscVariant &&
+        options.isProduction &&
+        !isDraftMode &&
+        !isForceDynamic &&
+        !options.scriptNonce &&
+        options.isProgressiveActionRender !== true &&
+        isAdmissibleCacheStatus(response.status) &&
+        completedRevalidateSeconds !== 0;
+      const headers = new Headers(response.headers);
+      if (!canCacheTerminalResponse || completedRevalidateSeconds === null) {
+        applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+        recordRouteCacheability({
+          cacheable: false,
+          ...(dynamicUsage ? { dynamicUsage: true } : {}),
+          reason: dynamicUsage
+            ? "dynamic API used while rendering a terminal App page response"
+            : "terminal App page response is not eligible for shared caching",
+        });
+      } else {
+        const cacheControl = isrCacheControl(completedRevalidateSeconds, {
+          expireSeconds: completedExpireSeconds,
+        });
+        const cacheControlHeader =
+          completedRevalidateSeconds === Infinity
+            ? STATIC_CACHE_CONTROL
+            : buildRevalidateCacheControl(completedRevalidateSeconds, completedExpireSeconds);
+        const tags = buildAppPageTags(
+          options.cleanPathname,
+          getCollectedFetchTags(),
+          route.routeSegments,
+        );
+        applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader, tags });
+        // Middleware is request-specific and runs again on cache replay. Persist
+        // only terminal metadata owned by the route renderer itself.
+        const storedHeaders: Record<string, string> = {};
+        const location = getFrameworkLocationHeader(response.headers);
+        if (response.status >= 300 && response.status < 400 && location) {
+          storedHeaders.location = location;
         }
+        if (hasFrameworkLinkHeaders(response.headers)) {
+          const frameworkLink = response.headers.get("link");
+          if (frameworkLink) storedHeaders.link = frameworkLink;
+        }
+        const cacheValue = options.isRscRequest
+          ? buildAppPageCacheValue(
+              "",
+              captured.body ?? new ArrayBuffer(0),
+              response.status,
+              undefined,
+            )
+          : buildAppPageCacheValue(
+              captured.body === null ? "" : new TextDecoder().decode(captured.body),
+              undefined,
+              response.status,
+              undefined,
+              Object.keys(storedHeaders).length > 0 ? storedHeaders : undefined,
+            );
+        const cacheKey = options.isRscRequest
+          ? options.isrRscKey(
+              options.cleanPathname,
+              options.mountedSlotsHeader,
+              options.renderMode,
+              options.interceptionContext,
+              interceptionId,
+            )
+          : options.isrHtmlKey(options.cleanPathname);
+        if (!terminalCacheCommitted) {
+          terminalCacheCommitted = true;
+          try {
+            await options.isrSet(cacheKey, cacheValue, { cacheControl, tags });
+          } catch (error) {
+            console.error("[vinext] ISR terminal page cache write error:", error);
+          }
+        }
+        recordRouteCacheability({ cacheable: true, cacheControl: cacheControlHeader, tags });
       }
-      recordRouteCacheability({ cacheable: true, cacheControl: cacheControlHeader, tags });
-    }
 
-    return new Response(captured.body, {
-      headers,
-      status: response.status,
-      statusText: response.statusText,
-    });
+      return new Response(captured.body, {
+        headers,
+        status: response.status,
+        statusText: response.statusText,
+      });
+    } finally {
+      if (!transferredCapture) captured.release();
+    }
   };
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
@@ -1225,12 +1246,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     if (warmupBuildResult.response) {
       return warmupBuildResult.response;
     }
-    await options.pprRuntime!.warm({
-      element: warmupBuildResult.element,
-      onError: options.createRscOnErrorHandler(options.cleanPathname, route.pattern),
-      renderToReadableStream: options.renderToReadableStream,
-      state: fallbackShellState,
-    });
+    await runWithPlatformIoTrackingIfCacheComponents(true, () =>
+      options.pprRuntime!.warm({
+        element: warmupBuildResult.element,
+        onError: options.createRscOnErrorHandler(options.cleanPathname, route.pattern),
+        renderToReadableStream: options.renderToReadableStream,
+        state: fallbackShellState,
+      }),
+    );
     discardAppPageRenderState();
   }
 
@@ -1261,143 +1284,149 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isSpeculativePrerender =
     isPrerender && options.request.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
 
-  return renderAppPageLifecycle({
-    basePath: options.basePath,
-    bypassInterceptionContextCache: options.bypassInterceptionContextCache,
-    clientTraceMetadata: options.clientTraceMetadata,
-    reactMaxHeadersLength: options.reactMaxHeadersLength,
-    cleanPathname: options.cleanPathname,
-    clearRequestContext: options.clearRequestContext,
-    consumeDynamicUsage,
-    peekDynamicUsage,
-    consumeInvalidDynamicUsageError,
-    consumeRenderObservationState: consumeAppPageRenderObservationState,
-    createRscOnErrorHandler(pathname, routePath) {
-      return options.createRscOnErrorHandler(pathname, routePath);
-    },
-    element: pageBuildResult.element,
-    clientReuseManifest: options.clientReuseManifest,
-    getDraftModeCookieHeader,
-    getFontLinks: options.getFontLinks,
-    getFontPreloads: options.getFontPreloads,
-    getFontStyles: options.getFontStyles,
-    getNavigationContext: options.getNavigationContext,
-    getPageTags() {
-      return buildAppPageTags(options.cleanPathname, getCollectedFetchTags(), route.routeSegments);
-    },
-    getRequestCacheLife() {
-      return requestCacheLife.consume();
-    },
-    peekRequestCacheLife() {
-      return requestCacheLife.peek();
-    },
-    handlerStart: options.handlerStart,
-    hasLoadingBoundary: hasActiveLoadingBoundary,
-    omitPendingDynamicCacheState: hasRequestSearchParams,
-    formState: options.formState ?? null,
-    isProgressiveActionRender: options.isProgressiveActionRender === true,
-    isDynamicError,
-    isDraftMode,
-    isForceDynamic,
-    isForceStatic,
-    isEdgeRuntime: options.isEdgeRuntime === true,
-    isPrerender,
-    isSpeculativePrerender,
-    isProduction: options.isProduction,
-    isRscRequest: options.isRscRequest,
-    isrDebug: options.isrDebug,
-    isrHtmlKey: options.isrHtmlKey,
-    isrRscKey: options.isrRscKey,
-    isrSet: options.isrSet,
-    interceptionContext: options.interceptionContext,
-    interceptionId,
-    expireSeconds: options.expireSeconds,
-    // A loading convention at tree position N wraps descendants, but not a
-    // layout co-located at N. Probing any deeper async layout before creating
-    // the RSC stream would serialize on work that its ancestor Suspense
-    // boundary is specifically meant to stream behind.
-    layoutCount: getAppPageLayoutProbeCount(route, activeLoadingTreePositions),
-    loadSsrHandler: options.loadSsrHandler,
-    middlewareContext: options.middlewareContext,
-    navigationParams,
-    params: options.params,
-    pprFallbackShellSignal,
-    pprFallbackShellReactSignal,
-    renderedPathAndSearch: options.renderedPathAndSearch,
-    abortPprFallbackShell: activeFallbackShellState
-      ? () => {
-          options.pprRuntime!.beginFinalRender(activeFallbackShellState);
-        }
-      : undefined,
-    layoutParamAccess,
-    rootParams: options.rootParams,
-    peekRenderObservationState() {
-      return {
-        dynamicFetches: peekDynamicFetchObservations(),
-        requestApis: peekRenderRequestApiUsage(),
-      };
-    },
-    probeLayoutAt(layoutIndex) {
-      return options.probeLayoutAt(layoutIndex, layoutParamAccess);
-    },
-    probePage() {
-      return options.probePage(pageSearchParams);
-    },
-    probePageBeforeRender: options.isRscRequest,
-    classification: {
-      getLayoutId(index) {
-        const treePosition = route.layoutTreePositions?.[index] ?? 0;
-        return AppElementsWire.encodeLayoutId(
-          createAppPageTreePath([...route.routeSegments], treePosition),
+  const render = () =>
+    renderAppPageLifecycle({
+      basePath: options.basePath,
+      bypassInterceptionContextCache: options.bypassInterceptionContextCache,
+      clientTraceMetadata: options.clientTraceMetadata,
+      reactMaxHeadersLength: options.reactMaxHeadersLength,
+      cleanPathname: options.cleanPathname,
+      clearRequestContext: options.clearRequestContext,
+      consumeDynamicUsage,
+      peekDynamicUsage,
+      consumeInvalidDynamicUsageError,
+      consumeRenderObservationState: consumeAppPageRenderObservationState,
+      createRscOnErrorHandler(pathname, routePath) {
+        return options.createRscOnErrorHandler(pathname, routePath);
+      },
+      element: pageBuildResult.element,
+      clientReuseManifest: options.clientReuseManifest,
+      getDraftModeCookieHeader,
+      getFontLinks: options.getFontLinks,
+      getFontPreloads: options.getFontPreloads,
+      getFontStyles: options.getFontStyles,
+      getNavigationContext: options.getNavigationContext,
+      getPageTags() {
+        return buildAppPageTags(
+          options.cleanPathname,
+          getCollectedFetchTags(),
+          route.routeSegments,
         );
       },
-      buildTimeClassifications: layoutClassifications.buildTimeClassifications,
-      buildTimeReasons: layoutClassifications.buildTimeReasons,
-      debugClassification: options.debugClassification,
-      isLayoutObservationDynamic(layoutId) {
-        return isAppLayoutObservationUnsafeForStaticReuse(
-          layoutParamAccess.getLayoutObservation(layoutId),
-        );
+      getRequestCacheLife() {
+        return requestCacheLife.consume();
       },
-      async runWithIsolatedDynamicScope(fn) {
-        return runWithIsolatedDynamicUsage(fn);
+      peekRequestCacheLife() {
+        return requestCacheLife.peek();
       },
-    },
-    dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
-    revalidateSeconds: currentRevalidateSeconds,
-    mountedSlotsHeader: options.mountedSlotsHeader,
-    renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
-    renderErrorBoundaryResponse(renderError, errorOrigin) {
-      return options.renderErrorBoundaryPage(renderError, errorOrigin);
-    },
-    renderLayoutSpecialError(specialError, layoutIndex) {
-      return renderLayoutSpecialError(
-        options,
-        specialError,
-        layoutIndex,
-        serveStreamingMetadata,
-      ).then(classifyTerminalResponse);
-    },
-    renderPageSpecialError(specialError) {
-      return renderPageSpecialError(
-        options,
-        specialError,
-        serveStreamingMetadata,
-        interceptResult.interceptOpts,
-      ).then(classifyTerminalResponse);
-    },
-    renderToReadableStream: options.renderToReadableStream,
-    hasCustomGlobalError: options.hasCustomGlobalError,
-    prerenderToReadableStream: options.prerenderToReadableStream,
-    routePattern: route.pattern,
-    runWithSuppressedHookWarning(probe) {
-      return options.runWithSuppressedHookWarning(probe);
-    },
-    scriptNonce: options.scriptNonce,
-    waitUntil(cachePromise) {
-      getRequestExecutionContext()?.waitUntil(cachePromise);
-    },
-  });
+      handlerStart: options.handlerStart,
+      hasLoadingBoundary: hasActiveLoadingBoundary,
+      omitPendingDynamicCacheState: hasRequestSearchParams,
+      formState: options.formState ?? null,
+      isProgressiveActionRender: options.isProgressiveActionRender === true,
+      isDynamicError,
+      isDraftMode,
+      isForceDynamic,
+      isForceStatic,
+      isEdgeRuntime: options.isEdgeRuntime === true,
+      isPrerender,
+      isSpeculativePrerender,
+      isProduction: options.isProduction,
+      isRscRequest: options.isRscRequest,
+      isrDebug: options.isrDebug,
+      isrHtmlKey: options.isrHtmlKey,
+      isrRscKey: options.isrRscKey,
+      isrSet: options.isrSet,
+      interceptionContext: options.interceptionContext,
+      interceptionId,
+      expireSeconds: options.expireSeconds,
+      // A loading convention at tree position N wraps descendants, but not a
+      // layout co-located at N. Probing any deeper async layout before creating
+      // the RSC stream would serialize on work that its ancestor Suspense
+      // boundary is specifically meant to stream behind.
+      layoutCount: getAppPageLayoutProbeCount(route, activeLoadingTreePositions),
+      loadSsrHandler: options.loadSsrHandler,
+      middlewareContext: options.middlewareContext,
+      navigationParams,
+      params: options.params,
+      pprFallbackShellSignal,
+      pprFallbackShellReactSignal,
+      renderedPathAndSearch: options.renderedPathAndSearch,
+      abortPprFallbackShell: activeFallbackShellState
+        ? () => {
+            options.pprRuntime!.beginFinalRender(activeFallbackShellState);
+          }
+        : undefined,
+      layoutParamAccess,
+      rootParams: options.rootParams,
+      peekRenderObservationState() {
+        return {
+          dynamicFetches: peekDynamicFetchObservations(),
+          requestApis: peekRenderRequestApiUsage(),
+        };
+      },
+      probeLayoutAt(layoutIndex) {
+        return options.probeLayoutAt(layoutIndex, layoutParamAccess);
+      },
+      probePage() {
+        return options.probePage(pageSearchParams);
+      },
+      probePageBeforeRender: options.isRscRequest,
+      classification: {
+        getLayoutId(index) {
+          const treePosition = route.layoutTreePositions?.[index] ?? 0;
+          return AppElementsWire.encodeLayoutId(
+            createAppPageTreePath([...route.routeSegments], treePosition),
+          );
+        },
+        buildTimeClassifications: layoutClassifications.buildTimeClassifications,
+        buildTimeReasons: layoutClassifications.buildTimeReasons,
+        debugClassification: options.debugClassification,
+        isLayoutObservationDynamic(layoutId) {
+          return isAppLayoutObservationUnsafeForStaticReuse(
+            layoutParamAccess.getLayoutObservation(layoutId),
+          );
+        },
+        async runWithIsolatedDynamicScope(fn) {
+          return runWithIsolatedDynamicUsage(fn);
+        },
+      },
+      dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
+      revalidateSeconds: currentRevalidateSeconds,
+      mountedSlotsHeader: options.mountedSlotsHeader,
+      renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
+      renderErrorBoundaryResponse(renderError, errorOrigin) {
+        return options.renderErrorBoundaryPage(renderError, errorOrigin);
+      },
+      renderLayoutSpecialError(specialError, layoutIndex) {
+        return renderLayoutSpecialError(
+          options,
+          specialError,
+          layoutIndex,
+          serveStreamingMetadata,
+        ).then(classifyTerminalResponse);
+      },
+      renderPageSpecialError(specialError) {
+        return renderPageSpecialError(
+          options,
+          specialError,
+          serveStreamingMetadata,
+          interceptResult.interceptOpts,
+        ).then(classifyTerminalResponse);
+      },
+      renderToReadableStream: options.renderToReadableStream,
+      hasCustomGlobalError: options.hasCustomGlobalError,
+      prerenderToReadableStream: options.prerenderToReadableStream,
+      routePattern: route.pattern,
+      runWithSuppressedHookWarning(probe) {
+        return options.runWithSuppressedHookWarning(probe);
+      },
+      scriptNonce: options.scriptNonce,
+      waitUntil(cachePromise) {
+        getRequestExecutionContext()?.waitUntil(cachePromise);
+      },
+    });
+  return runWithPlatformIoTrackingIfCacheComponents(options.pprRuntime !== undefined, render);
 }
 
 async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(

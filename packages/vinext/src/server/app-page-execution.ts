@@ -12,6 +12,7 @@ import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js
 import {
   copyLinkHeaderProvenance,
   hasFrameworkLinkHeaders,
+  markFrameworkLocationHeader,
   markFrameworkLinkHeaders,
 } from "./app-response-header-provenance.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
@@ -419,10 +420,12 @@ export async function buildAppPageSpecialErrorResponse(
       headers.append("Set-Cookie", cookie);
     }
 
-    return new Response(null, {
+    const response = new Response(null, {
       headers,
       status: options.specialError.statusCode,
     });
+    markFrameworkLocationHeader(response.headers, location);
+    return response;
   }
 
   if (options.renderFallbackPage) {
@@ -670,14 +673,14 @@ export async function drainAppPageBinaryStream(stream: ReadableStream<Uint8Array
 /** Collect a cache artifact within the same Worker-safe admission bounds. */
 export async function readAppPageBinaryStreamBounded(
   stream: ReadableStream<Uint8Array>,
-): Promise<ArrayBuffer> {
+): Promise<{ body: ArrayBuffer; release: () => void }> {
   const captured = await captureResponseBodyBounded(new Response(stream));
   if (captured.failClosed) {
     void captured.fallback.cancel().catch(() => {});
     throw new Error(captured.reason);
   }
-  void captured.fallback?.cancel().catch(() => {});
-  return captured.body ?? new ArrayBuffer(0);
+  await captured.fallback?.cancel().catch(() => {});
+  return { body: captured.body ?? new ArrayBuffer(0), release: captured.release };
 }
 
 export async function bufferAppPageBinaryStream(

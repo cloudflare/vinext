@@ -31,6 +31,17 @@ export type CacheabilityProbeResult = {
   failures: string[];
   manifest: CacheabilityManifest;
   probed: number;
+  /** Successful public-path resolutions used only to build the final warm plan. */
+  resolutions: CacheabilityProbeResolution[];
+};
+
+export type CacheabilityProbeResolution = {
+  exactPath: string;
+  kind: CacheabilityRouteKind;
+  pattern: string;
+  sourceKind: CacheabilityRouteKind;
+  sourcePattern: string;
+  state: "dynamic" | "static-candidate";
 };
 
 function manifestLocation(
@@ -144,6 +155,7 @@ export async function probeStagedWorkerCacheability(options: {
   const secret = readPrerenderSecret(options.root);
   const routes: Record<string, CacheabilityManifestRoute> = {};
   const failures: string[] = [];
+  const resolutions: CacheabilityProbeResolution[] = [];
   let probed = 0;
   let nextIndex = 0;
 
@@ -218,6 +230,14 @@ export async function probeStagedWorkerCacheability(options: {
         pattern: route.pattern,
         state,
       };
+      resolutions.push({
+        exactPath: exactPath!,
+        kind: result.kind!,
+        pattern: result.pattern!,
+        sourceKind: route.kind,
+        sourcePattern: route.pattern,
+        state,
+      });
       // A deterministic rewrite can make the public probe path resolve to a
       // different filesystem route. Retain the source-key copy for deploy
       // planning, and certify the resolved identity that the final Worker will
@@ -245,5 +265,10 @@ export async function probeStagedWorkerCacheability(options: {
       version: 1,
     },
     probed,
+    resolutions: resolutions.sort((a, b) =>
+      `${a.sourceKind}:${a.sourcePattern}:${a.exactPath}`.localeCompare(
+        `${b.sourceKind}:${b.sourcePattern}:${b.exactPath}`,
+      ),
+    ),
   };
 }

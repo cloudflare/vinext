@@ -44,7 +44,11 @@ import {
   type RouteHandlerCacheSetter,
 } from "./app-route-handler-execution.js";
 import { isKnownDynamicAppRoute, isValidHTTPMethod } from "./app-route-handler-runtime.js";
-import { beginRouteCacheability, recordRouteCacheability } from "./cacheability-request.js";
+import {
+  beginRouteCacheability,
+  isRouteManifestProvenDynamic,
+  recordRouteCacheability,
+} from "./cacheability-request.js";
 import {
   applyRouteHandlerMiddlewareContext,
   finalizeRouteHandlerResponse,
@@ -185,6 +189,7 @@ export async function dispatchAppRouteHandler(
   // not inherit framework cacheability from a probed GET route pattern.
   const routeCacheabilityStarted =
     method === "GET" && beginRouteCacheability("app-route", route.pattern);
+  const manifestProvenDynamic = method === "GET" && isRouteManifestProvenDynamic();
   if (method === "GET") {
     if (handler.dynamic === "force-dynamic" || revalidateSeconds === 0) {
       recordRouteCacheability({
@@ -423,7 +428,8 @@ export async function dispatchAppRouteHandler(
       isrSet: options.isrSet,
       markDynamicUsage,
       method,
-      observeCompletedBody: routeCacheabilityStarted || revalidateSeconds !== null,
+      observeCompletedBody:
+        !manifestProvenDynamic && (routeCacheabilityStarted || revalidateSeconds !== null),
       middlewareContext: options.middlewareContext,
       middlewareRequestHeaders: options.middlewareRequestHeaders,
       params: options.params === null ? null : makeThenableParams(options.params),
