@@ -8,10 +8,8 @@ import {
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
-import {
-  MAX_CACHEABILITY_MANIFEST_ROUTES,
-  withCacheabilityManifestArtifact,
-} from "../packages/cloudflare/src/cacheability-artifact.js";
+import { withCacheabilityManifestArtifact } from "../packages/cloudflare/src/cacheability-artifact.js";
+import { MAX_CACHEABILITY_MANIFEST_ROUTES } from "../packages/cloudflare/src/cacheability-manifest-limits.js";
 import { CACHEABILITY_MANIFEST_MODULE } from "../packages/vinext/src/server/cacheability-manifest.js";
 import { VINEXT_CACHEABILITY_PROBE_HEADER } from "../packages/vinext/src/server/headers.js";
 
