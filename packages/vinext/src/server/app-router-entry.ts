@@ -26,6 +26,7 @@ import "./server-globals.js";
 import rscHandler, {
   __assetPrefix as __rscAssetPrefix,
   __basePath as __rscBasePath,
+  __cacheabilityManifest as __rscCacheabilityManifest,
   __imageAllowedWidths as __rscImageAllowedWidths,
   __imageConfig as __rscImageConfig,
   __prerenderSecret as __rscPrerenderSecret,
@@ -123,6 +124,19 @@ async function handleRequest(
     );
     if (probeContext !== ctx) {
       ctx = probeContext;
+      finalizeCacheabilityResponse = cacheability.finalizeWorkerCacheabilityResponse;
+    }
+  }
+  if (!finalizeCacheabilityResponse && __rscCacheabilityManifest) {
+    const cacheability = await import("./cacheability-request.js");
+    const admissionContext = cacheability.createWorkerCacheabilityAdmissionContext(
+      ctx,
+      request,
+      __rscCacheabilityManifest,
+      process.env.__VINEXT_BUILD_ID,
+    );
+    if (admissionContext !== ctx) {
+      ctx = admissionContext;
       finalizeCacheabilityResponse = cacheability.finalizeWorkerCacheabilityResponse;
     }
   }
