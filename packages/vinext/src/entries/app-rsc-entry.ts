@@ -301,6 +301,8 @@ import ${JSON.stringify(appRouteRequestBuiltInsPath)};`
     : ""
 }
 import ${JSON.stringify(serverGlobalsPath)};
+import __cacheabilityManifest from "virtual:vinext-cacheability-manifest";
+export { __cacheabilityManifest };
 import {
   renderToReadableStream as _renderToReadableStream,
   ${

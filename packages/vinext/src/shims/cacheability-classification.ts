@@ -12,11 +12,16 @@ export type RouteCacheabilityOutcome = {
 };
 
 export type RouteCacheabilityState = {
+  admission?: {
+    manifest: unknown;
+    representation: string;
+    requestKey: string;
+  };
   captureDeadlineAt: number;
   complete?: (outcome: RouteCacheabilityOutcome) => void;
   completion?: Promise<RouteCacheabilityOutcome>;
   forcedDynamicReason?: string;
-  mode: "identity" | "probe";
+  mode: "admit" | "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
   route?: {
     kind: "app-page";
@@ -49,6 +54,12 @@ export function markRouteCacheabilityDynamic(reason: string): void {
 /** True only for an authenticated probe that must render the matched App Page. */
 export function isRouteCacheabilityProbe(): boolean {
   return readRouteCacheabilityState()?.mode === "probe";
+}
+
+/** True when the outer Worker must decide cache admission after clean EOF. */
+export function isRouteCacheabilityEvaluation(): boolean {
+  const mode = readRouteCacheabilityState()?.mode;
+  return mode === "probe" || mode === "admit";
 }
 
 /** True for the authenticated routing pass that must not evaluate user components. */

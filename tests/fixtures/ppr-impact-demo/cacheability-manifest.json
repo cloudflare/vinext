@@ -1,0 +1,38 @@
+{
+  "buildId": "ppr-impact-demo-cacheability",
+  "routes": {
+    "[\"app-page\",\"/cacheability/dynamic\",\"html\",\"/cacheability/dynamic\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/dynamic",
+      "representation": "html",
+      "requestKey": "/cacheability/dynamic",
+      "state": "dynamic",
+      "status": 200
+    },
+    "[\"app-page\",\"/cacheability/static\",\"html\",\"/cacheability/static\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/static",
+      "representation": "html",
+      "requestKey": "/cacheability/static",
+      "state": "static-candidate",
+      "status": 200
+    },
+    "[\"app-page\",\"/cacheability/static\",\"html\",\"/cacheability/static?runtime=1\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/static",
+      "representation": "html",
+      "requestKey": "/cacheability/static?runtime=1",
+      "state": "runtime-check",
+      "status": 200
+    },
+    "[\"app-page\",\"/cacheability/static-to-dynamic/:slug\",\"html\",\"/cacheability/static-to-dynamic/runtime\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/static-to-dynamic/:slug",
+      "representation": "html",
+      "requestKey": "/cacheability/static-to-dynamic/runtime",
+      "state": "static-candidate",
+      "status": 200
+    }
+  },
+  "version": 1
+}

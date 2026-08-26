@@ -21,7 +21,7 @@ import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import {
   deferRouteCacheability,
-  isRouteCacheabilityProbe,
+  isRouteCacheabilityEvaluation,
   type RouteCacheabilityOutcome,
 } from "vinext/shims/cacheability-classification";
 
@@ -175,7 +175,7 @@ function appPageCacheControlHeader(cacheControl: CacheControlMetadata): string {
     : buildRevalidateCacheControl(cacheControl.revalidate, cacheControl.expire);
 }
 
-function finalizeProbeAppPageResponse(
+function finalizeEvaluatedAppPageResponse(
   response: Response,
   options: {
     capturedDynamicUsageBeforeContextCleanup?: () => boolean;
@@ -187,7 +187,7 @@ function finalizeProbeAppPageResponse(
     revalidateSeconds: number | null;
   },
 ): Response | null {
-  if (!isRouteCacheabilityProbe()) return null;
+  if (!isRouteCacheabilityEvaluation()) return null;
   const complete = deferRouteCacheability();
   if (!complete) return response;
 
@@ -244,7 +244,7 @@ export function finalizeAppPageHtmlCacheResponse(
   response: Response,
   options: FinalizeAppPageHtmlCacheResponseOptions,
 ): Response {
-  const probeResponse = finalizeProbeAppPageResponse(response, options);
+  const probeResponse = finalizeEvaluatedAppPageResponse(response, options);
   if (probeResponse) {
     void options.capturedRscDataPromise?.catch(() => {});
     return probeResponse;
@@ -350,7 +350,7 @@ export function finalizeAppPageRscCacheResponse(
   response: Response,
   options: ScheduleAppPageRscCacheWriteOptions,
 ): Response {
-  const probeResponse = finalizeProbeAppPageResponse(response, options);
+  const probeResponse = finalizeEvaluatedAppPageResponse(response, options);
   if (probeResponse) {
     void options.capturedRscDataPromise?.catch(() => {});
     return probeResponse;
