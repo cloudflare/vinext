@@ -1,3 +1,5 @@
+import { io } from "next/cache";
+
 async function readPrivateValue() {
   "use cache: private";
 
@@ -9,7 +11,7 @@ let caughtProbeBailouts = 0;
 export default async function PrivateUseCachePage() {
   let value: string;
   try {
-    value = await readPrivateValue();
+    [value] = await Promise.all([readPrivateValue(), io()]);
   } catch {
     caughtProbeBailouts++;
     value = "caught-private-cache-bailout";

@@ -21,6 +21,7 @@ class HangingPromiseRejectionError extends Error {
 }
 
 const abortListenersBySignal = new WeakMap<AbortSignal, (() => void)[]>();
+const suppressedAbortRejections = new WeakSet<AbortSignal>();
 
 function suppressUnhandledRejection(): void {
   // intentionally empty — suppresses "unhandled rejection" warnings
@@ -32,6 +33,7 @@ export function makeHangingPromise<T>(
   expression: string,
 ): Promise<T> {
   if (signal.aborted) {
+    if (suppressedAbortRejections.has(signal)) return new Promise<T>(() => {});
     const rejected = Promise.reject(new HangingPromiseRejectionError(route, expression));
     rejected.catch(suppressUnhandledRejection);
     return rejected;
@@ -47,10 +49,13 @@ export function makeHangingPromise<T>(
       signal.addEventListener(
         "abort",
         () => {
-          for (let i = 0; i < listeners.length; i++) {
-            listeners[i]();
+          if (!suppressedAbortRejections.has(signal)) {
+            for (let i = 0; i < listeners.length; i++) {
+              listeners[i]();
+            }
           }
           listeners.length = 0;
+          abortListenersBySignal.delete(signal);
         },
         { once: true },
       );
@@ -61,4 +66,13 @@ export function makeHangingPromise<T>(
   // rejection is a no-op cleanup.
   hangingPromise.catch(suppressUnhandledRejection);
   return hangingPromise;
+}
+
+/**
+ * Keep user-visible suspension promises pending while their owning renderer is
+ * aborted after an uncatchable framework bailout. The abort event still reaches
+ * renderer-owned listeners; only these promise rejections are suppressed.
+ */
+export function suppressHangingPromiseAbortRejections(signal: AbortSignal): void {
+  suppressedAbortRejections.add(signal);
 }

@@ -61,6 +61,7 @@ import {
   recordRouteCacheabilityProbeBailout,
 } from "./cacheability-classification.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
+import { suppressHangingPromiseAbortRejections } from "./internal/make-hanging-promise.js";
 
 export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
@@ -623,6 +624,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             reason: `${expression} requires request-time execution`,
           });
         }
+        suppressHangingPromiseAbortRejections(workUnit.renderSignal);
         workUnit.signalPrerenderBailout?.(expression);
         return new Promise<TResult>(() => {});
       }
