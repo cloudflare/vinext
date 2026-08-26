@@ -180,6 +180,8 @@ function formatCacheTag(tags: readonly string[]): string | null {
 }
 
 export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
+  readonly requiresCompletedResponseAdmission = true;
+
   constructor(
     private readonly versionMetadata?: WorkerVersionMetadata,
     private readonly versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
@@ -237,6 +239,14 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   }
 
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
+    // App Page MISS streams may discover request-bound dynamic APIs after the
+    // response object is created. Only the outer Worker admission boundary may
+    // replace this private policy after clean EOF; without that proof, the CDN
+    // must fail closed.
+    if (input.pendingDynamicCheck) {
+      return clearCloudflareCdnResponseHeaders(NO_STORE);
+    }
+
     // No cacheable policy → nobody stores it.
     if (!input.cacheControl) {
       return clearCloudflareCdnResponseHeaders(NO_STORE);

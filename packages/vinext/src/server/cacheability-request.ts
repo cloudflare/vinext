@@ -8,6 +8,7 @@ import { applyCdnResponseHeaders, NO_STORE_CACHE_CONTROL } from "./cache-control
 import { VINEXT_CACHEABILITY_PROBE_HEADER, VINEXT_PRERENDER_SECRET_HEADER } from "./headers.js";
 import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
 import {
+  CACHEABILITY_ADMISSION_ISOLATE_BODY_LIMIT,
   CACHEABILITY_PROBE_BODY_LIMIT,
   CACHEABILITY_PROBE_TIMEOUT_MS,
 } from "./cacheability-limits.js";
@@ -79,14 +80,26 @@ export function createWorkerCacheabilityAdmissionContext(
   request: Request,
   rawManifest: string | null | undefined,
   buildId: string | null | undefined,
+  requiresCompletedResponseAdmission = rawManifest != null,
 ): ExecutionContextLike {
-  if (!rawManifest || !buildId) return base;
-  const manifest = readBoundManifest(rawManifest, buildId);
   const identity = cacheabilityRequestIdentity(request);
-  if (!manifest || !identity) return base;
+  if (!rawManifest) {
+    if (!requiresCompletedResponseAdmission || !identity) return base;
+    const state: RouteCacheabilityState = {
+      admission: { policy: "runtime", ...identity },
+      captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
+      mode: "admit",
+    };
+    return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
+      [CACHEABILITY_REQUEST_STATE]: state,
+    });
+  }
+
+  const manifest = buildId ? readBoundManifest(rawManifest, buildId) : null;
 
   const state: RouteCacheabilityState = {
-    admission: { manifest, ...identity },
+    admission:
+      manifest && identity ? { manifest, policy: "manifest", ...identity } : { policy: "deny" },
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
     mode: "admit",
   };
@@ -159,8 +172,48 @@ async function drainProbeBody(response: Response, deadlineAt: number): Promise<s
 }
 
 type CapturedAdmissionBody =
-  | { body: Uint8Array<ArrayBuffer> | null; kind: "captured" }
+  | { body: ReadableStream<Uint8Array> | null; kind: "captured" }
   | { body: ReadableStream<Uint8Array>; kind: "fallback" };
+
+export type CacheabilityAdmissionCaptureBudget = {
+  maxBytes: number;
+  reservedBytes: number;
+};
+
+const isolateCaptureBudget: CacheabilityAdmissionCaptureBudget = {
+  maxBytes: CACHEABILITY_ADMISSION_ISOLATE_BODY_LIMIT,
+  reservedBytes: 0,
+};
+
+export function createCacheabilityAdmissionCaptureBudget(
+  maxBytes: number,
+): CacheabilityAdmissionCaptureBudget {
+  return { maxBytes, reservedBytes: 0 };
+}
+
+type CapturedChunk = { reserved: boolean; value: Uint8Array };
+
+function reserveChunk(budget: CacheabilityAdmissionCaptureBudget, byteLength: number): boolean {
+  if (byteLength > budget.maxBytes - budget.reservedBytes) return false;
+  budget.reservedBytes += byteLength;
+  return true;
+}
+
+function releaseChunk(budget: CacheabilityAdmissionCaptureBudget, chunk: CapturedChunk): void {
+  if (!chunk.reserved) return;
+  chunk.reserved = false;
+  budget.reservedBytes -= chunk.value.byteLength;
+}
+
+function releaseChunks(
+  budget: CacheabilityAdmissionCaptureBudget,
+  chunks: CapturedChunk[],
+  start = 0,
+): void {
+  for (let index = start; index < chunks.length; index++) {
+    releaseChunk(budget, chunks[index]);
+  }
+}
 
 async function readBeforeDeadline<T>(
   promise: Promise<T>,
@@ -183,7 +236,8 @@ async function readBeforeDeadline<T>(
 
 function continueCapturedBody(
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  captured: Uint8Array[],
+  captured: CapturedChunk[],
+  budget: CacheabilityAdmissionCaptureBudget,
   pendingRead?: Promise<ReadableStreamReadResult<Uint8Array>>,
 ): ReadableStream<Uint8Array> {
   let index = 0;
@@ -193,44 +247,75 @@ function continueCapturedBody(
     released = true;
     reader.releaseLock();
   };
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      if (index < captured.length) {
-        controller.enqueue(captured[index++]);
-        return;
-      }
-      try {
-        const result = await (pendingRead ?? reader.read());
-        pendingRead = undefined;
-        if (result.done) {
-          release();
-          controller.close();
-        } else {
-          controller.enqueue(result.value);
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        if (index < captured.length) {
+          const chunk = captured[index++];
+          controller.enqueue(chunk.value);
+          releaseChunk(budget, chunk);
+          return;
         }
-      } catch (error) {
-        release();
-        controller.error(error);
-      }
+        try {
+          const result = await (pendingRead ?? reader.read());
+          pendingRead = undefined;
+          if (result.done) {
+            release();
+            controller.close();
+          } else {
+            controller.enqueue(result.value);
+          }
+        } catch (error) {
+          release();
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        try {
+          await reader.cancel(reason);
+        } finally {
+          releaseChunks(budget, captured, index);
+          release();
+        }
+      },
     },
-    async cancel(reason) {
-      try {
-        await reader.cancel(reason);
-      } finally {
-        release();
-      }
+    { highWaterMark: 0 },
+  );
+}
+
+function replayCapturedBody(
+  captured: CapturedChunk[],
+  budget: CacheabilityAdmissionCaptureBudget,
+): ReadableStream<Uint8Array> {
+  let index = 0;
+  return new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        if (index >= captured.length) {
+          controller.close();
+          return;
+        }
+        const chunk = captured[index++];
+        controller.enqueue(chunk.value);
+        releaseChunk(budget, chunk);
+      },
+      cancel() {
+        releaseChunks(budget, captured, index);
+      },
     },
-  });
+    { highWaterMark: 0 },
+  );
 }
 
 export async function captureCacheabilityAdmissionBody(
   body: ReadableStream<Uint8Array> | null,
   deadlineAt: number,
   limit = CACHEABILITY_PROBE_BODY_LIMIT,
+  budget = isolateCaptureBudget,
 ): Promise<CapturedAdmissionBody> {
   if (!body) return { body: null, kind: "captured" };
   const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
+  const chunks: CapturedChunk[] = [];
   let total = 0;
   try {
     while (true) {
@@ -238,29 +323,27 @@ export async function captureCacheabilityAdmissionBody(
       const deadlineResult = await readBeforeDeadline(pendingRead, deadlineAt);
       if (deadlineResult.kind === "timeout") {
         return {
-          body: continueCapturedBody(reader, chunks, pendingRead),
+          body: continueCapturedBody(reader, chunks, budget, pendingRead),
           kind: "fallback",
         };
       }
       const result = deadlineResult.value;
       if (result.done) {
         reader.releaseLock();
-        const captured = new Uint8Array(total);
-        let offset = 0;
-        for (const chunk of chunks) {
-          captured.set(chunk, offset);
-          offset += chunk.byteLength;
-        }
-        return { body: captured, kind: "captured" };
+        return { body: replayCapturedBody(chunks, budget), kind: "captured" };
       }
-      chunks.push(result.value);
-      total += result.value.byteLength;
-      if (total > limit) {
-        return { body: continueCapturedBody(reader, chunks), kind: "fallback" };
+      const nextTotal = total + result.value.byteLength;
+      const withinResponseLimit = nextTotal <= limit;
+      const reserved = withinResponseLimit && reserveChunk(budget, result.value.byteLength);
+      chunks.push({ reserved, value: result.value });
+      total = nextTotal;
+      if (!reserved) {
+        return { body: continueCapturedBody(reader, chunks, budget), kind: "fallback" };
       }
     }
   } catch (error) {
     await reader.cancel(error).catch(() => {});
+    releaseChunks(budget, chunks);
     reader.releaseLock();
     throw error;
   }
@@ -294,10 +377,10 @@ function staticToDynamicResponse(route: CacheabilityManifestRoute): Response {
   );
 }
 
-function cacheabilityEvaluationFailureResponse(route: CacheabilityManifestRoute): Response {
+function cacheabilityEvaluationFailureResponse(pattern: string): Response {
   const headers = new Headers({ "Content-Type": "text/plain; charset=utf-8" });
   applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
-  return new Response(`[vinext] Route ${route.pattern} failed during cacheability evaluation.`, {
+  return new Response(`[vinext] Route ${pattern} failed during cacheability evaluation.`, {
     headers,
     status: 500,
   });
@@ -308,21 +391,37 @@ async function finalizeWorkerCacheabilityAdmission(
   state: RouteCacheabilityState,
 ): Promise<Response> {
   const admission = state.admission;
-  if (!admission || !state.route) return responseWithCachePolicy(response, response.body, null);
-  const manifest = admission.manifest as CacheabilityManifest;
-  const manifestRoute = findCacheabilityManifestRoute(manifest, state.route.pattern, {
-    representation: admission.representation as Parameters<
-      typeof findCacheabilityManifestRoute
-    >[2]["representation"],
-    requestKey: admission.requestKey,
-  });
   if (
-    !manifestRoute ||
-    manifestRoute.state === "dynamic" ||
-    manifestRoute.state === "probe-failed" ||
-    manifestRoute.status !== response.status ||
+    !admission ||
+    admission.policy === "deny" ||
+    !admission.representation ||
+    !admission.requestKey ||
+    !state.route ||
     response.status >= 500
   ) {
+    return responseWithCachePolicy(response, response.body, null);
+  }
+
+  let manifestRoute: CacheabilityManifestRoute | null = null;
+  if (admission.policy === "manifest") {
+    const manifest = admission.manifest as CacheabilityManifest;
+    manifestRoute = findCacheabilityManifestRoute(manifest, state.route.pattern, {
+      representation: admission.representation as Parameters<
+        typeof findCacheabilityManifestRoute
+      >[2]["representation"],
+      requestKey: admission.requestKey,
+    });
+    if (
+      !manifestRoute ||
+      manifestRoute.state === "dynamic" ||
+      manifestRoute.state === "probe-failed" ||
+      manifestRoute.status !== response.status
+    ) {
+      return responseWithCachePolicy(response, response.body, null);
+    }
+  }
+
+  if (state.forcedDynamicReason) {
     return responseWithCachePolicy(response, response.body, null);
   }
 
@@ -330,7 +429,7 @@ async function finalizeWorkerCacheabilityAdmission(
   try {
     captured = await captureCacheabilityAdmissionBody(response.body, state.captureDeadlineAt);
   } catch {
-    return cacheabilityEvaluationFailureResponse(manifestRoute);
+    return cacheabilityEvaluationFailureResponse(state.route.pattern);
   }
   if (captured.kind === "fallback") {
     return responseWithCachePolicy(response, captured.body, null);
@@ -338,7 +437,7 @@ async function finalizeWorkerCacheabilityAdmission(
 
   const outcome = state.completion ? await state.completion : (state.outcome ?? null);
   if (outcome?.cacheable !== true || !outcome.cacheControl) {
-    return manifestRoute.state === "static-candidate" &&
+    return manifestRoute?.state === "static-candidate" &&
       (outcome === null || outcome.dynamicUsage === true)
       ? staticToDynamicResponse(manifestRoute)
       : responseWithCachePolicy(response, captured.body, null);

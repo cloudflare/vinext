@@ -13,9 +13,10 @@ export type RouteCacheabilityOutcome = {
 
 export type RouteCacheabilityState = {
   admission?: {
-    manifest: unknown;
-    representation: string;
-    requestKey: string;
+    manifest?: unknown;
+    policy: "deny" | "manifest" | "runtime";
+    representation?: string;
+    requestKey?: string;
   };
   captureDeadlineAt: number;
   complete?: (outcome: RouteCacheabilityOutcome) => void;
