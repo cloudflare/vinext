@@ -563,6 +563,8 @@ type PendingUnstableCacheFill = {
   promise: Promise<unknown>;
   expiresAt: number;
   leaseTimer: ReturnType<typeof setTimeout>;
+  phase: "computing" | "publishing";
+  publicationRevoked: boolean;
   poisonRegistration?: PoisonedUnstableCacheRegistration;
 };
 
@@ -731,6 +733,7 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   tags: string[],
   revalidateSeconds: number | false | undefined,
   canPublish: () => boolean,
+  onPublicationStart?: () => void,
 ): Promise<Result> {
   const result = await _unstableCacheAls.run(true, () => fn(...args));
   const invalidDynamicUsageError = peekInvalidDynamicUsageError();
@@ -739,6 +742,7 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   }
 
   if (!canPublish()) return result;
+  onPublicationStart?.();
 
   const cacheValue: CachedFetchValue = {
     kind: "FETCH",
@@ -773,6 +777,13 @@ function fillUnstableCacheResult<Args extends unknown[], Result>(
   tags: string[],
   revalidateSeconds: number | false | undefined,
 ): Promise<Result> {
+  // The caller may have awaited an adapter read after its first poison check.
+  // Recheck at the publication-ownership boundary so a lease that expires
+  // during that read cannot admit a replacement writer behind the old owner.
+  if (isUnstableCacheKeyPoisoned(cacheKey)) {
+    return refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds, () => false);
+  }
+
   const pending = getPendingUnstableCacheFills();
   const existing = pending.get(cacheKey);
   if (existing && existing.expiresAt > Date.now()) {
@@ -781,9 +792,15 @@ function fillUnstableCacheResult<Args extends unknown[], Result>(
   if (existing) {
     clearTimeout(existing.leaseTimer);
     if (deletePendingUnstableCacheFill(pending, cacheKey, existing)) {
-      existing.poisonRegistration = poisonUnstableCacheKey(cacheKey);
+      if (existing.phase === "computing") {
+        existing.publicationRevoked = true;
+      } else {
+        existing.poisonRegistration = poisonUnstableCacheKey(cacheKey);
+      }
     }
-    return refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds, () => false);
+    if (existing.phase === "publishing") {
+      return refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds, () => false);
+    }
   }
 
   if (!canRetainPendingUnstableCacheFill(pending, cacheKey)) {
@@ -791,8 +808,18 @@ function fillUnstableCacheResult<Args extends unknown[], Result>(
   }
 
   let entry: PendingUnstableCacheFill;
-  const canPublish = () => !isUnstableCachePublicationDisabled();
-  const fill = refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds, canPublish);
+  const canPublish = () => !entry.publicationRevoked && !isUnstableCachePublicationDisabled();
+  const fill = refreshUnstableCacheResult(
+    fn,
+    args,
+    cacheKey,
+    tags,
+    revalidateSeconds,
+    canPublish,
+    () => {
+      entry.phase = "publishing";
+    },
+  );
   const trackedFill = fill.finally(() => {
     deletePendingUnstableCacheFill(pending, cacheKey, entry);
     clearTimeout(entry.leaseTimer);
@@ -802,7 +829,11 @@ function fillUnstableCacheResult<Args extends unknown[], Result>(
   });
   const leaseTimer = setTimeout(() => {
     if (deletePendingUnstableCacheFill(pending, cacheKey, entry)) {
-      entry.poisonRegistration = poisonUnstableCacheKey(cacheKey);
+      if (entry.phase === "computing") {
+        entry.publicationRevoked = true;
+      } else {
+        entry.poisonRegistration = poisonUnstableCacheKey(cacheKey);
+      }
     }
   }, UNSTABLE_CACHE_PENDING_FILL_LEASE_MS);
   // Do not keep a Node.js process alive solely for an in-isolate stampede
@@ -814,6 +845,8 @@ function fillUnstableCacheResult<Args extends unknown[], Result>(
     promise: trackedFill,
     expiresAt: Date.now() + UNSTABLE_CACHE_PENDING_FILL_LEASE_MS,
     leaseTimer,
+    phase: "computing",
+    publicationRevoked: false,
   };
   addPendingUnstableCacheFill(pending, cacheKey, entry);
   return observeUnstableCacheFill(trackedFill);

@@ -6050,6 +6050,13 @@ describe("next/cache shim", () => {
         | Map<string, { leaseTimer?: ReturnType<typeof setTimeout> }>
         | undefined;
       expect(pending?.size).toBe(0);
+      const poisoned = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.poisonedKeys")) as
+        | Map<string, number>
+        | undefined;
+      expect(poisoned?.size ?? 0).toBe(0);
+      expect(
+        Reflect.get(globalThis, Symbol.for("vinext.unstableCache.publicationDisabled")),
+      ).not.toBe(true);
       const replacement = hanging();
       await vi.advanceTimersByTimeAsync(0);
       expect(hangingExecutions).toBe(2);
@@ -6076,6 +6083,58 @@ describe("next/cache shim", () => {
     }
   });
 
+  it("revokes publication from a computing unstable_cache fill after its lease expires", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+    let releaseFirstFill!: () => void;
+    const firstFillGate = new Promise<void>((resolve) => {
+      releaseFirstFill = resolve;
+    });
+    let executions = 0;
+    const cached = unstable_cache(async () => {
+      const execution = ++executions;
+      if (execution === 1) await firstFillGate;
+      return `result-${execution}`;
+    }, ["expired-computing-fill"]);
+
+    vi.useFakeTimers();
+    try {
+      const expiredFill = cached();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(60_001);
+
+      await expect(cached()).resolves.toBe("result-2");
+      releaseFirstFill();
+      await expect(expiredFill).resolves.toBe("result-1");
+      await expect(cached()).resolves.toBe("result-2");
+      expect(executions).toBe(2);
+
+      const stored = await handler.get("unstable_cache:expired-computing-fill:[]", {
+        kind: "FETCH",
+        tags: [],
+      });
+      expect(stored?.value?.kind).toBe("FETCH");
+      if (stored?.value?.kind !== "FETCH") throw new Error("expected cached fetch value");
+      expect(JSON.parse(stored.value.data.body)).toMatchObject({ v: "result-2", version: 2 });
+    } finally {
+      releaseFirstFill();
+      const pendingFills = Reflect.get(
+        globalThis,
+        Symbol.for("vinext.unstableCache.pendingFills"),
+      ) as Map<string, { leaseTimer?: ReturnType<typeof setTimeout> }> | undefined;
+      for (const entry of pendingFills?.values() ?? []) {
+        if (entry.leaseTimer !== undefined) clearTimeout(entry.leaseTimer);
+      }
+      pendingFills?.clear();
+      Reflect.deleteProperty(globalThis, Symbol.for("vinext.unstableCache.pendingFillKeyChars"));
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("preserves publication ownership after an unstable_cache fill lease expires", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -6088,8 +6147,26 @@ describe("next/cache shim", () => {
     const firstWriteStart = new Promise<void>((resolve) => {
       firstWriteStarted = resolve;
     });
+    let releaseSecondRead!: () => void;
+    const secondReadGate = new Promise<void>((resolve) => {
+      releaseSecondRead = resolve;
+    });
+    let secondReadStarted!: () => void;
+    const secondReadStart = new Promise<void>((resolve) => {
+      secondReadStarted = resolve;
+    });
     class DelayedFirstWriteCacheHandler extends MemoryCacheHandler {
       writes: Array<"value" | "tombstone"> = [];
+      reads = 0;
+
+      override async get(key: string, ctx?: Record<string, unknown>) {
+        this.reads++;
+        if (this.reads === 2) {
+          secondReadStarted();
+          await secondReadGate;
+        }
+        return super.get(key, ctx);
+      }
 
       override async set(
         key: string,
@@ -6116,6 +6193,10 @@ describe("next/cache shim", () => {
     try {
       const expiredFill = cached();
       await firstWriteStart;
+      // Begin a second request while the owner is still valid, but keep its
+      // adapter read in flight until the owner's publishing lease expires.
+      const replacement = cached();
+      await secondReadStart;
       await vi.advanceTimersByTimeAsync(60_001);
 
       const pending = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.pendingFills")) as
@@ -6123,7 +6204,8 @@ describe("next/cache shim", () => {
         | undefined;
       expect(pending?.size).toBe(0);
 
-      await expect(cached()).resolves.toBe("result-2");
+      releaseSecondRead();
+      await expect(replacement).resolves.toBe("result-2");
       releaseFirstWrite();
       await expect(expiredFill).resolves.toBe("result-1");
       const poisoned = Reflect.get(globalThis, Symbol.for("vinext.unstableCache.poisonedKeys")) as
@@ -6142,6 +6224,7 @@ describe("next/cache shim", () => {
       expect(executions).toBe(2);
       expect(handler.writes).toEqual(["value"]);
     } finally {
+      releaseSecondRead();
       releaseFirstWrite();
       const pendingFills = Reflect.get(
         globalThis,
