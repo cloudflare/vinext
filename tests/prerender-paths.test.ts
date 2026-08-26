@@ -111,9 +111,19 @@ describe("prerender path manifest", () => {
       buildId: "build-a",
       buildIdentity: "rsc-build-a",
       cacheabilityRoutes: [
-        { kind: "app-page", pattern: "/", probePath: "/" },
-        { kind: "app-page", pattern: "/cached/:slug", probePath: "/cached/intro" },
-        { kind: "app-page", pattern: "/dynamic", probePath: "/dynamic" },
+        { kind: "app-page", pattern: "/", probePath: "/", warmPaths: ["/"] },
+        {
+          kind: "app-page",
+          pattern: "/cached/:slug",
+          probePath: "/cached/intro",
+          warmPaths: ["/cached/intro", "/cached/featured"],
+        },
+        {
+          kind: "app-page",
+          pattern: "/dynamic",
+          probePath: "/dynamic",
+          warmPaths: ["/dynamic"],
+        },
       ],
       loadingShellPaths: ["/cached/intro", "/cached/featured"],
       rscBuildId: "rsc-build-a",
@@ -384,6 +394,11 @@ describe("prerender path manifest", () => {
     expect(manifest?.excludedWarmPaths).toEqual(["/rewrite-me"]);
     expect(manifest?.rscPaths).toEqual(["/safe"]);
     expect(manifest?.loadingShellPaths).toEqual(["/safe"]);
+    expect(manifest?.cacheabilityRoutes?.find((route) => route.pattern === "/rewrite-me")).toEqual({
+      fallbackState: "runtime-check",
+      kind: "app-page",
+      pattern: "/rewrite-me",
+    });
   });
 
   it("excludes warm paths shadowed by configured redirects", async () => {
@@ -422,6 +437,13 @@ describe("prerender path manifest", () => {
     expect(manifest?.paths).toEqual(["/safe"]);
     expect(manifest?.excludedWarmPaths).toEqual(["/redirect-me"]);
     expect(manifest?.rscPaths).toEqual(["/safe"]);
+    expect(manifest?.cacheabilityRoutes?.find((route) => route.pattern === "/redirect-me")).toEqual(
+      {
+        fallbackState: "runtime-check",
+        kind: "app-page",
+        pattern: "/redirect-me",
+      },
+    );
   });
 
   it("discovers a static child route from parent-layout generateStaticParams", async () => {

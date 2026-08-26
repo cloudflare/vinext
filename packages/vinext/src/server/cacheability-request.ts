@@ -15,11 +15,14 @@ import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
 type CacheabilityOutcome = {
   cacheControl?: string;
   cacheable: boolean;
+  dynamicUsage?: boolean;
   reason?: string;
   tags?: readonly string[];
 };
 
-type CacheabilityRequestRoute = Pick<CacheabilityManifestRoute, "kind" | "pattern">;
+type CacheabilityRequestRoute = Pick<CacheabilityManifestRoute, "kind" | "pattern"> & {
+  partialPrerender: boolean;
+};
 
 type CacheabilityRequestState = {
   complete?: (outcome: CacheabilityOutcome) => void;
@@ -38,7 +41,7 @@ function readState(ctx: ExecutionContextLike | null | undefined): CacheabilityRe
 }
 
 function responsePolicyIsCacheable(response: Response): boolean {
-  if (response.status < 200 || response.status >= 400 || response.headers.has("set-cookie")) {
+  if (response.status < 200 || response.status >= 500 || response.headers.has("set-cookie")) {
     return false;
   }
   const policy =
@@ -75,7 +78,11 @@ export function createWorkerCacheabilityContext(
   });
 }
 
-export function beginRouteCacheability(kind: CacheabilityRouteKind, pattern: string): boolean {
+export function beginRouteCacheability(
+  kind: CacheabilityRouteKind,
+  pattern: string,
+  options: { partialPrerender?: boolean } = {},
+): boolean {
   const state = readState(getRequestExecutionContext());
   if (!state) return false;
 
@@ -87,9 +94,14 @@ export function beginRouteCacheability(kind: CacheabilityRouteKind, pattern: str
 
   const manifestRoute =
     getEmbeddedCacheabilityManifest()?.routes[cacheabilityRouteKey(kind, pattern)];
-  if (state.mode === "admit" && manifestRoute?.state !== "static-candidate") return false;
+  if (
+    state.mode === "admit" &&
+    (manifestRoute?.state === "dynamic" || manifestRoute?.state === "probe-failed")
+  ) {
+    return false;
+  }
 
-  state.route = { kind, pattern };
+  state.route = { kind, pattern, partialPrerender: options.partialPrerender === true };
   state.manifestRoute = manifestRoute;
   return true;
 }
@@ -155,6 +167,60 @@ export async function finalizeWorkerCacheabilityResponse(
       : response;
   }
 
+  if (state.mode === "probe" && response.status >= 500) {
+    void response.body?.cancel().catch(() => {});
+    return probeResponse(
+      state,
+      "probe-failed",
+      { cacheable: false, reason: `route returned HTTP ${response.status}` },
+      response.status,
+    );
+  }
+
+  const staticCandidateBecameDynamic = (outcome: CacheabilityOutcome | undefined): boolean =>
+    state.mode !== "probe" &&
+    state.manifestRoute?.state === "static-candidate" &&
+    state.route?.partialPrerender !== true &&
+    outcome?.dynamicUsage === true;
+  const staticToDynamicError = (): Response => {
+    const headers = new Headers(response.headers);
+    applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+    return new Response("Internal Server Error", { headers, status: 500 });
+  };
+
+  const explicitOutcome = state.outcome;
+  if (staticCandidateBecameDynamic(explicitOutcome)) {
+    void response.body?.cancel().catch(() => {});
+    return staticToDynamicError();
+  }
+
+  const isEventStream = response.headers
+    .get("content-type")
+    ?.toLowerCase()
+    .startsWith("text/event-stream");
+  if (
+    isEventStream ||
+    explicitOutcome?.cacheable === false ||
+    (!state.completion && !responsePolicyIsCacheable(response))
+  ) {
+    if (state.mode === "probe") {
+      void response.body?.cancel().catch(() => {});
+      return probeResponse(
+        state,
+        "dynamic",
+        explicitOutcome ?? { cacheable: false, reason: isEventStream ? "event stream" : undefined },
+        response.status,
+      );
+    }
+    const headers = new Headers(response.headers);
+    applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+    return new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+
   let body: ArrayBuffer | null = null;
   try {
     body = response.body ? await response.arrayBuffer() : null;
@@ -177,7 +243,11 @@ export async function finalizeWorkerCacheabilityResponse(
           response.headers.get("Cache-Control") ??
           undefined,
       });
-  const cacheable = outcome.cacheable && response.status >= 200 && response.status < 400;
+  const cacheable =
+    outcome.cacheable &&
+    response.status >= 200 &&
+    response.status < 500 &&
+    !response.headers.has("set-cookie");
 
   if (state.mode === "probe") {
     return probeResponse(
@@ -186,6 +256,10 @@ export async function finalizeWorkerCacheabilityResponse(
       outcome,
       response.status,
     );
+  }
+
+  if (staticCandidateBecameDynamic(outcome)) {
+    return staticToDynamicError();
   }
 
   const headers = new Headers(response.headers);

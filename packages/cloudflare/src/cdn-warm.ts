@@ -139,8 +139,14 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
               (route.kind === "app-page" ||
                 route.kind === "app-route" ||
                 route.kind === "pages-page") &&
+              (route.fallbackState === undefined ||
+                route.fallbackState === "dynamic" ||
+                route.fallbackState === "runtime-check") &&
               typeof route.pattern === "string" &&
-              (route.probePath === undefined || typeof route.probePath === "string"),
+              (route.probePath === undefined || typeof route.probePath === "string") &&
+              (route.warmPaths === undefined ||
+                (Array.isArray(route.warmPaths) &&
+                  route.warmPaths.every((pathname) => typeof pathname === "string"))),
           ))) ||
       (manifest.rscPaths !== undefined &&
         (!Array.isArray(manifest.rscPaths) ||
@@ -251,6 +257,9 @@ export function readPrerenderWarmPlan(
           cacheabilityRoutes: manifest.cacheabilityRoutes.map((route) => ({
             ...route,
             ...(route.probePath ? { probePath: applyConfig(route.probePath) } : {}),
+            ...(route.warmPaths
+              ? { warmPaths: route.warmPaths.map((pathname) => applyConfig(pathname)) }
+              : {}),
           })),
         }
       : {}),

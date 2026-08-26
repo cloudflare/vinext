@@ -219,7 +219,11 @@ export async function executeAppRouteHandler(
 
     if (dynamicUsedInHandler) {
       markKnownDynamicAppRoute(options.routePattern);
-      recordRouteCacheability({ cacheable: false, reason: "dynamic API used by route handler" });
+      recordRouteCacheability({
+        cacheable: false,
+        dynamicUsage: true,
+        reason: "dynamic API used by route handler",
+      });
     }
 
     const pendingCookies = options.getAndClearPendingCookies();

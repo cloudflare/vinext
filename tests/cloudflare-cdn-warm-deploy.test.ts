@@ -8,6 +8,7 @@ import {
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
+import { CACHEABILITY_MANIFEST_PLACEHOLDER } from "../packages/vinext/src/server/cacheability-manifest.js";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
 const delayMock = vi.hoisted(() => vi.fn());
@@ -102,13 +103,63 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(hasCdnWarmRequests({ loadingShellPaths: [], paths: [], rscPaths: [] })).toBe(false);
   });
 
+  it("removes every known warm key for a proven-dynamic pattern", async () => {
+    const { omitProvenDynamicWarmPaths } = await import("../packages/cloudflare/src/deploy.js");
+
+    expect(
+      omitProvenDynamicWarmPaths(
+        {
+          loadingShellPaths: ["/products/one", "/static"],
+          paths: ["/products/one", "/products/two", "/static"],
+          rscPaths: ["/products/one", "/products/two", "/static"],
+        },
+        [
+          {
+            kind: "app-page",
+            pattern: "/products/:id",
+            probePath: "/products/one",
+            warmPaths: ["/products/one", "/products/two"],
+          },
+          {
+            kind: "app-page",
+            pattern: "/static",
+            probePath: "/static",
+            warmPaths: ["/static"],
+          },
+        ],
+        {
+          routes: {
+            "app-page:/products/:id": {
+              kind: "app-page",
+              pattern: "/products/:id",
+              state: "dynamic",
+            },
+            "app-page:/static": {
+              kind: "app-page",
+              pattern: "/static",
+              state: "static-candidate",
+            },
+          },
+          version: 1,
+        },
+      ),
+    ).toEqual({
+      omitted: 2,
+      plan: {
+        loadingShellPaths: ["/static"],
+        paths: ["/static"],
+        rscPaths: ["/static"],
+      },
+    });
+  });
+
   it("uploads a probe Worker, builds a route manifest, then warms and promotes a second Worker", async () => {
     const events: string[] = [];
     writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker", workers_dev: true }));
     writeFile("dist/server/vinext-server.json", JSON.stringify({ prerenderSecret: "secret-a" }));
     writeFile(
       "dist/server/entry.js",
-      "const cacheabilityManifest = __VINEXT_CACHEABILITY_MANIFEST__;",
+      `const cacheabilityManifest = ${JSON.stringify(CACHEABILITY_MANIFEST_PLACEHOLDER)};`,
     );
     writeFile("dist/server/wrangler.json", "{}");
     let uploadCount = 0;
@@ -122,7 +173,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         events.push(`upload:${uploadCount}`);
         if (uploadCount === 1) {
           expect(fs.readFileSync(path.join(tmpDir, "dist/server/entry.js"), "utf-8")).toContain(
-            "__VINEXT_CACHEABILITY_MANIFEST__",
+            CACHEABILITY_MANIFEST_PLACEHOLDER,
           );
         } else {
           const configArg = args[args.indexOf("--config") + 1];
@@ -132,9 +183,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           );
           expect(artifact).toContain("static-candidate");
           expect(artifact).toContain("app-page:/products/:id");
-          expect(artifact).not.toContain("__VINEXT_CACHEABILITY_MANIFEST__");
+          expect(artifact).not.toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
         }
-        return `Uploaded my-worker\nWorker Version ID: ${id}\n`;
+        return `Uploaded my-worker\nWorker Version ID: ${id}\nVersion Preview URL: https://${id.slice(0, 8)}-my-worker.example.workers.dev\n`;
       }
       if (args.includes("status")) {
         events.push("status");
@@ -209,17 +260,17 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "upload:1",
       "status",
       "stage:probe",
-      "triggers",
       "discover",
       "probe-route",
       "upload:2",
       "stage:final",
+      "triggers",
       "readiness:final",
       "warm:final",
       "promote:final",
     ]);
     expect(fs.readFileSync(path.join(tmpDir, "dist/server/entry.js"), "utf-8")).toContain(
-      "__VINEXT_CACHEABILITY_MANIFEST__",
+      CACHEABILITY_MANIFEST_PLACEHOLDER,
     );
   });
 
@@ -230,7 +281,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
         events.push("upload:probe");
-        return "Uploaded my-worker\nWorker Version ID: 22222222-2222-4222-8222-222222222222\n";
+        return (
+          "Uploaded my-worker\n" +
+          "Worker Version ID: 22222222-2222-4222-8222-222222222222\n" +
+          "Version Preview URL: https://22222222-my-worker.example.workers.dev\n"
+        );
       }
       if (args.includes("status")) {
         events.push("status");
@@ -282,7 +337,42 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "Cacheability probing failed; refusing to upload or promote the final Worker",
     );
 
-    expect(events).toEqual(["upload:probe", "status", "stage:probe", "triggers", "probe-failed"]);
+    expect(events).toEqual(["upload:probe", "status", "stage:probe", "probe-failed"]);
+  });
+
+  it("fails before discovery or trigger mutation when the probe upload has no preview URL", async () => {
+    const events: string[] = [];
+    writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker", workers_dev: true }));
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        events.push("upload:probe");
+        return "Uploaded my-worker\nWorker Version ID: 22222222-2222-4222-8222-222222222222\n";
+      }
+      if (args.includes("status")) {
+        events.push("status");
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        events.push("stage:probe");
+        return "Staged version\n";
+      }
+      if (args.includes("triggers")) events.push("triggers");
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const discoverWarmPlan = vi.fn();
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        discoverWarmPlan,
+        twoStageCacheability: true,
+      }),
+    ).rejects.toThrow("requires a Worker version preview URL");
+
+    expect(discoverWarmPlan).not.toHaveBeenCalled();
+    expect(events).toEqual(["upload:probe", "status", "stage:probe"]);
   });
 
   it("rejects promotion delays that Node timers cannot represent before deploying", async () => {

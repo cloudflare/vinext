@@ -18,6 +18,7 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { emitPrerenderPathManifest } from "vinext/internal/build/prerender-paths";
 import { runPrerender } from "vinext/internal/build/run-prerender";
+import type { CacheabilityManifest } from "vinext/internal/server/cacheability-manifest";
 import { loadDotenv } from "vinext/internal/config/dotenv";
 import {
   findVinextNextConfigInPlugins,
@@ -616,6 +617,29 @@ export function hasCdnWarmRequests(plan: CdnWarmRequestPlan): boolean {
   return plan.paths.length + plan.rscPaths.length + plan.loadingShellPaths.length > 0;
 }
 
+export function omitProvenDynamicWarmPaths(
+  plan: CdnWarmRequestPlan,
+  routes: NonNullable<PrerenderWarmPlan["cacheabilityRoutes"]>,
+  manifest: CacheabilityManifest,
+): { omitted: number; plan: CdnWarmRequestPlan } {
+  const dynamicWarmPaths = new Set(
+    routes.flatMap((route) => {
+      const result = manifest.routes[`${route.kind}:${route.pattern}`];
+      return result?.state === "dynamic" ? (route.warmPaths ?? []) : [];
+    }),
+  );
+  const omit = (paths: string[]): string[] =>
+    paths.filter((pathname) => !dynamicWarmPaths.has(pathname));
+  return {
+    omitted: dynamicWarmPaths.size,
+    plan: {
+      loadingShellPaths: omit(plan.loadingShellPaths),
+      paths: omit(plan.paths),
+      rscPaths: omit(plan.rscPaths),
+    },
+  };
+}
+
 export async function deployWithCdnWarmup(
   root: string,
   paths: readonly string[],
@@ -759,13 +783,23 @@ export async function deployWithCdnWarmup(
 
   if (stagingTraffic) {
     staged = runWranglerVersionDeploy(root, stagingTraffic, options, "stage");
-    try {
-      applyTriggers();
-    } catch (error) {
-      throw withStagedVersionCleanupNote(error);
+    if (!options.twoStageCacheability) {
+      try {
+        applyTriggers();
+      } catch (error) {
+        throw withStagedVersionCleanupNote(error);
+      }
     }
-    const targetUrl =
-      resolveCdnWarmupTargetUrl(root, triggersDeployedUrl, options) ?? staged.deployedUrl;
+    let targetUrl = options.twoStageCacheability
+      ? probeUpload.previewUrl
+      : (resolveCdnWarmupTargetUrl(root, triggersDeployedUrl, options) ?? staged.deployedUrl);
+    if (options.twoStageCacheability && !targetUrl) {
+      throw withStagedVersionCleanupNote(
+        new Error(
+          "Two-stage cacheability probing requires a Worker version preview URL. Enable preview_urls in the generated Wrangler config.",
+        ),
+      );
+    }
     const workerName =
       options.name ??
       probeUpload.workerName ??
@@ -793,6 +827,8 @@ export async function deployWithCdnWarmup(
             routes: cacheabilityRoutes,
             targetUrl,
             timeoutMs: options.warmCdnTimeout,
+            retries: options.warmCdnRetries,
+            retryDelayMs: options.warmCdnReadinessProbeDelay,
           });
           if (probeResult.failures.length > 0) {
             throw new Error(
@@ -801,11 +837,25 @@ export async function deployWithCdnWarmup(
                 .join("\n")}`,
             );
           }
+          const filteredWarmPlan = omitProvenDynamicWarmPaths(
+            remainingWarmPlan,
+            cacheabilityRoutes,
+            probeResult.manifest,
+          );
+          remainingWarmPlan = filteredWarmPlan.plan;
+          if (filteredWarmPlan.omitted > 0) {
+            console.log(
+              `  CDN warmup: omitted ${filteredWarmPlan.omitted} concrete path(s) belonging to proven-dynamic route patterns.`,
+            );
+          }
           console.log(
             `  CDN warmup: ${probeResult.probed} probe(s) completed; uploading the final Worker with an explicit ${Object.keys(probeResult.manifest.routes).length}-route cacheability manifest...`,
           );
-          finalUpload = withEmbeddedCacheabilityManifest(root, probeResult.manifest, (config) =>
-            runWranglerVersionUpload(root, { ...options, config }),
+          finalUpload = withEmbeddedCacheabilityManifest(
+            root,
+            options.config,
+            probeResult.manifest,
+            (config) => runWranglerVersionUpload(root, { ...options, config }),
           );
           const finalStagingTraffic = getZeroPercentStagingTraffic(
             deploymentStatus,
@@ -821,6 +871,14 @@ export async function deployWithCdnWarmup(
           if (!headers) {
             throw new Error(
               "CDN warmup could not build a version override for the final manifest-bearing Worker.",
+            );
+          }
+          applyTriggers();
+          targetUrl =
+            resolveCdnWarmupTargetUrl(root, triggersDeployedUrl, options) ?? staged.deployedUrl;
+          if (!targetUrl) {
+            throw new Error(
+              "CDN warmup could not resolve the production URL after applying Worker triggers.",
             );
           }
         }

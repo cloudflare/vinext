@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { CacheabilityProbeRoute } from "vinext/internal/build/prerender-paths";
 import {
   cacheabilityRouteKey,
@@ -49,12 +50,14 @@ async function probeRoute(options: {
   secret: string;
   targetUrl: string;
   timeoutMs: number;
+  retries: number;
+  retryDelayMs: number;
 }): Promise<ProbePayload> {
   if (!options.route.probePath) {
     return {
       kind: options.route.kind,
       pattern: options.route.pattern,
-      state: "dynamic",
+      state: options.route.fallbackState ?? "runtime-check",
       version: 1,
     };
   }
@@ -63,41 +66,44 @@ async function probeRoute(options: {
   headers.set("Cache-Control", "no-cache");
   headers.set(VINEXT_CACHEABILITY_PROBE_HEADER, "1");
   headers.set(VINEXT_PRERENDER_SECRET_HEADER, options.secret);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
-  try {
-    const response = await fetch(new URL(options.route.probePath, options.targetUrl), {
-      headers,
-      redirect: "manual",
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      return {
-        reason: `probe returned HTTP ${response.status}`,
-        state: "probe-failed",
-        version: 1,
-      };
-    }
+  let failureReason = "probe failed";
+  for (let attempt = 0; attempt <= options.retries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
+    let transient = true;
     try {
-      return JSON.parse(text) as ProbePayload;
-    } catch {
-      return { reason: "probe returned invalid JSON", state: "probe-failed", version: 1 };
-    }
-  } catch (error) {
-    return {
-      reason:
+      const response = await fetch(new URL(options.route.probePath, options.targetUrl), {
+        headers,
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      if (response.ok) {
+        try {
+          return JSON.parse(text) as ProbePayload;
+        } catch {
+          return { reason: "probe returned invalid JSON", state: "probe-failed", version: 1 };
+        }
+      }
+      failureReason = `probe returned HTTP ${response.status}`;
+      // These are the transient responses used by staged routing propagation
+      // and vinext's expected-version guard. A user route's own 5xx response is
+      // returned inside a successful authenticated probe envelope instead.
+      transient = response.status === 404 || response.status === 503;
+    } catch (error) {
+      failureReason =
         error instanceof Error && error.name === "AbortError"
           ? `probe timed out after ${options.timeoutMs}ms`
           : error instanceof Error
             ? error.message
-            : String(error),
-      state: "probe-failed",
-      version: 1,
-    };
-  } finally {
-    clearTimeout(timeout);
+            : String(error);
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!transient || attempt === options.retries) break;
+    if (options.retryDelayMs > 0) await delay(options.retryDelayMs);
   }
+  return { reason: failureReason, state: "probe-failed", version: 1 };
 }
 
 export async function probeStagedWorkerCacheability(options: {
@@ -108,6 +114,8 @@ export async function probeStagedWorkerCacheability(options: {
   routes: readonly CacheabilityProbeRoute[];
   targetUrl: string;
   timeoutMs?: number;
+  retries?: number;
+  retryDelayMs?: number;
 }): Promise<CacheabilityProbeResult> {
   const secret = readPrerenderSecret(options.root);
   const routes: Record<string, CacheabilityManifestRoute> = {};
@@ -119,7 +127,7 @@ export async function probeStagedWorkerCacheability(options: {
     routes[cacheabilityRouteKey(route.kind, route.pattern)] = {
       kind: route.kind,
       pattern: route.pattern,
-      state: "dynamic",
+      state: route.fallbackState ?? "runtime-check",
     };
   }
 
@@ -134,6 +142,8 @@ export async function probeStagedWorkerCacheability(options: {
         secret,
         targetUrl: options.targetUrl,
         timeoutMs: options.timeoutMs ?? 30_000,
+        retries: Math.max(0, options.retries ?? 0),
+        retryDelayMs: Math.max(0, options.retryDelayMs ?? 0),
       });
       const key = cacheabilityRouteKey(route.kind, route.pattern);
       const integrityFailure =

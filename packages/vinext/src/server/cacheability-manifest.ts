@@ -1,8 +1,13 @@
-export const CACHEABILITY_MANIFEST_DEFINE = "__VINEXT_CACHEABILITY_MANIFEST__";
+export const CACHEABILITY_MANIFEST_PLACEHOLDER =
+  "__VINEXT_CACHEABILITY_MANIFEST_7A4D2D86_5848_4C3D_A2D5_52B32F178CF9__";
 
 export type CacheabilityRouteKind = "app-page" | "app-route" | "pages-page";
 
-export type CacheabilityRouteState = "static-candidate" | "dynamic" | "probe-failed";
+export type CacheabilityRouteState =
+  | "static-candidate"
+  | "dynamic"
+  | "runtime-check"
+  | "probe-failed";
 
 export type CacheabilityManifestRoute = {
   kind: CacheabilityRouteKind;
@@ -29,7 +34,12 @@ function isCacheabilityRouteKind(value: unknown): value is CacheabilityRouteKind
 }
 
 function isCacheabilityRouteState(value: unknown): value is CacheabilityRouteState {
-  return value === "static-candidate" || value === "dynamic" || value === "probe-failed";
+  return (
+    value === "static-candidate" ||
+    value === "dynamic" ||
+    value === "runtime-check" ||
+    value === "probe-failed"
+  );
 }
 
 export function parseCacheabilityManifest(
@@ -77,7 +87,7 @@ export function getEmbeddedCacheabilityManifest(): CacheabilityManifest | null {
   const raw =
     typeof __VINEXT_CACHEABILITY_MANIFEST__ === "string"
       ? __VINEXT_CACHEABILITY_MANIFEST__
-      : undefined;
+      : CACHEABILITY_MANIFEST_PLACEHOLDER;
   parsedManifest = parseCacheabilityManifest(raw);
   return parsedManifest;
 }

@@ -49,16 +49,19 @@ export type PrerenderPathManifest = {
   pagesPaths?: string[];
   /** Public paths omitted because configured routes can replace their page response. */
   excludedWarmPaths?: string[];
-  /** One representative deployed probe per route pattern; missing paths are explicitly dynamic. */
+  /** One representative deployed probe per route pattern, with a safe runtime fallback. */
   cacheabilityRoutes?: CacheabilityProbeRoute[];
   trailingSlash?: boolean;
   paths: string[];
 };
 
 export type CacheabilityProbeRoute = {
+  fallbackState?: "dynamic" | "runtime-check";
   kind: "app-page" | "app-route" | "pages-page";
   pattern: string;
   probePath?: string;
+  /** Concrete warm targets owned by this pattern; only the first is probed. */
+  warmPaths?: string[];
 };
 
 export const PRERENDER_PATH_DISCOVERY_ENV = "__VINEXT_PRERENDER_PATH_DISCOVERY";
@@ -730,7 +733,15 @@ async function collectCacheabilityProbeRoutes(options: {
         apiRouter(options.pagesDir, options.pageExtensions),
       ])
     : [[], []];
-  const probePathByRoute = new Map<string, string>();
+  const pathsByRoute = new Map<string, string[]>();
+  const addRoutePath = (key: string, pathname: string): void => {
+    const existing = pathsByRoute.get(key);
+    if (existing) {
+      if (!existing.includes(pathname)) existing.push(pathname);
+    } else {
+      pathsByRoute.set(key, [pathname]);
+    }
+  };
 
   for (const pathname of options.paths) {
     const appMatch = matchAppRoute(pathname, appRoutes);
@@ -744,14 +755,14 @@ async function collectCacheabilityProbeRoutes(options: {
       (!appMatch || pagesRouteHasPriorityOverAppRoute(pagesMatch.route, appMatch.route))
     ) {
       if (!isPagesApiRequest) {
-        probePathByRoute.set(`pages-page:${pagesMatch.route.pattern}`, pathname);
+        addRoutePath(`pages-page:${pagesMatch.route.pattern}`, pathname);
       }
       continue;
     }
     if (appMatch) {
       const kind = appMatch.route.routePath ? "app-route" : "app-page";
       const key = `${kind}:${appMatch.route.pattern}`;
-      if (!probePathByRoute.has(key)) probePathByRoute.set(key, pathname);
+      addRoutePath(key, pathname);
     }
   }
 
@@ -767,8 +778,14 @@ async function collectCacheabilityProbeRoutes(options: {
     // admitted cache miss.
     const fixedRouteHandlerProbe =
       kind === "app-route" && !route.isDynamic ? route.pattern : undefined;
-    const probePath = probePathByRoute.get(key) ?? fixedRouteHandlerProbe;
-    result.push({ kind, pattern: route.pattern, ...(probePath ? { probePath } : {}) });
+    const warmPaths = pathsByRoute.get(key) ?? [];
+    const probePath = warmPaths[0] ?? fixedRouteHandlerProbe;
+    result.push({
+      kind,
+      pattern: route.pattern,
+      ...(probePath ? { probePath } : { fallbackState: "runtime-check" }),
+      ...(warmPaths.length > 0 ? { warmPaths } : {}),
+    });
   }
 
   const apiPatterns = new Set(apiRoutes.map((route) => route.pattern));
@@ -783,12 +800,15 @@ async function collectCacheabilityProbeRoutes(options: {
       continue;
     }
     const key = `pages-page:${route.pattern}`;
-    const probePath =
-      classifyPagesRoute(route.filePath).type === "ssr" ? undefined : probePathByRoute.get(key);
+    const isSsr = classifyPagesRoute(route.filePath).type === "ssr";
+    const warmPaths = pathsByRoute.get(key) ?? [];
+    const probePath = isSsr ? undefined : warmPaths[0];
     result.push({
+      ...(!probePath ? { fallbackState: isSsr ? "dynamic" : "runtime-check" } : {}),
       kind: "pages-page",
       pattern: route.pattern,
       ...(probePath ? { probePath } : {}),
+      ...(warmPaths.length > 0 ? { warmPaths } : {}),
     });
   }
 
@@ -994,7 +1014,7 @@ export async function emitPrerenderPathManifest(
     i18n: config.i18n,
     pagesDir,
     pageExtensions: config.pageExtensions,
-    paths,
+    paths: paths.filter((pathname) => !excludedWarmPathSet.has(pathname)),
   });
 
   const manifest: PrerenderPathManifest = {

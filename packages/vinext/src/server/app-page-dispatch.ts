@@ -633,7 +633,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
   const route = options.route;
-  beginRouteCacheability("app-page", route.pattern);
+  beginRouteCacheability("app-page", route.pattern, {
+    // Next.js exempts PPR routes from its static-to-dynamic invariant because
+    // request APIs can run in the postponed portion while the shell is static.
+    partialPrerender: options.pprFallbackShell !== undefined,
+  });
   const dynamicConfig = options.dynamicConfig;
   const currentRevalidateSeconds = options.revalidateSeconds;
   const interceptionId = options.isRscRequest

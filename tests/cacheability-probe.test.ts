@@ -6,6 +6,7 @@ import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-
 import { probeStagedWorkerCacheability } from "../packages/cloudflare/src/cacheability-probe.js";
 import { withEmbeddedCacheabilityManifest } from "../packages/cloudflare/src/cacheability-artifact.js";
 import {
+  CACHEABILITY_MANIFEST_PLACEHOLDER,
   parseCacheabilityManifest,
   resetEmbeddedCacheabilityManifestForTests,
 } from "../packages/vinext/src/server/cacheability-manifest.js";
@@ -16,6 +17,7 @@ import {
   finalizeWorkerCacheabilityResponse,
 } from "../packages/vinext/src/server/cacheability-request.js";
 import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
+import { finalizeAppPageHtmlCacheResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
   DefaultCdnCacheAdapter,
@@ -34,7 +36,9 @@ function createContext() {
   return { hostRuntime: "worker" as const, waitUntil: vi.fn() };
 }
 
-function installManifest(state: "static-candidate" | "dynamic" = "static-candidate"): void {
+function installManifest(
+  state: "static-candidate" | "dynamic" | "runtime-check" = "static-candidate",
+): void {
   vi.stubGlobal(
     manifestGlobal,
     JSON.stringify({
@@ -70,7 +74,7 @@ describe("cacheability manifests", () => {
     ).toBeNull();
   });
 
-  it("probes one representative path per pattern and explicitly marks unprobed routes dynamic", async () => {
+  it("probes one representative path per pattern and runtime-checks unprobed routes", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-probe-"));
     fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
     fs.writeFileSync(
@@ -115,7 +119,7 @@ describe("cacheability manifests", () => {
       "pages-page:/account": {
         kind: "pages-page",
         pattern: "/account",
-        state: "dynamic",
+        state: "runtime-check",
       },
     });
     expect(requests[0].url).toBe("https://shop.example.com/products/known");
@@ -124,12 +128,47 @@ describe("cacheability manifests", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("retries transient staged-version routing responses", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-retry-"));
+    fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "dist/server/vinext-server.json"),
+      JSON.stringify({ prerenderSecret: "secret-a" }),
+    );
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("not propagated", { status: 503 }))
+      .mockResolvedValueOnce(
+        Response.json({
+          kind: "app-page",
+          pattern: "/products/:id",
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await probeStagedWorkerCacheability({
+      retries: 1,
+      retryDelayMs: 0,
+      root,
+      routes: [{ kind: "app-page", pattern: "/products/:id", probePath: "/products/known" }],
+      targetUrl: "https://shop.example.com",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.failures).toEqual([]);
+    expect(result.manifest.routes["app-page:/products/:id"].state).toBe("static-candidate");
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("embeds a manifest into an isolated server artifact tree for one upload", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-artifact-"));
     const firstPath = path.join(root, "dist/server/entry.js");
     const secondPath = path.join(root, "dist/server/chunks/router.js");
     fs.mkdirSync(path.dirname(secondPath), { recursive: true });
-    const source = "export const value = __VINEXT_CACHEABILITY_MANIFEST__;";
+    const source = `export const value = \`${CACHEABILITY_MANIFEST_PLACEHOLDER}\`;`;
     fs.writeFileSync(firstPath, source);
     fs.writeFileSync(secondPath, source);
     fs.writeFileSync(path.join(root, "dist/server/wrangler.json"), "{}");
@@ -138,6 +177,7 @@ describe("cacheability manifests", () => {
     expect(
       withEmbeddedCacheabilityManifest(
         root,
+        undefined,
         {
           routes: {
             "app-page:/products/:id": {
@@ -153,7 +193,7 @@ describe("cacheability manifests", () => {
           const isolatedDirectory = path.dirname(isolatedConfigPath);
           const embedded = fs.readFileSync(path.join(isolatedDirectory, "entry.js"), "utf-8");
           expect(embedded).toContain("app-page:/products/:id");
-          expect(embedded).not.toContain(manifestGlobal);
+          expect(embedded).not.toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
           expect(fs.readFileSync(path.join(isolatedDirectory, "chunks/router.js"), "utf-8")).toBe(
             embedded,
           );
@@ -169,16 +209,51 @@ describe("cacheability manifests", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("preserves a selected generated Wrangler config during the isolated upload", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-custom-config-"));
+    const serverDirectory = path.join(root, "dist/custom-server");
+    fs.mkdirSync(serverDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(serverDirectory, "worker.mjs"),
+      `export const value = ${JSON.stringify(CACHEABILITY_MANIFEST_PLACEHOLDER)};`,
+    );
+    fs.writeFileSync(
+      path.join(serverDirectory, "wrangler.generated.json"),
+      JSON.stringify({ main: "worker.mjs", name: "custom-name", preview_urls: true }),
+    );
+
+    withEmbeddedCacheabilityManifest(
+      root,
+      "dist/custom-server/wrangler.generated.json",
+      { routes: {}, version: 1 },
+      (configPath) => {
+        const config = JSON.parse(fs.readFileSync(path.join(root, configPath), "utf-8"));
+        expect(config).toEqual({
+          main: "worker.mjs",
+          name: "custom-name",
+          preview_urls: true,
+        });
+        expect(
+          fs.readFileSync(
+            path.join(path.dirname(path.join(root, configPath)), "worker.mjs"),
+            "utf-8",
+          ),
+        ).not.toContain(CACHEABILITY_MANIFEST_PLACEHOLDER);
+      },
+    );
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("restores server artifacts when the final upload throws", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-artifact-error-"));
     const filePath = path.join(root, "dist/server/entry.js");
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const source = "export const value = __VINEXT_CACHEABILITY_MANIFEST__;";
+    const source = `export const value = ${JSON.stringify(CACHEABILITY_MANIFEST_PLACEHOLDER)};`;
     fs.writeFileSync(filePath, source);
     fs.writeFileSync(path.join(root, "dist/server/wrangler.json"), "{}");
 
     expect(() =>
-      withEmbeddedCacheabilityManifest(root, { routes: {}, version: 1 }, () => {
+      withEmbeddedCacheabilityManifest(root, undefined, { routes: {}, version: 1 }, () => {
         throw new Error("upload failed");
       }),
     ).toThrow("upload failed");
@@ -225,6 +300,39 @@ describe("buffered cache admission", () => {
     expect(response.headers.get("Cache-Tag")).toBe("/products/one");
   });
 
+  it.each([
+    ["a manifest runtime-check entry", "runtime-check" as const, "/products/:id"],
+    ["no manifest entry", "static-candidate" as const, "/new-route"],
+  ])("admits a completed static response with %s", async (_label, manifestState, pattern) => {
+    installManifest(manifestState);
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request(`https://example.com${pattern === "/new-route" ? pattern : "/products/new"}`),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", pattern)).toBe(true);
+      const complete = deferRouteCacheability();
+      const pending = new Response("runtime checked", {
+        headers: { "Cache-Control": "no-store" },
+      });
+      queueMicrotask(() =>
+        complete?.({
+          cacheable: true,
+          cacheControl: "s-maxage=60, stale-while-revalidate=300",
+        }),
+      );
+      return finalizeWorkerCacheabilityResponse(pending, ctx);
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("CDN-Cache-Control")).toBe(
+      "public, max-age=60, stale-while-revalidate=300",
+    );
+  });
+
   it("keeps a candidate request uncacheable when the completed render uses a dynamic API", async () => {
     installManifest();
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
@@ -244,6 +352,172 @@ describe("buffered cache admission", () => {
     await expect(response.text()).resolves.toBe("personalized");
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+  });
+
+  it.each([
+    ["middleware no-store", { "Cache-Control": "no-store" }],
+    ["middleware Set-Cookie", { "Set-Cookie": "session=private; Path=/" }],
+  ])("does not overwrite %s after the App render completes", async (_label, responseHeaders) => {
+    installManifest();
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/policy"),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      const pending = finalizeAppPageHtmlCacheResponse(
+        new Response("policy response", { headers: responseHeaders }),
+        {
+          capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+          cleanPathname: "/products/policy",
+          consumeDynamicUsage() {
+            return false;
+          },
+          getPageTags() {
+            return ["/products/policy"];
+          },
+          isrHtmlKey: (pathname) => `html:${pathname}`,
+          isrRscKey: (pathname) => `rsc:${pathname}`,
+          isrSet: vi.fn(async () => {}),
+          linkHeader: null,
+          revalidateSeconds: 60,
+        },
+      );
+      return finalizeWorkerCacheabilityResponse(pending, ctx);
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    if ("Set-Cookie" in responseHeaders) {
+      expect(response.headers.get("Set-Cookie")).toContain("session=private");
+    }
+  });
+
+  it("returns an uncacheable 500 when a proven static route becomes dynamic", async () => {
+    installManifest();
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/changed"),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      const complete = deferRouteCacheability();
+      queueMicrotask(() =>
+        complete?.({ cacheable: false, dynamicUsage: true, reason: "cookies()" }),
+      );
+      return finalizeWorkerCacheabilityResponse(new Response("personalized"), ctx);
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("Internal Server Error");
+  });
+
+  it("does not raise the static-to-dynamic invariant for a PPR route", async () => {
+    installManifest();
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/ppr"),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id", { partialPrerender: true })).toBe(
+        true,
+      );
+      const complete = deferRouteCacheability();
+      queueMicrotask(() =>
+        complete?.({ cacheable: false, dynamicUsage: true, reason: "cookies()" }),
+      );
+      return finalizeWorkerCacheabilityResponse(new Response("PPR dynamic portion"), ctx);
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("PPR dynamic portion");
+  });
+
+  it("keeps event streams streaming and explicitly uncacheable", async () => {
+    installManifest();
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/events"),
+      "secret-a",
+    );
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("data: ready\n\n"));
+      },
+    });
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      return finalizeWorkerCacheabilityResponse(
+        new Response(stream, { headers: { "Content-Type": "text/event-stream" } }),
+        ctx,
+      );
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toBe("data: ready\n\n");
+    await reader.cancel();
+  });
+
+  it("reports route 500 responses as probe failures", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const request = new Request("https://example.com/products/failing", {
+      headers: {
+        "X-Vinext-Cacheability-Probe": "1",
+        "X-Vinext-Prerender-Secret": "secret-a",
+      },
+    });
+    const ctx = createWorkerCacheabilityContext(createContext(), request, "secret-a");
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      return finalizeWorkerCacheabilityResponse(new Response("failed", { status: 500 }), ctx);
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      state: "probe-failed",
+      status: 500,
+    });
+  });
+
+  it("allows a cacheable ISR not-found response", async () => {
+    installManifest();
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/missing"),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      const complete = deferRouteCacheability();
+      queueMicrotask(() =>
+        complete?.({ cacheable: true, cacheControl: "s-maxage=60, stale-while-revalidate=300" }),
+      );
+      return finalizeWorkerCacheabilityResponse(new Response("not found", { status: 404 }), ctx);
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("CDN-Cache-Control")).toBe(
+      "public, max-age=60, stale-while-revalidate=300",
+    );
   });
 
   it("does not buffer the default origin-managed data-cache path", async () => {

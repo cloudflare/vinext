@@ -2,6 +2,7 @@ import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import {
   applyCdnResponseHeaders,
   buildRevalidateCacheControl,
+  hasExplicitNonCacheableResponsePolicy,
   NO_STORE_CACHE_CONTROL,
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
@@ -82,6 +83,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
+  responseExplicitlyUncacheable?: boolean;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
@@ -187,6 +189,8 @@ export function finalizeAppPageHtmlCacheResponse(
     options.interceptionId,
   );
   const clientHeaders = new Headers(response.headers);
+  const responseExplicitlyUncacheable =
+    response.headers.has("set-cookie") || hasExplicitNonCacheableResponsePolicy(response.headers);
   const completeCacheability = deferRouteCacheability();
   let cacheabilityCompleted = false;
   const complete = (outcome: Parameters<NonNullable<typeof completeCacheability>>[0]): void => {
@@ -208,7 +212,11 @@ export function finalizeAppPageHtmlCacheResponse(
         options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
         options.consumeDynamicUsage()
       ) {
-        complete({ cacheable: false, reason: "dynamic API used during render" });
+        complete({
+          cacheable: false,
+          dynamicUsage: true,
+          reason: "dynamic API used during render",
+        });
         options.isrDebug?.("HTML cache write skipped (dynamic usage during render)", htmlKey);
         return;
       }
@@ -262,11 +270,15 @@ export function finalizeAppPageHtmlCacheResponse(
       }
 
       await Promise.all(writes);
-      complete({
-        cacheable: true,
-        cacheControl: appPageCacheControlHeader(cacheControl),
-        tags: pageTags,
-      });
+      complete(
+        responseExplicitlyUncacheable
+          ? { cacheable: false, reason: "response explicitly opts out of shared caching" }
+          : {
+              cacheable: true,
+              cacheControl: appPageCacheControlHeader(cacheControl),
+              tags: pageTags,
+            },
+      );
       options.isrDebug?.("HTML cache written", htmlKey);
     } catch (cacheError) {
       complete({
@@ -300,7 +312,11 @@ export function finalizeAppPageRscCacheResponse(
   // dynamic API after the cache policy was chosen, so shared caches must not
   // keep it either way. An explicit no-store policy is required because
   // edge-managed adapters may cache pending-dynamic responses.
-  scheduleAppPageRscCacheWrite(options);
+  scheduleAppPageRscCacheWrite({
+    ...options,
+    responseExplicitlyUncacheable:
+      response.headers.has("set-cookie") || hasExplicitNonCacheableResponsePolicy(response.headers),
+  });
 
   const isUncacheableVariant =
     Boolean(options.mountedSlotsHeader) || options.bypassInterceptionContextCache === true;
@@ -358,7 +374,11 @@ export function scheduleAppPageRscCacheWrite(
       const rscData = await capturedRscDataPromise;
 
       if (options.consumeDynamicUsage()) {
-        complete({ cacheable: false, reason: "dynamic API used during render" });
+        complete({
+          cacheable: false,
+          dynamicUsage: true,
+          reason: "dynamic API used during render",
+        });
         options.isrDebug?.("RSC cache write skipped (dynamic usage during render)", rscKey);
         return;
       }
@@ -385,11 +405,15 @@ export function scheduleAppPageRscCacheWrite(
         cacheControl,
         tags: pageTags,
       });
-      complete({
-        cacheable: true,
-        cacheControl: appPageCacheControlHeader(cacheControl),
-        tags: pageTags,
-      });
+      complete(
+        options.responseExplicitlyUncacheable
+          ? { cacheable: false, reason: "response explicitly opts out of shared caching" }
+          : {
+              cacheable: true,
+              cacheControl: appPageCacheControlHeader(cacheControl),
+              tags: pageTags,
+            },
+      );
       options.isrDebug?.("RSC cache written", rscKey);
     } catch (cacheError) {
       complete({

@@ -399,6 +399,17 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
     "cache-probe static params known",
   );
 
+  // Only `known` was discovered and warmed. Like Next.js fallback blocking,
+  // another parameter is checked from its completed first render and then
+  // admitted without requiring a second deploy or a manifest entry per path.
+  const onDemandStaticResponse = await waitForCdnHit(
+    request,
+    `${baseURL}/cache-probe/static/on-demand`,
+  );
+  expect((await onDemandStaticResponse.text()).replaceAll("<!-- -->", "")).toContain(
+    "cache-probe static params on-demand",
+  );
+
   const staticRouteResponse = await waitForCdnHit(request, `${baseURL}/cache-probe/route-static`);
   expect(await staticRouteResponse.text()).toBe("cache-probe static route handler");
 
