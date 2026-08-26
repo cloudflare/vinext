@@ -116,6 +116,7 @@ function appPageProbeResponse(state: "static-candidate" | "probe-failed" = "stat
 
 function mockTwoStageWrangler(options: { failFinalUpload?: boolean } = {}) {
   const state = {
+    finalManifestSource: null as string | null,
     finalStaged: false,
     promoted: false,
     statusCount: 0,
@@ -126,6 +127,13 @@ function mockTwoStageWrangler(options: { failFinalUpload?: boolean } = {}) {
     if (args.includes("upload")) {
       state.uploads++;
       if (state.uploads === 2 && options.failFinalUpload) throw new Error("final upload failed");
+      if (state.uploads === 2) {
+        const configPath = path.resolve(tmpDir, args[args.indexOf("--config") + 1]!);
+        state.finalManifestSource = fs.readFileSync(
+          path.join(path.dirname(configPath), CACHEABILITY_MANIFEST_MODULE),
+          "utf8",
+        );
+      }
       return `Uploaded my-worker\nWorker Version ID: ${state.uploads === 1 ? PROBE_VERSION : FINAL_VERSION}\n`;
     }
     if (args.includes("status")) {
@@ -443,6 +451,109 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(
       fs.readFileSync(path.join(tmpDir, "dist/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
     ).toBe("export default null;\n");
+  });
+
+  it("promotes a final Worker with an empty manifest when discovery finds no identities", async () => {
+    writeTwoStageWorkerArtifact();
+    const wrangler = mockTwoStageWrangler();
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        cacheabilityProbe: true,
+        config: "dist/server/wrangler.json",
+        discoverWarmPlan: async () => ({
+          appPaths: [],
+          buildId: "app-build-a",
+          buildIdentity: "app-build-a",
+          loadingShellPaths: [],
+          paths: [],
+          rscPaths: [],
+        }),
+      }),
+    ).resolves.toBe("https://my-worker.example.workers.dev");
+
+    expect(wrangler.uploads).toBe(2);
+    expect(wrangler.promoted).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+    const manifestJson = JSON.parse(
+      wrangler.finalManifestSource!.slice("export default ".length, -2),
+    ) as string;
+    expect(JSON.parse(manifestJson)).toEqual({ buildId: "app-build-a", routes: {}, version: 1 });
+  });
+
+  it("promotes an empty manifest when every discovered identity is dynamic", async () => {
+    writeTwoStageWorkerArtifact();
+    const wrangler = mockTwoStageWrangler();
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1"
+        ? Response.json(
+            {
+              kind: "app-page",
+              pattern: "/dynamic",
+              state: "dynamic",
+              status: 200,
+              version: 1,
+            },
+            { headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a" } },
+          )
+        : isReadinessFetch(input)
+          ? cacheableHtml()
+          : new Response("unexpected", { status: 500 }),
+    );
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        cacheabilityProbe: true,
+        config: "dist/server/wrangler.json",
+        discoverWarmPlan: async () => ({
+          appPaths: ["/dynamic"],
+          buildId: "app-build-a",
+          buildIdentity: "app-build-a",
+          loadingShellPaths: [],
+          paths: ["/dynamic"],
+          rscPaths: [],
+        }),
+        warmCdnReadinessProbes: 1,
+        warmCdnRetries: 0,
+      }),
+    ).resolves.toBe("https://my-worker.example.workers.dev");
+
+    expect(wrangler.uploads).toBe(2);
+    expect(wrangler.promoted).toBe(true);
+    expect(getRealWarmFetchCalls()).toHaveLength(1);
+    const manifestJson = JSON.parse(
+      wrangler.finalManifestSource!.slice("export default ".length, -2),
+    ) as string;
+    expect(JSON.parse(manifestJson)).toEqual({ buildId: "app-build-a", routes: {}, version: 1 });
+  });
+
+  it("leaves an empty-manifest final Worker staged when promotion is disabled", async () => {
+    writeTwoStageWorkerArtifact();
+    const wrangler = mockTwoStageWrangler();
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        cacheabilityProbe: true,
+        config: "dist/server/wrangler.json",
+        discoverWarmPlan: async () => ({
+          appPaths: [],
+          buildId: "app-build-a",
+          buildIdentity: "app-build-a",
+          loadingShellPaths: [],
+          paths: [],
+          rscPaths: [],
+        }),
+        warmCdnPromote: false,
+      }),
+    ).resolves.toBe("https://my-worker.example.workers.dev");
+
+    expect(wrangler.uploads).toBe(2);
+    expect(wrangler.finalStaged).toBe(true);
+    expect(wrangler.promoted).toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("leaves production triggers untouched when an exact request cannot be classified", async () => {

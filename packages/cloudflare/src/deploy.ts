@@ -1013,7 +1013,7 @@ async function deployUploadedVersionWithCdnWarmup(
       );
     }
     const remainingWarmRequests = countRemainingWarmRequests();
-    if (options.discoverWarmPlan && discoveredWarmRequests === 0) {
+    if (!hasPreparedWarmPlan && options.discoverWarmPlan && discoveredWarmRequests === 0) {
       throw withStagedVersionCleanupNote(
         new Error(
           "CDN warmup cannot skip promotion because no build-discovered requests were found to warm.",
@@ -1217,32 +1217,6 @@ async function deployWithCacheabilityProbe(
     }
     const appPathSet = new Set(plan.appPaths);
     plan.paths = plan.paths.filter((pathname) => appPathSet.has(pathname));
-    if (!hasCdnWarmRequests(plan)) {
-      throw new Error(
-        "Two-stage CDN warming did not discover any App Page request identities to probe.",
-      );
-    }
-
-    console.log("  CDN warmup: waiting for the staged probe Worker to become stable...");
-    const readiness = await waitForCdnWarmTargetReadiness({
-      targetUrl,
-      headers,
-      plan,
-      deploymentId: plan.deploymentId,
-      expectedBuildId: plan.buildIdentity,
-      expectedRscBuildId: plan.rscBuildId,
-      phaseTimeoutMs: options.warmCdnReadinessTimeout,
-      probeIntervalMs: options.warmCdnReadinessProbeDelay,
-      requiredConsecutiveSuccesses: options.warmCdnReadinessProbes,
-      retries: options.warmCdnReadinessRetries ?? options.warmCdnRetries,
-      timeoutMs: options.warmCdnTimeout,
-    });
-    if (!readiness.ready) {
-      throw new Error(
-        `Two-stage CDN warming could not verify staged probe Worker readiness: ${readiness.error}.`,
-      );
-    }
-
     const targets = await createCdnWarmTargets({
       deploymentId: plan.deploymentId,
       headers,
@@ -1250,9 +1224,35 @@ async function deployWithCacheabilityProbe(
       paths: plan.paths,
       rscPaths: plan.rscPaths,
     });
-    console.log(
-      `  CDN warmup: probing ${targets.length} exact request identit${targets.length === 1 ? "y" : "ies"}...`,
-    );
+    if (targets.length > 0) {
+      console.log("  CDN warmup: waiting for the staged probe Worker to become stable...");
+      const readiness = await waitForCdnWarmTargetReadiness({
+        targetUrl,
+        headers,
+        plan,
+        deploymentId: plan.deploymentId,
+        expectedBuildId: plan.buildIdentity,
+        expectedRscBuildId: plan.rscBuildId,
+        phaseTimeoutMs: options.warmCdnReadinessTimeout,
+        probeIntervalMs: options.warmCdnReadinessProbeDelay,
+        requiredConsecutiveSuccesses: options.warmCdnReadinessProbes,
+        retries: options.warmCdnReadinessRetries ?? options.warmCdnRetries,
+        timeoutMs: options.warmCdnTimeout,
+      });
+      if (!readiness.ready) {
+        throw new Error(
+          `Two-stage CDN warming could not verify staged probe Worker readiness: ${readiness.error}.`,
+        );
+      }
+
+      console.log(
+        `  CDN warmup: probing ${targets.length} exact request identit${targets.length === 1 ? "y" : "ies"}...`,
+      );
+    } else {
+      console.log(
+        "  CDN warmup: no App Page request identities were discovered; embedding an empty fail-closed cacheability manifest.",
+      );
+    }
     const probe = await probeStagedWorkerCacheability({
       buildId: discovered.buildId,
       concurrency: options.warmCdnConcurrency,
@@ -1283,12 +1283,6 @@ async function deployWithCacheabilityProbe(
         .filter((target) => target.kind === "rsc-full")
         .map((target) => target.sourcePathname),
     };
-    if (!hasCdnWarmRequests(finalPlan)) {
-      throw new Error(
-        "Two-stage CDN warming did not classify any App Page request identities as cacheable.",
-      );
-    }
-
     // A concurrent deployment invalidates the probe. Check both before and
     // after the final upload; uploading a version does not itself change traffic.
     assertDeploymentTrafficUnchanged(root, options, probeTraffic);
