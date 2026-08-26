@@ -16,6 +16,7 @@ import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "./app-rsc-render-mod
 
 export const CACHEABILITY_MANIFEST_MODULE = "__vinext_cacheability_manifest.js";
 
+export type CacheabilityRouteKind = "app-page" | "pages-page";
 export type CacheabilityRepresentation = "html" | "rsc-full" | "rsc-loading-shell";
 type CacheabilityManifestRouteState =
   | "static-candidate"
@@ -24,7 +25,7 @@ type CacheabilityManifestRouteState =
   | "probe-failed";
 
 export type CacheabilityManifestRoute = {
-  kind: "app-page";
+  kind: CacheabilityRouteKind;
   pattern: string;
   representation: CacheabilityRepresentation;
   requestKey: string;
@@ -64,7 +65,7 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const route = value as Record<string, unknown>;
   if (
-    route.kind !== "app-page" ||
+    (route.kind !== "app-page" && route.kind !== "pages-page") ||
     typeof route.pattern !== "string" ||
     !route.pattern.startsWith("/") ||
     !isRepresentation(route.representation) ||
@@ -78,7 +79,7 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
     return null;
   }
   const parsed: CacheabilityManifestRoute = {
-    kind: "app-page",
+    kind: route.kind,
     pattern: route.pattern,
     representation: route.representation,
     requestKey: route.requestKey,
@@ -175,17 +176,13 @@ export function cacheabilityRequestIdentity(request: Request): {
 
 export function findCacheabilityManifestRoute(
   manifest: CacheabilityManifest,
+  kind: CacheabilityRouteKind,
   pattern: string,
   identity: { representation: CacheabilityRepresentation; requestKey: string },
 ): CacheabilityManifestRoute | null {
   return (
     manifest.routes[
-      cacheabilityManifestRouteKey(
-        "app-page",
-        pattern,
-        identity.representation,
-        identity.requestKey,
-      )
+      cacheabilityManifestRouteKey(kind, pattern, identity.representation, identity.requestKey)
     ] ?? null
   );
 }

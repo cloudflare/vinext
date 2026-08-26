@@ -288,6 +288,7 @@ import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
+import { isServerEnvironment } from "./plugins/environment.js";
 import {
   isPathInside,
   isPathInsideOrEqual,
@@ -3905,7 +3906,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // App Router virtual modules
           if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
           if (cleanId === VIRTUAL_CACHEABILITY_MANIFEST) {
-            if (this.environment?.name === "rsc" && this.environment.config?.command === "build") {
+            const isWorkerBuildEnvironment = hasAppDir
+              ? this.environment?.name === "rsc"
+              : this.environment !== undefined && isServerEnvironment(this.environment);
+            if (isWorkerBuildEnvironment && this.environment.config?.command === "build") {
               return { id: `./${CACHEABILITY_MANIFEST_MODULE}`, external: true };
             }
             return RESOLVED_CACHEABILITY_MANIFEST;
@@ -4410,7 +4414,10 @@ export const loadServerActionClient = ${
       apply: "build",
 
       generateBundle() {
-        if (this.environment?.name !== "rsc") return;
+        const isWorkerBuildEnvironment = hasAppDir
+          ? this.environment?.name === "rsc"
+          : this.environment !== undefined && isServerEnvironment(this.environment);
+        if (!isWorkerBuildEnvironment) return;
         this.emitFile({
           type: "asset",
           fileName: CACHEABILITY_MANIFEST_MODULE,
@@ -6753,16 +6760,35 @@ export const loadServerActionClient = ${
         sequential: true,
         order: "post" as const,
         handler(options: { dir?: string }) {
-          const envName = this.environment?.name;
-          // Fire for App Router RSC builds (rsc env) and Pages Router SSR builds
-          // (ssr env). Skip client and other environments.
-          if (envName !== "rsc" && envName !== "ssr") return;
+          const environment = this.environment;
+          // App Router metadata belongs to its RSC build. Pages Router may use
+          // Vite's `ssr` environment or a platform-owned server environment
+          // such as the one created by the Cloudflare Vite plugin.
+          if (
+            !environment ||
+            (hasAppDir ? environment.name !== "rsc" : !isServerEnvironment(environment))
+          ) {
+            return;
+          }
 
           const outDir = options.dir;
           if (!outDir) return;
 
           const manifest = { prerenderSecret };
-          fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
+          const source = JSON.stringify(manifest);
+          fs.writeFileSync(path.join(outDir, "vinext-server.json"), source);
+
+          // Staged discovery and cacheability probing deliberately read build
+          // metadata from the platform-independent server directory. A Pages
+          // Worker bundle may live in a platform-named output directory, so
+          // retain the adjacent copy above and also publish the canonical copy.
+          if (!hasAppDir) {
+            const canonicalServerDir = path.join(root, "dist", "server");
+            if (path.resolve(outDir) !== canonicalServerDir) {
+              fs.mkdirSync(canonicalServerDir, { recursive: true });
+              fs.writeFileSync(path.join(canonicalServerDir, "vinext-server.json"), source);
+            }
+          }
         },
       },
     },

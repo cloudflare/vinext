@@ -314,4 +314,44 @@ describe("staged Worker cacheability probes", () => {
     ).rejects.toThrow(`the limit is ${exactBytes} bytes`);
     expect(overflowFetch).toHaveBeenCalledTimes(2);
   });
+
+  it("records Pages Router probe envelopes without changing request identity", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-probe-pages-"));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, "dist", "server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "dist", "server", "vinext-server.json"),
+      JSON.stringify({ prerenderSecret: "probe-secret" }),
+    );
+    const target = {
+      headers: { Accept: "text/html" },
+      kind: "html" as const,
+      label: "/posts/one",
+      pathname: "/posts/one",
+      sourcePathname: "/posts/one",
+    };
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl: async () =>
+        Response.json({
+          kind: "pages-page",
+          pattern: "/posts/:slug",
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        }),
+      root,
+      targetUrl: "https://example.com",
+      targets: [target],
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(Object.values(result.manifest.routes)).toEqual([
+      expect.objectContaining({
+        kind: "pages-page",
+        pattern: "/posts/:slug",
+        requestKey: "/posts/one",
+      }),
+    ]);
+  });
 });

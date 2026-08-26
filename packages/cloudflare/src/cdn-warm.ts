@@ -91,6 +91,7 @@ export type PrerenderWarmPlan = {
   buildIdentity?: string;
   deploymentId?: string;
   loadingShellPaths: string[];
+  pagesPaths?: string[];
   paths: string[];
   rscBuildId?: string;
   rscPaths: string[];
@@ -241,6 +242,7 @@ export function readPrerenderWarmPlan(
     loadingShellPaths: supportsCanonicalRsc
       ? (manifest.loadingShellPaths ?? []).map(applyConfig)
       : [],
+    ...(manifest.pagesPaths ? { pagesPaths: manifest.pagesPaths.map(applyConfig) } : {}),
     paths: htmlPaths,
     ...(supportsCanonicalRsc ? { rscBuildId: manifest.rscBuildId } : {}),
     rscPaths: supportsCanonicalRsc ? manifest.rscPaths!.map(applyConfig) : [],

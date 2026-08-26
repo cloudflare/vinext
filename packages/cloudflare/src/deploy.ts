@@ -1372,16 +1372,17 @@ async function deployWithCacheabilityProbe(
       ...discovered,
       appPaths: discovered.appPaths ? [...discovered.appPaths] : undefined,
       loadingShellPaths: [...discovered.loadingShellPaths],
+      pagesPaths: discovered.pagesPaths ? [...discovered.pagesPaths] : undefined,
       paths: [...discovered.paths],
       rscPaths: [...discovered.rscPaths],
     };
-    if (!plan.appPaths) {
+    if (!plan.appPaths && !plan.pagesPaths) {
       throw new Error(
-        "Two-stage CDN warming requires staged discovery to report App Page route ownership.",
+        "Two-stage CDN warming requires staged discovery to report App or Pages route ownership.",
       );
     }
-    const appPathSet = new Set(plan.appPaths);
-    plan.paths = plan.paths.filter((pathname) => appPathSet.has(pathname));
+    const ownedHtmlPaths = new Set([...(plan.appPaths ?? []), ...(plan.pagesPaths ?? [])]);
+    plan.paths = plan.paths.filter((pathname) => ownedHtmlPaths.has(pathname));
     const targets = await createCdnWarmTargets({
       deploymentId: plan.deploymentId,
       headers,
@@ -1415,7 +1416,7 @@ async function deployWithCacheabilityProbe(
       );
     } else {
       console.log(
-        "  CDN warmup: no App Page request identities were discovered; embedding an empty fail-closed cacheability manifest.",
+        "  CDN warmup: no page request identities were discovered; embedding an empty fail-closed cacheability manifest.",
       );
     }
     const probe = await probeStagedWorkerCacheability({

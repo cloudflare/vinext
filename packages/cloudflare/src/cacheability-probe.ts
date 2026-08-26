@@ -314,7 +314,7 @@ export async function probeStagedWorkerCacheability(options: {
       }
       if (
         result.version !== 1 ||
-        result.kind !== "app-page" ||
+        (result.kind !== "app-page" && result.kind !== "pages-page") ||
         typeof result.pattern !== "string" ||
         !result.pattern.startsWith("/") ||
         !isProbeRouteState(result.state) ||
@@ -335,7 +335,7 @@ export async function probeStagedWorkerCacheability(options: {
       if (result.state !== "static-candidate") continue;
 
       const route: CacheabilityManifestRoute = {
-        kind: "app-page",
+        kind: result.kind,
         pattern: result.pattern,
         representation: identity.representation,
         requestKey: identity.requestKey,

@@ -80,6 +80,38 @@
       "requestKey": "/cacheability/static-to-dynamic/runtime",
       "state": "static-candidate",
       "status": 200
+    },
+    "[\"pages-page\",\"/cacheability-pages/isr\",\"html\",\"/cacheability-pages/isr\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/isr",
+      "representation": "html",
+      "requestKey": "/cacheability-pages/isr",
+      "state": "static-candidate",
+      "status": 200
+    },
+    "[\"pages-page\",\"/cacheability-pages/gssp\",\"html\",\"/cacheability-pages/gssp\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/gssp",
+      "representation": "html",
+      "requestKey": "/cacheability-pages/gssp",
+      "state": "dynamic",
+      "status": 204
+    },
+    "[\"pages-page\",\"/cacheability-pages/get-initial-props\",\"html\",\"/cacheability-pages/get-initial-props\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/get-initial-props",
+      "representation": "html",
+      "requestKey": "/cacheability-pages/get-initial-props",
+      "state": "dynamic",
+      "status": 204
+    },
+    "[\"pages-page\",\"/cacheability-pages/posts/:slug\",\"html\",\"/cacheability-pages/posts/known\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/posts/:slug",
+      "representation": "html",
+      "requestKey": "/cacheability-pages/posts/known",
+      "state": "static-candidate",
+      "status": 200
     }
   },
   "version": 1

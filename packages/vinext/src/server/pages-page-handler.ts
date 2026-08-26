@@ -33,6 +33,7 @@ import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
 import {
   BROWSER_REVALIDATE_CACHE_CONTROL,
+  STATIC_CACHE_CONTROL,
   applyCdnResponseHeaders,
   hasExplicitNonCacheableResponsePolicy,
   shouldUseNextDeployCacheControl,
@@ -64,6 +65,12 @@ import {
 } from "vinext/shims/unified-request-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
+import {
+  beginRouteCacheability,
+  isRouteCacheabilityIdentityProbe,
+  isRouteCacheabilityProbe,
+  recordRouteCacheability,
+} from "vinext/shims/cacheability-classification";
 import { collectAssetTags, resolveClientModuleUrl } from "./pages-asset-tags.js";
 import {
   NEXTJS_CACHE_HEADER,
@@ -554,6 +561,39 @@ export function createPagesPageHandler(
     const { route, params } = match;
     const pageModule = route.module;
     const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
+    const pagesReadiness = buildPagesReadinessNextData({
+      pageModule,
+      appComponent: AppComponent as { getInitialProps?: unknown; origGetInitialProps?: unknown },
+      hasRewrites,
+    });
+    const isCacheabilityProbe = isRouteCacheabilityProbe();
+    const isTopLevelPageRoute =
+      !isDataReq && !isRouteMissErrorRender && options?.__forcedRoute === undefined;
+    const hasRequestTimeData =
+      pagesReadiness.gssp === true || pagesReadiness.gip === true || pagesReadiness.appGip === true;
+
+    if (isTopLevelPageRoute) {
+      beginRouteCacheability("pages-page", route.pattern);
+      if (isRouteCacheabilityIdentityProbe()) {
+        return new Response(null, { status: 204 });
+      }
+      if (hasRequestTimeData) {
+        recordRouteCacheability({ cacheable: false, dynamicUsage: true });
+        // Next.js never executes request-time Pages data functions while
+        // deciding which routes can be prerendered. The staged probe can make
+        // the same decision from the matched module contract.
+        if (isCacheabilityProbe) return new Response(null, { status: 204 });
+      } else if (!isStaticPropsRoute) {
+        // Automatic Static Optimization is the Pages Router equivalent of a
+        // `getStaticProps` page with no revalidation window. It has no origin
+        // ISR entry to copy policy from, so carry Next.js's static policy into
+        // the probe/admission result explicitly.
+        recordRouteCacheability({ cacheable: true, cacheControl: STATIC_CACHE_CONTROL });
+      }
+    }
+
+    const routeIsrGet = isCacheabilityProbe ? async () => null : isrGet;
+    const routeIsrSet = isCacheabilityProbe ? async () => {} : isrSet;
     const isStaticPropsRender =
       isStaticPropsRoute && typeof pageModule.getServerSideProps !== "function";
     const shouldCoalesceOnDemand =
@@ -648,11 +688,7 @@ export function createPagesPageHandler(
           : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
         const previewData = preview.data;
         const pagesNextData = {
-          ...buildPagesReadinessNextData({
-            pageModule,
-            appComponent: AppComponent as { getInitialProps?: unknown } | null,
-            hasRewrites,
-          }),
+          ...pagesReadiness,
           ...(previewData === false ? {} : { isPreview: true as const }),
         };
         // Match Next.js's ServerRouter: SSG renders are not ready on the
@@ -811,8 +847,8 @@ export function createPagesPageHandler(
           fontLinkHeader,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isrCacheKey: pageIsrCacheKey,
-          isrGet,
-          isrSet,
+          isrGet: routeIsrGet,
+          isrSet: routeIsrSet,
           expireSeconds: vinextConfig.expireTime,
           isBuildTimePrerendering:
             typeof process !== "undefined" && process.env && process.env.VINEXT_PRERENDER === "1",
@@ -1076,7 +1112,7 @@ export function createPagesPageHandler(
           isrRevalidateSeconds,
           isOnDemandRevalidate,
           isStaticPropsRoute,
-          isrSet,
+          isrSet: routeIsrSet,
           i18n: buildI18nRenderContext(i18nConfig, locale, currentDefaultLocale, domainLocales),
           isFallback: isFallbackRender,
           pageProps,

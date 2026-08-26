@@ -28,18 +28,42 @@ describe("cacheability manifest", () => {
     const manifest = parseCacheabilityManifest(raw, "build-a");
     expect(manifest).not.toBeNull();
     expect(
-      findCacheabilityManifestRoute(manifest!, "/products/:id", {
+      findCacheabilityManifestRoute(manifest!, "app-page", "/products/:id", {
         representation: "html",
         requestKey: "/products/one?currency=gbp",
       }),
     ).toEqual(route);
     expect(
-      findCacheabilityManifestRoute(manifest!, "/products/:id", {
+      findCacheabilityManifestRoute(manifest!, "app-page", "/products/:id", {
         representation: "html",
         requestKey: "/products/two?currency=gbp",
       }),
     ).toBeNull();
     expect(parseCacheabilityManifest(raw, "build-b")).toBeNull();
+  });
+
+  it("keeps App and Pages routes with the same pattern isolated", () => {
+    const pagesRoute: CacheabilityManifestRoute = { ...route, kind: "pages-page" };
+    const pagesKey = cacheabilityManifestRouteKey(
+      pagesRoute.kind,
+      pagesRoute.pattern,
+      pagesRoute.representation,
+      pagesRoute.requestKey,
+    );
+    const manifest = parseCacheabilityManifest(
+      JSON.stringify({
+        buildId: "build-a",
+        routes: { [key]: route, [pagesKey]: pagesRoute },
+        version: 1,
+      }),
+      "build-a",
+    );
+    expect(
+      findCacheabilityManifestRoute(manifest!, "pages-page", "/products/:id", {
+        representation: "html",
+        requestKey: "/products/one?currency=gbp",
+      }),
+    ).toEqual(pagesRoute);
   });
 
   it("rejects malformed routes instead of partially trusting a manifest", () => {
