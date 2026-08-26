@@ -1,5 +1,11 @@
 import { expect, test } from "@playwright/test";
 
+function cacheabilityResult(body: string): string {
+  const match = body.match(/id="cacheability-result">([^<]+)</);
+  if (!match) throw new Error("response did not contain a cacheability result");
+  return match[1];
+}
+
 test("admits only exact manifest-backed App Page responses after clean EOF", async ({
   request,
 }) => {
@@ -74,8 +80,20 @@ test("admits only exact manifest-backed App Page responses after clean EOF", asy
     headers: { Accept: "text/html" },
   });
   expect(publicUseCache.status()).toBe(200);
-  expect(await publicUseCache.text()).toContain("owned-by-public-use-cache");
+  const publicUseCacheValue = cacheabilityResult(await publicUseCache.text());
+  expect(publicUseCacheValue).toMatch(/^owned-by-public-use-cache-\d+$/);
   expect(publicUseCache.headers()["cdn-cache-control"]).toContain("public");
+
+  const publicUseCacheAgain = await request.get("/cacheability/use-cache-public-no-store", {
+    headers: { Accept: "text/html" },
+  });
+  expect(cacheabilityResult(await publicUseCacheAgain.text())).toBe(publicUseCacheValue);
+
+  const directNoStore = await request.get("/cacheability/direct-no-store");
+  const directNoStoreAgain = await request.get("/cacheability/direct-no-store");
+  expect(cacheabilityResult(await directNoStoreAgain.text())).not.toBe(
+    cacheabilityResult(await directNoStore.text()),
+  );
 
   const privateUseCache = await request.get("/cacheability/use-cache-private", {
     headers: { Accept: "text/html" },

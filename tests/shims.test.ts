@@ -7283,6 +7283,44 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  it("bails out of private cache probes before asynchronous setup or user code", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { CACHEABILITY_REQUEST_STATE } =
+      await import("../packages/vinext/src/shims/cacheability-classification.js");
+    const { runWithExecutionContext } =
+      await import("../packages/vinext/src/shims/request-context.js");
+
+    let executions = 0;
+    const cached = registerCachedFunction(
+      async () => {
+        executions++;
+        return "private";
+      },
+      "test:private-probe",
+      "private",
+    );
+    const state = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "probe" as const,
+      route: { kind: "app-page" as const, pattern: "/private" },
+    };
+
+    await expect(
+      runWithExecutionContext(
+        {
+          [CACHEABILITY_REQUEST_STATE]: state,
+          waitUntil() {},
+        },
+        async () => cached(),
+      ),
+    ).rejects.toMatchObject({ digest: "DYNAMIC_SERVER_USAGE" });
+    expect(executions).toBe(0);
+    expect(state).toMatchObject({
+      outcome: { cacheable: false, dynamicUsage: true },
+    });
+  });
+
   it('rejects "use cache: private" nested inside public "use cache"', async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");

@@ -1,7 +1,10 @@
+let publicSourceSequence = 0;
+
 async function readUncachedValue() {
   "use cache";
 
-  const response = await fetch("data:text/plain,owned-by-public-use-cache", {
+  const value = `owned-by-public-use-cache-${++publicSourceSequence}`;
+  const response = await fetch(`data:text/plain,${value}`, {
     cache: "no-store",
   });
   return response.text();

@@ -591,6 +591,15 @@ export async function finalizeWorkerCacheabilityResponse(
     );
   }
 
+  // Some dynamic boundaries, notably "use cache: private", must bail out
+  // before executing request-private user code. Their render may therefore
+  // finish through an internal error boundary; the explicit route outcome is
+  // authoritative and the probe response intentionally discards that body.
+  if (state.outcome?.dynamicUsage === true) {
+    await response.body?.cancel().catch(() => {});
+    return probeResponse(state, "dynamic", state.outcome, response.status);
+  }
+
   if (response.status >= 500) {
     await response.body?.cancel().catch(() => {});
     return probeResponse(
