@@ -42,6 +42,7 @@ import {
   isImageOptimizationPath,
   resolveDevImageRedirect,
 } from "./server/image-optimization.js";
+import { CACHEABILITY_MANIFEST_MODULE } from "./server/cacheability-manifest.js";
 
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
@@ -1101,7 +1102,6 @@ const VIRTUAL_RSC_ENTRY = "virtual:vinext-rsc-entry";
 const RESOLVED_RSC_ENTRY = VIRTUAL_PREFIX + VIRTUAL_RSC_ENTRY;
 const VIRTUAL_CACHEABILITY_MANIFEST = "virtual:vinext-cacheability-manifest";
 const RESOLVED_CACHEABILITY_MANIFEST = VIRTUAL_PREFIX + VIRTUAL_CACHEABILITY_MANIFEST;
-const CACHEABILITY_MANIFEST_MODULE = "__vinext_cacheability_manifest.js";
 const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
 const RESOLVED_APP_SSR_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";

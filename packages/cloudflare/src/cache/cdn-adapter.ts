@@ -47,6 +47,7 @@ export function cdnAdapter(options?: CdnAdapterOptions) {
     capabilities: {
       buildIdentity: "response-header" as const,
       responseVary: "verbatim" as const,
+      routeCacheability: "probe-manifest" as const,
     },
   };
 }

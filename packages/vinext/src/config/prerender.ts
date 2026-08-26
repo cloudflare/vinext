@@ -5,6 +5,7 @@ export {
   findVinextCacheConfigInPlugins,
   hasBuildIdentityResponseHeader,
   hasVerbatimResponseVary,
+  requiresRouteCacheabilityProbeManifest,
   loadVinextCacheConfigFromViteConfig,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   type VinextCacheConfig,

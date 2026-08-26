@@ -342,13 +342,69 @@ async function fetchHeadersWithTimeout(
   }
 }
 
-type WarmTarget = {
+export type CdnWarmTarget = {
   headers?: HeadersInit;
   kind: "html" | "rsc-full" | "rsc-loading-shell";
   label: string;
   pathname: string;
   sourcePathname: string;
 };
+
+export async function createCdnWarmTargets(
+  options: Pick<
+    CdnWarmOptions,
+    "deploymentId" | "headers" | "loadingShellPaths" | "paths" | "rscPaths"
+  >,
+): Promise<CdnWarmTarget[]> {
+  const requests: CdnWarmTarget[] = [];
+  const fullRscPaths = new Set(options.rscPaths ?? []);
+  const loadingShellPaths = new Set(options.loadingShellPaths ?? []);
+  const commonHeaders = new Headers(options.headers);
+  for (const pathname of new Set([...fullRscPaths, ...loadingShellPaths])) {
+    if (fullRscPaths.has(pathname)) {
+      const rscHeaders = new Headers(commonHeaders);
+      for (const [name, value] of createCanonicalRscRequestHeaders(options.deploymentId)) {
+        rscHeaders.set(name, value);
+      }
+      requests.push({
+        headers: rscHeaders,
+        kind: "rsc-full",
+        label: `${pathname} (RSC full)`,
+        pathname: createCanonicalRscRequestUrl(pathname),
+        sourcePathname: pathname,
+      });
+    }
+
+    if (loadingShellPaths.has(pathname)) {
+      const loadingHeaders = new Headers(commonHeaders);
+      for (const [name, value] of createCanonicalLoadingShellRscRequestHeaders(
+        options.deploymentId,
+      )) {
+        loadingHeaders.set(name, value);
+      }
+      requests.push({
+        headers: loadingHeaders,
+        kind: "rsc-loading-shell",
+        label: `${pathname} (RSC loading shell)`,
+        pathname: await createRscRequestUrl(pathname, loadingHeaders),
+        sourcePathname: pathname,
+      });
+    }
+  }
+
+  for (const pathname of new Set(options.paths)) {
+    const htmlHeaders = new Headers(commonHeaders);
+    htmlHeaders.set("Accept", "text/html");
+    requests.push({
+      headers: htmlHeaders,
+      kind: "html",
+      label: pathname,
+      pathname,
+      sourcePathname: pathname,
+    });
+  }
+  return requests;
+}
 
 class CdnWarmProgress {
   private readonly isTTY = process.stderr.isTTY;
@@ -770,7 +826,7 @@ export async function waitForCdnWarmTargetReadiness(
 
 function shouldRetryValidationFailure(
   response: Response,
-  target: WarmTarget,
+  target: CdnWarmTarget,
   options: {
     expectedBuildId?: string;
     expectedRscBuildId?: string;
@@ -802,7 +858,7 @@ function shouldRetryValidationFailure(
 }
 
 async function warmOnePath(
-  target: WarmTarget,
+  target: CdnWarmTarget,
   options: Required<Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries">> & {
     fetchImpl: typeof fetch;
     headers?: HeadersInit;
@@ -916,54 +972,9 @@ async function runWithConcurrency<T, R>(
 }
 
 export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResult> {
-  const requests: WarmTarget[] = [];
-  const htmlRequests: WarmTarget[] = [];
-  const fullRscPaths = new Set(options.rscPaths ?? []);
-  const loadingShellPaths = new Set(options.loadingShellPaths ?? []);
-  const commonHeaders = new Headers(options.headers);
-  for (const pathname of new Set([...fullRscPaths, ...loadingShellPaths])) {
-    if (fullRscPaths.has(pathname)) {
-      const rscHeaders = new Headers(commonHeaders);
-      for (const [name, value] of createCanonicalRscRequestHeaders(options.deploymentId)) {
-        rscHeaders.set(name, value);
-      }
-      requests.push({
-        headers: rscHeaders,
-        kind: "rsc-full",
-        label: `${pathname} (RSC full)`,
-        pathname: createCanonicalRscRequestUrl(pathname),
-        sourcePathname: pathname,
-      });
-    }
-
-    if (loadingShellPaths.has(pathname)) {
-      const loadingHeaders = new Headers(commonHeaders);
-      for (const [name, value] of createCanonicalLoadingShellRscRequestHeaders(
-        options.deploymentId,
-      )) {
-        loadingHeaders.set(name, value);
-      }
-      requests.push({
-        headers: loadingHeaders,
-        kind: "rsc-loading-shell",
-        label: `${pathname} (RSC loading shell)`,
-        pathname: await createRscRequestUrl(pathname, loadingHeaders),
-        sourcePathname: pathname,
-      });
-    }
-  }
-
-  for (const pathname of options.paths) {
-    const htmlHeaders = new Headers(commonHeaders);
-    htmlHeaders.set("Accept", "text/html");
-    htmlRequests.push({
-      headers: htmlHeaders,
-      kind: "html",
-      label: pathname,
-      pathname,
-      sourcePathname: pathname,
-    });
-  }
+  const targets = await createCdnWarmTargets(options);
+  const requests = targets.filter((target) => target.kind !== "html");
+  const htmlRequests = targets.filter((target) => target.kind === "html");
   requests.push(...htmlRequests);
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
   const hasVersionOverride = new Headers(options.headers).has(WORKER_VERSION_OVERRIDE_HEADER);
@@ -996,7 +1007,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   progress.update(0, requests.length, "starting warmup");
 
   type WarmRetryMode = "normal" | "propagation-pass" | "propagation-retry";
-  const warmTarget = (target: WarmTarget, retryMode: WarmRetryMode = "normal") => {
+  const warmTarget = (target: CdnWarmTarget, retryMode: WarmRetryMode = "normal") => {
     const isPropagationRequest = retryMode !== "normal";
     const retries =
       retryMode === "propagation-retry"
@@ -1019,7 +1030,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   };
 
   const warmRequest = async (
-    target: WarmTarget,
+    target: CdnWarmTarget,
     retryMode: WarmRetryMode = "normal",
   ): Promise<Awaited<ReturnType<typeof warmOnePath>>> => {
     const result = await warmTarget(target, retryMode);
@@ -1029,7 +1040,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   };
 
   const warmPropagatingPass = async (
-    targets: readonly WarmTarget[],
+    targets: readonly CdnWarmTarget[],
   ): Promise<Awaited<ReturnType<typeof warmOnePath>>[]> => {
     const results = await runWithConcurrency(targets, concurrency, (target) =>
       warmRequest(target, "propagation-pass"),
@@ -1042,7 +1053,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
         ): entry is {
           index: number;
           result: { path: string; ok: false; error: string; retryable: boolean };
-          target: WarmTarget;
+          target: CdnWarmTarget;
         } => !entry.result.ok,
       );
     const retryableFailed = failed.filter(({ result }) => result.retryable);
@@ -1092,7 +1103,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
         entry,
       ): entry is {
         result: { path: string; ok: false; error: string; retryable: boolean };
-        target: WarmTarget;
+        target: CdnWarmTarget;
       } => !entry.result.ok,
     );
   const failures = failedRequests.map(({ result: { path, error } }) => ({ path, error }));

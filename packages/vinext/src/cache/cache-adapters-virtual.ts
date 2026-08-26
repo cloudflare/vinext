@@ -41,6 +41,12 @@ export type CdnCacheAdapterCapabilities = {
    * guarantee is present. URL-only caches retain the contextual `_rsc` digest.
    */
   responseVary?: "verbatim";
+  /**
+   * Cacheable App Page responses require a build-bound probe manifest before
+   * the adapter may emit public CDN cache policy. Cloudflare deploy tooling
+   * carries that manifest as a module in a second Worker version.
+   */
+  routeCacheability?: "probe-manifest";
 };
 
 export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
@@ -61,6 +67,10 @@ export function hasVerbatimResponseVary(cache?: VinextCacheConfig | null): boole
 
 export function hasBuildIdentityResponseHeader(cache?: VinextCacheConfig | null): boolean {
   return cache?.cdn?.capabilities?.buildIdentity === "response-header";
+}
+
+export function requiresRouteCacheabilityProbeManifest(cache?: VinextCacheConfig | null): boolean {
+  return cache?.cdn?.capabilities?.routeCacheability === "probe-manifest";
 }
 
 /**

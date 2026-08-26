@@ -14,6 +14,8 @@ import {
 } from "./headers.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "./app-rsc-render-mode.js";
 
+export const CACHEABILITY_MANIFEST_MODULE = "__vinext_cacheability_manifest.js";
+
 export type CacheabilityRepresentation = "html" | "rsc-full" | "rsc-loading-shell";
 type CacheabilityManifestRouteState =
   | "static-candidate"
