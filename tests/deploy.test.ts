@@ -3715,6 +3715,7 @@ describe("getZeroPercentStagingTraffic", () => {
     expect(
       getZeroPercentStagingTraffic(
         {
+          deploymentId: null,
           versions: [
             { versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 },
             { versionId: "33333333-3333-4333-8333-333333333333", percentage: 0 },
@@ -3733,6 +3734,7 @@ describe("getZeroPercentStagingTraffic", () => {
     expect(
       getZeroPercentStagingTraffic(
         {
+          deploymentId: null,
           versions: [
             { versionId: "11111111-1111-4111-8111-111111111111", percentage: 50 },
             { versionId: "33333333-3333-4333-8333-333333333333", percentage: 50 },
@@ -3748,6 +3750,7 @@ describe("getZeroPercentStagingTraffic", () => {
     expect(
       getZeroPercentStagingTraffic(
         {
+          deploymentId: null,
           versions: [{ versionId: "22222222-2222-4222-8222-222222222222", percentage: 100 }],
           output: "{}",
         },

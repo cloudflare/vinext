@@ -28,6 +28,7 @@ export type WranglerVersionTraffic = {
 };
 
 export type WranglerDeploymentStatus = {
+  deploymentId: string | null;
   versions: WranglerVersionTraffic[];
   output: string;
 };
@@ -261,7 +262,9 @@ export function parseWranglerDeploymentStatusOutput(output: string): WranglerDep
     throw new Error("Could not parse `wrangler deployments status --json` output.");
   }
 
-  return { versions: parseDeploymentVersions(parsed), output };
+  const deployment = Array.isArray(parsed) ? parsed.at(-1) : parsed;
+  const deploymentId = findStringInRecord(deployment, ["id", "deployment_id", "deploymentId"]);
+  return { deploymentId, versions: parseDeploymentVersions(parsed), output };
 }
 
 export function runWranglerVersionUpload(

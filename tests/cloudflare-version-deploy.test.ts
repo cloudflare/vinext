@@ -258,9 +258,13 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     expect(
       parseWranglerDeploymentStatusOutput(
         JSON.stringify({
+          id: "deployment-1",
           versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
         }),
-      ).versions,
-    ).toEqual([{ versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 }]);
+      ),
+    ).toMatchObject({
+      deploymentId: "deployment-1",
+      versions: [{ versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+    });
   });
 });
