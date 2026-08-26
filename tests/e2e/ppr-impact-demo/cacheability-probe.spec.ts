@@ -93,6 +93,19 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
+  const invalidNestingProbe = await request.get("/cacheability/use-cache-invalid-nesting", {
+    headers,
+  });
+  expect(invalidNestingProbe.ok()).toBe(true);
+  await expect(invalidNestingProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cacheability/use-cache-invalid-nesting",
+    reason: "route returned HTTP 500",
+    state: "probe-failed",
+    status: 500,
+    version: 1,
+  });
+
   const identityProbe = await request.get("/cacheability/static", {
     headers: { ...headers, [probeHeader]: "identity" },
   });
