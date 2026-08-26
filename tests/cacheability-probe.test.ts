@@ -1547,12 +1547,12 @@ describe("buffered cache admission", () => {
         },
       });
       let excessSettled = false;
-      const excessPromise = captureResponseBodyBounded(new Response(fallbackStream)).then(
-        (capture) => {
-          excessSettled = true;
-          return capture;
-        },
-      );
+      const excessPromise = captureResponseBodyBounded(new Response(fallbackStream), {
+        waitForCapacity: true,
+      }).then((capture) => {
+        excessSettled = true;
+        return capture;
+      });
       await Promise.resolve();
       expect(excessSettled).toBe(false);
 
@@ -1635,7 +1635,7 @@ describe("buffered cache admission", () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it("retains failed tee reader slots until fallback cancellation", async () => {
+  it("bounds overflow retention while ordinary excess captures fail closed immediately", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const context = createWorkerCacheabilityContext(
       { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
@@ -1651,8 +1651,8 @@ describe("buffered cache admission", () => {
             new Response(
               new ReadableStream<Uint8Array>({
                 start(controller) {
+                  controller.enqueue(new Uint8Array([index]));
                   controller.enqueue(new Uint8Array(CACHEABILITY_RESPONSE_BODY_LIMIT));
-                  controller.enqueue(new Uint8Array([1]));
                   controller.close();
                 },
               }),
@@ -1662,9 +1662,29 @@ describe("buffered cache admission", () => {
       }
       expect(failed.every((capture) => capture.failClosed)).toBe(true);
 
+      const readers = failed.map((capture) => {
+        if (!capture.failClosed) throw new Error("expected failed capture");
+        return capture.fallback.getReader();
+      });
+      for (const [index, reader] of readers.entries()) {
+        const prefix = await reader.read();
+        expect(prefix.done).toBe(false);
+        expect(prefix.value).toEqual(new Uint8Array([index]));
+      }
+
+      const immediate = await captureResponseBodyBounded(new Response(new Uint8Array([8])));
+      expect(immediate).toMatchObject({ failClosed: true, failure: "capacity" });
+      if (immediate.failClosed) {
+        await expect(immediate.fallback.getReader().read()).resolves.toMatchObject({
+          done: false,
+          value: new Uint8Array([8]),
+        });
+      }
+
       let excessSettled = false;
       const excessPromise = captureResponseBodyBounded(
         new Response(new Uint8Array(CACHEABILITY_RESPONSE_BODY_LIMIT)),
+        { waitForCapacity: true },
       ).then((capture) => {
         excessSettled = true;
         return capture;
@@ -1672,15 +1692,14 @@ describe("buffered cache admission", () => {
       await Promise.resolve();
       expect(excessSettled).toBe(false);
 
-      await Promise.all(
-        failed.map((capture) =>
-          capture.failClosed ? capture.fallback.cancel() : Promise.resolve(),
-        ),
-      );
+      const overflow = await readers[0].read();
+      expect(overflow.done).toBe(false);
+      expect(overflow.value?.byteLength).toBe(CACHEABILITY_RESPONSE_BODY_LIMIT);
       const excess = await excessPromise;
       expect(excess.failClosed).toBe(false);
       await excess.fallback?.cancel();
       if (!excess.failClosed) excess.release();
+      await Promise.all(readers.map((reader) => reader.cancel()));
       const afterCancellation = await captureResponseBodyBounded(new Response(new Uint8Array([3])));
       expect(afterCancellation.failClosed).toBe(false);
       if (!afterCancellation.failClosed) {
@@ -1690,7 +1709,7 @@ describe("buffered cache admission", () => {
     });
   });
 
-  it("returns 500 when a manifest-certified static response exceeds the capture bound", async () => {
+  it("streams no-store when a manifest-certified response exceeds the capture bound", async () => {
     installManifest();
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const ctx = createWorkerCacheabilityContext(
@@ -1709,9 +1728,10 @@ describe("buffered cache admission", () => {
       );
     });
 
-    expect(response.status).toBe(500);
+    expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
-    await expect(response.text()).resolves.toBe("Internal Server Error");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect((await response.arrayBuffer()).byteLength).toBe(CACHEABILITY_RESPONSE_BODY_LIMIT + 1);
   });
 
   it("fails closed on a stream that does not finish before the capture deadline", async () => {
@@ -1751,7 +1771,7 @@ describe("buffered cache admission", () => {
     await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
   });
 
-  it("returns a dynamic probe envelope before the outer probe deadline", async () => {
+  it("returns a failed probe envelope before the outer probe deadline", async () => {
     vi.useFakeTimers();
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const request = new Request("https://example.com/products/slow-probe", {
@@ -1782,7 +1802,7 @@ describe("buffered cache admission", () => {
     await expect(response.json()).resolves.toMatchObject({
       kind: "app-page",
       pattern: "/products/:id",
-      state: "dynamic",
+      state: "probe-failed",
     });
   });
 

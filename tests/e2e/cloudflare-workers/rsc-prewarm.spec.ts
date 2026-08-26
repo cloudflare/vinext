@@ -378,6 +378,16 @@ test("deploy-prewarmed Pages HTML and RSC variants are reused", async ({
     "cache-probe static params known",
   );
 
+  const bareFetchResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}/cache-probe/bare-fetch/known`,
+  );
+  expect(bareFetchResponse.ok()).toBe(true);
+  expect(bareFetchResponse.headers()["cf-cache-status"]).toBe("HIT");
+  expect((await bareFetchResponse.text()).replaceAll("<!-- -->", "")).toContain(
+    "cache-probe bare fetch known",
+  );
+
   // Only `known` was discovered and warmed. Like Next.js fallback blocking,
   // another parameter is checked from its completed first render and then
   // admitted without requiring a second deploy or a manifest entry per path.

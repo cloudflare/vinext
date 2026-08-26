@@ -45,6 +45,7 @@ const {
   runWithFetchCache,
   getCollectedFetchTags,
   setCurrentFetchCacheMode,
+  setCurrentCacheComponentsEnabled,
   setCurrentFetchRevalidate,
   setCurrentForceDynamicFetchDefault,
   setCurrentFetchSoftTags,
@@ -55,6 +56,8 @@ const {
   consumeDynamicFetchObservations,
   peekDynamicFetchObservations,
 } = await import("../packages/vinext/src/shims/fetch-cache.js");
+const { CACHEABILITY_REQUEST_STATE } =
+  await import("../packages/vinext/src/shims/cacheability-classification.js");
 const { getCacheHandler, revalidatePath, revalidateTag, MemoryCacheHandler, setCacheHandler } =
   await import("../packages/vinext/src/shims/cache.js");
 const { consumeDynamicUsage, setHeadersContext } =
@@ -123,6 +126,76 @@ describe("fetch cache shim", () => {
     const data2 = await res2.json();
     expect(data2.count).toBe(1); // Cached
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates next.revalidate and normalizes Infinity like Next.js", async () => {
+    for (const value of [-1, Number.NaN, "60"]) {
+      await expect(
+        fetch("https://api.example.com/invalid-revalidate", {
+          next: { revalidate: value as never },
+        }),
+      ).rejects.toThrow(/Invalid revalidate value/);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await fetch("https://api.example.com/infinite", {
+      next: { revalidate: Infinity },
+    });
+    startNewFetchCacheScope();
+    await fetch("https://api.example.com/infinite", {
+      next: { revalidate: Infinity },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses implicit build-time fetch caching only for non-Cache-Components staged probes", async () => {
+    const probeContext = {
+      [CACHEABILITY_REQUEST_STATE]: { mode: "probe", route: {} },
+      waitUntil() {},
+    };
+    const render = (cacheComponents: boolean) =>
+      runWithExecutionContext(probeContext, () =>
+        runWithFetchCache(async () => {
+          setCurrentCacheComponentsEnabled(cacheComponents);
+          setCurrentFetchRevalidate(60);
+          return fetch("https://api.example.com/implicit-build-cache");
+        }),
+      );
+
+    await render(false);
+    await render(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(consumeDynamicFetchObservations()).toEqual([]);
+    expect(consumeDynamicUsage()).toBe(false);
+
+    await render(true);
+    expect(peekDynamicFetchObservations()).toEqual([
+      "https://api.example.com/implicit-build-cache",
+    ]);
+  });
+
+  it("keeps runtime bare fetch dynamic unless the manifest certified the concrete route", async () => {
+    const render = (state: Record<string, unknown>) =>
+      runWithExecutionContext({ [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} }, () =>
+        runWithFetchCache(async () => {
+          setCurrentCacheComponentsEnabled(false);
+          setCurrentFetchRevalidate(60);
+          await fetch("https://api.example.com/runtime-auto-no-cache");
+          return peekDynamicFetchObservations();
+        }),
+      );
+
+    await expect(render({ mode: "admit-all", route: {} })).resolves.toEqual([
+      "https://api.example.com/runtime-auto-no-cache",
+    ]);
+    consumeDynamicFetchObservations();
+    await expect(
+      render({
+        manifestRoute: { state: "static-candidate" },
+        mode: "admit",
+        route: {},
+      }),
+    ).resolves.toEqual([]);
   });
 
   // Next.js stores CachedFetchData.body as base64:

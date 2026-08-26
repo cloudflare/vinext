@@ -386,24 +386,57 @@ const prospectiveCacheHandlerAls = getOrCreateAls<CacheHandler>(
 const prospectiveCacheFillsAls = getOrCreateAls<Set<Promise<unknown>>>(
   "vinext.cacheHandler.prospective.fills.als",
 );
-const untrackedCacheHandlers = new WeakSet<CacheHandler>();
+const untrackedCacheHandlers = new WeakMap<CacheHandler, CacheHandler>();
 
 function suppressHandlerPlatformIoTracking(handler: CacheHandler): CacheHandler {
-  if (untrackedCacheHandlers.has(handler)) return handler;
-  untrackedCacheHandlers.add(handler);
+  const existing = untrackedCacheHandlers.get(handler);
+  if (existing) return existing;
 
-  const get = handler.get.bind(handler);
-  const set = handler.set.bind(handler);
-  const revalidateTag = handler.revalidateTag.bind(handler);
-  handler.get = (key, ctx) => runWithoutPlatformIoTracking(() => get(key, ctx));
-  handler.set = (key, data, ctx) => runWithoutPlatformIoTracking(() => set(key, data, ctx));
-  handler.revalidateTag = (tags, durations) =>
-    runWithoutPlatformIoTracking(() => revalidateTag(tags, durations));
-  if (handler.resetRequestCache) {
-    const resetRequestCache = handler.resetRequestCache.bind(handler);
-    handler.resetRequestCache = () => runWithoutPlatformIoTracking(() => resetRequestCache());
+  // Cache handlers are adapter-owned and may be frozen or update their methods
+  // after registration. Delegate on every call instead of mutating or binding
+  // the configured object.
+  const facade = Object.create(Object.getPrototypeOf(handler)) as CacheHandler;
+  Object.defineProperties(facade, {
+    get: {
+      configurable: true,
+      value: (key: string, ctx?: Record<string, unknown>) =>
+        runWithoutPlatformIoTracking(() => handler.get(key, ctx)),
+    },
+    set: {
+      configurable: true,
+      value: (key: string, data: IncrementalCacheValue | null, ctx?: Record<string, unknown>) =>
+        runWithoutPlatformIoTracking(() => handler.set(key, data, ctx)),
+    },
+    revalidateTag: {
+      configurable: true,
+      value: (tags: string | string[], durations?: { expire?: number }) =>
+        runWithoutPlatformIoTracking(() => handler.revalidateTag(tags, durations)),
+    },
+    ...(handler.resetRequestCache
+      ? {
+          resetRequestCache: {
+            configurable: true,
+            value: () => runWithoutPlatformIoTracking(() => handler.resetRequestCache?.()),
+          },
+        }
+      : {}),
+  });
+  // Preserve adapter identity/introspection (including MemoryCacheHandler's
+  // test/debug store) without copying or mutating adapter-owned state.
+  for (const key of Reflect.ownKeys(handler)) {
+    if (key === "get" || key === "set" || key === "revalidateTag" || key === "resetRequestCache") {
+      continue;
+    }
+    Object.defineProperty(facade, key, {
+      configurable: true,
+      get: () => Reflect.get(handler, key),
+      set: (value) => {
+        Reflect.set(handler, key, value);
+      },
+    });
   }
-  return handler;
+  untrackedCacheHandlers.set(handler, facade);
+  return facade;
 }
 
 export function trackProspectiveCacheFill<T>(promise: Promise<T>): void {

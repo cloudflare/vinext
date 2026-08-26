@@ -29,6 +29,7 @@ import {
   getCollectedFetchTags,
   peekDynamicFetchObservations,
   runWithFetchDedupe,
+  setCurrentCacheComponentsEnabled,
   setCurrentFetchCacheMode,
   setCurrentFetchRevalidate,
   setCurrentForceDynamicFetchDefault,
@@ -567,6 +568,7 @@ async function runAppPageRevalidationContext<
   },
 >(
   options: {
+    cacheComponents: boolean;
     cleanPathname: string;
     displayPathname?: string;
     currentFetchCacheMode?: FetchCacheMode | null;
@@ -599,6 +601,7 @@ async function runAppPageRevalidationContext<
 
   const revalidation = runWithRequestContext(requestContext, async () => {
     ensureFetchPatch();
+    setCurrentCacheComponentsEnabled(options.cacheComponents);
     setRefreshStaleFetchesInForeground(process.env.VINEXT_PRERENDER === "1");
     setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], options.routeSegments));
     options.setNavigationContext({
@@ -846,6 +849,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   };
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
+  setCurrentCacheComponentsEnabled(options.pprRuntime !== undefined);
   setCurrentFetchCacheMode(options.fetchCache ?? null);
   setCurrentFetchRevalidate(currentRevalidateSeconds);
   setCurrentForceDynamicFetchDefault(isForceDynamic);
@@ -966,6 +970,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           (revalidationTarget.route === route ? dynamicConfig : undefined);
         return runAppPageRevalidationContext(
           {
+            cacheComponents: options.pprRuntime !== undefined,
             cleanPathname: options.cleanPathname,
             displayPathname: options.displayPathname,
             currentFetchCacheMode:

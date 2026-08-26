@@ -5922,6 +5922,19 @@ describe("next/cache shim", () => {
     );
   });
 
+  it("accepts infinite revalidation for unstable_cache", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+    let calls = 0;
+    const cached = unstable_cache(async () => ++calls, ["infinite-revalidate"], {
+      revalidate: Infinity,
+    });
+
+    await expect(cached()).resolves.toBe(1);
+    await expect(cached()).resolves.toBe(1);
+  });
+
   it("propagates unstable_cache revalidation to the enclosing route lifetime", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -7359,6 +7372,32 @@ describe('"use cache" runtime', () => {
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
+  });
+
+  it("does not mutate frozen cache handlers and delegates later method updates", async () => {
+    const { getCacheHandler, MemoryCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const calls: string[] = [];
+    const mutable = {
+      async get() {
+        calls.push("first");
+        return null;
+      },
+      async set() {},
+      async revalidateTag() {},
+    };
+    setCacheHandler(Object.freeze({ ...mutable }));
+    await expect(getCacheHandler().get("frozen")).resolves.toBeNull();
+
+    setCacheHandler(mutable);
+    const facade = getCacheHandler();
+    mutable.get = async () => {
+      calls.push("second");
+      return null;
+    };
+    await facade.get("updated");
+    expect(calls).toEqual(["first", "second"]);
+    setCacheHandler(new MemoryCacheHandler());
   });
 
   it('rejects "use cache: private" nested inside public "use cache"', async () => {

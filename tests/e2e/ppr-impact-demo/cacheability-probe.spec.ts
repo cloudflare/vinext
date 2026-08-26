@@ -68,6 +68,16 @@ test("classifies bundled Cache Components handlers through staged probe requests
     version: 1,
   });
 
+  const nodeCryptoAliasProbe = await request.get("/cache-probe/node-crypto-alias", { headers });
+  expect(nodeCryptoAliasProbe.ok()).toBe(true);
+  await expect(nodeCryptoAliasProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cache-probe/node-crypto-alias",
+    state: "dynamic",
+    status: 200,
+    version: 1,
+  });
+
   const fetchAliasProbe = await request.get("/cache-probe/fetch-alias", { headers });
   expect(fetchAliasProbe.ok()).toBe(true);
   await expect(fetchAliasProbe.json()).resolves.toMatchObject({

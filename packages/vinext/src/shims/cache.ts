@@ -644,7 +644,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   const revalidateSeconds = options?.revalidate;
   if (
     typeof revalidateSeconds === "number" &&
-    (!Number.isFinite(revalidateSeconds) || revalidateSeconds <= 0)
+    (Number.isNaN(revalidateSeconds) || revalidateSeconds <= 0)
   ) {
     throw new Error(
       `Invariant revalidate: ${revalidateSeconds} can not be less than or equal to zero for unstable_cache().`,

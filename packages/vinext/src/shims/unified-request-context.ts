@@ -116,6 +116,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     unstableCacheRevalidation: "foreground",
     _privateCache: null,
     cacheableFetchUrls: new Set<string>(),
+    currentCacheComponentsEnabled: false,
     currentRequestTags: [],
     currentFetchSoftTags: [],
     currentFetchCacheMode: null,

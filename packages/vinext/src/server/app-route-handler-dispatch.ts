@@ -3,6 +3,7 @@ import {
   getCollectedFetchTags,
   ensureFetchPatch,
   setCurrentFetchCacheMode,
+  setCurrentCacheComponentsEnabled,
   setCurrentFetchRevalidate,
   setCurrentFetchSoftTags,
   setCurrentForceDynamicFetchDefault,
@@ -133,6 +134,7 @@ function buildRouteHandlerPageCacheTags(
 
 async function runInRouteHandlerRevalidationContext(
   options: {
+    cacheComponents: boolean;
     cleanPathname: string;
     draftModeSecret: string;
     dynamicConfig?: string;
@@ -163,6 +165,7 @@ async function runInRouteHandlerRevalidationContext(
     );
     // The revalidation render runs in a fresh request context, so the fetch
     // defaults applied by `dispatchAppRouteHandler` must be re-applied here.
+    setCurrentCacheComponentsEnabled(options.cacheComponents);
     setCurrentFetchCacheMode(options.fetchCacheMode);
     setCurrentFetchRevalidate(options.revalidateSeconds);
     setCurrentForceDynamicFetchDefault(options.dynamicConfig === "force-dynamic");
@@ -299,6 +302,7 @@ export async function dispatchAppRouteHandler(
   // path (dispatch previously only set fetch soft tags), closing the gap
   // where handlers ignored their `fetchCache`/`force-dynamic` segment config.
   const fetchCacheMode = resolveAppRouteHandlerFetchCacheMode(handler);
+  setCurrentCacheComponentsEnabled(options.cacheComponents === true);
   setCurrentFetchCacheMode(fetchCacheMode);
   setCurrentFetchRevalidate(revalidateSeconds);
   setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
@@ -401,6 +405,7 @@ export async function dispatchAppRouteHandler(
       runInRevalidationContext(renderFn) {
         return runInRouteHandlerRevalidationContext(
           {
+            cacheComponents: options.cacheComponents === true,
             cleanPathname: options.cleanPathname,
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: handler.dynamic,

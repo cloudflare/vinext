@@ -106,10 +106,14 @@ function wrapNodeCryptoFunction(
   });
 }
 
-async function installNodeCryptoTracking(): Promise<void> {
+function installNodeCryptoTracking(): void {
   try {
-    const imported = (await import("node:crypto")) as NodeCrypto & { default?: NodeCrypto };
-    const nodeCrypto = imported.default;
+    // This must not suspend: generated entries load this prelude before user
+    // modules, but ESM may evaluate sibling dependencies while a top-level
+    // await is pending. `process.getBuiltinModule()` lets Node-compatible
+    // runtimes patch the CommonJS builtin synchronously, then publish the
+    // wrappers to already-linked ESM named exports before user code runs.
+    const nodeCrypto = process.getBuiltinModule?.("node:crypto") as NodeCrypto | undefined;
     if (!nodeCrypto) return;
 
     wrapNodeCryptoFunction(nodeCrypto, "randomUUID");
@@ -119,8 +123,10 @@ async function installNodeCryptoTracking(): Promise<void> {
     wrapNodeCryptoFunction(nodeCrypto, "generatePrimeSync");
     wrapNodeCryptoFunction(nodeCrypto, "generateKeyPairSync");
     wrapNodeCryptoFunction(nodeCrypto, "generateKeySync");
-    const nodeModule = await import("node:module");
-    nodeModule.syncBuiltinESMExports?.();
+    const nodeModule = process.getBuiltinModule?.("node:module") as
+      | typeof import("node:module")
+      | undefined;
+    nodeModule?.syncBuiltinESMExports?.();
   } catch {
     // Edge runtimes need only Web Crypto. Node-compatible runtimes that expose
     // mutable builtin exports take the same path as Next.js above.
@@ -133,7 +139,8 @@ export function installCacheComponentsPlatformIoTracking(): Promise<void> {
   const existing = globalState[INSTALL_KEY];
   if (existing instanceof Promise) return existing as Promise<void>;
 
-  const installing = installNodeCryptoTracking();
+  installNodeCryptoTracking();
+  const installing = Promise.resolve();
   globalState[INSTALL_KEY] = installing;
   return installing;
 }

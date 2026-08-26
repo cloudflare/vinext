@@ -77,6 +77,7 @@ export const CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY = Math.max(
   1,
   Math.floor(CACHEABILITY_RESPONSE_CAPTURE_BUDGET / CACHEABILITY_RESPONSE_BODY_LIMIT),
 );
+export const CACHEABILITY_RESPONSE_CAPTURE_PENDING_LIMIT = 32;
 // Leave headroom below the deploy probe's 30s request timeout so a slow or
 // never-ending response can still return its fail-closed probe envelope.
 export const CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS = 20_000;
@@ -160,7 +161,13 @@ async function acquireCaptureReader(
     activeCaptureReaders += 1;
     return createCaptureReaderRelease();
   }
-  if (signal?.aborted || timeoutMs <= 0) return null;
+  if (
+    signal?.aborted ||
+    timeoutMs <= 0 ||
+    pendingCaptureReaders.length >= CACHEABILITY_RESPONSE_CAPTURE_PENDING_LIMIT
+  ) {
+    return null;
+  }
 
   return new Promise<(() => void) | null>((resolve) => {
     const waiter: (typeof pendingCaptureReaders)[number] = {
@@ -213,17 +220,22 @@ function streamCapturedPrefixThenReader(
             controller.enqueue(prefix[index++]);
             if (index === prefix.length) {
               prefix.length = 0;
-              release();
+              if (!sourceOwnedOverflow) release();
             }
             return;
           }
-          release();
           if (sourceOwnedOverflow) {
             const chunk = sourceOwnedOverflow;
             sourceOwnedOverflow = undefined;
             controller.enqueue(chunk);
+            // Keep the reader permit while the source-owned overflow is
+            // retained. Releasing after enqueue bounds slow consumers too:
+            // another capture cannot start until this large chunk has left
+            // the stream's closure/queue.
+            release();
             return;
           }
+          release();
           const result = await reader.read();
           if (result.done) controller.close();
           else controller.enqueue(result.value);
@@ -396,7 +408,12 @@ export type CapturedResponseBody =
       failClosed: false;
       release: () => void;
     }
-  | { fallback: ReadableStream<Uint8Array>; failClosed: true; reason: string };
+  | {
+      failure: "budget" | "capacity" | "oversize" | "timeout";
+      fallback: ReadableStream<Uint8Array>;
+      failClosed: true;
+      reason: string;
+    };
 
 /**
  * Collect a response body only while it remains within the Worker-safe size
@@ -406,7 +423,7 @@ export type CapturedResponseBody =
  */
 export async function captureResponseBodyBounded(
   response: Response,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; waitForCapacity?: boolean } = {},
 ): Promise<CapturedResponseBody> {
   if (options.signal?.aborted) {
     throw options.signal.reason ?? new Error("response capture was aborted");
@@ -418,6 +435,7 @@ export async function captureResponseBodyBounded(
   const declaredLength = Number(response.headers.get("Content-Length"));
   if (Number.isFinite(declaredLength) && declaredLength > CACHEABILITY_RESPONSE_BODY_LIMIT) {
     return {
+      failure: "oversize",
       failClosed: true,
       fallback: response.body,
       reason: `response body exceeded ${CACHEABILITY_RESPONSE_BODY_LIMIT} bytes`,
@@ -427,16 +445,20 @@ export async function captureResponseBodyBounded(
   const captureStartedAt = frameworkNow();
   const releaseReader = await acquireCaptureReader(
     options.signal,
-    CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+    options.waitForCapacity === true ? CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS : 0,
   );
   if (!releaseReader) {
     if (options.signal?.aborted) {
       throw options.signal.reason ?? new Error("response capture was aborted");
     }
     return {
+      failure: "capacity",
       failClosed: true,
       fallback: response.body,
-      reason: `response capture did not acquire isolate capacity within ${CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS}ms`,
+      reason:
+        options.waitForCapacity === true
+          ? `response capture did not acquire isolate capacity within ${CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS}ms`
+          : "response capture isolate capacity is currently unavailable",
     };
   }
 
@@ -511,6 +533,7 @@ export async function captureResponseBodyBounded(
         void fallback.cancel().catch(() => {});
         reservation.release(retainedChunkBytes);
         return {
+          failure: readResult === "budget-exhausted" ? "budget" : "oversize",
           failClosed: true,
           fallback: streamCapturedPrefixThenReader(
             chunks,
@@ -533,6 +556,7 @@ export async function captureResponseBodyBounded(
       // the fallback keeps the other until its consumer drains or cancels it.
       reservation.release(retainedChunkBytes);
       return {
+        failure: "timeout",
         failClosed: true,
         // A tee may already have buffered the captured prefix into the unread
         // fallback branch. Keep that memory inside the aggregate reservation
@@ -559,6 +583,7 @@ export async function captureResponseBodyBounded(
       void fallback.cancel().catch(() => {});
       reservation.release(retainedChunkBytes);
       return {
+        failure: "budget",
         failClosed: true,
         fallback: streamCapturedPrefixThenReader(chunks, reader, reservation.releaseAll),
         reason: `response capture exceeded the ${CACHEABILITY_RESPONSE_CAPTURE_BUDGET} byte isolate budget`,
@@ -960,7 +985,9 @@ async function finalizeWorkerCacheabilityResponseWithState(
     captured = { body: state.capturedBody, fallback: null, failClosed: false, release: () => {} };
   } else {
     try {
-      captured = await captureResponseBodyBounded(response);
+      captured = await captureResponseBodyBounded(response, {
+        waitForCapacity: state.mode === "probe",
+      });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       if (state.mode === "probe") {
@@ -973,23 +1000,11 @@ async function finalizeWorkerCacheabilityResponseWithState(
   const releaseCaptured = captured.failClosed ? null : captured.release;
   try {
     if (captured.failClosed) {
-      if (
-        state.mode !== "probe" &&
-        state.manifestRoute?.state === "static-candidate" &&
-        state.route.partialPrerender !== true
-      ) {
-        void captured.fallback.cancel().catch(() => {});
-        return staticToDynamicErrorResponse({
-          cacheable: false,
-          dynamicUsage: true,
-          reason: captured.reason,
-        });
-      }
       if (state.mode === "probe") {
         void captured.fallback.cancel().catch(() => {});
         return probeResponse(
           state,
-          "dynamic",
+          "probe-failed",
           {
             cacheable: false,
             reason: captured.reason,
