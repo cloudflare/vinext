@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Buffer } from "node:buffer";
 import fs from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -15,6 +16,12 @@ import {
 } from "vinext/internal/server/headers";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "./cache/cdn-build-id.js";
 import type { CdnWarmTarget } from "./cdn-warm.js";
+import {
+  cacheabilityManifestByteLimitError,
+  cacheabilityManifestRouteLimitError,
+  MAX_CACHEABILITY_MANIFEST_BYTES,
+  MAX_CACHEABILITY_MANIFEST_ROUTES,
+} from "./cacheability-manifest-limits.js";
 
 type ProbePayload = {
   kind?: string;
@@ -129,6 +136,8 @@ export async function probeStagedWorkerCacheability(options: {
   targets: readonly CdnWarmTarget[];
   targetUrl: string;
   timeoutMs?: number;
+  /** @internal Apply stricter artifact bounds for focused coordinator tests. */
+  manifestLimits?: { maxBytes?: number; maxRoutes?: number };
 }): Promise<CacheabilityProbeResult> {
   const secret = readPrerenderSecret(options.root);
   const concurrency = Math.max(1, options.concurrency ?? 25);
@@ -138,10 +147,55 @@ export async function probeStagedWorkerCacheability(options: {
   const routes: Record<string, CacheabilityManifestRoute> = {};
   const cacheableTargets: CdnWarmTarget[] = [];
   const failures: string[] = [];
+  const maxManifestBytes = Math.min(
+    options.manifestLimits?.maxBytes ?? MAX_CACHEABILITY_MANIFEST_BYTES,
+    MAX_CACHEABILITY_MANIFEST_BYTES,
+  );
+  const maxManifestRoutes = Math.min(
+    options.manifestLimits?.maxRoutes ?? MAX_CACHEABILITY_MANIFEST_ROUTES,
+    MAX_CACHEABILITY_MANIFEST_ROUTES,
+  );
+  const emptyManifest: CacheabilityManifest = {
+    buildId: options.buildId,
+    routes: {},
+    version: 1,
+  };
+  let manifestBytes = Buffer.byteLength(JSON.stringify(emptyManifest));
+  const routeEntryBytes = new Map<string, number>();
+  let limitFailure: Error | null = null;
   let nextIndex = 0;
 
+  const addRouteWithinManifestLimits = (key: string, route: CacheabilityManifestRoute): boolean => {
+    const previousBytes = routeEntryBytes.get(key);
+    const nextRouteCount =
+      previousBytes === undefined ? routeEntryBytes.size + 1 : routeEntryBytes.size;
+    if (nextRouteCount > maxManifestRoutes) {
+      limitFailure = cacheabilityManifestRouteLimitError(nextRouteCount, maxManifestRoutes);
+      return false;
+    }
+
+    // This is the exact UTF-8 contribution of the entry to JSON.stringify's
+    // routes object. Counting entries incrementally avoids repeatedly
+    // serializing an ever-growing manifest while preserving the artifact's
+    // byte boundary exactly (including escaped keys and multibyte paths).
+    const nextEntryBytes = Buffer.byteLength(`${JSON.stringify(key)}:${JSON.stringify(route)}`);
+    const nextManifestBytes =
+      previousBytes === undefined
+        ? manifestBytes + nextEntryBytes + (routeEntryBytes.size > 0 ? 1 : 0)
+        : manifestBytes - previousBytes + nextEntryBytes;
+    if (nextManifestBytes > maxManifestBytes) {
+      limitFailure = cacheabilityManifestByteLimitError(nextManifestBytes, maxManifestBytes);
+      return false;
+    }
+
+    routes[key] = route;
+    routeEntryBytes.set(key, nextEntryBytes);
+    manifestBytes = nextManifestBytes;
+    return true;
+  };
+
   const worker = async (): Promise<void> => {
-    while (nextIndex < options.targets.length) {
+    while (!limitFailure && nextIndex < options.targets.length) {
       const target = options.targets[nextIndex++];
       const request = new Request(new URL(target.pathname, options.targetUrl), {
         headers: target.headers,
@@ -163,6 +217,7 @@ export async function probeStagedWorkerCacheability(options: {
         targetUrl: options.targetUrl,
         timeoutMs,
       });
+      if (limitFailure) return;
       if (
         result.version !== 1 ||
         result.kind !== "app-page" ||
@@ -193,14 +248,13 @@ export async function probeStagedWorkerCacheability(options: {
         state: result.state,
         status: result.status!,
       };
-      routes[
-        cacheabilityManifestRouteKey(
-          route.kind,
-          route.pattern,
-          route.representation,
-          route.requestKey,
-        )
-      ] = route;
+      const key = cacheabilityManifestRouteKey(
+        route.kind,
+        route.pattern,
+        route.representation,
+        route.requestKey,
+      );
+      if (!addRouteWithinManifestLimits(key, route)) return;
       cacheableTargets.push(target);
     }
   };
@@ -208,6 +262,7 @@ export async function probeStagedWorkerCacheability(options: {
   await Promise.all(
     Array.from({ length: Math.min(concurrency, options.targets.length) }, () => worker()),
   );
+  if (limitFailure) throw limitFailure;
   const sortedRoutes = Object.fromEntries(
     Object.entries(routes).sort(([first], [second]) => first.localeCompare(second)),
   );

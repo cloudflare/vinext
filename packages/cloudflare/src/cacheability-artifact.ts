@@ -5,9 +5,14 @@ import {
   CACHEABILITY_MANIFEST_MODULE,
   type CacheabilityManifest,
 } from "vinext/internal/server/cacheability-manifest";
+import {
+  cacheabilityManifestByteLimitError,
+  cacheabilityManifestRouteLimitError,
+  MAX_CACHEABILITY_MANIFEST_BYTES,
+  MAX_CACHEABILITY_MANIFEST_ROUTES,
+} from "./cacheability-manifest-limits.js";
 
-export const MAX_CACHEABILITY_MANIFEST_BYTES = 1024 * 1024;
-export const MAX_CACHEABILITY_MANIFEST_ROUTES = 10_000;
+export { MAX_CACHEABILITY_MANIFEST_BYTES, MAX_CACHEABILITY_MANIFEST_ROUTES };
 
 type JavaScriptToken = {
   kind: "identifier" | "punctuator" | "string";
@@ -212,16 +217,12 @@ export function withCacheabilityManifestArtifact<T>(
   }
   const routeCount = Object.keys(manifest.routes).length;
   if (routeCount > MAX_CACHEABILITY_MANIFEST_ROUTES) {
-    throw new Error(
-      `Two-stage CDN warming produced ${routeCount} cacheable identities; the limit is ${MAX_CACHEABILITY_MANIFEST_ROUTES}. Narrow prerender discovery or split the deployment before retrying.`,
-    );
+    throw cacheabilityManifestRouteLimitError(routeCount);
   }
   const serializedManifest = JSON.stringify(manifest);
   const manifestBytes = Buffer.byteLength(serializedManifest);
   if (manifestBytes > MAX_CACHEABILITY_MANIFEST_BYTES) {
-    throw new Error(
-      `Two-stage CDN warming produced a ${manifestBytes}-byte cacheability manifest; the limit is ${MAX_CACHEABILITY_MANIFEST_BYTES} bytes. Narrow prerender discovery or split the deployment before retrying.`,
-    );
+    throw cacheabilityManifestByteLimitError(manifestBytes);
   }
 
   const isolatedDirectory = fs.mkdtempSync(

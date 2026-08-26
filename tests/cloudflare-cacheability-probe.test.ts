@@ -1,10 +1,15 @@
+import { Buffer } from "node:buffer";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { probeStagedWorkerCacheability } from "../packages/cloudflare/src/cacheability-probe.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
-import { cacheabilityRequestIdentity } from "../packages/vinext/src/server/cacheability-manifest.js";
+import {
+  cacheabilityManifestRouteKey,
+  cacheabilityRequestIdentity,
+  type CacheabilityManifestRoute,
+} from "../packages/vinext/src/server/cacheability-manifest.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
@@ -13,6 +18,37 @@ import {
 
 describe("staged Worker cacheability probes", () => {
   const roots: string[] = [];
+
+  function createProbeRoot(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-probe-"));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, "dist", "server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "dist", "server", "vinext-server.json"),
+      JSON.stringify({ prerenderSecret: "probe-secret" }),
+    );
+    return root;
+  }
+
+  const target = (pathname: string) => ({
+    headers: { Accept: "text/html" },
+    kind: "html" as const,
+    label: pathname,
+    pathname,
+    sourcePathname: pathname,
+  });
+
+  const createStaticProbeFetch = () =>
+    vi.fn<typeof fetch>(async (input) => {
+      const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      return Response.json({
+        kind: "app-page",
+        pattern: pathname,
+        state: "static-candidate",
+        status: 200,
+        version: 1,
+      });
+    });
 
   afterEach(() => {
     for (const root of roots.splice(0)) fs.rmSync(root, { force: true, recursive: true });
@@ -145,5 +181,85 @@ describe("staged Worker cacheability probes", () => {
     expect(Object.values(result.manifest.routes)).toEqual([
       expect.objectContaining({ pattern: "/static", state: "static-candidate" }),
     ]);
+  });
+
+  it("stops launching probes when another cacheable identity exceeds the route bound", async () => {
+    const root = createProbeRoot();
+    const fetchImpl = createStaticProbeFetch();
+
+    await expect(
+      probeStagedWorkerCacheability({
+        buildId: "application-build",
+        concurrency: 1,
+        fetchImpl,
+        manifestLimits: { maxRoutes: 1 },
+        retries: 0,
+        root,
+        targetUrl: "https://example.com",
+        targets: [target("/one"), target("/two"), target("/three")],
+      }),
+    ).rejects.toThrow("produced 2 cacheable identities; the limit is 1");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the exact serialized-byte boundary and stops before later probes", async () => {
+    const root = createProbeRoot();
+    const firstTarget = target("/one");
+    const identity = cacheabilityRequestIdentity(
+      new Request(new URL(firstTarget.pathname, "https://example.com"), {
+        headers: firstTarget.headers,
+      }),
+    )!;
+    const route: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pattern: firstTarget.pathname,
+      representation: identity.representation,
+      requestKey: identity.requestKey,
+      state: "static-candidate",
+      status: 200,
+    };
+    const key = cacheabilityManifestRouteKey(
+      route.kind,
+      route.pattern,
+      route.representation,
+      route.requestKey,
+    );
+    const exactBytes = Buffer.byteLength(
+      JSON.stringify({
+        buildId: "application-build",
+        routes: { [key]: route },
+        version: 1,
+      }),
+    );
+
+    const boundaryFetch = createStaticProbeFetch();
+    await expect(
+      probeStagedWorkerCacheability({
+        buildId: "application-build",
+        concurrency: 1,
+        fetchImpl: boundaryFetch,
+        manifestLimits: { maxBytes: exactBytes },
+        retries: 0,
+        root,
+        targetUrl: "https://example.com",
+        targets: [firstTarget],
+      }),
+    ).resolves.toMatchObject({ probed: 1 });
+    expect(boundaryFetch).toHaveBeenCalledTimes(1);
+
+    const overflowFetch = createStaticProbeFetch();
+    await expect(
+      probeStagedWorkerCacheability({
+        buildId: "application-build",
+        concurrency: 1,
+        fetchImpl: overflowFetch,
+        manifestLimits: { maxBytes: exactBytes },
+        retries: 0,
+        root,
+        targetUrl: "https://example.com",
+        targets: [firstTarget, target("/two"), target("/three")],
+      }),
+    ).rejects.toThrow(`the limit is ${exactBytes} bytes`);
+    expect(overflowFetch).toHaveBeenCalledTimes(2);
   });
 });
