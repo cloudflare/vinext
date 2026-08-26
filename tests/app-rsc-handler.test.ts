@@ -38,6 +38,11 @@ import {
   headers as requestHeaders,
 } from "../packages/vinext/src/shims/headers.js";
 import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
 
 type TestRoute = {
   __loadPage?: unknown;
@@ -202,6 +207,58 @@ describe("createAppRscHandler", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("page");
   });
+
+  it.each([
+    {
+      condition: { type: "cookie" as const, key: "tenant" },
+      expectedReason: "next.config rewrite depends on request headers or cookies",
+      requestUrl: "https://example.test/docs/account",
+      requestHeaders: { Cookie: "tenant=alice" },
+    },
+    {
+      condition: { type: "query" as const, key: "tenant" },
+      expectedReason: undefined,
+      requestUrl: "https://example.test/docs/account?tenant=alice",
+      requestHeaders: undefined,
+    },
+  ])(
+    "keeps $condition.type-conditioned rewrite cacheability aligned with the public key",
+    async ({ condition, expectedReason, requestHeaders, requestUrl }) => {
+      // Cookie-conditioned rewrites are exercised by Next.js here:
+      // test/e2e/custom-routes/custom-routes.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/custom-routes/custom-routes.test.ts
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          beforeFiles: [
+            {
+              source: "/account",
+              destination: "/about",
+              has: [condition],
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        },
+      });
+      const state: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 1_000,
+        mode: "admit",
+      };
+      const context = {
+        [CACHEABILITY_REQUEST_STATE]: state,
+        waitUntil() {},
+      };
+
+      const response = await runWithExecutionContext(context, () =>
+        handler(new Request(requestUrl, { headers: requestHeaders }), null),
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("page");
+      expect(state.forcedDynamicReason).toBe(expectedReason);
+    },
+  );
 
   it.each(["afterFiles", "fallback"] as const)(
     "allows out-of-basePath %s rewrites to reach Pages routes",

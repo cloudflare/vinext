@@ -1,7 +1,5 @@
 import { headers } from "next/headers";
 
-export const revalidate = 3;
-
 export function generateStaticParams() {
   return [{ slug: "known" }];
 }
