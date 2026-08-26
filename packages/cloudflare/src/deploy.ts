@@ -90,7 +90,7 @@ import {
   type CacheabilityProbeResolution,
 } from "./cacheability-probe.js";
 import {
-  CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
+  CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY,
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
 } from "vinext/internal/server/cacheability-limits";
 import { withEmbeddedCacheabilityManifest } from "./cacheability-artifact.js";
@@ -998,7 +998,7 @@ export async function deployWithCdnWarmup(
       concurrency: authenticatedCacheabilityWarm
         ? Math.min(
             options.warmCdnConcurrency ?? DEFAULT_CDN_WARM_CONCURRENCY,
-            CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
+            CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY,
           )
         : options.warmCdnConcurrency,
       timeoutMs:
@@ -1027,7 +1027,7 @@ export async function deployWithCdnWarmup(
       concurrency: options.twoStageCacheability
         ? Math.min(
             options.warmCdnConcurrency ?? DEFAULT_CDN_WARM_CONCURRENCY,
-            CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
+            CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY,
           )
         : options.warmCdnConcurrency,
       timeoutMs: options.twoStageCacheability

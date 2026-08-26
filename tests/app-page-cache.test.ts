@@ -29,6 +29,8 @@ import {
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { withEnvVar } from "./env-test-helpers.js";
 import { applyConfigHeadersToResponse } from "../packages/vinext/src/server/config-headers.js";
+import { createWorkerCacheabilityContext } from "../packages/vinext/src/server/cacheability-request.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 function createHeaderClearingCdnAdapter(): CdnCacheAdapter {
   return {
@@ -372,6 +374,77 @@ describe("app page cache helpers", () => {
 
     expect(response?.headers.get("cache-control")).toBe("s-maxage=300");
   });
+
+  it.each([
+    ["HTML", false],
+    ["RSC", true],
+  ])(
+    "lets next.config replace an App %s MISS framework policy after default-KV rendering",
+    async (_label, isRscRequest) => {
+      const pendingCacheWrites: Promise<void>[] = [];
+      const context = createWorkerCacheabilityContext(
+        { hostRuntime: "worker", waitUntil() {} },
+        new Request("https://example.com/fresh"),
+        null,
+      );
+      const response = await runWithExecutionContext(context, async () => {
+        const options = {
+          capturedRscDataPromise: Promise.resolve(
+            capturedRscData(new TextEncoder().encode("flight").buffer),
+          ),
+          cleanPathname: "/fresh",
+          consumeDynamicUsage() {
+            return false;
+          },
+          dynamicUsedDuringBuild: false,
+          getPageTags() {
+            return ["/fresh"];
+          },
+          isrHtmlKey(pathname: string) {
+            return "html:" + pathname;
+          },
+          isrRscKey(pathname: string) {
+            return "rsc:" + pathname;
+          },
+          isrSet: vi.fn(async () => {}),
+          linkHeader: null,
+          revalidateSeconds: 60,
+          waitUntil(promise: Promise<void>) {
+            pendingCacheWrites.push(promise);
+          },
+        };
+        const source = new Response(isRscRequest ? "flight" : "<h1>fresh</h1>", {
+          headers: {
+            "Cache-Control": "s-maxage=60, stale-while-revalidate",
+            "Content-Type": isRscRequest ? "text/x-component" : "text/html; charset=utf-8",
+          },
+        });
+        return isRscRequest
+          ? finalizeAppPageRscCacheResponse(source, options)
+          : finalizeAppPageHtmlCacheResponse(source, options);
+      });
+
+      // Config headers are applied by the outer request pipeline after the
+      // response builder returns, so provenance must live on this Response's
+      // cloned Headers rather than only in request-local admission state.
+      applyConfigHeadersToResponse(response.headers, {
+        configHeaders: [
+          { source: "/fresh", headers: [{ key: "Cache-Control", value: "s-maxage=300" }] },
+        ],
+        pathname: "/fresh",
+        requestContext: {
+          cookies: {},
+          headers: new Headers(),
+          host: "example.com",
+          query: new URLSearchParams(),
+        },
+      });
+
+      expect(response.headers.get("cache-control")).toBe("s-maxage=300");
+      await response.body?.cancel();
+      await Promise.all(pendingCacheWrites);
+    },
+  );
 
   it("keeps middleware cache policy over next.config on a cached App page", () => {
     const middlewareHeaders = new Headers({ "Cache-Control": "private, no-store" });

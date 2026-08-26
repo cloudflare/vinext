@@ -146,6 +146,8 @@ export type AppPageSsrHandler = {
       capturedRscDataLimitBytes?: number;
       /** Maximum time raw RSC capture may retain isolate-wide capacity. */
       capturedRscDataTimeoutMs?: number;
+      /** Absolute authenticated-request deadline shared with every response capture. */
+      capturedRscDataDeadlineAt?: number;
       /** Release isolate-wide capacity after retaining raw RSC bytes. */
       releaseCapturedRscDataBudget?: () => void;
       reserveCapturedRscDataBytes?: (bytes: number) => boolean;
@@ -206,6 +208,8 @@ type RenderAppPageHtmlStreamOptions = {
   capturedRscDataLimitBytes?: number;
   /** Maximum time raw RSC capture may retain isolate-wide capacity. */
   capturedRscDataTimeoutMs?: number;
+  /** Absolute authenticated-request deadline shared with every response capture. */
+  capturedRscDataDeadlineAt?: number;
   /** Release isolate-wide capacity after retaining raw RSC bytes. */
   releaseCapturedRscDataBudget?: () => void;
   reserveCapturedRscDataBytes?: (bytes: number) => boolean;
@@ -292,6 +296,7 @@ export async function renderAppPageHtmlStream(
     capturedRscDataRef: options.capturedRscDataRef,
     capturedRscDataLimitBytes: options.capturedRscDataLimitBytes,
     capturedRscDataTimeoutMs: options.capturedRscDataTimeoutMs,
+    capturedRscDataDeadlineAt: options.capturedRscDataDeadlineAt,
     releaseCapturedRscDataBudget: options.releaseCapturedRscDataBudget,
     reserveCapturedRscDataBytes: options.reserveCapturedRscDataBytes,
     releaseCapturedRscDataBytes: options.releaseCapturedRscDataBytes,

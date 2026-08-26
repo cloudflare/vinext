@@ -81,6 +81,7 @@ import {
   CACHEABILITY_RESPONSE_BODY_LIMIT,
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
   createCacheabilityCaptureReservation,
+  getRouteCacheabilityCaptureDeadline,
   markRouteCacheabilityPolicyProvisional,
   recordRouteCacheability,
   recordRouteCacheabilityCapturedBody,
@@ -1042,6 +1043,9 @@ export async function renderAppPageLifecycle(
           : undefined,
         capturedRscDataTimeoutMs: capturedRscDataReservation
           ? CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS
+          : undefined,
+        capturedRscDataDeadlineAt: capturedRscDataReservation
+          ? getRouteCacheabilityCaptureDeadline()
           : undefined,
         releaseCapturedRscDataBudget: capturedRscDataReservation?.releaseAll,
         reserveCapturedRscDataBytes: capturedRscDataReservation?.tryReserve,

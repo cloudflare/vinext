@@ -378,6 +378,8 @@ export async function handleSsr(
     capturedRscDataLimitBytes?: number;
     /** Maximum time raw RSC capture may retain isolate-wide capacity. */
     capturedRscDataTimeoutMs?: number;
+    /** Absolute authenticated-request deadline shared with every response capture. */
+    capturedRscDataDeadlineAt?: number;
     /** Release isolate-wide capacity after retaining raw RSC bytes. */
     releaseCapturedRscDataBudget?: () => void;
     /** Charge each retained raw RSC chunk against isolate-wide capacity. */
@@ -454,6 +456,7 @@ export async function handleSsr(
               getInitialNavigationCacheMetadata: options?.getInitialNavigationCacheMetadata,
               rawBufferLimitBytes: options.capturedRscDataLimitBytes,
               rawBufferTimeoutMs: options.capturedRscDataTimeoutMs,
+              rawBufferDeadlineAt: options.capturedRscDataDeadlineAt,
               reserveRawBufferBytes: options.reserveCapturedRscDataBytes,
               releaseRawBufferBytes: options.releaseCapturedRscDataBytes,
             });

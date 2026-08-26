@@ -211,6 +211,7 @@ export function finalizeAppPageHtmlCacheResponse(
   const responseExplicitlyUncacheable =
     response.headers.has("set-cookie") || hasExplicitNonCacheableResponsePolicy(response.headers);
   const completeCacheability = deferRouteCacheability();
+  let clientPolicyIsFrameworkProvisional = false;
   let cacheabilityCompleted = false;
   const complete = (outcome: Parameters<NonNullable<typeof completeCacheability>>[0]): void => {
     if (!completeCacheability || cacheabilityCompleted) return;
@@ -221,8 +222,8 @@ export function finalizeAppPageHtmlCacheResponse(
     applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
       omitCacheState: options.omitPendingDynamicCacheState === true,
     });
-    if (completeCacheability && !responseExplicitlyUncacheable) {
-      markRouteCacheabilityPolicyProvisional(clientHeaders);
+    if (!responseExplicitlyUncacheable) {
+      clientPolicyIsFrameworkProvisional = true;
     }
   }
 
@@ -350,6 +351,9 @@ export function finalizeAppPageHtmlCacheResponse(
     statusText: response.statusText,
     headers: clientHeaders,
   });
+  if (clientPolicyIsFrameworkProvisional) {
+    markRouteCacheabilityPolicyProvisional(clientResponse.headers);
+  }
   markFrameworkLinkHeaders(clientResponse.headers, options.linkHeader);
   return clientResponse;
 }
@@ -378,6 +382,7 @@ export function finalizeAppPageRscCacheResponse(
   }
 
   const clientHeaders = new Headers(response.headers);
+  let clientPolicyIsFrameworkProvisional = false;
   if (isUncacheableVariant) {
     applyUncacheableRscVariantNoStoreHeaders(clientHeaders, {
       omitCacheState: options.omitPendingDynamicCacheState === true,
@@ -387,15 +392,19 @@ export function finalizeAppPageRscCacheResponse(
       omitCacheState: options.omitPendingDynamicCacheState === true,
     });
     if (!responseExplicitlyUncacheable) {
-      markRouteCacheabilityPolicyProvisional(clientHeaders);
+      clientPolicyIsFrameworkProvisional = true;
     }
   }
 
-  return new Response(response.body, {
+  const clientResponse = new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers: clientHeaders,
   });
+  if (clientPolicyIsFrameworkProvisional) {
+    markRouteCacheabilityPolicyProvisional(clientResponse.headers);
+  }
+  return clientResponse;
 }
 
 export function scheduleAppPageRscCacheWrite(

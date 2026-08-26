@@ -39,6 +39,7 @@ export {
   CACHEABILITY_RESPONSE_BODY_LIMIT,
   CACHEABILITY_RESPONSE_CAPTURE_BUDGET,
   CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
+  CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY,
   CACHEABILITY_RESPONSE_CAPTURE_MAX_IN_FLIGHT,
   CACHEABILITY_RESPONSE_CAPTURE_PENDING_LIMIT,
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
@@ -714,6 +715,11 @@ export function createWorkerCacheabilityContext(
   return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
     [CACHEABILITY_REQUEST_STATE]: state,
   });
+}
+
+/** Absolute deadline shared by every capture owned by this authenticated request. */
+export function getRouteCacheabilityCaptureDeadline(): number | undefined {
+  return readState(getRequestExecutionContext())?.captureDeadlineAt;
 }
 
 export function beginRouteCacheability(

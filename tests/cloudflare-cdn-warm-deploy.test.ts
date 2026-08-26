@@ -10,7 +10,7 @@ import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
 import { CACHEABILITY_MANIFEST_PLACEHOLDER } from "../packages/vinext/src/server/cacheability-manifest.js";
 import {
-  CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
+  CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY,
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
 } from "../packages/vinext/src/server/cacheability-limits.js";
 
@@ -495,8 +495,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status",
     ]);
     expect(delayMock).toHaveBeenCalledWith(1_000);
-    expect(peakWarmRequests).toBe(CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY);
-    expect(peakVerificationRequests).toBe(CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY);
+    expect(peakWarmRequests).toBe(CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY);
+    expect(peakVerificationRequests).toBe(CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY);
     expect(fs.readFileSync(path.join(tmpDir, "dist/server/entry.js"), "utf-8")).toContain(
       CACHEABILITY_MANIFEST_PLACEHOLDER,
     );

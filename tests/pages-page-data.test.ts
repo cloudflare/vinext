@@ -19,6 +19,7 @@ import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import { applyConfigHeadersToResponse } from "../packages/vinext/src/server/config-headers.js";
 
 const expiredPagesRepresentations: Array<[string, IncrementalCacheValue | null]> = [
   [
@@ -1769,6 +1770,62 @@ describe("pages page data", () => {
     expect(result.response.headers.get("cache-control")).toBe(
       "s-maxage=15, stale-while-revalidate=285",
     );
+  });
+
+  it("lets next.config replace a default-KV Pages cached HIT framework policy", async () => {
+    const request = new Request("https://example.com/posts/post");
+    const context = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", waitUntil() {} },
+      request,
+      null,
+    );
+    const result = await runWithExecutionContext(context, () =>
+      resolvePagesPageData(
+        createOptions({
+          isrGet: vi.fn().mockResolvedValue({
+            isStale: false,
+            value: {
+              cacheControl: { revalidate: 15, expire: 300 },
+              lastModified: 1,
+              value: {
+                kind: "PAGES",
+                html: "<html><body>cached</body></html>",
+                pageData: { cached: true },
+                headers: undefined,
+                status: undefined,
+              },
+            },
+          }),
+          pageModule: {
+            async getStaticProps() {
+              return { props: { title: "fresh" }, revalidate: 15 };
+            },
+          },
+        }),
+      ),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response result");
+    expect(result.response.headers.get("cache-control")).toContain("s-maxage=15");
+
+    applyConfigHeadersToResponse(result.response.headers, {
+      configHeaders: [
+        {
+          source: "/posts/:slug",
+          headers: [{ key: "Cache-Control", value: "s-maxage=300" }],
+        },
+      ],
+      pathname: "/posts/post",
+      requestContext: {
+        cookies: {},
+        headers: new Headers(),
+        host: "example.com",
+        query: new URLSearchParams(),
+      },
+    });
+
+    expect(result.response.headers.get("cache-control")).toBe("s-maxage=300");
   });
 
   it("returns normalized render data for cache misses", async () => {

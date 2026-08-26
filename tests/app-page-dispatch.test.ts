@@ -61,6 +61,8 @@ import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import { VINEXT_INTERCEPTION_ID_HEADER } from "../packages/vinext/src/server/headers.js";
+import { createWorkerCacheabilityContext } from "../packages/vinext/src/server/cacheability-request.js";
+import { applyConfigHeadersToResponse } from "../packages/vinext/src/server/config-headers.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -1983,6 +1985,56 @@ describe("app page dispatch", () => {
     expect(options.isrSet).toHaveBeenCalledOnce();
     await expect(response.text()).resolves.toBe("<html>not found</html>");
   });
+
+  it.each([
+    ["not-found", { digest: "NEXT_HTTP_ERROR_FALLBACK;404" }, 404],
+    ["redirect", { digest: "NEXT_REDIRECT;replace;/login;307" }, 307],
+  ])(
+    "lets next.config replace a default-KV App terminal %s framework policy",
+    async (_label, actionError, expectedStatus) => {
+      const request = new Request("https://example.test/posts/hello");
+      const context = createWorkerCacheabilityContext(
+        { hostRuntime: "worker", waitUntil() {} },
+        request,
+        null,
+      );
+      const { options } = createDispatchOptions({
+        actionError,
+        actionFailed: true,
+        isProduction: true,
+        request,
+        revalidateSeconds: 60,
+      });
+      if (expectedStatus === 404) {
+        options.renderHttpAccessFallbackPage = vi.fn(
+          async () => new Response("<html>not found</html>", { status: 404 }),
+        );
+      }
+
+      const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+      expect(response.status).toBe(expectedStatus);
+      expect(response.headers.get("cache-control")).toContain("s-maxage=60");
+
+      applyConfigHeadersToResponse(response.headers, {
+        configHeaders: [
+          {
+            source: "/posts/:slug",
+            headers: [{ key: "Cache-Control", value: "s-maxage=300" }],
+          },
+        ],
+        pathname: "/posts/hello",
+        requestContext: {
+          cookies: {},
+          headers: new Headers(),
+          host: "example.test",
+          query: new URLSearchParams(),
+        },
+      });
+
+      expect(response.headers.get("cache-control")).toBe("s-maxage=300");
+      await response.body?.cancel();
+    },
+  );
 
   it("stores only framework-owned metadata for a terminal redirect", async () => {
     const { options } = createDispatchOptions({

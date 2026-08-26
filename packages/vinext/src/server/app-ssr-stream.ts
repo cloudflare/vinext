@@ -12,6 +12,7 @@ import {
 } from "./app-rsc-embedded-chunks.js";
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/navigation-runtime.js";
 import { CacheabilityClassificationError } from "./cacheability-classification-error.js";
+import { runWithoutPlatformIoTracking } from "vinext/shims/platform-io-tracking";
 
 type RscEmbedTransform = {
   /** Stop the independent Flight pump when the HTML consumer disconnects. */
@@ -32,6 +33,8 @@ type RscEmbedTransformOptions = {
   rawBufferLimitBytes?: number;
   /** Fail prospective raw capture without stalling the HTML stream indefinitely. */
   rawBufferTimeoutMs?: number;
+  /** Absolute request deadline; takes precedence over rawBufferTimeoutMs. */
+  rawBufferDeadlineAt?: number;
   /** Charge retained raw bytes against the request's isolate-wide budget. */
   reserveRawBufferBytes?: (bytes: number) => boolean;
   /** Release retained raw bytes when capture storage changes ownership. */
@@ -191,14 +194,21 @@ export function createRscEmbedTransform(
     rejectRawBufferFailure?.(error);
     rejectRawBufferFailure = null;
   };
-  if (rawChunks && options.rawBufferTimeoutMs !== undefined) {
-    rawBufferTimeout = setTimeout(() => {
-      failRawBuffer(
-        new CacheabilityClassificationError(
-          `RSC body did not complete within ${options.rawBufferTimeoutMs}ms`,
-        ),
-      );
-    }, options.rawBufferTimeoutMs);
+  const rawBufferTimeoutMs =
+    options.rawBufferDeadlineAt === undefined
+      ? options.rawBufferTimeoutMs
+      : Math.max(0, options.rawBufferDeadlineAt - runWithoutPlatformIoTracking(() => Date.now()));
+  if (rawChunks && rawBufferTimeoutMs !== undefined) {
+    const timeoutError = new CacheabilityClassificationError(
+      options.rawBufferDeadlineAt === undefined
+        ? `RSC body did not complete within ${rawBufferTimeoutMs}ms`
+        : "RSC body did not complete before the request classification deadline",
+    );
+    if (options.rawBufferDeadlineAt !== undefined && rawBufferTimeoutMs === 0) {
+      failRawBuffer(timeoutError);
+    } else {
+      rawBufferTimeout = setTimeout(() => failRawBuffer(timeoutError), rawBufferTimeoutMs);
+    }
   }
 
   async function pumpReader(): Promise<void> {

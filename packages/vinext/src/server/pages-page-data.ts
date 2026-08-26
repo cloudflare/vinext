@@ -1011,7 +1011,6 @@ function buildPagesCacheResponse(
     ...buildCacheStateHeaders(cacheState),
   });
   applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader });
-  markRouteCacheabilityPolicyProvisional(headers);
 
   if (fontLinkHeader) {
     headers.set("Link", fontLinkHeader);
@@ -1032,10 +1031,12 @@ function buildPagesCacheResponse(
     }
   }
 
-  return new Response(html, {
+  const response = new Response(html, {
     status: status ?? 200,
     headers,
   });
+  markRouteCacheabilityPolicyProvisional(response.headers);
+  return response;
 }
 
 /**

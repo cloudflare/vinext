@@ -734,12 +734,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       recordRouteCacheabilityClassificationFailure(captured.reason);
       const headers = new Headers(response.headers);
       applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
-      markRouteCacheabilityPolicyProvisional(headers);
-      return new Response(captured.fallback, {
+      const fallbackResponse = new Response(captured.fallback, {
         headers,
         status: response.status,
         statusText: response.statusText,
       });
+      markRouteCacheabilityPolicyProvisional(fallbackResponse.headers);
+      return fallbackResponse;
     }
     await captured.fallback?.cancel().catch(() => {});
     const transferredCapture = recordRouteCacheabilityCapturedBody(captured.body, captured.release);
@@ -777,7 +778,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       const headers = new Headers(response.headers);
       if (!canCacheTerminalResponse || completedRevalidateSeconds === null) {
         applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
-        markRouteCacheabilityPolicyProvisional(headers);
         recordRouteCacheability({
           cacheable: false,
           ...(dynamicUsage ? { dynamicUsage: true } : {}),
@@ -799,7 +799,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           route.routeSegments,
         );
         applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader, tags });
-        markRouteCacheabilityPolicyProvisional(headers);
         // Middleware is request-specific and runs again on cache replay. Persist
         // only terminal metadata owned by the route renderer itself.
         const storedHeaders: Record<string, string> = {};
@@ -845,11 +844,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         recordRouteCacheability({ cacheable: true, cacheControl: cacheControlHeader, tags });
       }
 
-      return new Response(captured.body, {
+      const terminalResponse = new Response(captured.body, {
         headers,
         status: response.status,
         statusText: response.statusText,
       });
+      markRouteCacheabilityPolicyProvisional(terminalResponse.headers);
+      return terminalResponse;
     } finally {
       if (!transferredCapture) captured.release();
     }

@@ -14,11 +14,13 @@ import {
 } from "../packages/vinext/src/server/cacheability-manifest.js";
 import {
   beginRouteCacheability,
+  CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY,
   CACHEABILITY_RESPONSE_BODY_LIMIT,
   CACHEABILITY_RESPONSE_CAPTURE_BUDGET,
   CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY,
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
   captureResponseBodyBounded,
+  createCacheabilityCaptureReservation,
   createWorkerCacheabilityContext,
   deferRouteCacheability,
   finalizeWorkerCacheabilityResponse,
@@ -635,7 +637,7 @@ describe("cacheability manifests", () => {
 
     expect(result.failures).toEqual([]);
     expect(result.probed).toBe(patterns.length);
-    expect(peak).toBe(CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY);
+    expect(peak).toBe(CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -1838,6 +1840,80 @@ describe("buffered cache admission", () => {
     expect(returned[returned.length - 1]).toBe(2);
   });
 
+  it("guarantees both deploy slots can retain raw RSC while capturing delayed HTML", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const bytes = new Uint8Array(CACHEABILITY_RESPONSE_BODY_LIMIT);
+    let releaseHtmlStreams!: () => void;
+    const htmlStreamsReleased = new Promise<void>((resolve) => {
+      releaseHtmlStreams = resolve;
+    });
+    let htmlStreamsWaiting = 0;
+    let markAllHtmlStreamsWaiting!: () => void;
+    const allHtmlStreamsWaiting = new Promise<void>((resolve) => {
+      markAllHtmlStreamsWaiting = resolve;
+    });
+
+    const captures = Array.from(
+      { length: CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY },
+      async (_, index) => {
+        const context = createWorkerCacheabilityContext(
+          { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+          new Request(`https://example.com/concurrent-supported-captures/${index}`),
+          "secret-a",
+        );
+        return runWithExecutionContext(context, async () => {
+          const rawReservation = createCacheabilityCaptureReservation();
+          try {
+            const transform = createRscEmbedTransform(new Response(bytes).body!, {
+              rawBufferLimitBytes: CACHEABILITY_RESPONSE_BODY_LIMIT,
+              releaseRawBufferBytes: rawReservation.release,
+              reserveRawBufferBytes: rawReservation.tryReserve,
+            });
+            const [rawRsc] = await Promise.all([
+              transform.getRawBuffer(),
+              transform.drainFinal(() => {}),
+            ]);
+            expect(rawRsc.byteLength).toBe(CACHEABILITY_RESPONSE_BODY_LIMIT);
+
+            let pullCount = 0;
+            const html = new ReadableStream<Uint8Array>({
+              async pull(controller) {
+                pullCount += 1;
+                if (pullCount === 1) {
+                  controller.enqueue(bytes);
+                  return;
+                }
+                htmlStreamsWaiting += 1;
+                if (htmlStreamsWaiting === CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY) {
+                  markAllHtmlStreamsWaiting();
+                }
+                await htmlStreamsReleased;
+                controller.close();
+              },
+            });
+            const capture = await captureResponseBodyBounded(new Response(html), {
+              waitForCapacity: true,
+            });
+            return { capture, rawReservation };
+          } catch (error) {
+            rawReservation.releaseAll();
+            throw error;
+          }
+        });
+      },
+    );
+
+    await allHtmlStreamsWaiting;
+    releaseHtmlStreams();
+    const completed = await Promise.all(captures);
+    expect(completed.every(({ capture }) => !capture.failClosed)).toBe(true);
+    for (const { capture, rawReservation } of completed) {
+      await capture.fallback?.cancel();
+      if (!capture.failClosed) capture.release();
+      rawReservation.releaseAll();
+    }
+  });
+
   it("queues excess concurrent captures before teeing another body", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const context = createWorkerCacheabilityContext(
@@ -2134,7 +2210,9 @@ describe("buffered cache admission", () => {
     );
     await runWithExecutionContext(context, async () => {
       const retained: CapturedResponseBody[] = [];
-      for (let index = 0; index < 2; index++) {
+      const retainedCaptureCount =
+        CACHEABILITY_RESPONSE_CAPTURE_BUDGET / CACHEABILITY_RESPONSE_BODY_LIMIT - 2;
+      for (let index = 0; index < retainedCaptureCount; index++) {
         const capture = await captureResponseBodyBounded(
           new Response(new Uint8Array(CACHEABILITY_RESPONSE_BODY_LIMIT)),
         );

@@ -144,6 +144,49 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     expect(finalScripts).toContain('.rsc.push("chunk2")');
   });
 
+  it("uses the remaining request deadline when raw capture starts late", async () => {
+    vi.useFakeTimers();
+    try {
+      const deadlineAt = Date.now() + 20_000;
+      await vi.advanceTimersByTimeAsync(19_000);
+      const transform = createRscEmbedTransform(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("partial"));
+          },
+        }),
+        { rawBufferDeadlineAt: deadlineAt, rawBufferLimitBytes: 1024 },
+      );
+      const captured = transform.getRawBuffer();
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(
+        await Promise.race([
+          captured.then(
+            () => "settled",
+            () => "settled",
+          ),
+          Promise.resolve("pending"),
+        ]),
+      ).toBe("pending");
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(captured).rejects.toThrow("request classification deadline");
+      await transform.cancel();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails raw capture immediately when the request deadline already elapsed", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["already rendered"]), {
+      rawBufferDeadlineAt: Date.now() - 1,
+      rawBufferLimitBytes: 1024,
+    });
+
+    await expect(transform.getRawBuffer()).rejects.toThrow("request classification deadline");
+    await transform.cancel();
+  });
+
   it("optionally mirrors text chunks into the Next.js inline Flight transport", async () => {
     const transform = createRscEmbedTransform(createTextStream(["chunk1", "chunk2"]), {
       mirrorNextFlight: true,

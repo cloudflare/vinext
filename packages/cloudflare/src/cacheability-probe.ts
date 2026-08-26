@@ -10,7 +10,7 @@ import {
   type CacheabilityRouteKind,
   type CacheabilityRouteState,
 } from "vinext/internal/server/cacheability-manifest";
-import { CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY } from "vinext/internal/server/cacheability-limits";
+import { CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY } from "vinext/internal/server/cacheability-limits";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -411,7 +411,7 @@ export async function probeStagedWorkerCacheability(options: {
   // the number of captures that can actively make progress in one isolate.
   const fullProbeConcurrency = Math.max(
     1,
-    Math.min(concurrency, CACHEABILITY_RESPONSE_CAPTURE_CONCURRENCY, probeRoutes.length || 1),
+    Math.min(concurrency, CACHEABILITY_DEPLOY_REQUEST_CONCURRENCY, probeRoutes.length || 1),
   );
   await Promise.all(Array.from({ length: fullProbeConcurrency }, () => worker()));
 
