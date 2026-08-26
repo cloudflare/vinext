@@ -8,6 +8,7 @@ import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.j
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
 import { hasDigest } from "./app-rsc-errors.js";
 import {
+  finalizeAppPageCacheabilityEvaluationResponse,
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
 } from "./app-page-cache-finalizer.js";
@@ -1297,7 +1298,7 @@ export async function renderAppPageLifecycle(
     });
   }
 
-  return buildAppPageHtmlResponse(safeHtmlStream, {
+  const response = buildAppPageHtmlResponse(safeHtmlStream, {
     cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
     draftCookie,
     linkHeader,
@@ -1306,6 +1307,25 @@ export async function renderAppPageLifecycle(
     policy: htmlResponsePolicy,
     requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
+  });
+  return finalizeAppPageCacheabilityEvaluationResponse(response, {
+    capturedDynamicUsageBeforeContextCleanup() {
+      return dynamicUsedBeforeContextCleanup;
+    },
+    consumeDynamicUsage: consumeRenderDynamicUsage,
+    consumeRenderObservationState: options.consumeRenderObservationState,
+    getPageTags() {
+      return options.getPageTags();
+    },
+    getRequestCacheLife() {
+      return readRequestCacheLifeForCachePolicy(options);
+    },
+    expireSeconds,
+    revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
+      isDynamicError: options.isDynamicError,
+      isForceStatic: options.isForceStatic,
+      revalidateSeconds,
+    }),
   });
 }
 
