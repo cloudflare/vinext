@@ -115,7 +115,13 @@ function appPageProbeResponse(state: "static-candidate" | "probe-failed" = "stat
 }
 
 function mockTwoStageWrangler(options: { failFinalUpload?: boolean } = {}) {
-  const state = { promoted: false, statusCount: 0, triggerDeploys: 0, uploads: 0 };
+  const state = {
+    finalStaged: false,
+    promoted: false,
+    statusCount: 0,
+    triggerDeploys: 0,
+    uploads: 0,
+  };
   execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
     if (args.includes("upload")) {
       state.uploads++;
@@ -128,13 +134,22 @@ function mockTwoStageWrangler(options: { failFinalUpload?: boolean } = {}) {
         versions:
           state.statusCount === 1
             ? [{ version_id: OLD_VERSION, percentage: 100 }]
-            : [
-                { version_id: OLD_VERSION, percentage: 100 },
-                { version_id: PROBE_VERSION, percentage: 0 },
-              ],
+            : state.finalStaged
+              ? [
+                  { version_id: OLD_VERSION, percentage: 100 },
+                  { version_id: FINAL_VERSION, percentage: 0 },
+                ]
+              : [
+                  { version_id: OLD_VERSION, percentage: 100 },
+                  { version_id: PROBE_VERSION, percentage: 0 },
+                ],
       });
     }
-    if (args.includes(`${PROBE_VERSION}@0%`) || args.includes(`${FINAL_VERSION}@0%`)) {
+    if (args.includes(`${PROBE_VERSION}@0%`)) {
+      return "Staged version\nhttps://my-worker.example.workers.dev\n";
+    }
+    if (args.includes(`${FINAL_VERSION}@0%`)) {
+      state.finalStaged = true;
       return "Staged version\nhttps://my-worker.example.workers.dev\n";
     }
     if (args.includes(`${FINAL_VERSION}@100%`)) {
@@ -291,6 +306,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     const events: string[] = [];
     let uploadCount = 0;
     let statusCount = 0;
+    let finalStaged = false;
     let finalManifestSource = "";
     let finalConfig: unknown;
 
@@ -317,10 +333,15 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           versions:
             statusCount === 1
               ? [{ version_id: OLD_VERSION, percentage: 100 }]
-              : [
-                  { version_id: OLD_VERSION, percentage: 100 },
-                  { version_id: PROBE_VERSION, percentage: 0 },
-                ],
+              : finalStaged
+                ? [
+                    { version_id: OLD_VERSION, percentage: 100 },
+                    { version_id: FINAL_VERSION, percentage: 0 },
+                  ]
+                : [
+                    { version_id: OLD_VERSION, percentage: 100 },
+                    { version_id: PROBE_VERSION, percentage: 0 },
+                  ],
         });
       }
       if (args.includes(`${PROBE_VERSION}@0%`)) {
@@ -328,6 +349,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         return "Staged probe version\nhttps://my-worker.example.workers.dev\n";
       }
       if (args.includes(`${FINAL_VERSION}@0%`)) {
+        finalStaged = true;
         events.push("stage-final");
         return "Staged final version\nhttps://my-worker.example.workers.dev\n";
       }
@@ -386,7 +408,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
     expect(deployedUrl).toBe("https://my-worker.example.workers.dev");
     expect(uploadCount).toBe(2);
-    expect(statusCount).toBe(4);
+    expect(statusCount).toBe(6);
     expect(events).toEqual([
       "upload-probe",
       "status-1",
@@ -399,9 +421,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status-3",
       "status-4",
       "stage-final",
+      "status-5",
       "triggers",
       "readiness",
       "warm",
+      "status-6",
       "promote-final",
     ]);
     expect(finalConfig).toEqual({ main: "index.js", name: "my-worker", workers_dev: true });
@@ -695,6 +719,76 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).rejects.toThrow("deployment traffic changed");
     expect(statuses).toBe(2);
     expect(uploads).toBe(1);
+  });
+
+  it("does not stage the final version when traffic changes immediately after its upload", async () => {
+    writeTwoStageWorkerArtifact();
+    let uploads = 0;
+    let statuses = 0;
+    let finalStaged = false;
+    let triggersApplied = false;
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        uploads++;
+        return `Uploaded my-worker\nWorker Version ID: ${uploads === 1 ? PROBE_VERSION : FINAL_VERSION}\n`;
+      }
+      if (args.includes("status")) {
+        statuses++;
+        return JSON.stringify({
+          versions:
+            statuses === 1
+              ? [{ version_id: OLD_VERSION, percentage: 100 }]
+              : statuses < 4
+                ? [
+                    { version_id: OLD_VERSION, percentage: 100 },
+                    { version_id: PROBE_VERSION, percentage: 0 },
+                  ]
+                : [{ version_id: "44444444-4444-4444-8444-444444444444", percentage: 100 }],
+        });
+      }
+      if (args.includes(`${PROBE_VERSION}@0%`)) {
+        return "Staged probe version\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes(`${FINAL_VERSION}@0%`)) {
+        finalStaged = true;
+        return "Final version must not be staged";
+      }
+      if (args.includes("triggers")) {
+        triggersApplied = true;
+        return "Triggers must not be applied";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1"
+        ? appPageProbeResponse()
+        : isReadinessFetch(input)
+          ? cacheableHtml()
+          : new Response("unexpected", { status: 500 }),
+    );
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        cacheabilityProbe: true,
+        config: "dist/server/wrangler.json",
+        discoverWarmPlan: async () => ({
+          appPaths: ["/about"],
+          buildId: "app-build-a",
+          buildIdentity: "app-build-a",
+          loadingShellPaths: [],
+          paths: ["/about"],
+          rscPaths: [],
+        }),
+        warmCdnConcurrency: 1,
+        warmCdnReadinessProbes: 1,
+        warmCdnRetries: 0,
+      }),
+    ).rejects.toThrow("traffic changed before the final version could be staged");
+    expect(uploads).toBe(2);
+    expect(statuses).toBe(4);
+    expect(finalStaged).toBe(false);
+    expect(triggersApplied).toBe(false);
   });
 
   it("does not promote when deployment status cannot be read", async () => {

@@ -715,6 +715,7 @@ type CdnWarmDeployOptions = Pick<
   };
 
 type PreparedCdnWarmDeployOptions = CdnWarmDeployOptions & {
+  expectedDeploymentTraffic?: readonly WranglerVersionTraffic[];
   triggersAlreadyApplied?: boolean;
   triggersDeployedUrl?: string | null;
   uploadedVersion?: WranglerVersionUploadResult;
@@ -856,6 +857,14 @@ async function deployUploadedVersionWithCdnWarmup(
 
   const wranglerConfig = parseWranglerConfig(root, options.config);
   const deploymentStatus = runWranglerDeploymentStatus(root, options);
+  if (
+    options.expectedDeploymentTraffic &&
+    !deploymentTrafficEquals(deploymentStatus.versions, options.expectedDeploymentTraffic)
+  ) {
+    throw new Error(
+      "Two-stage CDN warming stopped because Worker deployment traffic changed before the final version could be staged. No final version was promoted.",
+    );
+  }
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, upload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
   let triggersDeployedUrl: string | null = options.triggersDeployedUrl ?? null;
@@ -877,6 +886,17 @@ async function deployUploadedVersionWithCdnWarmup(
   if (stagingTraffic) {
     staged = runWranglerVersionDeploy(root, stagingTraffic, options, "stage");
     try {
+      if (
+        hasPreparedWarmPlan &&
+        !deploymentTrafficEquals(
+          runWranglerDeploymentStatus(root, options).versions,
+          stagingTraffic,
+        )
+      ) {
+        throw new Error(
+          "Two-stage CDN warming stopped because Worker deployment traffic changed before production triggers could be applied. No final version was promoted.",
+        );
+      }
       applyTriggers();
     } catch (error) {
       throw withStagedVersionCleanupNote(error);
@@ -1028,6 +1048,15 @@ async function deployUploadedVersionWithCdnWarmup(
         );
         await delay(promotionDelay);
       }
+    }
+    if (
+      hasPreparedWarmPlan &&
+      stagingTraffic &&
+      !deploymentTrafficEquals(runWranglerDeploymentStatus(root, options).versions, stagingTraffic)
+    ) {
+      throw new Error(
+        "Two-stage CDN warming stopped because Worker deployment traffic changed before the final version could be promoted. No final version was promoted.",
+      );
     }
     deployed = runWranglerVersionDeploy(
       root,
@@ -1286,6 +1315,7 @@ async function deployWithCacheabilityProbe(
     deploymentId: prepared.plan.deploymentId,
     expectedBuildId: prepared.plan.buildIdentity,
     expectedRscBuildId: prepared.plan.rscBuildId,
+    expectedDeploymentTraffic: probeTraffic,
     loadingShellPaths: prepared.plan.loadingShellPaths,
     rscPaths: prepared.plan.rscPaths,
     uploadedVersion: prepared.upload,
