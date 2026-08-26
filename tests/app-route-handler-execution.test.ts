@@ -20,6 +20,7 @@ import { getRootParam, runWithRootParamsScope } from "../packages/vinext/src/shi
 import {
   getDataCacheHandler,
   setDataCacheHandler,
+  type CachedRouteValue,
 } from "../packages/vinext/src/shims/cache-handler.js";
 import {
   createRequestContext,
@@ -38,7 +39,7 @@ const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestIn
 );
 vi.stubGlobal("fetch", fetchMock);
 const { withFetchCache } = await import("../packages/vinext/src/shims/fetch-cache.js");
-const { revalidateTag } = await import("../packages/vinext/src/shims/cache.js");
+const { revalidateTag, unstable_cache } = await import("../packages/vinext/src/shims/cache.js");
 
 function createDynamicUsageState(): {
   consumeDynamicUsage: () => boolean;
@@ -378,6 +379,74 @@ describe("app route handler execution helpers", () => {
     });
 
     expect(result.crossedTaskBoundary).toBe(false);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/cache-components/cache-components.routes.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components.routes.test.ts
+  it("warms cached Route Handler I/O prospectively before applying the final task bound", async () => {
+    const originalHandler = getDataCacheHandler();
+    const values = new Map<string, Parameters<typeof originalHandler.set>[1]>();
+    setDataCacheHandler({
+      async get(key) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const value = values.get(key);
+        return value === undefined ? null : { lastModified: Date.now(), value };
+      },
+      async set(key, value) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        values.set(key, value);
+      },
+      async revalidateTag() {},
+    });
+    const dynamicUsage = createDynamicUsageState();
+    let executions = 0;
+    const cached = unstable_cache(async () => {
+      executions += 1;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return "cached";
+    }, ["prospective-route-handler"]);
+
+    try {
+      const result = await runAppRouteHandler({
+        cacheComponents: true,
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        async handlerFn() {
+          return new Response(await cached());
+        },
+        isCacheabilityProbe: true,
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        params: null,
+        request: new Request("https://example.com/api/cached-io"),
+      });
+
+      expect(executions).toBe(1);
+      expect(result.crossedTaskBoundary).toBe(false);
+      expect(result.dynamicUsedInHandler).toBe(false);
+      await expect(result.response.text()).resolves.toBe("cached");
+    } finally {
+      setDataCacheHandler(originalHandler);
+    }
+  });
+
+  it("still rejects uncached task-bound I/O after the prospective pass", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    let executions = 0;
+    const result = await runAppRouteHandler({
+      cacheComponents: true,
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      async handlerFn() {
+        executions += 1;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return new Response("dynamic");
+      },
+      isCacheabilityProbe: true,
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      params: null,
+      request: new Request("https://example.com/api/uncached-io"),
+    });
+
+    expect(executions).toBe(2);
+    expect(result.crossedTaskBoundary).toBe(true);
   });
 
   it("does not drain or cache Route Handler event streams", async () => {
@@ -1154,6 +1223,65 @@ describe("app route handler execution helpers", () => {
     expect(reportedErrors.map((error) => error.message)).toEqual(["boom"]);
 
     errorSpy.mockRestore();
+  });
+
+  it.each([
+    {
+      digest: "NEXT_REDIRECT;replace;%2Ftarget;308",
+      expectedLocation: "https://example.com/target",
+      expectedStatus: 308,
+      name: "redirect",
+    },
+    {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+      expectedLocation: null,
+      expectedStatus: 404,
+      name: "not-found",
+    },
+  ])("persists static $name Route Handler outcomes", async (testCase) => {
+    const dynamicUsage = createDynamicUsageState();
+    const pendingWrites: Promise<unknown>[] = [];
+    const writes: CachedRouteValue[] = [];
+    const response = await executeAppRouteHandler({
+      buildPageCacheTags: () => [],
+      cleanPathname: `/api/${testCase.name}`,
+      clearRequestContext() {},
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      executionContext: {
+        waitUntil(promise) {
+          pendingWrites.push(promise);
+        },
+      },
+      getAndClearPendingCookies: () => [],
+      getCollectedFetchTags: () => [],
+      getDraftModeCookieHeader: () => null,
+      handler: { revalidate: 60 },
+      handlerFn() {
+        throw { digest: testCase.digest };
+      },
+      isAutoHead: false,
+      isProduction: true,
+      isrRouteKey: (pathname) => `route:${pathname}`,
+      async isrSet(_key, value) {
+        writes.push(value);
+      },
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      method: "GET",
+      middlewareContext: { headers: null, status: null },
+      params: null,
+      reportRequestError() {},
+      request: new Request(`https://example.com/api/${testCase.name}`),
+      revalidateSeconds: 60,
+      routePattern: `/api/${testCase.name}`,
+      setHeadersAccessPhase: () => "render",
+    });
+    await Promise.all(pendingWrites);
+
+    expect(response.status).toBe(testCase.expectedStatus);
+    expect(response.headers.get("location")).toBe(testCase.expectedLocation);
+    expect(response.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate");
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ kind: "APP_ROUTE", status: testCase.expectedStatus });
   });
 
   it("rejects middleware control responses returned from route handlers", async () => {

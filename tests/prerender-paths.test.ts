@@ -191,6 +191,29 @@ describe("prerender path manifest", () => {
     expect(closeMock).toHaveBeenCalledOnce();
   });
 
+  it("validates Cache Components Route Handler modules through the staged Worker", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("next.config.mjs", "export default { cacheComponents: true };\n");
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("dist/server/vinext-server.json", JSON.stringify({ prerenderSecret: "secret-a" }));
+    writeFile("app/api/status/route.ts", "export function GET() { return new Response('ok'); }\n");
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    await emitPrerenderPathManifest({
+      root: tmpDir,
+      pathDiscoveryTarget: { baseUrl: "https://staged.example.workers.dev" },
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "https://staged.example.workers.dev/__vinext/prerender/validate-app-routes",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "x-vinext-prerender-secret": "secret-a" }),
+      }),
+    );
+  });
+
   it("never probes a concrete path whose middleware source can match", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");

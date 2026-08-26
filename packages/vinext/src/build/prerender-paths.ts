@@ -29,7 +29,10 @@ import { readPrerenderSecret } from "./server-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
 import { findDir } from "../utils/project.js";
 import { BLOCKED_PAGES, PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
-import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
+import {
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH,
+} from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
@@ -74,6 +77,8 @@ export type CacheabilityProbeRoute = {
   warmPaths?: string[];
   /** Additional paths warmed once with the final Worker's runtime check. */
   runtimeCheckWarmPaths?: string[];
+  /** Only generated concrete paths may use this dynamic pattern's runtime check. */
+  restrictToGeneratedPaths?: boolean;
 };
 
 export const PRERENDER_PATH_DISCOVERY_ENV = "__VINEXT_PRERENDER_PATH_DISCOVERY";
@@ -309,7 +314,9 @@ async function fetchDiscoveryEndpoint(
         return text;
       }
 
-      const detail = /cloudflare:|ERR_UNSUPPORTED_ESM_URL_SCHEME/i.test(text) ? text.trim() : "";
+      const detail = /cloudflare:|ERR_UNSUPPORTED_ESM_URL_SCHEME|\[vinext\]/i.test(text)
+        ? text.trim()
+        : "";
       lastError = new Error(
         `path discovery returned HTTP ${res.status}${detail ? `: ${detail}` : ""}`,
       );
@@ -731,6 +738,7 @@ async function resolveAppWarmPaths(options: {
 
 async function collectCacheabilityProbeRoutes(options: {
   appDir: string | null;
+  cacheComponents: boolean;
   excludedPaths?: ReadonlySet<string>;
   i18n: ResolvedNextConfig["i18n"];
   pagesDir: string | null;
@@ -744,13 +752,13 @@ async function collectCacheabilityProbeRoutes(options: {
         apiRouter(options.pagesDir, options.pageExtensions),
       ])
     : [[], []];
-  const pathsByRoute = new Map<string, string[]>();
+  const pathsByRoute = new Map<string, Set<string>>();
   const addRoutePath = (key: string, pathname: string): void => {
     const existing = pathsByRoute.get(key);
     if (existing) {
-      if (!existing.includes(pathname)) existing.push(pathname);
+      existing.add(pathname);
     } else {
-      pathsByRoute.set(key, [pathname]);
+      pathsByRoute.set(key, new Set([pathname]));
     }
   };
 
@@ -782,6 +790,7 @@ async function collectCacheabilityProbeRoutes(options: {
     kind: CacheabilityProbeRoute["kind"],
     pattern: string,
     warmPaths: readonly string[],
+    restrictToGeneratedPaths = false,
   ): void => {
     const [probePath, ...runtimeCheckWarmPaths] = warmPaths;
     if (!probePath) return;
@@ -792,6 +801,7 @@ async function collectCacheabilityProbeRoutes(options: {
       probePath,
       warmPaths: [probePath],
       ...(runtimeCheckWarmPaths.length > 0 ? { runtimeCheckWarmPaths } : {}),
+      ...(restrictToGeneratedPaths ? { restrictToGeneratedPaths: true } : {}),
     });
   };
 
@@ -800,8 +810,10 @@ async function collectCacheabilityProbeRoutes(options: {
     if (!route.routePath && !renderEntryPath) continue;
     const kind = route.routePath ? "app-route" : "app-page";
     const key = `${kind}:${route.pattern}`;
-    const warmPaths = pathsByRoute.get(key) ?? [];
-    addProbeableRoute(kind, route.pattern, warmPaths);
+    const warmPaths = [...(pathsByRoute.get(key) ?? [])];
+    const restrictToGeneratedPaths =
+      options.cacheComponents && kind === "app-route" && route.isDynamic;
+    addProbeableRoute(kind, route.pattern, warmPaths, restrictToGeneratedPaths);
     if (warmPaths.length > 0) continue;
 
     // Next.js can prerender a fixed GET route handler. Probe it independently
@@ -810,7 +822,12 @@ async function collectCacheabilityProbeRoutes(options: {
     if (kind === "app-route" && !route.isDynamic && !options.excludedPaths?.has(route.pattern)) {
       addProbeableRoute(kind, route.pattern, [route.pattern]);
     } else {
-      result.push({ kind, pattern: route.pattern, fallbackState: "runtime-check" });
+      result.push({
+        kind,
+        pattern: route.pattern,
+        fallbackState: restrictToGeneratedPaths ? "dynamic" : "runtime-check",
+        ...(restrictToGeneratedPaths ? { restrictToGeneratedPaths: true } : {}),
+      });
     }
   }
 
@@ -827,7 +844,7 @@ async function collectCacheabilityProbeRoutes(options: {
     }
     const key = `pages-page:${route.pattern}`;
     const isSsr = classifyPagesRoute(route.filePath).type === "ssr";
-    const warmPaths = pathsByRoute.get(key) ?? [];
+    const warmPaths = [...(pathsByRoute.get(key) ?? [])];
     if (!isSsr) addProbeableRoute("pages-page", route.pattern, warmPaths);
     if (warmPaths.length === 0 || isSsr) {
       result.push({
@@ -978,6 +995,13 @@ export async function emitPrerenderPathManifest(
 
     try {
       if (appDir) {
+        if (config.cacheComponents && options.pathDiscoveryTarget && baseUrl) {
+          await fetchDiscoveryEndpoint(
+            `${baseUrl}${VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH}`,
+            secretHeaders,
+            options.pathDiscoveryTarget,
+          );
+        }
         const appPathResult = await collectAppPaths({
           appDir,
           baseUrl,
@@ -1066,6 +1090,7 @@ export async function emitPrerenderPathManifest(
   const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : resolvedPagesWarmPaths;
   const cacheabilityRoutes = await collectCacheabilityProbeRoutes({
     appDir,
+    cacheComponents: config.cacheComponents,
     excludedPaths: excludedWarmPathSet,
     i18n: config.i18n,
     pagesDir,

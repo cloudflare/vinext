@@ -81,6 +81,7 @@ describe("app route handler policy helpers", () => {
       isProduction: true,
       method: "GET",
       revalidateSeconds: 0,
+      responseStatus: 200,
     };
     // Writing a never-cache response to ISR would persist uncacheable
     // content under a key that later requests would try to serve.
@@ -158,6 +159,7 @@ describe("app route handler policy helpers", () => {
       isProduction: true,
       method: "GET",
       revalidateSeconds: 60,
+      responseStatus: 200,
     };
 
     expect(shouldApplyAppRouteHandlerRevalidateHeader(base)).toBe(true);
@@ -173,6 +175,8 @@ describe("app route handler policy helpers", () => {
       false,
     );
     expect(shouldWriteAppRouteHandlerCache({ ...base, revalidateSeconds: Infinity })).toBe(true);
+    expect(shouldWriteAppRouteHandlerCache({ ...base, responseStatus: 500 })).toBe(false);
+    expect(shouldWriteAppRouteHandlerCache({ ...base, responseStatus: 404 })).toBe(true);
     // Infinity still emits a revalidate header for the static Cache-Control.
     expect(
       shouldApplyAppRouteHandlerRevalidateHeader({ ...base, revalidateSeconds: Infinity }),

@@ -22,6 +22,13 @@ describe("Worker prerender path discovery authorization", () => {
       }),
       "build-secret",
     );
+    const validation = createWorkerPrerenderDiscoveryContext(
+      base,
+      new Request("https://example.com/__vinext/prerender/validate-app-routes", {
+        headers: { "x-vinext-prerender-secret": "build-secret" },
+      }),
+      "build-secret",
+    );
     const ordinaryPath = createWorkerPrerenderDiscoveryContext(
       base,
       new Request("https://example.com/cached/intro", {
@@ -31,6 +38,7 @@ describe("Worker prerender path discovery authorization", () => {
     );
 
     expect(authorized.isPrerenderPathDiscovery).toBe(true);
+    expect(validation.isPrerenderPathDiscovery).toBe(true);
     expect(wrongSecret).toBe(base);
     expect(ordinaryPath).toBe(base);
   });

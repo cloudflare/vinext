@@ -10,6 +10,8 @@ export type CacheabilityRouteState =
   | "probe-failed";
 
 export type CacheabilityManifestRoute = {
+  /** Concrete generated paths eligible to use this dynamic pattern fallback. */
+  eligiblePaths?: string[];
   kind: CacheabilityRouteKind;
   /** Concrete public pathname classified by this entry. Omitted for the pattern fallback. */
   path?: string;
@@ -72,6 +74,15 @@ export function parseCacheabilityManifest(
         (route.path !== undefined &&
           (typeof route.path !== "string" || !route.path.startsWith("/"))) ||
         !isCacheabilityRouteState(route.state) ||
+        (route.eligiblePaths !== undefined &&
+          (!Array.isArray(route.eligiblePaths) ||
+            route.eligiblePaths.length === 0 ||
+            route.eligiblePaths.some(
+              (path, index, paths) =>
+                typeof path !== "string" ||
+                !path.startsWith("/") ||
+                (index > 0 && paths[index - 1] >= path),
+            ))) ||
         key !==
           cacheabilityRouteKey(
             route.kind,
@@ -82,6 +93,9 @@ export function parseCacheabilityManifest(
         return null;
       }
       routes[key] = {
+        ...(Array.isArray(route.eligiblePaths)
+          ? { eligiblePaths: route.eligiblePaths as string[] }
+          : {}),
         kind: route.kind,
         ...(typeof route.path === "string" ? { path: route.path } : {}),
         pattern: route.pattern,
@@ -97,6 +111,26 @@ export function parseCacheabilityManifest(
   } catch {
     return null;
   }
+}
+
+function includesSortedPath(paths: readonly string[], pathname: string): boolean {
+  let low = 0;
+  let high = paths.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >>> 1;
+    const candidate = paths[middle];
+    if (candidate === pathname) return true;
+    if (candidate < pathname) low = middle + 1;
+    else high = middle - 1;
+  }
+  return false;
+}
+
+export function cacheabilityRouteAllowsPath(
+  route: CacheabilityManifestRoute,
+  pathname: string,
+): boolean {
+  return route.eligiblePaths === undefined || includesSortedPath(route.eligiblePaths, pathname);
 }
 
 export function getEmbeddedCacheabilityManifest(): CacheabilityManifest | null {

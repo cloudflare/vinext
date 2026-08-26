@@ -691,7 +691,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     if (classifiedTerminalResponses.has(response)) return response;
     classifiedTerminalResponses.add(response);
 
-    const dynamicUsage = consumeDynamicUsage();
+    const observationState = consumeAppPageRenderObservationState();
+    const dynamicUsage =
+      consumeDynamicUsage() ||
+      observationState.dynamicFetches.length > 0 ||
+      (!isForceStatic && observationState.requestApis.length > 0);
     const explicitlyUncacheable =
       response.headers.has("set-cookie") || hasExplicitNonCacheableResponsePolicy(response.headers);
     const completedCacheLife = requestCacheLife.peek();

@@ -4,6 +4,7 @@ import { getCdnCacheAdapter, isNonCacheableCacheControl } from "vinext/shims/cdn
 import { applyCdnResponseHeaders, NO_STORE_CACHE_CONTROL } from "./cache-control.js";
 import {
   cacheabilityRouteKey,
+  cacheabilityRouteAllowsPath,
   getEmbeddedCacheabilityManifest,
   type CacheabilityManifestRoute,
   type CacheabilityRouteKind,
@@ -11,6 +12,7 @@ import {
 } from "./cacheability-manifest.js";
 import {
   RSC_HEADER,
+  VINEXT_RSC_VARY_HEADER,
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "./headers.js";
@@ -29,6 +31,7 @@ type CacheabilityRequestRoute = Pick<CacheabilityManifestRoute, "kind" | "patter
 };
 
 type CacheabilityRequestState = {
+  capturedBody?: ArrayBuffer | null;
   complete?: (outcome: CacheabilityOutcome) => void;
   completion?: Promise<CacheabilityOutcome>;
   manifestRoute?: CacheabilityManifestRoute;
@@ -74,6 +77,9 @@ const REPRESENTATION_HEADERS = [
   "trailer",
   "transfer-encoding",
 ] as const;
+const SUPPORTED_VARY_HEADERS = new Set(
+  VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
+);
 
 function readState(ctx: ExecutionContextLike | null | undefined): CacheabilityRequestState | null {
   if (!ctx) return null;
@@ -125,11 +131,21 @@ function responseHasFinalCacheOptOut(response: Response, state: CacheabilityRequ
 function responsePolicyIsCacheable(response: Response): boolean {
   if (!isAdmissibleCacheStatus(response.status) || response.headers.has("set-cookie")) return false;
   if (hasNonCacheablePolicy(response.headers)) return false;
-  return Boolean(
+  const policy =
     response.headers.get("CDN-Cache-Control") ??
     response.headers.get("Cloudflare-CDN-Cache-Control") ??
-    response.headers.get("Cache-Control"),
-  );
+    response.headers.get("Cache-Control");
+  if (!policy) return false;
+  return policy
+    .split(",")
+    .map((directive) => directive.trim().match(/^(?:s-maxage|max-age)\s*=\s*"?(\d+)"?$/i))
+    .some((match) => match !== null && Number(match[1]) > 0);
+}
+
+function responseHasUnsupportedVary(response: Response): boolean {
+  return (response.headers.get("Vary") ?? "")
+    .split(",")
+    .some((name) => name.trim() !== "" && !SUPPORTED_VARY_HEADERS.has(name.trim().toLowerCase()));
 }
 
 function isUpgradeResponse(response: Response): boolean {
@@ -281,7 +297,12 @@ export function createWorkerCacheabilityContext(
       expectedSecret ?? "",
     );
   const manifest = getEmbeddedCacheabilityManifest();
-  if (!authorizedProbe && base.hostRuntime !== "worker") return base;
+  if (
+    !authorizedProbe &&
+    (base.hostRuntime !== "worker" || getCdnCacheAdapter().ownsBackgroundRevalidation)
+  ) {
+    return base;
+  }
 
   const state: CacheabilityRequestState = {
     mode: authorizedProbe ? "probe" : manifest ? "admit" : "admit-all",
@@ -318,7 +339,13 @@ export function beginRouteCacheability(
   // so they retain their own completed-response runtime check.
   const exactManifestRoute =
     manifestRoutes?.[cacheabilityRouteKey(kind, pattern, state.requestPathname)];
-  const manifestRoute = exactManifestRoute ?? manifestRoutes?.[cacheabilityRouteKey(kind, pattern)];
+  const patternManifestRoute = manifestRoutes?.[cacheabilityRouteKey(kind, pattern)];
+  const manifestRoute =
+    exactManifestRoute ??
+    (patternManifestRoute &&
+    !cacheabilityRouteAllowsPath(patternManifestRoute, state.requestPathname)
+      ? { ...patternManifestRoute, state: "dynamic" as const }
+      : patternManifestRoute);
   state.route = { kind, pattern, partialPrerender: options.partialPrerender === true };
   state.manifestRoute = manifestRoute;
 
@@ -339,6 +366,11 @@ export function beginRouteCacheability(
   }
 
   return true;
+}
+
+/** True only for an authenticated staged-Worker cacheability probe. */
+export function isRouteCacheabilityProbe(): boolean {
+  return readState(getRequestExecutionContext())?.mode === "probe";
 }
 
 /** Prevent whole-response CDN admission when an earlier request phase can vary this URL. */
@@ -375,6 +407,13 @@ export function recordRouteCacheability(outcome: CacheabilityOutcome): void {
     : outcome;
   state.outcome = finalOutcome;
   state.complete?.(finalOutcome);
+}
+
+/** Reuse a body already collected by the route's Full Route Cache owner. */
+export function recordRouteCacheabilityCapturedBody(body: ArrayBuffer | null): void {
+  const state = readState(getRequestExecutionContext());
+  if (!state?.route) return;
+  state.capturedBody = body;
 }
 
 /** Record the exact adapter policy used only while an App render is unproven. */
@@ -478,8 +517,10 @@ export async function finalizeWorkerCacheabilityResponse(
     .get("content-type")
     ?.toLowerCase()
     .startsWith("text/event-stream");
+  const unsupportedVary = responseHasUnsupportedVary(response);
   if (
     isEventStream ||
+    unsupportedVary ||
     explicitOutcome?.cacheable === false ||
     responseHasFinalCacheOptOut(response, state) ||
     (!state.completion && !responsePolicyIsCacheable(response))
@@ -489,7 +530,14 @@ export async function finalizeWorkerCacheabilityResponse(
       return probeResponse(
         state,
         "dynamic",
-        explicitOutcome ?? { cacheable: false, reason: isEventStream ? "event stream" : undefined },
+        explicitOutcome ?? {
+          cacheable: false,
+          reason: isEventStream
+            ? "event stream"
+            : unsupportedVary
+              ? "response varies by an unsupported request header"
+              : undefined,
+        },
         response.status,
       );
     }
@@ -497,17 +545,33 @@ export async function finalizeWorkerCacheabilityResponse(
   }
 
   let captured: CapturedResponseBody;
-  try {
-    captured = await captureResponseBodyBounded(response);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    if (state.mode === "probe") {
-      return probeResponse(state, "probe-failed", { cacheable: false, reason }, response.status);
+  if (state.capturedBody !== undefined) {
+    captured = { body: state.capturedBody, fallback: null, failClosed: false };
+  } else {
+    try {
+      captured = await captureResponseBodyBounded(response);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      if (state.mode === "probe") {
+        return probeResponse(state, "probe-failed", { cacheable: false, reason }, response.status);
+      }
+      return syntheticErrorResponse(response);
     }
-    return syntheticErrorResponse(response);
   }
 
   if (captured.failClosed) {
+    if (
+      state.mode !== "probe" &&
+      state.manifestRoute?.state === "static-candidate" &&
+      state.route.partialPrerender !== true
+    ) {
+      void captured.fallback.cancel().catch(() => {});
+      return staticToDynamicErrorResponse({
+        cacheable: false,
+        dynamicUsage: true,
+        reason: captured.reason,
+      });
+    }
     if (state.mode === "probe") {
       void captured.fallback.cancel().catch(() => {});
       return probeResponse(

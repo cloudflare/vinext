@@ -249,14 +249,21 @@ describe("Cloudflare CDN warmup deploy flow", () => {
               ? [{ version_id: "33333333-3333-4333-8333-333333333333", percentage: 100 }]
               : [
                   { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
-                  ...(statusCount === 3
+                  ...(statusCount === 2
                     ? [
                         {
-                          version_id: "33333333-3333-4333-8333-333333333333",
+                          version_id: "22222222-2222-4222-8222-222222222222",
                           percentage: 0,
                         },
                       ]
-                    : []),
+                    : statusCount === 3
+                      ? [
+                          {
+                            version_id: "33333333-3333-4333-8333-333333333333",
+                            percentage: 0,
+                          },
+                        ]
+                      : []),
                 ],
         });
       }
@@ -376,16 +383,21 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       if (args.includes("status")) {
         statusCount += 1;
         const versions =
-          statusCount <= 2
+          statusCount === 1
             ? [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }]
-            : statusCount === 3
+            : statusCount === 2
               ? [
                   { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
-                  { version_id: "33333333-3333-4333-8333-333333333333", percentage: 0 },
+                  { version_id: "22222222-2222-4222-8222-222222222222", percentage: 0 },
                 ]
-              : statusCount === 4
-                ? [{ version_id: "33333333-3333-4333-8333-333333333333", percentage: 100 }]
-                : [{ version_id: "44444444-4444-4444-8444-444444444444", percentage: 100 }];
+              : statusCount === 3
+                ? [
+                    { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+                    { version_id: "33333333-3333-4333-8333-333333333333", percentage: 0 },
+                  ]
+                : statusCount === 4
+                  ? [{ version_id: "33333333-3333-4333-8333-333333333333", percentage: 100 }]
+                  : [{ version_id: "44444444-4444-4444-8444-444444444444", percentage: 100 }];
         return JSON.stringify({ versions });
       }
       if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
@@ -517,16 +529,6 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         events.push("upload:probe");
         return "Uploaded my-worker\nWorker Version ID: 22222222-2222-4222-8222-222222222222\n";
       }
-      if (args.includes("status")) {
-        events.push("status");
-        return JSON.stringify({
-          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
-        });
-      }
-      if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
-        events.push("stage:probe");
-        return "Staged version\n";
-      }
       if (args.includes("triggers")) events.push("triggers");
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     });
@@ -541,7 +543,32 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).rejects.toThrow("requires a Worker version preview URL");
 
     expect(discoverWarmPlan).not.toHaveBeenCalled();
-    expect(events).toEqual(["upload:probe", "status", "stage:probe"]);
+    expect(events).toEqual(["upload:probe"]);
+  });
+
+  it("fails before reading or changing deployment state when no Worker name is available", async () => {
+    writeFile("wrangler.jsonc", "{}");
+    writeTwoStageArtifact();
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return (
+          "Uploaded version\n" +
+          "Worker Version ID: 22222222-2222-4222-8222-222222222222\n" +
+          "Version Preview URL: https://22222222-worker.example.workers.dev\n"
+        );
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        discoverWarmPlan: async () => ({ loadingShellPaths: [], paths: [], rscPaths: [] }),
+        twoStageCacheability: true,
+      }),
+    ).rejects.toThrow("requires a Worker name for version overrides");
+
+    expect(execFileSyncMock).toHaveBeenCalledTimes(1);
   });
 
   it("rejects unsupported two-stage configs before uploading a probe Worker", async () => {
@@ -648,14 +675,21 @@ describe("Cloudflare CDN warmup deploy flow", () => {
               ? [{ version_id: "33333333-3333-4333-8333-333333333333", percentage: 100 }]
               : [
                   { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
-                  ...(statusCount === 3
+                  ...(statusCount === 2
                     ? [
                         {
-                          version_id: "33333333-3333-4333-8333-333333333333",
+                          version_id: "22222222-2222-4222-8222-222222222222",
                           percentage: 0,
                         },
                       ]
-                    : []),
+                    : statusCount === 3
+                      ? [
+                          {
+                            version_id: "33333333-3333-4333-8333-333333333333",
+                            percentage: 0,
+                          },
+                        ]
+                      : []),
                 ],
         });
       }
@@ -754,9 +788,14 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         statusCount += 1;
         events.push(`status:${statusCount}`);
         const versions =
-          statusCount < 3
+          statusCount === 1
             ? [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }]
-            : [{ version_id: "44444444-4444-4444-8444-444444444444", percentage: 100 }];
+            : statusCount === 2
+              ? [
+                  { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+                  { version_id: "22222222-2222-4222-8222-222222222222", percentage: 0 },
+                ]
+              : [{ version_id: "44444444-4444-4444-8444-444444444444", percentage: 100 }];
         return JSON.stringify({ versions });
       }
       if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
@@ -833,6 +872,28 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).rejects.toThrow(
       '--warm-cdn-promotion-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
     );
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects incompatible two-stage no-promote and propagation-delay options before upload", async () => {
+    writeTwoStageArtifact();
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        twoStageCacheability: true,
+        warmCdnPromote: false,
+      }),
+    ).rejects.toThrow("--warm-cdn-no-promote is incompatible with two-stage cacheability probing");
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        twoStageCacheability: true,
+        warmCdnPromotionDelay: 1,
+      }),
+    ).rejects.toThrow(
+      "--warm-cdn-promotion-delay is incompatible with two-stage cacheability probing",
+    );
+
     expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 

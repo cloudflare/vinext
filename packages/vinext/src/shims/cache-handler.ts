@@ -3,6 +3,7 @@ import {
   readCacheControlNumberField,
   readCacheControlRevalidateField,
 } from "../utils/cache-control-metadata.js";
+import { getOrCreateAls } from "./internal/als-registry.js";
 
 export type CacheHandlerValue = {
   lastModified: number;
@@ -374,6 +375,9 @@ export class MemoryCacheHandler implements CacheHandler {
 
 const HANDLER_KEY = Symbol.for("vinext.cacheHandler");
 const globalHandlers = globalThis as unknown as Record<PropertyKey, CacheHandler>;
+const prospectiveCacheHandlerAls = getOrCreateAls<CacheHandler>(
+  "vinext.cacheHandler.prospective.als",
+);
 
 function getActiveHandler(): CacheHandler {
   return globalHandlers[HANDLER_KEY] ?? (globalHandlers[HANDLER_KEY] = new MemoryCacheHandler());
@@ -390,7 +394,60 @@ export function setDataCacheHandler(handler: CacheHandler): void {
 }
 
 export function getDataCacheHandler(): CacheHandler {
-  return getActiveHandler();
+  return prospectiveCacheHandlerAls.getStore() ?? getActiveHandler();
+}
+
+/**
+ * Share cache fills between a Cache Components Route Handler's prospective
+ * pass and its final pass without replacing the configured persistent cache.
+ *
+ * Next.js uses a prerender resume-data cache for this exact boundary. The
+ * overlay writes through to the configured handler (so staged probes exercise
+ * real bindings) and also exposes the just-written value synchronously to the
+ * second pass. This keeps remote KV latency from looking like uncached I/O.
+ */
+export function runWithProspectiveDataCache<T>(fn: () => T): T {
+  const base = getActiveHandler();
+  const entries = new Map<string, CacheHandlerValue>();
+  const handler: CacheHandler = {
+    async get(key, ctx) {
+      return entries.get(key) ?? (await base.get(key, ctx));
+    },
+    async set(key, data, ctx) {
+      let revalidate = readCacheControlRevalidateField(ctx);
+      if (data && "revalidate" in data) {
+        if (typeof data.revalidate === "number") revalidate = data.revalidate;
+        else if (data.revalidate === false) revalidate ??= false;
+      }
+      if (revalidate !== 0) {
+        const expire = readCacheControlNumberField(ctx, "expire");
+        const stale = readCacheControlNumberField(ctx, "stale");
+        entries.set(key, {
+          lastModified: Date.now(),
+          value: data,
+          ...(typeof revalidate === "number" || revalidate === false
+            ? {
+                cacheControl: {
+                  revalidate,
+                  ...(expire === undefined ? {} : { expire }),
+                  ...(stale === undefined ? {} : { stale }),
+                },
+              }
+            : {}),
+        });
+      }
+      await base.set(key, data, ctx);
+    },
+    async revalidateTag(tags, durations) {
+      entries.clear();
+      await base.revalidateTag(tags, durations);
+    },
+    resetRequestCache() {
+      entries.clear();
+      base.resetRequestCache?.();
+    },
+  };
+  return prospectiveCacheHandlerAls.run(handler, fn);
 }
 
 export function setCacheHandler(handler: CacheHandler): void {

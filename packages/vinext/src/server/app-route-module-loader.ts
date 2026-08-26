@@ -115,6 +115,8 @@ export type LazyLoadableRoute = {
   __loaded?: boolean;
   /** In-flight hydration promise, used to dedup concurrent loads. */
   __loading?: Promise<unknown> | null;
+  /** In-flight route-handler-only hydration used by staged validation. */
+  __routeHandlerLoading?: Promise<unknown> | null;
 };
 
 function pushFieldLoad(
@@ -152,6 +154,26 @@ function pushArrayLoads(
       }),
     );
   }
+}
+
+/** Load only a route's handler module, without hydrating its page/layout tree. */
+export async function loadAppRouteHandlerModule(route: LazyLoadableRoute): Promise<unknown> {
+  if (route.routeHandler != null) return route.routeHandler;
+  if (route.__routeHandlerLoading) return route.__routeHandlerLoading;
+  if (!route.__loadRouteHandler) return undefined;
+
+  const loading = runOutsideRequestScopes(route.__loadRouteHandler)
+    .then((module) => {
+      route.routeHandler = module;
+      route.__routeHandlerLoading = null;
+      return module;
+    })
+    .catch((error: unknown) => {
+      route.__routeHandlerLoading = null;
+      throw error;
+    });
+  route.__routeHandlerLoading = loading;
+  return await loading;
 }
 
 /**

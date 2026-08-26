@@ -6,6 +6,8 @@ import {
 } from "vinext/shims/headers";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import type { CachedRouteValue } from "vinext/shims/cache-handler";
+import { runWithProspectiveDataCache } from "vinext/shims/cache-handler";
+import { consumeDynamicFetchObservations } from "vinext/shims/fetch-observations";
 import type { NextRequest } from "vinext/shims/server";
 import {
   _drainPendingRevalidations,
@@ -39,7 +41,12 @@ import {
   createTrackedAppRouteRequest,
   markKnownDynamicAppRoute,
 } from "./app-route-handler-runtime.js";
-import { captureResponseBodyBounded, recordRouteCacheability } from "./cacheability-request.js";
+import {
+  captureResponseBodyBounded,
+  isRouteCacheabilityProbe,
+  recordRouteCacheabilityCapturedBody,
+  recordRouteCacheability,
+} from "./cacheability-request.js";
 
 export type AppRouteParams = Record<string, string | string[]>;
 export type AppRouteDynamicUsageFn = () => boolean;
@@ -74,11 +81,13 @@ export type AppRouteDebugLogger = (event: string, detail: string) => void;
 type RunAppRouteHandlerOptions = {
   basePath?: string;
   cacheComponents?: boolean;
+  captureThrown?: boolean;
   consumeDynamicUsage: AppRouteDynamicUsageFn;
   draftModeSecret?: string;
   dynamicConfig?: string;
   handlerFn: AppRouteHandlerFunction;
   i18n?: NextI18nConfig | null;
+  isCacheabilityProbe?: boolean;
   isDraftMode?: boolean;
   trailingSlash?: boolean;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
@@ -98,6 +107,14 @@ type RunAppRouteHandlerResult = {
   dynamicUsedInHandler: boolean;
   response: Response;
 };
+
+type CapturedAppRouteHandlerResult =
+  | RunAppRouteHandlerResult
+  | {
+      crossedTaskBoundary: boolean;
+      dynamicUsedInHandler: boolean;
+      thrown: unknown;
+    };
 
 export function applyDraftModeCachePolicy(response: Response, isDraftMode: boolean): Response {
   if (!isDraftMode) return response;
@@ -159,54 +176,84 @@ function configureAppRouteStaticGenerationContext(options: RunAppRouteHandlerOpt
   }
 }
 
+export function runAppRouteHandler(
+  options: RunAppRouteHandlerOptions & { captureThrown: true },
+): Promise<CapturedAppRouteHandlerResult>;
+export function runAppRouteHandler(
+  options: RunAppRouteHandlerOptions,
+): Promise<RunAppRouteHandlerResult>;
 export async function runAppRouteHandler(
   options: RunAppRouteHandlerOptions,
-): Promise<RunAppRouteHandlerResult> {
-  options.consumeDynamicUsage();
-  configureAppRouteStaticGenerationContext(options);
-  const trackedRequest = createTrackedAppRouteRequest(options.request, {
-    basePath: options.basePath,
-    i18n: options.i18n,
-    trailingSlash: options.trailingSlash,
-    middlewareHeaders: options.middlewareRequestHeaders,
-    onDynamicAccess() {
-      options.markDynamicUsage();
-    },
-    requestMode:
-      options.dynamicConfig === "force-static" || options.dynamicConfig === "error"
-        ? options.dynamicConfig
-        : "auto",
-    staticGenerationErrorMessage(expression) {
-      return getAppRouteStaticGenerationErrorMessage(options.routePattern, expression);
-    },
-  });
-  let crossedTaskBoundary = false;
-  const taskBoundaryTimer = options.cacheComponents
-    ? setTimeout(() => {
-        crossedTaskBoundary = true;
-      }, 0)
-    : undefined;
-  let response: Response;
-  try {
-    response = await runWithRootParamsUsage(
-      {
-        kind: "route-handler",
-        routePattern: options.routePattern ?? new URL(options.request.url).pathname,
+): Promise<CapturedAppRouteHandlerResult> {
+  const runPass = async (trackTaskBoundary: boolean): Promise<CapturedAppRouteHandlerResult> => {
+    options.consumeDynamicUsage();
+    consumeDynamicFetchObservations();
+    configureAppRouteStaticGenerationContext(options);
+    const trackedRequest = createTrackedAppRouteRequest(options.request, {
+      basePath: options.basePath,
+      i18n: options.i18n,
+      trailingSlash: options.trailingSlash,
+      middlewareHeaders: options.middlewareRequestHeaders,
+      onDynamicAccess() {
+        options.markDynamicUsage();
       },
-      () =>
-        options.handlerFn(trackedRequest.request, {
-          params: options.params,
-        }),
-    );
-  } finally {
-    if (taskBoundaryTimer !== undefined) clearTimeout(taskBoundaryTimer);
+      requestMode:
+        options.dynamicConfig === "force-static" || options.dynamicConfig === "error"
+          ? options.dynamicConfig
+          : "auto",
+      staticGenerationErrorMessage(expression) {
+        return getAppRouteStaticGenerationErrorMessage(options.routePattern, expression);
+      },
+    });
+    let crossedTaskBoundary = false;
+    const taskBoundaryTimer = trackTaskBoundary
+      ? setTimeout(() => {
+          crossedTaskBoundary = true;
+        }, 0)
+      : undefined;
+    let response: Response | undefined;
+    let thrown: unknown;
+    try {
+      response = await runWithRootParamsUsage(
+        {
+          kind: "route-handler",
+          routePattern: options.routePattern ?? new URL(options.request.url).pathname,
+        },
+        () =>
+          options.handlerFn(trackedRequest.request, {
+            params: options.params,
+          }),
+      );
+    } catch (error) {
+      thrown = error;
+    } finally {
+      if (taskBoundaryTimer !== undefined) clearTimeout(taskBoundaryTimer);
+    }
+
+    const result = {
+      crossedTaskBoundary,
+      dynamicUsedInHandler:
+        options.consumeDynamicUsage() || consumeDynamicFetchObservations().length > 0,
+    };
+    return response ? { ...result, response } : { ...result, thrown };
+  };
+
+  let result: CapturedAppRouteHandlerResult;
+  if (options.cacheComponents && options.isCacheabilityProbe) {
+    result = await runWithProspectiveDataCache(async () => {
+      const prospective = await runPass(false);
+      if (prospective.dynamicUsedInHandler) return prospective;
+      if ("response" in prospective) {
+        void prospective.response.body?.cancel().catch(() => {});
+      }
+      return runPass(true);
+    });
+  } else {
+    result = await runPass(options.cacheComponents === true);
   }
 
-  return {
-    crossedTaskBoundary,
-    dynamicUsedInHandler: options.consumeDynamicUsage(),
-    response,
-  };
+  if ("thrown" in result && !options.captureThrown) throw result.thrown;
+  return result;
 }
 
 export async function executeAppRouteHandler(
@@ -219,11 +266,13 @@ export async function executeAppRouteHandler(
   };
 
   try {
-    let handlerResult: RunAppRouteHandlerResult;
+    let handlerResult: CapturedAppRouteHandlerResult;
     try {
       handlerResult = await runAppRouteHandler({
         ...options,
+        captureThrown: true,
         dynamicConfig: options.handler.dynamic,
+        isCacheabilityProbe: options.isCacheabilityProbe ?? isRouteCacheabilityProbe(),
       });
     } finally {
       // Route Handlers expose synchronous revalidation APIs; their async cache
@@ -233,7 +282,26 @@ export async function executeAppRouteHandler(
     }
     let { dynamicUsedInHandler } = handlerResult;
     const { crossedTaskBoundary } = handlerResult;
-    let { response } = handlerResult;
+    let response: Response;
+    let specialResponseKind: "redirect" | "status" | null = null;
+    if ("thrown" in handlerResult) {
+      const specialError = resolveAppRouteHandlerSpecialError(
+        handlerResult.thrown,
+        options.request.url,
+        { isAction: isPossibleAppRouteActionRequest(options.request) },
+      );
+      if (!specialError) throw handlerResult.thrown;
+      specialResponseKind = specialError.kind;
+      response =
+        specialError.kind === "redirect"
+          ? new Response(null, {
+              status: specialError.statusCode,
+              headers: { Location: specialError.location },
+            })
+          : new Response(null, { status: specialError.statusCode });
+    } else {
+      response = handlerResult.response;
+    }
     assertSupportedAppRouteHandlerResponse(response);
     const handlerSetCacheControl = response.headers.has("cache-control");
 
@@ -261,6 +329,7 @@ export async function executeAppRouteHandler(
           });
         } else {
           completedRouteCacheValue = await buildAppRouteCacheValue(response, captured.body);
+          recordRouteCacheabilityCapturedBody(captured.body);
           if (captured.body !== null) {
             response = new Response(captured.body, {
               headers: response.headers,
@@ -340,6 +409,7 @@ export async function executeAppRouteHandler(
         isDraftMode: shouldApplyDraftPolicy,
         method: options.method,
         revalidateSeconds: effectiveRevalidateSeconds,
+        responseStatus: response.status,
       })
     ) {
       const revalidateSeconds = effectiveRevalidateSeconds;
@@ -364,6 +434,7 @@ export async function executeAppRouteHandler(
         isProduction: options.isProduction,
         method: options.method,
         revalidateSeconds: effectiveRevalidateSeconds,
+        responseStatus: response.status,
       })
     ) {
       markRouteHandlerCacheMiss(response);
@@ -395,8 +466,8 @@ export async function executeAppRouteHandler(
     return applyDraftModeCachePolicy(
       applyRouteHandlerMiddlewareContext(
         finalizeRouteHandlerResponse(response, {
-          pendingCookies,
-          draftCookie,
+          pendingCookies: specialResponseKind === "status" ? [] : pendingCookies,
+          draftCookie: specialResponseKind === "status" ? null : draftCookie,
           isHead: options.isAutoHead,
         }),
         options.middlewareContext,

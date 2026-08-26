@@ -45,6 +45,7 @@ type AppRouteHandlerResponseCacheOptions = {
   isProduction: boolean;
   method: string;
   revalidateSeconds: number | null;
+  responseStatus: number;
 };
 
 type AppRouteHandlerSpecialError =
@@ -167,6 +168,7 @@ export function shouldApplyAppRouteHandlerRevalidateHeader(
   // Cache-Control, which is exactly the header a never-cache handler
   // needs to suppress heuristic caching.
   return (
+    (options.responseStatus < 400 || options.responseStatus === 404) &&
     options.revalidateSeconds !== null &&
     !options.isDraftMode &&
     !options.dynamicUsedInHandler &&

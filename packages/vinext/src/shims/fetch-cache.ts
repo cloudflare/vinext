@@ -32,6 +32,12 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
+import {
+  consumeDynamicFetchObservations,
+  peekDynamicFetchObservations,
+  recordDynamicFetchObservation,
+  resetDynamicFetchObservations,
+} from "./fetch-observations.js";
 
 // ---------------------------------------------------------------------------
 // Cache key generation
@@ -620,6 +626,7 @@ function _resetFallbackState(isFetchDedupeActive: boolean): void {
   _fallbackState.currentFetchRevalidate = null;
   _fallbackState.currentForceDynamicFetchDefault = false;
   _fallbackState.dynamicFetchUrls = new Set<string>();
+  resetDynamicFetchObservations();
   _fallbackState.refreshStaleFetchesInForeground = false;
   _fallbackState.isFetchDedupeActive = isFetchDedupeActive;
   _fallbackState.currentFetchDedupeEntries = new Map();
@@ -627,10 +634,6 @@ function _resetFallbackState(isFetchDedupeActive: boolean): void {
 
 function getFetchObservationUrl(input: string | URL | Request): string {
   return typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-}
-
-function recordDynamicFetchObservation(input: string | URL | Request): void {
-  _getState().dynamicFetchUrls.add(getFetchObservationUrl(input));
 }
 
 function markUncachedFetchForPageOutput(input: string | URL | Request): void {
@@ -746,16 +749,7 @@ export function peekCacheableFetchObservations(): string[] {
   return [..._getState().cacheableFetchUrls].sort();
 }
 
-export function peekDynamicFetchObservations(): string[] {
-  return [..._getState().dynamicFetchUrls].sort();
-}
-
-export function consumeDynamicFetchObservations(): string[] {
-  const state = _getState();
-  const observed = [...state.dynamicFetchUrls].sort();
-  state.dynamicFetchUrls = new Set<string>();
-  return observed;
-}
+export { consumeDynamicFetchObservations, peekDynamicFetchObservations };
 
 /**
  * Get tags collected during the current render pass.

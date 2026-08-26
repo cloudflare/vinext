@@ -719,22 +719,10 @@ function getSingleServingVersion(
   return serving.length === 1 && serving[0]?.percentage === 100 ? serving[0] : null;
 }
 
-function assertServingVersionUnchanged(
-  initial: WranglerDeploymentStatus,
-  current: WranglerDeploymentStatus,
-): void {
-  const initialServing = getSingleServingVersion(initial);
-  const currentServing = getSingleServingVersion(current);
-  if (!initialServing || !currentServing || initialServing.versionId !== currentServing.versionId) {
-    throw new Error(
-      "CDN warmup detected a concurrent Worker deployment while probing cacheability. Refusing to replace or promote that deployment; rerun against the latest serving version.",
-    );
-  }
-}
-
 function assertDeploymentTrafficUnchanged(
   expected: readonly WranglerVersionTraffic[],
   current: WranglerDeploymentStatus,
+  phase = "after staging the final cacheability manifest",
 ): void {
   const normalize = (versions: readonly WranglerVersionTraffic[]): string[] =>
     versions
@@ -747,7 +735,7 @@ function assertDeploymentTrafficUnchanged(
     expectedTraffic.some((version, index) => version !== currentTraffic[index])
   ) {
     throw new Error(
-      "CDN warmup detected a concurrent Worker deployment after staging the final cacheability manifest. Refusing to overwrite or promote that deployment; rerun against the latest serving version.",
+      `CDN warmup detected a concurrent Worker deployment ${phase}. Refusing to overwrite or promote that deployment; rerun against the latest serving version.`,
     );
   }
 }
@@ -758,7 +746,7 @@ function assertVersionServingExclusively(
   phase: string,
 ): void {
   const serving = getSingleServingVersion(current);
-  if (!serving || serving.versionId !== expectedVersionId) {
+  if (!serving || serving.versionId !== expectedVersionId || current.versions.length !== 1) {
     throw new Error(
       `CDN warmup detected a concurrent Worker deployment ${phase}. Expected ${expectedVersionId} to remain the sole version serving 100% traffic.`,
     );
@@ -817,6 +805,16 @@ export async function deployWithCdnWarmup(
     validatePromotionDelay(options.warmCdnPromotionDelay);
   }
   if (options.twoStageCacheability) {
+    if (options.warmCdnPromote === false) {
+      throw new Error(
+        "--warm-cdn-no-promote is incompatible with two-stage cacheability probing because Workers Cache entries must be warmed after promotion.",
+      );
+    }
+    if ((options.warmCdnPromotionDelay ?? 0) > 0) {
+      throw new Error(
+        "--warm-cdn-promotion-delay is incompatible with two-stage cacheability probing because there is no pre-promotion cache fill to propagate. Omit it or set it to 0.",
+      );
+    }
     validateTwoStageCacheabilityArtifact(root, options.config);
   }
   let deploymentId = options.deploymentId;
@@ -873,7 +871,24 @@ export async function deployWithCdnWarmup(
     remainingWarmPlan = prepareWarmPlan(remainingWarmPlan);
   }
 
+  const wranglerConfig = parseWranglerConfig(root, options.config);
   const probeUpload = runWranglerVersionUpload(root, options);
+  if (options.twoStageCacheability) {
+    if (!probeUpload.previewUrl) {
+      throw new Error(
+        "Two-stage cacheability probing requires a Worker version preview URL. Enable preview_urls in the generated Wrangler config. No deployment traffic or triggers were changed.",
+      );
+    }
+    const probeWorkerName =
+      options.name ??
+      probeUpload.workerName ??
+      resolveWorkerNameForVersionOverride(wranglerConfig, options);
+    if (!buildVersionOverrideHeaders(probeWorkerName, probeUpload.versionId)) {
+      throw new Error(
+        "Two-stage cacheability probing requires a Worker name for version overrides. Set name in Wrangler config or pass --name. No deployment traffic or triggers were changed.",
+      );
+    }
+  }
   let finalUpload = probeUpload;
   const warmUploadedVersion = (
     targetUrl: string,
@@ -922,7 +937,6 @@ export async function deployWithCdnWarmup(
       strict: !options.dangerouslyPromoteOnCdnWarmError,
     });
 
-  const wranglerConfig = parseWranglerConfig(root, options.config);
   const deploymentStatus = runWranglerDeploymentStatus(root, options);
   const stagingTraffic = getZeroPercentStagingTraffic(deploymentStatus, probeUpload.versionId);
   let staged: ReturnType<typeof runWranglerVersionDeploy> | null = null;
@@ -957,14 +971,6 @@ export async function deployWithCdnWarmup(
     let targetUrl = options.twoStageCacheability
       ? probeUpload.previewUrl
       : (resolveCdnWarmupTargetUrl(root, triggersDeployedUrl, options) ?? staged.deployedUrl);
-    if (options.twoStageCacheability && !targetUrl) {
-      throw withStagedVersionCleanupNote(
-        new Error(
-          "Two-stage cacheability probing requires a Worker version preview URL. Enable preview_urls in the generated Wrangler config.",
-        ),
-        false,
-      );
-    }
     const workerName =
       options.name ??
       probeUpload.workerName ??
@@ -1028,7 +1034,11 @@ export async function deployWithCdnWarmup(
             (config) => runWranglerVersionUpload(root, { ...options, config }),
           );
           const currentDeploymentStatus = runWranglerDeploymentStatus(root, options);
-          assertServingVersionUnchanged(deploymentStatus, currentDeploymentStatus);
+          assertDeploymentTrafficUnchanged(
+            stagingTraffic,
+            currentDeploymentStatus,
+            "while probing cacheability",
+          );
           finalStagingTraffic = getZeroPercentStagingTraffic(
             currentDeploymentStatus,
             finalUpload.versionId,

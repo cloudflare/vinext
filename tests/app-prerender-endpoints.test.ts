@@ -112,6 +112,44 @@ describe("App prerender endpoint helpers", () => {
     expect(response).toBeNull();
   });
 
+  it("validates every staged Cache Components Route Handler before probing", async () => {
+    const validateAppRouteHandlers = vi.fn(async () => {});
+    const response = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/validate-app-routes"),
+      {
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/validate-app-routes",
+        staticParamsMap: {},
+        validateAppRouteHandlers,
+      },
+    );
+
+    expect(validateAppRouteHandlers).toHaveBeenCalledOnce();
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("cache-control")).toBe("no-store");
+    await expect(response?.json()).resolves.toEqual({ valid: true });
+  });
+
+  it("fails staged validation when a Route Handler has incompatible segment config", async () => {
+    const response = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/validate-app-routes"),
+      {
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/validate-app-routes",
+        staticParamsMap: {},
+        validateAppRouteHandlers: async () => {
+          throw new Error(
+            'Route segment config "revalidate" is not compatible with `nextConfig.cacheComponents`. Please remove it.',
+          );
+        },
+      },
+    );
+
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("cache-control")).toBe("no-store");
+    await expect(response?.text()).resolves.toContain("Route segment config");
+  });
+
   it("returns 404 for prerender endpoints outside prerender mode", async () => {
     const response = await handleAppPrerenderEndpoint(
       new Request("http://localhost/__vinext/prerender/static-params?pattern=/blog/:slug"),

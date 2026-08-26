@@ -3,6 +3,7 @@ import {
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
+  VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH,
 } from "./headers.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import type { RootParams } from "vinext/shims/root-params";
@@ -23,6 +24,7 @@ type HandleAppPrerenderEndpointOptions = {
   isPrerenderEnabled?: () => boolean;
   getMetadataRoutePaths?: () => Promise<unknown>;
   loadPagesRoutes?: () => Promise<unknown>;
+  validateAppRouteHandlers?: () => Promise<void>;
   pathname: string;
   rootParamNamesByPattern?: AppPrerenderRootParamNamesMap;
   staticParamsMap: AppPrerenderStaticParamsMap;
@@ -52,7 +54,26 @@ export async function handleAppPrerenderEndpoint(
     return handleMetadataRoutesEndpoint(options);
   }
 
+  if (options.pathname === VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH) {
+    if (!options.validateAppRouteHandlers) return null;
+    return handleAppRouteValidationEndpoint(options);
+  }
+
   return null;
+}
+
+async function handleAppRouteValidationEndpoint(
+  options: HandleAppPrerenderEndpointOptions,
+): Promise<Response> {
+  if (!isEnabled(options)) {
+    return notFoundResponse({ headers: NO_STORE_HEADERS });
+  }
+  try {
+    await options.validateAppRouteHandlers?.();
+    return jsonResponse({ valid: true });
+  } catch (error) {
+    return jsonResponse({ error: `[vinext] ${String(error)}` }, 500);
+  }
 }
 
 async function handleMetadataRoutesEndpoint(

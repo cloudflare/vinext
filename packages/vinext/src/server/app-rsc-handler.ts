@@ -25,6 +25,7 @@ import {
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
+  VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH,
   VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
@@ -410,6 +411,7 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   rootParamNamesByPattern?: RootParamNamesMap;
   setNavigationContext: (context: NavigationContextValue) => void;
   staticParamsMap: StaticParamsMap;
+  validatePrerenderAppRouteHandlers?: () => Promise<void>;
   trailingSlash: boolean;
   validateDevRequestOrigin?: (request: Request) => Response | null;
 };
@@ -772,7 +774,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (
     pathname === VINEXT_PRERENDER_STATIC_PARAMS_PATH ||
     pathname === VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH ||
-    pathname === VINEXT_PRERENDER_METADATA_ROUTES_PATH
+    pathname === VINEXT_PRERENDER_METADATA_ROUTES_PATH ||
+    pathname === VINEXT_PRERENDER_VALIDATE_APP_ROUTES_PATH
   ) {
     const { handleAppPrerenderEndpoint } = await import("./app-prerender-endpoints.js");
     const prerenderEndpointResponse = await handleAppPrerenderEndpoint(request, {
@@ -787,6 +790,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       pathname,
       rootParamNamesByPattern: options.rootParamNamesByPattern,
       staticParamsMap: options.staticParamsMap,
+      validateAppRouteHandlers: options.validatePrerenderAppRouteHandlers,
     });
     if (prerenderEndpointResponse) return prerenderEndpointResponse;
   }

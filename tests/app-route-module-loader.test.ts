@@ -4,6 +4,7 @@ import {
   loadAppInterceptNotFound,
   loadAppInterceptPage,
   loadAppInterceptLayouts,
+  loadAppRouteHandlerModule,
   type LazyLoadableRoute,
 } from "../packages/vinext/src/server/app-route-module-loader.js";
 import { cookies, headersContextFromRequest } from "../packages/vinext/src/shims/headers.js";
@@ -51,6 +52,27 @@ describe("ensureAppRouteModulesLoaded", () => {
     await ensureAppRouteModulesLoaded(route);
 
     expect(route.routeHandler).toBe(handlerModule);
+  });
+
+  it("can validate a route handler without hydrating its page or layout tree", async () => {
+    const handlerModule = { GET: () => new Response("ok") };
+    const __loadRouteHandler = vi.fn(async () => handlerModule);
+    const __loadPage = vi.fn(async () => ({ default: () => null }));
+    const __loadLayout = vi.fn(async () => ({ default: () => null }));
+    const route: LazyLoadableRoute = {
+      page: null,
+      routeHandler: null,
+      layouts: [null],
+      __loadPage,
+      __loadRouteHandler,
+      __loadLayouts: [__loadLayout],
+    };
+
+    await expect(loadAppRouteHandlerModule(route)).resolves.toBe(handlerModule);
+    expect(route.routeHandler).toBe(handlerModule);
+    expect(__loadRouteHandler).toHaveBeenCalledOnce();
+    expect(__loadPage).not.toHaveBeenCalled();
+    expect(__loadLayout).not.toHaveBeenCalled();
   });
 
   it("loads both page and route handler in parallel", async () => {

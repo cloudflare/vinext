@@ -129,12 +129,12 @@ async function handleRequest(
     request,
     pagesEntry.prerenderSecret,
   );
-  const ctx = createWorkerCacheabilityContext(discoveryCtx, request, pagesEntry.prerenderSecret);
 
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
   // can resolve their configured bindings before request handling begins.
   registerConfiguredCacheAdapters(env);
   registerConfiguredImageOptimizer(env);
+  const ctx = createWorkerCacheabilityContext(discoveryCtx, request, pagesEntry.prerenderSecret);
 
   return runWithExecutionContext(ctx, async () => {
     try {

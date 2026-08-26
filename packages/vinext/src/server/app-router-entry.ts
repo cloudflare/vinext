@@ -116,11 +116,11 @@ async function handleRequest(
     request,
     __rscPrerenderSecret,
   );
-  const ctx = createWorkerCacheabilityContext(discoveryCtx, request, __rscPrerenderSecret);
 
   // Register config-driven cache adapters before any rendering touches the cache.
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
   registerConfiguredImageOptimizer(env as Record<string, unknown> | undefined);
+  const ctx = createWorkerCacheabilityContext(discoveryCtx, request, __rscPrerenderSecret);
 
   const cdnValidationResponse = await validateCdnRequest(request);
   if (cdnValidationResponse) return cdnValidationResponse;

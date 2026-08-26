@@ -50,6 +50,10 @@ const appRouteHandlerResponsePath = resolveEntryPath(
   "../server/app-route-handler-response.js",
   import.meta.url,
 );
+const appRouteHandlerPolicyPath = resolveEntryPath(
+  "../server/app-route-handler-policy.js",
+  import.meta.url,
+);
 const appServerActionExecutionPath = resolveEntryPath(
   "../server/app-server-action-execution.js",
   import.meta.url,
@@ -456,7 +460,7 @@ import { suppressHookWarningAls } from ${JSON.stringify(appHookWarningSuppressio
 import { clearAppRequestContext as __clearRequestContext, setAppNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestContextPath)};
 __configureMemoryCacheHandler({ cacheMaxMemorySize: ${JSON.stringify(cacheMaxMemorySize)} });
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
-import { ensureAppRouteModulesLoaded as __ensureRouteLoaded, loadAppInterceptPage as __loadAppInterceptPage } from ${JSON.stringify(appRouteModuleLoaderPath)};
+import { ensureAppRouteModulesLoaded as __ensureRouteLoaded, loadAppInterceptPage as __loadAppInterceptPage, loadAppRouteHandlerModule as __loadRouteHandlerModule } from ${JSON.stringify(appRouteModuleLoaderPath)};
 import {
   getRenderedConcreteUrlPathsForRoute as __getRenderedConcreteUrlPathsForRoute,
   initPregeneratedPathsFromGlobals as __initPregeneratedPathsFromGlobals,
@@ -1463,6 +1467,19 @@ const __appRscHandler = createAppRscHandler({
   rootParamNamesByPattern: rootParamNamesMap,
   setNavigationContext,
   staticParamsMap: generateStaticParamsMap,
+  ${
+    cacheComponents
+      ? `async validatePrerenderAppRouteHandlers() {
+    const { assertAppRouteCacheComponentsConfig: __assertCacheComponentsConfig } =
+      await import(${JSON.stringify(appRouteHandlerPolicyPath)});
+    for (const route of routes) {
+      if (!route.__loadRouteHandler) continue;
+      const handler = await __loadRouteHandlerModule(route);
+      __assertCacheComponentsConfig(handler);
+    }
+  },`
+      : ""
+  }
   trailingSlash: __trailingSlash,
   validateDevRequestOrigin: __validateDevRequestOrigin,
 });
