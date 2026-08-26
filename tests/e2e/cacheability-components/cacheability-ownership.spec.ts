@@ -73,6 +73,21 @@ test("preserves Cache Components ownership while probing inside workerd", async 
     version: 1,
   });
 
+  // Ported from Next.js: test/e2e/app-dir/io/io.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/io/io.test.ts
+  // Vinext keeps cache ownership in a separate ALS scope, so both real cache
+  // APIs must still make io() a no-op under the outer prerender owner.
+  for (const path of ["/io-in-use-cache", "/io-in-unstable-cache"]) {
+    const cachedIoProbe = await request.get(path, { headers });
+    await expect(cachedIoProbe.json()).resolves.toMatchObject({
+      kind: "app-page",
+      pattern: path,
+      state: "static-candidate",
+      status: 200,
+      version: 1,
+    });
+  }
+
   const dynamicErrorProbe = await request.get("/dynamic-error", { headers });
   await expect(dynamicErrorProbe.json()).resolves.toMatchObject({
     kind: "app-page",
@@ -119,4 +134,42 @@ test("preserves Cache Components ownership while probing inside workerd", async 
   expect((await request.get("/use-cache-private-in-unstable-cache")).status()).toBe(500);
   const state = await request.get("/use-cache-private-in-unstable-cache/state");
   await expect(state.json()).resolves.toEqual({ privateExecutions: 0 });
+});
+
+test("keeps a conditional io refill private after manifest certification", async ({ request }) => {
+  // Reset reused local workerd state and purge any response retained by a
+  // previous run before warming the manifest-certified static branch.
+  expect((await request.delete("/conditional-io/state")).status()).toBe(204);
+
+  const staticFill = await request.get("/conditional-io", {
+    headers: { Accept: "text/html" },
+  });
+  expect(staticFill.status()).toBe(200);
+  const staticBody = await staticFill.text();
+  expect(staticBody).toContain("conditional-io:static:");
+  expect(staticFill.headers()["cdn-cache-control"]).toContain("public");
+
+  // Simulate application state changing after certification, then purge the
+  // warmed edge entry so the next request performs a real conditional refill.
+  expect((await request.post("/conditional-io/state")).status()).toBe(204);
+
+  const dynamicRefill = await request.get("/conditional-io", {
+    headers: { Accept: "text/html" },
+  });
+  expect(dynamicRefill.status()).toBe(200);
+  const dynamicBody = await dynamicRefill.text();
+  expect(dynamicBody).toContain("conditional-io:dynamic:");
+  expect(dynamicRefill.headers()["cache-control"]).toContain("no-store");
+  expect(dynamicRefill.headers()["cdn-cache-control"]).toBeUndefined();
+
+  // The private refill itself must not warm the edge again.
+  const secondDynamicRefill = await request.get("/conditional-io", {
+    headers: { Accept: "text/html" },
+  });
+  expect(secondDynamicRefill.status()).toBe(200);
+  const secondDynamicBody = await secondDynamicRefill.text();
+  expect(secondDynamicBody).toContain("conditional-io:dynamic:");
+  expect(secondDynamicBody).not.toBe(dynamicBody);
+  expect(secondDynamicRefill.headers()["cache-control"]).toContain("no-store");
+  expect(secondDynamicRefill.headers()["cdn-cache-control"]).toBeUndefined();
 });

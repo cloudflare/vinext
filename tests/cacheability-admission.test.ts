@@ -360,6 +360,7 @@ describe("single-request cacheability admission", () => {
     "keeps a manifest-backed response private after late $name",
     async (testCase) => {
       const { raw } = staticManifestRoute();
+
       const context = createWorkerCacheabilityAdmissionContext(
         { waitUntil() {} },
         request,
@@ -384,6 +385,52 @@ describe("single-request cacheability admission", () => {
       await expect(response.text()).resolves.toBe("late private response");
     },
   );
+
+  it("demotes post-certification io only with Cache Components enabled", async () => {
+    // Next.js makes `io()` dynamic during Cache Components prerenders but a
+    // no-op under legacy prerender ownership.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/io.ts
+    const { io } = await import("../packages/vinext/src/shims/cache.js");
+    const { setRouteCacheabilityCacheComponents } =
+      await import("../packages/vinext/src/shims/cacheability-classification.js");
+    const { runWithExecutionContext } =
+      await import("../packages/vinext/src/shims/request-context.js");
+    const { raw } = staticManifestRoute();
+
+    const render = async (cacheComponents: boolean) => {
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        request,
+        raw,
+        "build-a",
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind: "app-page", pattern: "/page" };
+      state.outcome = {
+        cacheable: true,
+        cacheControl: "s-maxage=60, stale-while-revalidate=540",
+      };
+
+      await runWithExecutionContext(context, async () => {
+        setRouteCacheabilityCacheComponents(cacheComponents);
+        await io();
+      });
+      return finalizeWorkerCacheabilityResponse(
+        new Response("conditional", { headers: { "Cache-Control": "no-store" } }),
+        context,
+      );
+    };
+
+    const cacheComponentsResponse = await render(true);
+    expect(cacheComponentsResponse.headers.get("Cache-Control")).toContain("no-store");
+    await expect(cacheComponentsResponse.text()).resolves.toBe("conditional");
+
+    const legacyResponse = await render(false);
+    expect(legacyResponse.headers.get("Cache-Control")).toBe(
+      "s-maxage=60, stale-while-revalidate=540",
+    );
+    await expect(legacyResponse.text()).resolves.toBe("conditional");
+  });
 
   it("does not add admission overhead for adapters that persist completed artifacts", () => {
     const base = { waitUntil() {} };

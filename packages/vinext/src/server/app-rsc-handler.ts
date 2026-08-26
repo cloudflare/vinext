@@ -110,6 +110,7 @@ import {
 import {
   markRouteCacheabilityDynamic,
   preserveRouteCacheabilityResponsePolicy,
+  setRouteCacheabilityCacheComponents,
 } from "vinext/shims/cacheability-classification";
 
 type AppPageParams = Record<string, string | string[]>;
@@ -1978,6 +1979,8 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       unstableCacheRevalidation: "background",
     });
     let interceptionResponseUncacheable = false;
+
+    setRouteCacheabilityCacheComponents(options.createPprFallbackShells !== undefined);
 
     const responsePromise = runWithRequestContext(requestContext, () =>
       runWithPrerenderWorkUnit(

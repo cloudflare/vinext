@@ -21,6 +21,7 @@
 
 import {
   getHeadersAccessPhase,
+  isInsideAnyCacheScope,
   isDraftModeEnabled,
   markDynamicUsage as _markDynamic,
   peekInvalidDynamicUsageError,
@@ -34,7 +35,11 @@ import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
-import { isStagedCacheabilityProbeActive } from "./cacheability-classification.js";
+import {
+  isRouteCacheabilityCacheComponentsEnabled,
+  isStagedCacheabilityProbeActive,
+  markRouteCacheabilityDynamic,
+} from "./cacheability-classification.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
@@ -266,6 +271,26 @@ const _resolvedIOPromise: Promise<void> = Promise.resolve(undefined);
 export function io(): Promise<void> {
   const workUnitStore = workUnitAsyncStorage.getStore();
 
+  // Vinext's cache scopes use dedicated ALS stores rather than replacing the
+  // outer prerender work unit. Check those owners first so `io()` remains the
+  // same no-op inside public `"use cache"` and `unstable_cache()` that it is in
+  // Next.js, even while a Cache Components prerender owns the outer render.
+  if (_unstableCacheAls.getStore() === true || isInsideAnyCacheScope()) {
+    return _resolvedIOPromise;
+  }
+
+  // Without Cache Components, `io()` is deliberately a no-op during legacy
+  // prerendering and must not demote an otherwise static route.
+  if (workUnitStore?.type === "prerender-legacy") return _resolvedIOPromise;
+
+  // A manifest-certified route can take a different branch after an edge
+  // purge. Runtime admission has no prerender work unit, so preserve the
+  // Cache Components `io()` boundary explicitly and fail closed before the
+  // completed response receives public CDN headers.
+  if (isRouteCacheabilityCacheComponentsEnabled()) {
+    markRouteCacheabilityDynamic("`io()` requires request-time execution");
+  }
+
   if (workUnitStore) {
     switch (workUnitStore.type) {
       case "request":
@@ -287,7 +312,6 @@ export function io(): Promise<void> {
       case "private-cache":
       case "unstable-cache":
       case "generate-static-params":
-      case "prerender-legacy":
         return _resolvedIOPromise;
       default:
         workUnitStore satisfies never;
