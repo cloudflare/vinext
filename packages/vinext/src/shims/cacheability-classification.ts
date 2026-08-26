@@ -18,6 +18,8 @@ export type RouteCacheabilityState = {
     representation?: string;
     requestKey?: string;
   };
+  /** Optional admission budget override used by focused runtime tests. */
+  captureBudget?: { maxBytes: number; reservedBytes: number };
   captureDeadlineAt: number;
   complete?: (outcome: RouteCacheabilityOutcome) => void;
   completion?: Promise<RouteCacheabilityOutcome>;

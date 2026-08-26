@@ -5,7 +5,11 @@ import {
   type RouteCacheabilityState,
 } from "vinext/shims/cacheability-classification";
 import { applyCdnResponseHeaders, NO_STORE_CACHE_CONTROL } from "./cache-control.js";
-import { VINEXT_CACHEABILITY_PROBE_HEADER, VINEXT_PRERENDER_SECRET_HEADER } from "./headers.js";
+import {
+  VINEXT_CACHEABILITY_PROBE_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_RSC_VARY_HEADER,
+} from "./headers.js";
 import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
 import {
   CACHEABILITY_ADMISSION_ISOLATE_BODY_LIMIT,
@@ -35,6 +39,17 @@ type CacheabilityProbeResult = {
   status: number;
   version: 1;
 };
+
+const SUPPORTED_CACHEABILITY_VARY_FIELDS = new Set(
+  VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
+);
+
+function hasUnsupportedCacheabilityVary(headers: Headers): boolean {
+  return (headers.get("Vary") ?? "").split(",").some((name) => {
+    const normalized = name.trim().toLowerCase();
+    return normalized.length > 0 && !SUPPORTED_CACHEABILITY_VARY_FIELDS.has(normalized);
+  });
+}
 
 export function createWorkerCacheabilityContext(
   base: ExecutionContextLike,
@@ -424,10 +439,18 @@ async function finalizeWorkerCacheabilityAdmission(
   if (state.forcedDynamicReason) {
     return responseWithCachePolicy(response, response.body, null);
   }
+  if (hasUnsupportedCacheabilityVary(response.headers)) {
+    return responseWithCachePolicy(response, response.body, null);
+  }
 
   let captured: CapturedAdmissionBody;
   try {
-    captured = await captureCacheabilityAdmissionBody(response.body, state.captureDeadlineAt);
+    captured = await captureCacheabilityAdmissionBody(
+      response.body,
+      state.captureDeadlineAt,
+      CACHEABILITY_PROBE_BODY_LIMIT,
+      state.captureBudget ?? isolateCaptureBudget,
+    );
   } catch {
     return cacheabilityEvaluationFailureResponse(state.route.pattern);
   }
@@ -437,10 +460,18 @@ async function finalizeWorkerCacheabilityAdmission(
 
   const outcome = state.completion ? await state.completion : (state.outcome ?? null);
   if (outcome?.cacheable !== true || !outcome.cacheControl) {
-    return manifestRoute?.state === "static-candidate" &&
-      (outcome === null || outcome.dynamicUsage === true)
-      ? staticToDynamicResponse(manifestRoute)
-      : responseWithCachePolicy(response, captured.body, null);
+    // Next.js throws a static-to-dynamic error only when the runtime render
+    // actually observed dynamic usage. An absent outcome can also mean the
+    // renderer deliberately bypassed its cache-write path (notably draft mode
+    // and nonce-bearing HTML), in which case the completed response must stay
+    // private without being replaced by a 500.
+    if (manifestRoute?.state === "static-candidate" && outcome?.dynamicUsage === true) {
+      // The replacement 500 does not consume the captured replay stream. Its
+      // cancellation releases the isolate-wide byte reservation immediately.
+      await captured.body?.cancel().catch(() => {});
+      return staticToDynamicResponse(manifestRoute);
+    }
+    return responseWithCachePolicy(response, captured.body, null);
   }
   return responseWithCachePolicy(response, captured.body, outcome);
 }

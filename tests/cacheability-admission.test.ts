@@ -9,6 +9,10 @@ import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
+import {
+  cacheabilityManifestRouteKey,
+  type CacheabilityManifestRoute,
+} from "../packages/vinext/src/server/cacheability-manifest.js";
 
 const encoder = new TextEncoder();
 
@@ -86,6 +90,27 @@ function cacheabilityState(context: object): RouteCacheabilityState {
   return Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
 }
 
+function staticManifestRoute(): { raw: string; route: CacheabilityManifestRoute } {
+  const route: CacheabilityManifestRoute = {
+    kind: "app-page",
+    pattern: "/page",
+    representation: "html",
+    requestKey: "/page",
+    state: "static-candidate",
+    status: 200,
+  };
+  const key = cacheabilityManifestRouteKey(
+    route.kind,
+    route.pattern,
+    route.representation,
+    route.requestKey,
+  );
+  return {
+    raw: JSON.stringify({ buildId: "build-a", routes: { [key]: route }, version: 1 }),
+    route,
+  };
+}
+
 describe("single-request cacheability admission", () => {
   const request = new Request("https://example.com/page", {
     headers: { Accept: "text/html" },
@@ -125,6 +150,76 @@ describe("single-request cacheability admission", () => {
     const response = await finalizeWorkerCacheabilityResponse(new Response("dynamic"), context);
     expect(response.headers.get("Cache-Control")).toContain("no-store");
     await expect(response.text()).resolves.toBe("dynamic");
+  });
+
+  it("keeps responses with unsupported Vary fields private", async () => {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = {
+      cacheable: true,
+      cacheControl: "s-maxage=60, stale-while-revalidate=540",
+    };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("contextual", { headers: { Vary: "RSC, Cookie" } }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("contextual");
+  });
+
+  it("serves an intentionally private certified response without treating it as static-to-dynamic", async () => {
+    // Next.js bypasses the Full Route Cache in draft mode. The HTML renderer
+    // intentionally returns no-store without opening a cache-write completion,
+    // so an absent outcome is not evidence that a dynamic API was used.
+    // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+    const { raw } = staticManifestRoute();
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      raw,
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("draft", { headers: { "Cache-Control": "no-store" } }),
+      context,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("draft");
+  });
+
+  it("still rejects an observed static-to-dynamic transition", async () => {
+    const { raw } = staticManifestRoute();
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      raw,
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    const captureBudget = createCacheabilityAdmissionCaptureBudget(7);
+    state.captureBudget = captureBudget;
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = { cacheable: false, dynamicUsage: true };
+
+    const response = await finalizeWorkerCacheabilityResponse(new Response("dynamic"), context);
+    expect(response.status).toBe(500);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(captureBudget.reservedBytes).toBe(0);
+    await expect(response.text()).resolves.toContain("changed from static to dynamic");
   });
 
   it("does not add admission overhead for adapters that persist completed artifacts", () => {
