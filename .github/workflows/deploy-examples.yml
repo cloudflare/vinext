@@ -135,6 +135,17 @@ jobs:
           workingDirectory: ${{ matrix.example.working_directory }}
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
 
+      # `versions upload` does not apply non-versioned workers.dev/preview URL
+      # settings. A newly added assets-only Worker has no routes until this runs.
+      - name: Apply Static Export Preview Routes
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.static_export == true
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ${{ matrix.example.working_directory }}
+          command: triggers deploy --config ${{ matrix.example.wrangler_config }}
+
       - name: Seed RSC prewarm test Worker
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
         working-directory: ${{ matrix.example.working_directory }}
