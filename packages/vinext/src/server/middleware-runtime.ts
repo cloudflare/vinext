@@ -82,6 +82,8 @@ type ExecuteMiddlewareOptions = {
   isProxy: boolean;
   module: MiddlewareModule;
   normalizedPathname?: string;
+  /** Called only after the configured matcher accepts this request. */
+  onMatch?: () => void;
   /**
    * The caller already created an isolated body branch for middleware. This
    * lets App Router normalize that branch's URL and headers without adding a
@@ -448,6 +450,8 @@ export async function executeMiddleware(
   if (!encodedMatches && !decodedMatches) {
     return { continue: true };
   }
+
+  options.onMatch?.();
 
   const nextRequest = createNextRequest(
     options.request,
