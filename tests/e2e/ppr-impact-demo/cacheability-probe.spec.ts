@@ -77,6 +77,21 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     state: "dynamic",
     version: 1,
   });
+  const privateUseCacheRuntime = await request.get("/cacheability/use-cache-private");
+  expect((await privateUseCacheRuntime.text()).replaceAll("<!-- -->", "")).toContain(
+    "owned-by-private-use-cache:probe-catches-0",
+  );
+
+  const dynamicErrorProbe = await request.get("/cacheability/dynamic-error", { headers });
+  expect(dynamicErrorProbe.ok()).toBe(true);
+  await expect(dynamicErrorProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cacheability/dynamic-error",
+    reason: "route returned HTTP 500",
+    state: "probe-failed",
+    status: 500,
+    version: 1,
+  });
 
   const identityProbe = await request.get("/cacheability/static", {
     headers: { ...headers, [probeHeader]: "identity" },

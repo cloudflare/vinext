@@ -7251,36 +7251,57 @@ describe('"use cache" runtime', () => {
     expect(r3).toEqual({ count: 2 });
   });
 
-  it("private variant marks prerender output dynamic", async () => {
+  it("private variant suspends prerendering before user code", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
     const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
     const { createRequestContext, runWithRequestContext } =
       await import("../packages/vinext/src/shims/unified-request-context.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
 
     // Ported from Next.js: "use cache: private" is dynamic in prerendering contexts.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
-    const previousPrerender = process.env.VINEXT_PRERENDER;
-    process.env.VINEXT_PRERENDER = "1";
+    let executions = 0;
+    const cached = registerCachedFunction(
+      async () => {
+        executions++;
+        return "private";
+      },
+      "test:private-prerender",
+      "private",
+    );
+    const controller = new AbortController();
+    let bailoutExpression: string | undefined;
 
-    try {
-      await runWithRequestContext(createRequestContext(), async () => {
-        const cached = registerCachedFunction(
-          async () => "private",
-          "test:private-prerender",
-          "private",
-        );
-        await cached();
+    await runWithRequestContext(createRequestContext(), async () => {
+      const pending = workUnitAsyncStorage.run(
+        {
+          type: "prerender",
+          renderSignal: controller.signal,
+          route: "/private",
+          signalPrerenderBailout(expression) {
+            bailoutExpression = expression;
+          },
+        },
+        () => cached(),
+      );
+      let settled = false;
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await Promise.resolve();
 
-        expect(consumeDynamicUsage()).toBe(true);
-      });
-    } finally {
-      if (previousPrerender === undefined) {
-        delete process.env.VINEXT_PRERENDER;
-      } else {
-        process.env.VINEXT_PRERENDER = previousPrerender;
-      }
-    }
+      expect(settled).toBe(false);
+      expect(executions).toBe(0);
+      expect(consumeDynamicUsage()).toBe(true);
+      expect(bailoutExpression).toBe('"use cache: private"');
+    });
   });
 
   it("bails out of private cache probes before asynchronous setup or user code", async () => {
@@ -7290,6 +7311,8 @@ describe('"use cache" runtime', () => {
       await import("../packages/vinext/src/shims/cacheability-classification.js");
     const { runWithExecutionContext } =
       await import("../packages/vinext/src/shims/request-context.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
 
     let executions = 0;
     const cached = registerCachedFunction(
@@ -7306,19 +7329,44 @@ describe('"use cache" runtime', () => {
       route: { kind: "app-page" as const, pattern: "/private" },
     };
 
-    await expect(
-      runWithExecutionContext(
-        {
-          [CACHEABILITY_REQUEST_STATE]: state,
-          waitUntil() {},
-        },
-        async () => cached(),
-      ),
-    ).rejects.toMatchObject({ digest: "DYNAMIC_SERVER_USAGE" });
+    const controller = new AbortController();
+    let bailoutExpression: string | undefined;
+    const pending = runWithExecutionContext(
+      {
+        [CACHEABILITY_REQUEST_STATE]: state,
+        waitUntil() {},
+      },
+      () =>
+        workUnitAsyncStorage.run(
+          {
+            type: "prerender",
+            renderSignal: controller.signal,
+            route: "/private",
+            signalPrerenderBailout(expression) {
+              bailoutExpression = expression;
+            },
+          },
+          () => cached(),
+        ),
+    );
+    let settled = false;
+    void pending.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
     expect(executions).toBe(0);
     expect(state).toMatchObject({
       outcome: { cacheable: false, dynamicUsage: true },
+      probeBailout: { kind: "private-cache" },
     });
+    expect(bailoutExpression).toBe('"use cache: private"');
   });
 
   it('rejects "use cache: private" nested inside public "use cache"', async () => {

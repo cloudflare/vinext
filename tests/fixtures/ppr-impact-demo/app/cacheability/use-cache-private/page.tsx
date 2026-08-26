@@ -4,6 +4,19 @@ async function readPrivateValue() {
   return "owned-by-private-use-cache";
 }
 
+let caughtProbeBailouts = 0;
+
 export default async function PrivateUseCachePage() {
-  return <p id="cacheability-result">{await readPrivateValue()}</p>;
+  let value: string;
+  try {
+    value = await readPrivateValue();
+  } catch {
+    caughtProbeBailouts++;
+    value = "caught-private-cache-bailout";
+  }
+  return (
+    <p id="cacheability-result">
+      {value}:probe-catches-{caughtProbeBailouts}
+    </p>
+  );
 }

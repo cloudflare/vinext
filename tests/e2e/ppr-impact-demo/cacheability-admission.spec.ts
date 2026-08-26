@@ -60,7 +60,9 @@ test("admits only exact manifest-backed App Page responses after clean EOF", asy
     headers: { Accept: "text/html" },
   });
   expect(privateUseCache.status()).toBe(200);
-  expect(await privateUseCache.text()).toContain("owned-by-private-use-cache");
+  expect((await privateUseCache.text()).replaceAll("<!-- -->", "")).toContain(
+    "owned-by-private-use-cache:probe-catches-0",
+  );
   expect(privateUseCache.headers()["cache-control"]).toContain("no-store");
   expect(privateUseCache.headers()["cdn-cache-control"]).toBeUndefined();
 

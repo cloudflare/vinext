@@ -50,14 +50,17 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
-import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
+import {
+  createPprFallbackShellSuspensePromise,
+  trackPprFallbackShellCacheTask,
+} from "./ppr-fallback-shell.js";
 import { isMarkedAppPagePropsObject } from "./internal/app-page-props-cache-key.js";
 import { getCurrentRootParams, type RootParams } from "./root-params.js";
 import {
   isRouteCacheabilityProbe,
-  recordRouteCacheability,
+  recordRouteCacheabilityProbeBailout,
 } from "./cacheability-classification.js";
-import { DynamicServerError } from "./navigation-errors.js";
+import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 
 export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
@@ -602,13 +605,33 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // Next.js decides that a private cache requires request-time execution at
       // the cache boundary, before key serialization or any private user code.
       markDynamicUsage();
+      const expression = '"use cache: private"';
+      const workUnit = workUnitAsyncStorage.getStore();
+      const isPrerenderWorkUnit =
+        workUnit?.type === "prerender" ||
+        workUnit?.type === "prerender-client" ||
+        workUnit?.type === "prerender-runtime";
+      if (isPrerenderWorkUnit) {
+        if (isRouteCacheabilityProbe()) {
+          recordRouteCacheabilityProbeBailout("private-cache", {
+            cacheable: false,
+            dynamicUsage: true,
+            reason: `${expression} requires request-time execution`,
+          });
+        }
+        workUnit.signalPrerenderBailout?.(expression);
+        return new Promise<TResult>(() => {});
+      }
+      const fallbackShellPromise = createPprFallbackShellSuspensePromise<TResult>(expression);
+      if (fallbackShellPromise) return fallbackShellPromise;
       if (isRouteCacheabilityProbe()) {
-        recordRouteCacheability({
+        recordRouteCacheabilityProbeBailout("private-cache", {
           cacheable: false,
           dynamicUsage: true,
-          reason: '"use cache: private" requires request-time execution',
+          classificationFailure: true,
+          reason: `${expression} probe was not running in a prerender work unit`,
         });
-        throw new DynamicServerError('"use cache: private" requires request-time execution');
+        return new Promise<TResult>(() => {});
       }
     }
 
