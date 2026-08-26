@@ -208,6 +208,26 @@ describe("App Router dynamic requests", () => {
     expect(runTransform("server", "/app/node_modules/transpiled/index.js")).toBeTruthy();
   });
 
+  it("does not fold unrelated require calls admitted only for URL import normalization", () => {
+    const transform = createIgnoreDynamicRequestsPlugin().transform;
+    if (!transform || typeof transform === "function") {
+      throw new Error("dynamic request transform hook not found");
+    }
+    const source = [
+      `const loaded = require(String.fromCharCode(46, 47, 118, 97, 108, 117, 101));`,
+      `void import(new URL("./component.js", import.meta.url).href);`,
+    ].join("\n");
+    const result = transform.handler.call(
+      { environment: { config: { consumer: "client" } } } as never,
+      source,
+      "/app/page.tsx",
+    );
+    const code = typeof result === "object" && result && "code" in result ? result.code : result;
+
+    expect(code).toContain(`require(String.fromCharCode(46, 47, 118, 97, 108, 117, 101))`);
+    expect(code).toContain(`import("./component.js")`);
+  });
+
   it("only rewrites fully dynamic unbound requests", () => {
     expect(
       _transformVeryDynamicRequests("export const value = getValue();", "/app/page.tsx"),
@@ -630,12 +650,13 @@ require(/* @vite-ignore */ request);
     expect(transformed?.match(/Cannot find module as expression is too dynamic/g)).toHaveLength(1);
   });
 
-  it("honors the last explicit dynamic request ignore value at runtime", () => {
+  it("tracks explicit dynamic request ignore values per bundler", () => {
     const transformed = _transformVeryDynamicRequests(
       `const request = getRequest();
 const loaded = [];
 loaded.push(require(/* webpackIgnore: false */ /* turbopackIgnore: true */ request));
-try { require(/* turbopackIgnore: true */ /* webpackIgnore: false */ request); } catch (error) {
+loaded.push(require(/* turbopackIgnore: true */ /* webpackIgnore: false */ request));
+try { require(/* webpackIgnore: true */ /* webpackIgnore: false */ request); } catch (error) {
   loaded.push(error.message);
 }
 `,
@@ -648,7 +669,11 @@ try { require(/* turbopackIgnore: true */ /* webpackIgnore: false */ request); }
         getRequest: () => "ignored-module",
         require: (request: string) => request,
       }),
-    ).toEqual(["ignored-module", "Cannot find module as expression is too dynamic"]);
+    ).toEqual([
+      "ignored-module",
+      "ignored-module",
+      "Cannot find module as expression is too dynamic",
+    ]);
   });
 
   it("preserves require calls shadowed by switch, class, and static block bindings", () => {

@@ -1,7 +1,7 @@
 // Ported from Next.js: test/e2e/og-routes-custom-font/app/app/og/route.js
 // https://github.com/vercel/next.js/blob/canary/test/e2e/og-routes-custom-font/app/app/og/route.js
 //
-// Regression coverage for the vinext:og-inline-fetch-assets plugin handling of
+// Regression coverage for import-meta fetched-asset handling of
 // ../-relative font asset paths. The font lives at the example root
 // (assets/noto-sans.ttf) — three directories up from this route file — and is
 // loaded with `fetch(new URL("../../../assets/noto-sans.ttf", import.meta.url))`.

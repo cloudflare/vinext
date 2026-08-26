@@ -20,6 +20,11 @@ import {
 import { createTransformCache } from "./transform-cache.js";
 import { magicStringTransformResult } from "./transform-result.js";
 import {
+  hasBundlerIgnoreInNewUrl,
+  hasDynamicRequestIgnoreDirective,
+  relativeDynamicImportUrlSpecifier,
+} from "./import-meta-url-syntax.js";
+import {
   collectDirectScopeBindings,
   collectLoopScopeBindings,
   collectSwitchScopeBindings,
@@ -29,6 +34,7 @@ import {
   type AstScope,
 } from "./ast-scope.js";
 import { stripViteModuleQuery } from "../utils/path.js";
+import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
 const REQUIRE_PRESCAN =
@@ -175,81 +181,6 @@ function isUnboundStringRawTag(value: unknown, scope: Scope): boolean {
     !hasAstBinding(scope, "String") &&
     isIdentifierNamed(property, "raw")
   );
-}
-
-function hasDynamicRequestIgnoreDirective(
-  code: string,
-  requestNode: AstRecord,
-  argumentNode: AstRecord,
-): boolean {
-  if (!hasRange(requestNode) || !hasRange(argumentNode)) return false;
-  const comments: string[] = [];
-  const callee = astNode(requestNode.callee);
-  let index =
-    callee && hasRange(callee)
-      ? callee.end
-      : requestNode.type === "ImportExpression"
-        ? requestNode.start + "import".length
-        : requestNode.start;
-
-  while (index < argumentNode.start) {
-    if (/\s/.test(code[index])) {
-      index++;
-      continue;
-    }
-    if (code.startsWith("/*", index)) {
-      const end = code.indexOf("*/", index + 2);
-      if (end === -1 || end + 2 > argumentNode.start) return false;
-      index = end + 2;
-      continue;
-    }
-    if (code.startsWith("//", index)) {
-      while (index < argumentNode.start && code[index] !== "\n" && code[index] !== "\r") index++;
-      continue;
-    }
-    break;
-  }
-  if (code[index] !== "(") return false;
-  index++;
-
-  while (index < argumentNode.start) {
-    if (/\s/.test(code[index])) {
-      index++;
-      continue;
-    }
-    if (code.startsWith("/*", index)) {
-      const end = code.indexOf("*/", index + 2);
-      if (end === -1 || end + 2 > argumentNode.start) return false;
-      comments.push(code.slice(index + 2, end));
-      index = end + 2;
-      continue;
-    }
-    if (code.startsWith("//", index)) {
-      let end = index + 2;
-      while (end < argumentNode.start && code[end] !== "\n" && code[end] !== "\r") end++;
-      comments.push(code.slice(index + 2, end));
-      index = end;
-      continue;
-    }
-    return false;
-  }
-
-  let ignore: boolean | undefined;
-  for (const comment of comments) {
-    const text = comment.trim();
-    if (text === "@vite-ignore" && requestNode.type === "ImportExpression") {
-      ignore = true;
-      continue;
-    }
-    const separator = text.indexOf(":");
-    if (separator === -1) continue;
-    const directive = text.slice(0, separator).trim();
-    if (directive !== "webpackIgnore" && directive !== "turbopackIgnore") continue;
-    const value = text.slice(separator + 1).trim();
-    if (value === "true") ignore = true;
-    else if (value === "false") ignore = false;
-  }
-  return ignore === true;
 }
 
 function templateHasStaticPart(
@@ -731,7 +662,7 @@ function dynamicImportReplacement(): string {
   return `Promise.resolve().then(() => { const error = new Error(${JSON.stringify(DYNAMIC_REQUEST_ERROR)}); error.code = "MODULE_NOT_FOUND"; throw error; })`;
 }
 
-function transformVeryDynamicRequests(code: string, id: string) {
+function transformVeryDynamicRequests(code: string, id: string, replaceUnknownRequests = true) {
   // Pre-parse gate. `require` stays a broad substring check (it also covers
   // aliasing and comment-separated `require/* … */(`), but the `import` side is
   // narrowed to dynamic-call syntax via the shared `mayContainDynamicImport`:
@@ -751,6 +682,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
   let changed = false;
   const root = astNode(ast);
   if (!root) return null;
+  const normalizeUrlImports = !VIRTUAL_MODULE_ID_RE.test(id);
   const rootScope: Scope = { parent: null, bindings: new Set(), constants: new Map() };
   collectDirectBindings(root, rootScope);
   collectVarScopeBindings(root, rootScope);
@@ -845,6 +777,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
         const resolvedRequest = stringFromCharCodeValue(argumentsList[0], scope);
         const argument = astNode(argumentsList[0]);
         if (
+          replaceUnknownRequests &&
           resolvedRequest !== null &&
           resolvedRequest.replaceAll("\\", "/") !== "/" &&
           argument &&
@@ -854,7 +787,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
           changed = true;
           return;
         }
-        if (!requestHasStaticPart(argumentsList[0], scope)) {
+        if (replaceUnknownRequests && !requestHasStaticPart(argumentsList[0], scope)) {
           output.overwrite(node.start, node.end, dynamicRequireReplacement());
           changed = true;
           return;
@@ -862,15 +795,29 @@ function transformVeryDynamicRequests(code: string, id: string) {
       }
     }
 
-    if (
-      node.type === "ImportExpression" &&
-      hasRange(node) &&
-      !hasDynamicRequestIgnoreDirective(code, node, node.source as AstRecord) &&
-      !requestHasStaticPart(node.source, scope)
-    ) {
-      output.overwrite(node.start, node.end, dynamicImportReplacement());
-      changed = true;
-      return;
+    if (node.type === "ImportExpression" && hasRange(node)) {
+      const source = astNode(node.source);
+      if (source && !hasDynamicRequestIgnoreDirective(code, node, source)) {
+        const urlSpecifier = relativeDynamicImportUrlSpecifier(source);
+        if (urlSpecifier !== null) {
+          if (isAstRecord(node.options)) visit(node.options, scope);
+          if (
+            normalizeUrlImports &&
+            !hasAstBinding(scope, "URL") &&
+            hasRange(source) &&
+            !hasBundlerIgnoreInNewUrl(code, source)
+          ) {
+            output.overwrite(source.start, source.end, JSON.stringify(urlSpecifier));
+            changed = true;
+          }
+          return;
+        }
+        if (replaceUnknownRequests && !requestHasStaticPart(source, scope)) {
+          output.overwrite(node.start, node.end, dynamicImportReplacement());
+          changed = true;
+          return;
+        }
+      }
     }
 
     forEachAstChild(node, (child) => visit(child, scope));
@@ -887,7 +834,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
 export function createIgnoreDynamicRequestsPlugin(
   getTranspiledPackages: () => readonly string[] = () => [],
 ): Plugin {
-  const cached = createTransformCache<undefined, ReturnType<typeof transformVeryDynamicRequests>>();
+  const cached = createTransformCache<boolean, ReturnType<typeof transformVeryDynamicRequests>>();
 
   return {
     name: "vinext:ignore-dynamic-requests",
@@ -902,12 +849,14 @@ export function createIgnoreDynamicRequestsPlugin(
       handler(code, id) {
         const cleanId = stripViteModuleQuery(id);
         if (scriptParserLanguage(cleanId) === null) return null;
+        const replaceUnknownRequests = shouldTransformVeryDynamicRequests(
+          this.environment as EnvironmentLike,
+          cleanId,
+          getTranspiledPackages(),
+        );
         if (
-          !shouldTransformVeryDynamicRequests(
-            this.environment as EnvironmentLike,
-            cleanId,
-            getTranspiledPackages(),
-          )
+          !replaceUnknownRequests &&
+          (!code.includes("new") || !code.includes("import") || !code.includes("meta"))
         ) {
           return null;
         }
@@ -919,7 +868,9 @@ export function createIgnoreDynamicRequestsPlugin(
         ) {
           return null;
         }
-        return cached(id, code, undefined, () => transformVeryDynamicRequests(code, id));
+        return cached(id, code, replaceUnknownRequests, () =>
+          transformVeryDynamicRequests(code, id, replaceUnknownRequests),
+        );
       },
     },
   };

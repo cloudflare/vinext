@@ -29,17 +29,38 @@ import { canonicalizeFilePath, isPathInsideOrEqual, stripViteModuleQuery } from 
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
 import {
   collectBindingNames,
+  directivePrologueEnd,
   forEachAstChild,
   hasRange,
   isAstRecord,
-  isIdentifierNamed,
+  mayContainDynamicImport,
   nodeArray,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   type AstRange,
   type AstRecord,
 } from "./ast-utils.js";
+import {
+  collectDirectScopeBindings,
+  collectLoopScopeBindings,
+  collectSwitchScopeBindings,
+  collectVarScopeBindings,
+  createAstScope,
+  hasAstBinding,
+  isFunctionNode,
+  type AstScope,
+} from "./ast-scope.js";
 import { magicStringTransformResult, type MagicStringTransformResult } from "./transform-result.js";
+import { ImportMetaAssetTransformer, type ImportMetaAssetRewrite } from "./import-meta-assets.js";
+import type { OgAssetOwnership } from "./og-asset-ownership.js";
+import {
+  hasBundlerIgnoreInNewUrl,
+  hasDynamicRequestIgnoreDirective,
+  isImportMetaUrlNode,
+  isImportMetaUrlOrChainedNode,
+  isNewUrlExpression,
+  relativeDynamicImportUrlSpecifier,
+} from "./import-meta-url-syntax.js";
 
 type ImportMetaUrlEnvironment = "client" | "server";
 type ModuleIdentityTransformKind =
@@ -72,6 +93,8 @@ export type ImportMetaUrlCapability = {
   vitePlugin: Plugin;
   /** Thin adapter for Vite's independent dependency-optimizer Rolldown pipeline. */
   optimizeDepsPlugin: Plugin;
+  /** Dynamic-import-only adapter for client dependency optimization. */
+  clientOptimizeDepsPlugin: Plugin;
   /** Cached dependency identity/format classifier shared by both plugin pipelines. */
   isBundledCommonJsDependencyId: (id: string) => boolean;
 };
@@ -83,6 +106,7 @@ export type EmittedModuleFileNameResolver = (
 
 const MAX_DEPENDENCY_FORMAT_CACHE_ENTRIES = 512;
 const MAX_TRANSFORM_CACHE_ENTRIES = 2_048;
+const MAX_ASSET_AST_CACHE_SOURCE_UNITS = 2 * 1024 * 1024;
 
 // This block-comment expression cannot span an earlier closing delimiter. Keep
 // it deterministic: this regex runs in native hook filters and the JS fast
@@ -91,6 +115,11 @@ const MAX_TRANSFORM_CACHE_ENTRIES = 2_048;
 const BLOCK_COMMENT_PATTERN = String.raw`\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/`;
 const JAVASCRIPT_TRIVIA_PATTERN = String.raw`(?:\s|${BLOCK_COMMENT_PATTERN}|\/\/[^\r\n\u2028\u2029]*)*`;
 const UNICODE_IDENTIFIER_ESCAPE_PATTERN = String.raw`\\u(?:[\dA-Fa-f]{4}|\{[\dA-Fa-f]+\})`;
+const JAVASCRIPT_IDENTIFIER_CONTINUE_PATTERN = String.raw`[\p{ID_Continue}$\u200C\u200D\\]`;
+const FETCH_IDENTIFIER_CANDIDATE_RE = new RegExp(
+  String.raw`(?<!${JAVASCRIPT_IDENTIFIER_CONTINUE_PATTERN})(?:f|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:e|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:t|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:c|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:h|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?!${JAVASCRIPT_IDENTIFIER_CONTINUE_PATTERN})`,
+  "u",
+);
 const IMPORT_META_URL_CANDIDATE_PATTERN = String.raw`\bimport${JAVASCRIPT_TRIVIA_PATTERN}\.${JAVASCRIPT_TRIVIA_PATTERN}meta${JAVASCRIPT_TRIVIA_PATTERN}\??\.${JAVASCRIPT_TRIVIA_PATTERN}(?:u|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:r|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:l|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})`;
 const IMPORT_META_URL_CANDIDATE_RE = new RegExp(IMPORT_META_URL_CANDIDATE_PATTERN, "u");
 const SOURCE_IDENTITY_FILTER_RE = new RegExp(
@@ -99,6 +128,7 @@ const SOURCE_IDENTITY_FILTER_RE = new RegExp(
 );
 export function createImportMetaUrlPlugin(options: {
   getRoot: () => string | undefined;
+  assetOwnership?: OgAssetOwnership;
   createEmittedModuleFileNameResolver?: (
     config: ResolvedConfig,
   ) => EmittedModuleFileNameResolver | undefined;
@@ -110,6 +140,8 @@ export function createImportMetaUrlPlugin(options: {
   // allocating and hashing a composite string containing both full paths.
   // Replacing the entry also bounds each raw id to one source/path combination.
   const transformCache = new Map<string, ImportMetaUrlCacheEntry>();
+  const assetAstCache = new Map<string, { source: string; value: AstRecord }>();
+  let assetAstCacheSourceUnits = 0;
   // Canonical dependency paths and package metadata are immutable for the lifetime of a Vite config. A config
   // restart creates a new capability and cache, so package.json edits are not
   // retained across restarts. Cap the rare token-bearing dependency set to
@@ -123,6 +155,11 @@ export function createImportMetaUrlPlugin(options: {
   // The fixed-size provenance state stays valid for cached transforms and every
   // output of the capability.
   const emittedModuleIdentity = createEmittedModuleIdentity();
+  const assetTransformer = options.assetOwnership
+    ? new ImportMetaAssetTransformer({
+        ownership: options.assetOwnership,
+      })
+    : undefined;
   function dependencyModule(id: string): DependencyModuleCacheEntry["value"] {
     const cleanId = stripViteModuleQuery(id);
     const paths = getRootPaths();
@@ -162,25 +199,53 @@ export function createImportMetaUrlPlugin(options: {
 
   const vitePlugin: Plugin = {
     name: "vinext:import-meta-url",
-    enforce: "post",
     configResolved(config) {
       const root = options.getRoot() ?? config.root;
       const environments = Object.entries(config.environments ?? {});
       outputDirs = [
-        config.build.outDir,
+        config.build?.outDir ?? "dist",
         ...environments.map(([, environment]) => environment.build.outDir),
       ];
       resolveEmittedModuleFileName =
         options.createEmittedModuleFileNameResolver?.(config) ?? ((_, fileName) => fileName);
       rootPaths = createRootPaths(root, { outputDirs });
+      assetTransformer?.configResolved(config);
     },
-    watchChange() {
+    buildStart() {
+      assetTransformer?.buildStart();
+    },
+    resolveId: {
+      order: "pre",
+      async handler(source, importer, resolveOptions) {
+        if (!options.assetOwnership?.shouldTrackImport(source)) return null;
+        const resolved = await this.resolve(source, importer, {
+          ...resolveOptions,
+          skipSelf: true,
+        });
+        if (resolved === null || resolved.external) return null;
+        await options.assetOwnership.recordResolvedImport(source, resolved.id);
+        return null;
+      },
+    },
+    watchChange(id) {
       // Package scope and symlink targets can change while a dev server stays
       // alive. The next rare CJS-global-bearing dependency reclassifies from
       // disk; ordinary transforms still use the cache between watch events.
       dependencyModuleCache.clear();
+      assetTransformer?.forgetImporter(id);
+    },
+    hotUpdate({ file, modules }) {
+      const importers = assetTransformer?.importersForAsset(file);
+      if (!importers) return;
+      const affected = new Set(modules);
+      for (const importer of importers) {
+        const module = this.environment.moduleGraph.getModuleById(importer);
+        if (module) affected.add(module);
+      }
+      return [...affected];
     },
     transform: {
+      order: "post",
       filter: {
         id: {
           include: SCRIPT_MODULE_ID_RE,
@@ -196,79 +261,147 @@ export function createImportMetaUrlPlugin(options: {
 
         const cleanId = stripViteModuleQuery(id);
         const isServer = this.environment?.config?.consumer !== "client";
-        if (isServer) {
-          const dependency = dependencyModule(cleanId);
-          if (dependency) {
-            const importMetaUrlReplacement = mayContainImportMetaUrl(code)
-              ? this.environment.mode === "dev"
-                ? JSON.stringify(pathToFileURL(dependency.canonicalId).href)
-                : emittedModuleIdentity.importMetaUrlInitializer
-              : undefined;
-            const cjsGlobalInitializers =
-              dependency.isCommonJs && mayContainServerCjsGlobal(code)
+        const finishTransform = (
+          assetRewrites: readonly ImportMetaAssetRewrite[],
+          reusableAst?: AstRecord,
+        ): MagicStringTransformResult | null => {
+          const rewriteAssetsOnly = () =>
+            rewriteModuleIdentity(code, {
+              id: cleanId,
+              textRewrites: assetRewrites,
+              ast: reusableAst,
+            });
+          if (isServer) {
+            const dependency = dependencyModule(cleanId);
+            if (dependency) {
+              const importMetaUrlReplacement = mayContainImportMetaUrl(code)
                 ? this.environment.mode === "dev"
-                  ? sourcePathCjsGlobalInitializers(dependency.canonicalId)
-                  : emittedModuleIdentity.cjsGlobalInitializers
+                  ? JSON.stringify(pathToFileURL(dependency.canonicalId).href)
+                  : emittedModuleIdentity.importMetaUrlInitializer
                 : undefined;
-            if (importMetaUrlReplacement !== undefined || cjsGlobalInitializers) {
-              return rewriteModuleIdentity(code, {
-                id: dependency.canonicalId,
-                importMetaUrlReplacement,
-                cjsGlobalInitializers,
-              });
+              const cjsGlobalInitializers =
+                dependency.isCommonJs && mayContainServerCjsGlobal(code)
+                  ? this.environment.mode === "dev"
+                    ? sourcePathCjsGlobalInitializers(dependency.canonicalId)
+                    : emittedModuleIdentity.cjsGlobalInitializers
+                  : undefined;
+              if (importMetaUrlReplacement !== undefined || cjsGlobalInitializers) {
+                return (
+                  rewriteModuleIdentity(code, {
+                    id: dependency.canonicalId,
+                    importMetaUrlReplacement,
+                    cjsGlobalInitializers,
+                    textRewrites: assetRewrites,
+                    ast: reusableAst,
+                  }) ?? null
+                );
+              }
+            }
+          }
+          if (isNodeModulesId(cleanId)) return rewriteAssetsOnly();
+
+          const paths = getRootPaths();
+          if (!paths) return rewriteAssetsOnly();
+          const canonicalId = transformableModuleCanonicalId(cleanId, paths);
+          if (!canonicalId) return rewriteAssetsOnly();
+
+          const environment: ImportMetaUrlEnvironment =
+            this.environment?.name === "client" ? "client" : "server";
+          const explicitCommonJs = [".cjs", ".cts"].includes(path.extname(canonicalId));
+          const transformKind: ModuleIdentityTransformKind =
+            environment === "client"
+              ? "client"
+              : explicitCommonJs
+                ? this.environment.mode === "dev"
+                  ? "server-cjs-dev"
+                  : "server-cjs-build"
+                : this.environment.mode === "dev"
+                  ? "server-dev"
+                  : "server-build";
+          let entry = transformCache.get(id);
+          if (
+            !entry ||
+            entry.source !== code ||
+            entry.canonicalRoot !== paths.canonicalRoot ||
+            entry.canonicalId !== canonicalId
+          ) {
+            entry = {
+              source: code,
+              canonicalRoot: paths.canonicalRoot,
+              canonicalId,
+              results: new Map(),
+            };
+            setBoundedCacheEntry(transformCache, id, entry, MAX_TRANSFORM_CACHE_ENTRIES);
+          }
+
+          const cached = assetRewrites.length === 0 ? entry.results.get(transformKind) : undefined;
+          if (cached) return cached.value;
+
+          const value = rewriteCanonicalSourceIdentity(
+            code,
+            canonicalId,
+            paths,
+            environment,
+            this.environment.mode === "build" && mayContainServerCjsGlobal(code)
+              ? emittedModuleIdentity.cjsGlobalInitializers
+              : sourcePathCjsGlobalInitializers(canonicalId),
+            assetRewrites,
+            reusableAst,
+          );
+          if (assetRewrites.length === 0) entry.results.set(transformKind, { value });
+          return value;
+        };
+
+        let reusableAst: AstRecord | null = null;
+        if (isServer && assetTransformer && !_mayContainFetchIdentifier(code)) {
+          assetTransformer.clearImporterAssets(this, id);
+          const previous = assetAstCache.get(id);
+          if (previous) {
+            assetAstCache.delete(id);
+            assetAstCacheSourceUnits -= previous.source.length;
+          }
+        } else if (isServer && assetTransformer) {
+          const cachedAst = assetAstCache.get(id);
+          if (cachedAst?.source === code) {
+            reusableAst = cachedAst.value;
+          } else {
+            reusableAst = parseAssetBearingModule(code, cleanId);
+            const previous = assetAstCache.get(id);
+            if (previous) {
+              assetAstCache.delete(id);
+              assetAstCacheSourceUnits -= previous.source.length;
+            }
+            if (reusableAst && code.length <= MAX_ASSET_AST_CACHE_SOURCE_UNITS) {
+              while (
+                assetAstCache.size > 0 &&
+                (assetAstCache.size >= MAX_TRANSFORM_CACHE_ENTRIES ||
+                  assetAstCacheSourceUnits + code.length > MAX_ASSET_AST_CACHE_SOURCE_UNITS)
+              ) {
+                const oldestKey = assetAstCache.keys().next().value;
+                if (oldestKey === undefined) break;
+                const oldest = assetAstCache.get(oldestKey);
+                assetAstCache.delete(oldestKey);
+                if (oldest) assetAstCacheSourceUnits -= oldest.source.length;
+              }
+              assetAstCache.set(id, { source: code, value: reusableAst });
+              assetAstCacheSourceUnits += code.length;
             }
           }
         }
-        if (isNodeModulesId(cleanId)) return null;
-
-        const paths = getRootPaths();
-        if (!paths) return null;
-        const canonicalId = transformableModuleCanonicalId(cleanId, paths);
-        if (!canonicalId) return null;
-
-        const environment: ImportMetaUrlEnvironment =
-          this.environment?.name === "client" ? "client" : "server";
-        const explicitCommonJs = [".cjs", ".cts"].includes(path.extname(canonicalId));
-        const transformKind: ModuleIdentityTransformKind =
-          environment === "client"
-            ? "client"
-            : explicitCommonJs
-              ? this.environment.mode === "dev"
-                ? "server-cjs-dev"
-                : "server-cjs-build"
-              : this.environment.mode === "dev"
-                ? "server-dev"
-                : "server-build";
-        let entry = transformCache.get(id);
-        if (
-          !entry ||
-          entry.source !== code ||
-          entry.canonicalRoot !== paths.canonicalRoot ||
-          entry.canonicalId !== canonicalId
-        ) {
-          entry = {
-            source: code,
-            canonicalRoot: paths.canonicalRoot,
-            canonicalId,
-            results: new Map(),
-          };
-          setBoundedCacheEntry(transformCache, id, entry, MAX_TRANSFORM_CACHE_ENTRIES);
+        if (reusableAst && assetTransformer) {
+          return assetTransformer
+            .collectRewrites(
+              this,
+              code,
+              id,
+              reusableAst,
+              this.environment.mode === "build"
+                ? emittedModuleIdentity.importMetaUrlInitializer
+                : JSON.stringify(pathToFileURL(cleanId).href),
+            )
+            .then((assetRewrites) => finishTransform(assetRewrites, reusableAst));
         }
-
-        const cached = entry.results.get(transformKind);
-        if (cached) return cached.value;
-
-        const value = rewriteCanonicalSourceIdentity(
-          code,
-          canonicalId,
-          paths,
-          environment,
-          this.environment.mode === "build" && mayContainServerCjsGlobal(code)
-            ? emittedModuleIdentity.cjsGlobalInitializers
-            : sourcePathCjsGlobalInitializers(canonicalId),
-        );
-        entry.results.set(transformKind, { value });
-        return value;
+        return finishTransform([]);
       },
     },
     renderChunk: {
@@ -303,17 +436,20 @@ export function createImportMetaUrlPlugin(options: {
       handler(code, id) {
         if (!mayContainSourceIdentityToken(code)) return null;
         const dependency = dependencyModule(id);
-        if (!dependency) return null;
-        return rewriteModuleIdentity(code, {
-          id: dependency.canonicalId,
-          importMetaUrlReplacement: mayContainImportMetaUrl(code)
-            ? emittedModuleIdentity.importMetaUrlInitializer
-            : undefined,
-          cjsGlobalInitializers:
-            dependency.isCommonJs && mayContainServerCjsGlobal(code)
-              ? emittedModuleIdentity.cjsGlobalInitializers
+        if (!dependency) return rewriteDynamicImportUrls(code, id);
+        return (
+          rewriteModuleIdentity(code, {
+            id: dependency.canonicalId,
+            importMetaUrlReplacement: mayContainImportMetaUrl(code)
+              ? emittedModuleIdentity.importMetaUrlInitializer
               : undefined,
-        });
+            cjsGlobalInitializers:
+              dependency.isCommonJs && mayContainServerCjsGlobal(code)
+                ? emittedModuleIdentity.cjsGlobalInitializers
+                : undefined,
+            normalizeDynamicImportUrls: true,
+          }) ?? null
+        );
       },
     },
     renderChunk: {
@@ -329,11 +465,36 @@ export function createImportMetaUrlPlugin(options: {
     },
   };
 
+  const clientOptimizeDepsPlugin: Plugin = {
+    name: "vinext:import-meta-url:client-optimize-deps",
+    transform: {
+      filter: {
+        id: /\.(?:[cm]?[jt]s|[jt]sx)(?:\?.*)?$/,
+        code: IMPORT_META_URL_CANDIDATE_RE,
+      },
+      handler(code, id) {
+        if (!mayContainImportMetaUrl(code)) return null;
+        return rewriteDynamicImportUrls(code, id);
+      },
+    },
+  };
+
   return {
     vitePlugin,
     optimizeDepsPlugin,
+    clientOptimizeDepsPlugin,
     isBundledCommonJsDependencyId: (id) => commonJsDependencyCanonicalId(id) !== null,
   };
+}
+
+// Exported for focused tests; the production plugin calls this after the
+// dynamic-request fallback has explicitly admitted this static form.
+export function rewriteDynamicImportUrls(
+  code: string,
+  id: string,
+): MagicStringTransformResult | null {
+  if (!mayContainDynamicImport(code)) return null;
+  return rewriteModuleIdentity(code, { id, normalizeDynamicImportUrls: true });
 }
 
 // Test-only entry point. Delegates to the same transform the plugin runs so
@@ -371,12 +532,112 @@ export function rewriteServerCjsGlobals(
   return rewriteCanonicalSourceIdentity(code, canonicalId, rootPaths, "server");
 }
 
+type DynamicImportUrlSpecifier = AstRange & { specifier: string };
+
+// A literal relative module URL has the same ESM identity as its relative
+// specifier:
+//   import(new URL("./style.css", import.meta.url).href)
+//   import("./style.css")
+//
+// Normalizing this lets Vite resolve and emit the dependency. The earlier
+// generic dynamic-request fallback uses the shared syntax matcher to admit the
+// same form without owning a second transform.
+function collectDynamicImportUrlSpecifiers(
+  ast: unknown,
+  code: string,
+  id: string,
+): DynamicImportUrlSpecifier[] {
+  const specifiers: DynamicImportUrlSpecifier[] = [];
+  if (VIRTUAL_MODULE_ID_RE.test(id)) return specifiers;
+  if (!isAstRecord(ast)) return specifiers;
+  const rootScope = createAstScope(null);
+  collectDirectScopeBindings(ast, rootScope);
+  collectVarScopeBindings(ast, rootScope);
+
+  function visit(value: unknown, parentScope: AstScope): void {
+    if (!isAstRecord(value)) return;
+    if (isFunctionNode(value)) {
+      const parameterScope = createAstScope(parentScope);
+      collectBindingNames(value.id, parameterScope.bindings);
+      for (const parameter of nodeArray(value.params)) {
+        collectBindingNames(parameter, parameterScope.bindings);
+      }
+      for (const parameter of nodeArray(value.params)) visit(parameter, parameterScope);
+      if (isAstRecord(value.body)) {
+        const bodyScope = createAstScope(parameterScope);
+        if (value.body.type === "BlockStatement") {
+          collectDirectScopeBindings(value.body, bodyScope);
+          collectVarScopeBindings(value.body, bodyScope);
+        }
+        visit(value.body, bodyScope);
+      }
+      return;
+    }
+
+    let scope = parentScope;
+    if (value.type === "SwitchStatement") {
+      if (isAstRecord(value.discriminant)) visit(value.discriminant, parentScope);
+      const switchScope = createAstScope(parentScope);
+      collectSwitchScopeBindings(value, switchScope);
+      for (const switchCase of nodeArray(value.cases)) visit(switchCase, switchScope);
+      return;
+    }
+    if (
+      value !== ast &&
+      (value.type === "BlockStatement" ||
+        value.type === "StaticBlock" ||
+        value.type === "TSModuleBlock")
+    ) {
+      scope = createAstScope(parentScope);
+      collectDirectScopeBindings(value, scope);
+      if (value.type === "StaticBlock" || value.type === "TSModuleBlock") {
+        collectVarScopeBindings(value, scope);
+      }
+    } else if (value.type === "CatchClause") {
+      scope = createAstScope(parentScope);
+      collectBindingNames(value.param, scope.bindings);
+    } else if (
+      value.type === "ForStatement" ||
+      value.type === "ForInStatement" ||
+      value.type === "ForOfStatement"
+    ) {
+      scope = createAstScope(parentScope);
+      collectLoopScopeBindings(value, scope);
+    } else if (value.type === "ClassExpression" && isAstRecord(value.id)) {
+      scope = createAstScope(parentScope);
+      collectBindingNames(value.id, scope.bindings);
+    }
+
+    const source = isAstRecord(value.source) ? value.source : null;
+    if (value.type === "ImportExpression" && hasRange(source)) {
+      const specifier = relativeDynamicImportUrlSpecifier(source);
+      if (
+        specifier !== null &&
+        !hasAstBinding(scope, "URL") &&
+        !hasDynamicRequestIgnoreDirective(code, value, source) &&
+        !hasBundlerIgnoreInNewUrl(code, source)
+      ) {
+        if (isAstRecord(value.options)) visit(value.options, scope);
+        specifiers.push({ ...source, specifier });
+        return;
+      }
+    }
+
+    forEachAstChild(value, (child) => visit(child, scope));
+  }
+
+  for (const statement of nodeArray(ast.body)) visit(statement, rootScope);
+  return specifiers;
+}
+
 function rewriteCanonicalSourceIdentity(
   code: string,
   canonicalId: string,
   rootPaths: RootPaths,
   environment: ImportMetaUrlEnvironment,
   cjsGlobalInitializers?: CjsGlobalInitializers,
+  textRewrites: readonly ImportMetaAssetRewrite[] = [],
+  ast?: AstRecord,
 ): MagicStringTransformResult | null {
   return rewriteModuleIdentity(code, {
     id: canonicalId,
@@ -387,6 +648,8 @@ function rewriteCanonicalSourceIdentity(
       environment === "server" && mayContainServerCjsGlobal(code)
         ? (cjsGlobalInitializers ?? sourcePathCjsGlobalInitializers(canonicalId))
         : undefined,
+    textRewrites,
+    ast,
   });
 }
 
@@ -514,40 +777,92 @@ function finalizeEmittedModuleIdentity(
   return magicStringTransformResult(output);
 }
 
+function parseAssetBearingModule(code: string, id: string): AstRecord | null {
+  if (!code.includes("new") || !mayContainImportMetaUrl(code)) return null;
+  const lang = scriptParserLanguage(id);
+  if (lang === null) return null;
+  try {
+    const ast = parseAst(code, { lang });
+    return isAstRecord(ast) ? ast : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseModuleIdentityAst(
+  code: string,
+  id: string,
+  cjsGlobalInitializers?: CjsGlobalInitializers,
+): AstRecord | null {
+  const lang = scriptParserLanguage(id) ?? "jsx";
+  try {
+    const ast = parseAst(code, {
+      lang,
+      sourceType: cjsGlobalInitializers ? "commonjs" : undefined,
+    });
+    return isAstRecord(ast) ? ast : null;
+  } catch {
+    if (!cjsGlobalInitializers) return null;
+    try {
+      // Project modules can intentionally use Node globals alongside ESM-only
+      // syntax such as top-level await. Raw dependencies can instead contain
+      // CommonJS-only syntax such as a top-level return, so accept either
+      // grammar without weakening the binding analysis.
+      const ast = parseAst(code, { lang });
+      return isAstRecord(ast) ? ast : null;
+    } catch {
+      return null;
+    }
+  }
+}
+
 function rewriteModuleIdentity(
   code: string,
   options: {
     id: string;
     importMetaUrlReplacement?: string;
     cjsGlobalInitializers?: CjsGlobalInitializers;
+    normalizeDynamicImportUrls?: boolean;
+    textRewrites?: readonly ImportMetaAssetRewrite[];
+    ast?: AstRecord;
   },
 ): MagicStringTransformResult | null {
-  let ast: unknown;
-  try {
-    ast = parseAst(code, {
-      lang: scriptParserLanguage(options.id) ?? "jsx",
-      sourceType: options.cjsGlobalInitializers ? "commonjs" : undefined,
-    });
-  } catch {
-    if (!options.cjsGlobalInitializers) return null;
-    try {
-      // Project modules can intentionally use Node globals alongside ESM-only
-      // syntax such as top-level await. Raw dependencies can instead contain
-      // CommonJS-only syntax such as a top-level return, so accept either
-      // grammar without weakening the binding analysis.
-      ast = parseAst(code, { lang: scriptParserLanguage(options.id) ?? "jsx" });
-    } catch {
-      return null;
-    }
-  }
+  const ast =
+    options.ast ?? parseModuleIdentityAst(code, options.id, options.cjsGlobalInitializers);
+  if (!ast) return null;
 
   const output = new MagicString(code);
   let changed = false;
+
+  for (const rewrite of options.textRewrites ?? []) {
+    if (rewrite.start === rewrite.end) output.appendLeft(rewrite.start, rewrite.replacement);
+    else output.overwrite(rewrite.start, rewrite.end, rewrite.replacement);
+    changed = true;
+  }
+
+  if (options.normalizeDynamicImportUrls && mayContainDynamicImport(code)) {
+    for (const dynamicImport of collectDynamicImportUrlSpecifiers(ast, code, options.id)) {
+      output.overwrite(
+        dynamicImport.start,
+        dynamicImport.end,
+        JSON.stringify(dynamicImport.specifier),
+      );
+      changed = true;
+    }
+  }
 
   if (options.importMetaUrlReplacement !== undefined) {
     const importMetaRanges = collectImportMetaUrlRanges(ast);
     if (importMetaRanges.length > 0) {
       for (const range of importMetaRanges) {
+        if (
+          options.textRewrites?.some(
+            (rewrite) =>
+              rewrite.start < rewrite.end && rewrite.start < range.end && range.start < rewrite.end,
+          )
+        ) {
+          continue;
+        }
         output.overwrite(range.start, range.end, options.importMetaUrlReplacement);
         changed = true;
       }
@@ -557,7 +872,7 @@ function rewriteModuleIdentity(
   if (options.cjsGlobalInitializers) {
     const injected = injectServerCjsGlobals(ast, options.cjsGlobalInitializers);
     if (injected) {
-      output.appendLeft(findDirectivePrologueEnd(ast), `\n${injected}`);
+      output.appendLeft(directivePrologueEnd(ast), `\n${injected}`);
       changed = true;
     }
   }
@@ -669,6 +984,11 @@ function mayContainImportMetaUrl(code: string): boolean {
   return IMPORT_META_URL_CANDIDATE_RE.test(code);
 }
 
+export function _mayContainFetchIdentifier(code: string): boolean {
+  if (!code.includes("fetch") && !code.includes(String.raw`\u`)) return false;
+  return FETCH_IDENTIFIER_CANDIDATE_RE.test(code);
+}
+
 function mayContainSourceIdentityToken(code: string): boolean {
   return mayContainImportMetaUrl(code) || mayContainServerCjsGlobal(code);
 }
@@ -740,7 +1060,9 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
     if (isNewUrlExpression(value)) {
       const args = nodeArray(value.arguments);
       for (let index = 0; index < args.length; index += 1) {
-        if (index === 1 && isImportMetaUrlBaseNode(args[index])) continue;
+        if (index === 1 && isImportMetaUrlBaseNode(args[index])) {
+          continue;
+        }
         visit(args[index]);
       }
       // The callee is always the bare `URL` identifier (see isNewUrlExpression),
@@ -967,35 +1289,6 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
   return { reads, moduleBindings };
 }
 
-function isImportMetaNode(value: unknown): boolean {
-  return (
-    isAstRecord(value) &&
-    value.type === "MetaProperty" &&
-    isIdentifierNamed(value.meta, "import") &&
-    isIdentifierNamed(value.property, "meta")
-  );
-}
-
-function isImportMetaUrlNode(value: unknown): value is AstRange {
-  return (
-    isAstRecord(value) &&
-    value.type === "MemberExpression" &&
-    hasRange(value) &&
-    isImportMetaNode(value.object) &&
-    isIdentifierNamed(value.property, "url")
-  );
-}
-
-// Accepts both import.meta.url (MemberExpression) and import.meta?.url
-// (ChainExpression wrapping a MemberExpression) so that the new URL() skip
-// correctly handles optional-chained base arguments.
-function isImportMetaUrlOrChainedNode(value: unknown): value is AstRange {
-  if (isImportMetaUrlNode(value)) return true;
-  return (
-    isAstRecord(value) && value.type === "ChainExpression" && isImportMetaUrlNode(value.expression)
-  );
-}
-
 function isImportMetaUrlBaseNode(value: unknown): boolean {
   if (isImportMetaUrlOrChainedNode(value)) return true;
 
@@ -1025,41 +1318,4 @@ function isChainExpressionWrappingImportMetaUrl(value: unknown): value is AstRan
     hasRange(value) &&
     isImportMetaUrlNode(value.expression)
   );
-}
-
-// Only matches bare `new URL(...)`, not `new globalThis.URL(...)` or
-// `new window.URL(...)`. Matches Vite's own asset-detection scope.
-function isNewUrlExpression(value: AstRecord): boolean {
-  return value.type === "NewExpression" && isIdentifierNamed(value.callee, "URL");
-}
-
-function findDirectivePrologueEnd(ast: unknown): number {
-  if (!isAstRecord(ast) || ast.type !== "Program") return 0;
-
-  // A shebang (`#!...`) lives outside ast.body but must stay the first bytes of
-  // the file, so the injection floor starts after it. Inserting at offset 0
-  // would move the shebang off line 1 and produce invalid output.
-  let end = 0;
-  const hashbang = ast.hashbang;
-  const hashbangEnd =
-    typeof hashbang === "object" && hashbang !== null ? Reflect.get(hashbang, "end") : null;
-  if (typeof hashbangEnd === "number") {
-    end = hashbangEnd;
-  }
-
-  for (const statement of nodeArray(ast.body)) {
-    if (
-      !isAstRecord(statement) ||
-      statement.type !== "ExpressionStatement" ||
-      !isAstRecord(statement.expression) ||
-      statement.expression.type !== "Literal" ||
-      typeof statement.expression.value !== "string" ||
-      typeof statement.end !== "number"
-    ) {
-      break;
-    }
-    end = statement.end;
-  }
-
-  return end;
 }

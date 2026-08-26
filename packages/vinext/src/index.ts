@@ -180,7 +180,8 @@ import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.j
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
-import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
+import { createOgInlineReadFileAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
+import { OgAssetOwnership } from "./plugins/og-asset-ownership.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
@@ -1483,14 +1484,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let pagesOptimizeEntries: string[] = [];
+  const fetchedAssetOwnership = new OgAssetOwnership();
   const importMetaUrlCapability = createImportMetaUrlPlugin({
     getRoot: () => root,
+    assetOwnership: fetchedAssetOwnership,
     createEmittedModuleFileNameResolver(config) {
-      if (!hasCloudflarePlugin || !hasAppDir) return undefined;
-      // The Cloudflare Worker module registry mounts every emitted server
-      // environment below the RSC output directory. Node and Nitro expose a
-      // readable native import.meta.filename and retain environment-relative
-      // chunk names as the compatibility fallback.
+      if (!hasAppDir) return undefined;
+      // Derive emitted module identities from the configured output layout.
+      // Environments outside this common root retain their own chunk names.
       const outputRoot =
         config.environments.rsc?.build.outDir ?? options.rscOutDir ?? "dist/server";
       return createServerEnvironmentFileNameResolver(config, outputRoot);
@@ -3599,23 +3600,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configEnvironment(name, config) {
-        if (name !== "client" && config.consumer !== "client") {
-          // optimizeDeps runs its own Rolldown pipeline, outside Vite's plugin
-          // container. Register only the thin adapter for the same module-
-          // identity capability; parsing, dependency classification, marker
-          // state, and emitted identity finalization stay shared with Vite.
-          config.optimizeDeps ??= {};
-          config.optimizeDeps.rolldownOptions ??= {};
-          const configuredPlugins = config.optimizeDeps.rolldownOptions.plugins;
-          config.optimizeDeps.rolldownOptions.plugins = [
-            ...(Array.isArray(configuredPlugins)
-              ? configuredPlugins
-              : configuredPlugins
-                ? [configuredPlugins]
-                : []),
-            importMetaUrlCapability.optimizeDepsPlugin,
-          ];
-        }
+        // optimizeDeps runs its own Rolldown pipeline, outside Vite's plugin
+        // container. Client dependencies need only the ordering-sensitive URL
+        // import normalization; server dependencies additionally need portable
+        // emitted-module identity and CommonJS globals.
+        config.optimizeDeps ??= {};
+        config.optimizeDeps.rolldownOptions ??= {};
+        const configuredPlugins = config.optimizeDeps.rolldownOptions.plugins;
+        config.optimizeDeps.rolldownOptions.plugins = [
+          ...(Array.isArray(configuredPlugins)
+            ? configuredPlugins
+            : configuredPlugins
+              ? [configuredPlugins]
+              : []),
+          name === "client" || config.consumer === "client"
+            ? importMetaUrlCapability.clientOptimizeDepsPlugin
+            : importMetaUrlCapability.optimizeDepsPlugin,
+        ];
 
         if (
           isServeCommand &&
@@ -6626,9 +6627,11 @@ export const loadServerActionClient = ${
     // Expand Webpack's build-time `require.context(...)` into a static module
     // map backed by `import.meta.glob` — see src/plugins/require-context.ts
     createRequireContextPlugin(),
-    // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
-    // see src/plugins/og-assets.ts
-    createOgInlineFetchAssetsPlugin(),
+    // The import-meta capability owns fetch(new URL(...)) rewrites. Keep this
+    // legacy OG helper only for its fileURLToPath/readFileSync fallback.
+    createOgInlineReadFileAssetsPlugin(fetchedAssetOwnership, {
+      manageOwnership: false,
+    }),
     // Dedupe/copy @vercel/og binary WASM assets in the RSC output — see src/plugins/og-assets.ts
     createOgAssetsPlugin(),
     // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.

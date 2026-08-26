@@ -3,33 +3,11 @@
  *
  * Exports two Vite plugins:
  *
- * `createOgInlineFetchAssetsPlugin` — vinext:og-inline-fetch-assets
- *   Some bundled libraries (notably @vercel/og) load assets at module init
- *   time with the pattern:
- *
- *     fetch(new URL("./some-font.ttf", import.meta.url)).then(res => res.arrayBuffer())
- *     fetch(new URL("../../../assets/font.ttf", import.meta.url)).then(res => res.arrayBuffer())
- *
- *   Both ./-relative and ../-relative paths are handled (the latter appears in
- *   Next.js test fixtures like og-routes-custom-font and metadata-font where the
- *   font file lives in a project-root assets/ directory).
- *
- *   This works in browser and standard Node.js because import.meta.url is a
- *   real file:// URL. In Cloudflare Workers (both wrangler dev and production),
- *   however, import.meta.url is the string "worker" — not a URL — so
- *   new URL(...) throws "TypeError: Invalid URL string" and the Worker fails to
- *   start. Additionally, Node.js's built-in fetch() does not support file://
- *   URLs, so even on Node.js the pattern must be inlined at build time.
- *
- *   Fix: at Vite transform time, find every such pattern, resolve the referenced
- *   file relative to the module's actual path on disk (available as `id`), read
- *   it, and replace the entire fetch(new URL(...)) expression with an inline
- *   base64 IIFE that resolves synchronously. This eliminates the runtime fetch
- *   entirely and works in all environments (workerd, Node.js, browser).
- *
- *   Note: WASM files imported via `import ... from "./foo.wasm?module"` are
- *   handled by the bundler/Vite directly and do not need this treatment. Only
- *   assets that are runtime-fetched (not statically imported) need inlining.
+ * `createOgInlineReadFileAssetsPlugin` — vinext:og-inline-read-file-assets
+ *   Preserves @vercel/og's synchronous Node fallback by replacing
+ *   `readFileSync(fileURLToPath(new URL(..., import.meta.url)))` with an inline
+ *   Buffer. General `fetch(new URL(...))` handling belongs to the import-meta
+ *   capability and is not duplicated here.
  *
  * `createOgAssetsPlugin` — vinext:og-assets
  *   Guarantees each @vercel/og binary WASM module (resvg.wasm, yoga.wasm) ships
@@ -54,51 +32,53 @@ import { magicStringTransformResult } from "./transform-result.js";
 // ── Plugin factories ──────────────────────────────────────────────────────────
 
 /**
- * Create the `vinext:og-inline-fetch-assets` Vite plugin.
+ * Create the `vinext:og-inline-read-file-assets` Vite plugin.
  *
- * Inlines binary assets that are runtime-fetched via
- * `fetch(new URL("./asset", import.meta.url))` or read via
+ * Inlines binary assets read via
  * `readFileSync(fileURLToPath(new URL("./asset", import.meta.url)))`.
- * Both patterns are rewritten to inline base64 literals so the code works
- * correctly inside Cloudflare Workers where `import.meta.url` is not a
- * valid file URL.
  */
-export function createOgInlineFetchAssetsPlugin(): Plugin {
+export function createOgInlineReadFileAssetsPlugin(
+  ownership: OgAssetOwnership = new OgAssetOwnership(),
+  options: { manageOwnership?: boolean } = {},
+): Plugin {
   // Build-only cache to avoid repeated file reads during a single production
   // build. Dev mode skips the cache so asset edits are picked up without
   // restarting the Vite server.
   const cache = new Map<string, string>(); // absPath -> base64
-  const ownership = new OgAssetOwnership();
   let isBuild = false;
 
   return {
-    name: "vinext:og-inline-fetch-assets",
+    name: "vinext:og-inline-read-file-assets",
     enforce: "pre",
 
     configResolved(config) {
       isBuild = config.command === "build";
-      ownership.configure(config.root, config.resolve.alias);
+      if (options.manageOwnership !== false) {
+        ownership.configure(config.root, config.resolve.alias);
+      }
     },
 
     buildStart() {
       if (isBuild) {
         cache.clear();
       }
-      ownership.reset();
+      if (options.manageOwnership !== false) ownership.reset();
     },
 
-    async resolveId(source, importer, options) {
+    async resolveId(source, importer, resolveOptions) {
+      if (options.manageOwnership === false) return null;
       if (!ownership.shouldTrackImport(source)) return null;
 
-      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
+      const resolved = await this.resolve(source, importer, { ...resolveOptions, skipSelf: true });
       if (resolved === null || resolved.external) return null;
       await ownership.recordResolvedImport(source, resolved.id);
       return null;
     },
 
     transform: {
-      filter: { code: "import.meta.url" },
+      filter: { code: "readFileSync" },
       async handler(code, id) {
+        if (!code.includes("readFileSync(") || !code.includes("fileURLToPath")) return null;
         const useCache = isBuild;
         const boundary = await ownership.resolveModuleBoundary(id);
         if (boundary === null) return null;
@@ -125,51 +105,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
           }
         };
 
-        // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
-        // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
-        // The regex is deliberately tolerant of how formatters (Prettier
-        // `trailingComma: "all"`, oxfmt) rewrite the `.then(...)` callback when the call
-        // is wrapped across multiple lines, since formatted source that fails to match is
-        // left as a runtime fetch (which throws "Invalid URL" on Workers, where
-        // import.meta.url is "worker"):
-        //   - `,?` before each close paren tolerates a trailing comma, e.g.
-        //       .then((res) =>
-        //         res.arrayBuffer(),
-        //       )
-        //   - `;?` before the block-body `}` tolerates a terminating semicolon, e.g.
-        //       .then((res) => {
-        //         return res.arrayBuffer();
-        //       })
-        // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
-        if (code.includes("fetch(")) {
-          const fetchPattern =
-            /fetch\(\s*new URL\(\s*(["'])(\.[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*;?\s*\}?\s*,?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*,?\s*\))/g;
-
-          for (const match of code.matchAll(fetchPattern)) {
-            const fullMatch = match[0];
-            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
-            const absPath = path.resolve(moduleDir, relPath);
-
-            const fileBase64 = await readAsBase64(absPath);
-            if (fileBase64 === null) continue; // may be a runtime-only asset
-
-            // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
-            const inlined = [
-              `(function(){`,
-              `var b=${JSON.stringify(fileBase64)};`,
-              `var r=atob(b);`,
-              `var a=new Uint8Array(r.length);`,
-              `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
-              `return Promise.resolve(a.buffer);`,
-              `})()`,
-            ].join("");
-
-            s.overwrite(match.index, match.index + fullMatch.length, inlined);
-            didReplace = true;
-          }
-        }
-
-        // Pattern 2 — node build: readFileSync(fileURLToPath(new URL("./file", import.meta.url)))
+        // Node build: readFileSync(fileURLToPath(new URL("./file", import.meta.url)))
         // Supports both ./-relative and ../-relative paths (e.g. "../../../assets/font.ttf").
         // Replace with Buffer.from("<base64>", "base64"), which returns a Buffer (compatible with
         // both font data passed to satori and WASM bytes passed to initWasm).

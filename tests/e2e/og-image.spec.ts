@@ -8,7 +8,7 @@
  * Also covers /api/og-custom-font, which loads a font asset that lives three
  * directories up at the project root (assets/noto-sans.ttf) via
  * `fetch(new URL("../../../assets/noto-sans.ttf", import.meta.url))`. This is the
- * regression test for the vinext:og-inline-fetch-assets plugin's handling of
+ * regression test for the import-meta asset capability's handling of
  * ../-relative paths — without build-time inlining the route 500s on Workers
  * (import.meta.url === "worker") and on Node.js (fetch() rejects file:// URLs).
  *
@@ -129,7 +129,7 @@ test.describe("OG Image Generation (@next/og)", () => {
  * The /api/og-custom-font route reads assets/noto-sans.ttf (at the project root,
  * three levels up from the route file) via
  * `fetch(new URL("../../../assets/noto-sans.ttf", import.meta.url))` and passes
- * it to ImageResponse's `fonts` option. The vinext:og-inline-fetch-assets plugin
+ * it to ImageResponse's `fonts` option. The import-meta asset capability
  * must inline that asset as base64 at build/transform time; otherwise the runtime
  * fetch throws "TypeError: Invalid URL" on Workers (import.meta.url === "worker")
  * and rejects on Node.js (fetch() does not support file:// URLs), making the

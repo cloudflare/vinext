@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vite-plus/test";
-import vinext from "../packages/vinext/src/index.js";
 import { build, type Plugin } from "vite-plus";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { toSlash } from "pathslash";
+import { createOgInlineReadFileAssetsPlugin } from "../packages/vinext/src/plugins/og-assets.js";
+import { createImportMetaUrlPlugin } from "../packages/vinext/src/plugins/import-meta-url.js";
+import { OgAssetOwnership } from "../packages/vinext/src/plugins/og-asset-ownership.js";
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -15,15 +17,37 @@ function unwrapHook(hook: any): Function {
 }
 
 /**
- * Create a fresh vinext:og-inline-fetch-assets plugin instance.
+ * Create a fresh import-meta asset capability instance.
  * Each call gets an independent cache so tests do not share state.
  */
 function createOgInlinePlugin(command: "serve" | "build" = "serve", root = tmpDir): Plugin {
-  const plugins = vinext() as Plugin[];
-  const plugin = plugins.find((p) => p.name === "vinext:og-inline-fetch-assets");
-  if (!plugin) throw new Error("vinext:og-inline-fetch-assets plugin not found");
+  const plugin = createImportMetaUrlPlugin({
+    getRoot: () => root,
+    assetOwnership: new OgAssetOwnership(),
+  }).vitePlugin;
   const configResolved = unwrapHook(plugin.configResolved);
-  configResolved?.call(plugin, { command, root, resolve: { alias: [] } });
+  configResolved?.call(plugin, {
+    command,
+    root,
+    resolve: { alias: [] },
+    environments: {},
+    build: { outDir: "dist" },
+  });
+  unwrapHook(plugin.buildStart)?.call(plugin);
+  Object.defineProperties(plugin, {
+    addWatchFile: { value() {} },
+    resolve: { value: async () => null },
+    environment: {
+      value: { name: "ssr", mode: command === "serve" ? "dev" : "build", config: {} },
+    },
+  });
+  return plugin;
+}
+
+function createOgReadFilePlugin(command: "serve" | "build" = "serve", root = tmpDir): Plugin {
+  const plugin = createOgInlineReadFileAssetsPlugin();
+  unwrapHook(plugin.configResolved)?.call(plugin, { command, root, resolve: { alias: [] } });
+  unwrapHook(plugin.buildStart)?.call(plugin);
   return plugin;
 }
 
@@ -39,6 +63,8 @@ async function resolveLinkedPackage(
     command: "build",
     root,
     resolve: { alias: [{ find, replacement: resolvedId }] },
+    environments: {},
+    build: { outDir: "dist" },
   });
   const resolveId = unwrapHook(plugin.resolveId);
   await resolveId.call(
@@ -68,13 +94,13 @@ afterAll(async () => {
 
 // ── Tests ─────────────────────────────────────────────────────
 
-describe("vinext:og-inline-fetch-assets plugin", () => {
+describe("import-meta fetched assets and OG synchronous file fallback", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("exists in the plugin array", () => {
     const plugin = createOgInlinePlugin();
-    expect(plugin.name).toBe("vinext:og-inline-fetch-assets");
-    expect(plugin.enforce).toBe("pre");
+    expect(plugin.name).toBe("vinext:import-meta-url");
+    expect((plugin.resolveId as { order?: string }).order).toBe("pre");
   });
 
   // ── Guard clause ──────────────────────────────────────────
@@ -87,6 +113,17 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     expect(result).toBeNull();
   });
 
+  it("keeps the synchronous file fallback separate from fetched assets", async () => {
+    const plugin = createOgReadFilePlugin("build");
+    const transform = unwrapHook(plugin.transform);
+    const fetchCode = `fetch(new URL("./noto-sans.ttf", import.meta.url)).then((res) => res.arrayBuffer());`;
+    expect(await transform.call(plugin, fetchCode, path.join(tmpDir, "og.tsx"))).toBeNull();
+
+    const readCode = `fs.readFileSync(fileURLToPath(new URL("./noto-sans.ttf", import.meta.url)));`;
+    const result = await transform.call(plugin, readCode, path.join(tmpDir, "og.tsx"));
+    expect(result.code).toContain(fontBase64);
+  });
+
   // ── Pattern 1: fetch ─────────────────────────────────────
 
   it("transforms fetch(new URL(..., import.meta.url)).then(r => r.arrayBuffer())", async () => {
@@ -97,9 +134,12 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
 
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
-    // The font's base64 contents must be inlined and the runtime fetch eliminated.
+    // The exact module-initialization chain is decoded without fetch so runtimes
+    // such as Workerd do not perform asynchronous I/O during module evaluation.
     expect(result.code).toContain(fontBase64);
+    expect(result.code).toContain("__vinext_decode_asset_data");
     expect(result.code).not.toContain("fetch(");
+    expect(result.code).not.toContain("import.meta.url");
   });
 
   it("transforms fetch(new URL(..., import.meta.url)) with ../-relative path", async () => {
@@ -118,7 +158,9 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
     expect(result.code).toContain(fontBase64);
+    expect(result.code).toContain("__vinext_decode_asset_data");
     expect(result.code).not.toContain("fetch(");
+    expect(result.code).not.toContain("import.meta.url");
   });
 
   it("transforms fetch().then() that a formatter wrapped across lines with a trailing comma", async () => {
@@ -143,7 +185,9 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
     expect(result.code).toContain(fontBase64);
+    expect(result.code).toContain("__vinext_decode_asset_data");
     expect(result.code).not.toContain("fetch(");
+    expect(result.code).not.toContain("import.meta.url");
   });
 
   it("transforms a block-body .then() callback whose return ends with a semicolon", async () => {
@@ -165,7 +209,9 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
     expect(result.code).toContain(fontBase64);
+    expect(result.code).toContain("__vinext_decode_asset_data");
     expect(result.code).not.toContain("fetch(");
+    expect(result.code).not.toContain("import.meta.url");
   });
 
   it("transforms a function-expression .then() callback whose return ends with a semicolon", async () => {
@@ -178,13 +224,15 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const result = await transform.call(plugin, code, moduleId);
     expect(result).not.toBeNull();
     expect(result.code).toContain(fontBase64);
+    expect(result.code).toContain("__vinext_decode_asset_data");
     expect(result.code).not.toContain("fetch(");
+    expect(result.code).not.toContain("import.meta.url");
   });
 
   // ── Pattern 2: readFileSync ──────────────────────────────
 
   it("transforms fs.readFileSync(fileURLToPath(new URL(..., import.meta.url)))", async () => {
-    const plugin = createOgInlinePlugin();
+    const plugin = createOgReadFilePlugin();
     const transform = unwrapHook(plugin.transform);
     const code = `const buf = fs.readFileSync(fileURLToPath(new URL("./noto-sans.ttf", import.meta.url)));`;
     const moduleId = path.join(tmpDir, "og.tsx");
@@ -198,7 +246,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
 
   it("transforms fs.readFileSync(fileURLToPath(new URL(..., import.meta.url))) with ../-relative path", async () => {
     // Same pattern as above but with a ../ path traversal — mirrors metadata-font fixtures.
-    const plugin = createOgInlinePlugin();
+    const plugin = createOgReadFilePlugin();
     const transform = unwrapHook(plugin.transform);
     const routeDir = path.join(tmpDir, "app", "font");
     await fsp.mkdir(routeDir, { recursive: true });
@@ -342,6 +390,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       resolve: { alias: { ui: path.join(packageDir, "dist", "index.js") } },
       plugins: [createOgInlinePlugin("build", projectRoot)],
       build: {
+        ssr: path.join(projectRoot, "index.js"),
         outDir: "dist",
         rolldownOptions: {
           input: path.join(projectRoot, "index.js"),
@@ -351,7 +400,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     });
     const code = await fsp.readFile(path.join(projectRoot, "dist", "bundle.js"), "utf8");
 
-    expect(code).toContain("atob(");
+    expect(code).toContain("data:");
     expect(code).toContain(packageFont.toString("base64"));
     expect(code).not.toContain("/assets/font-");
   });
@@ -378,6 +427,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       resolve: { alias: { ui: packageDir } },
       plugins: [createOgInlinePlugin("build", projectRoot)],
       build: {
+        ssr: path.join(projectRoot, "index.js"),
         outDir: "dist",
         rolldownOptions: {
           input: path.join(projectRoot, "index.js"),
@@ -387,7 +437,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     });
     const code = await fsp.readFile(path.join(projectRoot, "dist", "bundle.js"), "utf8");
 
-    expect(code).toContain("atob(");
+    expect(code).toContain("data:");
     expect(code).toContain(packageFont.toString("base64"));
     expect(code).not.toContain("/assets/font-");
   });
@@ -420,6 +470,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       },
       plugins: [createOgInlinePlugin("build", projectRoot)],
       build: {
+        ssr: path.join(projectRoot, "index.js"),
         outDir: "dist",
         rolldownOptions: {
           input: path.join(projectRoot, "index.js"),
@@ -429,7 +480,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     });
     const code = await fsp.readFile(path.join(projectRoot, "dist", "bundle.js"), "utf8");
 
-    expect(code).toContain("atob(");
+    expect(code).toContain("data:");
     expect(code).toContain(packageFont.toString("base64"));
     expect(code).not.toContain("/assets/font-");
   });
@@ -1063,7 +1114,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
   it("reads the file only once for repeated build transforms (cache hit)", async () => {
     const readFileSpy = vi.spyOn(fs.promises, "readFile");
 
-    const plugin = createOgInlinePlugin("build");
+    const plugin = createOgReadFilePlugin("build");
     const transform = unwrapHook(plugin.transform);
     const code = `const buf = fs.readFileSync(fileURLToPath(new URL("./noto-sans.ttf", import.meta.url)));`;
     const moduleId = path.join(tmpDir, "og.tsx");
@@ -1092,7 +1143,7 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const updatedFontBase64 = Buffer.from("dev-font-v2").toString("base64");
     await fsp.writeFile(devFontPath, Buffer.from("dev-font-v1"));
 
-    const plugin = createOgInlinePlugin("serve");
+    const plugin = createOgReadFilePlugin("serve");
     const transform = unwrapHook(plugin.transform);
     const code = `const buf = fs.readFileSync(fileURLToPath(new URL("./dev-font.ttf", import.meta.url)));`;
     const moduleId = path.join(tmpDir, "og.tsx");

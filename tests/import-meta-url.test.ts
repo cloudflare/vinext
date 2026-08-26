@@ -7,9 +7,14 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   createImportMetaUrlPlugin,
+  rewriteDynamicImportUrls,
   rewriteImportMetaUrl,
   rewriteServerCjsGlobals,
 } from "../packages/vinext/src/plugins/import-meta-url.js";
+import {
+  _transformVeryDynamicRequests,
+  createIgnoreDynamicRequestsPlugin,
+} from "../packages/vinext/src/plugins/ignore-dynamic-requests.js";
 import { toSlash } from "pathslash";
 
 function unwrapHook(hook: any): Function {
@@ -183,6 +188,368 @@ describe("vinext:import-meta-url plugin", () => {
 
     expect(result?.code).toContain(`"file:///ROOT/pages/index.tsx"`);
   });
+
+  // Ported from Next.js:
+  // test/e2e/react-version/pages/api/pages-api-edge-url-dep.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/react-version/pages/api/pages-api-edge-url-dep.js
+  it("normalizes literal module URLs used as dynamic import specifiers", () => {
+    const result = rewriteDynamicImportUrls(
+      `const dependency = import(new URL("./style.css", import.meta.url).href);\n`,
+      "/ROOT/pages/api/url-dependency.js",
+    );
+
+    expect(result?.code).toContain(`import("./style.css")`);
+    expect(result?.code).not.toContain("new URL");
+  });
+
+  it.each([
+    ["ts", `import type { NextApiRequest } from "next";`],
+    ["tsx", `import type { ReactNode } from "react";\nconst element = <div />;`],
+  ])("normalizes module URL imports in raw %s source", (extension, prefix) => {
+    const result = rewriteDynamicImportUrls(
+      `${prefix}\nvoid import(new URL("./style.css", import.meta.url).href);\n`,
+      `/ROOT/pages/api/url-dependency.${extension}`,
+    );
+
+    expect(result?.code).toContain(`import("./style.css")`);
+  });
+
+  it("preserves non-literal and absolute dynamic import URLs", () => {
+    const result = rewriteDynamicImportUrls(
+      [
+        `const relative = "./style.css";`,
+        `const dynamic = import(new URL(relative, import.meta.url).href);`,
+        `const absolute = import(new URL("/style.css", import.meta.url).href);`,
+      ].join("\n"),
+      "/ROOT/pages/api/url-dependency.js",
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it.each(["@vite-ignore", "webpackIgnore: true", "turbopackIgnore: true"])(
+    "preserves URL imports carrying %s",
+    (directive) => {
+      const source = `import(/* ${directive} */ new URL("./dependency.js", import.meta.url).href);`;
+      expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    },
+  );
+
+  it.each([
+    `webpackIgnore: true, webpackChunkName: "ignored"`,
+    `webpackChunkName: "ignored", webpackIgnore: true`,
+    `turbopackIgnore: true, webpackChunkName: "ignored"`,
+    String.raw`webpackInclude: /foo\(/, webpackIgnore: true`,
+    `webpackInclude: /[(]/, webpackIgnore: true`,
+  ])("preserves URL imports carrying combined magic options: %s", (directive) => {
+    const source = `import(/* ${directive} */ new URL("./dependency.js", import.meta.url).href);`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")).toBeNull();
+  });
+
+  it.each(["\n", "\r", "\u2028", "\u2029"])(
+    "recognizes ignore options after a line comment ending with %#",
+    (terminator) => {
+      const directive = `webpackInclude: /foo/, // note${terminator} webpackIgnore: true`;
+      const source = `import(/* ${directive} */ new URL("./dependency.js", import.meta.url).href);`;
+      expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+      expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    },
+  );
+
+  it.each([
+    `webpackIgnore: false, webpackChunkName: "included"`,
+    `webpackChunkName: ", webpackIgnore: true", webpackPrefetch: true`,
+    `webpackIgnore: false, webpackInclude: /x, webpackIgnore: true, y/`,
+  ])("normalizes URL imports without an active combined ignore: %s", (directive) => {
+    const source = `import(/* ${directive} */ new URL("./dependency.js", import.meta.url).href);`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")?.code).toContain(
+      `import(/* ${directive} */ "./dependency.js")`,
+    );
+  });
+
+  it.each([
+    `/* @vite-ignore */ /* webpackIgnore: false */`,
+    `/* webpackIgnore: true */ /* turbopackIgnore: false */`,
+    `/* turbopackIgnore: true */ /* webpackIgnore: false */`,
+  ])("does not cancel an ignore directive from another bundler: %s", (directives) => {
+    const source = `import(${directives} new URL("./dependency.js", import.meta.url).href);`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")).toBeNull();
+  });
+
+  it("normalizes nested URL imports in dynamic-import options", () => {
+    const source = [
+      `import(new URL("./outer.js", import.meta.url).href, {`,
+      `  with: { type: (void import(new URL("./inner.js", import.meta.url).href), "json") },`,
+      `});`,
+    ].join("\n");
+    for (const result of [
+      _transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js"),
+      rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js"),
+    ]) {
+      expect(result?.code).toContain(`import("./outer.js"`);
+      expect(result?.code).toContain(`import("./inner.js")`);
+    }
+  });
+
+  it.each([
+    `import // before\u2028(/* @vite-ignore */ new URL("./dependency.js", import.meta.url).href)`,
+    `import // before\u2029(/* @vite-ignore */ new URL("./dependency.js", import.meta.url).href)`,
+    `import(// before\u2028/* @vite-ignore */ new URL("./dependency.js", import.meta.url).href)`,
+    `import(// before\u2029/* @vite-ignore */ new URL("./dependency.js", import.meta.url).href)`,
+  ])("preserves ignore directives after JavaScript line terminators", (source) => {
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")).toBeNull();
+  });
+
+  it("preserves Vite's inner new URL ignore placement", () => {
+    const source = `import(new URL(/* @vite-ignore */ "./dependency.js", import.meta.url).href);`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+      expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)).toBeNull();
+    }
+  });
+
+  it.each(["@vite-ignore", "webpackIgnore: true"])(
+    "preserves %s before a parenthesized import argument",
+    (directive) => {
+      const source = `import(/* ${directive} */ (new URL("./dependency.js", import.meta.url).href));`;
+      expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+      expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    },
+  );
+
+  it.each([
+    `function load(URL) { return import(new URL("./dependency.js", import.meta.url).href); }`,
+    `import { URL } from "custom-url"; import(new URL("./dependency.js", import.meta.url).href);`,
+    `{ const URL = CustomURL; import(new URL("./dependency.js", import.meta.url).href); }`,
+  ])("preserves URL imports using a shadowed constructor", (source) => {
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")).toBeNull();
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+      expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)).toBeNull();
+    }
+  });
+
+  it("normalizes escaped URL identifiers in every transform pipeline", () => {
+    const source = String.raw`import(new U\u0052L("./dependency.js", import.meta.url).href);`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")?.code).toContain(
+      `import("./dependency.js")`,
+    );
+    expect(rewriteDynamicImportUrls(source, "/ROOT/pages/api/edge.js")?.code).toContain(
+      `import("./dependency.js")`,
+    );
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+      expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)?.code).toContain(
+        `import("./dependency.js")`,
+      );
+    }
+  });
+
+  it("normalizes URL imports in default parameter initializers", () => {
+    const source = `export function load(value = import(new URL("./dependency.js", import.meta.url).href)) { return value; }`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js")?.code).toContain(
+      `import("./dependency.js")`,
+    );
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+      expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)?.code).toContain(
+        `import("./dependency.js")`,
+      );
+    }
+  });
+
+  it("preserves URL imports using a computed import.meta base", () => {
+    const source = `const key = "url"; import(new URL("./dependency.js", import.meta[key]).href);`;
+    expect(_transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.js", false)).toBeNull();
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+      expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)).toBeNull();
+    }
+  });
+
+  it.each(["@vite-ignore", "webpackIgnore: true", "turbopackIgnore: true"])(
+    "preserves URL imports carrying %s during dependency optimization",
+    (directive) => {
+      const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+      const source = `import(/* ${directive} */ new URL("./dependency.js", import.meta.url).href);`;
+      for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+        expect(unwrapHook(plugin.transform).call({}, source, esmDependencyPath)).toBeNull();
+      }
+    },
+  );
+
+  it.each([
+    `new URL("./dependency.js", import.meta.url).href as string`,
+    `new URL("./dependency.js", import.meta.url).href!`,
+    `new URL("./dependency.js", import.meta.url).href satisfies string`,
+    `new URL("./dependency.js", import.meta.url as string).href`,
+  ])("normalizes TypeScript-wrapped URL imports: %s", (expression) => {
+    const source = `void import(${expression});`;
+    const result = _transformVeryDynamicRequests(source, "/ROOT/pages/api/edge.ts", false);
+    expect(result?.code).toContain(`import("./dependency.js")`);
+  });
+
+  it("does not normalize relative URL imports in virtual modules", () => {
+    const source = `void import(new URL("./dependency.js", import.meta.url).href);`;
+    expect(_transformVeryDynamicRequests(source, "\0virtual:entry.js")).toBeNull();
+
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    for (const plugin of [capability.optimizeDepsPlugin, capability.clientOptimizeDepsPlugin]) {
+      expect(unwrapHook(plugin.transform).call({}, source, "\0virtual:entry.js")).toBeNull();
+    }
+  });
+
+  it("normalizes URL imports in the client dependency optimizer", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const source = `void import(new URL("./dependency.js", import.meta.url).href);`;
+    const result = unwrapHook(capability.clientOptimizeDepsPlugin.transform).call(
+      {},
+      source,
+      esmDependencyPath,
+    );
+    expect(result?.code).toContain(`import("./dependency.js")`);
+  });
+
+  it("normalizes client URL imports before Vite treats them as assets", async () => {
+    const clientRoot = path.join(realRoot, "client-url-import");
+    const entry = path.join(clientRoot, "entry.js");
+    const outDir = path.join(clientRoot, "dist");
+    await fsp.mkdir(clientRoot, { recursive: true });
+    await fsp.writeFile(
+      entry,
+      [
+        `export const loadJs = () => import(new URL("./dependency.js", import.meta.url).href);`,
+        `export const loadCss = () => import(new URL("./style.css", import.meta.url).href);`,
+      ].join("\n"),
+    );
+    await fsp.writeFile(
+      path.join(clientRoot, "dependency.js"),
+      `export const value = "client dependency loaded";`,
+    );
+    await fsp.writeFile(path.join(clientRoot, "style.css"), `.client-url-import { color: red; }`);
+
+    const capability = createImportMetaUrlPlugin({ getRoot: () => clientRoot });
+    await build({
+      root: clientRoot,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [createIgnoreDynamicRequestsPlugin(), capability.vitePlugin],
+      build: {
+        outDir,
+        cssCodeSplit: true,
+        lib: { entry, formats: ["es"], fileName: "entry" },
+        rolldownOptions: {
+          output: { entryFileNames: "entry.js", chunkFileNames: "[name].js" },
+        },
+      },
+    });
+
+    const builtEntry = await fsp.readFile(path.join(outDir, "entry.js"), "utf8");
+    expect(builtEntry).not.toContain("data:text/css");
+    expect(builtEntry).not.toContain("new URL");
+    expect(
+      (await import(`${pathToFileURL(path.join(outDir, "entry.js")).href}?t=${Date.now()}`)).loadJs,
+    ).toBeTypeOf("function");
+    const builtModule = await import(
+      `${pathToFileURL(path.join(outDir, "entry.js")).href}?run=${Date.now()}`
+    );
+    await expect(builtModule.loadJs()).resolves.toMatchObject({
+      value: "client dependency loaded",
+    });
+    expect(
+      (await fsp.readdir(outDir, { recursive: true })).some((file) => file.endsWith(".css")),
+    ).toBe(true);
+  });
+
+  it.each([
+    [
+      "block comments",
+      `import(/* webpackMode: ** "eager" ** */ new URL("./dependency.js", import.meta.url).href)`,
+      "block",
+    ],
+    [
+      "line comments ending in LF",
+      `import(// webpackMode: eager\nnew URL("./dependency.js", import.meta.url).href)`,
+      "line-lf",
+    ],
+    [
+      "line comments ending in CRLF",
+      `import(// webpackMode: eager\r\nnew URL("./dependency.js", import.meta.url).href)`,
+      "line-crlf",
+    ],
+    [
+      "line comments ending in CR",
+      `import(// webpackMode: eager\rnew URL("./dependency.js", import.meta.url).href)`,
+      "line-cr",
+    ],
+    [
+      "line comments ending in U+2028",
+      `import(// webpackMode: eager\u2028new URL("./dependency.js", import.meta.url).href)`,
+      "line-u2028",
+    ],
+    [
+      "line comments ending in U+2029",
+      `import(// webpackMode: eager\u2029new URL("./dependency.js", import.meta.url).href)`,
+      "line-u2029",
+    ],
+    [
+      "mixed repeated comments",
+      `import(/* first */ // second\u2028/* third **/ new URL("./dependency.js", import.meta.url).href)`,
+      "mixed-comments",
+    ],
+    [
+      "a comment between import and its parenthesis",
+      `import /* before call */ (new URL("./dependency.js", import.meta.url).href)`,
+      "before-call",
+    ],
+    [
+      "a comment between new and URL",
+      `import(new /* before URL */ URL("./dependency.js", import.meta.url).href)`,
+      "before-url",
+    ],
+    [
+      "a comment between URL and its parenthesis",
+      `import(new URL /* before arguments */ ("./dependency.js", import.meta.url).href)`,
+      "before-arguments",
+    ],
+  ])(
+    "normalizes URL imports with %s after the dynamic-request fallback admits them",
+    async (_description, dynamicImport, suffix) => {
+      const packageRoot = path.join(realRoot, "node_modules", `url-dependency-${suffix}`);
+      const packageEntry = path.join(packageRoot, "index.js");
+      await fsp.mkdir(packageRoot, { recursive: true });
+      await fsp.writeFile(
+        path.join(packageRoot, "package.json"),
+        JSON.stringify({ name: "url-dependency", type: "module" }),
+      );
+      await fsp.writeFile(packageEntry, `export const dependency = ${dynamicImport};`);
+      await fsp.writeFile(path.join(packageRoot, "dependency.js"), `export default "loaded";`);
+
+      const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+      const result = await build({
+        root: realRoot,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [createIgnoreDynamicRequestsPlugin(), capability.vitePlugin],
+        build: { write: false, ssr: packageEntry },
+      });
+      if (Array.isArray(result) || !("output" in result)) {
+        throw new Error("Expected a single build output");
+      }
+      const output = result.output
+        .filter((entry) => entry.type === "chunk")
+        .map((entry) => entry.code)
+        .join("\n");
+
+      expect(output).toContain("loaded");
+      expect(output).not.toContain("Cannot find module as expression is too dynamic");
+    },
+  );
 
   it("preserves the real server source file URL", () => {
     const result = rewriteImportMetaUrl(
@@ -787,8 +1154,8 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
     expect(result).toBeNull();
   });
 
-  it("uses one Vite capability plus a filtered optimizer adapter", () => {
-    const { vitePlugin, optimizeDepsPlugin } = createImportMetaUrlPlugin({
+  it("uses one Vite capability plus filtered environment optimizer adapters", () => {
+    const { vitePlugin, optimizeDepsPlugin, clientOptimizeDepsPlugin } = createImportMetaUrlPlugin({
       getRoot: () => realRoot,
     });
     const viteFilter = (
@@ -802,6 +1169,7 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
 
     expect(vitePlugin.name).toBe("vinext:import-meta-url");
     expect(optimizeDepsPlugin.name).toBe("vinext:import-meta-url:optimize-deps");
+    expect(clientOptimizeDepsPlugin.name).toBe("vinext:import-meta-url:client-optimize-deps");
     expect(viteFilter.id.include.test(pagePath)).toBe(true);
     expect(viteFilter.id.include.test(cjsDependencyPath)).toBe(true);
     expect(viteFilter.id.exclude.test("\0virtual:fixture.ts")).toBe(true);
@@ -839,6 +1207,19 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
       ),
     ).toBeNull();
     expect(rootReads).toBe(0);
+  });
+
+  it("keeps identity-only modules off the client dynamic-import path", () => {
+    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
+    const source = `export const identity = import.meta.url;`;
+
+    expect(
+      unwrapHook(capability.clientOptimizeDepsPlugin.transform).call({}, source, esmDependencyPath),
+    ).toBeNull();
+    expect(rewriteDynamicImportUrls(source, esmDependencyPath)).toBeNull();
+    expectBundledImportMetaUrl(
+      unwrapHook(capability.optimizeDepsPlugin.transform).call({}, source, esmDependencyPath)?.code,
+    );
   });
 
   it("does not backtrack across repeated comment near-matches", () => {
@@ -1291,7 +1672,7 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
 
   it("injects after TypeScript type-only constructs are erased", () => {
     // In production, Vite transforms strip TypeScript before this plugin
-    // (enforce: "post") sees the code.  Both `import type` and `type` aliases
+    // (transform order: "post") sees the code. Both `import type` and `type` aliases
     // are erased, so the plugin sees plain JS like this:
     const result = rewriteServerCjsGlobals(`console.log(__filename);`, pagePath, linkedRoot);
 

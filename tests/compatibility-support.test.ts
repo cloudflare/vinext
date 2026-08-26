@@ -31,10 +31,10 @@ describe("compatibility suite support policy", () => {
 
     expect(counts).toEqual({
       deferred: 25,
-      "needs-vite-equivalent": 3,
+      "needs-vite-equivalent": 2,
       unsupported: 6,
     });
-    expect(NON_SUPPORTED_SUITES).toHaveLength(34);
+    expect(NON_SUPPORTED_SUITES).toHaveLength(33);
     expect(CLASSIFIED_SUITES).toHaveLength(69);
     expect(new Set(CLASSIFIED_SUITES).size).toBe(69);
   });

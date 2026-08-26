@@ -92,6 +92,65 @@ async function readPackageName(packageRoot: string): Promise<string | null> {
   }
 }
 
+function collectPackageEntryTargets(value: unknown, targets: string[]): void {
+  if (typeof value === "string") {
+    if (value.startsWith("./")) targets.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) collectPackageEntryTargets(entry, targets);
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  for (const entry of Object.values(value)) collectPackageEntryTargets(entry, targets);
+}
+
+function packageEntryTargets(manifest: Record<string, unknown>): string[] {
+  const targets: string[] = [];
+  for (const field of ["main", "module", "source", "browser"]) {
+    const value = manifest[field];
+    if (typeof value === "string") targets.push(value);
+  }
+  collectPackageEntryTargets(manifest.exports, targets);
+  return targets;
+}
+
+function packageEntryTargetMatchesFile(
+  packageRoot: string,
+  target: string,
+  aliasFile: string,
+): boolean {
+  const targetPath = path.resolve(packageRoot, target);
+  if (!isPathInsideOrEqual(packageRoot, targetPath)) return false;
+
+  const firstWildcard = targetPath.indexOf("*");
+  if (firstWildcard === -1) return targetPath === aliasFile;
+  // Package exports use one captured subpath for every `*`. Supporting a
+  // single target wildcard covers the normal `./dist/*.js` form without
+  // treating malformed or ambiguous patterns as broad filesystem ownership.
+  if (targetPath.indexOf("*", firstWildcard + 1) !== -1) return false;
+  const prefix = targetPath.slice(0, firstWildcard);
+  const suffix = targetPath.slice(firstWildcard + 1);
+  return (
+    isPathInsideOrEqual(packageRoot, aliasFile) &&
+    aliasFile.startsWith(prefix) &&
+    aliasFile.endsWith(suffix) &&
+    aliasFile.length >= prefix.length + suffix.length
+  );
+}
+
+function packageEntryTargetIsWithinDirectory(
+  packageRoot: string,
+  target: string,
+  aliasDirectory: string,
+): boolean {
+  const targetPath = path.resolve(packageRoot, target);
+  if (!isPathInsideOrEqual(packageRoot, targetPath)) return false;
+  const wildcard = targetPath.indexOf("*");
+  const ownedPath = wildcard === -1 ? targetPath : targetPath.slice(0, wildcard);
+  return isPathInsideOrEqual(aliasDirectory, ownedPath);
+}
+
 async function packageOwnsAliasFile(
   packageRoot: string,
   packageName: string | null,
@@ -100,12 +159,10 @@ async function packageOwnsAliasFile(
   try {
     const manifest = JSON.parse(
       await fs.promises.readFile(path.join(packageRoot, "package.json"), "utf8"),
-    );
+    ) as Record<string, unknown>;
     if (packageName !== null && manifest.name === packageName) return true;
-    return ["main", "module", "source", "browser"].some(
-      (field) =>
-        typeof manifest[field] === "string" &&
-        path.resolve(packageRoot, manifest[field]) === aliasFile,
+    return packageEntryTargets(manifest).some((target) =>
+      packageEntryTargetMatchesFile(packageRoot, target, aliasFile),
     );
   } catch {
     return false;
@@ -121,12 +178,10 @@ async function packageOwnsAliasDirectory(
   try {
     const manifest = JSON.parse(
       await fs.promises.readFile(path.join(packageRoot, "package.json"), "utf8"),
-    );
+    ) as Record<string, unknown>;
     if (packageName !== null && manifest.name === packageName) return true;
-    return ["main", "module", "source", "browser"].some(
-      (field) =>
-        typeof manifest[field] === "string" &&
-        isPathInsideOrEqual(aliasDirectory, path.resolve(packageRoot, manifest[field])),
+    return packageEntryTargets(manifest).some((target) =>
+      packageEntryTargetIsWithinDirectory(packageRoot, target, aliasDirectory),
     );
   } catch {
     return false;
