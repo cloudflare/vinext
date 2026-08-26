@@ -569,7 +569,9 @@ export function createPagesPageHandler(
     const isCacheabilityProbe = isRouteCacheabilityProbe();
     const isTopLevelPageRoute = !isRouteMissErrorRender && options?.__forcedRoute === undefined;
     const hasRequestTimeData =
-      pagesReadiness.gssp === true || pagesReadiness.gip === true || pagesReadiness.appGip === true;
+      pagesReadiness.gssp === true ||
+      pagesReadiness.gip === true ||
+      (pagesReadiness.appGip === true && !isStaticPropsRoute);
 
     if (isTopLevelPageRoute) {
       beginRouteCacheability("pages-page", route.pattern);
