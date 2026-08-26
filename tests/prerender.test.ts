@@ -26,6 +26,7 @@ import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import {
   getAppRouteOutputPath,
+  getOutputPath,
   getRscOutputPath,
 } from "../packages/vinext/src/utils/prerender-output-paths.js";
 
@@ -128,6 +129,15 @@ describe("getRscOutputPath", () => {
   it("retains .rsc files for server prerenders", () => {
     expect(getRscOutputPath("/")).toBe("index.rsc");
     expect(getRscOutputPath("/target")).toBe("target.rsc");
+  });
+});
+
+describe("getOutputPath", () => {
+  it("emits canonical basePath keys for both trailingSlash modes", () => {
+    expect(getOutputPath("/", false, "/docs")).toBe("docs.html");
+    expect(getOutputPath("/", true, "/docs")).toBe("docs/index.html");
+    expect(getOutputPath("/about", false, "/docs")).toBe("docs/about.html");
+    expect(getOutputPath("/about", true, "/docs")).toBe("docs/about/index.html");
   });
 });
 

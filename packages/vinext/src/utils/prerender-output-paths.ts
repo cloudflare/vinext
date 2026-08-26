@@ -12,7 +12,7 @@ export function getOutputPath(urlPath: string, trailingSlash: boolean, basePath 
           ? `${basePath}/`
           : basePath
         : `${basePath}${urlPath}`;
-  const clean = outputUrlPath.replace(/^\//, "");
+  const clean = outputUrlPath.replace(/^\//, "").replace(/\/$/, "");
   if (trailingSlash) return `${clean}/index.html`;
   return `${clean}.html`;
 }
