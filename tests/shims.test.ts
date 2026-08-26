@@ -6576,8 +6576,8 @@ describe("next/cache shim", () => {
             kind: "FETCH",
             data: {
               headers: {},
-              body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:v2:stale-swr-test:[]",
+              body: JSON.stringify({ version: 2, value: "stale-value" }),
+              url: "unstable_cache:stale-swr-test:[]",
             },
             tags: ["stale-swr"],
             revalidate: 1,
@@ -6629,7 +6629,7 @@ describe("next/cache shim", () => {
 
       await Promise.all(waitUntilPromises);
 
-      expect(setBodies).toEqual([JSON.stringify({ v: "fresh-value" })]);
+      expect(setBodies).toEqual([JSON.stringify({ version: 2, value: "fresh-value" })]);
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
@@ -6651,8 +6651,8 @@ describe("next/cache shim", () => {
             kind: "FETCH",
             data: {
               headers: {},
-              body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:v2:foreground-test:[]",
+              body: JSON.stringify({ version: 2, value: "stale-value" }),
+              url: "unstable_cache:foreground-test:[]",
             },
             tags: ["foreground"],
             revalidate: 1,

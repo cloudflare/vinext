@@ -474,12 +474,6 @@ export function unstable_cacheTag(...tags: string[]): void {
 // unstable_cache — the older caching API
 // ---------------------------------------------------------------------------
 
-// Version the physical namespace whenever a runtime security invariant makes
-// entries produced by an older implementation unsafe to reuse. Version 2
-// prevents results created before private-in-unstable-cache validation from
-// bypassing the new synchronous boundary check after an application upgrade.
-const UNSTABLE_CACHE_KEY_PREFIX = "unstable_cache:v2";
-
 /**
  * AsyncLocalStorage to track whether we're inside an unstable_cache() callback.
  * Stored on globalThis via Symbol so headers.ts can detect the scope without
@@ -492,16 +486,22 @@ const _unstableCacheAls = getOrCreateAls<boolean>("vinext.unstableCache.als");
  * round-trip through JSON without confusion.  Using a structural wrapper
  * avoids any sentinel-string collision risk.
  */
-type CacheResultWrapper = { v: unknown } | { undef: true };
+type CacheResultWrapper = { version: 2; value: unknown } | { version: 2; undefined: true };
 
 function serializeUnstableCacheResult(value: unknown): string {
-  const wrapper: CacheResultWrapper = value === undefined ? { undef: true } : { v: value };
+  const wrapper: CacheResultWrapper =
+    value === undefined ? { version: 2, undefined: true } : { version: 2, value };
   return JSON.stringify(wrapper);
 }
 
 function deserializeUnstableCacheResult(body: string): unknown {
-  const wrapper = JSON.parse(body) as CacheResultWrapper;
-  return "undef" in wrapper ? undefined : wrapper.v;
+  const wrapper = JSON.parse(body) as unknown;
+  if (!wrapper || typeof wrapper !== "object" || Reflect.get(wrapper, "version") !== 2) {
+    throw new Error("Unsupported unstable_cache entry version");
+  }
+  if (Reflect.get(wrapper, "undefined") === true) return undefined;
+  if (Reflect.has(wrapper, "value")) return Reflect.get(wrapper, "value");
+  throw new Error("Invalid unstable_cache entry");
 }
 
 type UnstableCacheReadResult = { ok: true; value: unknown } | { ok: false };
@@ -531,6 +531,7 @@ type UnstableCacheOptions = {
 const _UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY = Symbol.for(
   "vinext.unstableCache.pendingRevalidations",
 );
+const _UNSTABLE_CACHE_PENDING_FILLS_KEY = Symbol.for("vinext.unstableCache.pendingFills");
 
 function getPendingUnstableCacheRevalidations(): Map<string, Promise<void>> {
   const existing = _g[_UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY];
@@ -538,6 +539,15 @@ function getPendingUnstableCacheRevalidations(): Map<string, Promise<void>> {
 
   const pending = new Map<string, Promise<void>>();
   _g[_UNSTABLE_CACHE_PENDING_REVALIDATIONS_KEY] = pending;
+  return pending;
+}
+
+function getPendingUnstableCacheFills(): Map<string, Promise<unknown>> {
+  const existing = _g[_UNSTABLE_CACHE_PENDING_FILLS_KEY];
+  if (existing instanceof Map) return existing;
+
+  const pending = new Map<string, Promise<unknown>>();
+  _g[_UNSTABLE_CACHE_PENDING_FILLS_KEY] = pending;
   return pending;
 }
 
@@ -601,6 +611,27 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   return result;
 }
 
+function fillUnstableCacheResult<Args extends unknown[], Result>(
+  fn: (...args: Args) => Promise<Result>,
+  args: Args,
+  cacheKey: string,
+  tags: string[],
+  revalidateSeconds: number | false | undefined,
+): Promise<Result> {
+  const pending = getPendingUnstableCacheFills();
+  const existing = pending.get(cacheKey);
+  if (existing) return existing as Promise<Result>;
+
+  const fill = refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
+  const trackedFill = fill.finally(() => {
+    if (pending.get(cacheKey) === trackedFill) {
+      pending.delete(cacheKey);
+    }
+  });
+  pending.set(cacheKey, trackedFill);
+  return trackedFill;
+}
+
 /**
  * Wrap an async function with caching.
  *
@@ -624,7 +655,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
 
   const cachedFn = async (...args: Parameters<T>) => {
     const argsKey = JSON.stringify(args);
-    const cacheKey = `${UNSTABLE_CACHE_KEY_PREFIX}:${baseKey}:${argsKey}`;
+    const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
     addCollectedRequestTags(tags);
     recordUnstableCacheObservation({
       kind: "unstable_cache",
@@ -676,7 +707,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     if (isDraftMode) {
       return await _unstableCacheAls.run(true, () => fn(...args));
     }
-    return await refreshUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
+    return await fillUnstableCacheResult(fn, args, cacheKey, tags, revalidateSeconds);
   };
 
   return cachedFn as T;
