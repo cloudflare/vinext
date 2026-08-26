@@ -27,7 +27,6 @@ import {
 } from "./unified-request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { hasBasePath, removeTrailingSlash, stripBasePath } from "../utils/base-path.js";
-import { markInvalidDynamicUsageError } from "./internal/invalid-dynamic-usage-error.js";
 
 /** @deprecated Import ImageResponse from `next/og` instead. */
 export function ImageResponse(): never {
@@ -72,24 +71,20 @@ function _recordInvalidDynamicUsageError(error: Error): void {
 function _throwIfInsideCacheScope(apiName: string): void {
   const cacheAls = _g[_USE_CACHE_ALS_KEY] as { getStore(): unknown } | undefined;
   if (cacheAls?.getStore() != null) {
-    const error = markInvalidDynamicUsageError(
-      new Error(
-        `\`${apiName}\` cannot be called inside "use cache". ` +
-          `If you need this data inside a cached function, call \`${apiName}\` ` +
-          "outside and pass the required data as an argument.",
-      ),
+    const error = new Error(
+      `\`${apiName}\` cannot be called inside "use cache". ` +
+        `If you need this data inside a cached function, call \`${apiName}\` ` +
+        "outside and pass the required data as an argument.",
     );
     _recordInvalidDynamicUsageError(error);
     throw error;
   }
   const unstableAls = _g[_UNSTABLE_CACHE_ALS_KEY] as { getStore(): unknown } | undefined;
   if (unstableAls?.getStore() === true) {
-    const error = markInvalidDynamicUsageError(
-      new Error(
-        `\`${apiName}\` cannot be called inside a function cached with \`unstable_cache()\`. ` +
-          `If you need this data inside a cached function, call \`${apiName}\` ` +
-          "outside and pass the required data as an argument.",
-      ),
+    const error = new Error(
+      `\`${apiName}\` cannot be called inside a function cached with \`unstable_cache()\`. ` +
+        `If you need this data inside a cached function, call \`${apiName}\` ` +
+        "outside and pass the required data as an argument.",
     );
     _recordInvalidDynamicUsageError(error);
     throw error;
