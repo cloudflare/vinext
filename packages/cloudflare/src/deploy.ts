@@ -54,6 +54,7 @@ import { parseWranglerConfig, runTPR } from "./tpr.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
 import {
   createCdnWarmTargets,
+  DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS,
   readPrerenderWarmPlan,
   waitForCdnWarmTargetReadiness,
   warmCdnCache,
@@ -847,6 +848,7 @@ async function deployUploadedVersionWithCdnWarmup(
       loadingShellPaths: plan.loadingShellPaths,
       rscPaths: plan.rscPaths,
       concurrency: options.warmCdnConcurrency,
+      phaseTimeoutMs: hasPreparedWarmPlan ? DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS : undefined,
       timeoutMs: options.warmCdnTimeout,
       retries: options.warmCdnRetries,
       strict: !options.dangerouslyPromoteOnCdnWarmError,
@@ -935,6 +937,15 @@ async function deployUploadedVersionWithCdnWarmup(
           } else {
             console.log("  CDN warmup: staged Worker version is stable.");
             const warmResult = await warmUploadedVersion(targetUrl, headers, true, stagedWarmPlan);
+            if (hasPreparedWarmPlan && warmResult.skipped > 0) {
+              const message =
+                `Two-stage CDN warming could not fill ${warmResult.skipped}/${warmResult.total} ` +
+                "planned cache entries because Cloudflare refused cache admission.";
+              if (!options.dangerouslyPromoteOnCdnWarmError) {
+                throw new Error(message);
+              }
+              console.warn(`  ${message} Promoting because the dangerous override is enabled.`);
+            }
             stagedCacheFilled = warmResult.warmed > 0;
             remainingWarmPlan = {
               loadingShellPaths: warmResult.retryPlan.loadingShellPaths,
@@ -1128,14 +1139,17 @@ async function deployWithCacheabilityProbe(
   let prepared:
     | {
         plan: PrerenderWarmPlan;
-        triggersDeployedUrl: string | null;
         upload: WranglerVersionUploadResult;
       }
     | undefined;
   try {
-    const triggersUrl = runWranglerTriggersDeploy(root, options).deployedUrl;
-    const targetUrl =
-      resolveCdnWarmupTargetUrl(root, triggersUrl, options) ?? stagedProbe.deployedUrl;
+    // Probe through a URL returned by the non-traffic upload/staging commands.
+    // Production triggers stay untouched until the manifest-bearing upload succeeds.
+    const targetUrl = resolveCdnWarmupTargetUrl(
+      root,
+      stagedProbe.deployedUrl ?? probeUpload.previewUrl,
+      options,
+    );
     const wranglerConfig = parseWranglerConfig(root, options.config);
     const workerName =
       options.name ??
@@ -1262,9 +1276,9 @@ async function deployWithCacheabilityProbe(
         }),
     );
     assertDeploymentTrafficUnchanged(root, options, probeTraffic);
-    prepared = { plan: finalPlan, triggersDeployedUrl: triggersUrl, upload: finalUpload };
+    prepared = { plan: finalPlan, upload: finalUpload };
   } catch (error) {
-    throw withStagedVersionCleanupNote(error);
+    throw withStagedProbeVersionCleanupNote(error);
   }
 
   return deployUploadedVersionWithCdnWarmup(root, prepared.plan.paths, {
@@ -1274,8 +1288,6 @@ async function deployWithCacheabilityProbe(
     expectedRscBuildId: prepared.plan.rscBuildId,
     loadingShellPaths: prepared.plan.loadingShellPaths,
     rscPaths: prepared.plan.rscPaths,
-    triggersAlreadyApplied: true,
-    triggersDeployedUrl: prepared.triggersDeployedUrl,
     uploadedVersion: prepared.upload,
   });
 }
@@ -1355,6 +1367,15 @@ function withStagedVersionCleanupNote(error: unknown): Error {
   return new Error(`${message} ${getStagedVersionCleanupNote()}`, {
     cause: error,
   });
+}
+
+function withStagedProbeVersionCleanupNote(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `${message} The probe version may remain staged at 0% with the previous version still serving 100% traffic; ` +
+      "production Worker triggers/routes were not changed.",
+    { cause: error },
+  );
 }
 
 function getStagedVersionCleanupNote(): string {

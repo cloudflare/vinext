@@ -42,6 +42,8 @@ export type CdnWarmOptions = {
   timeoutMs?: number;
   retries?: number;
   retryDelayMs?: number;
+  /** Bound the whole warm phase, including queued targets and retries. */
+  phaseTimeoutMs?: number;
   /** Retry a newly staged version or preview alias until its routing has propagated. */
   propagatingTarget?: boolean;
   strict?: boolean;
@@ -865,6 +867,7 @@ function shouldRetryValidationFailure(
 async function warmOnePath(
   target: CdnWarmTarget,
   options: Required<Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries">> & {
+    deadlineAt?: number;
     fetchImpl: typeof fetch;
     headers?: HeadersInit;
     expectedBuildId?: string;
@@ -872,6 +875,7 @@ async function warmOnePath(
     retryPropagationFailures: boolean;
     retryDelayMs: number;
     retryNotFound: boolean;
+    phaseTimeoutMs?: number;
   },
 ): Promise<
   | { path: string; ok: true; skipped: false }
@@ -882,22 +886,38 @@ async function warmOnePath(
   let lastError = "request failed before the first attempt";
   let lastRetryable = true;
 
+  const phaseDeadlineError = () =>
+    `CDN warmup exceeded its ${options.phaseTimeoutMs}ms phase deadline`;
+  const remainingPhaseMs = (): number =>
+    options.deadlineAt === undefined ? options.timeoutMs : options.deadlineAt - Date.now();
+
   const canRetry = (attempt: number): boolean => attempt < options.retries;
 
-  const waitBeforeRetry = async (): Promise<void> => {
-    if (options.retryDelayMs <= 0) return;
-    await new Promise((resolve) => setTimeout(resolve, options.retryDelayMs));
+  const waitBeforeRetry = async (): Promise<boolean> => {
+    if (options.retryDelayMs <= 0) return remainingPhaseMs() > 0;
+    const delayMs = Math.min(options.retryDelayMs, Math.max(0, remainingPhaseMs()));
+    if (delayMs <= 0) return false;
+    await delay(delayMs);
+    return remainingPhaseMs() > 0;
   };
 
   for (let attempt = 0; attempt <= options.retries; attempt++) {
+    const remainingMs = remainingPhaseMs();
+    if (remainingMs <= 0) {
+      return { path: target.label, ok: false, error: phaseDeadlineError(), retryable: false };
+    }
+    const attemptTimeoutMs = Math.min(options.timeoutMs, remainingMs);
     try {
       const { response } = await fetchWithTimeout(
         options.fetchImpl,
         url,
-        options.timeoutMs,
+        attemptTimeoutMs,
         target.headers ?? options.headers,
         "manual",
       );
+      if (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt) {
+        return { path: target.label, ok: false, error: phaseDeadlineError(), retryable: false };
+      }
 
       if (process.env.VINEXT_CDN_WARM_DEBUG === "1") {
         console.log(
@@ -926,7 +946,9 @@ async function warmOnePath(
         lastRetryable = shouldRetryValidationFailure(response, target, options);
         if (!lastRetryable) break;
         if (!canRetry(attempt)) break;
-        await waitBeforeRetry();
+        if (!(await waitBeforeRetry())) {
+          return { path: target.label, ok: false, error: phaseDeadlineError(), retryable: false };
+        }
         continue;
       }
 
@@ -943,13 +965,18 @@ async function warmOnePath(
     } catch (error) {
       lastRetryable = true;
       if (error instanceof DOMException && error.name === "AbortError") {
-        lastError = `timed out after ${options.timeoutMs}ms`;
+        lastError =
+          options.deadlineAt !== undefined && Date.now() >= options.deadlineAt
+            ? phaseDeadlineError()
+            : `timed out after ${attemptTimeoutMs}ms`;
       } else {
         lastError = error instanceof Error ? error.message : String(error);
       }
     }
     if (!canRetry(attempt)) break;
-    await waitBeforeRetry();
+    if (!(await waitBeforeRetry())) {
+      return { path: target.label, ok: false, error: phaseDeadlineError(), retryable: false };
+    }
   }
 
   return { path: target.label, ok: false, error: lastError, retryable: lastRetryable };
@@ -993,6 +1020,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const normalRetryDelayMs = Math.max(0, options.retryDelayMs ?? 0);
   const propagationRetryDelayMs = Math.max(0, options.retryDelayMs ?? 1_000);
   const fetchImpl = options.fetchImpl ?? fetch;
+  const phaseTimeoutMs =
+    options.phaseTimeoutMs === undefined ? undefined : Math.max(1, options.phaseTimeoutMs);
+  const deadlineAt = phaseTimeoutMs === undefined ? undefined : Date.now() + phaseTimeoutMs;
 
   if (requests.length === 0) {
     return {
@@ -1024,6 +1054,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       targetUrl: options.targetUrl,
       timeoutMs,
       retries,
+      deadlineAt,
       fetchImpl,
       headers: options.headers,
       expectedBuildId: options.expectedBuildId,
@@ -1031,6 +1062,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       retryPropagationFailures: isPropagationRequest,
       retryDelayMs: isPropagationRequest ? propagationRetryDelayMs : normalRetryDelayMs,
       retryNotFound: isPropagationRequest,
+      phaseTimeoutMs,
     });
   };
 

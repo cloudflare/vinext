@@ -949,7 +949,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(calls.lastIndexOf("/later:html")).toBeGreaterThan(lastInitialRequest);
   });
 
-  it("does not expire propagation retries while requests wait in the queue", async () => {
+  it("bounds queued targets and retry delays by one propagation phase deadline", async () => {
     let now = 0;
     vi.spyOn(Date, "now").mockImplementation(() => now);
     const attempts = new Map<string, number>();
@@ -960,12 +960,10 @@ describe("Cloudflare CDN warmup", () => {
       const attempt = (attempts.get(key) ?? 0) + 1;
       attempts.set(key, attempt);
 
-      // Move beyond the former 30-second wall-clock deadline before the
-      // concurrency-1 worker can dequeue any of the remaining requests.
+      // Exhaust the shared phase before the retry or any queued request can run.
       if (key === "/first:rsc") {
         now = 31_000;
-      } else if (url.pathname === "/later" && attempt === 1) {
-        return new Response("not propagated", { status: isRsc ? 404 : 500 });
+        return new Response("not propagated", { status: 404 });
       }
       return isRsc ? cacheableRsc() : cacheableHtml();
     });
@@ -975,16 +973,42 @@ describe("Cloudflare CDN warmup", () => {
         concurrency: 1,
         expectedRscBuildId: "rsc-build-a",
         fetchImpl: fetchImpl as typeof fetch,
+        phaseTimeoutMs: 30_000,
         paths: ["/first", "/later"],
         propagatingTarget: true,
-        retryDelayMs: 0,
+        retries: 2,
+        retryDelayMs: 1_000,
         rscPaths: ["/first", "/later"],
         strict: true,
         targetUrl: "https://app.example.com",
       }),
-    ).resolves.toMatchObject({ total: 4, warmed: 4, failed: 0 });
-    expect(attempts.get("/later:rsc")).toBe(2);
-    expect(attempts.get("/later:html")).toBe(2);
+    ).rejects.toThrow("CDN warmup exceeded its 30000ms phase deadline");
+    expect(attempts).toEqual(new Map([["/first:rsc", 1]]));
+  });
+
+  it("uses the remaining phase budget as the fetch deadline", async () => {
+    const fetchImpl = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        }),
+    );
+
+    await expect(
+      warmCdnCache({
+        fetchImpl: fetchImpl as typeof fetch,
+        phaseTimeoutMs: 5,
+        paths: ["/stalled"],
+        propagatingTarget: true,
+        retries: 2,
+        strict: true,
+        targetUrl: "https://app.example.com",
+        timeoutMs: 1_000,
+      }),
+    ).rejects.toThrow("CDN warmup exceeded its 5ms phase deadline");
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it("keeps the staged propagation budget independent for each failed key", async () => {
