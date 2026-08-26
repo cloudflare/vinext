@@ -1,7 +1,5 @@
-import { cacheLife } from "next/cache";
+export const revalidate = 60;
 
-export default async function StaticCacheabilityPage() {
-  "use cache";
-  cacheLife("minutes");
+export default function StaticCacheabilityPage() {
   return <p id="cacheability-result">static page</p>;
 }

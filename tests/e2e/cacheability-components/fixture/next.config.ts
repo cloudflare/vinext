@@ -1,5 +1,6 @@
 import type { NextConfig } from "vinext";
 
 export default {
-  generateBuildId: () => "ppr-impact-demo-cacheability",
+  cacheComponents: true,
+  generateBuildId: () => "cacheability-components-e2e",
 } satisfies NextConfig;

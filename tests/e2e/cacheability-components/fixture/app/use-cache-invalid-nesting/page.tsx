@@ -1,12 +1,10 @@
 async function readPrivateValue() {
   "use cache: private";
-
   return "private";
 }
 
 async function readPublicValue() {
   "use cache";
-
   return readPrivateValue();
 }
 
