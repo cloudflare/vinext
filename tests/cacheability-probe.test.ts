@@ -2353,6 +2353,37 @@ describe("buffered cache admission", () => {
     });
   });
 
+  it("transfers a route-owner capture without retaining it in request state", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const context = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      new Request("https://example.com/transferred-route-owner-capture"),
+      "secret-a",
+    );
+    const capturedBody = new Uint8Array([1]).buffer;
+    const release = vi.fn();
+
+    await runWithExecutionContext(context, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      expect(recordRouteCacheabilityCapturedBody(capturedBody, release)).toBe(true);
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response(null, {
+          headers: { "CDN-Cache-Control": "public, max-age=60" },
+        }),
+        context,
+      );
+      const state = Reflect.get(context, Symbol.for("vinext.cacheabilityRequestState")) as {
+        capturedBody?: ArrayBuffer | null;
+      };
+      expect(state.capturedBody).toBeUndefined();
+      expect(release).not.toHaveBeenCalled();
+
+      await response.body?.cancel();
+      expect(release).toHaveBeenCalledOnce();
+    });
+  });
+
   it("releases captures that finish after request admission has closed", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const ctx = createWorkerCacheabilityContext(

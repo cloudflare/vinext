@@ -461,8 +461,10 @@ async function finalizeWorkerCacheabilityResponseWithState(
   let captured: CapturedResponseBody;
   if (state.capturedBody !== undefined) {
     const release = state.capturedBodyRelease ?? (() => {});
+    const body = state.capturedBody;
+    state.capturedBody = undefined;
     state.capturedBodyRelease = undefined;
-    captured = { body: state.capturedBody, fallback: null, failClosed: false, release };
+    captured = { body, fallback: null, failClosed: false, release };
   } else {
     try {
       captured = await captureResponseBodyBoundedRuntime(response);
