@@ -4660,9 +4660,20 @@ describe("createAppRscHandler", () => {
       renderPagesFallback,
     });
 
-    const response = await handler(new Request("https://example.test/docs/about"), null);
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "admit",
+    };
+    const context = {
+      [CACHEABILITY_REQUEST_STATE]: state,
+      waitUntil() {},
+    };
+    const response = await runWithExecutionContext(context, () =>
+      handler(new Request("https://example.test/docs/about"), null),
+    );
 
     expect(await response.text()).toBe("pages:/about");
+    expect(state.preserveResponseCachePolicy).toBe(true);
     expect(renderPagesFallback).toHaveBeenCalledWith(
       expect.objectContaining({
         matchKind: "static",

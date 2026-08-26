@@ -153,6 +153,25 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe("dynamic");
   });
 
+  it("preserves an independently classified hybrid Pages response", async () => {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+    );
+    cacheabilityState(context).preserveResponseCachePolicy = true;
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("pages", { headers: { "Cache-Control": "public, s-maxage=300" } }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=300");
+    await expect(response.text()).resolves.toBe("pages");
+  });
+
   it("keeps responses with unsupported Vary fields private", async () => {
     const context = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },

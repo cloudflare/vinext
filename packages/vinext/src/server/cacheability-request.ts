@@ -426,6 +426,12 @@ async function finalizeWorkerCacheabilityAdmission(
   response: Response,
   state: RouteCacheabilityState,
 ): Promise<Response> {
+  // This layer classifies App Pages only. Hybrid routing can hand the request
+  // to Pages Router after admission begins; retain the Pages response and its
+  // independently computed cache policy until Pages probing is introduced by
+  // its own stack layer.
+  if (state.preserveResponseCachePolicy) return response;
+
   const admission = state.admission;
   if (
     !admission ||

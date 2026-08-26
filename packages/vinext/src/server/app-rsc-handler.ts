@@ -107,7 +107,10 @@ import {
   type AppRouteTreePrefetchRoute,
   type PrefetchInliningConfig,
 } from "./app-route-tree-prefetch.js";
-import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
+import {
+  markRouteCacheabilityDynamic,
+  preserveRouteCacheabilityResponsePolicy,
+} from "vinext/shims/cacheability-classification";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -1496,6 +1499,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             url,
           })) ?? null)
         : null;
+    if (response) preserveRouteCacheabilityResponsePolicy();
     if (!response || !pagesDataRequest || resolvedUrl === originalResolvedUrl) return response;
 
     const headers = new Headers(response.headers);

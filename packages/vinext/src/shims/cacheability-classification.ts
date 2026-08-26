@@ -36,11 +36,19 @@ export type RouteCacheabilityState = {
   frameworkResponseCachePolicy?: Partial<Record<CacheabilityPolicyHeader, string>>;
   mode: "admit" | "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
+  preserveResponseCachePolicy?: boolean;
   route?: {
     kind: "app-page";
     pattern: string;
   };
 };
+
+/** Preserve the existing policy when hybrid routing hands the request to Pages Router. */
+export function preserveRouteCacheabilityResponsePolicy(): void {
+  const state = readRouteCacheabilityState();
+  if (!state || state.mode !== "admit") return;
+  state.preserveResponseCachePolicy = true;
+}
 
 export function readRouteCacheabilityState(): RouteCacheabilityState | null {
   const context = getRequestExecutionContext();
