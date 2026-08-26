@@ -15,6 +15,7 @@ export type RouteCacheabilityState = {
   captureDeadlineAt: number;
   complete?: (outcome: RouteCacheabilityOutcome) => void;
   completion?: Promise<RouteCacheabilityOutcome>;
+  forcedDynamicReason?: string;
   mode: "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
   route?: {
@@ -36,6 +37,13 @@ export function beginRouteCacheability(kind: "app-page", pattern: string): boole
   if (!state) return false;
   state.route = { kind, pattern };
   return true;
+}
+
+/** Prevent shared caching when request processing before route dispatch was request-specific. */
+export function markRouteCacheabilityDynamic(reason: string): void {
+  const state = readRouteCacheabilityState();
+  if (!state) return;
+  state.forcedDynamicReason = reason;
 }
 
 /** True only for an authenticated probe that must render the matched App Page. */
@@ -60,8 +68,15 @@ export function deferRouteCacheability(): ((outcome: RouteCacheabilityOutcome) =
 
   state.completion = new Promise<RouteCacheabilityOutcome>((resolve) => {
     state.complete = (outcome) => {
-      state.outcome = outcome;
-      resolve(outcome);
+      const resolvedOutcome = state.forcedDynamicReason
+        ? {
+            cacheable: false,
+            dynamicUsage: true,
+            reason: state.forcedDynamicReason,
+          }
+        : outcome;
+      state.outcome = resolvedOutcome;
+      resolve(resolvedOutcome);
     };
   });
   return (outcome) => state.complete?.(outcome);
@@ -70,6 +85,13 @@ export function deferRouteCacheability(): ((outcome: RouteCacheabilityOutcome) =
 export function recordRouteCacheability(outcome: RouteCacheabilityOutcome): void {
   const state = readRouteCacheabilityState();
   if (!state?.route) return;
-  state.outcome = outcome;
-  state.complete?.(outcome);
+  const resolvedOutcome = state.forcedDynamicReason
+    ? {
+        cacheable: false,
+        dynamicUsage: true,
+        reason: state.forcedDynamicReason,
+      }
+    : outcome;
+  state.outcome = resolvedOutcome;
+  state.complete?.(resolvedOutcome);
 }

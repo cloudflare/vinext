@@ -433,6 +433,30 @@ describe("middleware redirect protocol", () => {
     expect((capturedRequest as NextRequest & { __isData?: boolean }).__isData).toBeUndefined();
   });
 
+  it("reports whether the configured matcher accepted the request", async () => {
+    const onMatch = vi.fn();
+    const module = {
+      config: { matcher: "/matched/:path*" },
+      default: () => undefined,
+    };
+
+    await executeMiddleware({
+      isProxy: false,
+      module,
+      onMatch,
+      request: new Request("http://localhost:3000/not-matched"),
+    });
+    expect(onMatch).not.toHaveBeenCalled();
+
+    await executeMiddleware({
+      isProxy: false,
+      module,
+      onMatch,
+      request: new Request("http://localhost:3000/matched/page"),
+    });
+    expect(onMatch).toHaveBeenCalledOnce();
+  });
+
   it("relativizes the Location header for same-host redirects", async () => {
     const module = {
       default: (req: Request) => {

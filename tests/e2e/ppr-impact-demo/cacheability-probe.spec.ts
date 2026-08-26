@@ -35,6 +35,20 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
+  // Next.js keeps middleware in front of page serving on every request:
+  // test/e2e/middleware-static-files/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-static-files/index.test.ts
+  const middlewareProbe = await request.get("/cacheability/middleware", { headers });
+  expect(middlewareProbe.ok()).toBe(true);
+  await expect(middlewareProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cacheability/middleware",
+    reason: "middleware matched this request",
+    state: "dynamic",
+    status: 200,
+    version: 1,
+  });
+
   const identityProbe = await request.get("/cacheability/static", {
     headers: { ...headers, [probeHeader]: "identity" },
   });

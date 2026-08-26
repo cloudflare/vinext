@@ -107,6 +107,7 @@ import {
   type AppRouteTreePrefetchRoute,
   type PrefetchInliningConfig,
 } from "./app-route-tree-prefetch.js";
+import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -898,6 +899,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       request: userlandRequest,
       validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
     });
+    if (middlewareResult.matched) {
+      // Next.js runs matched middleware before serving a page response. A CDN
+      // HIT in front of this Worker would skip that request-specific boundary,
+      // so this architecture must remain private until middleware is isolated
+      // into an uncached outer stage.
+      markRouteCacheabilityDynamic("middleware matched this request");
+    }
     if (middlewareResult.kind === "response") {
       if (request.body && !request.body.locked) {
         void request.body.cancel().catch(() => {});
@@ -1250,6 +1258,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       ) {
         void sourceRequest.body.cancel().catch(() => {});
       }
+    }
+    if (sourceMiddlewareResult.matched) {
+      markRouteCacheabilityDynamic("middleware matched this request");
     }
     if (sourceMiddlewareResult.kind === "response") {
       options.clearRequestContext();

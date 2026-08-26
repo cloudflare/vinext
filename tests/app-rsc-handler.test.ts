@@ -690,8 +690,8 @@ describe("createAppRscHandler", () => {
       async runMiddleware({ cleanPathname }) {
         middlewarePaths.push(cleanPathname);
         return cleanPathname.startsWith("/feed/secret")
-          ? { kind: "response", response: new Response("denied", { status: 401 }) }
-          : { kind: "continue", cleanPathname, rewritten: false, search: null };
+          ? { kind: "response", matched: true, response: new Response("denied", { status: 401 }) }
+          : { kind: "continue", cleanPathname, matched: true, rewritten: false, search: null };
       },
     });
 
@@ -1918,7 +1918,7 @@ describe("createAppRscHandler", () => {
         } else {
           getHeadersContext()?.headers.set("x-source", "added");
         }
-        return { kind: "continue", cleanPathname, rewritten: false, search: null };
+        return { kind: "continue", cleanPathname, matched: true, rewritten: false, search: null };
       },
     });
 
@@ -2043,7 +2043,7 @@ describe("createAppRscHandler", () => {
         pathname === "/photos/1" ? { params: {}, route: targetRoute } : null,
       async runMiddleware({ cleanPathname }) {
         middlewarePaths.push(cleanPathname);
-        return { kind: "continue", cleanPathname, rewritten: false, search: null };
+        return { kind: "continue", cleanPathname, matched: true, rewritten: false, search: null };
       },
     });
 
@@ -4455,7 +4455,7 @@ describe("createAppRscHandler", () => {
         matchRoute,
         async runMiddleware({ cleanPathname }) {
           middlewarePaths.push(cleanPathname);
-          return { kind: "continue", cleanPathname, rewritten: false, search: null };
+          return { kind: "continue", cleanPathname, matched: true, rewritten: false, search: null };
         },
       });
       const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
