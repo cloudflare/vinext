@@ -142,6 +142,17 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     state: "static-candidate",
     version: 1,
   });
+
+  // Ported from Next.js: packages/next/src/server/request/io.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/request/io.ts
+  const legacyIoProbe = await request.get("/cacheability/explicit-io", { headers });
+  await expect(legacyIoProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cacheability/explicit-io",
+    state: "static-candidate",
+    status: 200,
+    version: 1,
+  });
 });
 
 test("rejects forged probes without exposing capability headers to user code", async ({

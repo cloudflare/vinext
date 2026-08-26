@@ -2024,7 +2024,10 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             ? markUnverifiedInterceptionResponseUncacheable(response)
             : response;
         },
-        { route: () => new URL(request.url).pathname },
+        {
+          cacheComponents: options.createPprFallbackShells !== undefined,
+          route: () => new URL(request.url).pathname,
+        },
       ),
     );
     let response: Response;

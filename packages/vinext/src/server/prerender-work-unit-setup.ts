@@ -17,9 +17,12 @@ import { NO_STORE_CACHE_CONTROL } from "./cache-control.js";
 
 export function runWithPrerenderWorkUnit(
   fn: () => Promise<Response>,
-  options?: { route?: string | (() => string) },
+  options?: { cacheComponents?: boolean; route?: string | (() => string) },
 ): Promise<Response> {
   if (process.env.VINEXT_PRERENDER === "1" || isRouteCacheabilityProbe()) {
+    if (options?.cacheComponents !== true) {
+      return workUnitAsyncStorage.run({ type: "prerender-legacy" }, fn);
+    }
     return runWithPrerenderWorkUnitOwner(fn, options);
   }
   return fn();
