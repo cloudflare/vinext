@@ -39,7 +39,7 @@ import {
   createTrackedAppRouteRequest,
   markKnownDynamicAppRoute,
 } from "./app-route-handler-runtime.js";
-import { recordRouteCacheability } from "./cacheability-request.js";
+import { captureResponseBodyBounded, recordRouteCacheability } from "./cacheability-request.js";
 
 export type AppRouteParams = Record<string, string | string[]>;
 export type AppRouteDynamicUsageFn = () => boolean;
@@ -73,6 +73,7 @@ export type AppRouteDebugLogger = (event: string, detail: string) => void;
 
 type RunAppRouteHandlerOptions = {
   basePath?: string;
+  cacheComponents?: boolean;
   consumeDynamicUsage: AppRouteDynamicUsageFn;
   draftModeSecret?: string;
   dynamicConfig?: string;
@@ -93,6 +94,7 @@ type RunAppRouteHandlerOptions = {
 };
 
 type RunAppRouteHandlerResult = {
+  crossedTaskBoundary: boolean;
   dynamicUsedInHandler: boolean;
   response: Response;
 };
@@ -129,6 +131,7 @@ type ExecuteAppRouteHandlerOptions = {
   isrRouteKey: (pathname: string) => string;
   isrSet: RouteHandlerCacheSetter;
   method: string;
+  observeCompletedBody?: boolean;
   middlewareContext: RouteHandlerMiddlewareContext;
   reportRequestError: AppRouteErrorReporter;
   expireSeconds?: number;
@@ -177,18 +180,30 @@ export async function runAppRouteHandler(
       return getAppRouteStaticGenerationErrorMessage(options.routePattern, expression);
     },
   });
-  const response = await runWithRootParamsUsage(
-    {
-      kind: "route-handler",
-      routePattern: options.routePattern ?? new URL(options.request.url).pathname,
-    },
-    () =>
-      options.handlerFn(trackedRequest.request, {
-        params: options.params,
-      }),
-  );
+  let crossedTaskBoundary = false;
+  const taskBoundaryTimer = options.cacheComponents
+    ? setTimeout(() => {
+        crossedTaskBoundary = true;
+      }, 0)
+    : undefined;
+  let response: Response;
+  try {
+    response = await runWithRootParamsUsage(
+      {
+        kind: "route-handler",
+        routePattern: options.routePattern ?? new URL(options.request.url).pathname,
+      },
+      () =>
+        options.handlerFn(trackedRequest.request, {
+          params: options.params,
+        }),
+    );
+  } finally {
+    if (taskBoundaryTimer !== undefined) clearTimeout(taskBoundaryTimer);
+  }
 
   return {
+    crossedTaskBoundary,
     dynamicUsedInHandler: options.consumeDynamicUsage(),
     response,
   };
@@ -216,18 +231,78 @@ export async function executeAppRouteHandler(
       // finalization clears the request context.
       await _drainPendingRevalidations();
     }
-    const { dynamicUsedInHandler, response } = handlerResult;
+    let { dynamicUsedInHandler } = handlerResult;
+    const { crossedTaskBoundary } = handlerResult;
+    let { response } = handlerResult;
     assertSupportedAppRouteHandlerResponse(response);
     const handlerSetCacheControl = response.headers.has("cache-control");
+
+    let completedRouteCacheValue: CachedRouteValue | null = null;
+    let completedBodyFailure: string | null = null;
+    if (options.observeCompletedBody) {
+      const contentType = response.headers.get("content-type")?.toLowerCase();
+      const streamingOnly =
+        response.status === 101 ||
+        response.headers.has("upgrade") ||
+        Reflect.get(response, "webSocket") != null ||
+        contentType?.startsWith("text/event-stream");
+      if (streamingOnly) {
+        completedBodyFailure = contentType?.startsWith("text/event-stream")
+          ? "route handler returned an event stream"
+          : "route handler returned an upgrade response";
+      } else {
+        const captured = await captureResponseBodyBounded(response);
+        if (captured.failClosed) {
+          completedBodyFailure = captured.reason;
+          response = new Response(captured.fallback, {
+            headers: response.headers,
+            status: response.status,
+            statusText: response.statusText,
+          });
+        } else {
+          completedRouteCacheValue = await buildAppRouteCacheValue(response, captured.body);
+          if (captured.body !== null) {
+            response = new Response(captured.body, {
+              headers: response.headers,
+              status: response.status,
+              statusText: response.statusText,
+            });
+          }
+          void captured.fallback?.cancel().catch(() => {});
+        }
+        // A returned stream can use request APIs, cacheLife(), or synchronous
+        // invalidation while it is pulled. Observe those effects before choosing
+        // response headers or writing the Full Route Cache, matching Next.js's
+        // completed-response collection for bounded responses.
+        await _drainPendingRevalidations();
+        dynamicUsedInHandler = dynamicUsedInHandler || options.consumeDynamicUsage();
+      }
+    }
+    if (crossedTaskBoundary) dynamicUsedInHandler = true;
 
     if (dynamicUsedInHandler) {
       markKnownDynamicAppRoute(options.routePattern);
       recordRouteCacheability({
         cacheable: false,
         dynamicUsage: true,
-        reason: "dynamic API used by route handler",
+        reason: crossedTaskBoundary
+          ? "Cache Components route handler completed in a new task"
+          : "dynamic API used by route handler",
+      });
+    } else if (completedBodyFailure) {
+      recordRouteCacheability({
+        cacheable: false,
+        // A manifest-certified Full Route Cache response must complete as a
+        // bounded artifact, as it does during Next.js prerender collection.
+        // Mark an incomplete body as a static-to-dynamic transition so the
+        // outer Worker finalizer returns 500 instead of exposing a changed
+        // streamed representation under a previously static URL.
+        dynamicUsage: true,
+        reason: completedBodyFailure,
       });
     }
+
+    const cacheabilityBlocked = dynamicUsedInHandler || completedBodyFailure !== null;
 
     const pendingCookies = options.getAndClearPendingCookies();
     const handlerDraftCookie = options.getDraftModeCookieHeader();
@@ -259,7 +334,7 @@ export async function executeAppRouteHandler(
 
     if (
       shouldApplyAppRouteHandlerRevalidateHeader({
-        dynamicUsedInHandler,
+        dynamicUsedInHandler: cacheabilityBlocked,
         handlerSetCacheControl,
         isAutoHead: options.isAutoHead,
         isDraftMode: shouldApplyDraftPolicy,
@@ -282,7 +357,7 @@ export async function executeAppRouteHandler(
     if (
       shouldWriteAppRouteHandlerCache({
         dynamicConfig: options.handler.dynamic,
-        dynamicUsedInHandler,
+        dynamicUsedInHandler: cacheabilityBlocked,
         handlerSetCacheControl,
         isAutoHead: options.isAutoHead,
         isDraftMode: shouldApplyDraftPolicy,
@@ -292,7 +367,6 @@ export async function executeAppRouteHandler(
       })
     ) {
       markRouteHandlerCacheMiss(response);
-      const routeClone = response.clone();
       const routeKey = options.isrRouteKey(options.cleanPathname);
       const revalidateSeconds = effectiveRevalidateSeconds;
       if (revalidateSeconds == null) {
@@ -300,7 +374,8 @@ export async function executeAppRouteHandler(
       }
       const routeWritePromise = (async () => {
         try {
-          const routeCacheValue = await buildAppRouteCacheValue(routeClone);
+          const routeCacheValue =
+            completedRouteCacheValue ?? (await buildAppRouteCacheValue(response.clone()));
           await options.isrSet(routeKey, routeCacheValue, {
             cacheControl: isrCacheControl(revalidateSeconds, {
               expireSeconds: effectiveExpireSeconds,

@@ -25,6 +25,7 @@ import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import { CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS } from "../packages/vinext/src/server/cacheability-request.js";
 
 // The fetch-cache shim captures `originalFetch` from globalThis at import
 // time, so stub fetch BEFORE importing it (same pattern as
@@ -292,6 +293,186 @@ describe("app route handler execution helpers", () => {
     expect(phaseCalls).toEqual(["route-handler", "render"]);
     expect(didClearRequestContext).toBe(true);
     expect(reportCalls).toEqual([]);
+  });
+
+  it("observes dynamic API usage while a cacheable Route Handler stream is consumed", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const isrSet = vi.fn(async () => {});
+    const routePattern = `/api/late-dynamic-${Date.now()}`;
+
+    const response = await executeAppRouteHandler({
+      buildPageCacheTags: () => [],
+      cleanPathname: routePattern,
+      clearRequestContext() {},
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      executionContext: null,
+      getAndClearPendingCookies: () => [],
+      getCollectedFetchTags: () => [],
+      getDraftModeCookieHeader: () => null,
+      handler: { revalidate: false },
+      handlerFn() {
+        return new Response(
+          new ReadableStream({
+            pull(controller) {
+              dynamicUsage.markDynamicUsage();
+              controller.enqueue(new TextEncoder().encode("late dynamic"));
+              controller.close();
+            },
+          }),
+        );
+      },
+      isAutoHead: false,
+      isProduction: true,
+      isrRouteKey: (pathname) => `route:${pathname}`,
+      isrSet,
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      method: "GET",
+      middlewareContext: { headers: null, status: null },
+      observeCompletedBody: true,
+      params: null,
+      reportRequestError() {},
+      request: new Request(`https://example.com${routePattern}`),
+      revalidateSeconds: Infinity,
+      routePattern,
+      setHeadersAccessPhase: () => "render",
+    });
+
+    expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
+    expect(isrSet).not.toHaveBeenCalled();
+    expect(response.headers.get("cache-control")).toBeNull();
+    await expect(response.text()).resolves.toBe("late dynamic");
+  });
+
+  it("classifies Cache Components handlers that cross a task boundary as dynamic", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const result = await runAppRouteHandler({
+      cacheComponents: true,
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      async handlerFn() {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return new Response("task");
+      },
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      params: null,
+      request: new Request("https://example.com/api/task"),
+    });
+
+    expect(result.crossedTaskBoundary).toBe(true);
+  });
+
+  it.each([
+    ["synchronously", false],
+    ["after a microtask", true],
+  ])("keeps Cache Components handlers cacheable when they finish %s", async (_name, microtask) => {
+    const dynamicUsage = createDynamicUsageState();
+    const result = await runAppRouteHandler({
+      cacheComponents: true,
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      async handlerFn() {
+        if (microtask) await Promise.resolve();
+        return new Response("static");
+      },
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      params: null,
+      request: new Request("https://example.com/api/static"),
+    });
+
+    expect(result.crossedTaskBoundary).toBe(false);
+  });
+
+  it("does not drain or cache Route Handler event streams", async () => {
+    const isrSet = vi.fn(async () => {});
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("data: ready\n\n"));
+      },
+    });
+
+    const response = await executeAppRouteHandler({
+      buildPageCacheTags: () => [],
+      cleanPathname: "/api/events",
+      clearRequestContext() {},
+      consumeDynamicUsage: () => false,
+      executionContext: null,
+      getAndClearPendingCookies: () => [],
+      getCollectedFetchTags: () => [],
+      getDraftModeCookieHeader: () => null,
+      handler: { revalidate: false },
+      handlerFn: () => new Response(stream, { headers: { "Content-Type": "text/event-stream" } }),
+      isAutoHead: false,
+      isProduction: true,
+      isrRouteKey: (pathname) => `route:${pathname}`,
+      isrSet,
+      markDynamicUsage() {},
+      method: "GET",
+      middlewareContext: { headers: null, status: null },
+      observeCompletedBody: true,
+      params: null,
+      reportRequestError() {},
+      request: new Request("https://example.com/api/events"),
+      revalidateSeconds: Infinity,
+      routePattern: "/api/events",
+      setHeadersAccessPhase: () => "render",
+    });
+
+    expect(response.headers.get("cache-control")).toBeNull();
+    expect(isrSet).not.toHaveBeenCalled();
+    const reader = response.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    await reader.cancel();
+  });
+
+  it("bounds completed-body observation without losing a slow streamed response", async () => {
+    vi.useFakeTimers();
+    try {
+      const isrSet = vi.fn(async () => {});
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const stream = new ReadableStream<Uint8Array>({
+        start(value) {
+          controller = value;
+          controller.enqueue(new TextEncoder().encode("first"));
+        },
+      });
+
+      const pending = executeAppRouteHandler({
+        buildPageCacheTags: () => [],
+        cleanPathname: "/api/slow",
+        clearRequestContext() {},
+        consumeDynamicUsage: () => false,
+        executionContext: null,
+        getAndClearPendingCookies: () => [],
+        getCollectedFetchTags: () => [],
+        getDraftModeCookieHeader: () => null,
+        handler: { revalidate: false },
+        handlerFn: () => new Response(stream),
+        isAutoHead: false,
+        isProduction: true,
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        isrSet,
+        markDynamicUsage() {},
+        method: "GET",
+        middlewareContext: { headers: null, status: null },
+        observeCompletedBody: true,
+        params: null,
+        reportRequestError() {},
+        request: new Request("https://example.com/api/slow"),
+        revalidateSeconds: Infinity,
+        routePattern: "/api/slow",
+        setHeadersAccessPhase: () => "render",
+      });
+      await vi.advanceTimersByTimeAsync(CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS);
+      const response = await pending;
+
+      expect(response.headers.get("cache-control")).toBeNull();
+      expect(isrSet).not.toHaveBeenCalled();
+      const reader = response.body!.getReader();
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toBe("first");
+      controller.close();
+      await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("persists revalidate=false route handlers as immutable Full Route Cache entries", async () => {

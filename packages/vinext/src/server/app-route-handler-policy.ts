@@ -64,7 +64,9 @@ type AppRouteHandlerSpecialErrorOptions = {
 
 export function getAppRouteHandlerRevalidateSeconds(
   handler: Pick<AppRouteHandlerModule, "dynamic" | "generateStaticParams" | "revalidate">,
+  cacheComponents = false,
 ): number | null {
+  if (cacheComponents) return Infinity;
   // 0 is a meaningful value ("never cache") and must be preserved so the
   // header path can emit a no-store Cache-Control.
   // revalidate = false means "cache indefinitely" (Next.js segment config
@@ -92,6 +94,18 @@ export function getAppRouteHandlerRevalidateSeconds(
   }
 
   return null;
+}
+
+export function assertAppRouteCacheComponentsConfig(
+  handler: Pick<AppRouteHandlerModule, "dynamic" | "fetchCache" | "revalidate">,
+): void {
+  for (const name of ["dynamic", "revalidate", "fetchCache"] as const) {
+    if (handler[name] !== undefined) {
+      throw new Error(
+        `Route segment config "${name}" is not compatible with \`nextConfig.cacheComponents\`. Please remove it.`,
+      );
+    }
+  }
 }
 
 export function hasAppRouteHandlerDefaultExport(handler: RouteHandlerModule): boolean {

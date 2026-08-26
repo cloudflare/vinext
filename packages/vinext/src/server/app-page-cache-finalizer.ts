@@ -41,7 +41,15 @@ type BuildAppPageCacheRenderObservation = (input: {
   state: AppPageRenderObservationState;
 }) => RenderObservation;
 
+function renderObservationRequiresRuntime(
+  state: AppPageRenderObservationState,
+  allowRequestApis: boolean,
+): boolean {
+  return state.dynamicFetches.length > 0 || (!allowRequestApis && state.requestApis.length > 0);
+}
+
 type FinalizeAppPageHtmlCacheResponseOptions = {
+  allowRequestApis?: boolean;
   capturedDynamicUsageBeforeContextCleanup?: () => boolean;
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
@@ -66,6 +74,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
 };
 
 type ScheduleAppPageRscCacheWriteOptions = {
+  allowRequestApis?: boolean;
   bypassInterceptionContextCache?: boolean;
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
@@ -241,6 +250,15 @@ export function finalizeAppPageHtmlCacheResponse(
       const pageTags = options.getPageTags();
       const observationState =
         options.consumeRenderObservationState?.() ?? createEmptyAppPageRenderObservationState();
+      if (renderObservationRequiresRuntime(observationState, options.allowRequestApis === true)) {
+        complete({
+          cacheable: false,
+          dynamicUsage: true,
+          reason: "completed render observed uncached data or a request API",
+        });
+        options.isrDebug?.("HTML cache write skipped (completed render requires runtime)", htmlKey);
+        return;
+      }
       const htmlRenderObservation = options.createHtmlRenderObservation?.({
         cacheTags: pageTags,
         state: observationState,
@@ -407,6 +425,15 @@ export function scheduleAppPageRscCacheWrite(
       const pageTags = options.getPageTags();
       const observationState =
         options.consumeRenderObservationState?.() ?? createEmptyAppPageRenderObservationState();
+      if (renderObservationRequiresRuntime(observationState, options.allowRequestApis === true)) {
+        complete({
+          cacheable: false,
+          dynamicUsage: true,
+          reason: "completed render observed uncached data or a request API",
+        });
+        options.isrDebug?.("RSC cache write skipped (completed render requires runtime)", rscKey);
+        return;
+      }
       const rscRenderObservation = options.createRscRenderObservation?.({
         cacheTags: pageTags,
         state: observationState,

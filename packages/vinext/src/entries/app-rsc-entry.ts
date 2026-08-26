@@ -1045,6 +1045,7 @@ const __appRscHandler = createAppRscHandler({
       await __loadAppRouteHandlerDispatch();
     return __dispatchAppRouteHandler({
       basePath: __basePath,
+      cacheComponents: ${JSON.stringify(cacheComponents)},
       cleanPathname,
       clearRequestContext() {
         __clearRequestContext();

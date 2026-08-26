@@ -938,6 +938,10 @@ export async function renderAppPageLifecycle(
         : completionResponse;
 
     return finalizeAppPageRscCacheResponse(devRscResponse, {
+      // force-static deliberately replaces request-derived values with empty
+      // values. Observing headers()/cookies()/searchParams on that path does
+      // not make the completed representation request-specific in Next.js.
+      allowRequestApis: options.isForceStatic,
       capturedRscDataPromise:
         options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
       bypassInterceptionContextCache: options.bypassInterceptionContextCache,
@@ -1250,6 +1254,7 @@ export async function renderAppPageLifecycle(
     }
 
     return finalizeAppPageHtmlCacheResponse(isrResponse, {
+      allowRequestApis: options.isForceStatic,
       capturedDynamicUsageBeforeContextCleanup() {
         return dynamicUsedBeforeContextCleanup;
       },

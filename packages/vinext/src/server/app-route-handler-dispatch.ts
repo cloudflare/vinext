@@ -27,6 +27,7 @@ import {
 } from "vinext/shims/unified-request-context";
 import type { ISRCacheEntry } from "./isr-cache.js";
 import {
+  assertAppRouteCacheComponentsConfig,
   getAppRouteHandlerRevalidateSeconds,
   hasAppRouteHandlerDefaultExport,
   resolveAppRouteHandlerMethod,
@@ -75,6 +76,7 @@ type RouteHandlerBackgroundRegenerator = (
 
 type DispatchAppRouteHandlerOptions = {
   basePath?: string;
+  cacheComponents?: boolean;
   cleanPathname: string;
   clearRequestContext: () => void;
   draftModeSecret: string;
@@ -170,12 +172,14 @@ export async function dispatchAppRouteHandler(
   const { route } = options;
   const handler = route.routeHandler;
   const method = options.request.method.toUpperCase();
-  const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);
+  if (options.cacheComponents) assertAppRouteCacheComponentsConfig(handler);
+  const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler, options.cacheComponents);
   // Next.js only admits GET Route Handler representations to its Full Route
   // Cache. POST/PUT/etc. can still set their own HTTP cache headers, but must
   // not inherit framework cacheability from a probed GET route pattern.
+  const routeCacheabilityStarted =
+    method === "GET" && beginRouteCacheability("app-route", route.pattern);
   if (method === "GET") {
-    beginRouteCacheability("app-route", route.pattern);
     if (handler.dynamic === "force-dynamic" || revalidateSeconds === 0) {
       recordRouteCacheability({
         cacheable: false,
@@ -327,6 +331,7 @@ export async function dispatchAppRouteHandler(
   if (resolvedHandlerFn) {
     return executeAppRouteHandler({
       basePath: options.basePath,
+      cacheComponents: options.cacheComponents,
       buildPageCacheTags(pathname, extraTags) {
         return buildRouteHandlerPageCacheTags(pathname, extraTags, route.routeSegments);
       },
@@ -352,6 +357,7 @@ export async function dispatchAppRouteHandler(
       isrSet: options.isrSet,
       markDynamicUsage,
       method,
+      observeCompletedBody: routeCacheabilityStarted || revalidateSeconds !== null,
       middlewareContext: options.middlewareContext,
       middlewareRequestHeaders: options.middlewareRequestHeaders,
       params: options.params === null ? null : makeThenableParams(options.params),

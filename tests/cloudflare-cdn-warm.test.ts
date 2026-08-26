@@ -327,6 +327,67 @@ describe("Cloudflare CDN warmup", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects a cache fill that becomes BYPASS during certification", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("dynamic", {
+          headers: {
+            "cache-control": "no-store",
+            "cf-cache-status": "BYPASS",
+            "content-type": "text/html",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          },
+        }),
+    );
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/changed"],
+        requireCacheHit: true,
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).rejects.toThrow("CF-Cache-Status is BYPASS; the cache fill is not reusable");
+  });
+
+  it("certifies from headers and cancels the cached body", async () => {
+    let cancelled = false;
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.enqueue(new Uint8Array([1]));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          {
+            headers: {
+              "cf-cache-status": "HIT",
+              "content-type": "text/html",
+              [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+            },
+          },
+        ),
+    );
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/cached"],
+        requireCacheHit: true,
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ warmed: 1, failed: 0 });
+    expect(cancelled).toBe(true);
+  });
+
   it("uses Cloudflare cache-control precedence when validating admission", async () => {
     const fetchImpl = vi.fn(async () => {
       const response = cacheableRsc();

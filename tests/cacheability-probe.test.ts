@@ -266,6 +266,53 @@ describe("cacheability manifests", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("stores one manifest entry rather than an exact duplicate for each fixed route", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-fixed-probes-"));
+    fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "dist/server/vinext-server.json"),
+      JSON.stringify({ prerenderSecret: "secret-a" }),
+    );
+    const fixedRoutes = Array.from({ length: 200 }, (_, index) => `/fixed-${index}`);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: URL | RequestInfo) => {
+        const pathname = new URL(
+          input instanceof URL ? input : typeof input === "string" ? input : input.url,
+        ).pathname;
+        return Response.json({
+          kind: "app-page",
+          pattern: pathname,
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        });
+      }),
+    );
+
+    const result = await probeStagedWorkerCacheability({
+      root,
+      routes: fixedRoutes.map((pattern) => ({
+        kind: "app-page" as const,
+        path: pattern,
+        pattern,
+        probePath: pattern,
+      })),
+      targetUrl: "https://shop.example.com",
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.probed).toBe(fixedRoutes.length);
+    expect(Object.keys(result.manifest.routes)).toHaveLength(fixedRoutes.length);
+    expect(result.manifest.routes["app-page:/fixed-199"]).toEqual({
+      kind: "app-page",
+      pattern: "/fixed-199",
+      state: "static-candidate",
+    });
+    expect(JSON.stringify(result.manifest)).not.toContain('["app-page","/fixed-199"');
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("retries transient staged-version routing responses", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-retry-"));
     fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
@@ -426,6 +473,15 @@ describe("buffered cache admission", () => {
     );
     await runWithExecutionContext(dynamicContext, async () => {
       expect(beginRouteCacheability("app-page", "/products/:id")).toBe(false);
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response("personalized", {
+          headers: { "Cache-Control": "public, s-maxage=60" },
+        }),
+        dynamicContext,
+      );
+      expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+      expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+      await expect(response.text()).resolves.toBe("personalized");
     });
 
     const staticContext = createWorkerCacheabilityContext(
@@ -501,6 +557,82 @@ describe("buffered cache admission", () => {
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     await expect(response.text()).resolves.toBe("completed static");
+  });
+
+  it.each([
+    { dynamicFetches: ["https://api.example.com/uncached"], requestApis: [] },
+    { dynamicFetches: [], requestApis: ["headers" as const] },
+  ])("does not admit an App response whose completed render requires runtime", async (state) => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/cache-components"),
+      "secret-a",
+    );
+    const isrSet = vi.fn(async () => {});
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id", { partialPrerender: true })).toBe(
+        true,
+      );
+      const pending = finalizeAppPageHtmlCacheResponse(new Response("runtime hole"), {
+        capturedRscDataPromise: null,
+        cleanPathname: "/products/cache-components",
+        consumeDynamicUsage: () => false,
+        consumeRenderObservationState: () => state,
+        getPageTags: () => ["/products/cache-components"],
+        isrHtmlKey: (pathname) => `html:${pathname}`,
+        isrRscKey: (pathname) => `rsc:${pathname}`,
+        isrSet,
+        linkHeader: null,
+        revalidateSeconds: 60,
+      });
+      return finalizeWorkerCacheabilityResponse(pending, ctx);
+    });
+
+    expect(isrSet).not.toHaveBeenCalled();
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    await expect(response.text()).resolves.toBe("runtime hole");
+  });
+
+  it("admits force-static App responses whose request APIs were replaced with empty values", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/force-static"),
+      "secret-a",
+    );
+    const isrSet = vi.fn(async () => {});
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      const pending = finalizeAppPageHtmlCacheResponse(new Response("forced static"), {
+        allowRequestApis: true,
+        capturedRscDataPromise: null,
+        cleanPathname: "/products/force-static",
+        consumeDynamicUsage: () => false,
+        consumeRenderObservationState: () => ({
+          dynamicFetches: [],
+          requestApis: ["headers", "cookies"],
+        }),
+        getPageTags: () => ["/products/force-static"],
+        isrHtmlKey: (pathname) => `html:${pathname}`,
+        isrRscKey: (pathname) => `rsc:${pathname}`,
+        isrSet,
+        linkHeader: null,
+        revalidateSeconds: Infinity,
+      });
+      return finalizeWorkerCacheabilityResponse(pending, ctx);
+    });
+
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    expect(response.headers.get("CDN-Cache-Control")).toBe(
+      "public, max-age=31536000, stale-while-revalidate=31536000",
+    );
+    await expect(response.text()).resolves.toBe("forced static");
   });
 
   it("forces an unsafe early response to no-store before route dispatch", async () => {

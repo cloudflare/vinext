@@ -229,8 +229,14 @@ function applyMutableCookieFallbacks(headers: Headers, pendingCookies: string[])
   }
 }
 
-export async function buildAppRouteCacheValue(response: Response): Promise<CachedRouteValue> {
-  const body = await response.arrayBuffer();
+export async function buildAppRouteCacheValue(
+  response: Response,
+  capturedBody?: ArrayBuffer | null,
+): Promise<CachedRouteValue> {
+  const body =
+    capturedBody === undefined
+      ? await response.arrayBuffer()
+      : (capturedBody ?? new ArrayBuffer(0));
   const headers: CachedRouteValue["headers"] = {};
 
   response.headers.forEach((value, key) => {

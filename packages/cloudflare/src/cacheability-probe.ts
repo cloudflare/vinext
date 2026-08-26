@@ -29,6 +29,26 @@ export type CacheabilityProbeResult = {
   probed: number;
 };
 
+function manifestLocation(
+  route: CacheabilityProbeRoute,
+  exactPath: string | undefined,
+): { key: string; path?: string } {
+  // A fixed route has no sibling params, so its pattern entry can hold the
+  // observed result directly. Dynamic and localized/basePath variants retain
+  // sparse exact entries plus a runtime-check pattern fallback.
+  if (
+    exactPath !== undefined &&
+    route.path === route.pattern &&
+    route.probePath === route.pattern
+  ) {
+    return { key: cacheabilityRouteKey(route.kind, route.pattern) };
+  }
+  return {
+    key: cacheabilityRouteKey(route.kind, route.pattern, exactPath),
+    ...(exactPath === undefined ? {} : { path: exactPath }),
+  };
+}
+
 function readPrerenderSecret(root: string): string {
   const manifestPath = path.join(root, "dist", "server", "vinext-server.json");
   const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as unknown;
@@ -142,9 +162,10 @@ export async function probeStagedWorkerCacheability(options: {
 
     const exactPath = route.path ?? route.probePath;
     if (exactPath) {
-      routes[cacheabilityRouteKey(route.kind, route.pattern, exactPath)] = {
+      const location = manifestLocation(route, exactPath);
+      routes[location.key] = {
         kind: route.kind,
-        path: exactPath,
+        ...(location.path ? { path: location.path } : {}),
         pattern: route.pattern,
         state: route.fallbackState ?? "runtime-check",
       };
@@ -166,7 +187,8 @@ export async function probeStagedWorkerCacheability(options: {
         retryDelayMs: Math.max(0, options.retryDelayMs ?? 0),
       });
       const exactPath = route.path ?? route.probePath;
-      const key = cacheabilityRouteKey(route.kind, route.pattern, exactPath);
+      const location = manifestLocation(route, exactPath);
+      const key = location.key;
       const integrityFailure =
         result.version !== 1 || result.kind !== route.kind || result.pattern !== route.pattern;
       const state = integrityFailure ? "probe-failed" : result.state;
@@ -176,7 +198,7 @@ export async function probeStagedWorkerCacheability(options: {
           : (result.reason ?? "probe failed without a reason");
         routes[key] = {
           kind: route.kind,
-          ...(exactPath ? { path: exactPath } : {}),
+          ...(location.path ? { path: location.path } : {}),
           pattern: route.pattern,
           state: "probe-failed",
         };
@@ -185,7 +207,7 @@ export async function probeStagedWorkerCacheability(options: {
       }
       routes[key] = {
         kind: route.kind,
-        ...(exactPath ? { path: exactPath } : {}),
+        ...(location.path ? { path: location.path } : {}),
         pattern: route.pattern,
         state,
       };

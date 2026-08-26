@@ -50,7 +50,10 @@ type CacheabilityPolicySnapshot = {
 };
 
 const CACHEABILITY_STATE = Symbol.for("vinext.cacheabilityRequestState");
-export const CACHEABILITY_RESPONSE_BODY_LIMIT = 16 * 1024 * 1024;
+// Runtime-check responses are temporarily represented by the source stream,
+// an unread tee branch, and the final contiguous buffer. Keep the per-request
+// ceiling low enough to leave useful headroom in a Worker isolate.
+export const CACHEABILITY_RESPONSE_BODY_LIMIT = 4 * 1024 * 1024;
 // Leave headroom below the deploy probe's 30s request timeout so a slow or
 // never-ending response can still return its fail-closed probe envelope.
 export const CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS = 20_000;
@@ -192,11 +195,19 @@ function uncacheableStreamingResponse(response: Response): Response {
   });
 }
 
-type CapturedBody =
+export type CapturedResponseBody =
   | { body: ArrayBuffer | null; fallback: ReadableStream<Uint8Array> | null; failClosed: false }
   | { fallback: ReadableStream<Uint8Array>; failClosed: true; reason: string };
 
-async function captureResponseBody(response: Response): Promise<CapturedBody> {
+/**
+ * Collect a response body only while it remains within the Worker-safe size
+ * and time bounds. The fallback branch preserves every byte when collection
+ * must stop, allowing callers to fail cache admission without breaking the
+ * streamed response.
+ */
+export async function captureResponseBodyBounded(
+  response: Response,
+): Promise<CapturedResponseBody> {
   if (!response.body) return { body: null, fallback: null, failClosed: false };
 
   const declaredLength = Number(response.headers.get("Content-Length"));
@@ -319,8 +330,11 @@ export function beginRouteCacheability(
     state.mode === "admit" &&
     (manifestRoute?.state === "dynamic" || manifestRoute?.state === "probe-failed")
   ) {
-    state.route = undefined;
-    state.manifestRoute = undefined;
+    state.unsafeReason =
+      manifestRoute.state === "dynamic"
+        ? "staged probe classified this route as dynamic"
+        : "staged probe could not certify this route";
+    state.outcome = { cacheable: false, reason: state.unsafeReason };
     return false;
   }
 
@@ -482,9 +496,9 @@ export async function finalizeWorkerCacheabilityResponse(
     return uncacheableStreamingResponse(response);
   }
 
-  let captured: CapturedBody;
+  let captured: CapturedResponseBody;
   try {
-    captured = await captureResponseBody(response);
+    captured = await captureResponseBodyBounded(response);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     if (state.mode === "probe") {

@@ -663,7 +663,9 @@ export function includeProvenStaticRouteHandlerWarmPaths(
     for (const pathname of route.runtimeCheckWarmPaths ?? []) paths.add(pathname);
     const exactPath = route.path ?? route.probePath;
     if (!exactPath) continue;
-    const result = manifest.routes[cacheabilityRouteKey(route.kind, route.pattern, exactPath)];
+    const result =
+      manifest.routes[cacheabilityRouteKey(route.kind, route.pattern, exactPath)] ??
+      manifest.routes[cacheabilityRouteKey(route.kind, route.pattern)];
     if (result?.state !== "static-candidate") continue;
     for (const pathname of route.warmPaths ?? [exactPath]) paths.add(pathname);
   }
@@ -746,6 +748,19 @@ function assertDeploymentTrafficUnchanged(
   ) {
     throw new Error(
       "CDN warmup detected a concurrent Worker deployment after staging the final cacheability manifest. Refusing to overwrite or promote that deployment; rerun against the latest serving version.",
+    );
+  }
+}
+
+function assertVersionServingExclusively(
+  expectedVersionId: string,
+  current: WranglerDeploymentStatus,
+  phase: string,
+): void {
+  const serving = getSingleServingVersion(current);
+  if (!serving || serving.versionId !== expectedVersionId) {
+    throw new Error(
+      `CDN warmup detected a concurrent Worker deployment ${phase}. Expected ${expectedVersionId} to remain the sole version serving 100% traffic.`,
     );
   }
 }
@@ -1030,13 +1045,10 @@ export async function deployWithCdnWarmup(
               "CDN warmup could not build a version override for the final manifest-bearing Worker.",
             );
           }
-          const targetEnv = options.env || (options.preview ? "preview" : undefined);
-          const configuredDomain = targetEnv
-            ? wranglerConfig?.env?.[targetEnv]?.customDomain
-            : wranglerConfig?.customDomain;
-          targetUrl = configuredDomain
-            ? `https://${configuredDomain}`
-            : (staged.deployedUrl ?? finalUpload.previewUrl);
+          // Readiness must not depend on triggers that this deployment has not
+          // applied yet. Prefer the immutable version preview and fall back to
+          // Wrangler's staged URL when preview URLs are unavailable.
+          targetUrl = finalUpload.previewUrl ?? staged.deployedUrl;
           if (!targetUrl) {
             throw new Error(
               "CDN warmup could not resolve an existing version-locked URL for the final Worker.",
@@ -1102,7 +1114,6 @@ export async function deployWithCdnWarmup(
             }
           }
         }
-        if (options.twoStageCacheability) applyTriggers();
       } catch (error) {
         throw withStagedVersionCleanupNote(error, triggerDeploymentStarted);
       }
@@ -1190,6 +1201,13 @@ export async function deployWithCdnWarmup(
       options,
       stagedCacheFilled ? "promote-warmed" : "promote-uploaded",
     );
+    if (options.twoStageCacheability) {
+      assertVersionServingExclusively(
+        finalUpload.versionId,
+        runWranglerDeploymentStatus(root, options),
+        "immediately after promotion",
+      );
+    }
   } catch (error) {
     throw staged ? withStagedVersionCleanupNote(error) : error;
   }
@@ -1225,6 +1243,11 @@ export async function deployWithCdnWarmup(
             undefined,
             warmResult.warmedPlan,
           );
+          if (verification.warmed !== warmResult.warmed) {
+            const message = `CDN warmup certified ${verification.warmed}/${warmResult.warmed} active cache entries as reusable.`;
+            if (!options.dangerouslyPromoteOnCdnWarmError) throw new Error(message);
+            console.warn(`  ${message} Continuing because the dangerous override is enabled.`);
+          }
           remainingWarmPlan = {
             loadingShellPaths: [
               ...new Set([
@@ -1253,6 +1276,13 @@ export async function deployWithCdnWarmup(
         "  CDN warmup skipped: no production URL could be inferred after promotion; the dangerous override was enabled.",
       );
     }
+  }
+  if (options.twoStageCacheability) {
+    assertVersionServingExclusively(
+      finalUpload.versionId,
+      runWranglerDeploymentStatus(root, options),
+      "during active cache warming and certification",
+    );
   }
   return (
     deployed.deployedUrl ??

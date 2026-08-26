@@ -489,6 +489,13 @@ function validateCachePolicy(
   const hasSetCookie = response.headers.has("Set-Cookie");
   const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
 
+  if (requireCacheHit && !REUSABLE_CF_CACHE_STATUSES.has(cacheStatus ?? "")) {
+    return {
+      outcome: "failed",
+      error: `CF-Cache-Status is ${cacheStatus ?? "missing"}; the cache fill is not reusable`,
+    };
+  }
+
   // Cloudflare-CDN-Cache-Control is consumed at the edge and is deliberately
   // not forwarded to clients. A cacheable Cloudflare-specific policy can
   // therefore coexist with a downstream `no-store` policy or a Set-Cookie
@@ -501,12 +508,6 @@ function validateCachePolicy(
       return {
         outcome: "failed",
         error: "response sets a cookie without an observable field-qualified cache policy",
-      };
-    }
-    if (requireCacheHit && !REUSABLE_CF_CACHE_STATUSES.has(cacheStatus)) {
-      return {
-        outcome: "failed",
-        error: `CF-Cache-Status is ${cacheStatus}; the cache fill is not yet reusable`,
       };
     }
     return { outcome: "warmed" };
@@ -864,13 +865,26 @@ async function warmOnePath(
 
   for (let attempt = 0; attempt <= options.retries; attempt++) {
     try {
-      const { response } = await fetchWithTimeout(
-        options.fetchImpl,
-        url,
-        options.timeoutMs,
-        target.headers ?? options.headers,
-        "manual",
-      );
+      const response = options.requireCacheHit
+        ? await fetchHeadersWithTimeout(
+            options.fetchImpl,
+            url,
+            options.timeoutMs,
+            target.headers ?? options.headers,
+          )
+        : (
+            await fetchWithTimeout(
+              options.fetchImpl,
+              url,
+              options.timeoutMs,
+              target.headers ?? options.headers,
+              "manual",
+            )
+          ).response;
+      // Certification only needs immutable response metadata. A reusable HIT
+      // is already stored at the edge, so downloading it again would double
+      // warmup bandwidth without proving anything more.
+      if (options.requireCacheHit) void response.body?.cancel().catch(() => {});
 
       if (process.env.VINEXT_CDN_WARM_DEBUG === "1") {
         console.log(

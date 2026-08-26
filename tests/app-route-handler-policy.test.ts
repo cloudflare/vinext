@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  assertAppRouteCacheComponentsConfig,
   getAppRouteHandlerRevalidateSeconds,
   hasAppRouteHandlerDefaultExport,
   isPossibleAppRouteActionRequest,
@@ -38,6 +39,23 @@ describe("app route handler policy helpers", () => {
     ).toBe(Infinity);
     expect(getAppRouteHandlerRevalidateSeconds({ dynamic: "force-dynamic" })).toBeNull();
     expect(getAppRouteHandlerRevalidateSeconds({})).toBeNull();
+  });
+
+  it("matches Cache Components Route Handler defaults and rejects segment config", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/cache-components/cache-components.routes.test.ts
+    // test/e2e/app-dir/cache-components-route-handler-errors/
+    expect(getAppRouteHandlerRevalidateSeconds({}, true)).toBe(Infinity);
+    expect(() => assertAppRouteCacheComponentsConfig({})).not.toThrow();
+    for (const config of [
+      { dynamic: "force-static" },
+      { revalidate: 60 },
+      { fetchCache: "force-cache" },
+    ]) {
+      expect(() => assertAppRouteCacheComponentsConfig(config)).toThrow(
+        "is not compatible with `nextConfig.cacheComponents`. Please remove it.",
+      );
+    }
   });
 
   it("treats revalidate = 0 as never-cache for route handler ISR read/write gates", () => {

@@ -244,17 +244,20 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         statusCount += 1;
         events.push("status");
         return JSON.stringify({
-          versions: [
-            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
-            ...(statusCount === 3
-              ? [
-                  {
-                    version_id: "33333333-3333-4333-8333-333333333333",
-                    percentage: 0,
-                  },
-                ]
-              : []),
-          ],
+          versions:
+            statusCount >= 4
+              ? [{ version_id: "33333333-3333-4333-8333-333333333333", percentage: 100 }]
+              : [
+                  { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+                  ...(statusCount === 3
+                    ? [
+                        {
+                          version_id: "33333333-3333-4333-8333-333333333333",
+                          percentage: 0,
+                        },
+                      ]
+                    : []),
+                ],
         });
       }
       if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
@@ -342,16 +345,101 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status",
       "stage:final",
       "readiness:final",
-      "triggers",
       "status",
       "promote:final",
+      "status",
+      "triggers",
       "warm:final",
       "verify:final",
+      "status",
     ]);
     expect(delayMock).toHaveBeenCalledWith(1_000);
     expect(fs.readFileSync(path.join(tmpDir, "dist/server/entry.js"), "utf-8")).toContain(
       CACHEABILITY_MANIFEST_PLACEHOLDER,
     );
+  });
+
+  it("fails if a concurrent deployment appears during active cache certification", async () => {
+    writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker", workers_dev: true }));
+    writeTwoStageArtifact();
+    let uploadCount = 0;
+    let statusCount = 0;
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        uploadCount += 1;
+        const id =
+          uploadCount === 1
+            ? "22222222-2222-4222-8222-222222222222"
+            : "33333333-3333-4333-8333-333333333333";
+        return `Uploaded my-worker\nWorker Version ID: ${id}\nVersion Preview URL: https://${id.slice(0, 8)}-my-worker.example.workers.dev\n`;
+      }
+      if (args.includes("status")) {
+        statusCount += 1;
+        const versions =
+          statusCount <= 2
+            ? [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }]
+            : statusCount === 3
+              ? [
+                  { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+                  { version_id: "33333333-3333-4333-8333-333333333333", percentage: 0 },
+                ]
+              : statusCount === 4
+                ? [{ version_id: "33333333-3333-4333-8333-333333333333", percentage: 100 }]
+                : [{ version_id: "44444444-4444-4444-8444-444444444444", percentage: 100 }];
+        return JSON.stringify({ versions });
+      }
+      if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
+        return "Staged probe\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("33333333-3333-4333-8333-333333333333@0%")) {
+        return "Staged final\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("33333333-3333-4333-8333-333333333333@100%")) {
+        return "Promoted final\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        return "Triggers deployed\nhttps://my-worker.example.workers.dev\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    let activeRequest = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const headers = new Headers(init?.headers);
+      if (headers.get("X-Vinext-Cacheability-Probe") === "1") {
+        return Response.json({
+          kind: "app-page",
+          pattern: "/products/:id",
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        });
+      }
+      if (isReadinessFetch(input)) return cacheableHtml();
+      activeRequest += 1;
+      return cacheableHtml("ok", activeRequest === 1 ? "MISS" : "HIT");
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        discoverWarmPlan: async () => ({
+          buildId: "build-a",
+          buildIdentity: "app-build-a",
+          cacheabilityRoutes: [
+            { kind: "app-page", pattern: "/products/:id", probePath: "/products/known" },
+          ],
+          loadingShellPaths: [],
+          paths: ["/products/known"],
+          rscPaths: [],
+        }),
+        warmCdnPromotionDelay: 0,
+        warmCdnReadinessProbes: 1,
+        twoStageCacheability: true,
+      }),
+    ).rejects.toThrow("concurrent Worker deployment during active cache warming and certification");
+
+    expect(statusCount).toBe(5);
+    expect(activeRequest).toBe(2);
   });
 
   it("does not upload or promote the final Worker when a route probe fails", async () => {
@@ -555,17 +643,20 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         statusCount += 1;
         events.push("status");
         return JSON.stringify({
-          versions: [
-            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
-            ...(statusCount === 3
-              ? [
-                  {
-                    version_id: "33333333-3333-4333-8333-333333333333",
-                    percentage: 0,
-                  },
-                ]
-              : []),
-          ],
+          versions:
+            statusCount >= 4
+              ? [{ version_id: "33333333-3333-4333-8333-333333333333", percentage: 100 }]
+              : [
+                  { version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+                  ...(statusCount === 3
+                    ? [
+                        {
+                          version_id: "33333333-3333-4333-8333-333333333333",
+                          percentage: 0,
+                        },
+                      ]
+                    : []),
+                ],
         });
       }
       if (args.includes("22222222-2222-4222-8222-222222222222@0%")) {
@@ -635,9 +726,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status",
       "stage:final",
       "readiness:final",
-      "triggers",
       "status",
       "promote:final",
+      "status",
+      "triggers",
+      "status",
     ]);
   });
 
@@ -728,7 +821,6 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status:2",
       "stage:final",
       "readiness",
-      "triggers",
       "status:3",
     ]);
   });
