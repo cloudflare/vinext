@@ -23,6 +23,11 @@ import {
   MAX_CACHEABILITY_MANIFEST_ROUTES,
 } from "./cacheability-manifest-limits.js";
 
+export const DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS = 120_000;
+export const DEFAULT_CACHEABILITY_PROBE_RETRIES = 2;
+export const DEFAULT_CACHEABILITY_PROBE_RETRY_DELAY_MS = 1_000;
+const DEFAULT_CACHEABILITY_PROBE_REQUEST_TIMEOUT_MS = 30_000;
+
 type ProbePayload = {
   kind?: string;
   pattern?: string;
@@ -30,6 +35,7 @@ type ProbePayload = {
   state?: string;
   status?: number;
   version?: number;
+  phaseTimedOut?: boolean;
 };
 
 export type CacheabilityProbeResult = {
@@ -64,6 +70,8 @@ async function probeTarget(options: {
   headers?: HeadersInit;
   retries: number;
   retryDelayMs: number;
+  deadlineAt: number;
+  phaseTimeoutMs: number;
   secret: string;
   target: CdnWarmTarget;
   targetUrl: string;
@@ -77,49 +85,90 @@ async function probeTarget(options: {
 
   let reason = "probe failed";
   const probeId = randomUUID();
+  const phaseTimeoutPayload = (): ProbePayload => ({
+    phaseTimedOut: true,
+    reason: `cacheability probing exceeded its ${options.phaseTimeoutMs}ms phase deadline`,
+    state: "probe-failed",
+    version: 1,
+  });
   for (let attempt = 0; attempt <= options.retries; attempt++) {
+    const remainingMs = options.deadlineAt - Date.now();
+    if (remainingMs <= 0) return phaseTimeoutPayload();
+
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
+    const attemptTimeoutMs = Math.min(options.timeoutMs, remainingMs);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     let retryable = true;
     try {
       const url = new URL(options.target.pathname, options.targetUrl);
       url.searchParams.set(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM, `${probeId}-${attempt}`);
-      const response = await options.fetchImpl(url, {
-        headers,
-        redirect: "manual",
-        signal: controller.signal,
-      });
-      if (
-        options.expectedBuildId !== undefined &&
-        response.headers.get(VINEXT_CDN_BUILD_ID_HEADER) !== options.expectedBuildId
-      ) {
-        await response.body?.cancel().catch(() => {});
-        reason = "probe reached an unexpected Worker build";
-        retryable = true;
-      } else if (!response.ok) {
-        await response.body?.cancel().catch(() => {});
-        reason = `probe returned HTTP ${response.status}`;
-        retryable = response.status === 404 || response.status === 503;
-      } else {
+      const request = (async () => {
+        const response = await options.fetchImpl(url, {
+          headers,
+          redirect: "manual",
+          signal: controller.signal,
+        });
+        if (
+          options.expectedBuildId !== undefined &&
+          response.headers.get(VINEXT_CDN_BUILD_ID_HEADER) !== options.expectedBuildId
+        ) {
+          void response.body?.cancel().catch(() => {});
+          return {
+            kind: "retry" as const,
+            reason: "probe reached an unexpected Worker build",
+            retryable: true,
+          };
+        }
+        if (!response.ok) {
+          void response.body?.cancel().catch(() => {});
+          return {
+            kind: "retry" as const,
+            reason: `probe returned HTTP ${response.status}`,
+            retryable: response.status === 404 || response.status === 503,
+          };
+        }
         const text = await response.text();
         try {
-          return JSON.parse(text) as ProbePayload;
+          return { kind: "complete" as const, payload: JSON.parse(text) as ProbePayload };
         } catch {
-          return { reason: "probe returned invalid JSON", state: "probe-failed", version: 1 };
+          return {
+            kind: "complete" as const,
+            payload: {
+              reason: "probe returned invalid JSON",
+              state: "probe-failed",
+              version: 1,
+            },
+          };
         }
-      }
+      })();
+      const timedOut = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new DOMException(`Timed out after ${attemptTimeoutMs}ms`, "AbortError"));
+        }, attemptTimeoutMs);
+      });
+      const result = await Promise.race([request, timedOut]);
+      if (Date.now() >= options.deadlineAt) return phaseTimeoutPayload();
+      if (result.kind === "complete") return result.payload;
+      reason = result.reason;
+      retryable = result.retryable;
     } catch (error) {
+      if (Date.now() >= options.deadlineAt) return phaseTimeoutPayload();
       reason =
         error instanceof Error && error.name === "AbortError"
-          ? `probe timed out after ${options.timeoutMs}ms`
+          ? `probe timed out after ${attemptTimeoutMs}ms`
           : error instanceof Error
             ? error.message
             : String(error);
     } finally {
-      clearTimeout(timeout);
+      if (timeout !== undefined) clearTimeout(timeout);
     }
     if (!retryable || attempt === options.retries) break;
-    if (options.retryDelayMs > 0) await delay(options.retryDelayMs);
+    if (options.retryDelayMs > 0) {
+      const delayMs = Math.min(options.retryDelayMs, Math.max(0, options.deadlineAt - Date.now()));
+      if (delayMs <= 0) return phaseTimeoutPayload();
+      await delay(delayMs);
+    }
   }
   return { reason, state: "probe-failed", version: 1 };
 }
@@ -136,14 +185,23 @@ export async function probeStagedWorkerCacheability(options: {
   targets: readonly CdnWarmTarget[];
   targetUrl: string;
   timeoutMs?: number;
+  phaseTimeoutMs?: number;
   /** @internal Apply stricter artifact bounds for focused coordinator tests. */
   manifestLimits?: { maxBytes?: number; maxRoutes?: number };
 }): Promise<CacheabilityProbeResult> {
   const secret = readPrerenderSecret(options.root);
   const concurrency = Math.max(1, options.concurrency ?? 25);
-  const retries = Math.max(0, options.retries ?? 2);
-  const retryDelayMs = Math.max(0, options.retryDelayMs ?? 0);
-  const timeoutMs = options.timeoutMs ?? 30_000;
+  const retries = Math.max(0, options.retries ?? DEFAULT_CACHEABILITY_PROBE_RETRIES);
+  const retryDelayMs = Math.max(
+    0,
+    options.retryDelayMs ?? DEFAULT_CACHEABILITY_PROBE_RETRY_DELAY_MS,
+  );
+  const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CACHEABILITY_PROBE_REQUEST_TIMEOUT_MS);
+  const phaseTimeoutMs = Math.max(
+    1,
+    options.phaseTimeoutMs ?? DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS,
+  );
+  const deadlineAt = Date.now() + phaseTimeoutMs;
   const routes: Record<string, CacheabilityManifestRoute> = {};
   const cacheableTargets: CdnWarmTarget[] = [];
   const failures: string[] = [];
@@ -163,6 +221,7 @@ export async function probeStagedWorkerCacheability(options: {
   let manifestBytes = Buffer.byteLength(JSON.stringify(emptyManifest));
   const routeEntryBytes = new Map<string, number>();
   let limitFailure: Error | null = null;
+  let phaseTimedOut = false;
   let nextIndex = 0;
 
   const addRouteWithinManifestLimits = (key: string, route: CacheabilityManifestRoute): boolean => {
@@ -195,7 +254,7 @@ export async function probeStagedWorkerCacheability(options: {
   };
 
   const worker = async (): Promise<void> => {
-    while (!limitFailure && nextIndex < options.targets.length) {
+    while (!limitFailure && !phaseTimedOut && nextIndex < options.targets.length) {
       const target = options.targets[nextIndex++];
       const request = new Request(new URL(target.pathname, options.targetUrl), {
         headers: target.headers,
@@ -208,16 +267,22 @@ export async function probeStagedWorkerCacheability(options: {
 
       const result = await probeTarget({
         expectedBuildId: options.expectedResponseBuildId,
+        deadlineAt,
         fetchImpl: options.fetchImpl ?? fetch,
         headers: options.headers,
         retries,
         retryDelayMs,
+        phaseTimeoutMs,
         secret,
         target,
         targetUrl: options.targetUrl,
         timeoutMs,
       });
       if (limitFailure) return;
+      if (result.phaseTimedOut) {
+        phaseTimedOut = true;
+        return;
+      }
       if (
         result.version !== 1 ||
         result.kind !== "app-page" ||
@@ -263,6 +328,9 @@ export async function probeStagedWorkerCacheability(options: {
     Array.from({ length: Math.min(concurrency, options.targets.length) }, () => worker()),
   );
   if (limitFailure) throw limitFailure;
+  if (phaseTimedOut || Date.now() >= deadlineAt) {
+    throw new Error(`cacheability probing exceeded its ${phaseTimeoutMs}ms phase deadline`);
+  }
   const sortedRoutes = Object.fromEntries(
     Object.entries(routes).sort(([first], [second]) => first.localeCompare(second)),
   );

@@ -442,6 +442,65 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toBe(false);
   });
 
+  it("uses the dedicated cacheability-probe retry budget before the legacy warm fallback", async () => {
+    writeTwoStageWorkerArtifact();
+    let uploads = 0;
+    let probeAttempts = 0;
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        uploads++;
+        return `Uploaded my-worker\nWorker Version ID: ${PROBE_VERSION}\n`;
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [{ version_id: OLD_VERSION, percentage: 100 }],
+        });
+      }
+      if (args.includes(`${PROBE_VERSION}@0%`)) {
+        return "Staged probe version\nhttps://my-worker.example.workers.dev\n";
+      }
+      if (args.includes("triggers")) {
+        return "Triggers deployed\nhttps://my-worker.example.workers.dev\n";
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
+        probeAttempts++;
+        return new Response("unavailable", {
+          status: 503,
+          headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a" },
+        });
+      }
+      return isReadinessFetch(input)
+        ? cacheableHtml()
+        : new Response("unexpected", { status: 500 });
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        cacheabilityProbe: true,
+        config: "dist/server/wrangler.json",
+        discoverWarmPlan: async () => ({
+          appPaths: ["/about"],
+          buildId: "app-build-a",
+          buildIdentity: "app-build-a",
+          loadingShellPaths: [],
+          paths: ["/about"],
+          rscPaths: [],
+        }),
+        warmCdnConcurrency: 1,
+        warmCdnProbeRetries: 0,
+        warmCdnProbeTimeout: 100,
+        warmCdnReadinessProbes: 1,
+        warmCdnRetries: 5,
+      }),
+    ).rejects.toThrow("probe returned HTTP 503");
+    expect(probeAttempts).toBe(1);
+    expect(uploads).toBe(1);
+  });
+
   it("refuses the final upload when deployment traffic changes during probing", async () => {
     writeTwoStageWorkerArtifact();
     let uploads = 0;

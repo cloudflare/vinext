@@ -53,8 +53,6 @@ import {
 import { parseWranglerConfig, runTPR } from "./tpr.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
 import {
-  DEFAULT_STAGED_READINESS_INTERVAL_MS,
-  DEFAULT_STAGED_READINESS_RETRIES,
   createCdnWarmTargets,
   readPrerenderWarmPlan,
   waitForCdnWarmTargetReadiness,
@@ -85,7 +83,12 @@ import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
 import { withCacheabilityManifestArtifact } from "./cacheability-artifact.js";
-import { probeStagedWorkerCacheability } from "./cacheability-probe.js";
+import {
+  DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS,
+  DEFAULT_CACHEABILITY_PROBE_RETRIES,
+  DEFAULT_CACHEABILITY_PROBE_RETRY_DELAY_MS,
+  probeStagedWorkerCacheability,
+} from "./cacheability-probe.js";
 
 export const DEFAULT_CDN_WARM_PROMOTION_DELAY_MS = 15_000;
 
@@ -122,6 +125,10 @@ export type DeployOptions = {
   warmCdnDiscoveryTimeout?: number;
   /** Number of transient staged Worker path discovery retries */
   warmCdnDiscoveryRetries?: number;
+  /** Maximum duration of staged Worker cacheability probing */
+  warmCdnProbeTimeout?: number;
+  /** Number of transient staged Worker cacheability probe retries */
+  warmCdnProbeRetries?: number;
   /** Maximum duration of staged Worker readiness verification */
   warmCdnReadinessTimeout?: number;
   /** Number of staged Worker readiness retries */
@@ -221,6 +228,8 @@ const deployArgOptions = {
   "warm-cdn-retries": { type: "string" },
   "warm-cdn-discovery-timeout": { type: "string" },
   "warm-cdn-discovery-retries": { type: "string" },
+  "warm-cdn-probe-timeout": { type: "string" },
+  "warm-cdn-probe-retries": { type: "string" },
   "warm-cdn-readiness-timeout": { type: "string" },
   "warm-cdn-readiness-retries": { type: "string" },
   "warm-cdn-readiness-probes": { type: "string" },
@@ -288,6 +297,14 @@ export function parseDeployArgs(args: string[]) {
             values["warm-cdn-discovery-retries"],
             "--warm-cdn-discovery-retries",
           ),
+    warmCdnProbeTimeout:
+      values["warm-cdn-probe-timeout"] === undefined
+        ? undefined
+        : parsePositiveIntegerArg(values["warm-cdn-probe-timeout"], "--warm-cdn-probe-timeout"),
+    warmCdnProbeRetries:
+      values["warm-cdn-probe-retries"] === undefined
+        ? undefined
+        : parseNonNegativeIntegerArg(values["warm-cdn-probe-retries"], "--warm-cdn-probe-retries"),
     warmCdnReadinessTimeout:
       values["warm-cdn-readiness-timeout"] === undefined
         ? undefined
@@ -674,6 +691,8 @@ type CdnWarmDeployOptions = Pick<
   | "warmCdnRetries"
   | "warmCdnDiscoveryTimeout"
   | "warmCdnDiscoveryRetries"
+  | "warmCdnProbeTimeout"
+  | "warmCdnProbeRetries"
   | "warmCdnReadinessTimeout"
   | "warmCdnReadinessRetries"
   | "warmCdnReadinessProbes"
@@ -716,6 +735,12 @@ export async function deployWithCdnWarmup(
       String(options.warmCdnDiscoveryRetries),
       "--warm-cdn-discovery-retries",
     );
+  }
+  if (options.warmCdnProbeTimeout !== undefined) {
+    parsePositiveIntegerArg(String(options.warmCdnProbeTimeout), "--warm-cdn-probe-timeout");
+  }
+  if (options.warmCdnProbeRetries !== undefined) {
+    parseNonNegativeIntegerArg(String(options.warmCdnProbeRetries), "--warm-cdn-probe-retries");
   }
   if (options.warmCdnReadinessTimeout !== undefined) {
     parsePositiveIntegerArg(
@@ -1163,9 +1188,10 @@ async function deployWithCacheabilityProbe(
       deploymentId: plan.deploymentId,
       expectedBuildId: plan.buildIdentity,
       expectedRscBuildId: plan.rscBuildId,
+      phaseTimeoutMs: options.warmCdnReadinessTimeout,
       probeIntervalMs: options.warmCdnReadinessProbeDelay,
       requiredConsecutiveSuccesses: options.warmCdnReadinessProbes,
-      retries: options.warmCdnRetries,
+      retries: options.warmCdnReadinessRetries ?? options.warmCdnRetries,
       timeoutMs: options.warmCdnTimeout,
     });
     if (!readiness.ready) {
@@ -1188,8 +1214,10 @@ async function deployWithCacheabilityProbe(
       buildId: discovered.buildId,
       concurrency: options.warmCdnConcurrency,
       expectedResponseBuildId: plan.buildIdentity,
-      retries: options.warmCdnRetries ?? DEFAULT_STAGED_READINESS_RETRIES,
-      retryDelayMs: options.warmCdnReadinessProbeDelay ?? DEFAULT_STAGED_READINESS_INTERVAL_MS,
+      phaseTimeoutMs: options.warmCdnProbeTimeout ?? DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS,
+      retries:
+        options.warmCdnProbeRetries ?? options.warmCdnRetries ?? DEFAULT_CACHEABILITY_PROBE_RETRIES,
+      retryDelayMs: DEFAULT_CACHEABILITY_PROBE_RETRY_DELAY_MS,
       root,
       targets,
       targetUrl,
@@ -1567,6 +1595,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
       warmCdnRetries: options.warmCdnRetries,
       warmCdnDiscoveryTimeout: options.warmCdnDiscoveryTimeout,
       warmCdnDiscoveryRetries: options.warmCdnDiscoveryRetries,
+      warmCdnProbeTimeout: options.warmCdnProbeTimeout,
+      warmCdnProbeRetries: options.warmCdnProbeRetries,
       warmCdnReadinessTimeout: options.warmCdnReadinessTimeout,
       warmCdnReadinessRetries: options.warmCdnReadinessRetries,
       warmCdnReadinessProbes: options.warmCdnReadinessProbes,

@@ -135,6 +135,31 @@ describe("staged Worker cacheability probes", () => {
     expect(result.cacheableTargets).toEqual([target]);
   });
 
+  it("bounds all target retries by one cacheability-probe phase deadline", async () => {
+    const root = createProbeRoot();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("staged version unavailable", { status: 503 }))
+      .mockResolvedValueOnce(new Response("staged version unavailable", { status: 503 }))
+      // The phase deadline remains authoritative even if fetch ignores abort.
+      .mockImplementation(() => new Promise<Response>(() => {}));
+
+    await expect(
+      probeStagedWorkerCacheability({
+        buildId: "application-build",
+        concurrency: 1,
+        fetchImpl,
+        phaseTimeoutMs: 25,
+        retries: 60,
+        retryDelayMs: 10,
+        root,
+        targetUrl: "https://example.com",
+        targets: [target("/one"), target("/two")],
+      }),
+    ).rejects.toThrow("cacheability probing exceeded its 25ms phase deadline");
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
   it("omits dynamic identities from the deployed manifest and final warm targets", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-probe-"));
     roots.push(root);

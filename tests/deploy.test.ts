@@ -706,6 +706,24 @@ describe("parseDeployArgs", () => {
     expect(cliSource).toMatch(/config:\s*parsed\.config/);
   });
 
+  it("forwards phase-specific warmup budgets through the deploy CLI", () => {
+    const cliSource = fs.readFileSync(
+      path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
+      "utf-8",
+    );
+
+    for (const option of [
+      "warmCdnDiscoveryTimeout",
+      "warmCdnDiscoveryRetries",
+      "warmCdnProbeTimeout",
+      "warmCdnProbeRetries",
+      "warmCdnReadinessTimeout",
+      "warmCdnReadinessRetries",
+    ]) {
+      expect(cliSource).toContain(`${option}: parsed.${option}`);
+    }
+  });
+
   it("defaults to production deploy with no flags", () => {
     const parsed = parseDeployArgs([]);
     expect(parsed.preview).toBe(false);
@@ -796,6 +814,8 @@ describe("parseDeployArgs", () => {
       "0",
       "--warm-cdn-discovery-timeout=90000",
       "--warm-cdn-discovery-retries=7",
+      "--warm-cdn-probe-timeout=60000",
+      "--warm-cdn-probe-retries=4",
       "--warm-cdn-readiness-timeout=45000",
       "--warm-cdn-readiness-retries=9",
       "--warm-cdn-readiness-probes=8",
@@ -813,6 +833,8 @@ describe("parseDeployArgs", () => {
     expect(parsed.warmCdnRetries).toBe(0);
     expect(parsed.warmCdnDiscoveryTimeout).toBe(90_000);
     expect(parsed.warmCdnDiscoveryRetries).toBe(7);
+    expect(parsed.warmCdnProbeTimeout).toBe(60_000);
+    expect(parsed.warmCdnProbeRetries).toBe(4);
     expect(parsed.warmCdnReadinessTimeout).toBe(45_000);
     expect(parsed.warmCdnReadinessRetries).toBe(9);
     expect(parsed.warmCdnReadinessProbes).toBe(8);
@@ -849,6 +871,12 @@ describe("parseDeployArgs", () => {
     );
     expect(() => parseDeployArgs(["--warm-cdn-discovery-retries=-1"])).toThrow(
       '--warm-cdn-discovery-retries expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-probe-timeout=0"])).toThrow(
+      '--warm-cdn-probe-timeout expects a positive integer, but got "0".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-probe-retries=-1"])).toThrow(
+      '--warm-cdn-probe-retries expects a non-negative integer, but got "-1".',
     );
     expect(() => parseDeployArgs(["--warm-cdn-readiness-timeout=0"])).toThrow(
       '--warm-cdn-readiness-timeout expects a positive integer, but got "0".',
