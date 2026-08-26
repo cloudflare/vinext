@@ -14,6 +14,7 @@ import {
 import {
   buildAppPageFontLinkHeader,
   readAppPageBinaryStream,
+  readAppPageBinaryStreamBounded,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
   type AppPageFontPreload,
@@ -76,6 +77,10 @@ import {
   createAppPageRscOutputScope,
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
+import {
+  recordRouteCacheability,
+  recordRouteCacheabilityCapturedBody,
+} from "./cacheability-request.js";
 import type {
   AppLayoutParamAccessTracker,
   StaticLayoutObservationSkipRejection,
@@ -84,7 +89,6 @@ import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-obse
 import { peekDynamicUsage } from "vinext/shims/headers";
 import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
-import { recordRouteCacheability } from "./cacheability-request.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -805,7 +809,12 @@ export async function renderAppPageLifecycle(
   // through so .value is read lazily after handleSsr completes.
   const capturedRscDataRef: { value: Promise<ArrayBuffer> | null } = { value: null };
   if (rscCapture.sideStream && options.isRscRequest) {
-    capturedRscDataRef.value = readAppPageBinaryStream(rscCapture.sideStream);
+    capturedRscDataRef.value = readAppPageBinaryStreamBounded(rscCapture.sideStream).then(
+      (body) => {
+        recordRouteCacheabilityCapturedBody(body);
+        return body;
+      },
+    );
   }
 
   if (options.isRscRequest) {

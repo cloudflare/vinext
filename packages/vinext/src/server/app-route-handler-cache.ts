@@ -1,18 +1,12 @@
 import type { NextI18nConfig } from "../config/next-config.js";
 import type { HeadersAccessPhase } from "vinext/shims/headers";
-import { isrCacheControl, type ISRCacheEntry } from "./isr-cache.js";
+import type { ISRCacheEntry } from "./isr-cache.js";
 import type { RouteHandlerMiddlewareContext } from "./app-route-handler-response.js";
 import {
   applyRouteHandlerMiddlewareContext,
-  assertSupportedAppRouteHandlerResponse,
-  buildAppRouteCacheValue,
   buildRouteHandlerCachedResponse,
 } from "./app-route-handler-response.js";
-import { markKnownDynamicAppRoute } from "./app-route-handler-runtime.js";
-import { makeThenableParams } from "vinext/shims/thenable-params";
-import { _captureRequestScopedCacheLifeAccessors } from "vinext/shims/cache-request-state";
 import {
-  runAppRouteHandler,
   type AppRouteDebugLogger,
   type AppRouteDynamicUsageFn,
   type AppRouteHandlerFunction,
@@ -47,6 +41,7 @@ type ReadAppRouteHandlerCacheOptions = {
   /** `null` for non-dynamic routes. See `AppRouteHandlerFunction` for details. */
   params: AppRouteParams | null;
   requestUrl: string;
+  regenerate?: () => Promise<void>;
   revalidateSearchParams: URLSearchParams;
   expireSeconds?: number;
   revalidateSeconds: number;
@@ -109,54 +104,19 @@ export async function readAppRouteHandlerCacheResponse(
 
       options.scheduleBackgroundRegeneration(routeKey, async () => {
         await options.runInRevalidationContext(async () => {
-          const requestCacheLife = _captureRequestScopedCacheLifeAccessors();
           options.setNavigationContext({
             pathname: options.cleanPathname,
             searchParams: revalidateSearchParams,
             params: options.params ?? EMPTY_PARAMS,
           });
-
-          const { dynamicUsedInHandler, response } = await runAppRouteHandler({
-            basePath: options.basePath,
-            consumeDynamicUsage: options.consumeDynamicUsage,
-            dynamicConfig: options.dynamicConfig,
-            handlerFn: options.handlerFn,
-            i18n: options.i18n,
-            trailingSlash: options.trailingSlash,
-            markDynamicUsage: options.markDynamicUsage,
-            params: options.params === null ? null : makeThenableParams(options.params),
-            request: new Request(options.requestUrl, { method: "GET" }),
-            routePattern: options.routePattern,
-            setHeadersAccessPhase: options.setHeadersAccessPhase,
-          });
-
-          options.setNavigationContext(null);
-          assertSupportedAppRouteHandlerResponse(response);
-
-          if (dynamicUsedInHandler) {
-            markKnownDynamicAppRoute(options.routePattern);
-            options.isrDebug?.("route regen skipped (dynamic usage)", options.cleanPathname);
-            return;
+          try {
+            if (!options.regenerate) {
+              throw new Error("Expected App Route regeneration callback");
+            }
+            await options.regenerate();
+          } finally {
+            options.setNavigationContext(null);
           }
-
-          const routeTags = options.buildPageCacheTags(
-            options.cleanPathname,
-            options.getCollectedFetchTags(),
-          );
-          const completedCacheLife = requestCacheLife.peek();
-          const revalidateSeconds =
-            completedCacheLife?.revalidate === undefined
-              ? options.revalidateSeconds
-              : Math.min(options.revalidateSeconds, completedCacheLife.revalidate);
-          const expireSeconds = completedCacheLife?.expire ?? options.expireSeconds;
-          const routeCacheValue = await buildAppRouteCacheValue(response);
-          await options.isrSet(routeKey, routeCacheValue, {
-            cacheControl: isrCacheControl(revalidateSeconds, {
-              expireSeconds,
-            }),
-            tags: routeTags,
-          });
-          options.isrDebug?.("route regen complete", routeKey);
         });
       });
 

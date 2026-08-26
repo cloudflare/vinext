@@ -153,9 +153,7 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
                   route.warmPaths.every((pathname) => typeof pathname === "string"))) &&
               (route.runtimeCheckWarmPaths === undefined ||
                 (Array.isArray(route.runtimeCheckWarmPaths) &&
-                  route.runtimeCheckWarmPaths.every((pathname) => typeof pathname === "string"))) &&
-              (route.restrictToGeneratedPaths === undefined ||
-                typeof route.restrictToGeneratedPaths === "boolean"),
+                  route.runtimeCheckWarmPaths.every((pathname) => typeof pathname === "string"))),
           ))) ||
       (manifest.rscPaths !== undefined &&
         (!Array.isArray(manifest.rscPaths) ||

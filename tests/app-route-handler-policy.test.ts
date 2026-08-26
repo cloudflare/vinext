@@ -170,6 +170,7 @@ describe("app route handler policy helpers", () => {
       shouldApplyAppRouteHandlerRevalidateHeader({ ...base, handlerSetCacheControl: true }),
     ).toBe(false);
     expect(shouldWriteAppRouteHandlerCache(base)).toBe(true);
+    expect(shouldWriteAppRouteHandlerCache({ ...base, handlerSetCacheControl: true })).toBe(true);
     expect(shouldWriteAppRouteHandlerCache({ ...base, isProduction: false })).toBe(false);
     expect(shouldWriteAppRouteHandlerCache({ ...base, dynamicConfig: "force-dynamic" })).toBe(
       false,

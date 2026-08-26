@@ -19,6 +19,7 @@ import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
 import { isPromiseLike } from "../utils/promise.js";
 import { formatNextRedirectDigest } from "./app-rsc-redirect-flight.js";
 import { runWithConnectionProbe } from "vinext/shims/headers";
+import { captureResponseBodyBounded } from "./cacheability-request.js";
 
 export type { LayoutFlags };
 
@@ -656,6 +657,19 @@ export async function readAppPageBinaryStream(
   }
 
   return buffer.buffer;
+}
+
+/** Collect a cache artifact within the same Worker-safe admission bounds. */
+export async function readAppPageBinaryStreamBounded(
+  stream: ReadableStream<Uint8Array>,
+): Promise<ArrayBuffer> {
+  const captured = await captureResponseBodyBounded(new Response(stream));
+  if (captured.failClosed) {
+    void captured.fallback.cancel().catch(() => {});
+    throw new Error(captured.reason);
+  }
+  void captured.fallback?.cancel().catch(() => {});
+  return captured.body ?? new ArrayBuffer(0);
 }
 
 export async function bufferAppPageBinaryStream(

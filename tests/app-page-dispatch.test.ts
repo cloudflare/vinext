@@ -1930,6 +1930,7 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(404);
     expect(response.headers.get("Cache-Control")).toContain("s-maxage=60");
+    expect(options.isrSet).toHaveBeenCalledOnce();
     await expect(response.text()).resolves.toBe("<html>not found</html>");
   });
 
@@ -1952,6 +1953,33 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(404);
     expect(response.headers.get("Cache-Control")).toBe("s-maxage=5, stale-while-revalidate=25");
+    expect(options.isrSet).toHaveBeenCalledOnce();
+  });
+
+  it("does not cache a terminal response that becomes dynamic while its body drains", async () => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_HTTP_ERROR_FALLBACK;404" },
+      actionFailed: true,
+      isProduction: true,
+      revalidateSeconds: 60,
+    });
+    options.renderHttpAccessFallbackPage = async () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            markDynamicUsage();
+            controller.enqueue(new TextEncoder().encode("<html>late dynamic</html>"));
+            controller.close();
+          },
+        }),
+        { status: 404 },
+      );
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(options.isrSet).not.toHaveBeenCalled();
+    await expect(response.text()).resolves.toBe("<html>late dynamic</html>");
   });
 
   it("does not make an authorization response cacheable", async () => {

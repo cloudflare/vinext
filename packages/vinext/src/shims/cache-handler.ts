@@ -411,7 +411,15 @@ export function runWithProspectiveDataCache<T>(fn: () => T): T {
   const entries = new Map<string, CacheHandlerValue>();
   const handler: CacheHandler = {
     async get(key, ctx) {
-      return entries.get(key) ?? (await base.get(key, ctx));
+      const requestEntry = entries.get(key);
+      if (requestEntry !== undefined) return requestEntry;
+
+      const persistentEntry = await base.get(key, ctx);
+      // A remote handler can already contain this value before the prospective
+      // pass starts. Keep that hit request-local so the bounded final pass does
+      // not mistake a second KV/network round trip for uncached I/O.
+      if (persistentEntry !== null) entries.set(key, persistentEntry);
+      return persistentEntry;
     },
     async set(key, data, ctx) {
       let revalidate = readCacheControlRevalidateField(ctx);

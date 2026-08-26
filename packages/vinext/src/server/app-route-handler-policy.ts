@@ -188,7 +188,9 @@ export function shouldWriteAppRouteHandlerCache(
     options.revalidateSeconds > 0 &&
     options.dynamicConfig !== "force-dynamic" &&
     !options.isDraftMode &&
-    shouldApplyAppRouteHandlerRevalidateHeader(options)
+    !options.dynamicUsedInHandler &&
+    (options.method === "GET" || options.isAutoHead) &&
+    (options.responseStatus < 400 || options.responseStatus === 404)
   );
 }
 

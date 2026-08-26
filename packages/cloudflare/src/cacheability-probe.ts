@@ -145,18 +145,8 @@ export async function probeStagedWorkerCacheability(options: {
 
   for (const route of options.routes) {
     const patternKey = cacheabilityRouteKey(route.kind, route.pattern);
-    const eligiblePaths = route.restrictToGeneratedPaths
-      ? Array.from(
-          new Set([
-            ...(route.warmPaths ?? []),
-            ...(route.runtimeCheckWarmPaths ?? []),
-            ...(route.probePath ? [route.probePath] : []),
-          ]),
-        ).sort()
-      : undefined;
     if (!routes[patternKey]) {
       routes[patternKey] = {
-        ...(eligiblePaths && eligiblePaths.length > 0 ? { eligiblePaths } : {}),
         kind: route.kind,
         pattern: route.pattern,
         // An exact-path classification must never certify sibling params.
@@ -168,10 +158,6 @@ export async function probeStagedWorkerCacheability(options: {
       };
     } else if (route.path === undefined && route.fallbackState === "dynamic") {
       routes[patternKey].state = "dynamic";
-    } else if (eligiblePaths && eligiblePaths.length > 0) {
-      routes[patternKey].eligiblePaths = Array.from(
-        new Set([...(routes[patternKey].eligiblePaths ?? []), ...eligiblePaths]),
-      ).sort();
     }
 
     const exactPath = route.path ?? route.probePath;

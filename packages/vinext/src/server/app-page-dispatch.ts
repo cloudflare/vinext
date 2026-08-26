@@ -88,8 +88,10 @@ import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js"
 import { buildAppPageTags } from "./implicit-tags.js";
 import {
   beginRouteCacheability,
+  captureResponseBodyBounded,
   isAdmissibleCacheStatus,
   recordRouteCacheability,
+  recordRouteCacheabilityCapturedBody,
 } from "./cacheability-request.js";
 import {
   applyCdnResponseHeaders,
@@ -98,7 +100,12 @@ import {
   NO_STORE_CACHE_CONTROL,
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
-import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
+import {
+  buildAppPageCacheValue,
+  isrCacheControl,
+  type AppPageCacheSetter,
+  type ISRCacheEntry,
+} from "./isr-cache.js";
 import {
   createAppLayoutParamAccessTracker,
   isAppLayoutObservationUnsafeForStaticReuse,
@@ -687,9 +694,28 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const hasActiveLoadingBoundary = activeLoadingTreePositions.length > 0;
   const requestCacheLife = _captureRequestScopedCacheLifeAccessors();
   const classifiedTerminalResponses = new WeakSet<Response>();
-  const classifyTerminalResponse = (response: Response): Response => {
+  let terminalCacheCommitted = false;
+  const classifyTerminalResponse = async (response: Response): Promise<Response> => {
     if (classifiedTerminalResponses.has(response)) return response;
     classifiedTerminalResponses.add(response);
+
+    const captured = await captureResponseBodyBounded(response);
+    if (captured.failClosed) {
+      recordRouteCacheability({
+        cacheable: false,
+        dynamicUsage: true,
+        reason: captured.reason,
+      });
+      const headers = new Headers(response.headers);
+      applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+      return new Response(captured.fallback, {
+        headers,
+        status: response.status,
+        statusText: response.statusText,
+      });
+    }
+    void captured.fallback?.cancel().catch(() => {});
+    recordRouteCacheabilityCapturedBody(captured.body);
 
     const observationState = consumeAppPageRenderObservationState();
     const dynamicUsage =
@@ -716,36 +742,52 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       options.isProgressiveActionRender !== true &&
       isAdmissibleCacheStatus(response.status) &&
       completedRevalidateSeconds !== 0;
-    const cacheControl =
-      completedRevalidateSeconds === null || completedRevalidateSeconds === Infinity
-        ? STATIC_CACHE_CONTROL
-        : buildRevalidateCacheControl(completedRevalidateSeconds, completedExpireSeconds);
-    const tags = buildAppPageTags(
-      options.cleanPathname,
-      getCollectedFetchTags(),
-      route.routeSegments,
-    );
-    if (canCacheTerminalResponse) {
-      applyCdnResponseHeaders(response.headers, { cacheControl, tags });
+    const headers = new Headers(response.headers);
+    if (!canCacheTerminalResponse || completedRevalidateSeconds === null) {
+      applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+      recordRouteCacheability({
+        cacheable: false,
+        ...(dynamicUsage ? { dynamicUsage: true } : {}),
+        reason: dynamicUsage
+          ? "dynamic API used while rendering a terminal App page response"
+          : "terminal App page response is not eligible for shared caching",
+      });
     } else {
-      applyCdnResponseHeaders(response.headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+      const cacheControl = isrCacheControl(completedRevalidateSeconds, {
+        expireSeconds: completedExpireSeconds,
+      });
+      const cacheControlHeader =
+        completedRevalidateSeconds === Infinity
+          ? STATIC_CACHE_CONTROL
+          : buildRevalidateCacheControl(completedRevalidateSeconds, completedExpireSeconds);
+      const tags = buildAppPageTags(
+        options.cleanPathname,
+        getCollectedFetchTags(),
+        route.routeSegments,
+      );
+      applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader, tags });
+      const storedHeaders = Object.fromEntries(headers);
+      const html = captured.body === null ? "" : new TextDecoder().decode(captured.body);
+      if (!terminalCacheCommitted) {
+        terminalCacheCommitted = true;
+        try {
+          await options.isrSet(
+            options.isrHtmlKey(options.cleanPathname),
+            buildAppPageCacheValue(html, undefined, response.status, undefined, storedHeaders),
+            { cacheControl, tags },
+          );
+        } catch (error) {
+          console.error("[vinext] ISR terminal page cache write error:", error);
+        }
+      }
+      recordRouteCacheability({ cacheable: true, cacheControl: cacheControlHeader, tags });
     }
-    recordRouteCacheability(
-      canCacheTerminalResponse
-        ? {
-            cacheable: true,
-            cacheControl,
-            tags,
-          }
-        : {
-            cacheable: false,
-            ...(dynamicUsage ? { dynamicUsage: true } : {}),
-            reason: dynamicUsage
-              ? "dynamic API used while rendering a terminal App page response"
-              : "terminal App page response is not eligible for shared caching",
-          },
-    );
-    return response;
+
+    return new Response(captured.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
   };
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));

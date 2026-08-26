@@ -92,6 +92,8 @@ type RunAppRouteHandlerOptions = {
   trailingSlash?: boolean;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
   middlewareRequestHeaders?: Headers | null;
+  /** Keep Cache Components task tracking active until the bounded body is collected. */
+  observeCompletedBody?: boolean;
   /**
    * `null` for non-dynamic routes. Passed through to the handler context
    * unchanged — callers are expected to compute this from `route.isDynamic`.
@@ -105,6 +107,7 @@ type RunAppRouteHandlerOptions = {
 type RunAppRouteHandlerResult = {
   crossedTaskBoundary: boolean;
   dynamicUsedInHandler: boolean;
+  finishTaskBoundaryTracking?: () => boolean;
   response: Response;
 };
 
@@ -227,24 +230,74 @@ export async function runAppRouteHandler(
     } catch (error) {
       thrown = error;
     } finally {
-      if (taskBoundaryTimer !== undefined) clearTimeout(taskBoundaryTimer);
+      if (
+        taskBoundaryTimer !== undefined &&
+        (response === undefined || options.observeCompletedBody !== true)
+      ) {
+        clearTimeout(taskBoundaryTimer);
+      }
     }
 
     const result = {
       crossedTaskBoundary,
       dynamicUsedInHandler:
         options.consumeDynamicUsage() || consumeDynamicFetchObservations().length > 0,
+      ...(taskBoundaryTimer !== undefined && response !== undefined && options.observeCompletedBody
+        ? {
+            finishTaskBoundaryTracking() {
+              clearTimeout(taskBoundaryTimer);
+              return crossedTaskBoundary;
+            },
+          }
+        : {}),
     };
     return response ? { ...result, response } : { ...result, thrown };
   };
 
   let result: CapturedAppRouteHandlerResult;
-  if (options.cacheComponents && options.isCacheabilityProbe) {
+  if (options.cacheComponents && (options.isCacheabilityProbe || options.observeCompletedBody)) {
     result = await runWithProspectiveDataCache(async () => {
       const prospective = await runPass(false);
       if (prospective.dynamicUsedInHandler) return prospective;
       if ("response" in prospective) {
-        void prospective.response.body?.cancel().catch(() => {});
+        const prospectiveContentType = prospective.response.headers
+          .get("content-type")
+          ?.toLowerCase();
+        if (
+          prospective.response.status === 101 ||
+          prospective.response.headers.has("upgrade") ||
+          Reflect.get(prospective.response, "webSocket") != null ||
+          prospectiveContentType?.startsWith("text/event-stream")
+        ) {
+          prospective.dynamicUsedInHandler = true;
+          return prospective;
+        }
+        // Next's prospective Route Handler pass collects the returned body as
+        // well as invoking GET. Cached work may be deferred until a stream is
+        // pulled, so draining here lets that work populate the request-local
+        // data-cache overlay before the task-bounded final pass.
+        const captured = await captureResponseBodyBounded(prospective.response);
+        await _drainPendingRevalidations();
+        prospective.dynamicUsedInHandler =
+          options.consumeDynamicUsage() || consumeDynamicFetchObservations().length > 0;
+        if (prospective.dynamicUsedInHandler) {
+          if (captured.failClosed) {
+            prospective.response = new Response(captured.fallback, {
+              headers: prospective.response.headers,
+              status: prospective.response.status,
+              statusText: prospective.response.statusText,
+            });
+          } else {
+            void captured.fallback?.cancel().catch(() => {});
+            prospective.response = new Response(captured.body, {
+              headers: prospective.response.headers,
+              status: prospective.response.status,
+              statusText: prospective.response.statusText,
+            });
+          }
+          return prospective;
+        }
+        void captured.fallback?.cancel().catch(() => {});
       }
       return runPass(true);
     });
@@ -264,6 +317,7 @@ export async function executeAppRouteHandler(
     appendResponseLink:
       options.handler.runtime === "edge" || options.handler.runtime === "experimental-edge",
   };
+  let finishTaskBoundaryTracking: (() => boolean) | undefined;
 
   try {
     let handlerResult: CapturedAppRouteHandlerResult;
@@ -281,7 +335,9 @@ export async function executeAppRouteHandler(
       await _drainPendingRevalidations();
     }
     let { dynamicUsedInHandler } = handlerResult;
-    const { crossedTaskBoundary } = handlerResult;
+    let { crossedTaskBoundary } = handlerResult;
+    finishTaskBoundaryTracking =
+      "response" in handlerResult ? handlerResult.finishTaskBoundaryTracking : undefined;
     let response: Response;
     let specialResponseKind: "redirect" | "status" | null = null;
     if ("thrown" in handlerResult) {
@@ -320,6 +376,13 @@ export async function executeAppRouteHandler(
           : "route handler returned an upgrade response";
       } else {
         const captured = await captureResponseBodyBounded(response);
+        // Stream pulls can also enqueue cache invalidations, uncached fetches,
+        // or dynamic API reads. Include all of them before cache admission.
+        await _drainPendingRevalidations();
+        dynamicUsedInHandler =
+          dynamicUsedInHandler ||
+          options.consumeDynamicUsage() ||
+          consumeDynamicFetchObservations().length > 0;
         if (captured.failClosed) {
           completedBodyFailure = captured.reason;
           response = new Response(captured.fallback, {
@@ -328,7 +391,9 @@ export async function executeAppRouteHandler(
             statusText: response.statusText,
           });
         } else {
-          completedRouteCacheValue = await buildAppRouteCacheValue(response, captured.body);
+          completedRouteCacheValue = await buildAppRouteCacheValue(response, captured.body, {
+            preserveCacheControl: handlerSetCacheControl,
+          });
           recordRouteCacheabilityCapturedBody(captured.body);
           if (captured.body !== null) {
             response = new Response(captured.body, {
@@ -339,14 +404,10 @@ export async function executeAppRouteHandler(
           }
           void captured.fallback?.cancel().catch(() => {});
         }
-        // A returned stream can use request APIs, cacheLife(), or synchronous
-        // invalidation while it is pulled. Observe those effects before choosing
-        // response headers or writing the Full Route Cache, matching Next.js's
-        // completed-response collection for bounded responses.
-        await _drainPendingRevalidations();
-        dynamicUsedInHandler = dynamicUsedInHandler || options.consumeDynamicUsage();
       }
     }
+    crossedTaskBoundary = finishTaskBoundaryTracking?.() || crossedTaskBoundary;
+    finishTaskBoundaryTracking = undefined;
     if (crossedTaskBoundary) dynamicUsedInHandler = true;
 
     if (dynamicUsedInHandler) {
@@ -446,7 +507,10 @@ export async function executeAppRouteHandler(
       const routeWritePromise = (async () => {
         try {
           const routeCacheValue =
-            completedRouteCacheValue ?? (await buildAppRouteCacheValue(response.clone()));
+            completedRouteCacheValue ??
+            (await buildAppRouteCacheValue(response.clone(), undefined, {
+              preserveCacheControl: handlerSetCacheControl,
+            }));
           await options.isrSet(routeKey, routeCacheValue, {
             cacheControl: isrCacheControl(revalidateSeconds, {
               expireSeconds: effectiveExpireSeconds,
@@ -476,6 +540,8 @@ export async function executeAppRouteHandler(
       shouldApplyDraftPolicy,
     );
   } catch (error) {
+    finishTaskBoundaryTracking?.();
+    finishTaskBoundaryTracking = undefined;
     const pendingCookies = options.getAndClearPendingCookies();
     const handlerDraftCookie = options.getDraftModeCookieHeader();
     const draftCookie = handlerDraftCookie ?? options.initialDraftModeCookie;

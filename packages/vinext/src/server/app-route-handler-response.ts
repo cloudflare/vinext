@@ -113,7 +113,13 @@ export function buildRouteHandlerCachedResponse(
     expireSeconds: options.expireSeconds,
     cacheControlMeta: options.cacheControl,
   });
-  applyCdnResponseHeaders(headers, { cacheControl });
+  if (
+    !headers.has("Cache-Control") &&
+    !headers.has("CDN-Cache-Control") &&
+    !headers.has("Cloudflare-CDN-Cache-Control")
+  ) {
+    applyCdnResponseHeaders(headers, { cacheControl });
+  }
 
   return new Response(options.isHead ? null : cachedValue.body, {
     status: cachedValue.status,
@@ -232,6 +238,7 @@ function applyMutableCookieFallbacks(headers: Headers, pendingCookies: string[])
 export async function buildAppRouteCacheValue(
   response: Response,
   capturedBody?: ArrayBuffer | null,
+  options: { preserveCacheControl?: boolean } = {},
 ): Promise<CachedRouteValue> {
   const body =
     capturedBody === undefined
@@ -252,7 +259,7 @@ export async function buildAppRouteCacheValue(
       key === VINEXT_PRERENDER_CACHE_LIFE_HEADER ||
       key === VINEXT_CACHE_HEADER.toLowerCase() ||
       key === NEXTJS_CACHE_HEADER.toLowerCase() ||
-      key === "cache-control" ||
+      (key === "cache-control" && options.preserveCacheControl !== true) ||
       key.startsWith(MIDDLEWARE_HEADER_PREFIX)
     ) {
       return;

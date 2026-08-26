@@ -544,6 +544,7 @@ export async function finalizeWorkerCacheabilityResponse(
     return uncacheableStreamingResponse(response);
   }
 
+  const deferredOutcome = state.completion ? await state.completion : undefined;
   let captured: CapturedResponseBody;
   if (state.capturedBody !== undefined) {
     captured = { body: state.capturedBody, fallback: null, failClosed: false };
@@ -593,15 +594,17 @@ export async function finalizeWorkerCacheabilityResponse(
     );
   }
 
-  const outcome = state.completion
-    ? await state.completion
-    : (state.outcome ?? {
-        cacheable: responsePolicyIsCacheable(response),
-        cacheControl:
-          response.headers.get("CDN-Cache-Control") ??
-          response.headers.get("Cache-Control") ??
-          undefined,
-      });
+  const outcome =
+    deferredOutcome ??
+    state.outcome ??
+    ({
+      cacheable: responsePolicyIsCacheable(response),
+      cacheControl:
+        response.headers.get("CDN-Cache-Control") ??
+        response.headers.get("Cloudflare-CDN-Cache-Control") ??
+        response.headers.get("Cache-Control") ??
+        undefined,
+    } satisfies CacheabilityOutcome);
   const cacheable =
     !state.unsafeReason && outcome.cacheable && !responseHasFinalCacheOptOut(response, state);
 

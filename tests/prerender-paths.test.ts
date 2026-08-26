@@ -504,7 +504,7 @@ describe("prerender path manifest", () => {
     });
   });
 
-  it("does not reintroduce a config-shadowed fixed Route Handler as a probe target", async () => {
+  it("probes deterministic rewrites through their public source path", async () => {
     // Next.js applies config rewrites before filesystem Route Handlers:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
     writeFile("package.json", JSON.stringify({ type: "module" }));
@@ -537,14 +537,13 @@ describe("prerender path manifest", () => {
       root: tmpDir,
     });
 
-    expect(manifest?.excludedWarmPaths).toEqual(["/api/source"]);
-    expect(manifest?.cacheabilityRoutes).toContainEqual({
-      fallbackState: "runtime-check",
-      kind: "app-route",
-      pattern: "/api/source",
-    });
-    expect(manifest?.cacheabilityRoutes).not.toContainEqual(
-      expect.objectContaining({ pattern: "/api/source", probePath: "/api/source" }),
+    expect(manifest?.excludedWarmPaths).toBeUndefined();
+    expect(manifest?.cacheabilityRoutes).toContainEqual(
+      expect.objectContaining({
+        kind: "app-route",
+        pattern: "/api/source",
+        probePath: "/api/source",
+      }),
     );
   });
 
@@ -625,13 +624,6 @@ describe("prerender path manifest", () => {
     expect(manifest?.paths).toEqual(["/safe"]);
     expect(manifest?.excludedWarmPaths).toEqual(["/redirect-me"]);
     expect(manifest?.rscPaths).toEqual(["/safe"]);
-    expect(manifest?.cacheabilityRoutes?.find((route) => route.pattern === "/redirect-me")).toEqual(
-      {
-        fallbackState: "runtime-check",
-        kind: "app-page",
-        pattern: "/redirect-me",
-      },
-    );
   });
 
   it("discovers a static child route from parent-layout generateStaticParams", async () => {
@@ -746,7 +738,7 @@ describe("prerender path manifest", () => {
     expect(manifest?.rscBuildId).toBe("rsc-build-a");
   });
 
-  it("matches rewrites against the trailing-slash warm URL", async () => {
+  it("warms deterministic rewrites using the trailing-slash public URL", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
@@ -770,12 +762,12 @@ describe("prerender path manifest", () => {
       root: tmpDir,
     });
 
-    expect(manifest?.paths).toEqual([]);
-    expect(manifest?.rscPaths).toEqual([]);
-    expect(manifest?.excludedWarmPaths).toEqual(["/foo"]);
+    expect(manifest?.paths).toEqual(["/foo"]);
+    expect(manifest?.rscPaths).toEqual(["/foo"]);
+    expect(manifest?.excludedWarmPaths).toBeUndefined();
   });
 
-  it("checks rewrite identity for every configured domain default locale", async () => {
+  it("warms deterministic rewrites across configured domain default locales", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
@@ -803,9 +795,9 @@ describe("prerender path manifest", () => {
       root: tmpDir,
     });
 
-    expect(manifest?.paths).toEqual([]);
-    expect(manifest?.rscPaths).toEqual([]);
-    expect(manifest?.excludedWarmPaths).toEqual(["/foo"]);
+    expect(manifest?.paths).toEqual(["/foo"]);
+    expect(manifest?.rscPaths).toEqual(["/foo"]);
+    expect(manifest?.excludedWarmPaths).toBeUndefined();
   });
 
   it("excludes Pages-owned hybrid paths from App warm discovery", async () => {
@@ -1392,7 +1384,7 @@ describe("prerender path manifest", () => {
     );
   });
 
-  it("excludes only the locale-specific Pages key affected by a rewrite", async () => {
+  it("warms locale-specific deterministic Pages rewrites", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/entry.js", "export default {};\n");
@@ -1416,9 +1408,9 @@ describe("prerender path manifest", () => {
       root: tmpDir,
     });
 
-    expect(manifest?.paths).toEqual(["/about"]);
-    expect(manifest?.pagesPaths).toEqual(["/about"]);
-    expect(manifest?.excludedWarmPaths).toEqual(["/fr/about"]);
+    expect(manifest?.paths).toEqual(["/about", "/fr/about"]);
+    expect(manifest?.pagesPaths).toEqual(["/about", "/fr/about"]);
+    expect(manifest?.excludedWarmPaths).toBeUndefined();
   });
 
   it("does not reload disk config when supplied resolved config", async () => {

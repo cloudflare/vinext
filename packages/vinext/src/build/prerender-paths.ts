@@ -78,7 +78,6 @@ export type CacheabilityProbeRoute = {
   /** Additional paths warmed once with the final Worker's runtime check. */
   runtimeCheckWarmPaths?: string[];
   /** Only generated concrete paths may use this dynamic pattern's runtime check. */
-  restrictToGeneratedPaths?: boolean;
 };
 
 export const PRERENDER_PATH_DISCOVERY_ENV = "__VINEXT_PRERENDER_PATH_DISCOVERY";
@@ -790,7 +789,6 @@ async function collectCacheabilityProbeRoutes(options: {
     kind: CacheabilityProbeRoute["kind"],
     pattern: string,
     warmPaths: readonly string[],
-    restrictToGeneratedPaths = false,
   ): void => {
     const [probePath, ...runtimeCheckWarmPaths] = warmPaths;
     if (!probePath) return;
@@ -801,7 +799,6 @@ async function collectCacheabilityProbeRoutes(options: {
       probePath,
       warmPaths: [probePath],
       ...(runtimeCheckWarmPaths.length > 0 ? { runtimeCheckWarmPaths } : {}),
-      ...(restrictToGeneratedPaths ? { restrictToGeneratedPaths: true } : {}),
     });
   };
 
@@ -811,9 +808,7 @@ async function collectCacheabilityProbeRoutes(options: {
     const kind = route.routePath ? "app-route" : "app-page";
     const key = `${kind}:${route.pattern}`;
     const warmPaths = [...(pathsByRoute.get(key) ?? [])];
-    const restrictToGeneratedPaths =
-      options.cacheComponents && kind === "app-route" && route.isDynamic;
-    addProbeableRoute(kind, route.pattern, warmPaths, restrictToGeneratedPaths);
+    addProbeableRoute(kind, route.pattern, warmPaths);
     if (warmPaths.length > 0) continue;
 
     // Next.js can prerender a fixed GET route handler. Probe it independently
@@ -825,8 +820,7 @@ async function collectCacheabilityProbeRoutes(options: {
       result.push({
         kind,
         pattern: route.pattern,
-        fallbackState: restrictToGeneratedPaths ? "dynamic" : "runtime-check",
-        ...(restrictToGeneratedPaths ? { restrictToGeneratedPaths: true } : {}),
+        fallbackState: "runtime-check",
       });
     }
   }
@@ -876,19 +870,13 @@ function configuredRouteAffectsWarmPath(
       normalizeDefaultLocalePathname(canonicalPathname, config.i18n, { hostname }),
     ),
   );
-  const rewrites = [
+  const conditionalRules = [
     ...config.rewrites.beforeFiles,
     ...config.rewrites.afterFiles,
     ...config.rewrites.fallback,
-  ];
-  // Unconditional response headers are visible to the completed-render probe.
-  // Conditional rules are not: a future request can satisfy `has`/`missing`
-  // and receive a different policy after a headerless probe. Treat source
-  // coverage alone as unsafe, matching rewrites/redirects.
-  const conditionalHeaders = config.headers.filter(
-    (rule) => (rule.has?.length ?? 0) > 0 || (rule.missing?.length ?? 0) > 0,
-  );
-  return [...rewrites, ...config.redirects, ...conditionalHeaders].some((rule) =>
+    ...config.headers,
+  ].filter((rule) => (rule.has?.length ?? 0) > 0 || (rule.missing?.length ?? 0) > 0);
+  return [...config.redirects, ...conditionalRules].some((rule) =>
     Array.from(matchPathnames).some((matchPathname) =>
       matchesRewriteSource(matchPathname, rule, {
         basePath: config.basePath,

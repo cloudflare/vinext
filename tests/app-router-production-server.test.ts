@@ -1878,6 +1878,21 @@ describe("App Router Production server (startProdServer)", () => {
           },
         });
         fs.rmSync(ccOutDir, { recursive: true, force: true });
+        // Cache Components rejects Route Handler segment config at build time,
+        // matching Next.js. These unrelated ISR fixtures are not part of this
+        // rewrite test, so omit them from the isolated Cache Components app.
+        for (const relativePath of fs.globSync("app/**/route.{js,jsx,ts,tsx}", {
+          cwd: fixtureRoot,
+        })) {
+          const routePath = path.join(fixtureRoot, relativePath);
+          if (
+            /export const (?:dynamic|fetchCache|revalidate)\b/.test(
+              fs.readFileSync(routePath, "utf-8"),
+            )
+          ) {
+            fs.rmSync(routePath);
+          }
+        }
         const fixtureNodeModules = path.join(fixtureRoot, "node_modules");
         if (!fs.existsSync(fixtureNodeModules)) {
           fs.symlinkSync(
@@ -2098,13 +2113,14 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res2.headers.get("x-vinext-cache")).toBeNull();
   });
 
-  it("route handler ISR: handler-set Cache-Control skips ISR caching", async () => {
+  it("route handler ISR: handler-set Cache-Control is preserved with ISR caching", async () => {
     // /api/custom-cache exports revalidate=60 but sets its own Cache-Control
     const res1 = await fetch(`${baseUrl}/api/custom-cache`);
     const res2 = await fetch(`${baseUrl}/api/custom-cache`);
-    // Handler controls caching — ISR should not interfere
-    expect(res1.headers.get("x-vinext-cache")).toBeNull();
-    expect(res2.headers.get("x-vinext-cache")).toBeNull();
+    expect(res1.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(res1.headers.get("cache-control")).toBe("public, max-age=300");
+    expect(res2.headers.get("cache-control")).toBe("public, max-age=300");
   });
 
   it("route handler ISR: force-dynamic handler is not cached", async () => {

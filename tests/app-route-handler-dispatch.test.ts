@@ -723,4 +723,45 @@ describe("app route handler dispatch", () => {
       setDataCacheHandler(previousHandler);
     }
   });
+
+  it("does not replace a stale Route Handler entry with a regenerated 500", async () => {
+    let scheduledRender: (() => Promise<void>) | undefined;
+    const isrSet = vi.fn(async () => {});
+    const response = await dispatchAppRouteHandler({
+      cleanPathname: "/api/stale-error",
+      clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
+      i18n: null,
+      isDevelopment: false,
+      isProduction: true,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
+      },
+      isrRouteKey: (pathname) => `route:${pathname}`,
+      isrSet,
+      middlewareContext: { headers: null, status: null },
+      middlewareRequestHeaders: null,
+      params: null,
+      request: new Request("https://example.com/api/stale-error"),
+      route: {
+        pattern: "/api/stale-error",
+        routeHandler: {
+          revalidate: 60,
+          GET() {
+            return new Response("failed", { status: 500 });
+          },
+        },
+        routeSegments: ["api", "stale-error"],
+      },
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(scheduledRender).toBeTypeOf("function");
+    await scheduledRender!();
+    expect(isrSet).not.toHaveBeenCalled();
+  });
 });

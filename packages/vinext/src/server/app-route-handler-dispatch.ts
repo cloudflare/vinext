@@ -153,9 +153,8 @@ async function runInRouteHandlerRevalidationContext(
     try {
       await renderFn();
     } finally {
-      // Stale ISR regeneration invokes the route handler directly instead of
-      // going through executeAppRouteHandler(), so its fresh request context
-      // owns and drains any synchronous next/cache invalidations here.
+      // The fresh revalidation request context owns and drains synchronous
+      // next/cache invalidations before its response and ISR write settle.
       await _drainPendingRevalidations();
     }
   });
@@ -295,6 +294,51 @@ export async function dispatchAppRouteHandler(
       middlewareContext: options.middlewareContext,
       params: options.params,
       requestUrl: options.request.url,
+      async regenerate() {
+        await executeAppRouteHandler({
+          basePath: options.basePath,
+          cacheComponents: options.cacheComponents,
+          buildPageCacheTags(pathname, extraTags) {
+            return buildRouteHandlerPageCacheTags(pathname, extraTags, route.routeSegments);
+          },
+          cleanPathname: options.cleanPathname,
+          clearRequestContext() {
+            setNavigationContext(null);
+          },
+          consumeDynamicUsage,
+          draftModeSecret: options.draftModeSecret,
+          executionContext: getRequestExecutionContext(),
+          getAndClearPendingCookies,
+          getCollectedFetchTags,
+          getActiveDraftModeState,
+          getDraftModeCookieHeader,
+          handler,
+          handlerFn: resolvedHandlerFn,
+          i18n: options.i18n,
+          trailingSlash: options.trailingSlash,
+          isAutoHead,
+          initialDraftModeCookie: null,
+          isDraftMode: false,
+          isProduction,
+          isrDebug: options.isrDebug,
+          isrRouteKey: options.isrRouteKey,
+          isrSet: options.isrSet,
+          markDynamicUsage,
+          method: "GET",
+          observeCompletedBody: true,
+          middlewareContext: { headers: null, status: null },
+          middlewareRequestHeaders: null,
+          params: options.params === null ? null : makeThenableParams(options.params),
+          reportRequestError(error, request, context) {
+            void reportRequestError(error, request, context);
+          },
+          request: new Request(options.request.url, { method: "GET" }),
+          expireSeconds: options.expireSeconds,
+          revalidateSeconds,
+          routePattern: route.pattern,
+          setHeadersAccessPhase,
+        });
+      },
       revalidateSearchParams: options.searchParams,
       expireSeconds: options.expireSeconds,
       revalidateSeconds,

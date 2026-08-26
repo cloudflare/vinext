@@ -126,6 +126,34 @@ describe("cacheability manifests", () => {
         ],
       }),
     ).toBe(false);
+    expect(
+      configRoutesCanVaryResponse({
+        ...base,
+        headers: [],
+        rewrites: {
+          afterFiles: [],
+          beforeFiles: [{ source: "/account", destination: "/static-account" }],
+          fallback: [],
+        },
+      }),
+    ).toBe(false);
+    expect(
+      configRoutesCanVaryResponse({
+        ...base,
+        headers: [],
+        rewrites: {
+          afterFiles: [],
+          beforeFiles: [
+            {
+              source: "/account",
+              destination: "/members",
+              has: [{ type: "cookie", key: "session" }],
+            },
+          ],
+          fallback: [],
+        },
+      }),
+    ).toBe(true);
   });
 
   it("rejects malformed and key-inconsistent route entries", () => {
@@ -266,7 +294,7 @@ describe("cacheability manifests", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it("restricts dynamic Cache Components Route Handlers to generated paths", async () => {
+  it("keeps ungenerated Cache Components Route Handler paths eligible for runtime ISR", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-route-paths-"));
     fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
     fs.writeFileSync(
@@ -294,7 +322,6 @@ describe("cacheability manifests", () => {
           path: "/api/products/a",
           pattern: "/api/products/:id",
           probePath: "/api/products/a",
-          restrictToGeneratedPaths: true,
           runtimeCheckWarmPaths: ["/api/products/b"],
           warmPaths: ["/api/products/a"],
         },
@@ -304,7 +331,6 @@ describe("cacheability manifests", () => {
 
     expect(result.probed).toBe(1);
     expect(result.manifest.routes["app-route:/api/products/:id"]).toEqual({
-      eligiblePaths: ["/api/products/a", "/api/products/b"],
       kind: "app-route",
       pattern: "/api/products/:id",
       state: "runtime-check",
@@ -329,8 +355,52 @@ describe("cacheability manifests", () => {
       "secret-a",
     );
     await runWithExecutionContext(unknownContext, async () => {
-      expect(beginRouteCacheability("app-route", "/api/products/:id")).toBe(false);
+      expect(beginRouteCacheability("app-route", "/api/products/:id")).toBe(true);
     });
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("does not embed generated Route Handler path lists in the runtime manifest", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-route-scale-"));
+    fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "dist/server/vinext-server.json"),
+      JSON.stringify({ prerenderSecret: "secret-a" }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          kind: "app-route",
+          pattern: "/api/products/:id",
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        }),
+      ),
+    );
+    const generatedPaths = Array.from(
+      { length: 100_000 },
+      (_, index) => `/api/products/item-${index}`,
+    );
+
+    const result = await probeStagedWorkerCacheability({
+      root,
+      routes: [
+        {
+          kind: "app-route",
+          path: generatedPaths[0],
+          pattern: "/api/products/:id",
+          probePath: generatedPaths[0],
+          runtimeCheckWarmPaths: generatedPaths.slice(1),
+          warmPaths: [generatedPaths[0]],
+        },
+      ],
+      targetUrl: "https://shop.example.com",
+    });
+
+    expect(JSON.stringify(result.manifest).length).toBeLessThan(1_000);
+    expect(JSON.stringify(result.manifest)).not.toContain("item-99999");
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -998,6 +1068,30 @@ describe("buffered cache admission", () => {
     expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     await expect(response.text()).resolves.toBe("uncertified");
+  });
+
+  it("preserves an explicit Cloudflare CDN cache policy through final admission", async () => {
+    installManifest("runtime-check");
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const ctx = createWorkerCacheabilityContext(
+      createContext(),
+      new Request("https://example.com/products/cloudflare-policy"),
+      "secret-a",
+    );
+
+    const response = await runWithExecutionContext(ctx, async () => {
+      expect(beginRouteCacheability("app-page", "/products/:id")).toBe(true);
+      return finalizeWorkerCacheabilityResponse(
+        new Response("provider policy", {
+          headers: { "Cloudflare-CDN-Cache-Control": "public, max-age=60" },
+        }),
+        ctx,
+      );
+    });
+
+    expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=60");
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    await expect(response.text()).resolves.toBe("provider policy");
   });
 
   it.each([400, 401, 403, 405, 410, 429, 500])(

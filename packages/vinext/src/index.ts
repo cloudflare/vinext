@@ -334,6 +334,40 @@ installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 
+const CACHE_COMPONENTS_INCOMPATIBLE_ROUTE_EXPORTS = new Set([
+  "dynamic",
+  "revalidate",
+  "fetchCache",
+]);
+
+function findCacheComponentsIncompatibleRouteExport(code: string, id: string): string | null {
+  if (![...CACHE_COMPONENTS_INCOMPATIBLE_ROUTE_EXPORTS].some((name) => code.includes(name))) {
+    return null;
+  }
+  const ast = parseAst(code, { lang: parserLanguageForScript(id) });
+  for (const statement of ast.body) {
+    if (statement.type !== "ExportNamedDeclaration" || statement.exportKind === "type") continue;
+    const declaration = statement.declaration;
+    if (declaration?.type === "VariableDeclaration") {
+      for (const declarator of declaration.declarations) {
+        if (
+          declarator.id.type === "Identifier" &&
+          CACHE_COMPONENTS_INCOMPATIBLE_ROUTE_EXPORTS.has(declarator.id.name)
+        ) {
+          return declarator.id.name;
+        }
+      }
+    }
+    for (const specifier of statement.specifiers) {
+      if (specifier.exportKind === "type") continue;
+      const exported = specifier.exported;
+      const name = exported.type === "Identifier" ? exported.name : String(exported.value);
+      if (CACHE_COMPONENTS_INCOMPATIBLE_ROUTE_EXPORTS.has(name)) return name;
+    }
+  }
+  return null;
+}
+
 function hasServerOnlyMarkerImport(code: string): boolean {
   if (!code.includes("server-only")) return false;
 
@@ -3715,6 +3749,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           );
         }
 
+        if (config.command === "build" && hasAppDir && nextConfig.cacheComponents) {
+          const appRoutes = await appRouter(appDir, nextConfig.pageExtensions, fileMatcher);
+          for (const route of appRoutes) {
+            if (!route.routePath) continue;
+            const source = fs.readFileSync(route.routePath, "utf-8");
+            const incompatibleExport = findCacheComponentsIncompatibleRouteExport(
+              source,
+              route.routePath,
+            );
+            if (incompatibleExport) {
+              throw new Error(
+                `Route segment config "${incompatibleExport}" is not compatible with \`nextConfig.cacheComponents\`. Please remove it.`,
+              );
+            }
+          }
+        }
+
         if (config.command === "build") {
           publicDirConflictOptions = {
             root: config.root,
@@ -6078,6 +6129,33 @@ export const loadServerActionClient = ${
           isProxyFile(middlewarePath),
         );
         return null;
+      },
+    },
+    {
+      name: "vinext:validate-cache-components-route-config",
+      enforce: "pre",
+      transform: {
+        filter: {
+          id: { exclude: VIRTUAL_MODULE_ID_RE },
+          code: /\b(?:dynamic|revalidate|fetchCache)\b/,
+        },
+        handler(code, id) {
+          if (!nextConfig.cacheComponents || !hasAppDir) return null;
+          const modulePath = toSlash(stripViteModuleQuery(id));
+          if (
+            !isPathInsideOrEqual(appDir, modulePath) ||
+            !fileMatcher.isAppRouterRoute(modulePath)
+          ) {
+            return null;
+          }
+          const incompatibleExport = findCacheComponentsIncompatibleRouteExport(code, modulePath);
+          if (incompatibleExport) {
+            throw new Error(
+              `Route segment config "${incompatibleExport}" is not compatible with \`nextConfig.cacheComponents\`. Please remove it.`,
+            );
+          }
+          return null;
+        },
       },
     },
     // Next.js rejects `export * from "..."` when compiling Pages Router files

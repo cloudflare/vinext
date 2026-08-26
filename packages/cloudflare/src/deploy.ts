@@ -1137,6 +1137,11 @@ export async function deployWithCdnWarmup(
       console.warn(`  ${message} Promoting because the dangerous override is enabled.`);
     }
   } else {
+    if (options.twoStageCacheability) {
+      throw new Error(
+        "Two-stage cacheability probing cannot continue because the current deployment is not exactly one version serving 100% traffic. Cacheability certification cannot be bypassed with --dangerously-promote-on-cdn-warm-error. No traffic or triggers were changed.",
+      );
+    }
     if (initialWarmRequests > 0) {
       const message =
         "CDN warmup cannot stage the uploaded Worker at 0% because the current deployment is not exactly one version serving 100% traffic.";

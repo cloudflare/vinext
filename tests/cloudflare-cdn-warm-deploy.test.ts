@@ -586,6 +586,42 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 
+  it("does not let the dangerous override bypass two-stage cacheability certification", async () => {
+    writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
+    writeTwoStageArtifact();
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("upload")) {
+        return (
+          "Uploaded my-worker\n" +
+          "Worker Version ID: 22222222-2222-4222-8222-222222222222\n" +
+          "Version Preview URL: https://22222222-my-worker.example.workers.dev\n"
+        );
+      }
+      if (args.includes("status")) {
+        return JSON.stringify({
+          versions: [
+            { version_id: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+            { version_id: "33333333-3333-4333-8333-333333333333", percentage: 50 },
+          ],
+        });
+      }
+      throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
+    });
+    const discoverWarmPlan = vi.fn();
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        dangerouslyPromoteOnCdnWarmError: true,
+        discoverWarmPlan,
+        twoStageCacheability: true,
+      }),
+    ).rejects.toThrow("Cacheability certification cannot be bypassed");
+
+    expect(discoverWarmPlan).not.toHaveBeenCalled();
+    expect(execFileSyncMock).toHaveBeenCalledTimes(2);
+  });
+
   it("aborts final staging when the serving deployment changes during probing", async () => {
     const events: string[] = [];
     writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker" }));

@@ -16,11 +16,12 @@ import { buildAppPageCacheValue, isrCacheControl, type AppPageCacheSetter } from
 import type { CacheControlMetadata } from "vinext/shims/cache-handler";
 import type { RenderObservation } from "./cache-proof.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
-import { readStreamAsText } from "../utils/text-stream.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 import {
+  captureResponseBodyBounded,
   deferRouteCacheability,
   markRouteCacheabilityPolicyProvisional,
+  recordRouteCacheabilityCapturedBody,
 } from "./cacheability-request.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
@@ -187,11 +188,15 @@ export function finalizeAppPageHtmlCacheResponse(
   response: Response,
   options: FinalizeAppPageHtmlCacheResponseOptions,
 ): Response {
-  if (!response.body) {
-    return response;
-  }
-
-  const [streamForClient, streamForCache] = response.body.tee();
+  const hadBody = response.body !== null;
+  const sourceBody =
+    response.body ??
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close();
+      },
+    });
+  const [streamForClient, streamForCache] = sourceBody.tee();
   const htmlKey = options.isrHtmlKey(options.cleanPathname);
   const rscKey = options.isrRscKey(
     options.cleanPathname,
@@ -221,7 +226,16 @@ export function finalizeAppPageHtmlCacheResponse(
 
   const cachePromise = (async () => {
     try {
-      const cachedHtml = await readStreamAsText(streamForCache);
+      const captured = await captureResponseBodyBounded(new Response(streamForCache));
+      if (captured.failClosed) {
+        void captured.fallback.cancel().catch(() => {});
+        complete({ cacheable: false, dynamicUsage: true, reason: captured.reason });
+        options.isrDebug?.("HTML cache write skipped (bounded capture failed)", htmlKey);
+        return;
+      }
+      void captured.fallback?.cancel().catch(() => {});
+      recordRouteCacheabilityCapturedBody(captured.body);
+      const cachedHtml = captured.body === null ? "" : new TextDecoder().decode(captured.body);
 
       if (
         options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
@@ -274,7 +288,7 @@ export function finalizeAppPageHtmlCacheResponse(
           buildAppPageCacheValue(
             cachedHtml,
             undefined,
-            200,
+            response.status,
             htmlRenderObservation,
             linkHeader ? { link: linkHeader } : undefined,
           ),
@@ -317,7 +331,7 @@ export function finalizeAppPageHtmlCacheResponse(
 
   options.waitUntil?.(cachePromise);
 
-  const clientResponse = new Response(streamForClient, {
+  const clientResponse = new Response(hadBody ? streamForClient : null, {
     status: response.status,
     statusText: response.statusText,
     headers: clientHeaders,
