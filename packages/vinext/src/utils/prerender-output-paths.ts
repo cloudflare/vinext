@@ -9,12 +9,20 @@ export function getOutputPath(urlPath: string, trailingSlash: boolean): string {
   return `${clean}.html`;
 }
 
-/**
- * Determine the RSC output file path for a prerendered URL.
- * "/blog/hello-world" -> "blog/hello-world.rsc"
- * "/"                 -> "index.rsc"
- */
-export function getRscOutputPath(urlPath: string): string {
+/** Determine the Flight payload path for a prerendered App Router URL. */
+export function getRscOutputPath(
+  urlPath: string,
+  options: { mode: "default" | "export"; trailingSlash: boolean } = {
+    mode: "default",
+    trailingSlash: false,
+  },
+): string {
+  if (options.mode === "export") {
+    if (urlPath === "/") return "index.txt";
+    const clean = urlPath.replace(/^\//, "").replace(/\/$/, "");
+    return options.trailingSlash ? `${clean}/index.txt` : `${clean}.txt`;
+  }
+
   if (urlPath === "/") return "index.rsc";
   return urlPath.replace(/^\//, "") + ".rsc";
 }

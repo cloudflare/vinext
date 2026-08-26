@@ -25,6 +25,9 @@ export default function HomePage() {
           <li>
             <Link href="/products/widget">Product: widget (Pages Router)</Link>
           </li>
+          <li>
+            <Link href="/missing-static-artifact">Missing route</Link>
+          </li>
         </ul>
       </nav>
     </main>

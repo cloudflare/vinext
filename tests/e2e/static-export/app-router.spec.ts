@@ -64,13 +64,47 @@ test.describe("Static Export — App Router", () => {
     await expect(nav.locator('a[href="/blog/getting-started/"]')).toBeVisible();
     await expect(nav.locator('a[href="/old-school/"]')).toBeVisible();
     await expect(nav.locator('a[href="/products/widget/"]')).toBeVisible();
+    await expect(nav.locator('a[href="/missing-static-artifact/"]')).toBeVisible();
   });
 
-  test("client-side navigation works between pages", async ({ page }) => {
+  test("soft navigation fetches the exported Flight text without a document reload", async ({
+    page,
+  }) => {
+    const documentPaths: string[] = [];
+    const flightPaths: string[] = [];
+    page.on("request", (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (request.resourceType() === "document") documentPaths.push(pathname);
+      if (pathname.endsWith(".txt") && request.headers().rsc === "1") {
+        flightPaths.push(pathname);
+      }
+    });
+
     await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => Reflect.set(window, "__staticExportSoftNavigation", true));
     await page.locator('a[href="/about/"]').click();
     await page.waitForURL(`${BASE}/about/`);
     await expect(page.locator("h1")).toHaveText("About");
+    await expect(page).toHaveTitle("About — Static Export");
+    expect(await page.evaluate(() => Reflect.get(window, "__staticExportSoftNavigation"))).toBe(
+      true,
+    );
+    expect(flightPaths).toContain("/about/index.txt");
+    expect(documentPaths).toEqual(["/"]);
+  });
+
+  test("soft navigation restores dynamic useParams from the route manifest", async ({ page }) => {
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => Reflect.set(window, "__staticExportSoftNavigation", true));
+    await page.locator('a[href="/blog/hello-world/"]').click();
+    await page.waitForURL(`${BASE}/blog/hello-world/`);
+    await expect(page.getByTestId("client-slug")).toHaveText("Client slug: hello-world");
+    await expect(page).toHaveTitle("Blog: hello-world");
+    expect(await page.evaluate(() => Reflect.get(window, "__staticExportSoftNavigation"))).toBe(
+      true,
+    );
   });
 
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
@@ -88,14 +122,65 @@ test.describe("Static Export — App Router", () => {
     expect(rscRequests).toBe(0);
   });
 
-  test("useSearchParams reads the query after static-host navigation fallback", async ({
-    page,
-  }) => {
+  test("useSearchParams reads the query after static-host soft navigation", async ({ page }) => {
+    const documentPaths: string[] = [];
+    const flightPaths: string[] = [];
+    page.on("request", (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (request.resourceType() === "document") documentPaths.push(pathname);
+      if (pathname.endsWith(".txt")) flightPaths.push(pathname);
+    });
     await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
     await page.evaluate(() => Reflect.set(window, "__staticExportSoftNavigation", true));
     await page.locator('a[href="/search-params/?value=navigated"]').click();
     await page.waitForURL(`${BASE}/search-params/?value=navigated`);
     await expect(page.getByTestId("query-value")).toHaveText("navigated");
+    expect(await page.evaluate(() => Reflect.get(window, "__staticExportSoftNavigation"))).toBe(
+      true,
+    );
+    expect(flightPaths).toContain("/search-params/index.txt");
+    expect(documentPaths).toEqual(["/"]);
+  });
+
+  test("back and forward retain the client document", async ({ page }) => {
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => Reflect.set(window, "__staticExportSoftNavigation", true));
+    await page.locator('a[href="/about/"]').click();
+    await page.waitForURL(`${BASE}/about/`);
+
+    await page.goBack();
+    await page.waitForURL(`${BASE}/`);
+    await expect(page.locator("h1")).toHaveText("Static Export — App Router");
+    expect(await page.evaluate(() => Reflect.get(window, "__staticExportSoftNavigation"))).toBe(
+      true,
+    );
+
+    await page.goForward();
+    await page.waitForURL(`${BASE}/about/`);
+    await expect(page.locator("h1")).toHaveText("About");
+    expect(await page.evaluate(() => Reflect.get(window, "__staticExportSoftNavigation"))).toBe(
+      true,
+    );
+  });
+
+  test("missing Flight artifacts fall back to the static 404 document", async ({ page }) => {
+    const documentPaths: string[] = [];
+    const flightPaths: string[] = [];
+    page.on("request", (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (request.resourceType() === "document") documentPaths.push(pathname);
+      if (pathname.endsWith(".txt")) flightPaths.push(pathname);
+    });
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => Reflect.set(window, "__staticExportSoftNavigation", true));
+    await page.locator('a[href="/missing-static-artifact/"]').click();
+    await page.waitForURL(`${BASE}/missing-static-artifact/`);
+
+    expect(flightPaths).toContain("/missing-static-artifact/index.txt");
+    expect(documentPaths).toContain("/missing-static-artifact/");
     expect(
       await page.evaluate(() => Reflect.get(window, "__staticExportSoftNavigation")),
     ).toBeUndefined();

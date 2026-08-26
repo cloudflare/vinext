@@ -2425,6 +2425,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_TRAILING_SLASH"] = JSON.stringify(
           nextConfig.trailingSlash ? "true" : "false",
         );
+        // Next.js uses this compile-time value to switch App Router navigation
+        // from header-selected RSC responses to static `.txt` Flight assets.
+        defines["process.env.__NEXT_CONFIG_OUTPUT"] = JSON.stringify(nextConfig.output ?? "");
         // Expose image remote patterns for validation in next/image shim
         defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.remotePatterns ?? []),

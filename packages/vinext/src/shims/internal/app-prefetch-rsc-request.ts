@@ -39,6 +39,7 @@ export async function resolveAppPrefetchRscRequest({
   rewrittenPrefetchHref,
 }: ResolveAppPrefetchRscRequestOptions): Promise<ResolvedAppPrefetchRscRequest> {
   const canUseCanonicalSharedRequest =
+    process.env.__NEXT_CONFIG_OUTPUT !== "export" &&
     process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
     interceptionContext === null &&
     mountedSlotsHeader === null &&

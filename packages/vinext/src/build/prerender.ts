@@ -1038,7 +1038,7 @@ export async function prerenderPages({
  * Starts a local production server and fetches every static/ISR route via HTTP.
  * Works for both plain Node and Cloudflare Workers builds — the CF Workers bundle
  * (`dist/server/index.js`) is a standard Node-compatible server entry, so no
- * wrangler/miniflare is needed. Writes HTML files, `.rsc` files, and
+ * wrangler/miniflare is needed. Writes HTML files, Flight payloads, and
  * `vinext-prerender.json` to `outDir`.
  *
  * If the bundle does not exist, an error is thrown directing the user to run
@@ -1673,7 +1673,7 @@ export async function prerenderApp({
         // Reconstruct the RSC payload from the inline bootstrap chunks already
         // streamed into the HTML body. The generated RSC entry performs
         // framing-aware hint normalization at the stream source, so the
-        // resulting `.rsc` file contains the same Flight bytes.
+        // resulting Flight artifact contains the same bytes.
         //
         // Falls back to a second invocation with `RSC: 1` when the HTML has
         // no chunk scripts at all — covers cases where middleware
@@ -1712,8 +1712,13 @@ export async function prerenderApp({
         fs.writeFileSync(htmlFullPath, html, "utf-8");
         outputFiles.push(htmlOutputPath);
 
-        // Write RSC payload (.rsc file)
-        const rscOutputPath = getRscOutputPath(urlPath);
+        // Next.js writes export-mode Flight payloads as `.txt` so a plain
+        // static host serves a portable `text/plain` content type. Normal
+        // server prerenders retain vinext's internal `.rsc` artifact shape.
+        const rscOutputPath = getRscOutputPath(urlPath, {
+          mode,
+          trailingSlash: config.trailingSlash,
+        });
         const rscFullPath = path.join(outDir, rscOutputPath);
         fs.mkdirSync(path.dirname(rscFullPath), { recursive: true });
         fs.writeFileSync(rscFullPath, rscData);

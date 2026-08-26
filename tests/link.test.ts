@@ -457,6 +457,39 @@ describe("Link App Router prefetch mode", () => {
     }
   });
 
+  it("uses reusable full-route prefetches for static exports", () => {
+    const originalWindow = globalThis.window;
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("__NEXT_CONFIG_OUTPUT", "export");
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost/blog",
+        origin: "http://localhost",
+      },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [
+        { canPrefetchLoadingShell: true, patternParts: ["blog", ":slug"], isDynamic: true },
+      ],
+    };
+
+    try {
+      expect(resolveAutoAppRoutePrefetch("/blog/hello-world?from=export")).toEqual({
+        cacheForNavigation: true,
+        dynamicStaleTime: "full-prefetch",
+        fallbackTtl: "static",
+        prefetchShellFirst: true,
+        shouldPrefetch: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/missing").shouldPrefetch).toBe(false);
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("keeps Cache Components encoded delimiters and fully dynamic roots learning-only", () => {
     const originalWindow = globalThis.window;
     const originalCacheComponents = process.env.__NEXT_CACHE_COMPONENTS;

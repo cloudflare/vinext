@@ -91,6 +91,13 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
   if (!match) return NO_APP_ROUTE_PREFETCH;
 
+  // Export builds only emit one full-route Flight artifact per pathname; they
+  // have no server that can produce loading-shell, route-tree, or per-segment
+  // variants. Reuse that full payload for every matched App route prefetch.
+  if (process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export") {
+    return resolveFullAppRoutePrefetch();
+  }
+
   const route = match.route;
   const requiresRouteTreePrefetch =
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true" && route.hasRootParams === true;

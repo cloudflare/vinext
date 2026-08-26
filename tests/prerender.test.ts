@@ -24,7 +24,10 @@ import {
 import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
-import { getAppRouteOutputPath } from "../packages/vinext/src/utils/prerender-output-paths.js";
+import {
+  getAppRouteOutputPath,
+  getRscOutputPath,
+} from "../packages/vinext/src/utils/prerender-output-paths.js";
 
 const PAGES_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
 const APP_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/app-basic");
@@ -93,6 +96,26 @@ function legacyRscDoneScript(): string {
 }
 
 // ─── App Router RSC payload extraction ───────────────────────────────────────
+
+describe("getRscOutputPath", () => {
+  // Ported from Next.js:
+  // test/e2e/app-dir/static-export-skew-trailing-slash/static-export-skew-trailing-slash.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/static-export-skew-trailing-slash/static-export-skew-trailing-slash.test.ts
+  it("matches static export HTML layout with text/plain Flight artifacts", () => {
+    expect(getRscOutputPath("/", { mode: "export", trailingSlash: true })).toBe("index.txt");
+    expect(getRscOutputPath("/target", { mode: "export", trailingSlash: true })).toBe(
+      "target/index.txt",
+    );
+    expect(getRscOutputPath("/target", { mode: "export", trailingSlash: false })).toBe(
+      "target.txt",
+    );
+  });
+
+  it("retains .rsc files for server prerenders", () => {
+    expect(getRscOutputPath("/")).toBe("index.rsc");
+    expect(getRscOutputPath("/target")).toBe("target.rsc");
+  });
+});
 
 describe("extractRscPayloadFromPrerenderedHtml", () => {
   function decodeExtractedPayload(html: string): string | null {

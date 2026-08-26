@@ -259,7 +259,12 @@ function toOperationLane(kind: NavigationKind): OperationLane {
 }
 
 const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
-const CLIENT_RSC_COMPATIBILITY_ID = getVinextRscCompatibilityId();
+const IS_STATIC_EXPORT =
+  process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export";
+// Static asset hosts cannot attach vinext's compatibility header to `.txt`
+// files. The artifact and client bundle are emitted atomically by one build,
+// so export mode uses the Flight payload itself as the compatibility boundary.
+const CLIENT_RSC_COMPATIBILITY_ID = IS_STATIC_EXPORT ? null : getVinextRscCompatibilityId();
 const optimisticRouteTemplates = new Map<string, OptimisticRouteTemplate>();
 const optimisticRouteTemplateSources = new Set<string>();
 const optimisticRouteTemplateLearning = new Map<string, Promise<void>>();
@@ -278,6 +283,18 @@ function markInitialAppRouterBootstrapHydrated(): void {
 
 function getBrowserRouteManifest(): RouteManifest | null {
   return getNavigationRuntime()?.bootstrap.routeManifest ?? null;
+}
+
+function resolveStaticExportRouteParams(href: string): Record<string, string | string[]> {
+  const routeManifest = getBrowserRouteManifest();
+  if (routeManifest === null) return {};
+  return (
+    matchOptimisticRouteManifestRoute({
+      basePath: __basePath,
+      href,
+      routeManifest,
+    })?.params ?? {}
+  );
 }
 
 const MAX_HISTORY_STATE_SNAPSHOTS = 50;
@@ -2094,6 +2111,7 @@ function bootstrapHydration(
           targetPathAndSearch,
         });
         const canUseCanonicalSharedRequest =
+          !IS_STATIC_EXPORT &&
           process.env.__VINEXT_CANONICAL_RSC_REQUESTS === "1" &&
           navigationKind === "navigate" &&
           settledPrefetchedResponse === null &&
@@ -2419,6 +2437,14 @@ function bootstrapHydration(
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
         const navContentType = navResponse.headers.get("content-type") ?? "";
+        const isNavigationRscContentType =
+          navContentType.startsWith(VINEXT_RSC_CONTENT_TYPE) ||
+          (IS_STATIC_EXPORT && navContentType.startsWith("text/plain"));
+        // A static host reports the fetched transport URL (`/route/index.txt`),
+        // but that is not a redirect and must never become browser-visible.
+        const navigationResponseUrl = IS_STATIC_EXPORT
+          ? currentHref
+          : (navResponseUrl ?? navResponse.url);
         const streamedRedirectTarget = navResponse.headers.get(VINEXT_RSC_REDIRECT_HEADER);
         const streamedRedirectTypeHeader = navResponse.headers.get(VINEXT_RSC_REDIRECT_TYPE_HEADER);
         const streamedRedirectType =
@@ -2434,12 +2460,12 @@ function bootstrapHydration(
           currentHref,
           effectiveHistoryUpdateMode: currentHistoryMode ?? "replace",
           hasBody: navResponse.body !== null,
-          isRscContentType: navContentType.startsWith(VINEXT_RSC_CONTENT_TYPE),
+          isRscContentType: isNavigationRscContentType,
           origin: window.location.origin,
           redirectDepth: redirectCount,
           requestPreviousNextUrl,
           responseOk: navResponse.ok,
-          responseUrl: navResponseUrl ?? navResponse.url,
+          responseUrl: navigationResponseUrl,
           source: "live",
           streamedRedirectTarget,
           streamedRedirectType,
@@ -2490,10 +2516,11 @@ function bootstrapHydration(
         }
 
         // navParams falls back to {} on a missing or malformed header.
+        const responseParams = parseEncodedJsonHeader<Record<string, string | string[]>>(
+          navResponse.headers.get(VINEXT_PARAMS_HEADER),
+        );
         const navParams: Record<string, string | string[]> =
-          parseEncodedJsonHeader<Record<string, string | string[]>>(
-            navResponse.headers.get(VINEXT_PARAMS_HEADER),
-          ) ?? {};
+          responseParams ?? (IS_STATIC_EXPORT ? resolveStaticExportRouteParams(currentHref) : {});
         // Build snapshot from local params, not latestClientParams
         const navigationSnapshot = createClientNavigationRenderSnapshot(currentHref, navParams);
 
@@ -2639,7 +2666,11 @@ function bootstrapHydration(
           // absent from both caches and an explicit prefetch refetches it.
           const responseSnapshot =
             consumedPrefetchSnapshot ??
-            createCachedRscResponseSnapshot(navResponse, await cacheBufferPromise, navResponseUrl);
+            createCachedRscResponseSnapshot(
+              navResponse,
+              await cacheBufferPromise,
+              navigationResponseUrl,
+            );
           const completedResponseResolvedDynamic =
             responseSnapshot.completedDynamicStaleTimeSeconds !== undefined;
           const cacheRestorable =
