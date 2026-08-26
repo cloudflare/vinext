@@ -18,7 +18,10 @@ import type { RenderObservation } from "./cache-proof.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
-import { deferRouteCacheability } from "./cacheability-request.js";
+import {
+  deferRouteCacheability,
+  markRouteCacheabilityPolicyProvisional,
+} from "./cacheability-request.js";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageRscCacheKeyBuilder = (
@@ -202,6 +205,9 @@ export function finalizeAppPageHtmlCacheResponse(
     applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
       omitCacheState: options.omitPendingDynamicCacheState === true,
     });
+    if (completeCacheability && !responseExplicitlyUncacheable) {
+      markRouteCacheabilityPolicyProvisional(clientHeaders);
+    }
   }
 
   const cachePromise = (async () => {
@@ -312,10 +318,11 @@ export function finalizeAppPageRscCacheResponse(
   // dynamic API after the cache policy was chosen, so shared caches must not
   // keep it either way. An explicit no-store policy is required because
   // edge-managed adapters may cache pending-dynamic responses.
+  const responseExplicitlyUncacheable =
+    response.headers.has("set-cookie") || hasExplicitNonCacheableResponsePolicy(response.headers);
   scheduleAppPageRscCacheWrite({
     ...options,
-    responseExplicitlyUncacheable:
-      response.headers.has("set-cookie") || hasExplicitNonCacheableResponsePolicy(response.headers),
+    responseExplicitlyUncacheable,
   });
 
   const isUncacheableVariant =
@@ -333,6 +340,9 @@ export function finalizeAppPageRscCacheResponse(
     applyPendingDynamicCdnHeaders(clientHeaders, options.getPageTags(), {
       omitCacheState: options.omitPendingDynamicCacheState === true,
     });
+    if (!responseExplicitlyUncacheable) {
+      markRouteCacheabilityPolicyProvisional(clientHeaders);
+    }
   }
 
   return new Response(response.body, {

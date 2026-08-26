@@ -5,8 +5,14 @@ import {
   type RequestContext,
 } from "../config/config-matchers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
+import { invalidateRouteCacheabilityProvisionalPolicy } from "./cacheability-request.js";
 
 const ADDITIVE_CONFIG_HEADER_NAMES = new Set(["set-cookie", "vary"]);
+const CACHE_POLICY_HEADER_NAMES = new Set([
+  "cache-control",
+  "cdn-cache-control",
+  "cloudflare-cdn-cache-control",
+]);
 
 type ApplyConfigHeadersOptions = {
   configHeaders: NextHeader[];
@@ -91,6 +97,9 @@ export function applyConfigHeadersToResponse(
       options.basePathState,
     ),
   );
+  if (matched.some((header) => CACHE_POLICY_HEADER_NAMES.has(header.key.toLowerCase()))) {
+    invalidateRouteCacheabilityProvisionalPolicy();
+  }
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "link") {
