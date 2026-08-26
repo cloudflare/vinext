@@ -43,6 +43,16 @@ type BuildAppPageCacheRenderObservation = (input: {
   state: AppPageRenderObservationState;
 }) => RenderObservation;
 
+type FinalizeAppPageCacheabilityEvaluationOptions = {
+  capturedDynamicUsageBeforeContextCleanup?: () => boolean;
+  consumeDynamicUsage: () => boolean;
+  consumeRenderObservationState?: () => AppPageRenderObservationState;
+  getPageTags: () => string[];
+  getRequestCacheLife?: () => AppPageRequestCacheLife | null;
+  expireSeconds?: number;
+  revalidateSeconds: number | null;
+};
+
 type FinalizeAppPageHtmlCacheResponseOptions = {
   capturedDynamicUsageBeforeContextCleanup?: () => boolean;
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
@@ -177,15 +187,7 @@ function appPageCacheControlHeader(cacheControl: CacheControlMetadata): string {
 
 function finalizeEvaluatedAppPageResponse(
   response: Response,
-  options: {
-    capturedDynamicUsageBeforeContextCleanup?: () => boolean;
-    consumeDynamicUsage: () => boolean;
-    consumeRenderObservationState?: () => AppPageRenderObservationState;
-    getPageTags: () => string[];
-    getRequestCacheLife?: () => AppPageRequestCacheLife | null;
-    expireSeconds?: number;
-    revalidateSeconds: number | null;
-  },
+  options: FinalizeAppPageCacheabilityEvaluationOptions,
 ): Response | null {
   if (!isRouteCacheabilityEvaluation()) return null;
   const complete = deferRouteCacheability();
@@ -238,6 +240,17 @@ function finalizeEvaluatedAppPageResponse(
     status: response.status,
     statusText: response.statusText,
   });
+}
+
+/**
+ * Complete probe/admission classification for an App Page response that does
+ * not enter the ISR cache-write path. Ordinary requests pass through unchanged.
+ */
+export function finalizeAppPageCacheabilityEvaluationResponse(
+  response: Response,
+  options: FinalizeAppPageCacheabilityEvaluationOptions,
+): Response {
+  return finalizeEvaluatedAppPageResponse(response, options) ?? response;
 }
 
 export function finalizeAppPageHtmlCacheResponse(
