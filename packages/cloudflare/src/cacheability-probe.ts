@@ -17,6 +17,7 @@ import {
 } from "vinext/internal/server/headers";
 
 type ProbePayload = {
+  explicitPolicyDynamicOverride?: boolean;
   kind?: CacheabilityRouteKind;
   pattern?: string;
   reason?: string;
@@ -353,6 +354,9 @@ export async function probeStagedWorkerCacheability(options: {
         continue;
       }
       routes[key] = {
+        ...(result.explicitPolicyDynamicOverride === true
+          ? { explicitPolicyDynamicOverride: true }
+          : {}),
         ...(location.path ? { generatedPath: true } : {}),
         kind: route.kind,
         ...(location.path ? { path: location.path } : {}),
@@ -375,6 +379,9 @@ export async function probeStagedWorkerCacheability(options: {
       if (result.kind !== route.kind || result.pattern !== route.pattern) {
         const resolvedKey = cacheabilityRouteKey(result.kind!, result.pattern!, exactPath);
         routes[resolvedKey] = {
+          ...(result.explicitPolicyDynamicOverride === true
+            ? { explicitPolicyDynamicOverride: true }
+            : {}),
           generatedPath: true,
           kind: result.kind!,
           path: exactPath,

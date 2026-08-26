@@ -742,6 +742,7 @@ async function collectCacheabilityProbeRoutes(options: {
   appDir: string | null;
   cacheComponents: boolean;
   excludedPaths?: ReadonlySet<string>;
+  isExcludedPath?: (pathname: string) => boolean;
   i18n: ResolvedNextConfig["i18n"];
   pagesDir: string | null;
   pageExtensions: readonly string[];
@@ -873,7 +874,9 @@ async function collectCacheabilityProbeRoutes(options: {
             localizePagesPath(route.pattern, locale, options.i18n),
           )
         : [route.pattern];
-      warmPaths = fixedPaths.filter((pathname) => !options.excludedPaths?.has(pathname));
+      warmPaths = fixedPaths.filter(
+        (pathname) => !options.excludedPaths?.has(pathname) && !options.isExcludedPath?.(pathname),
+      );
     }
     if (!isSsr || warmPaths.length > 0) {
       addProbeableRoute("pages-page", route.pattern, warmPaths);
@@ -1158,6 +1161,13 @@ export async function emitPrerenderPathManifest(
     appDir,
     cacheComponents: config.cacheComponents,
     excludedPaths: excludedWarmPathSet,
+    isExcludedPath: (pathname) =>
+      Boolean(
+        options.responseVary &&
+        (configuredRouteAffectsWarmPath(pathname, config) ||
+          (middlewarePath &&
+            middlewareMatcherCanRunForPath(pathname, middlewareMatcher, config.i18n))),
+      ),
     i18n: config.i18n,
     pagesDir,
     pageExtensions: config.pageExtensions,

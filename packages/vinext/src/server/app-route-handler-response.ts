@@ -15,7 +15,10 @@ import { setCacheStateHeaders } from "./cache-headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { getSetCookieName } from "./cookie-utils.js";
-import { markEdgeRouteHandlerLinkHeaders } from "./app-response-header-provenance.js";
+import {
+  markAppRouteHandlerResponseHeaders,
+  markEdgeRouteHandlerLinkHeaders,
+} from "./app-response-header-provenance.js";
 import { markRouteCacheabilityPolicyProvisional } from "./cacheability-request.js";
 
 export type RouteHandlerMiddlewareContext = {
@@ -57,6 +60,7 @@ export function applyRouteHandlerMiddlewareContext(
   const responseLink = options.appendResponseLink ? response.headers.get("link") : null;
   if (!middlewareContext.headers && middlewareContext.status == null) {
     markEdgeRouteHandlerLinkHeaders(response.headers, responseLink);
+    markAppRouteHandlerResponseHeaders(response.headers);
     return response;
   }
 
@@ -72,6 +76,7 @@ export function applyRouteHandlerMiddlewareContext(
     headers: responseHeaders,
   });
   markEdgeRouteHandlerLinkHeaders(result.headers, responseLink);
+  markAppRouteHandlerResponseHeaders(result.headers);
   return result;
 }
 
@@ -121,11 +126,12 @@ export function buildRouteHandlerCachedResponse(
   ) {
     applyCdnResponseHeaders(headers, { cacheControl });
   }
-
-  return new Response(options.isHead ? null : cachedValue.body, {
+  const response = new Response(options.isHead ? null : cachedValue.body, {
     status: cachedValue.status,
     headers,
   });
+  markRouteCacheabilityPolicyProvisional(response.headers);
+  return response;
 }
 
 export function applyRouteHandlerRevalidateHeader(

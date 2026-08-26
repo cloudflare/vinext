@@ -775,15 +775,19 @@ export async function renderPagesPageResponse(
     responseHeaders.set("ETag", etag);
     const noCacheRequested = requestsNoCache(options.requestCacheControl);
     if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
-      return new Response(null, {
+      const response = new Response(null, {
         status: 304,
         headers: responseHeaders,
       });
+      if (wroteFrameworkCachePolicy) markRouteCacheabilityPolicyProvisional(response.headers);
+      return response;
     }
-    return new Response(fullHtml, {
+    const response = new Response(fullHtml, {
       status: finalStatus,
       headers: responseHeaders,
     });
+    if (wroteFrameworkCachePolicy) markRouteCacheabilityPolicyProvisional(response.headers);
+    return response;
   }
 
   const response: PagesStreamedHtmlResponse = Object.assign(
@@ -795,6 +799,7 @@ export async function renderPagesPageResponse(
       __vinextStreamedHtmlResponse: true,
     },
   );
+  if (wroteFrameworkCachePolicy) markRouteCacheabilityPolicyProvisional(response.headers);
   // Mark the normal streamed HTML render so the Node prod server can strip
   // stale Content-Length only for this path, not for custom gSSP responses.
   return response;

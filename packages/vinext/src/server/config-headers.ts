@@ -119,7 +119,10 @@ export function applyConfigHeadersToResponse(
       );
     } else if (ADDITIVE_CONFIG_HEADER_NAMES.has(lowerName)) {
       responseHeaders.append(header.key, header.value);
-    } else if (options.overwriteExisting?.has(lowerName) || !responseHeaders.has(lowerName)) {
+    } else if (
+      (options.overwriteExisting?.has(lowerName) && !options.middlewareHeaders?.has(lowerName)) ||
+      !responseHeaders.has(lowerName)
+    ) {
       responseHeaders.set(header.key, header.value);
       if (CACHE_POLICY_HEADER_NAMES.has(lowerName)) appliedCachePolicy = true;
     }

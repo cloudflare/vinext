@@ -24,6 +24,7 @@ import { hasCompleteNegativeRequestApiProof, type RenderObservation } from "./ca
 import { isAppPprDynamicFallbackShellHtml } from "./app-ppr-fallback-shell.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
+import { markRouteCacheabilityPolicyProvisional } from "./cacheability-request.js";
 export {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
@@ -242,6 +243,11 @@ export function buildAppPageCachedResponse(
   cachedValue: CachedAppPageValue,
   options: BuildAppPageCachedResponseOptions,
 ): Response | null {
+  const middlewareHasCachePolicy = [
+    "Cache-Control",
+    "CDN-Cache-Control",
+    "Cloudflare-CDN-Cache-Control",
+  ].some((name) => options.middlewareHeaders?.has(name));
   // Preserve the legacy fallback semantics from the generated entry: invalid
   // falsy statuses still fall back to 200 rather than being forwarded through.
   const isStoredTerminalResponse =
@@ -278,10 +284,12 @@ export function buildAppPageCachedResponse(
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
 
-    return new Response(cachedValue.rscData, {
+    const response = new Response(cachedValue.rscData, {
       status,
       headers: rscHeaders,
     });
+    if (!middlewareHasCachePolicy) markRouteCacheabilityPolicyProvisional(response.headers);
+    return response;
   }
 
   if (
@@ -311,6 +319,7 @@ export function buildAppPageCachedResponse(
     status,
     headers: htmlHeaders,
   });
+  if (!middlewareHasCachePolicy) markRouteCacheabilityPolicyProvisional(response.headers);
   markFrameworkLinkHeaders(response.headers, cachedValue.headers?.link);
   return response;
 }

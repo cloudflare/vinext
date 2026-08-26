@@ -1036,10 +1036,11 @@ export function createPagesPageHandler(
               init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
             }
           }
-          return finalizePagesPreviewResponse(
-            buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, init),
-            preview,
-          );
+          const dataResponse = buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, init);
+          if (wroteFrameworkCachePolicy) {
+            markRouteCacheabilityPolicyProvisional(dataResponse.headers);
+          }
+          return finalizePagesPreviewResponse(dataResponse, preview);
         }
 
         // Include both the global _app module and the matched page module.

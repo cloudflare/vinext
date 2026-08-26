@@ -1,5 +1,6 @@
 const frameworkLinkHeaders = new WeakSet<Headers>();
 const edgeRouteHandlerLinkHeaders = new WeakSet<Headers>();
+const appRouteHandlerResponseHeaders = new WeakSet<Headers>();
 const frameworkLocationHeaders = new WeakMap<Headers, string>();
 
 /** Mark response headers whose Link value was emitted by the App page renderer. */
@@ -39,6 +40,16 @@ export function markEdgeRouteHandlerLinkHeaders(
 /** Whether config must precede a later framework or Edge-handler Link value. */
 export function hasPostConfigLinkHeaders(headers: Headers): boolean {
   return frameworkLinkHeaders.has(headers) || edgeRouteHandlerLinkHeaders.has(headers);
+}
+
+/** Mark headers returned by an App Route Handler after middleware merging. */
+export function markAppRouteHandlerResponseHeaders(headers: Headers): void {
+  appRouteHandlerResponseHeaders.add(headers);
+}
+
+/** Whether next.config singular headers precede this Route Handler response. */
+export function isAppRouteHandlerResponseHeaders(headers: Headers): boolean {
+  return appRouteHandlerResponseHeaders.has(headers);
 }
 
 /** Preserve Link provenance when a response wrapper reconstructs a Response. */

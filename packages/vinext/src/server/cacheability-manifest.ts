@@ -10,6 +10,8 @@ export type CacheabilityRouteState =
   | "probe-failed";
 
 export type CacheabilityManifestRoute = {
+  /** The probe observed dynamic usage that an explicit cache policy deliberately authorized. */
+  explicitPolicyDynamicOverride?: boolean;
   /** The pathname came from generateStaticParams/getStaticPaths discovery. */
   generatedPath?: boolean;
   /** Compact pattern-level membership for generated paths not fully probed. */
@@ -251,6 +253,8 @@ export function parseCacheabilityManifest(
         (route.path !== undefined &&
           (typeof route.path !== "string" || !route.path.startsWith("/"))) ||
         (route.generatedPath !== undefined && typeof route.generatedPath !== "boolean") ||
+        (route.explicitPolicyDynamicOverride !== undefined &&
+          typeof route.explicitPolicyDynamicOverride !== "boolean") ||
         !isCacheabilityRouteState(route.state) ||
         key !==
           cacheabilityRouteKey(
@@ -262,6 +266,9 @@ export function parseCacheabilityManifest(
         return null;
       }
       routes[key] = {
+        ...(route.explicitPolicyDynamicOverride === true
+          ? { explicitPolicyDynamicOverride: true }
+          : {}),
         ...(route.generatedPath === true ? { generatedPath: true } : {}),
         ...(generatedPaths ? { generatedPaths } : {}),
         kind: route.kind,

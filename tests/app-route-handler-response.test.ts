@@ -12,6 +12,7 @@ import {
 import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import { hasPostConfigLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import { applyConfigHeadersToResponse } from "../packages/vinext/src/server/config-headers.js";
 
 function buildCachedRouteValue(
   body: string,
@@ -157,6 +158,29 @@ describe("app route handler response helpers", () => {
     });
 
     expect(response.headers.get("cache-control")).toBe("s-maxage=15, stale-while-revalidate=285");
+  });
+
+  it("lets next.config replace a cached Route Handler framework policy", () => {
+    const response = buildRouteHandlerCachedResponse(buildCachedRouteValue("from-cache"), {
+      cacheState: "HIT",
+      isHead: false,
+      revalidateSeconds: 60,
+    });
+
+    applyConfigHeadersToResponse(response.headers, {
+      configHeaders: [
+        { source: "/api/cached", headers: [{ key: "Cache-Control", value: "s-maxage=300" }] },
+      ],
+      pathname: "/api/cached",
+      requestContext: {
+        cookies: {},
+        headers: new Headers(),
+        host: "example.com",
+        query: new URLSearchParams(),
+      },
+    });
+
+    expect(response.headers.get("cache-control")).toBe("s-maxage=300");
   });
 
   it("emits static cache-control for revalidateSeconds = Infinity (revalidate = false)", () => {

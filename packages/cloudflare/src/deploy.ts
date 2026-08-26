@@ -670,16 +670,17 @@ export function omitProvenDynamicWarmPaths(
   };
 }
 
-export function includeProvenStaticRouteHandlerWarmPaths(
+export function includeCacheabilityManifestWarmPaths(
   plan: CdnWarmRequestPlan,
   routes: NonNullable<PrerenderWarmPlan["cacheabilityRoutes"]>,
   manifest: CacheabilityManifest,
 ): CdnWarmRequestPlan {
   const paths = new Set(plan.paths);
   for (const route of routes) {
-    if (route.kind === "app-route") {
-      for (const pathname of route.runtimeCheckWarmPaths ?? []) paths.add(pathname);
-    }
+    // Sibling paths are not certified by the representative probe. They are
+    // intentionally added only to the authenticated final-Worker warm pass,
+    // where each concrete response runs its own completed-render admission.
+    for (const pathname of route.runtimeCheckWarmPaths ?? []) paths.add(pathname);
     const exactPath = route.path ?? route.probePath;
     if (!exactPath) continue;
     const result =
@@ -1113,7 +1114,7 @@ export async function deployWithCdnWarmup(
             cacheabilityRoutes,
             probeResult.manifest,
           );
-          remainingWarmPlan = includeProvenStaticRouteHandlerWarmPaths(
+          remainingWarmPlan = includeCacheabilityManifestWarmPaths(
             filteredWarmPlan.plan,
             cacheabilityRoutes,
             probeResult.manifest,

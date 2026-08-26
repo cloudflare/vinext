@@ -179,12 +179,12 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     });
   });
 
-  it("adds every newly proven-static representation to the final warm plan", async () => {
-    const { includeProvenStaticRouteHandlerWarmPaths } =
+  it("adds proven exact and runtime-checked sibling representations to the final warm plan", async () => {
+    const { includeCacheabilityManifestWarmPaths } =
       await import("../packages/cloudflare/src/deploy.js");
 
     expect(
-      includeProvenStaticRouteHandlerWarmPaths(
+      includeCacheabilityManifestWarmPaths(
         { loadingShellPaths: [], paths: ["/page"], rscPaths: ["/page"] },
         [
           {
@@ -206,6 +206,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
             path: "/pages-ssr",
             pattern: "/pages-ssr",
             probePath: "/pages-ssr",
+            runtimeCheckWarmPaths: ["/fr/pages-ssr"],
             warmPaths: ["/pages-ssr"],
           },
         ],
@@ -234,7 +235,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       ),
     ).toEqual({
       loadingShellPaths: [],
-      paths: ["/page", "/api/static", "/pages-ssr"],
+      paths: ["/page", "/api/static", "/fr/pages-ssr", "/pages-ssr"],
       rscPaths: ["/page"],
     });
   });

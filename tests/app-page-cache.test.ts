@@ -28,6 +28,7 @@ import {
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { withEnvVar } from "./env-test-helpers.js";
+import { applyConfigHeadersToResponse } from "../packages/vinext/src/server/config-headers.js";
 
 function createHeaderClearingCdnAdapter(): CdnCacheAdapter {
   return {
@@ -347,6 +348,55 @@ describe("app page cache helpers", () => {
     });
 
     expect(response?.headers.get("cache-control")).toBe("s-maxage=60, stale-while-revalidate=240");
+  });
+
+  it("lets next.config replace a cached App page framework policy without CDN admission state", () => {
+    const response = buildAppPageCachedResponse(buildCachedAppPageValue("<h1>cached</h1>"), {
+      cacheState: "HIT",
+      isRscRequest: false,
+      revalidateSeconds: 60,
+    });
+
+    applyConfigHeadersToResponse(response!.headers, {
+      configHeaders: [
+        { source: "/cached", headers: [{ key: "Cache-Control", value: "s-maxage=300" }] },
+      ],
+      pathname: "/cached",
+      requestContext: {
+        cookies: {},
+        headers: new Headers(),
+        host: "example.com",
+        query: new URLSearchParams(),
+      },
+    });
+
+    expect(response?.headers.get("cache-control")).toBe("s-maxage=300");
+  });
+
+  it("keeps middleware cache policy over next.config on a cached App page", () => {
+    const middlewareHeaders = new Headers({ "Cache-Control": "private, no-store" });
+    const response = buildAppPageCachedResponse(buildCachedAppPageValue("<h1>cached</h1>"), {
+      cacheState: "HIT",
+      isRscRequest: false,
+      middlewareHeaders,
+      revalidateSeconds: 60,
+    });
+
+    applyConfigHeadersToResponse(response!.headers, {
+      configHeaders: [
+        { source: "/cached", headers: [{ key: "Cache-Control", value: "s-maxage=300" }] },
+      ],
+      middlewareHeaders,
+      pathname: "/cached",
+      requestContext: {
+        cookies: {},
+        headers: new Headers(),
+        host: "example.com",
+        query: new URLSearchParams(),
+      },
+    });
+
+    expect(response?.headers.get("cache-control")).toBe("private, no-store");
   });
 
   it("emits static cache-control for cached indefinite app pages", async () => {

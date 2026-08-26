@@ -310,6 +310,38 @@ describe("prerender path manifest", () => {
     ]);
   });
 
+  it("never synthesizes a fixed Pages SSR probe whose middleware source can match", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile(
+      "pages/guarded.tsx",
+      [
+        "export async function getServerSideProps() { return { props: {} }; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "proxy.ts",
+      ["export function proxy() {}", "export const config = { matcher: '/guarded' };"].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.cacheabilityRoutes).toEqual([
+      {
+        fallbackState: "dynamic",
+        kind: "pages-page",
+        pattern: "/guarded",
+      },
+    ]);
+  });
+
   it("discovers dynamic paths from an uploaded Worker without loading its bundle in Node", async () => {
     // No Next.js test port applies: staged Worker version overrides and
     // cloudflare:workers bindings are Cloudflare-specific.

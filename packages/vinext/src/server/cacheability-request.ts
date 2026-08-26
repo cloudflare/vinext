@@ -63,6 +63,7 @@ type CacheabilityRequestRoute = Pick<CacheabilityManifestRoute, "kind" | "patter
 };
 
 type CacheabilityRequestState = {
+  captureDeadlineAt?: number;
   capturedBody?: ArrayBuffer | null;
   closed?: boolean;
   releaseCapturedBodies?: Set<() => void>;
@@ -91,6 +92,7 @@ type CacheabilityPolicySnapshot = {
 
 let reservedCaptureBytes = 0;
 let activeCaptureReaders = 0;
+const frameworkCachePolicies = new WeakMap<Headers, CacheabilityPolicySnapshot>();
 const pendingCaptureReaders: Array<{
   resolve: (release: (() => void) | null) => void;
   signal?: AbortSignal;
@@ -487,6 +489,12 @@ export async function captureResponseBodyBounded(
   }
 
   const captureStartedAt = frameworkNow();
+  const requestDeadlineAt = readState(getRequestExecutionContext())?.captureDeadlineAt;
+  const captureDeadlineAt = Math.min(
+    captureStartedAt + CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+    requestDeadlineAt ?? Number.POSITIVE_INFINITY,
+  );
+  const remainingCaptureMs = (): number => Math.max(0, captureDeadlineAt - frameworkNow());
   const waitForCapacity =
     options.waitForCapacity ??
     (() => {
@@ -495,7 +503,7 @@ export async function captureResponseBodyBounded(
     })();
   const releaseReader = await acquireCaptureReader(
     options.signal,
-    waitForCapacity ? CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS : 0,
+    waitForCapacity ? remainingCaptureMs() : 0,
   );
   if (!releaseReader) {
     if (options.signal?.aborted) {
@@ -506,7 +514,7 @@ export async function captureResponseBodyBounded(
       failClosed: true,
       fallback: response.body,
       reason: waitForCapacity
-        ? `response capture did not acquire isolate capacity within ${CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS}ms`
+        ? "response capture did not acquire isolate capacity before the classification deadline"
         : "response capture isolate capacity is currently unavailable",
     };
   }
@@ -558,13 +566,7 @@ export async function captureResponseBodyBounded(
         }
       })(),
       new Promise<"timed-out">((resolve) => {
-        timeout = setTimeout(
-          () => resolve("timed-out"),
-          Math.max(
-            0,
-            CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS - (frameworkNow() - captureStartedAt),
-          ),
-        );
+        timeout = setTimeout(() => resolve("timed-out"), remainingCaptureMs());
       }),
       new Promise<"aborted">((resolve) => {
         const signal = options.signal;
@@ -701,6 +703,9 @@ export function createWorkerCacheabilityContext(
       : manifest
         ? "admit"
         : "admit-all",
+    ...(authorizedCapability && probeMode !== "identity"
+      ? { captureDeadlineAt: frameworkNow() + CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS }
+      : {}),
     requestHeaders: Object.fromEntries(diagnosticHeaders),
     requestIsRsc: request.headers.get(RSC_HEADER) === "1",
     requestMethod: request.method,
@@ -901,18 +906,22 @@ export function retainRouteCacheabilityCapture(release: () => void): boolean {
 
 /** Record the exact adapter policy used only while an App render is unproven. */
 export function markRouteCacheabilityPolicyProvisional(headers: Headers): void {
+  const snapshot = snapshotCachePolicy(headers);
+  frameworkCachePolicies.set(headers, snapshot);
   const state = readState(getRequestExecutionContext());
   if (!state?.route) return;
-  state.provisionalPolicy = snapshotCachePolicy(headers);
+  state.provisionalPolicy = snapshot;
 }
 
 /** Whether the current cache headers are still exactly framework-generated. */
 export function isRouteCacheabilityPolicyProvisional(headers: Headers): boolean {
   const state = readState(getRequestExecutionContext());
+  const responseSnapshot = frameworkCachePolicies.get(headers);
   return Boolean(
-    state?.route &&
-    state.provisionalPolicy &&
-    cachePoliciesMatch(state.provisionalPolicy, snapshotCachePolicy(headers)),
+    (responseSnapshot && cachePoliciesMatch(responseSnapshot, snapshotCachePolicy(headers))) ||
+    (state?.route &&
+      state.provisionalPolicy &&
+      cachePoliciesMatch(state.provisionalPolicy, snapshotCachePolicy(headers))),
   );
 }
 
@@ -937,18 +946,14 @@ export function markRouteCacheabilityResponsePolicyExplicit(headers: Headers): v
 /** Replace only the framework policy that an earlier explicit config policy supersedes. */
 export function applyExplicitRouteCacheabilityPolicy(headers: Headers): void {
   const state = readState(getRequestExecutionContext());
-  if (
-    !state?.explicitCachePolicy ||
-    !state.explicitCachePolicyHeader ||
-    !isRouteCacheabilityPolicyProvisional(headers)
-  ) {
-    return;
-  }
+  if (!isRouteCacheabilityPolicyProvisional(headers)) return;
   headers.delete("Cache-Control");
   headers.delete("CDN-Cache-Control");
   headers.delete("Cloudflare-CDN-Cache-Control");
-  headers.set(state.explicitCachePolicyHeader, state.explicitCachePolicy);
-  state.provisionalPolicy = undefined;
+  if (state?.explicitCachePolicy && state.explicitCachePolicyHeader) {
+    headers.set(state.explicitCachePolicyHeader, state.explicitCachePolicy);
+    state.provisionalPolicy = undefined;
+  }
 }
 
 function probeResponse(
@@ -959,6 +964,9 @@ function probeResponse(
 ): Response {
   const body = {
     cacheControl: outcome.cacheControl,
+    ...(state.explicitCachePolicy && state.outcome?.dynamicUsage === true
+      ? { explicitPolicyDynamicOverride: true }
+      : {}),
     kind: state.route?.kind,
     pattern: state.route?.pattern,
     reason: outcome.reason,
@@ -1046,7 +1054,10 @@ async function finalizeWorkerCacheabilityResponseWithState(
   const authoritativePolicyOutcome = explicitCachePolicyOutcome(response, state);
   const staticCandidateBecameDynamic = (outcome: CacheabilityOutcome | undefined): boolean =>
     state.mode !== "probe" &&
-    authoritativePolicyOutcome === undefined &&
+    !(
+      state.manifestRoute?.explicitPolicyDynamicOverride === true &&
+      authoritativePolicyOutcome !== undefined
+    ) &&
     state.manifestRoute?.state === "static-candidate" &&
     state.route?.partialPrerender !== true &&
     outcome?.dynamicUsage === true;

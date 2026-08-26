@@ -876,9 +876,17 @@ export async function runPagesRequest(
         renderPageMatch?.route.pattern,
       );
     }
-    // Explicit next.config policy is staged before rendering. Replace only a
-    // renderer-generated cache default so it cannot suppress that policy.
-    applyExplicitRouteCacheabilityPolicy(response.headers);
+    // Explicit next.config and middleware policies are staged before rendering.
+    // Replace only a renderer-generated cache default so it cannot suppress
+    // either earlier policy; leave the framework policy intact when no staged
+    // cache policy matched this request.
+    if (
+      ["cache-control", "cdn-cache-control", "cloudflare-cdn-cache-control"].some(
+        (name) => matchedPathHeaders[name] !== undefined,
+      )
+    ) {
+      applyExplicitRouteCacheabilityPolicy(response.headers);
+    }
     const merged = mergeHeaders(response, matchedPathHeaders, middlewareStatus);
     // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
     // mergeHeaders may create a new Response object (losing non-standard properties),
