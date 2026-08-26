@@ -16,6 +16,12 @@ import {
   type CdnResponseHeaders,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { createStaticFileSignal } from "../packages/vinext/src/server/request-pipeline.js";
+import { createWorkerCacheabilityAdmissionContext } from "../packages/vinext/src/server/cacheability-request.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -92,6 +98,55 @@ describe("finalizeAppRscResponse — config header application", () => {
 
     expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("x-example-edge-policy")).toBeNull();
+  });
+
+  it("records the adapter's provisional policy before config headers run", async () => {
+    const adapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: true,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders({ cacheControl }): CdnResponseHeaders {
+        return { "Cache-Control": cacheControl || "no-store" };
+      },
+      hasExplicitNonCacheableResponsePolicy(headers) {
+        return headers.get("Cache-Control")?.includes("no-store") === true;
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(adapter);
+    const request = new Request("http://example.com/about", {
+      headers: { Accept: "text/html" },
+    });
+    const executionContext = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+    );
+
+    await runWithExecutionContext(executionContext, () =>
+      finalizeAppRscResponse(new Response("body"), request, {
+        basePath: "",
+        configHeaders: [
+          {
+            source: "/about",
+            headers: [{ key: "Cache-Control", value: "private, no-store" }],
+          },
+        ],
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      }),
+    );
+
+    const state = Reflect.get(
+      executionContext,
+      CACHEABILITY_REQUEST_STATE,
+    ) as RouteCacheabilityState;
+    expect(state.frameworkResponseCachePolicy).toEqual({ "cache-control": "no-store" });
+    expect(state.finalResponseVetoReason).toContain("next.config headers set a non-cacheable");
   });
 
   it("applies a matching config header to a 200 response", async () => {

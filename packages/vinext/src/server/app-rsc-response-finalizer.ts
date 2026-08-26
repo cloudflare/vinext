@@ -13,6 +13,7 @@ import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
 import { hasPostConfigLinkHeaders } from "./app-response-header-provenance.js";
+import { captureRouteCacheabilityResponsePolicy } from "vinext/shims/cacheability-classification";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -123,6 +124,11 @@ export async function finalizeAppRscResponse(
   // already applied. Redirects are already skipped above.
   if (!response.headers.has("Cache-Control")) {
     applyCdnResponseHeaders(response.headers, { cacheControl: "" });
+    // This is the adapter's fail-closed provisional policy, not an
+    // application opt-out. Admission may replace it only after the body has
+    // completed and the render has proved reusable. Capture before config
+    // headers run so any later private/no-store override still vetoes.
+    captureRouteCacheabilityResponsePolicy(response.headers);
   }
 
   if (configHeadersAlreadyApplied.has(response)) {

@@ -126,7 +126,7 @@ describe("single-request cacheability admission", () => {
       cacheable: true,
       cacheControl: "s-maxage=60, stale-while-revalidate=540",
     };
-    state.initialResponseCachePolicy = { "cache-control": "no-store" };
+    state.frameworkResponseCachePolicy = { "cache-control": "no-store" };
 
     const response = await finalizeWorkerCacheabilityResponse(
       new Response("static", { headers: { "Cache-Control": "no-store" } }),
@@ -225,7 +225,7 @@ describe("single-request cacheability admission", () => {
 
   const lateFinalPolicyCases: Array<{
     finalHeaders: Record<string, string>;
-    initialPolicy: NonNullable<RouteCacheabilityState["initialResponseCachePolicy"]>;
+    initialPolicy: NonNullable<RouteCacheabilityState["frameworkResponseCachePolicy"]>;
     name: string;
   }> = [
     {
@@ -262,7 +262,7 @@ describe("single-request cacheability admission", () => {
       );
       const state = cacheabilityState(context);
       state.route = { kind: "app-page", pattern: "/page" };
-      state.initialResponseCachePolicy = testCase.initialPolicy;
+      state.frameworkResponseCachePolicy = testCase.initialPolicy;
       state.outcome = {
         cacheable: true,
         cacheControl: "s-maxage=60, stale-while-revalidate=540",

@@ -413,7 +413,7 @@ function hasStrictFinalResponseVeto(response: Response, state: RouteCacheability
     const value = response.headers.get(name);
     if (
       value !== null &&
-      value !== state.initialResponseCachePolicy?.[name] &&
+      value !== state.frameworkResponseCachePolicy?.[name] &&
       isNonCacheableCacheControl(value)
     ) {
       return true;

@@ -33,7 +33,7 @@ export type RouteCacheabilityState = {
   completion?: Promise<RouteCacheabilityOutcome>;
   finalResponseVetoReason?: string;
   forcedDynamicReason?: string;
-  initialResponseCachePolicy?: Partial<Record<CacheabilityPolicyHeader, string>>;
+  frameworkResponseCachePolicy?: Partial<Record<CacheabilityPolicyHeader, string>>;
   mode: "admit" | "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
   route?: {
@@ -71,17 +71,23 @@ export function markRouteCacheabilityFinalResponseUncacheable(reason: string): v
   state.finalResponseVetoReason ??= reason;
 }
 
-/** Record renderer-owned policy so admission can identify policy added later. */
+/** Record framework-owned policy so admission can identify policy added later. */
 export function captureRouteCacheabilityResponsePolicy(headers: Headers): void {
   const state = readRouteCacheabilityState();
-  if (!state || state.mode !== "admit" || state.initialResponseCachePolicy) return;
+  if (!state || state.mode !== "admit") return;
 
   const policy: Partial<Record<CacheabilityPolicyHeader, string>> = {};
   for (const name of CACHEABILITY_POLICY_HEADERS) {
     const value = headers.get(name);
     if (value !== null) policy[name] = value;
   }
-  state.initialResponseCachePolicy = policy;
+  // Framework response shaping has more than one trusted phase. In
+  // particular, the App Page renderer can leave Cache-Control absent before
+  // the outer response finalizer applies the adapter's provisional no-store
+  // default. Keep the latest trusted snapshot; configurable response headers
+  // run after the final capture and remain visible to the strict admission
+  // comparison below.
+  state.frameworkResponseCachePolicy = policy;
 }
 
 /** True only for an authenticated probe that must render the matched App Page. */
