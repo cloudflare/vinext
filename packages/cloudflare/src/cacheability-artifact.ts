@@ -83,9 +83,11 @@ export function withEmbeddedCacheabilityManifest<T>(
         (embedded, literal) => embedded.replaceAll(literal, replacement),
         content,
       );
-      const embedded = replaced.startsWith("#!")
-        ? replaced.replace("\n", `\n${importStatement}`)
-        : importStatement + replaced;
+      const shebangEnd = replaced.startsWith("#!") ? replaced.indexOf("\n") : -1;
+      const embedded =
+        shebangEnd === -1
+          ? importStatement + replaced
+          : `${replaced.slice(0, shebangEnd + 1)}${importStatement}${replaced.slice(shebangEnd + 1)}`;
       fs.writeFileSync(filePath, embedded);
     }
 

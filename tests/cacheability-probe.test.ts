@@ -773,6 +773,29 @@ describe("cacheability manifests", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("inserts the manifest import after a generated artifact shebang", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-shebang-"));
+    const entryPath = path.join(root, "dist/server/entry.js");
+    fs.mkdirSync(path.dirname(entryPath), { recursive: true });
+    fs.writeFileSync(
+      entryPath,
+      `#!/usr/bin/env node\nexport const value = ${JSON.stringify(CACHEABILITY_MANIFEST_PLACEHOLDER)};`,
+    );
+    fs.writeFileSync(path.join(root, "dist/server/wrangler.json"), "{}");
+
+    withEmbeddedCacheabilityManifest(root, undefined, { routes: {}, version: 1 }, (configPath) => {
+      const embedded = fs.readFileSync(
+        path.join(root, path.dirname(configPath), "entry.js"),
+        "utf-8",
+      );
+      expect(embedded).toMatch(
+        /^#!\/usr\/bin\/env node\nimport __vinextCacheabilityManifest_7a4d2d86/,
+      );
+    });
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("isolates a generated config at the dist root without recursive copying", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-dist-config-"));
     fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
