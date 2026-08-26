@@ -7,7 +7,8 @@
     "strict": true,
     "skipLibCheck": true,
     "paths": {
-      "vinext/shims/cache-handler": ["../../../../packages/vinext/src/shims/cache-handler.ts"]
+      "vinext/shims/cache-handler": ["../../../../packages/vinext/src/shims/cache-handler.ts"],
+      "vinext/shims/cdn-cache": ["../../../../packages/vinext/src/shims/cdn-cache.ts"]
     }
   },
   "include": ["app"]

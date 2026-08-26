@@ -406,6 +406,7 @@ describe("single-request cacheability admission", () => {
       );
       const state = cacheabilityState(context);
       state.route = { kind: "app-page", pattern: "/page" };
+      state.frameworkResponseCachePolicy = { "cache-control": "no-store" };
       state.outcome = {
         cacheable: true,
         cacheControl: "s-maxage=60, stale-while-revalidate=540",
