@@ -18,13 +18,16 @@ const CACHEABILITY_POLICY_HEADER_NAMES = new Set<string>(CACHEABILITY_POLICY_HEA
 function markConditionalConfigHeaderCacheability(rule: NextHeader): void {
   if (
     [...(rule.has ?? []), ...(rule.missing ?? [])].some(
-      (condition) => condition.type === "header" || condition.type === "cookie",
+      (condition) =>
+        condition.type === "header" || condition.type === "cookie" || condition.type === "host",
     )
   ) {
-    // Query values are already part of the public CDN key and hostnames are
-    // isolated by the platform. Headers and cookies are neither, so a response
-    // header selected by either cannot be shared safely under the request URL.
-    markRouteCacheabilityDynamic("next.config headers depend on request headers or cookies");
+    // Query values are already part of the public Workers Cache key. Headers,
+    // cookies, and hostnames are not, so a response header selected by any of
+    // them cannot be shared safely under the request URL.
+    markRouteCacheabilityDynamic(
+      "next.config headers depend on request headers, cookies, or hostnames",
+    );
   }
 }
 

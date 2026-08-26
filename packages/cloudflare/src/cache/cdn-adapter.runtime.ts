@@ -267,6 +267,11 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
       "Cloudflare-CDN-Cache-Control": null,
       "Cache-Tag": input.tags ? formatCacheTag(input.tags) : null,
+      // Workers Cache is consulted before the Worker runs. Vary the reusable
+      // anonymous response by Cookie so a draft/preview request cannot consume
+      // that HIT before vinext validates its signed bypass cookie. The draft
+      // response itself remains no-store once the Worker handles the miss.
+      Vary: "Cookie",
     };
 
     return headers;

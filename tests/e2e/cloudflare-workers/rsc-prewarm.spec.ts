@@ -243,7 +243,29 @@ test("deploy-prewarmed App HTML and RSC variants are reused", async ({
     appHtmlResponseHeaders["cf-cache-status"],
     `App HTML response headers: ${JSON.stringify(appHtmlResponseHeaders)}`,
   ).toBe("HIT");
+  expect(appHtmlResponseHeaders.vary?.split(/\s*,\s*/i)).toContain("Cookie");
   expect(await appHtmlResponse.text()).toContain("Prewarm target");
+
+  // Workers Cache is consulted before Worker code can validate Next.js's
+  // signed draft cookie. The cached anonymous response must therefore vary by
+  // Cookie; otherwise a valid draft request could consume this HIT without
+  // entering vinext and leak the public page into preview mode.
+  const cookieIsolatedHtmlResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    {
+      ...htmlHeaders,
+      Cookie: `__prerender_bypass=invalid-${Date.now()}`,
+    },
+  );
+  const cookieIsolatedHtmlHeaders = cookieIsolatedHtmlResponse.headers();
+  expect(cookieIsolatedHtmlResponse.ok(), JSON.stringify(cookieIsolatedHtmlHeaders)).toBe(true);
+  expect(
+    cookieIsolatedHtmlHeaders["cf-cache-status"],
+    `cookie-isolated App HTML response headers: ${JSON.stringify(cookieIsolatedHtmlHeaders)}`,
+  ).toBe("MISS");
+  expect(cookieIsolatedHtmlHeaders.vary?.split(/\s*,\s*/i)).toContain("Cookie");
+  expect(await cookieIsolatedHtmlResponse.text()).toContain("Prewarm target");
 
   const fullResponse = await getResponseAfterPromotion(
     request,

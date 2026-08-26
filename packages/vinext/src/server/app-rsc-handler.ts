@@ -120,18 +120,29 @@ type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
 type AppRscMiddlewareContext = AppMiddlewareContext;
 
-function rewriteUsesUnkeyedRequestCondition(rewrite: NextRewrite): boolean {
-  return [...(rewrite.has ?? []), ...(rewrite.missing ?? [])].some(
-    (condition) => condition.type === "header" || condition.type === "cookie",
+function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
+  return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
+    (condition) =>
+      condition.type === "header" || condition.type === "cookie" || condition.type === "host",
   );
 }
 
 function markConditionalRewriteCacheability(rewrite: NextRewrite): void {
-  if (rewriteUsesUnkeyedRequestCondition(rewrite)) {
-    // Query values are already part of the public CDN key and hostnames are
-    // isolated by the platform. Headers and cookies are neither, so a rewrite
-    // selected by either cannot publish its destination under the source URL.
-    markRouteCacheabilityDynamic("next.config rewrite depends on request headers or cookies");
+  if (ruleUsesUnkeyedRequestCondition(rewrite)) {
+    // Query values are already part of the public Workers Cache key. Headers,
+    // cookies, and hostnames are not, so a rewrite selected by any of them
+    // cannot publish its destination under the source URL.
+    markRouteCacheabilityDynamic(
+      "next.config rewrite depends on request headers, cookies, or hostnames",
+    );
+  }
+}
+
+function markConditionalRedirectCacheability(redirect: NextRedirect): void {
+  if (ruleUsesUnkeyedRequestCondition(redirect)) {
+    markRouteCacheabilityDynamic(
+      "next.config redirect depends on request headers, cookies, or hostnames",
+    );
   }
 }
 
@@ -505,6 +516,7 @@ async function applyRewrite(
     options.requestContext,
     options.basePathState,
     options.paramsPathname,
+    markConditionalRewriteCacheability,
   );
   if (!rewritten) return null;
 
@@ -847,6 +859,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         options.configRedirects,
         preMiddlewareRequestContext,
         basePathState,
+        markConditionalRedirectCacheability,
       )
     : null;
   if (configMatchers && redirect) {
@@ -983,7 +996,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     );
     if (beforeFilesRewrite instanceof Response) return beforeFilesRewrite;
     if (beforeFilesRewrite) {
-      markConditionalRewriteCacheability(rewrite);
       resolvedUrl = mergeRewriteQuery(resolvedUrl, beforeFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
@@ -1024,7 +1036,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       );
       if (rewritten instanceof Response) return rewritten;
       if (!rewritten) continue;
-      markConditionalRewriteCacheability(rewrite);
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
@@ -1054,7 +1065,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         );
         if (rewritten instanceof Response) return rewritten;
         if (!rewritten) continue;
-        markConditionalRewriteCacheability(rewrite);
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         cleanPathname = pathnameForResolvedUrl(resolvedUrl);
         cleanPathnameIsRequestPathname = false;
@@ -1527,7 +1537,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         return afterFilesRewrite;
       }
       if (!afterFilesRewrite) continue;
-      markConditionalRewriteCacheability(rewrite);
       resolvedUrl = mergeRewriteQuery(resolvedUrl, afterFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
@@ -1582,7 +1591,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         return fallbackRewrite;
       }
       if (!fallbackRewrite) continue;
-      markConditionalRewriteCacheability(rewrite);
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;

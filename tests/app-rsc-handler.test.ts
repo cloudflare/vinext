@@ -211,19 +211,35 @@ describe("createAppRscHandler", () => {
   it.each([
     {
       condition: { type: "cookie" as const, key: "tenant" },
-      expectedReason: "next.config rewrite depends on request headers or cookies",
+      expectedReason: "next.config rewrite depends on request headers, cookies, or hostnames",
+      expectedStatus: 200,
       requestUrl: "https://example.test/docs/account",
       requestHeaders: { Cookie: "tenant=alice" },
     },
     {
+      condition: { type: "cookie" as const, key: "tenant" },
+      expectedReason: "next.config rewrite depends on request headers, cookies, or hostnames",
+      expectedStatus: 404,
+      requestUrl: "https://example.test/docs/account",
+      requestHeaders: undefined,
+    },
+    {
+      condition: { type: "host" as const, key: "host", value: "example\\.test" },
+      expectedReason: "next.config rewrite depends on request headers, cookies, or hostnames",
+      expectedStatus: 200,
+      requestUrl: "https://example.test/docs/account",
+      requestHeaders: undefined,
+    },
+    {
       condition: { type: "query" as const, key: "tenant" },
       expectedReason: undefined,
+      expectedStatus: 200,
       requestUrl: "https://example.test/docs/account?tenant=alice",
       requestHeaders: undefined,
     },
   ])(
     "keeps $condition.type-conditioned rewrite cacheability aligned with the public key",
-    async ({ condition, expectedReason, requestHeaders, requestUrl }) => {
+    async ({ condition, expectedReason, expectedStatus, requestHeaders, requestUrl }) => {
       // Cookie-conditioned rewrites are exercised by Next.js here:
       // test/e2e/custom-routes/custom-routes.test.ts
       // https://github.com/vercel/next.js/blob/canary/test/e2e/custom-routes/custom-routes.test.ts
@@ -254,8 +270,8 @@ describe("createAppRscHandler", () => {
         handler(new Request(requestUrl, { headers: requestHeaders }), null),
       );
 
-      expect(response.status).toBe(200);
-      expect(await response.text()).toBe("page");
+      expect(response.status).toBe(expectedStatus);
+      if (expectedStatus === 200) expect(await response.text()).toBe("page");
       expect(state.forcedDynamicReason).toBe(expectedReason);
     },
   );
@@ -294,19 +310,35 @@ describe("createAppRscHandler", () => {
   it.each([
     {
       condition: { type: "cookie" as const, key: "tenant" },
-      expectedReason: "next.config headers depend on request headers or cookies",
+      expectedReason: "next.config headers depend on request headers, cookies, or hostnames",
+      expectedHeader: "alice",
       requestUrl: "https://example.test/docs/about",
       requestHeaders: { Cookie: "tenant=alice" },
     },
     {
+      condition: { type: "cookie" as const, key: "tenant" },
+      expectedReason: "next.config headers depend on request headers, cookies, or hostnames",
+      expectedHeader: null,
+      requestUrl: "https://example.test/docs/about",
+      requestHeaders: undefined,
+    },
+    {
+      condition: { type: "host" as const, key: "host", value: "example\\.test" },
+      expectedReason: "next.config headers depend on request headers, cookies, or hostnames",
+      expectedHeader: "alice",
+      requestUrl: "https://example.test/docs/about",
+      requestHeaders: undefined,
+    },
+    {
       condition: { type: "query" as const, key: "tenant" },
       expectedReason: undefined,
+      expectedHeader: "alice",
       requestUrl: "https://example.test/docs/about?tenant=alice",
       requestHeaders: undefined,
     },
   ])(
     "keeps $condition.type-conditioned config header cacheability aligned with the public key",
-    async ({ condition, expectedReason, requestHeaders, requestUrl }) => {
+    async ({ condition, expectedHeader, expectedReason, requestHeaders, requestUrl }) => {
       const handler = createHandler({
         configHeaders: [
           {
@@ -330,10 +362,41 @@ describe("createAppRscHandler", () => {
       );
 
       expect(response.status).toBe(200);
-      expect(response.headers.get("X-Tenant")).toBe("alice");
+      expect(response.headers.get("X-Tenant")).toBe(expectedHeader);
       expect(state.forcedDynamicReason).toBe(expectedReason);
     },
   );
+
+  it("keeps a condition-miss redirect pathname private", async () => {
+    const handler = createHandler({
+      configRedirects: [
+        {
+          source: "/about",
+          destination: "/account",
+          permanent: false,
+          has: [{ type: "cookie", key: "tenant" }],
+        },
+      ],
+    });
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "admit",
+    };
+    const context = {
+      [CACHEABILITY_REQUEST_STATE]: state,
+      waitUntil() {},
+    };
+
+    const response = await runWithExecutionContext(context, () =>
+      handler(new Request("https://example.test/docs/about"), null),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("page");
+    expect(state.forcedDynamicReason).toBe(
+      "next.config redirect depends on request headers, cookies, or hostnames",
+    );
+  });
 
   it("passes source config headers into Server Action execution", async () => {
     let sourceConfigHeader: string | null | undefined;

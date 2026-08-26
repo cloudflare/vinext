@@ -23,7 +23,10 @@ import {
   finalizeAppPageRscCacheResponse,
 } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
-import { applyCdnResponseIdentityHeaders } from "../packages/vinext/src/server/cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  applyCdnResponseIdentityHeaders,
+} from "../packages/vinext/src/server/cache-control.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
@@ -211,7 +214,17 @@ describe("CloudflareCdnCacheAdapter", () => {
       "CDN-Cache-Control": "public, max-age=60, stale-while-revalidate=31536000",
       "Cloudflare-CDN-Cache-Control": null,
       "Cache-Tag": null,
+      Vary: "Cookie",
     });
+  });
+
+  it("preserves existing variants while isolating cookie-bearing requests", () => {
+    setCdnCacheAdapter(adapter);
+    const headers = new Headers({ Vary: "RSC, Next-Router-State-Tree" });
+
+    applyCdnResponseHeaders(headers, { cacheControl: "s-maxage=60" });
+
+    expect(headers.get("Vary")).toBe("RSC, Next-Router-State-Tree, Cookie");
   });
 
   it("fails closed while an App Page render still has a pending dynamic check", () => {
