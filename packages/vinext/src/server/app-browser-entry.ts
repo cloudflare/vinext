@@ -204,6 +204,7 @@ import {
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
+  resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
   type OptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
@@ -261,9 +262,11 @@ function toOperationLane(kind: NavigationKind): OperationLane {
 const MAX_VISITED_RESPONSE_CACHE_SIZE = 50;
 const IS_STATIC_EXPORT =
   process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export";
+const CLIENT_DEPLOYMENT_VERSION = process.env.__VINEXT_BUILD_ID ?? null;
 // Static asset hosts cannot attach vinext's compatibility header to `.txt`
 // files. The artifact and client bundle are emitted atomically by one build,
-// so export mode uses the Flight payload itself as the compatibility boundary.
+// so export mode validates the deployment version embedded in the Flight
+// payload before committing it instead.
 const CLIENT_RSC_COMPATIBILITY_ID = IS_STATIC_EXPORT ? null : getVinextRscCompatibilityId();
 const optimisticRouteTemplates = new Map<string, OptimisticRouteTemplate>();
 const optimisticRouteTemplateSources = new Set<string>();
@@ -289,12 +292,19 @@ function resolveStaticExportRouteParams(href: string): Record<string, string | s
   const routeManifest = getBrowserRouteManifest();
   if (routeManifest === null) return {};
   return (
-    matchOptimisticRouteManifestRoute({
+    resolveOptimisticNavigationParamsForHref({
       basePath: __basePath,
       href,
       routeManifest,
-    })?.params ?? {}
+    }) ?? {}
   );
+}
+
+function isStaticExportPayloadDeploymentCompatible(elements: AppElements): boolean {
+  if (!IS_STATIC_EXPORT) return true;
+  const deploymentVersion =
+    AppElementsWire.readMetadata(elements).artifactCompatibility.deploymentVersion;
+  return CLIENT_DEPLOYMENT_VERSION !== null && deploymentVersion === CLIENT_DEPLOYMENT_VERSION;
 }
 
 const MAX_HISTORY_STATE_SNAPSHOTS = 50;
@@ -2588,6 +2598,20 @@ function bootstrapHydration(
             signal: navigationAbortHandle.signal,
             supplemental,
           }).then(requireCompleteSupplementalRefresh);
+        }
+
+        // Static hosts cannot supply the compatibility response header used by
+        // server navigation. Match Next.js's export skew protection by checking
+        // the build identity carried in the decoded Flight model before React
+        // can commit a mixed-deployment tree.
+        if (IS_STATIC_EXPORT) {
+          const staticExportElements = await rscPayload;
+          if (!browserNavigationController.isCurrentNavigation(navId)) return;
+          if (!isStaticExportPayloadDeploymentCompatible(staticExportElements)) {
+            performHardNavigationForScrollIntent(currentHref);
+            return;
+          }
+          rscPayload = Promise.resolve(staticExportElements);
         }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;

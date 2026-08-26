@@ -94,6 +94,42 @@ test.describe("Static Export — App Router", () => {
     expect(documentPaths).toEqual(["/"]);
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/static-export-skew-trailing-slash/static-export-skew-trailing-slash.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/static-export-skew-trailing-slash/static-export-skew-trailing-slash.test.ts
+  test("deployment-skewed Flight falls back to the canonical static document", async ({ page }) => {
+    const documentPaths: string[] = [];
+    const flightPaths: string[] = [];
+    page.on("request", (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (request.resourceType() === "document") documentPaths.push(pathname);
+      if (pathname.endsWith(".txt")) flightPaths.push(pathname);
+    });
+    await page.route("**/about/index.txt", async (route) => {
+      const response = await route.fetch();
+      const body = await response.text();
+      const skewedBody = body.replace(
+        /"deploymentVersion":"[^"]*"/,
+        '"deploymentVersion":"foreign-build-id"',
+      );
+      expect(skewedBody).not.toBe(body);
+      await route.fulfill({ response, body: skewedBody });
+    });
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => Reflect.set(window, "__staticExportSoftNavigation", true));
+    await page.locator('a[href="/about/"]').click();
+    await page.waitForURL(`${BASE}/about/`);
+    await expect(page.locator("h1")).toHaveText("About");
+
+    expect(flightPaths).toContain("/about/index.txt");
+    expect(documentPaths).toEqual(["/", "/about/"]);
+    expect(
+      await page.evaluate(() => Reflect.get(window, "__staticExportSoftNavigation")),
+    ).toBeUndefined();
+  });
+
   test("soft navigation restores dynamic useParams from the route manifest", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await waitForAppRouterHydration(page);
