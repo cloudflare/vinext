@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../fixtures";
 
@@ -200,5 +201,49 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
     expect(response.headers()["cache-tag"]).toBeUndefined();
     expect(response.headers()["x-vinext-cache"]).toBeUndefined();
+  });
+});
+
+test.describe("Cloudflare Pages-only completed-response admission", () => {
+  const pagesBaseUrl = "http://localhost:4196";
+  let pagesServer: ChildProcess;
+
+  test.beforeAll(async () => {
+    test.setTimeout(90_000);
+    pagesServer = spawn(
+      "../../../node_modules/.bin/vp build --config vite.pages-cdn-cache.config.ts && npx wrangler dev --config dist/server/wrangler.json --port 4196",
+      { cwd: FIXTURE_DIR, shell: true, stdio: "inherit" },
+    );
+    for (let attempt = 0; attempt < 240; attempt++) {
+      if (pagesServer.exitCode !== null) {
+        throw new Error(`cf-app-basic Pages Worker exited with code ${pagesServer.exitCode}`);
+      }
+      try {
+        const response = await fetch(`${pagesBaseUrl}/pages-home`);
+        if (response.ok) return;
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("Timed out waiting for cf-app-basic Pages Worker");
+  });
+
+  test.afterAll(() => {
+    pagesServer.kill();
+  });
+
+  test("fails closed without an embedded two-stage manifest", async ({ request }) => {
+    expect(
+      fs.readFileSync(`${FIXTURE_DIR}/dist/server/__vinext_cacheability_manifest.js`, "utf8"),
+    ).toBe("export default null;\n");
+
+    const response = await request.get(`${pagesBaseUrl}/pages-about`, {
+      headers: { Accept: "text/html" },
+    });
+    expect(response.status()).toBe(200);
+    expect(await response.text()).toContain("About (Pages)");
+    expect(response.headers()["cache-control"]).toContain("no-store");
+    expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+    expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+    expect(response.headers()["cache-tag"]).toBeUndefined();
   });
 });

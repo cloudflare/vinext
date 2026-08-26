@@ -44,6 +44,7 @@ import {
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "./headers.js";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import {
   createWorkerPrerenderDiscoveryContext,
@@ -126,6 +127,10 @@ async function handleRequest(
   const requestCtx = createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
     handleRequest(internalRequest, env, internalCtx),
   );
+  // Registration must precede admission setup: the active adapter declares
+  // whether public response headers require a completed-response proof even
+  // when this build has no embedded two-stage manifest.
+  registerConfiguredCacheAdapters(env);
   let ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, pagesEntry.prerenderSecret);
   let finalizeCacheabilityResponse:
     | ((response: Response, ctx: ExecutionContextLike) => Promise<Response>)
@@ -147,13 +152,19 @@ async function handleRequest(
       }
     }
   }
-  if (!finalizeCacheabilityResponse && __cacheabilityManifest) {
+  const requiresCompletedResponseAdmission =
+    getCdnCacheAdapter().requiresCompletedResponseAdmission === true;
+  if (
+    !finalizeCacheabilityResponse &&
+    (__cacheabilityManifest || requiresCompletedResponseAdmission)
+  ) {
     const cacheability = await import("./cacheability-request.js");
     const admissionContext = cacheability.createWorkerCacheabilityAdmissionContext(
       ctx,
       request,
       __cacheabilityManifest,
       pagesEntry.buildId,
+      requiresCompletedResponseAdmission,
     );
     if (admissionContext !== ctx) {
       ctx = admissionContext;
@@ -165,9 +176,8 @@ async function handleRequest(
       ? finalizeCacheabilityResponse(response, ctx)
       : Promise.resolve(response);
 
-  // Pass the Worker env so binding-backed adapters (for example KV and Images)
-  // can resolve their configured bindings before request handling begins.
-  registerConfiguredCacheAdapters(env);
+  // Cache adapters were registered above because admission depends on them.
+  // Register the image adapter before request handling begins.
   registerConfiguredImageOptimizer(env);
 
   try {
