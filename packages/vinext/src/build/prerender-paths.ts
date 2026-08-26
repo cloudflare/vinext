@@ -605,10 +605,7 @@ function localizePagesPath(
  * Ported from Next.js:
  * packages/next/src/shared/lib/router/utils/format-next-pathname-info.ts
  */
-function localizePagesDataPath(
-  pathname: string,
-  i18n: ResolvedNextConfig["i18n"],
-): string {
+function localizePagesDataPath(pathname: string, i18n: ResolvedNextConfig["i18n"]): string {
   if (!i18n) return pathname;
   if (extractPagesStaticPathLocale(pathname, i18n).explicitLocalePrefix) return pathname;
   return pathname === "/" ? `/${i18n.defaultLocale}` : `/${i18n.defaultLocale}${pathname}`;

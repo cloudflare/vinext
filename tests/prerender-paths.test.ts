@@ -745,7 +745,7 @@ describe("prerender path manifest", () => {
     expect(manifest?.appPaths).toEqual(["/pages-dir/static", "/specific/value"]);
     expect(manifest?.rscPaths).toEqual(["/pages-dir/static", "/specific/value"]);
     expect(manifest?.loadingShellPaths).toEqual(["/specific/value"]);
-    expect(manifest?.pagesPaths).toEqual([]);
+    expect(manifest?.pagesPaths).toEqual(["/pages-dir/foobar"]);
   });
 
   it("uses the runtime-best App route for App-only loading-shell discovery", async () => {
@@ -845,7 +845,7 @@ describe("prerender path manifest", () => {
     expect(manifest?.appPaths).toEqual(["/fr/api/status"]);
     expect(manifest?.rscPaths).toEqual(["/fr/api/status"]);
     expect(manifest?.loadingShellPaths).toEqual(["/fr/api/status"]);
-    expect(manifest?.pagesPaths).toEqual(["/about", "/fr/about"]);
+    expect(manifest?.pagesPaths).toEqual(["/fr/about", "/about"]);
   });
 
   it("resolves Pages-discovered warm paths to their runtime App owner", async () => {
