@@ -33,6 +33,8 @@ import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 
 export type PrerenderPathManifest = {
+  /** App Page HTML paths after hybrid route ownership has been resolved. */
+  appPaths?: string[];
   basePath?: string;
   buildId?: string;
   /** Opaque per-build identity emitted by CDN adapter page responses. */
@@ -1000,6 +1002,7 @@ export async function emitPrerenderPathManifest(
   const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : resolvedPagesWarmPaths;
 
   const manifest: PrerenderPathManifest = {
+    ...(appDir ? { appPaths: appOwnedWarmPaths.htmlPaths } : {}),
     ...(config.basePath ? { basePath: config.basePath } : {}),
     buildId: config.buildId,
     ...(rscBuildId && options.buildIdentity === "response-header"

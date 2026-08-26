@@ -81,6 +81,7 @@ export type CdnWarmRequestPlan = {
 export type CdnWarmReadinessResult = { ready: true } | { error: string; ready: false };
 
 export type PrerenderWarmPlan = {
+  appPaths?: string[];
   buildId?: string;
   buildIdentity?: string;
   deploymentId?: string;
@@ -124,6 +125,9 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
     if (
       !Array.isArray(manifest.paths) ||
       !manifest.paths.every((pathname) => typeof pathname === "string") ||
+      (manifest.appPaths !== undefined &&
+        (!Array.isArray(manifest.appPaths) ||
+          !manifest.appPaths.every((pathname) => typeof pathname === "string"))) ||
       (manifest.pagesPaths !== undefined &&
         (!Array.isArray(manifest.pagesPaths) ||
           !manifest.pagesPaths.every((pathname) => typeof pathname === "string"))) ||
@@ -225,6 +229,7 @@ export function readPrerenderWarmPlan(
     }
   }
   return {
+    ...(manifest.appPaths ? { appPaths: manifest.appPaths.map(applyConfig) } : {}),
     buildId: manifest.buildId,
     ...(manifest.buildIdentity ? { buildIdentity: manifest.buildIdentity } : {}),
     ...(manifest.deploymentId ? { deploymentId: manifest.deploymentId } : {}),

@@ -108,6 +108,7 @@ describe("prerender path manifest", () => {
     });
 
     expect(manifest).toEqual({
+      appPaths: ["/", "/dynamic", "/cached/intro", "/cached/featured"],
       buildId: "build-a",
       buildIdentity: "rsc-build-a",
       loadingShellPaths: ["/cached/intro", "/cached/featured"],

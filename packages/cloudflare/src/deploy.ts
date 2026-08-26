@@ -1134,13 +1134,21 @@ async function deployWithCacheabilityProbe(
     }
     const plan: PrerenderWarmPlan = {
       ...discovered,
+      appPaths: discovered.appPaths ? [...discovered.appPaths] : undefined,
       loadingShellPaths: [...discovered.loadingShellPaths],
       paths: [...discovered.paths],
       rscPaths: [...discovered.rscPaths],
     };
+    if (!plan.appPaths) {
+      throw new Error(
+        "Two-stage CDN warming requires staged discovery to report App Page route ownership.",
+      );
+    }
+    const appPathSet = new Set(plan.appPaths);
+    plan.paths = plan.paths.filter((pathname) => appPathSet.has(pathname));
     if (!hasCdnWarmRequests(plan)) {
       throw new Error(
-        "Two-stage CDN warming did not discover any cacheable request identities to probe.",
+        "Two-stage CDN warming did not discover any App Page request identities to probe.",
       );
     }
 

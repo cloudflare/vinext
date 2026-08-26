@@ -217,10 +217,13 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       cacheabilityProbe: true,
       config: "dist/server/wrangler.json",
       discoverWarmPlan: async () => ({
+        appPaths: ["/about"],
         buildId: "app-build-a",
         buildIdentity: "app-build-a",
         loadingShellPaths: [],
-        paths: ["/about"],
+        // The discovery manifest can contain a mixed App/Pages HTML plan.
+        // This stack only certifies App Pages; the Pages path stays private.
+        paths: ["/about", "/pages-about"],
         rscPaths: [],
       }),
       warmCdnConcurrency: 1,
@@ -301,6 +304,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         cacheabilityProbe: true,
         config: "dist/server/wrangler.json",
         discoverWarmPlan: async () => ({
+          appPaths: ["/about"],
           buildId: "app-build-a",
           buildIdentity: "app-build-a",
           loadingShellPaths: [],
@@ -363,6 +367,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         cacheabilityProbe: true,
         config: "dist/server/wrangler.json",
         discoverWarmPlan: async () => ({
+          appPaths: ["/about"],
           buildId: "app-build-a",
           buildIdentity: "app-build-a",
           loadingShellPaths: [],
