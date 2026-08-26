@@ -33,6 +33,7 @@ import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
+import { isStagedCacheabilityProbeActive } from "./cacheability-classification.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
@@ -96,6 +97,10 @@ function scheduleRevalidation(promise: Promise<void>): undefined {
  * @param profile - cacheLife profile name (e.g. 'max', 'hours') or inline { expire: number }
  */
 export function revalidateTag(tag: string, profile?: string | { expire?: number }): undefined {
+  if (isStagedCacheabilityProbeActive()) {
+    _markDynamic();
+    return undefined;
+  }
   // Resolve the profile to durations for the handler
   let durations: { expire?: number } | undefined;
   if (typeof profile === "string") {
@@ -151,6 +156,10 @@ async function _invalidateEncodedTag(
  * layout/page hierarchy tags, so only no-type invalidation applies there.
  */
 export function revalidatePath(path: string, type?: "page" | "layout"): undefined {
+  if (isStagedCacheabilityProbeActive()) {
+    _markDynamic();
+    return undefined;
+  }
   markActionRevalidation(ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC);
   // Strip trailing slash so root "/" becomes "" — avoids double-slash in _N_T_//layout
   const stem = path.endsWith("/") ? path.slice(0, -1) : path;

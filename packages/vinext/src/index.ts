@@ -6304,6 +6304,13 @@ export const loadServerActionClient = ${
         // compute `'/nodejs'` correctly instead of `''` (issue #1365).
         serverDefines["process.env.NEXT_RUNTIME"] = JSON.stringify("nodejs");
 
+        // Next evaluates App Page prerenders with NEXT_PHASE set to
+        // phase-production-build, then evaluates ISR regeneration in the
+        // production-server phase. A staged probe shares a Worker bundle with
+        // ordinary requests, so defer this one value to the request-scoped
+        // server-global accessor instead of baking one phase into the bundle.
+        serverDefines["process.env.NEXT_PHASE"] = "globalThis.__VINEXT_NEXT_PHASE";
+
         // On-demand ISR revalidation secret — baked SERVER-ONLY (the `client`
         // early-return above guarantees it never reaches the browser bundle) so
         // every server bundle, and therefore every Workers isolate, shares the

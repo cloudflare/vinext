@@ -37,6 +37,9 @@ export const VINEXT_TIMING_HEADER = "x-vinext-timing";
 /** Expected Worker version asserted by vinext staged warmup requests. */
 export const VINEXT_EXPECTED_WORKER_VERSION_HEADER = "X-Vinext-Expected-Worker-Version";
 
+/** Authenticated staged-Worker request asking for a completed App Page classification. */
+export const VINEXT_CACHEABILITY_PROBE_HEADER = "X-Vinext-Cacheability-Probe";
+
 export {
   VINEXT_MW_CTX_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -268,6 +271,7 @@ export const INTERNAL_HEADERS = [
 
 /** Vinext-only internal headers stripped alongside Next.js protocol internals. */
 export const VINEXT_INTERNAL_HEADERS = [
+  VINEXT_CACHEABILITY_PROBE_HEADER.toLowerCase(),
   VINEXT_EXPECTED_WORKER_VERSION_HEADER.toLowerCase(),
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,

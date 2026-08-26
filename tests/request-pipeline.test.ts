@@ -23,6 +23,7 @@ import {
   applyConfigHeadersToResponse,
 } from "../packages/vinext/src/server/config-headers.js";
 import {
+  VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -871,6 +872,7 @@ describe("filterInternalHeaders", () => {
   it("strips vinext-only internal headers without extending Next.js INTERNAL_HEADERS", () => {
     const headers = new Headers({
       "cloudflare-workers-version-overrides": 'downstream="version-id"',
+      [VINEXT_CACHEABILITY_PROBE_HEADER]: "forged",
       [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "expected-version",
       [VINEXT_PRERENDER_CACHE_LIFE_HEADER]: "forged",
       [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
@@ -885,6 +887,7 @@ describe("filterInternalHeaders", () => {
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_SPECULATIVE_HEADER);
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
     expect(VINEXT_INTERNAL_HEADERS).toEqual([
+      VINEXT_CACHEABILITY_PROBE_HEADER.toLowerCase(),
       VINEXT_EXPECTED_WORKER_VERSION_HEADER.toLowerCase(),
       VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
       VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -895,6 +898,7 @@ describe("filterInternalHeaders", () => {
       expect(name).toBe(name.toLowerCase());
     }
     expect(result.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)).toBe(false);
+    expect(result.has(VINEXT_CACHEABILITY_PROBE_HEADER)).toBe(false);
     expect(result.has(VINEXT_EXPECTED_WORKER_VERSION_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_SPECULATIVE_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
