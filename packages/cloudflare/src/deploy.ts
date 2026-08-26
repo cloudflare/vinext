@@ -130,6 +130,8 @@ export type DeployOptions = {
   warmCdnProbeTimeout?: number;
   /** Number of transient staged Worker cacheability probe retries */
   warmCdnProbeRetries?: number;
+  /** Re-request warmed identities and require reusable CDN hits before promotion */
+  warmCdnCertify?: boolean;
   /** Maximum duration of staged Worker readiness verification */
   warmCdnReadinessTimeout?: number;
   /** Number of staged Worker readiness retries */
@@ -231,6 +233,7 @@ const deployArgOptions = {
   "warm-cdn-discovery-retries": { type: "string" },
   "warm-cdn-probe-timeout": { type: "string" },
   "warm-cdn-probe-retries": { type: "string" },
+  "warm-cdn-certify": { type: "boolean", default: false },
   "warm-cdn-readiness-timeout": { type: "string" },
   "warm-cdn-readiness-retries": { type: "string" },
   "warm-cdn-readiness-probes": { type: "string" },
@@ -306,6 +309,7 @@ export function parseDeployArgs(args: string[]) {
       values["warm-cdn-probe-retries"] === undefined
         ? undefined
         : parseNonNegativeIntegerArg(values["warm-cdn-probe-retries"], "--warm-cdn-probe-retries"),
+    warmCdnCertify: values["warm-cdn-certify"],
     warmCdnReadinessTimeout:
       values["warm-cdn-readiness-timeout"] === undefined
         ? undefined
@@ -694,6 +698,7 @@ type CdnWarmDeployOptions = Pick<
   | "warmCdnDiscoveryRetries"
   | "warmCdnProbeTimeout"
   | "warmCdnProbeRetries"
+  | "warmCdnCertify"
   | "warmCdnReadinessTimeout"
   | "warmCdnReadinessRetries"
   | "warmCdnReadinessProbes"
@@ -987,7 +992,7 @@ async function deployUploadedVersionWithCdnWarmup(
               paths: warmResult.retryPlan.paths,
               rscPaths: warmResult.retryPlan.rscPaths,
             };
-            if (hasPreparedWarmPlan && warmResult.warmed > 0) {
+            if (hasPreparedWarmPlan && options.warmCdnCertify && warmResult.warmed > 0) {
               console.log(
                 `  CDN warmup: certifying ${warmResult.warmed} staged cache entr${warmResult.warmed === 1 ? "y" : "ies"} before promotion...`,
               );
@@ -1796,6 +1801,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       warmCdnDiscoveryRetries: options.warmCdnDiscoveryRetries,
       warmCdnProbeTimeout: options.warmCdnProbeTimeout,
       warmCdnProbeRetries: options.warmCdnProbeRetries,
+      warmCdnCertify: options.warmCdnCertify,
       warmCdnReadinessTimeout: options.warmCdnReadinessTimeout,
       warmCdnReadinessRetries: options.warmCdnReadinessRetries,
       warmCdnReadinessProbes: options.warmCdnReadinessProbes,

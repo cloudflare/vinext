@@ -326,7 +326,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toThrow(`the limit is ${MAX_CACHEABILITY_MANIFEST_ROUTES}`);
   });
 
-  it("uploads only static identities, then warms and promotes the final version", async () => {
+  it("uploads only static identities, then warms once and promotes the final version", async () => {
     writeTwoStageWorkerArtifact();
     const events: string[] = [];
     let uploadCount = 0;
@@ -410,7 +410,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       if (isReadinessFetch(input)) events.push("readiness");
       else {
         cacheRequestCount++;
-        events.push(cacheRequestCount === 1 ? "warm" : "certify");
+        events.push(cacheRequestCount === 1 ? "warm" : "unexpected-second-request");
       }
       return cacheableHtml("ok", cacheRequestCount > 1 ? "HIT" : "MISS");
     });
@@ -438,6 +438,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(deployedUrl).toBe("https://my-worker.example.workers.dev");
     expect(uploadCount).toBe(2);
     expect(statusCount).toBe(7);
+    expect(cacheRequestCount).toBe(1);
     expect(events).toEqual([
       "upload-probe",
       "status-1",
@@ -455,7 +456,6 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "triggers",
       "readiness",
       "warm",
-      "certify",
       "status-7",
       "promote-final",
     ]);
@@ -584,6 +584,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     writeTwoStageWorkerArtifact();
     let uploadCount = 0;
     let statusCount = 0;
+    let finalStaged = false;
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
         uploadCount++;
@@ -595,16 +596,22 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           versions:
             statusCount === 1
               ? [{ version_id: OLD_VERSION, percentage: 100 }]
-              : [
-                  { version_id: OLD_VERSION, percentage: 100 },
-                  { version_id: PROBE_VERSION, percentage: 0 },
-                ],
+              : finalStaged
+                ? [
+                    { version_id: OLD_VERSION, percentage: 100 },
+                    { version_id: FINAL_VERSION, percentage: 0 },
+                  ]
+                : [
+                    { version_id: OLD_VERSION, percentage: 100 },
+                    { version_id: PROBE_VERSION, percentage: 0 },
+                  ],
         });
       }
       if (args.includes(`${PROBE_VERSION}@0%`)) {
         return "Staged probe version\nhttps://my-worker.example.workers.dev\n";
       }
       if (args.includes(`${FINAL_VERSION}@0%`)) {
+        finalStaged = true;
         return "Staged final version\nhttps://my-worker.example.workers.dev\n";
       }
       if (args.includes(`${FINAL_VERSION}@100%`)) {
@@ -637,6 +644,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           rscPaths: [],
         }),
         dangerouslyPromoteOnCdnWarmError: true,
+        warmCdnCertify: true,
         warmCdnConcurrency: 1,
         warmCdnPromotionDelay: 0,
         warmCdnReadinessProbes: 1,
@@ -651,7 +659,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toBe(false);
   });
 
-  it("does not overwrite deployment traffic changed during final certification", async () => {
+  it("does not overwrite deployment traffic changed before promotion", async () => {
     writeTwoStageWorkerArtifact();
     let uploadCount = 0;
     let statusCount = 0;
@@ -665,12 +673,17 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         const versions =
           statusCount === 1
             ? [{ version_id: OLD_VERSION, percentage: 100 }]
-            : statusCount === 5
+            : statusCount === 7
               ? [{ version_id: "44444444-4444-4444-8444-444444444444", percentage: 100 }]
-              : [
-                  { version_id: OLD_VERSION, percentage: 100 },
-                  { version_id: PROBE_VERSION, percentage: 0 },
-                ];
+              : statusCount === 6
+                ? [
+                    { version_id: OLD_VERSION, percentage: 100 },
+                    { version_id: FINAL_VERSION, percentage: 0 },
+                  ]
+                : [
+                    { version_id: OLD_VERSION, percentage: 100 },
+                    { version_id: PROBE_VERSION, percentage: 0 },
+                  ];
         return JSON.stringify({ versions });
       }
       if (args.includes(`${PROBE_VERSION}@0%`)) {
@@ -710,13 +723,16 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           paths: ["/about"],
           rscPaths: [],
         }),
+        warmCdnCertify: true,
         warmCdnConcurrency: 1,
         warmCdnPromotionDelay: 0,
         warmCdnReadinessProbes: 1,
         warmCdnRetries: 0,
       }),
-    ).rejects.toThrow("deployment traffic changed during final cache certification");
-    expect(statusCount).toBe(5);
+    ).rejects.toThrow(
+      "deployment traffic or deployment identity changed before the final version could be promoted",
+    );
+    expect(statusCount).toBe(7);
     expect(
       (execFileSyncMock.mock.calls as Array<[string, string[]]>).some(([, args]) =>
         args.includes(`${FINAL_VERSION}@100%`),

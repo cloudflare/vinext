@@ -38,6 +38,8 @@ export function formatDeployHelp(): string {
                              Total cacheability-probe deadline (default: 120000)
     --warm-cdn-probe-retries <n>
                              Cacheability-probe retries (default: 2)
+    --warm-cdn-certify      Re-request warmed entries using headers only and
+                             require reusable CDN hits before promotion
     --warm-cdn-readiness-timeout <ms>
                              Total staged-readiness deadline (default: 120000)
     --warm-cdn-readiness-retries <n>

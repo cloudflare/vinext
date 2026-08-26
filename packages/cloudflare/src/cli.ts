@@ -58,6 +58,7 @@ async function deployCommand(): Promise<void> {
     warmCdnDiscoveryRetries: parsed.warmCdnDiscoveryRetries,
     warmCdnProbeTimeout: parsed.warmCdnProbeTimeout,
     warmCdnProbeRetries: parsed.warmCdnProbeRetries,
+    warmCdnCertify: parsed.warmCdnCertify,
     warmCdnReadinessTimeout: parsed.warmCdnReadinessTimeout,
     warmCdnReadinessRetries: parsed.warmCdnReadinessRetries,
     warmCdnReadinessProbes: parsed.warmCdnReadinessProbes,

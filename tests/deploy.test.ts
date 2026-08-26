@@ -717,6 +717,7 @@ describe("parseDeployArgs", () => {
       "warmCdnDiscoveryRetries",
       "warmCdnProbeTimeout",
       "warmCdnProbeRetries",
+      "warmCdnCertify",
       "warmCdnReadinessTimeout",
       "warmCdnReadinessRetries",
     ]) {
@@ -732,6 +733,7 @@ describe("parseDeployArgs", () => {
     expect(parsed.skipBuild).toBe(false);
     expect(parsed.dryRun).toBe(false);
     expect(parsed.warmCdnCache).toBe(false);
+    expect(parsed.warmCdnCertify).toBe(false);
     expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(false);
   });
 
@@ -816,6 +818,7 @@ describe("parseDeployArgs", () => {
       "--warm-cdn-discovery-retries=7",
       "--warm-cdn-probe-timeout=60000",
       "--warm-cdn-probe-retries=4",
+      "--warm-cdn-certify",
       "--warm-cdn-readiness-timeout=45000",
       "--warm-cdn-readiness-retries=9",
       "--warm-cdn-readiness-probes=8",
@@ -835,6 +838,7 @@ describe("parseDeployArgs", () => {
     expect(parsed.warmCdnDiscoveryRetries).toBe(7);
     expect(parsed.warmCdnProbeTimeout).toBe(60_000);
     expect(parsed.warmCdnProbeRetries).toBe(4);
+    expect(parsed.warmCdnCertify).toBe(true);
     expect(parsed.warmCdnReadinessTimeout).toBe(45_000);
     expect(parsed.warmCdnReadinessRetries).toBe(9);
     expect(parsed.warmCdnReadinessProbes).toBe(8);
