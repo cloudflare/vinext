@@ -707,7 +707,11 @@ describe("Cloudflare CDN warmup", () => {
         "staged readiness exceeded its 25ms phase deadline; uploaded build was not stable for 1 consecutive probe(s)",
       ready: false,
     });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    // The exact count depends on response/cancellation overhead inside this
+    // real wall-clock window. Prove that the phase retried but stopped on its
+    // own deadline instead of exhausting the configured attempt ceiling.
+    expect(fetchImpl.mock.calls.length).toBeGreaterThan(1);
+    expect(fetchImpl.mock.calls.length).toBeLessThan(100);
   });
 
   it("does not skip a non-success response from a different build", async () => {
