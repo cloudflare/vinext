@@ -49,7 +49,7 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
-import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
+import { isDraftModeEnabled, markDynamicUsage, recordInvalidDynamicUsageError } from "./headers.js";
 import {
   createPprFallbackShellSuspensePromise,
   trackPprFallbackShellCacheTask,
@@ -62,6 +62,7 @@ import {
 } from "./cacheability-classification.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { suppressHangingPromiseAbortRejections } from "./internal/make-hanging-promise.js";
+import { markInvalidDynamicUsageError } from "./internal/invalid-dynamic-usage-error.js";
 
 export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
@@ -916,18 +917,20 @@ const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
 const USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL = Symbol.for("vinext.useCacheAcceptsSecondArgument");
 
 function throwPrivateUseCacheInsidePublicUseCacheError(): never {
-  const error = new Error(
-    '"use cache: private" must not be used within "use cache". It can only be nested inside of another "use cache: private".',
+  const error = markInvalidDynamicUsageError(
+    new Error(
+      '"use cache: private" must not be used within "use cache". It can only be nested inside of another "use cache: private".',
+    ),
   );
-  const ctx = getRequestContext();
-  if (ctx) ctx.invalidDynamicUsageError = error;
+  recordInvalidDynamicUsageError(error);
   throw error;
 }
 
 function throwPrivateUseCacheInsideUnstableCacheError(): never {
-  const error = new Error('"use cache: private" must not be used within `unstable_cache()`.');
-  const ctx = getRequestContext();
-  if (ctx) ctx.invalidDynamicUsageError = error;
+  const error = markInvalidDynamicUsageError(
+    new Error('"use cache: private" must not be used within `unstable_cache()`.'),
+  );
+  recordInvalidDynamicUsageError(error);
   throw error;
 }
 

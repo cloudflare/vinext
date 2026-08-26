@@ -24,6 +24,7 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
+import { markInvalidDynamicUsageError } from "./internal/invalid-dynamic-usage-error.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 import type { ReadonlyRequestCookies } from "@vinext/types/next/upstream/dist/server/web/spec-extension/adapters/request-cookies";
 import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@edge-runtime/cookies/index";
@@ -228,6 +229,22 @@ function propagateInvalidDynamicUsageError(state: VinextHeadersShimState, error:
       target.invalidDynamicUsageError = error;
     }
   });
+}
+
+/**
+ * Preserve a framework-invalid cache-scope error on the current request even
+ * when user code catches the immediate throw. Cross-request cache-fill
+ * joiners call this as well, so each request owns its own fatal marker.
+ */
+export function recordInvalidDynamicUsageError(error: unknown): void {
+  const state = isInsideUnifiedScope() ? getRequestContext() : _als.getStore();
+  // The module fallback is intentionally not request-owned. Persisting a fatal
+  // marker there would leak one standalone invocation into later requests.
+  if (!state) return;
+  if (state.invalidDynamicUsageError == null) {
+    state.invalidDynamicUsageError = error;
+  }
+  propagateInvalidDynamicUsageError(state, error);
 }
 
 /**
@@ -437,10 +454,12 @@ export function isInsideAnyCacheScope(): boolean {
  */
 export function throwIfInsideCacheScope(apiName: string): void {
   if (_isInsidePublicUseCache()) {
-    const error = new Error(
-      `\`${apiName}\` cannot be called inside "use cache". ` +
-        `If you need this data inside a cached function, call \`${apiName}\` ` +
-        "outside and pass the required data as an argument.",
+    const error = markInvalidDynamicUsageError(
+      new Error(
+        `\`${apiName}\` cannot be called inside "use cache". ` +
+          `If you need this data inside a cached function, call \`${apiName}\` ` +
+          "outside and pass the required data as an argument.",
+      ),
     );
     // Record the error on the request context so it survives user try/catch
     // and can be forwarded to the dev overlay on client-side navigations.
@@ -450,24 +469,22 @@ export function throwIfInsideCacheScope(apiName: string): void {
     try {
       const cacheCtx = _getUseCacheGuardContext();
       if (cacheCtx) cacheCtx.invalidDynamicUsageError = error;
-      const ctx = getRequestContext();
-      if (ctx) ctx.invalidDynamicUsageError = error;
-      propagateInvalidDynamicUsageError(_getState(), error);
+      recordInvalidDynamicUsageError(error);
     } catch {
       // Ignore — best-effort recording for dev diagnostics
     }
     throw error;
   }
   if (_isInsideUnstableCache()) {
-    const error = new Error(
-      `\`${apiName}\` cannot be called inside a function cached with \`unstable_cache()\`. ` +
-        `If you need this data inside a cached function, call \`${apiName}\` ` +
-        "outside and pass the required data as an argument.",
+    const error = markInvalidDynamicUsageError(
+      new Error(
+        `\`${apiName}\` cannot be called inside a function cached with \`unstable_cache()\`. ` +
+          `If you need this data inside a cached function, call \`${apiName}\` ` +
+          "outside and pass the required data as an argument.",
+      ),
     );
     try {
-      const ctx = getRequestContext();
-      if (ctx) ctx.invalidDynamicUsageError = error;
-      propagateInvalidDynamicUsageError(_getState(), error);
+      recordInvalidDynamicUsageError(error);
     } catch {
       // Ignore
     }
