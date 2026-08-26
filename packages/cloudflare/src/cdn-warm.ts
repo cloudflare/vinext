@@ -52,6 +52,7 @@ export const DEFAULT_CDN_WARM_CONCURRENCY = 25;
 export const DEFAULT_CDN_WARM_TIMEOUT_MS = 10_000;
 export const DEFAULT_STAGED_READINESS_RETRIES = 60;
 export const DEFAULT_STAGED_READINESS_INTERVAL_MS = 1_000;
+export const DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS = 120_000;
 const DEFAULT_STAGED_READINESS_SUCCESSES = 6;
 const STAGED_READINESS_QUERY_PARAM = "__vinext_cdn_warm_readiness";
 
@@ -647,6 +648,7 @@ export async function waitForCdnWarmTargetReadiness(
   > & {
     plan: CdnWarmRequestPlan;
     maxAttempts?: number;
+    phaseTimeoutMs?: number;
     probeIntervalMs?: number;
     requiredConsecutiveSuccesses?: number;
   },
@@ -686,6 +688,11 @@ export async function waitForCdnWarmTargetReadiness(
     options.requiredConsecutiveSuccesses ?? DEFAULT_STAGED_READINESS_SUCCESSES,
   );
   const readinessRetries = Math.max(0, options.retries ?? DEFAULT_STAGED_READINESS_RETRIES);
+  const phaseTimeoutMs = Math.max(
+    1,
+    options.phaseTimeoutMs ?? DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS,
+  );
+  const deadlineAt = Date.now() + phaseTimeoutMs;
   const maxAttempts = Math.max(
     requiredConsecutiveSuccesses,
     options.maxAttempts ?? requiredConsecutiveSuccesses + readinessRetries,
@@ -695,11 +702,21 @@ export async function waitForCdnWarmTargetReadiness(
   let lastError = "readiness probe did not run";
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      lastError = `staged readiness exceeded its ${phaseTimeoutMs}ms phase deadline`;
+      break;
+    }
     const url = buildWarmupUrl(options.targetUrl, probePath);
     url.searchParams.set(STAGED_READINESS_QUERY_PARAM, `${probeId}-${attempt}`);
     let response: Response | undefined;
     try {
-      response = await fetchHeadersWithTimeout(fetchImpl, url, timeoutMs, headers);
+      response = await fetchHeadersWithTimeout(
+        fetchImpl,
+        url,
+        Math.min(timeoutMs, remainingMs),
+        headers,
+      );
       const validationError = validateReadinessResponse(
         response,
         kind,
@@ -723,15 +740,26 @@ export async function waitForCdnWarmTargetReadiness(
     } catch (error) {
       consecutiveSuccesses = 0;
       lastError =
-        error instanceof DOMException && error.name === "AbortError"
-          ? `timed out after ${timeoutMs}ms`
-          : error instanceof Error
-            ? error.message
-            : String(error);
+        Date.now() >= deadlineAt
+          ? `staged readiness exceeded its ${phaseTimeoutMs}ms phase deadline`
+          : error instanceof DOMException && error.name === "AbortError"
+            ? `timed out after ${Math.min(timeoutMs, remainingMs)}ms`
+            : error instanceof Error
+              ? error.message
+              : String(error);
     } finally {
-      if (response?.body) await response.body.cancel().catch(() => {});
+      // Cancellation is best-effort cleanup and must not extend the readiness
+      // phase past its hard deadline if a runtime stalls the cancellation.
+      if (response?.body) void response.body.cancel().catch(() => {});
     }
-    if (attempt + 1 < maxAttempts && probeIntervalMs > 0) await delay(probeIntervalMs);
+    if (attempt + 1 < maxAttempts && probeIntervalMs > 0) {
+      const delayMs = Math.min(probeIntervalMs, Math.max(0, deadlineAt - Date.now()));
+      if (delayMs <= 0) {
+        lastError = `staged readiness exceeded its ${phaseTimeoutMs}ms phase deadline`;
+        break;
+      }
+      await delay(delayMs);
+    }
   }
 
   return {

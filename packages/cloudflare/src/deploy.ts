@@ -16,7 +16,12 @@ import { spawn, type SpawnOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { emitPrerenderPathManifest } from "vinext/internal/build/prerender-paths";
+import {
+  DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS,
+  DEFAULT_REMOTE_PATH_DISCOVERY_RETRIES,
+  DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS,
+  emitPrerenderPathManifest,
+} from "vinext/internal/build/prerender-paths";
 import { runPrerender } from "vinext/internal/build/run-prerender";
 import { loadDotenv } from "vinext/internal/config/dotenv";
 import {
@@ -48,8 +53,6 @@ import {
 import { parseWranglerConfig, runTPR } from "./tpr.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
 import {
-  DEFAULT_STAGED_READINESS_INTERVAL_MS,
-  DEFAULT_STAGED_READINESS_RETRIES,
   readPrerenderWarmPlan,
   waitForCdnWarmTargetReadiness,
   warmCdnCache,
@@ -109,6 +112,14 @@ export type DeployOptions = {
   warmCdnTimeout?: number;
   /** Number of CDN warmup retries for transient failures */
   warmCdnRetries?: number;
+  /** Maximum duration of staged Worker path discovery */
+  warmCdnDiscoveryTimeout?: number;
+  /** Number of transient staged Worker path discovery retries */
+  warmCdnDiscoveryRetries?: number;
+  /** Maximum duration of staged Worker readiness verification */
+  warmCdnReadinessTimeout?: number;
+  /** Number of staged Worker readiness retries */
+  warmCdnReadinessRetries?: number;
   /** Consecutive successful probes required before warming the staged Worker */
   warmCdnReadinessProbes?: number;
   /** Delay between staged Worker readiness probes in milliseconds */
@@ -202,6 +213,10 @@ const deployArgOptions = {
   "warm-cdn-concurrency": { type: "string" },
   "warm-cdn-timeout": { type: "string" },
   "warm-cdn-retries": { type: "string" },
+  "warm-cdn-discovery-timeout": { type: "string" },
+  "warm-cdn-discovery-retries": { type: "string" },
+  "warm-cdn-readiness-timeout": { type: "string" },
+  "warm-cdn-readiness-retries": { type: "string" },
   "warm-cdn-readiness-probes": { type: "string" },
   "warm-cdn-readiness-probe-delay": { type: "string" },
   "dangerously-promote-on-cdn-warm-error": { type: "boolean", default: false },
@@ -253,6 +268,34 @@ export function parseDeployArgs(args: string[]) {
       values["warm-cdn-retries"] === undefined
         ? undefined
         : parseNonNegativeIntegerArg(values["warm-cdn-retries"], "--warm-cdn-retries"),
+    warmCdnDiscoveryTimeout:
+      values["warm-cdn-discovery-timeout"] === undefined
+        ? undefined
+        : parsePositiveIntegerArg(
+            values["warm-cdn-discovery-timeout"],
+            "--warm-cdn-discovery-timeout",
+          ),
+    warmCdnDiscoveryRetries:
+      values["warm-cdn-discovery-retries"] === undefined
+        ? undefined
+        : parseNonNegativeIntegerArg(
+            values["warm-cdn-discovery-retries"],
+            "--warm-cdn-discovery-retries",
+          ),
+    warmCdnReadinessTimeout:
+      values["warm-cdn-readiness-timeout"] === undefined
+        ? undefined
+        : parsePositiveIntegerArg(
+            values["warm-cdn-readiness-timeout"],
+            "--warm-cdn-readiness-timeout",
+          ),
+    warmCdnReadinessRetries:
+      values["warm-cdn-readiness-retries"] === undefined
+        ? undefined
+        : parseNonNegativeIntegerArg(
+            values["warm-cdn-readiness-retries"],
+            "--warm-cdn-readiness-retries",
+          ),
     warmCdnReadinessProbes:
       values["warm-cdn-readiness-probes"] === undefined
         ? undefined
@@ -626,6 +669,10 @@ export async function deployWithCdnWarmup(
     | "warmCdnConcurrency"
     | "warmCdnTimeout"
     | "warmCdnRetries"
+    | "warmCdnDiscoveryTimeout"
+    | "warmCdnDiscoveryRetries"
+    | "warmCdnReadinessTimeout"
+    | "warmCdnReadinessRetries"
     | "warmCdnReadinessProbes"
     | "warmCdnReadinessProbeDelay"
     | "dangerouslyPromoteOnCdnWarmError"
@@ -642,6 +689,30 @@ export async function deployWithCdnWarmup(
       }) => Promise<PrerenderWarmPlan>;
     },
 ): Promise<string> {
+  if (options.warmCdnDiscoveryTimeout !== undefined) {
+    parsePositiveIntegerArg(
+      String(options.warmCdnDiscoveryTimeout),
+      "--warm-cdn-discovery-timeout",
+    );
+  }
+  if (options.warmCdnDiscoveryRetries !== undefined) {
+    parseNonNegativeIntegerArg(
+      String(options.warmCdnDiscoveryRetries),
+      "--warm-cdn-discovery-retries",
+    );
+  }
+  if (options.warmCdnReadinessTimeout !== undefined) {
+    parsePositiveIntegerArg(
+      String(options.warmCdnReadinessTimeout),
+      "--warm-cdn-readiness-timeout",
+    );
+  }
+  if (options.warmCdnReadinessRetries !== undefined) {
+    parseNonNegativeIntegerArg(
+      String(options.warmCdnReadinessRetries),
+      "--warm-cdn-readiness-retries",
+    );
+  }
   if (options.warmCdnReadinessProbes !== undefined) {
     parsePositiveIntegerArg(String(options.warmCdnReadinessProbes), "--warm-cdn-readiness-probes");
   }
@@ -790,9 +861,12 @@ export async function deployWithCdnWarmup(
             deploymentId,
             expectedBuildId,
             expectedRscBuildId,
+            phaseTimeoutMs: options.warmCdnReadinessTimeout,
             probeIntervalMs: options.warmCdnReadinessProbeDelay,
             requiredConsecutiveSuccesses: options.warmCdnReadinessProbes,
-            retries: options.warmCdnRetries,
+            // Preserve the existing --warm-cdn-retries behavior while allowing
+            // readiness to be tuned independently by the dedicated option.
+            retries: options.warmCdnReadinessRetries ?? options.warmCdnRetries,
             timeoutMs: options.warmCdnTimeout,
           });
           if (!readiness.ready) {
@@ -1243,9 +1317,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
           pathDiscoveryTarget: {
             baseUrl: targetUrl,
             headers,
-            retries: options.warmCdnRetries ?? DEFAULT_STAGED_READINESS_RETRIES,
-            retryDelayMs:
-              options.warmCdnReadinessProbeDelay ?? DEFAULT_STAGED_READINESS_INTERVAL_MS,
+            phaseTimeoutMs:
+              options.warmCdnDiscoveryTimeout ?? DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS,
+            retries: options.warmCdnDiscoveryRetries ?? DEFAULT_REMOTE_PATH_DISCOVERY_RETRIES,
+            retryDelayMs: DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS,
           },
         });
         return readPrerenderWarmPlan(root, {
@@ -1256,6 +1331,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
       warmCdnConcurrency: options.warmCdnConcurrency,
       warmCdnTimeout: options.warmCdnTimeout,
       warmCdnRetries: options.warmCdnRetries,
+      warmCdnDiscoveryTimeout: options.warmCdnDiscoveryTimeout,
+      warmCdnDiscoveryRetries: options.warmCdnDiscoveryRetries,
+      warmCdnReadinessTimeout: options.warmCdnReadinessTimeout,
+      warmCdnReadinessRetries: options.warmCdnReadinessRetries,
       warmCdnReadinessProbes: options.warmCdnReadinessProbes,
       warmCdnReadinessProbeDelay: options.warmCdnReadinessProbeDelay,
       dangerouslyPromoteOnCdnWarmError: options.dangerouslyPromoteOnCdnWarmError,

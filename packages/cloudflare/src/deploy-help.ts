@@ -29,6 +29,14 @@ export function formatDeployHelp(): string {
     --warm-cdn-timeout <ms>  Per-request CDN warmup timeout (default: 10000)
     --warm-cdn-retries <n>   Retries per failed CDN warmup request (default: 1;
                              staged-version propagation default: 60)
+    --warm-cdn-discovery-timeout <ms>
+                             Total staged path-discovery deadline (default: 120000)
+    --warm-cdn-discovery-retries <n>
+                             Staged path-discovery retries (default: 60)
+    --warm-cdn-readiness-timeout <ms>
+                             Total staged-readiness deadline (default: 120000)
+    --warm-cdn-readiness-retries <n>
+                             Staged-readiness retries (default: 60)
     --warm-cdn-readiness-probes <count>
                              Consecutive successful staged-readiness probes
                              required before warming (default: 6)

@@ -794,6 +794,10 @@ describe("parseDeployArgs", () => {
       "--warm-cdn-timeout=1500",
       "--warm-cdn-retries",
       "0",
+      "--warm-cdn-discovery-timeout=90000",
+      "--warm-cdn-discovery-retries=7",
+      "--warm-cdn-readiness-timeout=45000",
+      "--warm-cdn-readiness-retries=9",
       "--warm-cdn-readiness-probes=8",
       "--warm-cdn-readiness-probe-delay",
       "750",
@@ -807,6 +811,10 @@ describe("parseDeployArgs", () => {
     expect(parsed.warmCdnConcurrency).toBe(6);
     expect(parsed.warmCdnTimeout).toBe(1500);
     expect(parsed.warmCdnRetries).toBe(0);
+    expect(parsed.warmCdnDiscoveryTimeout).toBe(90_000);
+    expect(parsed.warmCdnDiscoveryRetries).toBe(7);
+    expect(parsed.warmCdnReadinessTimeout).toBe(45_000);
+    expect(parsed.warmCdnReadinessRetries).toBe(9);
     expect(parsed.warmCdnReadinessProbes).toBe(8);
     expect(parsed.warmCdnReadinessProbeDelay).toBe(750);
     expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(true);
@@ -835,6 +843,18 @@ describe("parseDeployArgs", () => {
     );
     expect(() => parseDeployArgs(["--warm-cdn-retries=-1"])).toThrow(
       '--warm-cdn-retries expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-discovery-timeout=0"])).toThrow(
+      '--warm-cdn-discovery-timeout expects a positive integer, but got "0".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-discovery-retries=-1"])).toThrow(
+      '--warm-cdn-discovery-retries expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-timeout=0"])).toThrow(
+      '--warm-cdn-readiness-timeout expects a positive integer, but got "0".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-retries=-1"])).toThrow(
+      '--warm-cdn-readiness-retries expects a non-negative integer, but got "-1".',
     );
     expect(() => parseDeployArgs(["--warm-cdn-readiness-probes=0"])).toThrow(
       '--warm-cdn-readiness-probes expects a positive integer, but got "0".',
