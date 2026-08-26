@@ -494,6 +494,127 @@ describe("app route handler execution helpers", () => {
     }
   });
 
+  it("does not warm body-deferred cached I/O during the prospective pass", async () => {
+    const originalHandler = getDataCacheHandler();
+    const values = new Map<string, Parameters<typeof originalHandler.set>[1]>();
+    setDataCacheHandler({
+      async get(key) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const value = values.get(key);
+        return value === undefined ? null : { lastModified: Date.now(), value };
+      },
+      async set(key, value) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        values.set(key, value);
+      },
+      async revalidateTag() {},
+    });
+    const dynamicUsage = createDynamicUsageState();
+    const routePattern = `/api/deferred-cache-${Date.now()}`;
+    const cached = unstable_cache(async () => "deferred", [routePattern]);
+    let pulls = 0;
+    let cancellations = 0;
+
+    try {
+      const response = await executeAppRouteHandler({
+        buildPageCacheTags: () => [],
+        cacheComponents: true,
+        cleanPathname: routePattern,
+        clearRequestContext() {},
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        executionContext: null,
+        getAndClearPendingCookies: () => [],
+        getCollectedFetchTags: () => [],
+        getDraftModeCookieHeader: () => null,
+        handler: {},
+        handlerFn() {
+          return new Response(
+            new ReadableStream(
+              {
+                async pull(controller) {
+                  pulls += 1;
+                  controller.enqueue(new TextEncoder().encode(await cached()));
+                  controller.close();
+                },
+                cancel() {
+                  cancellations += 1;
+                },
+              },
+              { highWaterMark: 0 },
+            ),
+          );
+        },
+        isAutoHead: false,
+        isCacheabilityProbe: true,
+        isProduction: true,
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        isrSet: vi.fn(async () => {}),
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        method: "GET",
+        middlewareContext: { headers: null, status: null },
+        observeCompletedBody: true,
+        params: null,
+        reportRequestError() {},
+        request: new Request(`https://example.com${routePattern}`),
+        revalidateSeconds: Infinity,
+        routePattern,
+        setHeadersAccessPhase: () => "render",
+      });
+
+      expect(cancellations).toBe(1);
+      expect(pulls).toBe(1);
+      expect(isKnownDynamicAppRoute(routePattern)).toBe(true);
+      await expect(response.text()).resolves.toBe("deferred");
+    } finally {
+      setDataCacheHandler(originalHandler);
+    }
+  });
+
+  it("awaits an owned regeneration cache write", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const isrSet = vi.fn(async () => writeGate);
+    let settled = false;
+    const pending = executeAppRouteHandler({
+      awaitCacheWrite: true,
+      buildPageCacheTags: () => [],
+      cleanPathname: "/api/regenerate",
+      clearRequestContext() {},
+      consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+      executionContext: null,
+      getAndClearPendingCookies: () => [],
+      getCollectedFetchTags: () => [],
+      getDraftModeCookieHeader: () => null,
+      handler: { revalidate: 60 },
+      handlerFn: () => new Response("fresh"),
+      isAutoHead: false,
+      isProduction: true,
+      isrRouteKey: (pathname) => `route:${pathname}`,
+      isrSet,
+      markDynamicUsage: dynamicUsage.markDynamicUsage,
+      method: "GET",
+      middlewareContext: { headers: null, status: null },
+      observeCompletedBody: true,
+      params: null,
+      reportRequestError() {},
+      request: new Request("https://example.com/api/regenerate"),
+      revalidateSeconds: 60,
+      routePattern: "/api/regenerate",
+      setHeadersAccessPhase: () => "render",
+    }).then((response) => {
+      settled = true;
+      return response;
+    });
+
+    await vi.waitFor(() => expect(isrSet).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    releaseWrite();
+    await expect(pending).resolves.toBeInstanceOf(Response);
+  });
+
   // Ported from Next.js: test/e2e/app-dir/cache-components/cache-components.routes.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components.routes.test.ts
   it("classifies Cache Components streams that cross a task boundary while pulling as dynamic", async () => {

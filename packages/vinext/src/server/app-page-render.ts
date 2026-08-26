@@ -13,7 +13,6 @@ import {
 } from "./app-page-cache-finalizer.js";
 import {
   buildAppPageFontLinkHeader,
-  readAppPageBinaryStream,
   readAppPageBinaryStreamBounded,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
@@ -78,8 +77,10 @@ import {
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
 import {
+  CACHEABILITY_RESPONSE_BODY_LIMIT,
   recordRouteCacheability,
   recordRouteCacheabilityCapturedBody,
+  reserveCacheabilityResponseCapture,
 } from "./cacheability-request.js";
 import type {
   AppLayoutParamAccessTracker,
@@ -767,7 +768,7 @@ export async function renderAppPageLifecycle(
 
   let pprFallbackShellRsc: Uint8Array | null = null;
   if (options.pprFallbackShellSignal) {
-    pprFallbackShellRsc = new Uint8Array(await readAppPageBinaryStream(rscStream));
+    pprFallbackShellRsc = new Uint8Array(await readAppPageBinaryStreamBounded(rscStream));
   }
 
   let revalidateSeconds = options.revalidateSeconds;
@@ -1022,8 +1023,15 @@ export async function renderAppPageLifecycle(
     },
     async renderHtmlStream() {
       const ssrHandler = await options.loadSsrHandler();
+      const releaseCapturedRscDataBudget = shouldCaptureRscForCacheMetadata
+        ? reserveCacheabilityResponseCapture()
+        : undefined;
       return renderAppPageHtmlStream({
         capturedRscDataRef,
+        capturedRscDataLimitBytes: releaseCapturedRscDataBudget
+          ? CACHEABILITY_RESPONSE_BODY_LIMIT
+          : undefined,
+        releaseCapturedRscDataBudget: releaseCapturedRscDataBudget ?? undefined,
         getInitialNavigationCacheMetadata: () => {
           let kind: "dynamic" | "static";
           if (options.isForceStatic) {

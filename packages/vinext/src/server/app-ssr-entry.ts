@@ -374,6 +374,10 @@ export async function handleSsr(
     sideStream?: ReadableStream<Uint8Array>;
     /** Out-parameter: filled with accumulated raw RSC bytes when sideStream is consumed. */
     capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+    /** Maximum raw RSC bytes retained for a prospective cache artifact. */
+    capturedRscDataLimitBytes?: number;
+    /** Release isolate-wide capacity after retaining raw RSC bytes. */
+    releaseCapturedRscDataBudget?: () => void;
     pprFallbackShellSignal?: AbortSignal;
     formState?: ReactFormState | null;
     basePath?: string;
@@ -436,13 +440,23 @@ export async function handleSsr(
 
         if (options?.sideStream) {
           ssrStream = rscStream;
-          rscEmbed = createRscEmbedTransform(options.sideStream, {
-            mirrorNextFlight: options?.mirrorNextFlight,
-            scriptNonce: options?.scriptNonce,
-            getInitialNavigationCacheMetadata: options?.getInitialNavigationCacheMetadata,
-          });
+          try {
+            rscEmbed = createRscEmbedTransform(options.sideStream, {
+              mirrorNextFlight: options?.mirrorNextFlight,
+              scriptNonce: options?.scriptNonce,
+              getInitialNavigationCacheMetadata: options?.getInitialNavigationCacheMetadata,
+              rawBufferLimitBytes: options.capturedRscDataLimitBytes,
+            });
+          } catch (error) {
+            options.releaseCapturedRscDataBudget?.();
+            throw error;
+          }
           if (options.capturedRscDataRef) {
-            options.capturedRscDataRef.value = rscEmbed.getRawBuffer();
+            options.capturedRscDataRef.value = rscEmbed
+              .getRawBuffer()
+              .finally(() => options.releaseCapturedRscDataBudget?.());
+          } else {
+            options.releaseCapturedRscDataBudget?.();
           }
         } else {
           const [s1, s2] = rscStream.tee();

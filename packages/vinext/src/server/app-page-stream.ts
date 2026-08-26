@@ -136,6 +136,10 @@ export type AppPageSsrHandler = {
       rootParams?: RootParams;
       sideStream?: ReadableStream<Uint8Array>;
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+      /** Maximum raw RSC bytes retained for a prospective cache artifact. */
+      capturedRscDataLimitBytes?: number;
+      /** Release isolate-wide capacity after retaining raw RSC bytes. */
+      releaseCapturedRscDataBudget?: () => void;
       /** Abort signal for a build-time PPR fallback-shell static render. */
       pprFallbackShellSignal?: AbortSignal;
       /** When true, wait for the full React tree before emitting bytes. */
@@ -186,6 +190,10 @@ type RenderAppPageHtmlStreamOptions = {
   sideStream?: ReadableStream<Uint8Array>;
   /** Out-parameter filled with accumulated raw RSC bytes after stream consumption. */
   capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+  /** Maximum raw RSC bytes retained for a prospective cache artifact. */
+  capturedRscDataLimitBytes?: number;
+  /** Release isolate-wide capacity after retaining raw RSC bytes. */
+  releaseCapturedRscDataBudget?: () => void;
   /** Abort signal for a build-time PPR fallback-shell static render. */
   pprFallbackShellSignal?: AbortSignal;
   /** When true, wait for the full React tree before emitting bytes. */
@@ -264,6 +272,8 @@ export async function renderAppPageHtmlStream(
     rootParams: options.rootParams,
     sideStream: options.sideStream,
     capturedRscDataRef: options.capturedRscDataRef,
+    capturedRscDataLimitBytes: options.capturedRscDataLimitBytes,
+    releaseCapturedRscDataBudget: options.releaseCapturedRscDataBudget,
     pprFallbackShellSignal: options.pprFallbackShellSignal,
     waitForAllReady: options.waitForAllReady,
     isStaticGeneration: options.isStaticGeneration,
@@ -279,12 +289,18 @@ export async function renderAppPageHtmlStream(
     getInitialNavigationCacheMetadata: options.getInitialNavigationCacheMetadata,
   };
 
-  const rawResult = await options.ssrHandler.handleSsr(
-    options.rscStream,
-    options.navigationContext,
-    options.fontData,
-    ssrOptions,
-  );
+  let rawResult: ReadableStream<Uint8Array> | AppSsrRenderResult;
+  try {
+    rawResult = await options.ssrHandler.handleSsr(
+      options.rscStream,
+      options.navigationContext,
+      options.fontData,
+      ssrOptions,
+    );
+  } catch (error) {
+    options.releaseCapturedRscDataBudget?.();
+    throw error;
+  }
 
   return normalizeAppSsrRenderResult(rawResult, options.capturedRscDataRef?.value ?? null);
 }

@@ -37,6 +37,52 @@ function buildISRCacheEntry(value: CachedRouteValue, isStale = false): ISRCacheE
 }
 
 describe("app route handler dispatch", () => {
+  // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+  it("returns 404 for Route Handler params excluded by dynamicParams=false", async () => {
+    const get = vi.fn(() => new Response("handler ran"));
+    const dispatch = (slug: string) =>
+      dispatchAppRouteHandler({
+        cacheComponents: true,
+        cleanPathname: `/api/products/${slug}`,
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        dynamicParamsConfig: false,
+        generateStaticParams: async () => [{ slug: "known" }],
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return null;
+        },
+        isrRouteKey: (pathname) => `route:${pathname}`,
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: { slug },
+        request: new Request(`https://example.com/api/products/${slug}`),
+        route: {
+          isDynamic: true,
+          pattern: "/api/products/:slug",
+          routeHandler: { GET: get },
+          routeSegments: ["api", "products", "[slug]"],
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+
+    const unknown = await dispatch("unknown");
+    expect(unknown.status).toBe(404);
+    expect(get).not.toHaveBeenCalled();
+
+    const known = await dispatch("known");
+    expect(known.status).toBe(200);
+    await expect(known.text()).resolves.toBe("handler ran");
+    // Cache Components invokes the known handler once prospectively and once
+    // for the final task-bounded representation.
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
   it("classifies force-dynamic GET handlers as dynamic despite public response headers", async () => {
     const request = new Request("https://example.com/api/dynamic", {
       headers: {

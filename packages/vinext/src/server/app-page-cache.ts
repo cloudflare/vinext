@@ -279,7 +279,12 @@ export function buildAppPageCachedResponse(
     });
   }
 
-  if (typeof cachedValue.html !== "string" || cachedValue.html.length === 0) {
+  const isStoredTerminalResponse =
+    typeof cachedValue.status === "number" && cachedValue.status !== 200;
+  if (
+    typeof cachedValue.html !== "string" ||
+    (cachedValue.html.length === 0 && !isStoredTerminalResponse)
+  ) {
     return null;
   }
 
@@ -292,6 +297,12 @@ export function buildAppPageCachedResponse(
     middlewareHeaders: options.middlewareHeaders,
     staleTimeSeconds,
   });
+  const storedLocation = cachedValue.headers?.location;
+  if (typeof storedLocation === "string") {
+    htmlHeaders.set("Location", storedLocation);
+  } else if (storedLocation?.[0]) {
+    htmlHeaders.set("Location", storedLocation[0]);
+  }
 
   const response = new Response(cachedValue.html, {
     status,

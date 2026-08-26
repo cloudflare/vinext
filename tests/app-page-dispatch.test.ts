@@ -1934,6 +1934,47 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>not found</html>");
   });
 
+  it("stores only framework-owned metadata for a terminal redirect", async () => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_REDIRECT;replace;/login;307" },
+      actionFailed: true,
+      isProduction: true,
+      middlewareContext: {
+        headers: new Headers({ Link: "</request-a.css>; rel=preload; as=style" }),
+        status: null,
+      },
+      revalidateSeconds: 60,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("/login");
+    expect(options.isrSet).toHaveBeenCalledOnce();
+    const stored = vi.mocked(options.isrSet).mock.calls[0]![1];
+    expect(stored.headers).toEqual({ location: "/login" });
+  });
+
+  it("stores a terminal RSC redirect only in the RSC artifact", async () => {
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_REDIRECT;replace;/login;307" },
+      actionFailed: true,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: 60,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    expect(options.isrSet).toHaveBeenCalledOnce();
+    const [key, stored] = vi.mocked(options.isrSet).mock.calls[0]!;
+    expect(key).toContain("rsc:");
+    expect(key).not.toContain("html:");
+    expect(stored.html).toBe("");
+    expect(new TextDecoder().decode(stored.rscData)).toBe("flight");
+  });
+
   it("applies the completed render cache-life minimum to a static not-found response", async () => {
     const renderHttpAccessFallbackPage = vi.fn(async () => {
       _setRequestScopedCacheLife({ expire: 30, revalidate: 5 });

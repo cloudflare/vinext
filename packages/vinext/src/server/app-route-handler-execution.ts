@@ -152,6 +152,8 @@ type ExecuteAppRouteHandlerOptions = {
   isrSet: RouteHandlerCacheSetter;
   method: string;
   observeCompletedBody?: boolean;
+  /** Regeneration owns the cache write and must not release its per-key lock early. */
+  awaitCacheWrite?: boolean;
   middlewareContext: RouteHandlerMiddlewareContext;
   reportRequestError: AppRouteErrorReporter;
   expireSeconds?: number;
@@ -272,32 +274,16 @@ export async function runAppRouteHandler(
           prospective.dynamicUsedInHandler = true;
           return prospective;
         }
-        // Next's prospective Route Handler pass collects the returned body as
-        // well as invoking GET. Cached work may be deferred until a stream is
-        // pulled, so draining here lets that work populate the request-local
-        // data-cache overlay before the task-bounded final pass.
-        const captured = await captureResponseBodyBounded(prospective.response);
+        // Next's prospective pass invokes GET and waits for cache fills started
+        // by the handler, but does not pull the returned body. Body-deferred
+        // I/O must remain subject to the final pass's task boundary.
         await _drainPendingRevalidations();
         prospective.dynamicUsedInHandler =
           options.consumeDynamicUsage() || consumeDynamicFetchObservations().length > 0;
         if (prospective.dynamicUsedInHandler) {
-          if (captured.failClosed) {
-            prospective.response = new Response(captured.fallback, {
-              headers: prospective.response.headers,
-              status: prospective.response.status,
-              statusText: prospective.response.statusText,
-            });
-          } else {
-            void captured.fallback?.cancel().catch(() => {});
-            prospective.response = new Response(captured.body, {
-              headers: prospective.response.headers,
-              status: prospective.response.status,
-              statusText: prospective.response.statusText,
-            });
-          }
           return prospective;
         }
-        void captured.fallback?.cancel().catch(() => {});
+        void prospective.response.body?.cancel().catch(() => {});
       }
       return runPass(true);
     });
@@ -505,24 +491,31 @@ export async function executeAppRouteHandler(
         throw new Error("Expected route handler cache revalidate seconds");
       }
       const routeWritePromise = (async () => {
-        try {
-          const routeCacheValue =
-            completedRouteCacheValue ??
-            (await buildAppRouteCacheValue(response.clone(), undefined, {
-              preserveCacheControl: handlerSetCacheControl,
-            }));
-          await options.isrSet(routeKey, routeCacheValue, {
-            cacheControl: isrCacheControl(revalidateSeconds, {
-              expireSeconds: effectiveExpireSeconds,
-            }),
-            tags: routeTags,
-          });
-          options.isrDebug?.("route cache written", routeKey);
-        } catch (cacheErr) {
-          console.error("[vinext] ISR route cache write error:", cacheErr);
-        }
+        const routeCacheValue =
+          completedRouteCacheValue ??
+          (await buildAppRouteCacheValue(response.clone(), undefined, {
+            preserveCacheControl: handlerSetCacheControl,
+          }));
+        await options.isrSet(routeKey, routeCacheValue, {
+          cacheControl: isrCacheControl(revalidateSeconds, {
+            expireSeconds: effectiveExpireSeconds,
+          }),
+          tags: routeTags,
+        });
+        options.isrDebug?.("route cache written", routeKey);
       })();
-      options.executionContext?.waitUntil(routeWritePromise);
+      if (options.awaitCacheWrite) {
+        await routeWritePromise;
+      } else {
+        const reportedWrite = routeWritePromise.catch((cacheErr) => {
+          console.error("[vinext] ISR route cache write error:", cacheErr);
+        });
+        if (options.executionContext) {
+          options.executionContext.waitUntil(reportedWrite);
+        } else {
+          void reportedWrite;
+        }
+      }
     }
 
     options.clearRequestContext();

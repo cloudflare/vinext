@@ -23,6 +23,8 @@ type RscEmbedTransformOptions = {
   mirrorNextFlight?: boolean;
   scriptNonce?: string;
   getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
+  /** Opt in to retaining raw Flight bytes, bounded to this many bytes. */
+  rawBufferLimitBytes?: number;
 };
 
 type HtmlInsertion = string | (() => string);
@@ -129,9 +131,17 @@ export function createRscEmbedTransform(
 ): RscEmbedTransform {
   const options =
     typeof optionsOrNonce === "string" ? { scriptNonce: optionsOrNonce } : optionsOrNonce;
+  if (
+    options.rawBufferLimitBytes !== undefined &&
+    (!Number.isSafeInteger(options.rawBufferLimitBytes) || options.rawBufferLimitBytes < 0)
+  ) {
+    throw new RangeError("rawBufferLimitBytes must be a non-negative safe integer");
+  }
   const reader = embedStream.getReader();
   let pendingChunks: RscEmbeddedChunk[] = [];
-  const rawChunks: Uint8Array[] = [];
+  const rawChunks: Uint8Array[] | null = options.rawBufferLimitBytes === undefined ? null : [];
+  let rawLength = 0;
+  let rawBufferExceeded = false;
   let reading = false;
   let mirroredNextFlightBootstrap = false;
 
@@ -142,7 +152,18 @@ export function createRscEmbedTransform(
       while (true) {
         const result = await reader.read();
         if (result.done) break;
-        rawChunks.push(result.value);
+        if (rawChunks && !rawBufferExceeded) {
+          rawLength += result.value.byteLength;
+          if (rawLength <= options.rawBufferLimitBytes!) {
+            rawChunks.push(result.value);
+          } else {
+            // Embedding still has to drain the Flight stream for a valid HTML
+            // response. Stop retaining bytes and make only the prospective
+            // cache artifact fail closed.
+            rawBufferExceeded = true;
+            rawChunks.length = 0;
+          }
+        }
         try {
           const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
           const text = decoder.decode(result.value);
@@ -203,6 +224,12 @@ export function createRscEmbedTransform(
 
     async getRawBuffer(): Promise<ArrayBuffer> {
       await pumpPromise;
+      if (!rawChunks) {
+        throw new Error("raw RSC capture was not enabled");
+      }
+      if (rawBufferExceeded) {
+        throw new Error(`RSC body exceeded ${options.rawBufferLimitBytes} bytes`);
+      }
       const buffer = concatUint8Arrays(rawChunks);
       rawChunks.length = 0;
       return buffer.buffer;

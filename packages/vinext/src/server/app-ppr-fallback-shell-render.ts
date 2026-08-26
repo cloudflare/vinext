@@ -5,7 +5,7 @@ import {
   waitForPprFallbackShellCacheReady,
   type PprFallbackShellState,
 } from "vinext/shims/ppr-fallback-shell";
-import { readAppPageBinaryStream } from "./app-page-execution.js";
+import { drainAppPageBinaryStream } from "./app-page-execution.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -39,7 +39,7 @@ export async function warmPprFallbackShellCaches(
       return options.onError(error, requestInfo, errorContext);
     },
   });
-  const warmupDrain = readAppPageBinaryStream(warmupStream).catch((error: unknown) => {
+  const warmupDrain = drainAppPageBinaryStream(warmupStream).catch((error: unknown) => {
     if (options.state.abortController.signal.aborted || isPprFallbackShellAbortError(error)) {
       return;
     }

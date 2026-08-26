@@ -23,6 +23,7 @@ function deriveExecutionContext(
         }
       : {}),
     hostRuntime: "worker",
+    isCloudflareWorker: base?.hostRuntime !== "node",
     ...(base?.cache === undefined ? {} : { cache: base.cache }),
     ...(base?.trustedRevalidateOrigin === undefined
       ? {}

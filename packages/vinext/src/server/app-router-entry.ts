@@ -106,11 +106,12 @@ async function handleRequest(
   // server-owned loopback origin and must retain its HTTP revalidation path.
   // Cloudflare requests instead receive an in-process dispatcher so the
   // credential never leaves the Worker isolate.
-  const requestCtx = platformCtx?.trustedRevalidateOrigin
-    ? platformCtx
-    : createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
-        handleRequest(internalRequest, env, internalCtx),
-      );
+  const requestCtx =
+    platformCtx?.hostRuntime === "node" || platformCtx?.trustedRevalidateOrigin
+      ? platformCtx
+      : createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
+          handleRequest(internalRequest, env, internalCtx),
+        );
   const discoveryCtx = createWorkerPrerenderDiscoveryContext(
     requestCtx,
     request,

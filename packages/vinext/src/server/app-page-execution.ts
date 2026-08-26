@@ -659,6 +659,14 @@ export async function readAppPageBinaryStream(
   return buffer.buffer;
 }
 
+/** Drain a render stream without retaining its payload. */
+export async function drainAppPageBinaryStream(stream: ReadableStream<Uint8Array>): Promise<void> {
+  const reader = stream.getReader();
+  while (!(await reader.read()).done) {
+    // Pulling the warmup render populates nested caches; its bytes are discarded.
+  }
+}
+
 /** Collect a cache artifact within the same Worker-safe admission bounds. */
 export async function readAppPageBinaryStreamBounded(
   stream: ReadableStream<Uint8Array>,

@@ -14,7 +14,9 @@ import {
 import {
   beginRouteCacheability,
   CACHEABILITY_RESPONSE_BODY_LIMIT,
+  CACHEABILITY_RESPONSE_CAPTURE_BUDGET,
   CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS,
+  captureResponseBodyBounded,
   createWorkerCacheabilityContext,
   deferRouteCacheability,
   finalizeWorkerCacheabilityResponse,
@@ -250,6 +252,52 @@ describe("cacheability manifests", () => {
     expect(requests[0].headers.get("X-Vinext-Cacheability-Probe")).toBe("1");
     expect(requests[0].headers.get("X-Vinext-Prerender-Secret")).toBe("secret-a");
     expect(requests[1].url).toBe("https://shop.example.com/products/dynamic");
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("certifies deterministic rewrites under their resolved route identity", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-rewrite-"));
+    fs.mkdirSync(path.join(root, "dist/server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "dist/server/vinext-server.json"),
+      JSON.stringify({ prerenderSecret: "secret-a" }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          kind: "app-route",
+          pattern: "/api/target",
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        }),
+      ),
+    );
+
+    const result = await probeStagedWorkerCacheability({
+      root,
+      routes: [
+        {
+          kind: "app-route",
+          path: "/api/source",
+          pattern: "/api/source",
+          probePath: "/api/source",
+        },
+      ],
+      targetUrl: "https://shop.example.com",
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.manifest.routes["app-route:/api/source"].state).toBe("static-candidate");
+    expect(
+      result.manifest.routes[cacheabilityRouteKey("app-route", "/api/target", "/api/source")],
+    ).toEqual({
+      kind: "app-route",
+      path: "/api/source",
+      pattern: "/api/target",
+      state: "static-candidate",
+    });
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -1305,6 +1353,51 @@ describe("buffered cache admission", () => {
     expect(returned.byteLength).toBe(bytes.byteLength);
     expect(returned[0]).toBe(1);
     expect(returned[returned.length - 1]).toBe(2);
+  });
+
+  it("fails excess concurrent captures closed before teeing another body", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const context = createWorkerCacheabilityContext(
+      { hostRuntime: "worker", isCloudflareWorker: true, waitUntil() {} },
+      new Request("https://example.com/capture-budget"),
+      "secret-a",
+    );
+    await runWithExecutionContext(context, async () => {
+      const captureCount = CACHEABILITY_RESPONSE_CAPTURE_BUDGET / CACHEABILITY_RESPONSE_BODY_LIMIT;
+      const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+      const pending = Array.from({ length: captureCount }, () => {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controllers.push(controller);
+            controller.enqueue(new Uint8Array([1]));
+          },
+        });
+        return captureResponseBodyBounded(new Response(stream));
+      });
+      await vi.waitFor(() => expect(controllers).toHaveLength(captureCount));
+
+      const fallbackStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array([9]));
+          controller.close();
+        },
+      });
+      const excess = await captureResponseBodyBounded(new Response(fallbackStream));
+      expect(excess).toMatchObject({
+        failClosed: true,
+        reason: expect.stringContaining("isolate budget"),
+      });
+      await expect(new Response(excess.fallback).arrayBuffer()).resolves.toEqual(
+        new Uint8Array([9]).buffer,
+      );
+
+      for (const controller of controllers) controller.close();
+      const completed = await Promise.all(pending);
+      for (const capture of completed) {
+        expect(capture.failClosed).toBe(false);
+        void capture.fallback?.cancel();
+      }
+    });
   });
 
   it("returns 500 when a manifest-certified static response exceeds the capture bound", async () => {

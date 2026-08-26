@@ -57,9 +57,43 @@ const CACHEABILITY_STATE = Symbol.for("vinext.cacheabilityRequestState");
 // an unread tee branch, and the final contiguous buffer. Keep the per-request
 // ceiling low enough to leave useful headroom in a Worker isolate.
 export const CACHEABILITY_RESPONSE_BODY_LIMIT = 4 * 1024 * 1024;
+// Capturing keeps a tee branch, chunk views, and a contiguous artifact alive
+// at once. Bound aggregate in-flight work per isolate as well as each request;
+// excess requests keep streaming but fail CDN admission closed.
+export const CACHEABILITY_RESPONSE_CAPTURE_BUDGET = 4 * CACHEABILITY_RESPONSE_BODY_LIMIT;
 // Leave headroom below the deploy probe's 30s request timeout so a slow or
 // never-ending response can still return its fail-closed probe envelope.
 export const CACHEABILITY_RESPONSE_CAPTURE_TIMEOUT_MS = 20_000;
+
+let reservedCaptureBytes = 0;
+
+export function reserveCacheabilityResponseCapture(): (() => void) | null {
+  // The aggregate ceiling protects the 128 MiB Worker isolate. Node/Nitro
+  // processes and programmatic Full Route Cache writes retain the per-response
+  // bound, but do not participate in CDN probe/admission capture.
+  const context = getRequestExecutionContext();
+  if (
+    context?.hostRuntime !== "worker" ||
+    context.isCloudflareWorker !== true ||
+    context.trustedRevalidateOrigin !== undefined ||
+    !readState(context)
+  ) {
+    return () => {};
+  }
+  if (
+    reservedCaptureBytes + CACHEABILITY_RESPONSE_BODY_LIMIT >
+    CACHEABILITY_RESPONSE_CAPTURE_BUDGET
+  ) {
+    return null;
+  }
+  reservedCaptureBytes += CACHEABILITY_RESPONSE_BODY_LIMIT;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    reservedCaptureBytes -= CACHEABILITY_RESPONSE_BODY_LIMIT;
+  };
+}
 
 const REPRESENTATION_HEADERS = [
   "accept-ranges",
@@ -235,7 +269,23 @@ export async function captureResponseBodyBounded(
     };
   }
 
-  const [captureStream, fallback] = response.body.tee();
+  const releaseCapture = reserveCacheabilityResponseCapture();
+  if (!releaseCapture) {
+    return {
+      failClosed: true,
+      fallback: response.body,
+      reason: `response capture exceeded the ${CACHEABILITY_RESPONSE_CAPTURE_BUDGET} byte isolate budget`,
+    };
+  }
+
+  let captureStream: ReadableStream<Uint8Array>;
+  let fallback: ReadableStream<Uint8Array>;
+  try {
+    [captureStream, fallback] = response.body.tee();
+  } catch (error) {
+    releaseCapture();
+    throw error;
+  }
   const reader = captureStream.getReader();
   const chunks: Uint8Array[] = [];
   let length = 0;
@@ -258,6 +308,7 @@ export async function captureResponseBodyBounded(
     ]);
     if (readResult !== "complete") {
       void reader.cancel().catch(() => {});
+      releaseCapture();
       return {
         failClosed: true,
         fallback,
@@ -269,18 +320,23 @@ export async function captureResponseBodyBounded(
     }
   } catch (error) {
     void fallback.cancel().catch(() => {});
+    releaseCapture();
     throw error;
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
   }
 
-  const body = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
+  try {
+    const body = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return { body: body.buffer, fallback, failClosed: false };
+  } finally {
+    releaseCapture();
   }
-  return { body: body.buffer, fallback, failClosed: false };
 }
 
 export function createWorkerCacheabilityContext(

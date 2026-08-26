@@ -55,8 +55,13 @@ import { createStaticGenerationHeadersContext } from "./app-static-generation.js
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { reportRequestError } from "./instrumentation.js";
+import {
+  validateAppPageDynamicParams,
+  type ValidateAppPageDynamicParamsOptions,
+} from "./app-page-request.js";
 
 type AppRouteHandlerDispatchRoute = {
+  isDynamic?: boolean;
   pattern: string;
   routeHandler: AppRouteHandlerModule;
   routeSegments: string[];
@@ -97,6 +102,8 @@ type DispatchAppRouteHandlerOptions = {
    * (`params ? await params : null`) resolves to `null`.
    */
   params: AppRouteParams | null;
+  dynamicParamsConfig?: boolean;
+  generateStaticParams?: ValidateAppPageDynamicParamsOptions["generateStaticParams"];
   request: Request;
   route: AppRouteHandlerDispatchRoute;
   scheduleBackgroundRegeneration: RouteHandlerBackgroundRegenerator;
@@ -231,6 +238,20 @@ export async function dispatchAppRouteHandler(
     return finalizeFrameworkResponse(new Response(null, { status: 400 }));
   }
 
+  const dynamicParamsResponse = await validateAppPageDynamicParams({
+    enforceStaticParamsOnly: options.dynamicParamsConfig === false,
+    generateStaticParams: options.generateStaticParams,
+    isDynamicRoute: route.isDynamic ?? route.pattern.includes(":"),
+    params: options.params ?? {},
+  });
+  if (dynamicParamsResponse) {
+    recordRouteCacheability({
+      cacheable: false,
+      reason: "route parameters were not returned by generateStaticParams",
+    });
+    return finalizeFrameworkResponse(dynamicParamsResponse, method === "HEAD");
+  }
+
   const { allowHeaderForOptions, handlerFn, isAutoHead, shouldAutoRespondToOptions } =
     resolveAppRouteHandlerMethod(handler, method);
 
@@ -296,6 +317,7 @@ export async function dispatchAppRouteHandler(
       requestUrl: options.request.url,
       async regenerate() {
         await executeAppRouteHandler({
+          awaitCacheWrite: true,
           basePath: options.basePath,
           cacheComponents: options.cacheComponents,
           buildPageCacheTags(pathname, extraTags) {

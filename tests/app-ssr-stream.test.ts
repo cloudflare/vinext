@@ -105,7 +105,7 @@ function createNoopRscEmbedTransform() {
 describe("createRscEmbedTransform raw buffer (#981)", () => {
   it("accumulates raw bytes while producing embed scripts", async () => {
     const sideStream = createTextStream(["chunk1", "chunk2"]);
-    const transform = createRscEmbedTransform(sideStream);
+    const transform = createRscEmbedTransform(sideStream, { rawBufferLimitBytes: 1024 });
 
     // Let the reader pump all chunks
     const rawBuffer = await transform.getRawBuffer();
@@ -278,13 +278,13 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
         controller.error(new Error("stream broke"));
       },
     });
-    const transform = createRscEmbedTransform(errorStream);
+    const transform = createRscEmbedTransform(errorStream, { rawBufferLimitBytes: 1024 });
     await expect(transform.getRawBuffer()).rejects.toThrow("stream broke");
   });
 
   it("preserves Flight bytes in both embedded and captured RSC data", async () => {
     const sideStream = createTextStream([':HL["/a.css","stylesheet"]']);
-    const transform = createRscEmbedTransform(sideStream);
+    const transform = createRscEmbedTransform(sideStream, { rawBufferLimitBytes: 1024 });
 
     const rawBuffer = await transform.getRawBuffer();
     const rawText = new TextDecoder().decode(rawBuffer);
@@ -292,6 +292,18 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
 
     const finalScripts = await transform.finalize();
     expect(finalScripts).toContain("stylesheet");
+    expect(finalScripts).toContain(".done=true");
+  });
+
+  it("bounds raw capture without interrupting HTML Flight embedding", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["123", "456"]), {
+      rawBufferLimitBytes: 5,
+    });
+
+    await expect(transform.getRawBuffer()).rejects.toThrow("RSC body exceeded 5 bytes");
+    const finalScripts = await transform.finalize();
+    expect(finalScripts).toContain('.rsc.push("123")');
+    expect(finalScripts).toContain('.rsc.push("456")');
     expect(finalScripts).toContain(".done=true");
   });
 

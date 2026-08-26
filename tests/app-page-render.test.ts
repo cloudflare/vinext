@@ -533,10 +533,13 @@ describe("app page render lifecycle", () => {
       consumeDynamicUsage,
       consumeRenderObservationState() {
         return {
-          dynamicFetches: ["https://api.example.test/posts?token=secret"],
+          dynamicFetches: [],
           requestApis: ["headers"],
         };
       },
+      // force-static intentionally substitutes empty request values, so the
+      // observation remains safe to persist while still exercising redaction.
+      isForceStatic: true,
       isProduction: true,
       isRscRequest: true,
       revalidateSeconds: 60,

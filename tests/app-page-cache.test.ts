@@ -155,6 +155,24 @@ describe("app page cache helpers", () => {
     expect(await rscResponse?.arrayBuffer()).toEqual(rscData);
   });
 
+  it("replays empty terminal redirects with framework Location and current middleware", async () => {
+    const cachedValue = buildCachedAppPageValue("", undefined, 307);
+    cachedValue.headers = { location: "/login" };
+    const middlewareHeaders = new Headers({ Link: "</current.css>; rel=preload; as=style" });
+
+    const response = buildAppPageCachedResponse(cachedValue, {
+      cacheState: "HIT",
+      isRscRequest: false,
+      middlewareHeaders,
+      revalidateSeconds: 60,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).toBe("/login");
+    expect(response?.headers.get("link")).toBe("</current.css>; rel=preload; as=style");
+    await expect(response?.text()).resolves.toBe("");
+  });
+
   it("replays the entry's client stale time on cache hits", async () => {
     // The claim was resolved by the render that produced these bytes and
     // persisted onto the entry. Replaying it is what keeps a warm hit from

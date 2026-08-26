@@ -9,6 +9,7 @@ export { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 
 export type AppRouteHandlerModule = {
   dynamic?: string;
+  dynamicParams?: unknown;
   fetchCache?: unknown;
   generateStaticParams?: unknown;
   revalidate?: unknown;

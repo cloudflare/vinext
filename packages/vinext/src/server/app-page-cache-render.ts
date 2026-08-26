@@ -23,6 +23,7 @@ import {
 } from "./app-page-stream.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
+import { CACHEABILITY_RESPONSE_BODY_LIMIT } from "./cacheability-request.js";
 
 type AppPageRenderableElement = ReactNode | Record<string, ReactNode>;
 type AppPageCacheRoute = {
@@ -101,6 +102,10 @@ export async function renderAppPageCacheArtifacts(
         ? {
             sideStream: rscCapture.sideStream,
             capturedRscDataRef,
+            // Regeneration writes a programmatic Full Route Cache artifact,
+            // not a CDN probe response, so it retains the per-artifact bound
+            // without consuming the isolate-wide probe admission budget.
+            capturedRscDataLimitBytes: CACHEABILITY_RESPONSE_BODY_LIMIT,
           }
         : {}),
     },

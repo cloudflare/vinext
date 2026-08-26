@@ -486,7 +486,7 @@ describe("deploy prerender config wiring", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("rejects no-promote warmup when discovery finds no requests", async () => {
+  it("rejects no-promote warmup before two-stage discovery", async () => {
     writeApiOnlyProject();
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
@@ -497,7 +497,7 @@ describe("deploy prerender config wiring", () => {
         warmCdnCache: true,
         warmCdnPromote: false,
       }),
-    ).rejects.toThrow("no build-discovered requests were found to warm");
+    ).rejects.toThrow("--warm-cdn-no-promote is incompatible with two-stage cacheability probing");
     expect(spawn).not.toHaveBeenCalled();
   });
 });

@@ -1047,6 +1047,19 @@ const __appRscHandler = createAppRscHandler({
   }) {
     const { dispatchAppRouteHandler: __dispatchAppRouteHandler } =
       await __loadAppRouteHandlerDispatch();
+    const __routeHandlerSegmentConfig = __resolveAppPageSegmentConfig({
+      layouts: route.layouts,
+      layoutTreePositions: route.layoutTreePositions,
+      page: route.routeHandler,
+      routeSegments: route.routeSegments,
+    });
+    const __routeHandlerGenerateStaticParams = __resolveAppPageGenerateStaticParamsSources({
+      layouts: route.layouts,
+      layoutTreePositions: route.layoutTreePositions,
+      page: route.routeHandler,
+      routePatternParts: route.patternParts,
+      routeSegments: route.routeSegments,
+    });
     return __dispatchAppRouteHandler({
       basePath: __basePath,
       cacheComponents: ${JSON.stringify(cacheComponents)},
@@ -1063,9 +1076,12 @@ const __appRscHandler = createAppRscHandler({
       isrSet: __isrSet,
       middlewareContext,
       middlewareRequestHeaders: middlewareContext.requestHeaders,
+      dynamicParamsConfig: __routeHandlerSegmentConfig.dynamicParamsConfig,
+      generateStaticParams: __routeHandlerGenerateStaticParams,
       params,
       request,
       route: {
+        isDynamic: route.isDynamic,
         pattern: route.pattern,
         routeHandler: route.routeHandler,
         routeSegments: route.routeSegments,

@@ -23,6 +23,10 @@ type ProbePayload = {
   version?: number;
 };
 
+function isProbeRouteKind(value: unknown): value is CacheabilityRouteKind {
+  return value === "app-page" || value === "app-route" || value === "pages-page";
+}
+
 export type CacheabilityProbeResult = {
   failures: string[];
   manifest: CacheabilityManifest;
@@ -190,11 +194,14 @@ export async function probeStagedWorkerCacheability(options: {
       const location = manifestLocation(route, exactPath);
       const key = location.key;
       const integrityFailure =
-        result.version !== 1 || result.kind !== route.kind || result.pattern !== route.pattern;
+        result.version !== 1 ||
+        !isProbeRouteKind(result.kind) ||
+        typeof result.pattern !== "string" ||
+        !result.pattern.startsWith("/");
       const state = integrityFailure ? "probe-failed" : result.state;
       if (state !== "static-candidate" && state !== "dynamic") {
         const reason = integrityFailure
-          ? `probe identity mismatch (expected ${key}, received ${String(result.kind)}:${String(result.pattern)})`
+          ? `probe returned an invalid route identity (${String(result.kind)}:${String(result.pattern)})`
           : (result.reason ?? "probe failed without a reason");
         routes[key] = {
           kind: route.kind,
@@ -211,6 +218,19 @@ export async function probeStagedWorkerCacheability(options: {
         pattern: route.pattern,
         state,
       };
+      // A deterministic rewrite can make the public probe path resolve to a
+      // different filesystem route. Retain the source-key copy for deploy
+      // planning, and certify the resolved identity that the final Worker will
+      // look up while serving that same public path.
+      if (result.kind !== route.kind || result.pattern !== route.pattern) {
+        const resolvedKey = cacheabilityRouteKey(result.kind!, result.pattern!, exactPath);
+        routes[resolvedKey] = {
+          kind: result.kind!,
+          path: exactPath,
+          pattern: result.pattern!,
+          state,
+        };
+      }
     }
   };
 

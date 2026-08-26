@@ -35,6 +35,7 @@ import {
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
 } from "vinext/shims/fetch-cache";
+import { hasFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { WarmPprFallbackShellCachesOptions } from "./app-ppr-fallback-shell-render.js";
@@ -766,16 +767,44 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         route.routeSegments,
       );
       applyCdnResponseHeaders(headers, { cacheControl: cacheControlHeader, tags });
-      const storedHeaders = Object.fromEntries(headers);
-      const html = captured.body === null ? "" : new TextDecoder().decode(captured.body);
+      // Middleware is request-specific and runs again on cache replay. Persist
+      // only terminal metadata owned by the route renderer itself.
+      const storedHeaders: Record<string, string> = {};
+      const location = response.headers.get("location");
+      if (response.status >= 300 && response.status < 400 && location) {
+        storedHeaders.location = location;
+      }
+      if (hasFrameworkLinkHeaders(response.headers)) {
+        const frameworkLink = response.headers.get("link");
+        if (frameworkLink) storedHeaders.link = frameworkLink;
+      }
+      const cacheValue = options.isRscRequest
+        ? buildAppPageCacheValue(
+            "",
+            captured.body ?? new ArrayBuffer(0),
+            response.status,
+            undefined,
+          )
+        : buildAppPageCacheValue(
+            captured.body === null ? "" : new TextDecoder().decode(captured.body),
+            undefined,
+            response.status,
+            undefined,
+            Object.keys(storedHeaders).length > 0 ? storedHeaders : undefined,
+          );
+      const cacheKey = options.isRscRequest
+        ? options.isrRscKey(
+            options.cleanPathname,
+            options.mountedSlotsHeader,
+            options.renderMode,
+            options.interceptionContext,
+            interceptionId,
+          )
+        : options.isrHtmlKey(options.cleanPathname);
       if (!terminalCacheCommitted) {
         terminalCacheCommitted = true;
         try {
-          await options.isrSet(
-            options.isrHtmlKey(options.cleanPathname),
-            buildAppPageCacheValue(html, undefined, response.status, undefined, storedHeaders),
-            { cacheControl, tags },
-          );
+          await options.isrSet(cacheKey, cacheValue, { cacheControl, tags });
         } catch (error) {
           console.error("[vinext] ISR terminal page cache write error:", error);
         }
