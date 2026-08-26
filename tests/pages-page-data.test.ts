@@ -9,6 +9,16 @@ import {
   type ResolvePagesPageDataOptions,
 } from "../packages/vinext/src/server/pages-page-data.js";
 import type { IncrementalCacheValue } from "../packages/vinext/src/shims/cache-handler.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
+  createWorkerCacheabilityContext,
+  finalizeWorkerCacheabilityResponse,
+} from "../packages/vinext/src/server/cacheability-request.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 
 const expiredPagesRepresentations: Array<[string, IncrementalCacheValue | null]> = [
   [
@@ -82,6 +92,53 @@ function createOptions(
 }
 
 describe("pages page data", () => {
+  // Next.js stores getStaticProps redirects as full-route cache entries. The
+  // route identity must therefore be established before this terminal result,
+  // not only when React page rendering begins.
+  it("reports a cacheable getStaticProps redirect to a staged cacheability probe", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const request = new Request("https://example.com/posts/post", {
+        headers: {
+          "X-Vinext-Cacheability-Probe": "1",
+          "X-Vinext-Prerender-Secret": "secret",
+        },
+      });
+      const ctx = createWorkerCacheabilityContext(
+        { hostRuntime: "worker", waitUntil() {} },
+        request,
+        "secret",
+      );
+      const result = await runWithExecutionContext(ctx, () =>
+        resolvePagesPageData(
+          createOptions({
+            pageModule: {
+              async getStaticProps() {
+                return {
+                  redirect: { destination: "/new-post", permanent: false },
+                  revalidate: 60,
+                };
+              },
+            },
+          }),
+        ),
+      );
+
+      expect(result.kind).toBe("response");
+      if (result.kind !== "response") throw new Error("expected terminal redirect response");
+      expect(result.response.headers.get("CDN-Cache-Control")).toContain("max-age=60");
+      const probeResponse = await finalizeWorkerCacheabilityResponse(result.response, ctx);
+      await expect(probeResponse.json()).resolves.toMatchObject({
+        kind: "pages-page",
+        pattern: "/posts/[slug]",
+        state: "static-candidate",
+        status: 307,
+      });
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   it("preserves omitted and explicit false revalidation as indefinite", () => {
     expect(resolvePagesRevalidateSeconds({})).toBe(false);
     expect(resolvePagesRevalidateSeconds({ revalidate: false })).toBe(false);

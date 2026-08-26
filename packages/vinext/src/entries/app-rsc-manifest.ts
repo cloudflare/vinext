@@ -500,6 +500,18 @@ function buildGenerateStaticParamsEntries(
         `{ load: ${imports.getLazyLoaderVar(route.pagePath)} }`,
       );
     }
+
+    if (route.routePath) {
+      // Route Handlers participate in Next.js static generation when they
+      // export generateStaticParams. Keep the deployed discovery endpoint on
+      // the same lazy module path as page hooks so Cloudflare bindings remain
+      // available while enumerating their concrete URLs.
+      appendStaticParamSource(
+        sourcesByPattern,
+        route.pattern,
+        `{ load: ${imports.getLazyLoaderVar(route.routePath)} }`,
+      );
+    }
   }
 
   return Array.from(sourcesByPattern.entries()).map(([pattern, sources]) => {

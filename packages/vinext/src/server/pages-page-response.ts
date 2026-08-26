@@ -35,7 +35,6 @@ import {
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER } from "./headers.js";
 import { matchesIfNoneMatch } from "./http-conditional.js";
-import { beginRouteCacheability } from "./cacheability-request.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -507,7 +506,6 @@ function applyGsspHeaders(
 export async function renderPagesPageResponse(
   options: RenderPagesPageResponseOptions,
 ): Promise<Response> {
-  beginRouteCacheability("pages-page", options.routePattern);
   const renderProps = options.props ?? { pageProps: options.pageProps };
   options.resetSSRHead?.();
   await options.flushPreloads?.();

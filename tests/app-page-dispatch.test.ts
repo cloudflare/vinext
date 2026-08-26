@@ -1913,6 +1913,25 @@ describe("app page dispatch", () => {
     );
   });
 
+  it("applies the route ISR policy to a production static not-found response", async () => {
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      actionError: { digest: "NEXT_HTTP_ERROR_FALLBACK;404" },
+      actionFailed: true,
+      isProduction: true,
+      revalidateSeconds: 60,
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Cache-Control")).toContain("s-maxage=60");
+    await expect(response.text()).resolves.toBe("<html>not found</html>");
+  });
+
   it("does not bypass cached production HTML for arbitrary draft cookie values", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached</html>")),

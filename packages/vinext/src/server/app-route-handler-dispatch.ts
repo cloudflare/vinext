@@ -168,9 +168,14 @@ export async function dispatchAppRouteHandler(
   options: DispatchAppRouteHandlerOptions,
 ): Promise<Response> {
   const { route } = options;
-  beginRouteCacheability("app-route", route.pattern);
   const handler = route.routeHandler;
   const method = options.request.method.toUpperCase();
+  // Next.js only admits GET Route Handler representations to its Full Route
+  // Cache. POST/PUT/etc. can still set their own HTTP cache headers, but must
+  // not inherit framework cacheability from a probed GET route pattern.
+  if (method === "GET") {
+    beginRouteCacheability("app-route", route.pattern);
+  }
   const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);
   const isDevelopment = options.isDevelopment ?? process.env.NODE_ENV === "development";
   const isProduction = options.isProduction ?? process.env.NODE_ENV === "production";

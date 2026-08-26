@@ -86,7 +86,13 @@ import type { AppPageSsrHandler } from "./app-page-stream.js";
 import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
-import { beginRouteCacheability } from "./cacheability-request.js";
+import { beginRouteCacheability, recordRouteCacheability } from "./cacheability-request.js";
+import {
+  applyCdnResponseHeaders,
+  buildRevalidateCacheControl,
+  hasExplicitNonCacheableResponsePolicy,
+  STATIC_CACHE_CONTROL,
+} from "./cache-control.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
 import {
   createAppLayoutParamAccessTracker,
@@ -636,7 +642,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   beginRouteCacheability("app-page", route.pattern, {
     // Next.js exempts PPR routes from its static-to-dynamic invariant because
     // request APIs can run in the postponed portion while the shell is static.
-    partialPrerender: options.pprFallbackShell !== undefined,
+    // Eligibility belongs to the route (Cache Components), not just the
+    // internal request currently generating a fallback shell.
+    partialPrerender: options.pprRuntime !== undefined,
   });
   const dynamicConfig = options.dynamicConfig;
   const currentRevalidateSeconds = options.revalidateSeconds;
@@ -668,6 +676,54 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const layoutParamAccess = createAppLayoutParamAccessTracker();
   const activeLoadingTreePositions = getActiveLoadingTreePositions(route);
   const hasActiveLoadingBoundary = activeLoadingTreePositions.length > 0;
+  const classifiedTerminalResponses = new WeakSet<Response>();
+  const classifyTerminalResponse = (response: Response): Response => {
+    if (classifiedTerminalResponses.has(response)) return response;
+    classifiedTerminalResponses.add(response);
+
+    const dynamicUsage = consumeDynamicUsage();
+    const explicitlyUncacheable =
+      response.headers.has("set-cookie") || hasExplicitNonCacheableResponsePolicy(response.headers);
+    const canCacheTerminalResponse =
+      !dynamicUsage &&
+      !explicitlyUncacheable &&
+      options.isProduction &&
+      !isDraftMode &&
+      !isForceDynamic &&
+      !options.scriptNonce &&
+      options.isProgressiveActionRender !== true &&
+      response.status >= 200 &&
+      response.status < 500 &&
+      currentRevalidateSeconds !== 0;
+    const cacheControl =
+      currentRevalidateSeconds === null
+        ? STATIC_CACHE_CONTROL
+        : buildRevalidateCacheControl(currentRevalidateSeconds, options.expireSeconds);
+    const tags = buildAppPageTags(
+      options.cleanPathname,
+      getCollectedFetchTags(),
+      route.routeSegments,
+    );
+    if (canCacheTerminalResponse) {
+      applyCdnResponseHeaders(response.headers, { cacheControl, tags });
+    }
+    recordRouteCacheability(
+      canCacheTerminalResponse
+        ? {
+            cacheable: true,
+            cacheControl,
+            tags,
+          }
+        : {
+            cacheable: false,
+            ...(dynamicUsage ? { dynamicUsage: true } : {}),
+            reason: dynamicUsage
+              ? "dynamic API used while rendering a terminal App page response"
+              : "terminal App page response is not eligible for shared caching",
+          },
+    );
+    return response;
+  };
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
   setCurrentFetchCacheMode(options.fetchCache ?? null);
@@ -1064,7 +1120,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           specialError,
           serveStreamingMetadata,
           interceptResult.interceptOpts,
-        );
+        ).then(classifyTerminalResponse);
       },
       resolveSpecialError: resolveAppPageSpecialError,
     });
@@ -1086,7 +1142,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   const pageBuildResult = await buildCurrentPageElement();
   if (pageBuildResult.response) {
-    return pageBuildResult.response;
+    return classifyTerminalResponse(pageBuildResult.response);
   }
 
   const navigationParams = resolveAppPageNavigationParams(
@@ -1222,7 +1278,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       return options.renderErrorBoundaryPage(renderError, errorOrigin);
     },
     renderLayoutSpecialError(specialError, layoutIndex) {
-      return renderLayoutSpecialError(options, specialError, layoutIndex, serveStreamingMetadata);
+      return renderLayoutSpecialError(
+        options,
+        specialError,
+        layoutIndex,
+        serveStreamingMetadata,
+      ).then(classifyTerminalResponse);
     },
     renderPageSpecialError(specialError) {
       return renderPageSpecialError(
@@ -1230,7 +1291,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         specialError,
         serveStreamingMetadata,
         interceptResult.interceptOpts,
-      );
+      ).then(classifyTerminalResponse);
     },
     renderToReadableStream: options.renderToReadableStream,
     hasCustomGlobalError: options.hasCustomGlobalError,

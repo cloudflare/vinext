@@ -708,8 +708,11 @@ describe("App Router generated manifest construction", () => {
     expect(dynamicRouteEntry).toContain("page: null");
     expect(dynamicRouteEntry).toContain("__pageLoader: load_17");
     expect(dynamicRouteEntry).toContain('params: ["photoId"]');
+    // Both the page and App Route module can own generateStaticParams for the
+    // same dynamic pattern. The deployed resolver loads each lazily and uses
+    // whichever modules actually export the hook.
     expect(manifest.generateStaticParamsEntries).toEqual([
-      '  "/dashboard/:id": __createAppPrerenderStaticParamsResolver([{ load: load_5 }], ["id"]),',
+      '  "/dashboard/:id": __createAppPrerenderStaticParamsResolver([{ load: load_5 }, { load: load_6 }], ["id"]),',
     ]);
   });
 

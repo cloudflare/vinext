@@ -10,6 +10,7 @@ export { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 export type AppRouteHandlerModule = {
   dynamic?: string;
   fetchCache?: unknown;
+  generateStaticParams?: unknown;
   revalidate?: unknown;
   runtime?: string;
 } & RouteHandlerModule;
@@ -62,7 +63,7 @@ type AppRouteHandlerSpecialErrorOptions = {
 };
 
 export function getAppRouteHandlerRevalidateSeconds(
-  handler: Pick<AppRouteHandlerModule, "revalidate">,
+  handler: Pick<AppRouteHandlerModule, "dynamic" | "generateStaticParams" | "revalidate">,
 ): number | null {
   // 0 is a meaningful value ("never cache") and must be preserved so the
   // header path can emit a no-store Cache-Control.
@@ -70,10 +71,27 @@ export function getAppRouteHandlerRevalidateSeconds(
   // parity) — return Infinity to signal the cache-later path.
   const { revalidate } = handler;
   if (revalidate === false) return Infinity;
-  if (typeof revalidate !== "number" || !Number.isFinite(revalidate) || revalidate < 0) {
+  if (typeof revalidate === "number" && Number.isFinite(revalidate) && revalidate >= 0) {
+    return revalidate;
+  }
+  if (revalidate !== undefined) {
     return null;
   }
-  return revalidate;
+
+  // Next.js statically optimizes App Route handlers only after one of these
+  // explicit opt-ins. With no numeric revalidation window, their completed
+  // representation is immutable until invalidated or replaced by a deploy.
+  // Ported from Next.js:
+  // packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts
+  if (
+    handler.dynamic === "force-static" ||
+    handler.dynamic === "error" ||
+    typeof handler.generateStaticParams === "function"
+  ) {
+    return Infinity;
+  }
+
+  return null;
 }
 
 export function hasAppRouteHandlerDefaultExport(handler: RouteHandlerModule): boolean {

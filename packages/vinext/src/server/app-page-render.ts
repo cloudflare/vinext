@@ -84,6 +84,7 @@ import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-obse
 import { peekDynamicUsage } from "vinext/shims/headers";
 import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
+import { recordRouteCacheability } from "./cacheability-request.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -1155,6 +1156,17 @@ export async function renderAppPageLifecycle(
   }
   dynamicUsedDuringRender = dynamicUsedDuringRender || consumeRenderDynamicUsage();
   dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
+  if (dynamicUsedDuringRender) {
+    // Dynamic usage can settle before this response enters the streaming cache
+    // finalizer. Record it now so a previously proven static, non-PPR route
+    // follows Next.js's static-to-dynamic invariant instead of silently
+    // returning a dynamic 200.
+    recordRouteCacheability({
+      cacheable: false,
+      dynamicUsage: true,
+      reason: "dynamic API used during render",
+    });
+  }
 
   const draftCookie = options.getDraftModeCookieHeader();
   let dynamicUsedBeforeContextCleanup = dynamicUsedDuringRender;

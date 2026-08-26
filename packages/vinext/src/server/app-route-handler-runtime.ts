@@ -27,7 +27,10 @@ const ROUTE_HANDLER_HTTP_METHODS = [
 
 export type RouteHandlerHttpMethod = (typeof ROUTE_HANDLER_HTTP_METHODS)[number];
 
-export type RouteHandlerModule = Partial<Record<RouteHandlerHttpMethod | "default", unknown>>;
+export type RouteHandlerModule = Partial<Record<RouteHandlerHttpMethod | "default", unknown>> & {
+  /** App Route static-generation hook, evaluated by deployed prerender discovery. */
+  generateStaticParams?: unknown;
+};
 
 /**
  * Checks whether a string is a recognized HTTP method for App Router route

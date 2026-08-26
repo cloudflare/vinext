@@ -24,6 +24,22 @@ describe("app route handler policy helpers", () => {
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: false })).toBe(Infinity);
   });
 
+  // Ported from Next.js static eligibility:
+  // packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts
+  it("treats every Next.js App Route static-generation opt-in as immutable", () => {
+    expect(getAppRouteHandlerRevalidateSeconds({ dynamic: "force-static" })).toBe(Infinity);
+    expect(getAppRouteHandlerRevalidateSeconds({ dynamic: "error" })).toBe(Infinity);
+    expect(
+      getAppRouteHandlerRevalidateSeconds({
+        generateStaticParams() {
+          return [{ slug: "one" }];
+        },
+      }),
+    ).toBe(Infinity);
+    expect(getAppRouteHandlerRevalidateSeconds({ dynamic: "force-dynamic" })).toBeNull();
+    expect(getAppRouteHandlerRevalidateSeconds({})).toBeNull();
+  });
+
   it("treats revalidate = 0 as never-cache for route handler ISR read/write gates", () => {
     const readBase = {
       dynamicConfig: "auto",
