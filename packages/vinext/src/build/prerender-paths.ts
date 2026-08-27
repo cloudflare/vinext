@@ -1244,6 +1244,7 @@ export async function emitPrerenderPathManifest(
       "",
     ),
   );
+  const routePatterns = annotateCacheabilityProbeSafety(appOwnedWarmPaths.routePatterns, config);
 
   const manifest: PrerenderPathManifest = {
     ...(appDir ? { appPaths: appOwnedWarmPaths.appPaths } : {}),
@@ -1263,7 +1264,7 @@ export async function emitPrerenderPathManifest(
     ...(rscBuildId ? { rscBuildId } : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
     ...(options.responseVary ? { rscPaths: appOwnedWarmPaths.rscPaths } : {}),
-    routePatterns: annotateCacheabilityProbeSafety(appOwnedWarmPaths.routePatterns, config),
+    ...(Object.keys(routePatterns).length > 0 ? { routePatterns } : {}),
     ...(appOwnedWarmPaths.appRoutePaths.length > 0
       ? { routeHandlerPaths: appOwnedWarmPaths.appRoutePaths }
       : {}),
