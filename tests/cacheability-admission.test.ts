@@ -820,4 +820,27 @@ describe("cacheability probe finalization", () => {
       else process.env.__VINEXT_BUILD_ID = previousBuildId;
     }
   });
+
+  it.each([
+    ["Set-Cookie", "session=private; Path=/", "response sets a cookie"],
+    ["Vary", "User-Agent", "response has unsupported Vary fields"],
+  ])("keeps Route Handler probes with unsafe %s private", async (name, value, reason) => {
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "probe",
+      route: { kind: "app-route", pattern: "/api/data" },
+    };
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("unsafe", {
+        headers: { "Cache-Control": "public, s-maxage=60", [name]: value },
+      }),
+      contextWith(state),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "app-route",
+      reason,
+      state: "dynamic",
+    });
+  });
 });

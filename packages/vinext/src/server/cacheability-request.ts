@@ -461,7 +461,15 @@ function completedRouteOutcome(
   if (state.forcedDynamicReason) {
     return { cacheable: false, reason: state.forcedDynamicReason };
   }
-  if (state.route?.kind === "app-route") return inferPagesPageCacheability(response);
+  if (state.route?.kind === "app-route") {
+    if (response.headers.has("set-cookie")) {
+      return { cacheable: false, reason: "response sets a cookie" };
+    }
+    if (hasUnsupportedCacheabilityVary(response.headers)) {
+      return { cacheable: false, reason: "response has unsupported Vary fields" };
+    }
+    return inferPagesPageCacheability(response);
+  }
   if (state.route?.kind === "app-page") {
     return inferFinalAppPageCacheability(response, state) ?? rendererOutcome;
   }
