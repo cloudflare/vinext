@@ -34,3 +34,15 @@ test("serves static metadata and the rendered 404 under basePath", async ({ requ
   expect(missing.status()).toBe(404);
   expect(await missing.text()).toContain("BasePath Not Found");
 });
+
+// Next.js serves public files through the configured basePath and rejects the
+// unprefixed URL:
+// https://github.com/vercel/next.js/blob/canary/test/e2e/basepath/basepath.test.ts
+test("namespaces public files under basePath", async ({ request }) => {
+  const publicFile = await request.get(`${BASE}/docs/public-data.txt`);
+  expect(publicFile.status()).toBe(200);
+  expect(await publicFile.text()).toBe("basePath public data\n");
+
+  const unprefixed = await request.get(`${BASE}/public-data.txt`);
+  expect(unprefixed.status()).toBe(404);
+});
