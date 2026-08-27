@@ -11,7 +11,10 @@ import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/sr
 import { writeCacheabilityManifestArtifact } from "../packages/cloudflare/src/cacheability-artifact.js";
 import { MAX_CACHEABILITY_MANIFEST_ROUTES } from "../packages/cloudflare/src/cacheability-manifest-limits.js";
 import { CACHEABILITY_MANIFEST_MODULE } from "../packages/vinext/src/server/cacheability-manifest.js";
-import { VINEXT_CACHEABILITY_PROBE_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_CACHEABILITY_PROBE_HEADER,
+  VINEXT_PRERENDER_READINESS_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
 const delayMock = vi.hoisted(() => vi.fn());
@@ -60,6 +63,17 @@ function cacheableHtml(body = "ok", cacheStatus = "MISS"): Response {
       "cf-cache-status": cacheStatus,
       "content-type": "text/html",
       [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a",
+    },
+  });
+}
+
+function readinessResponse(buildId = "app-build-a"): Response {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "cache-control": "no-store",
+      [VINEXT_CDN_BUILD_ID_HEADER]: buildId,
+      [VINEXT_PRERENDER_READINESS_HEADER]: "1",
     },
   });
 }
@@ -497,6 +511,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         expect(headers.get("accept")).toBe("text/html");
         expect(headers.get("rsc")).toBeNull();
         expect(headers.get("x-vinext-prerender-secret")).toBe("test-prerender-secret");
+        return readinessResponse();
       }
       const cacheKey = `${pathname}${isRsc ? "?_rsc" : ""}`;
       const cacheStatus = (cacheRequestCounts.get(cacheKey) ?? 0) > 1 ? "HIT" : "MISS";
@@ -762,7 +777,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
             { headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a" } },
           )
         : isReadinessFetch(input)
-          ? cacheableHtml()
+          ? readinessResponse()
           : new Response("unexpected", { status: 500 }),
     );
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -813,7 +828,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         );
       }
       return isReadinessFetch(input)
-        ? cacheableHtml()
+        ? readinessResponse()
         : new Response("unexpected warm request", { status: 500 });
     });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -862,7 +877,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
         return pagesPageProbeResponse();
       }
-      if (isReadinessFetch(input)) return cacheableHtml();
+      if (isReadinessFetch(input)) return readinessResponse();
       return new URL(formatFetchUrl(input)).pathname.startsWith("/_next/data/")
         ? cacheablePagesData()
         : cacheableHtml();
@@ -990,7 +1005,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
         return appPageProbeResponse();
       }
-      if (isReadinessFetch(input)) return cacheableHtml();
+      if (isReadinessFetch(input)) return readinessResponse();
       return cacheableHtml();
     });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -1031,7 +1046,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
         return appPageProbeResponse();
       }
-      if (isReadinessFetch(input)) return cacheableHtml();
+      if (isReadinessFetch(input)) return readinessResponse();
       return new Response("failed fill", {
         status: 500,
         headers: {
@@ -1112,7 +1127,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
         return appPageProbeResponse();
       }
-      if (isReadinessFetch(input)) return cacheableHtml();
+      if (isReadinessFetch(input)) return readinessResponse();
       cacheRequestCount++;
       return cacheableHtml("ok", cacheRequestCount === 1 ? "MISS" : "HIT");
     });
@@ -1155,7 +1170,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1"
         ? appPageProbeResponse("probe-failed")
         : isReadinessFetch(input)
-          ? cacheableHtml()
+          ? readinessResponse()
           : new Response("unexpected", { status: 500 }),
     );
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -1190,7 +1205,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1"
         ? appPageProbeResponse()
         : isReadinessFetch(input)
-          ? cacheableHtml()
+          ? readinessResponse()
           : new Response("unexpected", { status: 500 }),
     );
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -1232,7 +1247,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
           return appPageProbeResponse();
         }
-        if (isReadinessFetch(input)) return cacheableHtml();
+        if (isReadinessFetch(input)) return readinessResponse();
         return new Response("private", {
           headers: {
             "cache-control": "no-store",
@@ -1283,7 +1298,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
         return appPageProbeResponse();
       }
-      if (isReadinessFetch(input)) return cacheableHtml();
+      if (isReadinessFetch(input)) return readinessResponse();
       fillCalls++;
       now += 120_001;
       return cacheableHtml();
@@ -1351,7 +1366,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         });
       }
       return isReadinessFetch(input)
-        ? cacheableHtml()
+        ? readinessResponse()
         : new Response("unexpected", { status: 500 });
     });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -1418,7 +1433,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1"
         ? appPageProbeResponse()
         : isReadinessFetch(input)
-          ? cacheableHtml()
+          ? readinessResponse()
           : new Response("unexpected", { status: 500 }),
     );
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -1481,7 +1496,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1"
         ? appPageProbeResponse()
         : isReadinessFetch(input)
-          ? cacheableHtml()
+          ? readinessResponse()
           : new Response("unexpected", { status: 500 }),
     );
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -1549,7 +1564,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1"
         ? appPageProbeResponse()
         : isReadinessFetch(input)
-          ? cacheableHtml()
+          ? readinessResponse()
           : new Response("unexpected", { status: 500 }),
     );
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -1617,7 +1632,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1"
         ? appPageProbeResponse()
         : isReadinessFetch(input)
-          ? cacheableHtml()
+          ? readinessResponse()
           : new Response("unexpected", { status: 500 }),
     );
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");

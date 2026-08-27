@@ -16,6 +16,7 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
+import { VINEXT_PRERENDER_READINESS_HEADER } from "../packages/vinext/src/server/headers.js";
 
 let tmpDir: string;
 
@@ -826,7 +827,11 @@ describe("Cloudflare CDN warmup", () => {
       expect(headers.get("x-vinext-prerender-secret")).toBe("build-secret");
       return new Response(null, {
         status: 204,
-        headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "build-a" },
+        headers: {
+          "cache-control": "no-store",
+          [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          [VINEXT_PRERENDER_READINESS_HEADER]: "1",
+        },
       });
     });
 
@@ -844,6 +849,55 @@ describe("Cloudflare CDN warmup", () => {
       }),
     ).resolves.toEqual({ ready: true });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      label: "an application response",
+      response: new Response("fallback", {
+        headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "build-a" },
+      }),
+    },
+    {
+      label: "a same-build 404",
+      response: new Response("not found", {
+        status: 404,
+        headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "build-a" },
+      }),
+    },
+    {
+      label: "an unmarked 204",
+      response: new Response(null, {
+        status: 204,
+        headers: {
+          "cache-control": "no-store",
+          [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+        },
+      }),
+    },
+    {
+      label: "a cacheable marked 204",
+      response: new Response(null, {
+        status: 204,
+        headers: {
+          [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          [VINEXT_PRERENDER_READINESS_HEADER]: "1",
+        },
+      }),
+    },
+  ])("does not accept $label from the dedicated readiness path", async ({ response }) => {
+    const readiness = await waitForCdnWarmTargetReadiness({
+      expectedBuildId: "build-a",
+      fetchImpl: vi.fn(async () => response.clone()) as typeof fetch,
+      maxAttempts: 1,
+      plan: { loadingShellPaths: [], pagesDataPaths: [], paths: ["/slow"], rscPaths: [] },
+      prerenderSecret: "build-secret",
+      probeIntervalMs: 0,
+      requiredConsecutiveSuccesses: 1,
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(readiness.ready).toBe(false);
   });
 
   it("uses a Pages data identity when it is the only staged readiness target", async () => {

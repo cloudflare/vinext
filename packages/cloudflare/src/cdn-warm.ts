@@ -25,6 +25,7 @@ import {
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import {
+  VINEXT_PRERENDER_READINESS_HEADER,
   VINEXT_PRERENDER_READINESS_PATH,
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "vinext/internal/server/headers";
@@ -829,6 +830,24 @@ function validateReadinessResponse(
   return null;
 }
 
+function validatePrerenderReadinessResponse(
+  response: Response,
+  expectedBuildId?: string,
+): string | null {
+  const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
+  if (buildIdentityValidation?.outcome === "failed") return buildIdentityValidation.error;
+  if (response.redirected) return "redirected response";
+  if (response.status !== 204) return `expected readiness HTTP 204, received ${response.status}`;
+  if (response.headers.get(VINEXT_PRERENDER_READINESS_HEADER) !== "1") {
+    return `response is missing ${VINEXT_PRERENDER_READINESS_HEADER}: 1`;
+  }
+  const cacheControl = response.headers.get("Cache-Control");
+  if (!cacheControl || !/(?:^|,)\s*no-store\s*(?:,|$)/i.test(cacheControl)) {
+    return "readiness response is missing Cache-Control: no-store";
+  }
+  return null;
+}
+
 /**
  * Wait until version-override requests consistently reach the uploaded build
  * before any real cache key is filled. Every probe has a unique query key, so
@@ -933,12 +952,14 @@ export async function waitForCdnWarmTargetReadiness(
         Math.min(timeoutMs, remainingMs),
         headers,
       );
-      const validationError = validateReadinessResponse(
-        response,
-        useReadinessEndpoint ? "html" : kind,
-        options.expectedBuildId,
-        useReadinessEndpoint ? undefined : options.expectedRscBuildId,
-      );
+      const validationError = useReadinessEndpoint
+        ? validatePrerenderReadinessResponse(response, options.expectedBuildId)
+        : validateReadinessResponse(
+            response,
+            kind,
+            options.expectedBuildId,
+            options.expectedRscBuildId,
+          );
       if (process.env.VINEXT_CDN_WARM_DEBUG === "1") {
         console.log(
           `  CDN warm readiness attempt ${attempt + 1}: ` +

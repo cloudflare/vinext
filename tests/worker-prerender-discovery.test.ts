@@ -58,6 +58,7 @@ describe("Worker prerender path discovery authorization", () => {
 
     expect(response?.status).toBe(204);
     expect(response?.headers.get("cache-control")).toBe("no-store");
+    expect(response?.headers.get("x-vinext-prerender-readiness")).toBe("1");
     expect(
       createWorkerPrerenderReadinessResponse(
         base,

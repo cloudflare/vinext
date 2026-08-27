@@ -3,6 +3,7 @@ import {
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
+  VINEXT_PRERENDER_READINESS_HEADER,
   VINEXT_PRERENDER_READINESS_PATH,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
@@ -49,7 +50,10 @@ export function createWorkerPrerenderReadinessResponse(
   }
   return new Response(null, {
     status: 204,
-    headers: { "Cache-Control": "no-store" },
+    headers: {
+      "Cache-Control": "no-store",
+      [VINEXT_PRERENDER_READINESS_HEADER]: "1",
+    },
   });
 }
 

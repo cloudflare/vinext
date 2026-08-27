@@ -119,6 +119,7 @@ describe("App Router Production server worker entry compatibility", () => {
       expect(capturedRequests).toHaveLength(2);
       expect(readiness.status).toBe(204);
       expect(readiness.headers.get("cache-control")).toBe("no-store");
+      expect(readiness.headers.get("x-vinext-prerender-readiness")).toBe("1");
       expect(capturedRequests[0].headers.get("x-vinext-prerender-secret")).toBeNull();
       expect(capturedRequests[0].headers.get("x-vinext-prerender-route-params")).toBeNull();
       expect(capturedRequests[1].headers.get("x-vinext-prerender-secret")).toBeNull();
