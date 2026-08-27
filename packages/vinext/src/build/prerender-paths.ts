@@ -37,6 +37,17 @@ import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priori
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { buildPagesDataHref } from "vinext/shims/internal/pages-data-url";
+import { CACHEABILITY_POLICY_HEADERS } from "vinext/shims/cacheability-classification";
+
+export type PrerenderRoutePattern = {
+  kind: "app-page" | "app-route" | "pages-page";
+  pattern: string;
+  /** Closed-world safety facts for probe coordinator optimizations. */
+  cacheabilityProbe?: {
+    canPrunePattern: boolean;
+    canReuseHtmlForRsc: boolean;
+  };
+};
 
 export type PrerenderPathManifest = {
   /** App Page HTML paths after hybrid route ownership has been resolved. */
@@ -62,10 +73,7 @@ export type PrerenderPathManifest = {
   /** Public paths omitted because configured routes can replace their page response. */
   excludedWarmPaths?: string[];
   /** Resolved route ownership for grouping cacheability probes without re-matching paths. */
-  routePatterns?: Record<
-    string,
-    { kind: "app-page" | "app-route" | "pages-page"; pattern: string }
-  >;
+  routePatterns?: Record<string, PrerenderRoutePattern>;
   trailingSlash?: boolean;
   paths: string[];
 };
@@ -793,7 +801,7 @@ async function resolveAppWarmPaths(options: {
   loadingShellPaths: string[];
   pagesPaths: string[];
   rscPaths: string[];
-  routePatterns: Record<string, { kind: "app-page" | "app-route" | "pages-page"; pattern: string }>;
+  routePatterns: Record<string, PrerenderRoutePattern>;
 }> {
   const appRoutes = await appRouter(options.appDir, options.pageExtensions);
   const routeHandlerClassifications = new Map(
@@ -816,10 +824,7 @@ async function resolveAppWarmPaths(options: {
   const htmlPaths: string[] = [];
   const loadingShellPaths: string[] = [];
   const pagesPaths: string[] = [];
-  const routePatterns: Record<
-    string,
-    { kind: "app-page" | "app-route" | "pages-page"; pattern: string }
-  > = {};
+  const routePatterns: Record<string, PrerenderRoutePattern> = {};
   for (const pathname of options.paths) {
     const appMatch = matchAppRoute(pathname, appRoutes);
     // Pages Router i18n prefixes are routing metadata rather than part of the
@@ -886,6 +891,76 @@ async function resolveAppWarmPaths(options: {
     routePatterns,
     rscPaths,
   };
+}
+
+const CACHEABILITY_POLICY_HEADER_NAMES = new Set<string>(CACHEABILITY_POLICY_HEADERS);
+
+function cachePolicyRuleMatchesWarmPath(
+  pathname: string,
+  rule: ResolvedNextConfig["headers"][number],
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
+): boolean {
+  const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
+  const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
+  return hostnames.some((hostname) => {
+    const matchPathname = normalizeDefaultLocalePathname(canonicalPathname, config.i18n, {
+      hostname,
+    });
+    return matchesRewriteSource(matchPathname, rule, {
+      basePath: config.basePath,
+      hadBasePath: true,
+    });
+  });
+}
+
+/**
+ * Certify only probe collapses that cannot hide a path- or request-specific
+ * next.config cache policy. The manifest contains a closed set of concrete
+ * identities, so path uniformity is evaluated across that discovered set.
+ */
+function annotateCacheabilityProbeSafety(
+  routePatterns: Record<string, PrerenderRoutePattern>,
+  config: Pick<ResolvedNextConfig, "basePath" | "headers" | "i18n" | "trailingSlash">,
+): Record<string, PrerenderRoutePattern> {
+  const cachePolicyRules = config.headers.filter((rule) =>
+    rule.headers.some((header) => CACHEABILITY_POLICY_HEADER_NAMES.has(header.key.toLowerCase())),
+  );
+  const matchingRules = new Map(
+    Object.keys(routePatterns).map((pathname) => [
+      pathname,
+      cachePolicyRules.filter((rule) => cachePolicyRuleMatchesWarmPath(pathname, rule, config)),
+    ]),
+  );
+  const pathsByPattern = new Map<string, string[]>();
+  for (const [pathname, route] of Object.entries(routePatterns)) {
+    const key = `${route.kind}\0${route.pattern}`;
+    const paths = pathsByPattern.get(key) ?? [];
+    paths.push(pathname);
+    pathsByPattern.set(key, paths);
+  }
+
+  return Object.fromEntries(
+    Object.entries(routePatterns).map(([pathname, route]) => {
+      const patternPaths = pathsByPattern.get(`${route.kind}\0${route.pattern}`) ?? [pathname];
+      const relevantRules = new Set(patternPaths.flatMap((path) => matchingRules.get(path) ?? []));
+      const canPrunePattern = Array.from(relevantRules).every(
+        (rule) =>
+          !rule.has?.length &&
+          !rule.missing?.length &&
+          patternPaths.every((path) => matchingRules.get(path)?.includes(rule) === true),
+      );
+      const canReuseHtmlForRsc = (matchingRules.get(pathname) ?? []).every(
+        (rule) => !rule.has?.length && !rule.missing?.length,
+      );
+      return [
+        pathname,
+        {
+          ...route,
+          cacheabilityProbe: { canPrunePattern, canReuseHtmlForRsc },
+        },
+      ];
+    }),
+  );
 }
 
 function configuredRouteAffectsWarmPath(
@@ -1148,7 +1223,7 @@ export async function emitPrerenderPathManifest(
     ...(rscBuildId ? { rscBuildId } : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
     ...(options.responseVary ? { rscPaths: appOwnedWarmPaths.rscPaths } : {}),
-    routePatterns: appOwnedWarmPaths.routePatterns,
+    routePatterns: annotateCacheabilityProbeSafety(appOwnedWarmPaths.routePatterns, config),
     ...(appOwnedWarmPaths.appRoutePaths.length > 0
       ? { routeHandlerPaths: appOwnedWarmPaths.appRoutePaths }
       : {}),

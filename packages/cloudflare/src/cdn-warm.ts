@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   PRERENDER_PATHS_MANIFEST,
   type PrerenderPathManifest,
+  type PrerenderRoutePattern,
 } from "vinext/internal/build/prerender-paths";
 import {
   getPrerenderedConcretePaths,
@@ -32,9 +33,7 @@ export type CdnWarmOptions = {
   pagesDataPaths?: readonly string[];
   /** Statically eligible App Route Handler request identities. */
   routeHandlerPaths?: readonly string[];
-  routePatterns?: Readonly<
-    Record<string, { kind: "app-page" | "app-route" | "pages-page"; pattern: string }>
-  >;
+  routePatterns?: Readonly<Record<string, PrerenderRoutePattern>>;
   /** App Router ISR paths whose definitive client-navigation payload is warmed. */
   rscPaths?: readonly string[];
   /** App Router paths whose deterministic loading-boundary payload is warmed. */
@@ -90,10 +89,7 @@ export type CdnWarmRequestPlan = {
   paths: string[];
   rscPaths: string[];
   routeHandlerPaths?: string[];
-  routePatterns?: Record<
-    string,
-    { kind: "app-page" | "app-route" | "pages-page"; pattern: string }
-  >;
+  routePatterns?: Record<string, PrerenderRoutePattern>;
 };
 
 export type CdnWarmReadinessResult = { ready: true } | { error: string; ready: false };
@@ -108,10 +104,7 @@ export type PrerenderWarmPlan = {
   pagesPaths?: string[];
   paths: string[];
   routeHandlerPaths?: string[];
-  routePatterns?: Record<
-    string,
-    { kind: "app-page" | "app-route" | "pages-page"; pattern: string }
-  >;
+  routePatterns?: Record<string, PrerenderRoutePattern>;
   rscBuildId?: string;
   rscPaths: string[];
 };
@@ -182,7 +175,13 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
                 route.kind === "app-route" ||
                 route.kind === "pages-page") &&
               typeof route.pattern === "string" &&
-              route.pattern.startsWith("/"),
+              route.pattern.startsWith("/") &&
+              (route.cacheabilityProbe === undefined ||
+                (route.cacheabilityProbe !== null &&
+                  typeof route.cacheabilityProbe === "object" &&
+                  !Array.isArray(route.cacheabilityProbe) &&
+                  typeof route.cacheabilityProbe.canPrunePattern === "boolean" &&
+                  typeof route.cacheabilityProbe.canReuseHtmlForRsc === "boolean")),
           ))) ||
       (manifest.loadingShellPaths !== undefined &&
         (!Array.isArray(manifest.loadingShellPaths) ||
@@ -414,7 +413,7 @@ export type CdnWarmTarget = {
   label: string;
   pathname: string;
   sourcePathname: string;
-  route?: { kind: "app-page" | "app-route" | "pages-page"; pattern: string };
+  route?: PrerenderRoutePattern;
 };
 
 export async function createCdnWarmTargets(

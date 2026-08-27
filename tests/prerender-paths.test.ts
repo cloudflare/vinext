@@ -40,6 +40,12 @@ describe("prerender path manifest", () => {
         }
         if (
           url.pathname === "/__vinext/prerender/static-params" &&
+          url.searchParams.get("pattern") === "/policy/:slug"
+        ) {
+          return Response.json([{ slug: "ordinary" }, { slug: "special" }]);
+        }
+        if (
+          url.pathname === "/__vinext/prerender/static-params" &&
           url.searchParams.get("pattern") === "/:path+"
         ) {
           return Response.json([
@@ -121,10 +127,26 @@ describe("prerender path manifest", () => {
       rscBuildId: "rsc-build-a",
       responseVary: "verbatim",
       routePatterns: {
-        "/": { kind: "app-page", pattern: "/" },
-        "/cached/featured": { kind: "app-page", pattern: "/cached/:slug" },
-        "/cached/intro": { kind: "app-page", pattern: "/cached/:slug" },
-        "/dynamic": { kind: "app-page", pattern: "/dynamic" },
+        "/": {
+          cacheabilityProbe: { canPrunePattern: true, canReuseHtmlForRsc: true },
+          kind: "app-page",
+          pattern: "/",
+        },
+        "/cached/featured": {
+          cacheabilityProbe: { canPrunePattern: true, canReuseHtmlForRsc: true },
+          kind: "app-page",
+          pattern: "/cached/:slug",
+        },
+        "/cached/intro": {
+          cacheabilityProbe: { canPrunePattern: true, canReuseHtmlForRsc: true },
+          kind: "app-page",
+          pattern: "/cached/:slug",
+        },
+        "/dynamic": {
+          cacheabilityProbe: { canPrunePattern: true, canReuseHtmlForRsc: true },
+          kind: "app-page",
+          pattern: "/dynamic",
+        },
       },
       rscPaths: ["/", "/dynamic", "/cached/intro", "/cached/featured"],
       trailingSlash: false,
@@ -147,6 +169,60 @@ describe("prerender path manifest", () => {
       }),
     );
     expect(closeMock).toHaveBeenCalledOnce();
+  });
+
+  it("marks probe collapses unsafe when config cache policy varies by path or request", async () => {
+    // Next.js applies pathname-specific custom Cache-Control to dynamic App
+    // routes and evaluates has/missing conditions against each request:
+    // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+    // test/e2e/custom-routes/custom-routes.test.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/policy/[slug]/page.tsx",
+      [
+        "export const dynamic = 'force-dynamic';",
+        "export function generateStaticParams() { return [{ slug: 'ordinary' }, { slug: 'special' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/conditional/page.tsx",
+      "export const dynamic = 'force-dynamic'; export default function Page() { return null; }\n",
+    );
+    writeFile(
+      "next.config.mjs",
+      [
+        "export default {",
+        "  headers: async () => [",
+        "    { source: '/policy/special', headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
+        "    { source: '/conditional', missing: [{ type: 'query', key: '_rsc' }], headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
+        "  ],",
+        "};",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      buildIdentity: "response-header",
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.routePatterns).toMatchObject({
+      "/conditional": {
+        cacheabilityProbe: { canPrunePattern: false, canReuseHtmlForRsc: false },
+      },
+      "/policy/ordinary": {
+        cacheabilityProbe: { canPrunePattern: false, canReuseHtmlForRsc: true },
+      },
+      "/policy/special": {
+        cacheabilityProbe: { canPrunePattern: false, canReuseHtmlForRsc: true },
+      },
+    });
   });
 
   it("discovers only Next.js-static Route Handler GET identities", async () => {

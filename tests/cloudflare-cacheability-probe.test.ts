@@ -38,6 +38,12 @@ describe("staged Worker cacheability probes", () => {
     sourcePathname: pathname,
   });
 
+  const optimizableRoute = (pattern: string) => ({
+    cacheabilityProbe: { canPrunePattern: true, canReuseHtmlForRsc: true },
+    kind: "app-page" as const,
+    pattern,
+  });
+
   const createStaticProbeFetch = () =>
     vi.fn<typeof fetch>(async (input) => {
       const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
@@ -168,7 +174,7 @@ describe("staged Worker cacheability probes", () => {
       buildId: "application-build",
       concurrency: 1,
       fetchImpl: async (input) => {
-        await new Promise((resolve) => setTimeout(resolve, 15));
+        await new Promise((resolve) => setTimeout(resolve, 40));
         const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
         return Response.json({
           kind: "app-page",
@@ -181,20 +187,47 @@ describe("staged Worker cacheability probes", () => {
       onProgress(update) {
         progress.push(update.completed);
       },
-      phaseTimeoutMs: 25,
+      phaseTimeoutMs: 250,
       retries: 0,
       root,
       targetUrl: "https://example.com",
-      targets: [target("/one"), target("/two"), target("/three")],
+      targets: Array.from({ length: 7 }, (_, index) => target(`/serial-${index}`)),
+    });
+
+    expect(result).toMatchObject({ classified: 7, probed: 7, skipped: 0 });
+    expect(progress).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("extends an in-flight probe watchdog when another request makes progress", async () => {
+    const root = createProbeRoot();
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      concurrency: 2,
+      fetchImpl: async (input) => {
+        const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+        await new Promise((resolve) => setTimeout(resolve, pathname === "/slow" ? 220 : 80));
+        return Response.json({
+          kind: "app-page",
+          pattern: pathname,
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        });
+      },
+      phaseTimeoutMs: 150,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [target("/slow"), target("/fast-one"), target("/fast-two")],
+      timeoutMs: 1_000,
     });
 
     expect(result).toMatchObject({ classified: 3, probed: 3, skipped: 0 });
-    expect(progress).toEqual([0, 1, 2, 3]);
   });
 
   it("classifies paired App HTML and RSC identities from one completed HTML render", async () => {
     const root = createProbeRoot();
-    const route = { kind: "app-page" as const, pattern: "/posts/:slug" };
+    const route = optimizableRoute("/posts/:slug");
     const html = { ...target("/posts/one"), route };
     const rsc = {
       headers: { Accept: "text/x-component", RSC: "1" },
@@ -307,7 +340,7 @@ describe("staged Worker cacheability probes", () => {
 
   it("uses pattern-wide dynamic proof to skip sibling HTML and RSC renders", async () => {
     const root = createProbeRoot();
-    const route = { kind: "app-page" as const, pattern: "/posts/:slug" };
+    const route = optimizableRoute("/posts/:slug");
     const htmlOne = { ...target("/posts/one"), route };
     const htmlTwo = { ...target("/posts/two"), route };
     const rsc = (slug: string) => ({
@@ -343,6 +376,84 @@ describe("staged Worker cacheability probes", () => {
     expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 1, skipped: 3 });
     expect(result.cacheableTargets).toEqual([]);
     expect(result.manifest.routes).toEqual({});
+  });
+
+  it("does not prune siblings when a config cache policy varies within the route pattern", async () => {
+    const root = createProbeRoot();
+    const route = {
+      cacheabilityProbe: { canPrunePattern: false, canReuseHtmlForRsc: true },
+      kind: "app-page" as const,
+      pattern: "/posts/:slug",
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      return Response.json({
+        kind: "app-page",
+        pattern: route.pattern,
+        scope: pathname === "/posts/ordinary" ? "pattern" : undefined,
+        state: pathname === "/posts/ordinary" ? "dynamic" : "static-candidate",
+        status: 200,
+        version: 1,
+      });
+    });
+
+    const special = { ...target("/posts/special"), route };
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      concurrency: 1,
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [{ ...target("/posts/ordinary"), route }, special],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ classified: 2, dynamic: 1, probed: 2, skipped: 0 });
+    expect(result.cacheableTargets).toEqual([special]);
+  });
+
+  it("probes RSC independently when config cache policy conditions distinguish identities", async () => {
+    const root = createProbeRoot();
+    const route = {
+      cacheabilityProbe: { canPrunePattern: false, canReuseHtmlForRsc: false },
+      kind: "app-page" as const,
+      pattern: "/conditional",
+    };
+    const html = { ...target("/conditional"), route };
+    const rsc = {
+      headers: { Accept: "text/x-component", RSC: "1" },
+      kind: "rsc-full" as const,
+      label: "/conditional (RSC full)",
+      pathname: "/conditional?_rsc",
+      route,
+      sourcePathname: "/conditional",
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      const isRsc = new Headers(init?.headers).get("RSC") === "1";
+      return Response.json({
+        kind: "app-page",
+        pattern: route.pattern,
+        scope: isRsc ? "pattern" : undefined,
+        state: isRsc ? "dynamic" : "static-candidate",
+        status: 200,
+        version: 1,
+      });
+    });
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      concurrency: 1,
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [rsc, html],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ classified: 2, dynamic: 1, probed: 2, skipped: 0 });
+    expect(result.cacheableTargets).toEqual([html]);
   });
 
   it("does not prune siblings from an identity-scoped dynamic observation", async () => {
@@ -389,7 +500,7 @@ describe("staged Worker cacheability probes", () => {
       const pathname = `/docs/${index}`;
       return {
         ...target(pathname),
-        route: { kind: "app-page" as const, pattern: "/docs/:slug" },
+        route: optimizableRoute("/docs/:slug"),
       };
     });
     const rscTargets = htmlTargets.map((htmlTarget) => ({

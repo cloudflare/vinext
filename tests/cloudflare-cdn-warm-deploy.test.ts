@@ -497,9 +497,17 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         paths: ["/about", "/dynamic", "/pages-about"],
         routeHandlerPaths: ["/api/data"],
         routePatterns: {
-          "/about": { kind: "app-page", pattern: "/about" },
+          "/about": {
+            cacheabilityProbe: { canPrunePattern: true, canReuseHtmlForRsc: true },
+            kind: "app-page",
+            pattern: "/about",
+          },
           "/api/data": { kind: "app-route", pattern: "/api/data" },
-          "/dynamic": { kind: "app-page", pattern: "/dynamic" },
+          "/dynamic": {
+            cacheabilityProbe: { canPrunePattern: true, canReuseHtmlForRsc: true },
+            kind: "app-page",
+            pattern: "/dynamic",
+          },
           "/pages-about": { kind: "pages-page", pattern: "/pages-about" },
         },
         rscPaths: ["/about", "/dynamic"],
@@ -1020,7 +1028,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     },
   );
 
-  it("bounds queued prepared cache fills by one hard phase deadline", async () => {
+  it("lets prepared cache fills exceed the readiness window while requests keep completing", async () => {
     writeTwoStageWorkerArtifact();
     let now = 0;
     vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -1032,7 +1040,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }
       if (isReadinessFetch(input)) return cacheableHtml();
       fillCalls++;
-      now = 120_001;
+      now += 120_001;
       return cacheableHtml();
     });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -1054,9 +1062,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         warmCdnReadinessProbes: 1,
         warmCdnRetries: 0,
       }),
-    ).rejects.toThrow("CDN warmup exceeded its 120000ms phase deadline");
-    expect(fillCalls).toBe(1);
-    expect(wrangler.promoted).toBe(false);
+    ).resolves.toBe("https://my-worker.example.workers.dev");
+    expect(fillCalls).toBe(2);
+    expect(wrangler.promoted).toBe(true);
   });
 
   it("uses the dedicated cacheability-probe retry budget before the legacy warm fallback", async () => {

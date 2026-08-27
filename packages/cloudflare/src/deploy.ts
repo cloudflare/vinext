@@ -55,7 +55,6 @@ import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
 import {
   createCdnWarmTargets,
   CdnOperationProgress,
-  DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS,
   readPrerenderWarmPlan,
   waitForCdnWarmTargetReadiness,
   warmCdnCache,
@@ -925,7 +924,6 @@ async function deployUploadedVersionWithCdnWarmup(
       routePatterns: plan.routePatterns,
       rscPaths: plan.rscPaths,
       concurrency: options.warmCdnConcurrency,
-      phaseTimeoutMs: hasPreparedWarmPlan ? DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS : undefined,
       timeoutMs: options.warmCdnTimeout,
       retries: options.warmCdnRetries,
       requireCacheHit,

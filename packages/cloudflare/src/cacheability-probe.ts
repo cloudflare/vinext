@@ -147,12 +147,12 @@ async function probeTarget(options: {
     version: 1,
   });
   for (let attempt = 0; attempt <= options.retries; attempt++) {
-    const remainingMs = options.getDeadlineAt() - Date.now();
-    if (remainingMs <= 0) return phaseTimeoutPayload();
+    if (options.getDeadlineAt() - Date.now() <= 0) return phaseTimeoutPayload();
 
     const controller = new AbortController();
-    const attemptTimeoutMs = Math.min(options.timeoutMs, remainingMs);
+    const requestDeadlineAt = Date.now() + options.timeoutMs;
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let timedOutBy: "phase" | "request" | null = null;
     let retryable = true;
     try {
       const url = new URL(options.target.pathname, options.targetUrl);
@@ -185,10 +185,22 @@ async function probeTarget(options: {
         return { kind: "complete" as const, payload: await readProbeEnvelope(response) };
       })();
       const timedOut = new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => {
+        const checkDeadline = (): void => {
+          const phaseDeadlineAt = options.getDeadlineAt();
+          const deadlineAt = Math.min(requestDeadlineAt, phaseDeadlineAt);
+          const remainingMs = deadlineAt - Date.now();
+          if (remainingMs > 0) {
+            timeout = setTimeout(checkDeadline, remainingMs);
+            return;
+          }
+          // Another concurrent request can extend the no-progress deadline
+          // after this attempt starts. Re-read it whenever the timer fires;
+          // only the per-request deadline itself remains fixed.
+          timedOutBy = requestDeadlineAt <= phaseDeadlineAt ? "request" : "phase";
           controller.abort();
-          reject(new DOMException(`Timed out after ${attemptTimeoutMs}ms`, "AbortError"));
-        }, attemptTimeoutMs);
+          reject(new DOMException("Probe deadline exceeded", "AbortError"));
+        };
+        checkDeadline();
       });
       const result = await Promise.race([request, timedOut]);
       if (Date.now() >= options.getDeadlineAt()) return phaseTimeoutPayload();
@@ -196,10 +208,12 @@ async function probeTarget(options: {
       reason = result.reason;
       retryable = result.retryable;
     } catch (error) {
-      if (Date.now() >= options.getDeadlineAt()) return phaseTimeoutPayload();
+      if (timedOutBy === "phase" || Date.now() >= options.getDeadlineAt()) {
+        return phaseTimeoutPayload();
+      }
       reason =
         error instanceof Error && error.name === "AbortError"
-          ? `probe timed out after ${attemptTimeoutMs}ms`
+          ? `probe timed out after ${options.timeoutMs}ms`
           : error instanceof Error
             ? error.message
             : String(error);
@@ -278,12 +292,19 @@ export async function probeStagedWorkerCacheability(options: {
   const patternDynamic = new Set<string>();
   const rscBySourcePath = new Map(
     options.targets
-      .filter((target) => target.kind === "rsc-full")
+      .filter(
+        (target) =>
+          target.kind === "rsc-full" &&
+          target.route?.cacheabilityProbe?.canReuseHtmlForRsc === true,
+      )
       .map((target) => [target.sourcePathname, target] as const),
   );
   const htmlSources = new Set(
     options.targets
-      .filter((target) => target.kind === "html")
+      .filter(
+        (target) =>
+          target.kind === "html" && target.route?.cacheabilityProbe?.canReuseHtmlForRsc === true,
+      )
       .map((target) => target.sourcePathname),
   );
   const targets = options.targets.filter(
@@ -396,7 +417,11 @@ export async function probeStagedWorkerCacheability(options: {
 
     if (result.state !== "static-candidate") {
       dynamicCount += 1;
-      if (result.scope === "pattern" && knownPattern === `${result.kind}\0${result.pattern}`) {
+      if (
+        result.scope === "pattern" &&
+        target.route?.cacheabilityProbe?.canPrunePattern === true &&
+        knownPattern === `${result.kind}\0${result.pattern}`
+      ) {
         patternDynamic.add(`${result.kind}\0${result.pattern}`);
       }
       reportProgress();
@@ -493,7 +518,9 @@ export async function probeStagedWorkerCacheability(options: {
       const resultPatternKey = `${result.kind}\0${result.pattern}`;
       if (
         result.state === "dynamic" &&
-        (result.scope !== "pattern" || routeKey(target) !== resultPatternKey)
+        (result.scope !== "pattern" ||
+          target.route?.cacheabilityProbe?.canPrunePattern !== true ||
+          routeKey(target) !== resultPatternKey)
       ) {
         await classifyTarget(pairedRsc);
       } else if (result.state === "dynamic") {

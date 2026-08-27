@@ -27,6 +27,15 @@ export default {
       headers: [{ key: "Cache-Control", value: "s-maxage=32" }],
     },
     {
+      source: "/cacheability/config-public-pattern/special",
+      headers: [{ key: "Cache-Control", value: "s-maxage=33" }],
+    },
+    {
+      source: "/cacheability/config-public-representation",
+      missing: [{ type: "query", key: "_rsc", value: ".*" }],
+      headers: [{ key: "Cache-Control", value: "s-maxage=34" }],
+    },
+    {
       source: "/cacheability/route-handler-config-public-late-error",
       headers: [{ key: "Cache-Control", value: "public, s-maxage=60" }],
     },

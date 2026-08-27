@@ -114,6 +114,53 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
+  const ordinaryPatternProbe = await request.get("/cacheability/config-public-pattern/ordinary", {
+    headers,
+  });
+  await expect(ordinaryPatternProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cacheability/config-public-pattern/:slug",
+    scope: "pattern",
+    state: "dynamic",
+    status: 200,
+    version: 1,
+  });
+  const specialPatternProbe = await request.get("/cacheability/config-public-pattern/special", {
+    headers,
+  });
+  await expect(specialPatternProbe.json()).resolves.toMatchObject({
+    cacheControl: "s-maxage=33",
+    kind: "app-page",
+    pattern: "/cacheability/config-public-pattern/:slug",
+    state: "static-candidate",
+    status: 200,
+    version: 1,
+  });
+
+  const representationHtmlProbe = await request.get("/cacheability/config-public-representation", {
+    headers,
+  });
+  await expect(representationHtmlProbe.json()).resolves.toMatchObject({
+    cacheControl: "s-maxage=34",
+    kind: "app-page",
+    pattern: "/cacheability/config-public-representation",
+    state: "static-candidate",
+    status: 200,
+    version: 1,
+  });
+  const representationRscProbe = await request.get(
+    "/cacheability/config-public-representation?_rsc",
+    { headers: { ...headers, Accept: "text/x-component", RSC: "1" } },
+  );
+  await expect(representationRscProbe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/cacheability/config-public-representation",
+    scope: "pattern",
+    state: "dynamic",
+    status: 200,
+    version: 1,
+  });
+
   const staticRouteHandlerProbe = await request.get("/cacheability/route-handler-static", {
     headers: { ...headers, Accept: "*/*" },
   });
