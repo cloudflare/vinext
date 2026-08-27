@@ -115,6 +115,21 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
+  // A handler-owned public policy is an explicit cache opt-in even when the
+  // handler reads request data. Next.js preserves that policy rather than
+  // replacing it with the framework's dynamic default.
+  const explicitDynamicRouteHandlerProbe = await request.get(
+    "/cacheability/route-handler-explicit-dynamic",
+    { headers: { ...headers, Accept: "*/*" } },
+  );
+  await expect(explicitDynamicRouteHandlerProbe.json()).resolves.toMatchObject({
+    kind: "app-route",
+    pattern: "/cacheability/route-handler-explicit-dynamic",
+    state: "static-candidate",
+    status: 200,
+    version: 1,
+  });
+
   // Next.js keeps middleware in front of page serving on every request:
   // test/e2e/middleware-static-files/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-static-files/index.test.ts

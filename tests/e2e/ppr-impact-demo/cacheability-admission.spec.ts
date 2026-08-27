@@ -130,6 +130,16 @@ test("admits only exact manifest-backed App Page responses after clean EOF", asy
   expect(dynamicRouteHandler.headers()["cache-control"]).toContain("no-store");
   expect(dynamicRouteHandler.headers()["cdn-cache-control"]).toBeUndefined();
 
+  const explicitDynamicRouteHandler = await request.get(
+    "/cacheability/route-handler-explicit-dynamic",
+    { headers: { "X-Probe-Value": "explicitly-public" } },
+  );
+  await expect(explicitDynamicRouteHandler.json()).resolves.toEqual({
+    value: "explicitly-public",
+  });
+  expect(explicitDynamicRouteHandler.headers()["cdn-cache-control"]).toBe("public, max-age=60");
+  expect(explicitDynamicRouteHandler.headers()["cache-control"]).toContain("must-revalidate");
+
   const lateConfigPublicFailure = await request.get(
     "/cacheability/route-handler-config-public-late-error",
   );

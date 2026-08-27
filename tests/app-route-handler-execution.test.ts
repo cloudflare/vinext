@@ -26,7 +26,10 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
-import { createWorkerCacheabilityAdmissionContext } from "../packages/vinext/src/server/cacheability-request.js";
+import {
+  createWorkerCacheabilityAdmissionContext,
+  finalizeWorkerCacheabilityResponse,
+} from "../packages/vinext/src/server/cacheability-request.js";
 import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
@@ -666,6 +669,75 @@ describe("app route handler execution helpers", () => {
     expect(state.completedResponseBody).toBe(true);
     expect(state.finalResponseVetoReason).toBeUndefined();
     await expect(response.text()).resolves.toBe("reusable");
+  });
+
+  it("preserves an explicit public policy after dynamic reads complete during admission", async () => {
+    const request = new Request("https://example.com/api/explicit-dynamic", {
+      headers: { "x-tenant": "tenant-a" },
+    });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+    );
+    const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
+    state.route = { kind: "app-route", pattern: "/api/explicit-dynamic" };
+    const dynamicUsage = createDynamicUsageState();
+
+    const executed = await runWithExecutionContext(context, () =>
+      executeAppRouteHandler({
+        buildPageCacheTags() {
+          return [];
+        },
+        cleanPathname: "/api/explicit-dynamic",
+        clearRequestContext() {},
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        executionContext: null,
+        getAndClearPendingCookies() {
+          return [];
+        },
+        getCollectedFetchTags() {
+          return [];
+        },
+        getDraftModeCookieHeader() {
+          return null;
+        },
+        handler: { dynamic: "auto", revalidate: 60 },
+        handlerFn(trackedRequest) {
+          return Response.json(
+            { tenant: trackedRequest.headers.get("x-tenant") },
+            { headers: { "Cache-Control": "public, s-maxage=60" } },
+          );
+        },
+        isAutoHead: false,
+        isProduction: true,
+        isrRouteKey(pathname) {
+          return pathname;
+        },
+        async isrSet() {
+          throw new Error("dynamic response must not enter origin ISR");
+        },
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        method: "GET",
+        middlewareContext: { headers: null, status: null },
+        params: null,
+        reportRequestError() {},
+        request,
+        revalidateSeconds: 60,
+        routePattern: "/api/explicit-dynamic",
+        setHeadersAccessPhase() {
+          return "render";
+        },
+      }),
+    );
+
+    expect(state.explicitResponseCachePolicy).toBe(true);
+    expect(state.completedResponseBody).toBeUndefined();
+    const response = await finalizeWorkerCacheabilityResponse(executed, context);
+    expect(response.headers.get("cache-control")).toBe("public, s-maxage=60");
+    await expect(response.json()).resolves.toEqual({ tenant: "tenant-a" });
   });
 
   it("records handler-owned public policy separately from framework revalidate policy", async () => {

@@ -464,7 +464,9 @@ export async function executeAppRouteHandler(
     // Next.js preserves a Route Handler's explicit Cache-Control even when the
     // handler used request data. During CDN probe/admission the adapter still
     // owns fail-closed policy until the completed response is authorized.
-    const preserveHandlerPolicy = !isRouteCacheabilityEvaluation() && handlerSetCacheControl;
+    const preserveHandlerPolicy = isRouteCacheabilityEvaluation()
+      ? hasExplicitCacheablePolicy
+      : handlerSetCacheControl;
     if (responseMustStayPrivate && !preserveHandlerPolicy) {
       const headers = new Headers(finalized.headers);
       applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });

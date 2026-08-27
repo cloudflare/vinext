@@ -97,6 +97,14 @@
       "state": "static-candidate",
       "status": 200
     },
+    "[\"app-route\",\"/cacheability/route-handler-explicit-dynamic\",\"app-route\",\"/cacheability/route-handler-explicit-dynamic\"]": {
+      "kind": "app-route",
+      "pattern": "/cacheability/route-handler-explicit-dynamic",
+      "representation": "app-route",
+      "requestKey": "/cacheability/route-handler-explicit-dynamic",
+      "state": "static-candidate",
+      "status": 200
+    },
     "[\"app-route\",\"/cacheability/route-handler-static\",\"app-route\",\"/cacheability/route-handler-static\"]": {
       "kind": "app-route",
       "pattern": "/cacheability/route-handler-static",
