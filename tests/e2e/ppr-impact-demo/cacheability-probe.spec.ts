@@ -75,6 +75,20 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+  const configPublicDynamicProbe = await request.get("/cacheability/config-public-dynamic", {
+    headers,
+  });
+  await expect(configPublicDynamicProbe.json()).resolves.toMatchObject({
+    cacheControl: "s-maxage=32",
+    kind: "app-page",
+    pattern: "/cacheability/config-public-dynamic",
+    state: "static-candidate",
+    status: 200,
+    version: 1,
+  });
+
   // Next.js keeps middleware in front of page serving on every request:
   // test/e2e/middleware-static-files/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-static-files/index.test.ts

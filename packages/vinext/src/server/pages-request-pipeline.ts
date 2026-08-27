@@ -45,6 +45,29 @@ import {
 } from "./http-error-responses.js";
 import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
 
+function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
+  return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
+    (condition) =>
+      condition.type === "header" || condition.type === "cookie" || condition.type === "host",
+  );
+}
+
+function markConditionalRewriteCacheability(rewrite: NextRewrite): void {
+  if (ruleUsesUnkeyedRequestCondition(rewrite)) {
+    markRouteCacheabilityDynamic(
+      "next.config rewrite depends on request headers, cookies, or hostnames",
+    );
+  }
+}
+
+function markConditionalRedirectCacheability(redirect: NextRedirect): void {
+  if (ruleUsesUnkeyedRequestCondition(redirect)) {
+    markRouteCacheabilityDynamic(
+      "next.config redirect depends on request headers, cookies, or hostnames",
+    );
+  }
+}
+
 // All "render options" that are passed through to the renderPage callback
 export type PagesRenderOptions = {
   isDataReq?: boolean;
@@ -347,6 +370,7 @@ export async function runPagesRequest(
       configRedirects,
       reqCtx,
       basePathState,
+      markConditionalRedirectCacheability,
     );
     if (redirect) {
       // Only prepend basePath when the request was actually under basePath.
@@ -597,6 +621,8 @@ export async function runPagesRequest(
       [rewrite],
       rewriteRequestContext(),
       basePathState,
+      configSourcePathname(),
+      markConditionalRewriteCacheability,
     );
     if (rewritten) {
       if (isExternalUrl(rewritten)) {
@@ -697,6 +723,8 @@ export async function runPagesRequest(
         [rewrite],
         rewriteRequestContext(),
         basePathState,
+        configSourcePathname(),
+        markConditionalRewriteCacheability,
       );
       if (rewritten) {
         if (isExternalUrl(rewritten)) {
@@ -749,6 +777,8 @@ export async function runPagesRequest(
           [rewrite],
           rewriteRequestContext(),
           basePathState,
+          configSourcePathname(),
+          markConditionalRewriteCacheability,
         );
         if (!fallbackRewrite) continue;
         if (isExternalUrl(fallbackRewrite)) {
@@ -808,6 +838,8 @@ export async function runPagesRequest(
           [rewrite],
           rewriteRequestContext(),
           basePathState,
+          configSourcePathname(),
+          markConditionalRewriteCacheability,
         );
         if (!fallbackRewrite) continue;
         if (isExternalUrl(fallbackRewrite)) {
@@ -897,6 +929,8 @@ export async function runPagesRequest(
         [rewrite],
         rewriteRequestContext(),
         basePathState,
+        configSourcePathname(),
+        markConditionalRewriteCacheability,
       );
       if (!fallbackRewrite) continue;
       if (isExternalUrl(fallbackRewrite)) {

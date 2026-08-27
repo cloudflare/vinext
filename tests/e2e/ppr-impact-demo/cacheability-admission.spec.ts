@@ -70,6 +70,12 @@ test("admits only exact manifest-backed App Page responses after clean EOF", asy
   expect(knownDynamic.headers()["cache-control"]).toContain("no-store");
   expect(knownDynamic.headers()["cdn-cache-control"]).toBeUndefined();
 
+  const configPublicDynamic = await request.get("/cacheability/config-public-dynamic", {
+    headers: { Accept: "text/html" },
+  });
+  expect(configPublicDynamic.status()).toBe(200);
+  expect(configPublicDynamic.headers()["cdn-cache-control"]).toContain("max-age=32");
+
   const staticToDynamic = await request.get("/cacheability/static-to-dynamic/runtime", {
     headers: { Accept: "text/html", "X-Probe-Value": "private-value" },
   });

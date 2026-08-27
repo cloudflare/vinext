@@ -31,6 +31,7 @@ export type RouteCacheabilityState = {
   captureDeadlineAt: number;
   complete?: (outcome: RouteCacheabilityOutcome) => void;
   completion?: Promise<RouteCacheabilityOutcome>;
+  explicitConfigCachePolicy?: boolean;
   finalResponseVetoReason?: string;
   forcedDynamicReason?: string;
   frameworkResponseCachePolicy?: Partial<Record<CacheabilityPolicyHeader, string>>;
@@ -107,6 +108,13 @@ export function markRouteCacheabilityFinalResponseUncacheable(reason: string): v
   const state = readRouteCacheabilityState();
   if (!state || state.mode !== "admit") return;
   state.finalResponseVetoReason ??= reason;
+}
+
+/** Record that next.config explicitly owns the final response cache policy. */
+export function markRouteCacheabilityExplicitConfigPolicy(): void {
+  const state = readRouteCacheabilityState();
+  if (!state) return;
+  state.explicitConfigCachePolicy = true;
 }
 
 /** Record framework-owned policy so admission can identify policy added later. */

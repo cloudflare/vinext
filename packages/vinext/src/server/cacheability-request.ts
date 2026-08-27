@@ -393,7 +393,7 @@ function inferFinalAppPageCacheability(
   response: Response,
   state: RouteCacheabilityState,
 ): RouteCacheabilityOutcome | null {
-  if (!state.frameworkResponseCachePolicy) return null;
+  if (!state.explicitConfigCachePolicy && !state.frameworkResponseCachePolicy) return null;
 
   // Config headers run after the framework snapshots its provisional policy.
   // Match Next.js by honoring a later explicit public policy instead of
@@ -402,7 +402,10 @@ function inferFinalAppPageCacheability(
     ["cloudflare-cdn-cache-control", "cdn-cache-control", "cache-control"] as const
   ).find((name) => {
     const value = response.headers.get(name);
-    return value !== null && value !== state.frameworkResponseCachePolicy?.[name];
+    return (
+      value !== null &&
+      (state.explicitConfigCachePolicy || value !== state.frameworkResponseCachePolicy?.[name])
+    );
   });
   if (!changedPolicy) return null;
 

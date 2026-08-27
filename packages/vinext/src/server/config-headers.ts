@@ -8,6 +8,7 @@ import type { HeaderRecord } from "./request-pipeline.js";
 import {
   CACHEABILITY_POLICY_HEADERS,
   markRouteCacheabilityDynamic,
+  markRouteCacheabilityExplicitConfigPolicy,
   markRouteCacheabilityFinalResponseUncacheable,
 } from "vinext/shims/cacheability-classification";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
@@ -39,6 +40,9 @@ function markExplicitConfigResponseVeto(
     if (name === "set-cookie") {
       markRouteCacheabilityFinalResponseUncacheable("next.config headers set a cookie");
       continue;
+    }
+    if (CACHEABILITY_POLICY_HEADER_NAMES.has(name)) {
+      markRouteCacheabilityExplicitConfigPolicy();
     }
     if (CACHEABILITY_POLICY_HEADER_NAMES.has(name) && isNonCacheableCacheControl(header.value)) {
       markRouteCacheabilityFinalResponseUncacheable(

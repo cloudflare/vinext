@@ -95,6 +95,14 @@ test("classifies Pages Router data contracts inside the staged Worker", async ({
       "/cacheability-pages/config-header",
       "next.config headers depend on request headers, cookies, or hostnames",
     ],
+    [
+      "/cacheability-pages/conditional-redirect",
+      "next.config redirect depends on request headers, cookies, or hostnames",
+    ],
+    [
+      "/cacheability-pages/conditional-rewrite",
+      "next.config rewrite depends on request headers, cookies, or hostnames",
+    ],
   ] as const) {
     const response = await request.get(pathname, {
       headers: { ...headers, Accept: "text/html" },

@@ -3,6 +3,7 @@ import {
   captureCacheabilityAdmissionBody,
   createCacheabilityAdmissionCaptureBudget,
   createWorkerCacheabilityAdmissionContext,
+  createWorkerCacheabilityContext,
   finalizeWorkerCacheabilityResponse,
 } from "../packages/vinext/src/server/cacheability-request.js";
 import {
@@ -200,6 +201,58 @@ describe("single-request cacheability admission", () => {
     const response = await finalizeWorkerCacheabilityResponse(new Response("dynamic"), context);
     expect(response.headers.get("Cache-Control")).toContain("no-store");
     await expect(response.text()).resolves.toBe("dynamic");
+  });
+
+  it("honors a final public config policy for a completed dynamic App Page", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.frameworkResponseCachePolicy = { "cache-control": "no-store" };
+    state.completion = Promise.resolve({ cacheable: false, dynamicUsage: true });
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("dynamic", { headers: { "Cache-Control": "s-maxage=32" } }),
+      context,
+    );
+    expect(response.headers.get("Cache-Control")).toBe("s-maxage=32");
+    await expect(response.text()).resolves.toBe("dynamic");
+  });
+
+  it("probes a dynamic App Page with a final public config policy as cacheable", async () => {
+    const context = createWorkerCacheabilityContext(
+      { waitUntil() {} },
+      new Request("https://example.com/page", {
+        headers: {
+          "X-Vinext-Cacheability-Probe": "1",
+          "X-Vinext-Prerender-Secret": "probe-secret",
+        },
+      }),
+      "probe-secret",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.frameworkResponseCachePolicy = { "cache-control": "no-store" };
+    state.completion = Promise.resolve({ cacheable: false, dynamicUsage: true });
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("dynamic", { headers: { "Cache-Control": "s-maxage=32" } }),
+      context,
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      cacheControl: "s-maxage=32",
+      kind: "app-page",
+      pattern: "/page",
+      state: "static-candidate",
+      status: 200,
+    });
   });
 
   it.each([undefined, "*/*", "application/json"])(

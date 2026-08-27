@@ -1,6 +1,14 @@
 {
   "buildId": "ppr-impact-demo-cacheability",
   "routes": {
+    "[\"app-page\",\"/cacheability/config-public-dynamic\",\"html\",\"/cacheability/config-public-dynamic\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/config-public-dynamic",
+      "representation": "html",
+      "requestKey": "/cacheability/config-public-dynamic",
+      "state": "static-candidate",
+      "status": 200
+    },
     "[\"app-page\",\"/cacheability/dynamic\",\"html\",\"/cacheability/dynamic\"]": {
       "kind": "app-page",
       "pattern": "/cacheability/dynamic",
