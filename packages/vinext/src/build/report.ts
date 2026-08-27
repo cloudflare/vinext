@@ -177,6 +177,19 @@ function hasNamedExportInProgram(program: Program, name: string): boolean {
   return false;
 }
 
+function hasRuntimeExportedNameInProgram(program: Program, name: string): boolean {
+  for (const node of program.body) {
+    if (node.type !== "ExportNamedDeclaration" || node.exportKind === "type") continue;
+    if (declarationHasBindingName(node.declaration, name)) return true;
+
+    for (const specifier of node.specifiers) {
+      if (specifier.exportKind === "type") continue;
+      if (moduleExportNameValue(specifier.exported ?? specifier.local) === name) return true;
+    }
+  }
+  return false;
+}
+
 function unwrapStaticExpression(expression: Expression): Expression {
   let current = expression;
   while (
@@ -783,14 +796,19 @@ export function classifyAppRouteHandler(filePath: string): {
 
   const dynamicValue = extractExportConstStringFromProgram(program, "dynamic");
   const revalidateValue = extractExportConstNumberFromProgram(program, "revalidate");
+  const hasGet = hasRuntimeExportedNameInProgram(program, "GET");
+  const hasNonStaticMethod = ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"].some((method) =>
+    hasRuntimeExportedNameInProgram(program, method),
+  );
   return {
-    hasGet: hasNamedExportInProgram(program, "GET"),
+    hasGet,
     staticGenerationEnabled:
-      dynamicValue === "force-static" ||
-      dynamicValue === "error" ||
-      revalidateValue === Infinity ||
-      (revalidateValue !== null && revalidateValue > 0) ||
-      hasNamedExportInProgram(program, "generateStaticParams"),
+      !hasNonStaticMethod &&
+      (dynamicValue === "force-static" ||
+        dynamicValue === "error" ||
+        revalidateValue === Infinity ||
+        (revalidateValue !== null && revalidateValue > 0) ||
+        hasRuntimeExportedNameInProgram(program, "generateStaticParams")),
   };
 }
 

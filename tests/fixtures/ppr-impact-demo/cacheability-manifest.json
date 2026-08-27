@@ -89,6 +89,14 @@
       "state": "static-candidate",
       "status": 200
     },
+    "[\"app-route\",\"/cacheability/route-handler-config-public-late-error\",\"app-route\",\"/cacheability/route-handler-config-public-late-error\"]": {
+      "kind": "app-route",
+      "pattern": "/cacheability/route-handler-config-public-late-error",
+      "representation": "app-route",
+      "requestKey": "/cacheability/route-handler-config-public-late-error",
+      "state": "static-candidate",
+      "status": 200
+    },
     "[\"app-route\",\"/cacheability/route-handler-static\",\"app-route\",\"/cacheability/route-handler-static\"]": {
       "kind": "app-route",
       "pattern": "/cacheability/route-handler-static",

@@ -595,7 +595,7 @@ describe("app route handler execution helpers", () => {
     await expect(response.text()).resolves.toBe("tenant-a");
   });
 
-  it("completes an otherwise dynamic GET before adapter admission", async () => {
+  it("records clean completion for an otherwise unconfigured GET during adapter admission", async () => {
     const request = new Request("https://example.com/api/config-cache", {
       headers: { "x-tenant": "tenant-a" },
     });
@@ -628,14 +628,12 @@ describe("app route handler execution helpers", () => {
           return null;
         },
         handler: { dynamic: "auto" },
-        handlerFn(trackedRequest) {
+        handlerFn() {
           return new Response(
             new ReadableStream<Uint8Array>(
               {
                 pull(controller) {
-                  controller.enqueue(
-                    new TextEncoder().encode(trackedRequest.headers.get("x-tenant") ?? "missing"),
-                  );
+                  controller.enqueue(new TextEncoder().encode("reusable"));
                   controller.close();
                 },
               },
@@ -665,11 +663,9 @@ describe("app route handler execution helpers", () => {
       }),
     );
 
-    expect(state.finalResponseVetoReason).toContain(
-      "did not complete as a reusable static response",
-    );
-    expect(response.headers.get("cache-control")).toContain("no-store");
-    await expect(response.text()).resolves.toBe("tenant-a");
+    expect(state.completedResponseBody).toBe(true);
+    expect(state.finalResponseVetoReason).toBeUndefined();
+    await expect(response.text()).resolves.toBe("reusable");
   });
 
   it("falls back to private streaming and defers cleanup when bounded completion overflows", async () => {

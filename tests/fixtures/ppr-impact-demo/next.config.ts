@@ -27,6 +27,10 @@ export default {
       headers: [{ key: "Cache-Control", value: "s-maxage=32" }],
     },
     {
+      source: "/cacheability/route-handler-config-public-late-error",
+      headers: [{ key: "Cache-Control", value: "public, s-maxage=60" }],
+    },
+    {
       source: "/cacheability/static",
       has: [{ type: "query", key: "late-policy", value: "set-cookie" }],
       headers: [{ key: "Set-Cookie", value: "late-config=cookie; Path=/; HttpOnly" }],

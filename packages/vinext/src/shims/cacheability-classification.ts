@@ -31,6 +31,7 @@ export type RouteCacheabilityState = {
   captureDeadlineAt: number;
   complete?: (outcome: RouteCacheabilityOutcome) => void;
   completion?: Promise<RouteCacheabilityOutcome>;
+  completedResponseBody?: boolean;
   explicitConfigCachePolicy?: boolean;
   finalResponseVetoReason?: string;
   forcedDynamicReason?: string;
@@ -115,6 +116,13 @@ export function markRouteCacheabilityExplicitConfigPolicy(): void {
   const state = readRouteCacheabilityState();
   if (!state) return;
   state.explicitConfigCachePolicy = true;
+}
+
+/** Record that the response body reached clean EOF and is now a replay stream. */
+export function markRouteCacheabilityResponseBodyComplete(): void {
+  const state = readRouteCacheabilityState();
+  if (!state) return;
+  state.completedResponseBody = true;
 }
 
 /** Record framework-owned policy so admission can identify policy added later. */

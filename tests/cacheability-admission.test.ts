@@ -344,6 +344,36 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe("public");
   });
 
+  it("rejects a late-failing Route Handler made public by final config headers", async () => {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/api/config-public", { headers: { Accept: "*/*" } }),
+      null,
+      "build-a",
+      true,
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-route", pattern: "/api/config-public" };
+    state.explicitConfigCachePolicy = true;
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode("partial"));
+            controller.error(new Error("late failure"));
+          },
+        }),
+        { headers: { "Cache-Control": "public, s-maxage=60" } },
+      ),
+      context,
+    );
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+  });
+
   it.each(["*/*", "text/html"])(
     "admits only an exact manifest-backed Route Handler identity for Accept: %s",
     async (accept) => {

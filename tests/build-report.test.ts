@@ -499,6 +499,17 @@ describe("classifyAppRoute", () => {
 });
 
 describe("classifyAppRouteHandler", () => {
+  async function classifySource(code: string) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-route-handler-report-"));
+    const filePath = path.join(root, "route.ts");
+    try {
+      await fs.writeFile(filePath, code);
+      return classifyAppRouteHandler(filePath);
+    } finally {
+      await fs.rm(root, { force: true, recursive: true });
+    }
+  }
+
   it("matches Next.js static generation eligibility", () => {
     expect(
       classifyAppRouteHandler(path.join(FIXTURES_APP, "api", "static-data", "route.ts")),
@@ -506,6 +517,37 @@ describe("classifyAppRouteHandler", () => {
     expect(classifyAppRouteHandler(path.join(FIXTURES_APP, "api", "no-cache", "route.ts"))).toEqual(
       { hasGet: true, staticGenerationEnabled: false },
     );
+  });
+
+  it("uses exported aliases for the Route Handler module contract", async () => {
+    await expect(
+      classifySource(`
+        const handler = () => new Response("ok");
+        const params = () => [];
+        export { handler as GET, params as generateStaticParams };
+      `),
+    ).resolves.toEqual({ hasGet: true, staticGenerationEnabled: true });
+
+    await expect(
+      classifySource(`
+        type Handler = () => Response;
+        export type { Handler as GET };
+        export const revalidate = 60;
+      `),
+    ).resolves.toEqual({ hasGet: false, staticGenerationEnabled: true });
+  });
+
+  it("rejects GET modules with methods Next.js cannot statically generate", async () => {
+    // Ported from Next.js:
+    // packages/next/src/server/route-modules/app-route/module.ts#hasNonStaticMethods
+    await expect(
+      classifySource(`
+        export const revalidate = 60;
+        export function GET() { return new Response("get"); }
+        const mutate = () => new Response("post");
+        export { mutate as POST };
+      `),
+    ).resolves.toEqual({ hasGet: true, staticGenerationEnabled: false });
   });
 });
 

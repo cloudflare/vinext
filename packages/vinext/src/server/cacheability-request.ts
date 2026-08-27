@@ -527,12 +527,13 @@ async function finalizeWorkerCacheabilityAdmission(
 
   const admission = state.admission;
 
-  // Route Handlers prove body completion inside their execution boundary, so
-  // the outer Worker does not buffer them a second time. A manifest-bearing
-  // deployment must still authorize the exact route/path identity before a
-  // public response policy can escape. Normalize HTML-shaped direct
-  // navigations to the same Route Handler representation as canonical fetches;
-  // unsupported Vary fields remain a final veto below.
+  // Route Handlers normally prove body completion inside their execution
+  // boundary, so the outer Worker does not buffer them a second time. Config
+  // headers run later, however, and can make an otherwise dynamic response
+  // public. Capture only that unproven final-public case before it can escape.
+  // A manifest-bearing deployment must also authorize the exact route/path
+  // identity. Normalize HTML-shaped direct navigations to the same Route
+  // Handler representation as canonical fetches.
   if (state.route?.kind === "app-route") {
     let manifestRoute: CacheabilityManifestRoute | null = null;
     if (
@@ -571,7 +572,28 @@ async function finalizeWorkerCacheabilityAdmission(
     ) {
       return responseWithCachePolicy(response, response.body, null);
     }
-    return response;
+
+    const outcome = inferPagesPageCacheability(response);
+    if (!outcome.cacheable || !outcome.cacheControl) {
+      return responseWithCachePolicy(response, response.body, null);
+    }
+    if (state.completedResponseBody) return response;
+
+    let captured: CapturedAdmissionBody;
+    try {
+      captured = await captureCacheabilityAdmissionBody(
+        response.body,
+        state.captureDeadlineAt,
+        CACHEABILITY_PROBE_BODY_LIMIT,
+        state.captureBudget ?? isolateCaptureBudget,
+      );
+    } catch {
+      return cacheabilityEvaluationFailureResponse(state.route.pattern);
+    }
+    if (captured.kind === "fallback") {
+      return responseWithCachePolicy(response, captured.body, null);
+    }
+    return responseWithCachePolicy(response, captured.body, outcome);
   }
 
   if (
