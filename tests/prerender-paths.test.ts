@@ -193,6 +193,7 @@ describe("prerender path manifest", () => {
       "export const dynamic = 'force-dynamic'; export default function Page() { return null; }\n",
     );
     writeFile("app/cookie/page.tsx", "export default function Page() { return null; }\n");
+    writeFile("app/wildcard/path/page.tsx", "export default function Page() { return null; }\n");
     writeFile(
       "next.config.mjs",
       [
@@ -201,6 +202,7 @@ describe("prerender path manifest", () => {
         "    { source: '/policy/special', headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
         "    { source: '/conditional', missing: [{ type: 'query', key: '_rsc' }], headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
         "    { source: '/cookie', has: [{ type: 'query', key: '_rsc', value: '.*' }], headers: [{ key: 'Set-Cookie', value: 'rsc=1' }] },",
+        "    { source: '/wildcard/*', missing: [{ type: 'query', key: '_rsc', value: '.*' }], headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
         "  ],",
         "};",
       ].join("\n"),
@@ -226,6 +228,9 @@ describe("prerender path manifest", () => {
       },
       "/policy/special": {
         cacheabilityProbe: { canPrunePattern: false, canReuseHtmlForRsc: true },
+      },
+      "/wildcard/path": {
+        cacheabilityProbe: { canPrunePattern: false, canReuseHtmlForRsc: false },
       },
     });
   });

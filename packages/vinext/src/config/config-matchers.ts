@@ -1013,7 +1013,7 @@ export function matchRewrite(
  */
 export function matchesRewriteSource(
   pathname: string,
-  rewrite: Pick<NextRewrite, "basePath" | "source">,
+  rewrite: NextRewrite,
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
 ): boolean {
   return (

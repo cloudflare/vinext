@@ -32,7 +32,7 @@ import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
-import { matchesRewriteSource } from "../config/config-matchers.js";
+import { matchHeaders, matchesRewriteSource } from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
@@ -911,10 +911,22 @@ function cachePolicyRuleMatchesWarmPath(
     const matchPathname = normalizeDefaultLocalePathname(canonicalPathname, config.i18n, {
       hostname,
     });
-    return matchesRewriteSource(matchPathname, rule, {
-      basePath: config.basePath,
-      hadBasePath: true,
-    });
+    let sourceMatched = false;
+    matchHeaders(
+      matchPathname,
+      [rule],
+      {
+        cookies: {},
+        headers: new Headers(),
+        host: hostname ?? "",
+        query: new URLSearchParams(),
+      },
+      { basePath: config.basePath, hadBasePath: true },
+      () => {
+        sourceMatched = true;
+      },
+    );
+    return sourceMatched;
   });
 }
 
