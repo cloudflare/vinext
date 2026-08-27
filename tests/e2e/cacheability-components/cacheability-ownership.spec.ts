@@ -88,6 +88,22 @@ test("preserves Cache Components ownership while probing inside workerd", async 
     });
   }
 
+  // Ported from Next.js: test/e2e/app-dir/io/io.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/io/io.test.ts
+  // Cache Components must not leak through the hybrid handoff: io() remains
+  // a no-op for Pages Router even while the outer App handler owns the probe.
+  expect((await request.delete("/pages-io-state")).status()).toBe(204);
+  const pagesIoProbe = await request.get("/pages-io", { headers });
+  expect(pagesIoProbe.status()).toBe(200);
+  await expect(pagesIoProbe.json()).resolves.toMatchObject({
+    reason: "request did not resolve to a probeable App Page",
+    state: "probe-failed",
+  });
+  const pagesIoState = (await (await request.get("/pages-io-state")).json()) as {
+    renderCount: number;
+  };
+  expect(pagesIoState.renderCount).toBeGreaterThan(0);
+
   const dynamicErrorProbe = await request.get("/dynamic-error", { headers });
   await expect(dynamicErrorProbe.json()).resolves.toMatchObject({
     kind: "app-page",

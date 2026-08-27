@@ -79,7 +79,10 @@ import {
   resolveDevImageRedirect,
   type ImageConfig,
 } from "./image-optimization.js";
-import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
+import {
+  runWithLegacyPagesPrerenderWorkUnit,
+  runWithPrerenderWorkUnit,
+} from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
@@ -1484,22 +1487,36 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     matchKind: "dynamic" | "static",
   ): Promise<Response | null> => {
     if (!filesystemRouteEligible) return null;
-    const response =
-      !isInterceptionMatch && (match === null || match.route.isDynamic)
-        ? ((await options.renderPagesFallback?.({
-            appRouteMatch: match ?? null,
-            allowRscDocumentFallback:
-              didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
-            isDataRequest,
-            isRscRequest,
-            matchKind,
-            middlewareContext,
-            pathname: resolvedUrl,
-            pagesDataRequest,
-            request,
-            url,
-          })) ?? null)
-        : null;
+    const renderPagesFallback = options.renderPagesFallback;
+    let response: Response | null = null;
+    if (!isInterceptionMatch && (match === null || match.route.isDynamic) && renderPagesFallback) {
+      // Cache Components is an App Router feature. A hybrid fallback must
+      // retain Pages Router's legacy `io()` semantics during both staged
+      // probing and post-purge admission, matching Next.js.
+      setRouteCacheabilityCacheComponents(false);
+      try {
+        response =
+          (await runWithLegacyPagesPrerenderWorkUnit(() =>
+            renderPagesFallback({
+              appRouteMatch: match ?? null,
+              allowRscDocumentFallback:
+                didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
+              isDataRequest,
+              isRscRequest,
+              matchKind,
+              middlewareContext,
+              pathname: resolvedUrl,
+              pagesDataRequest,
+              request,
+              url,
+            }),
+          )) ?? null;
+      } finally {
+        if (!response) {
+          setRouteCacheabilityCacheComponents(options.createPprFallbackShells !== undefined);
+        }
+      }
+    }
     if (response) preserveRouteCacheabilityResponsePolicy();
     if (!response || !pagesDataRequest || resolvedUrl === originalResolvedUrl) return response;
 
