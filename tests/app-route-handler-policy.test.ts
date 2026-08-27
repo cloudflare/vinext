@@ -6,6 +6,7 @@ import {
   resolveAppRouteHandlerMethod,
   resolveAppRouteHandlerSpecialError,
   shouldApplyAppRouteHandlerRevalidateHeader,
+  shouldCompleteAppRouteHandlerResponse,
   shouldReadAppRouteHandlerCache,
   shouldWriteAppRouteHandlerCache,
 } from "../packages/vinext/src/server/app-route-handler-policy.js";
@@ -72,6 +73,21 @@ describe("app route handler policy helpers", () => {
     // unless the handler set its own. Gating this off would leave the
     // response with no Cache-Control and expose it to heuristic caching.
     expect(shouldApplyAppRouteHandlerRevalidateHeader(writeBase)).toBe(true);
+  });
+
+  it("completes GET bodies when the CDN adapter requires response admission", () => {
+    expect(
+      shouldCompleteAppRouteHandlerResponse({
+        dynamicConfig: "auto",
+        dynamicUsedInHandler: false,
+        handlerSetCacheControl: false,
+        isAutoHead: false,
+        isProduction: true,
+        method: "GET",
+        revalidateSeconds: null,
+        requiresCompletedResponseAdmission: true,
+      }),
+    ).toBe(true);
   });
 
   it("detects invalid default-export route handlers", () => {

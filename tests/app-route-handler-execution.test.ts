@@ -595,6 +595,83 @@ describe("app route handler execution helpers", () => {
     await expect(response.text()).resolves.toBe("tenant-a");
   });
 
+  it("completes an otherwise dynamic GET before adapter admission", async () => {
+    const request = new Request("https://example.com/api/config-cache", {
+      headers: { "x-tenant": "tenant-a" },
+    });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+    );
+    const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
+    const dynamicUsage = createDynamicUsageState();
+
+    const response = await runWithExecutionContext(context, () =>
+      executeAppRouteHandler({
+        buildPageCacheTags() {
+          return [];
+        },
+        cleanPathname: "/api/config-cache",
+        clearRequestContext() {},
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        executionContext: null,
+        getAndClearPendingCookies() {
+          return [];
+        },
+        getCollectedFetchTags() {
+          return [];
+        },
+        getDraftModeCookieHeader() {
+          return null;
+        },
+        handler: { dynamic: "auto" },
+        handlerFn(trackedRequest) {
+          return new Response(
+            new ReadableStream<Uint8Array>(
+              {
+                pull(controller) {
+                  controller.enqueue(
+                    new TextEncoder().encode(trackedRequest.headers.get("x-tenant") ?? "missing"),
+                  );
+                  controller.close();
+                },
+              },
+              { highWaterMark: 0 },
+            ),
+          );
+        },
+        isAutoHead: false,
+        isProduction: true,
+        isrRouteKey(pathname) {
+          return pathname;
+        },
+        async isrSet() {
+          throw new Error("dynamic response must not be persisted");
+        },
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        method: "GET",
+        middlewareContext: { headers: null, status: null },
+        params: null,
+        reportRequestError() {},
+        request,
+        revalidateSeconds: null,
+        routePattern: "/api/config-cache",
+        setHeadersAccessPhase() {
+          return "render";
+        },
+      }),
+    );
+
+    expect(state.finalResponseVetoReason).toContain(
+      "did not complete as a reusable static response",
+    );
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("tenant-a");
+  });
+
   it("falls back to private streaming and defers cleanup when bounded completion overflows", async () => {
     const request = new Request("https://example.com/api/large", {
       headers: { Accept: "*/*" },

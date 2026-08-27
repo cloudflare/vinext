@@ -45,6 +45,7 @@ type AppRouteHandlerResponseCacheOptions = {
   isProduction: boolean;
   method: string;
   revalidateSeconds: number | null;
+  requiresCompletedResponseAdmission?: boolean;
 };
 
 type AppRouteHandlerSpecialError =
@@ -170,8 +171,8 @@ export function shouldCompleteAppRouteHandlerResponse(
 ): boolean {
   return (
     options.isProduction &&
-    options.revalidateSeconds !== null &&
-    options.revalidateSeconds > 0 &&
+    ((options.revalidateSeconds !== null && options.revalidateSeconds > 0) ||
+      options.requiresCompletedResponseAdmission === true) &&
     options.dynamicConfig !== "force-dynamic" &&
     !options.isDraftMode &&
     !options.dynamicUsedInHandler &&

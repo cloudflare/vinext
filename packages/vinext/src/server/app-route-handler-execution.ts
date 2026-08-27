@@ -40,6 +40,8 @@ import {
 import {
   getRouteCacheabilityCaptureOptions,
   getRouteCacheabilityDynamicReason,
+  isRouteCacheabilityEvaluation,
+  markRouteCacheabilityFinalResponseUncacheable,
 } from "vinext/shims/cacheability-classification";
 import {
   CACHEABILITY_PROBE_BODY_LIMIT,
@@ -325,6 +327,7 @@ export async function executeAppRouteHandler(
         isProduction: options.isProduction,
         method: options.method,
         revalidateSeconds: options.revalidateSeconds,
+        requiresCompletedResponseAdmission: isRouteCacheabilityEvaluation(),
       })
     ) {
       const completed = await completeAppRouteHandlerResponse(response);
@@ -339,8 +342,16 @@ export async function executeAppRouteHandler(
 
     const requestCacheabilityVeto = getRouteCacheabilityDynamicReason();
     const responseMustStayPrivate = Boolean(
-      dynamicUsedInHandler || requestCacheabilityVeto || cleanupDeferredToBody,
+      options.handler.dynamic === "force-dynamic" ||
+      dynamicUsedInHandler ||
+      requestCacheabilityVeto ||
+      cleanupDeferredToBody,
     );
+    if (responseMustStayPrivate) {
+      markRouteCacheabilityFinalResponseUncacheable(
+        "Route Handler did not complete as a reusable static response",
+      );
+    }
 
     if (dynamicUsedInHandler) {
       markKnownDynamicAppRoute(options.routePattern);
