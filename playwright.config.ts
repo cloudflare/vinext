@@ -328,7 +328,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4209" },
     server: {
       command:
-        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/ppr-impact-demo/node_modules node_modules) && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && npx wrangler dev --config dist/server/wrangler.json --port 4209",
+        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/ppr-impact-demo/node_modules node_modules) && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && node ../../../fixtures/ppr-impact-demo/embed-cacheability-manifest.mjs && npx wrangler dev --config dist/server/wrangler.json --port 4209",
       cwd: "./tests/e2e/cacheability-components/fixture",
       port: 4209,
       reuseExistingServer: !process.env.CI,

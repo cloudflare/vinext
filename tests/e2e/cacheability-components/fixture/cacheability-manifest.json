@@ -1,0 +1,14 @@
+{
+  "buildId": "cacheability-components-e2e",
+  "routes": {
+    "[\"app-page\",\"/conditional-io\",\"html\",\"/conditional-io\"]": {
+      "kind": "app-page",
+      "pattern": "/conditional-io",
+      "representation": "html",
+      "requestKey": "/conditional-io",
+      "state": "static-candidate",
+      "status": 200
+    }
+  },
+  "version": 1
+}

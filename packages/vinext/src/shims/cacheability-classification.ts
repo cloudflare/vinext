@@ -29,6 +29,8 @@ export type RouteCacheabilityState = {
   /** Optional admission budget override used by focused runtime tests. */
   captureBudget?: { maxBytes: number; reservedBytes: number };
   captureDeadlineAt: number;
+  /** Whether this request renders with Next.js Cache Components semantics. */
+  cacheComponents?: boolean;
   complete?: (outcome: RouteCacheabilityOutcome) => void;
   completion?: Promise<RouteCacheabilityOutcome>;
   finalResponseVetoReason?: string;
@@ -67,6 +69,17 @@ export function beginRouteCacheability(kind: "app-page" | "app-route", pattern: 
   if (!state) return false;
   state.route = { kind, pattern };
   return true;
+}
+
+/** Record the route runtime's Cache Components mode for late admission checks. */
+export function setRouteCacheabilityCacheComponents(enabled: boolean): void {
+  const state = readRouteCacheabilityState();
+  if (state) state.cacheComponents = enabled;
+}
+
+/** Whether the active cacheability evaluation uses Cache Components semantics. */
+export function isRouteCacheabilityCacheComponentsEnabled(): boolean {
+  return readRouteCacheabilityState()?.cacheComponents === true;
 }
 
 /** Prevent shared caching when request processing before route dispatch was request-specific. */

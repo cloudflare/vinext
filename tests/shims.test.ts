@@ -6204,6 +6204,46 @@ describe("next/cache shim", () => {
     await expect(promise).resolves.toBeUndefined();
   });
 
+  // Ported from Next.js: test/e2e/app-dir/io/io.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/io/io.test.ts
+  it('io resolves inside actual "use cache" and unstable_cache scopes during prerender', async () => {
+    const { io, unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+    const controller = new AbortController();
+    const signalPrerenderBailout = vi.fn();
+    const publicCached = registerCachedFunction(async () => {
+      await io();
+      return "public-cache";
+    }, "test:io-inside-public-cache");
+    const unstableCached = unstable_cache(async () => {
+      await io();
+      return "unstable-cache";
+    }, ["io-inside-unstable-cache"]);
+
+    try {
+      await expect(
+        workUnitAsyncStorage.run(
+          {
+            type: "prerender",
+            renderSignal: controller.signal,
+            signalPrerenderBailout,
+          },
+          () => Promise.all([publicCached(), unstableCached()]),
+        ),
+      ).resolves.toEqual(["public-cache", "unstable-cache"]);
+      expect(signalPrerenderBailout).not.toHaveBeenCalled();
+    } finally {
+      controller.abort();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("io rejects hanging promise on abort when prerendering", async () => {
     const { io } = await import("../packages/vinext/src/shims/cache.js");
     const { workUnitAsyncStorage } =

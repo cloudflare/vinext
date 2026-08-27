@@ -28,6 +28,19 @@ export function runWithPrerenderWorkUnit(
   return fn();
 }
 
+/** Keep Pages Router rendering on its legacy prerender semantics during an App handoff. */
+export function runWithLegacyPagesPrerenderWorkUnit<T>(fn: () => T): T {
+  const store = workUnitAsyncStorage.getStore();
+  if (
+    store?.type !== "prerender" &&
+    store?.type !== "prerender-client" &&
+    store?.type !== "prerender-runtime"
+  ) {
+    return fn();
+  }
+  return workUnitAsyncStorage.run({ type: "prerender-legacy" }, fn);
+}
+
 async function runWithPrerenderWorkUnitOwner(
   fn: () => Promise<Response>,
   options?: { route?: string | (() => string) },
