@@ -91,6 +91,7 @@ import {
   DEFAULT_CACHEABILITY_PROBE_RETRIES,
   DEFAULT_CACHEABILITY_PROBE_RETRY_DELAY_MS,
   probeStagedWorkerCacheability,
+  readPrerenderSecret,
 } from "./cacheability-probe.js";
 
 export const DEFAULT_CDN_WARM_PROMOTION_DELAY_MS = 15_000;
@@ -759,6 +760,7 @@ type CdnWarmDeployOptions = Pick<
 type PreparedCdnWarmDeployOptions = CdnWarmDeployOptions & {
   expectedDeploymentState?: WranglerDeploymentStatus;
   optionalWarmTargetKeys?: ReadonlySet<string>;
+  prerenderSecret?: string;
   triggersAlreadyApplied?: boolean;
   triggersDeployedUrl?: string | null;
   uploadedVersion?: WranglerVersionUploadResult;
@@ -1035,6 +1037,7 @@ async function deployUploadedVersionWithCdnWarmup(
             targetUrl,
             headers,
             plan: stagedWarmPlan,
+            prerenderSecret: options.prerenderSecret,
             deploymentId,
             expectedBuildId,
             expectedRscBuildId,
@@ -1379,6 +1382,8 @@ async function deployWithCacheabilityProbe(
     );
   }
 
+  const prerenderSecret = readPrerenderSecret(root);
+
   const probeUpload = runWranglerVersionUpload(root, options);
   const initialDeployment = runWranglerDeploymentStatus(root, options);
   const probeTraffic = getZeroPercentStagingTraffic(initialDeployment, probeUpload.versionId);
@@ -1421,6 +1426,7 @@ async function deployWithCacheabilityProbe(
     | {
         optionalWarmTargetKeys: ReadonlySet<string>;
         plan: PrerenderWarmPlan;
+        prerenderSecret: string;
         upload: WranglerVersionUploadResult;
       }
     | undefined;
@@ -1510,6 +1516,7 @@ async function deployWithCacheabilityProbe(
         targetUrl,
         headers,
         plan,
+        prerenderSecret,
         deploymentId: plan.deploymentId,
         expectedBuildId: plan.buildIdentity,
         expectedRscBuildId: plan.rscBuildId,
@@ -1616,6 +1623,7 @@ async function deployWithCacheabilityProbe(
     );
     prepared = {
       optionalWarmTargetKeys: new Set(probe.speculativeTargets.map(cdnWarmTargetKey)),
+      prerenderSecret,
       plan: finalPlan,
       upload: finalUpload,
     };
@@ -1632,6 +1640,7 @@ async function deployWithCacheabilityProbe(
     loadingShellPaths: prepared.plan.loadingShellPaths,
     optionalWarmTargetKeys: prepared.optionalWarmTargetKeys,
     pagesDataPaths: prepared.plan.pagesDataPaths,
+    prerenderSecret: prepared.prerenderSecret,
     routeHandlerPaths: prepared.plan.routeHandlerPaths,
     routePatterns: prepared.plan.routePatterns,
     rscPaths: prepared.plan.rscPaths,

@@ -104,7 +104,21 @@ describe("App Router Production server worker entry compatibility", () => {
         trustedRevalidateOrigin: "http://127.0.0.1:3000",
       });
 
+      const readiness = await entry.default.fetch(
+        new Request("https://example.com/__vinext/prerender/readiness", {
+          headers: {
+            accept: "text/html",
+            "x-vinext-expected-worker-version": "version-a",
+            "x-vinext-prerender-secret": "worker-prerender-secret",
+          },
+        }),
+        undefined,
+        { waitUntil() {} },
+      );
+
       expect(capturedRequests).toHaveLength(2);
+      expect(readiness.status).toBe(204);
+      expect(readiness.headers.get("cache-control")).toBe("no-store");
       expect(capturedRequests[0].headers.get("x-vinext-prerender-secret")).toBeNull();
       expect(capturedRequests[0].headers.get("x-vinext-prerender-route-params")).toBeNull();
       expect(capturedRequests[1].headers.get("x-vinext-prerender-secret")).toBeNull();

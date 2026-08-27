@@ -815,6 +815,37 @@ describe("Cloudflare CDN warmup", () => {
     ).resolves.toEqual({ ready: true });
   });
 
+  it("uses the authenticated readiness endpoint instead of rendering an application route", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : input);
+      const headers = new Headers(init?.headers);
+      expect(url.pathname).toBe("/__vinext/prerender/readiness");
+      expect(url.searchParams.has("__vinext_cdn_warm_readiness")).toBe(true);
+      expect(headers.get("accept")).toBe("text/html");
+      expect(headers.get("rsc")).toBeNull();
+      expect(headers.get("x-vinext-prerender-secret")).toBe("build-secret");
+      return new Response(null, {
+        status: 204,
+        headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "build-a" },
+      });
+    });
+
+    await expect(
+      waitForCdnWarmTargetReadiness({
+        expectedBuildId: "build-a",
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        maxAttempts: 1,
+        plan: { loadingShellPaths: [], pagesDataPaths: [], paths: [], rscPaths: ["/slow"] },
+        prerenderSecret: "build-secret",
+        probeIntervalMs: 0,
+        requiredConsecutiveSuccesses: 1,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toEqual({ ready: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("uses a Pages data identity when it is the only staged readiness target", async () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       expect(new Headers(init?.headers).get("accept")).toBe("application/json");
@@ -899,7 +930,7 @@ describe("Cloudflare CDN warmup", () => {
     expect(fetchImpl.mock.calls.length).toBeLessThan(100);
   });
 
-  it("lets the default phase envelope consume the configured retry budget", async () => {
+  it("keeps failed readiness bounded by the default phase deadline", async () => {
     let now = 0;
     const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
     const fetchImpl = vi.fn(async () => {
@@ -920,7 +951,7 @@ describe("Cloudflare CDN warmup", () => {
       });
 
       expect(readiness.ready).toBe(false);
-      expect(fetchImpl).toHaveBeenCalledTimes(66);
+      expect(fetchImpl).toHaveBeenCalledTimes(12);
     } finally {
       dateNow.mockRestore();
     }

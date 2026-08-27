@@ -24,6 +24,10 @@ import {
 } from "vinext/internal/server/app-rsc-cache-busting";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
+import {
+  VINEXT_PRERENDER_READINESS_PATH,
+  VINEXT_PRERENDER_SECRET_HEADER,
+} from "vinext/internal/server/headers";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "./cache/cdn-build-id.js";
 
 export type CdnWarmOptions = {
@@ -845,6 +849,7 @@ export async function waitForCdnWarmTargetReadiness(
     plan: CdnWarmRequestPlan;
     maxAttempts?: number;
     phaseTimeoutMs?: number;
+    prerenderSecret?: string;
     probeIntervalMs?: number;
     requiredConsecutiveSuccesses?: number;
   },
@@ -864,8 +869,17 @@ export async function waitForCdnWarmTargetReadiness(
   }
 
   const headers = new Headers(options.headers);
-  const probePath = kind === "rsc" ? createCanonicalRscRequestUrl(pathname) : pathname;
-  if (kind === "rsc") {
+  const readinessSecret = options.prerenderSecret;
+  const useReadinessEndpoint = Boolean(readinessSecret);
+  const probePath = useReadinessEndpoint
+    ? VINEXT_PRERENDER_READINESS_PATH
+    : kind === "rsc"
+      ? createCanonicalRscRequestUrl(pathname)
+      : pathname;
+  if (readinessSecret) {
+    headers.set("Accept", "text/html");
+    headers.set(VINEXT_PRERENDER_SECRET_HEADER, readinessSecret);
+  } else if (kind === "rsc") {
     for (const [name, value] of createCanonicalRscRequestHeaders(options.deploymentId)) {
       headers.set(name, value);
     }
@@ -894,13 +908,9 @@ export async function waitForCdnWarmTargetReadiness(
     requiredConsecutiveSuccesses,
     options.maxAttempts ?? requiredConsecutiveSuccesses + readinessRetries,
   );
-  // The default phase envelope must be large enough to honor the configured
-  // retry budget even when every attempt consumes its request timeout. An
-  // explicit phase deadline remains authoritative.
-  const retryBudgetMs = maxAttempts * timeoutMs + Math.max(0, maxAttempts - 1) * probeIntervalMs;
   const phaseTimeoutMs = Math.max(
     1,
-    options.phaseTimeoutMs ?? Math.max(DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS, retryBudgetMs),
+    options.phaseTimeoutMs ?? DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS,
   );
   const deadlineAt = Date.now() + phaseTimeoutMs;
   const probeId = randomUUID();
@@ -925,9 +935,9 @@ export async function waitForCdnWarmTargetReadiness(
       );
       const validationError = validateReadinessResponse(
         response,
-        kind,
+        useReadinessEndpoint ? "html" : kind,
         options.expectedBuildId,
-        options.expectedRscBuildId,
+        useReadinessEndpoint ? undefined : options.expectedRscBuildId,
       );
       if (process.env.VINEXT_CDN_WARM_DEBUG === "1") {
         console.log(

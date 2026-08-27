@@ -127,7 +127,7 @@ function isProbeRouteState(value: unknown): value is ProbeRouteState {
   return value === "static-candidate" || value === "dynamic" || value === "probe-failed";
 }
 
-function readPrerenderSecret(root: string): string {
+export function readPrerenderSecret(root: string): string {
   const manifestPath = path.join(root, "dist", "server", "vinext-server.json");
   const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as unknown;
   const secret =

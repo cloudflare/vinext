@@ -45,7 +45,7 @@ export function formatDeployHelp(): string {
                              entry to be reusable before promotion
     --warm-cdn-readiness-timeout <ms>
                              Explicit total staged-readiness deadline (default:
-                             enough for all retries, minimum 120000)
+                             120000)
     --warm-cdn-readiness-retries <n>
                              Staged-readiness retries (default: 60)
     --warm-cdn-readiness-probes <count>

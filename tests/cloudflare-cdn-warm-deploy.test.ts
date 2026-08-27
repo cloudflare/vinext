@@ -492,6 +492,12 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }
       const pathname = new URL(formatFetchUrl(input)).pathname;
       const isRsc = headers.get("RSC") === "1";
+      if (isReadinessFetch(input)) {
+        expect(pathname).toBe("/__vinext/prerender/readiness");
+        expect(headers.get("accept")).toBe("text/html");
+        expect(headers.get("rsc")).toBeNull();
+        expect(headers.get("x-vinext-prerender-secret")).toBe("test-prerender-secret");
+      }
       const cacheKey = `${pathname}${isRsc ? "?_rsc" : ""}`;
       const cacheStatus = (cacheRequestCounts.get(cacheKey) ?? 0) > 1 ? "HIT" : "MISS";
       if (pathname === "/about" && isRsc) {
