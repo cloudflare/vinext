@@ -1056,6 +1056,51 @@ describe("cacheability probe finalization", () => {
     };
   }
 
+  it.each(["app-page", "pages-page"] as const)(
+    "classifies named Vary fields as static for verbatim %s probes",
+    async (kind) => {
+      const state: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 1_000,
+        mode: "probe",
+        outcome: { cacheable: true, cacheControl: "public, s-maxage=60" },
+        responseVary: "verbatim",
+        route: { kind, pattern: "/page" },
+      };
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response("variant", { headers: { Vary: "Accept-Language" } }),
+        contextWith(state),
+      );
+
+      await expect(response.json()).resolves.toMatchObject({
+        kind,
+        state: "static-candidate",
+      });
+    },
+  );
+
+  it.each(["app-page", "pages-page"] as const)(
+    "classifies Vary wildcard %s probes as dynamic",
+    async (kind) => {
+      const state: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 1_000,
+        mode: "probe",
+        outcome: { cacheable: true, cacheControl: "public, s-maxage=60" },
+        responseVary: "verbatim",
+        route: { kind, pattern: "/page" },
+      };
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response("wildcard", { headers: { Vary: "*" } }),
+        contextWith(state),
+      );
+
+      await expect(response.json()).resolves.toMatchObject({
+        kind,
+        reason: "response uses Vary: *",
+        state: "dynamic",
+      });
+    },
+  );
+
   it("reports whether the renderer itself produced the public cache policy", async () => {
     const staticState: RouteCacheabilityState = {
       captureDeadlineAt: Date.now() + 1_000,

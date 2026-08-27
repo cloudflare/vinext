@@ -503,12 +503,12 @@ function completedRouteOutcome(
   if (state.forcedDynamicReason) {
     return { cacheable: false, reason: state.forcedDynamicReason };
   }
+  const varyRejectionReason = cacheabilityVaryRejectionReason(response.headers, state);
+  if (varyRejectionReason) return { cacheable: false, reason: varyRejectionReason };
   if (state.route?.kind === "app-route") {
     if (response.headers.has("set-cookie")) {
       return { cacheable: false, reason: "response sets a cookie" };
     }
-    const varyRejectionReason = cacheabilityVaryRejectionReason(response.headers, state);
-    if (varyRejectionReason) return { cacheable: false, reason: varyRejectionReason };
     return inferPagesPageCacheability(response);
   }
   if (state.route?.kind === "app-page") {
