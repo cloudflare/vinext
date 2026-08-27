@@ -890,15 +890,19 @@ export async function waitForCdnWarmTargetReadiness(
     options.requiredConsecutiveSuccesses ?? DEFAULT_STAGED_READINESS_SUCCESSES,
   );
   const readinessRetries = Math.max(0, options.retries ?? DEFAULT_STAGED_READINESS_RETRIES);
-  const phaseTimeoutMs = Math.max(
-    1,
-    options.phaseTimeoutMs ?? DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS,
-  );
-  const deadlineAt = Date.now() + phaseTimeoutMs;
   const maxAttempts = Math.max(
     requiredConsecutiveSuccesses,
     options.maxAttempts ?? requiredConsecutiveSuccesses + readinessRetries,
   );
+  // The default phase envelope must be large enough to honor the configured
+  // retry budget even when every attempt consumes its request timeout. An
+  // explicit phase deadline remains authoritative.
+  const retryBudgetMs = maxAttempts * timeoutMs + Math.max(0, maxAttempts - 1) * probeIntervalMs;
+  const phaseTimeoutMs = Math.max(
+    1,
+    options.phaseTimeoutMs ?? Math.max(DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS, retryBudgetMs),
+  );
+  const deadlineAt = Date.now() + phaseTimeoutMs;
   const probeId = randomUUID();
   let consecutiveSuccesses = 0;
   let lastError = "readiness probe did not run";

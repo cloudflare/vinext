@@ -899,6 +899,33 @@ describe("Cloudflare CDN warmup", () => {
     expect(fetchImpl.mock.calls.length).toBeLessThan(100);
   });
 
+  it("lets the default phase envelope consume the configured retry budget", async () => {
+    let now = 0;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const fetchImpl = vi.fn(async () => {
+      now += 10_000;
+      throw new DOMException("timed out", "AbortError");
+    });
+
+    try {
+      const readiness = await waitForCdnWarmTargetReadiness({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        plan: { loadingShellPaths: [], pagesDataPaths: [], paths: ["/"], rscPaths: [] },
+        probeIntervalMs: 0,
+        requiredConsecutiveSuccesses: 6,
+        retries: 60,
+        targetUrl: "https://app.example.com",
+        timeoutMs: 10_000,
+      });
+
+      expect(readiness.ready).toBe(false);
+      expect(fetchImpl).toHaveBeenCalledTimes(66);
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+
   it("does not skip a non-success response from a different build", async () => {
     const fetchImpl = vi.fn(
       async () =>
