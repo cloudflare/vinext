@@ -44,6 +44,12 @@ export type CacheabilityManifest = {
   version: 1;
 };
 
+const manifestRoutePatterns = new WeakMap<CacheabilityManifest, ReadonlySet<string>>();
+
+function cacheabilityManifestRoutePatternKey(kind: CacheabilityRouteKind, pattern: string): string {
+  return `${kind}\0${pattern}`;
+}
+
 export function cacheabilityManifestRouteKey(
   kind: CacheabilityManifestRoute["kind"],
   pattern: string,
@@ -128,15 +134,36 @@ export function parseCacheabilityManifest(
     }
 
     const routes: Record<string, CacheabilityManifestRoute> = {};
+    const routePatterns = new Set<string>();
     for (const [key, routeValue] of Object.entries(record.routes)) {
       const route = parseRoute(key, routeValue);
       if (!route) return null;
       routes[key] = route;
+      routePatterns.add(cacheabilityManifestRoutePatternKey(route.kind, route.pattern));
     }
-    return { buildId: expectedBuildId, routes, version: 1 };
+    const manifest: CacheabilityManifest = { buildId: expectedBuildId, routes, version: 1 };
+    manifestRoutePatterns.set(manifest, routePatterns);
+    return manifest;
   } catch {
     return null;
   }
+}
+
+export function cacheabilityManifestHasRoutePattern(
+  manifest: CacheabilityManifest,
+  kind: CacheabilityRouteKind,
+  pattern: string,
+): boolean {
+  let routePatterns = manifestRoutePatterns.get(manifest);
+  if (!routePatterns) {
+    routePatterns = new Set(
+      Object.values(manifest.routes).map((route) =>
+        cacheabilityManifestRoutePatternKey(route.kind, route.pattern),
+      ),
+    );
+    manifestRoutePatterns.set(manifest, routePatterns);
+  }
+  return routePatterns.has(cacheabilityManifestRoutePatternKey(kind, pattern));
 }
 
 const CONTEXTUAL_RSC_HEADERS = [

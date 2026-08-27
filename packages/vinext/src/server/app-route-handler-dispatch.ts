@@ -29,6 +29,7 @@ import type { ISRCacheEntry } from "./isr-cache.js";
 import {
   getAppRouteHandlerRevalidateSeconds,
   hasAppRouteHandlerDefaultExport,
+  hasNonStaticAppRouteHandlerMethods,
   resolveAppRouteHandlerMethod,
   shouldReadAppRouteHandlerCache,
   type AppRouteHandlerModule,
@@ -177,7 +178,13 @@ export async function dispatchAppRouteHandler(
   if (method === "GET" || method === "HEAD") {
     beginRouteCacheability("app-route", route.pattern);
   }
-  const revalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);
+  const configuredRevalidateSeconds = getAppRouteHandlerRevalidateSeconds(handler);
+  // Next.js bails out of static generation when any mutating method is
+  // exported. Keep segment revalidation available to inner fetches, but do
+  // not read/write ISR or generate a public route-response policy.
+  const revalidateSeconds = hasNonStaticAppRouteHandlerMethods(handler)
+    ? null
+    : configuredRevalidateSeconds;
   const isDevelopment = options.isDevelopment ?? process.env.NODE_ENV === "development";
   const isProduction = options.isProduction ?? process.env.NODE_ENV === "production";
   const appendResponseLink = handler.runtime === "edge" || handler.runtime === "experimental-edge";
@@ -245,7 +252,7 @@ export async function dispatchAppRouteHandler(
   // where handlers ignored their `fetchCache`/`force-dynamic` segment config.
   const fetchCacheMode = resolveAppRouteHandlerFetchCacheMode(handler);
   setCurrentFetchCacheMode(fetchCacheMode);
-  setCurrentFetchRevalidate(revalidateSeconds);
+  setCurrentFetchRevalidate(configuredRevalidateSeconds);
   setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
 
   if (

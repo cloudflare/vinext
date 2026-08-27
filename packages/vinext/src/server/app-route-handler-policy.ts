@@ -97,6 +97,11 @@ export function hasAppRouteHandlerDefaultExport(handler: RouteHandlerModule): bo
   return typeof handler.default === "function";
 }
 
+/** Match Next.js methods that force an App Route out of static generation. */
+export function hasNonStaticAppRouteHandlerMethods(handler: RouteHandlerModule): boolean {
+  return Boolean(handler.POST || handler.PUT || handler.DELETE || handler.PATCH || handler.OPTIONS);
+}
+
 export function resolveAppRouteHandlerMethod(
   handler: AppRouteHandlerModule,
   method: string,

@@ -461,6 +461,31 @@ describe("single-request cacheability admission", () => {
     },
   );
 
+  it("does not let explicit policy bypass an exact manifest status mismatch", async () => {
+    const { raw } = staticAppRouteManifest();
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/api/data", { headers: { Accept: "*/*" } }),
+      raw,
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-route", pattern: "/api/data" };
+    state.explicitResponseCachePolicy = true;
+    state.completedResponseBody = true;
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("redirected", {
+        headers: { "Cache-Control": "public, s-maxage=60", Location: "/elsewhere" },
+        status: 302,
+      }),
+      context,
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+  });
+
   it("keeps an unlisted Route Handler query identity private despite explicit policy", async () => {
     const { raw } = staticAppRouteManifest();
     const context = createWorkerCacheabilityAdmissionContext(

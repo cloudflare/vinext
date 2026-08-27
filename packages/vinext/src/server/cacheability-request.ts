@@ -25,6 +25,7 @@ import {
 } from "./cacheability-limits.js";
 import {
   cacheabilityRequestIdentity,
+  cacheabilityManifestHasRoutePattern,
   findCacheabilityManifestRoute,
   parseCacheabilityManifest,
   type CacheabilityManifest,
@@ -563,8 +564,10 @@ async function finalizeWorkerCacheabilityAdmission(
         },
       );
       if (!manifestRoute && hasExplicitRuntimePolicy) {
-        manifestContainsRoutePattern = Object.values(manifest.routes).some(
-          (route) => route.kind === state.route?.kind && route.pattern === state.route?.pattern,
+        manifestContainsRoutePattern = cacheabilityManifestHasRoutePattern(
+          manifest,
+          state.route.kind,
+          state.route.pattern,
         );
       }
     }
@@ -573,7 +576,7 @@ async function finalizeWorkerCacheabilityAdmission(
     const canUseBoundedRuntimeAdmission =
       hasExplicitRuntimePolicy &&
       (admission.policy === "runtime" ||
-        (admission.policy === "manifest" && !manifestContainsRoutePattern));
+        (admission.policy === "manifest" && !manifestRoute && !manifestContainsRoutePattern));
     if (
       (!isManifestAuthorized && !canUseBoundedRuntimeAdmission) ||
       response.status >= 500 ||

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   getAppRouteHandlerRevalidateSeconds,
   hasAppRouteHandlerDefaultExport,
+  hasNonStaticAppRouteHandlerMethods,
   isPossibleAppRouteActionRequest,
   resolveAppRouteHandlerMethod,
   resolveAppRouteHandlerSpecialError,
@@ -94,6 +95,13 @@ describe("app route handler policy helpers", () => {
     expect(hasAppRouteHandlerDefaultExport({ default() {} })).toBe(true);
     expect(hasAppRouteHandlerDefaultExport({ default: "nope" })).toBe(false);
     expect(hasAppRouteHandlerDefaultExport({ GET() {} })).toBe(false);
+  });
+
+  it("matches Next.js non-static Route Handler method detection", () => {
+    expect(hasNonStaticAppRouteHandlerMethods({ GET() {} })).toBe(false);
+    for (const method of ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"] as const) {
+      expect(hasNonStaticAppRouteHandlerMethods({ GET() {}, [method]() {} })).toBe(true);
+    }
   });
 
   it("resolves auto-options and auto-head route handler behavior", () => {
