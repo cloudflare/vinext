@@ -690,6 +690,7 @@ function extractPagesStaticPathLocale(
 async function collectAppPaths(options: {
   appDir: string;
   baseUrl: string | null;
+  cacheComponents: boolean;
   pageExtensions: readonly string[];
   retryOptions?: PathDiscoveryRetryOptions;
   secretHeaders: Record<string, string>;
@@ -729,6 +730,13 @@ async function collectAppPaths(options: {
           const value = JSON.parse(text) as unknown;
           if (!Array.isArray(value)) {
             throw new Error(`generateStaticParams must return an array for ${pattern}.`);
+          }
+          if (options.cacheComponents && value.length === 0) {
+            throw new Error(
+              "When using Cache Components, all `generateStaticParams` functions must return at least one result. " +
+                "This is to ensure that we can perform build-time validation that there is no other dynamic accesses that would cause a runtime error.\n\n" +
+                "Learn more: https://nextjs.org/docs/messages/empty-generate-static-params",
+            );
           }
           return value.map((entry) => {
             if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
@@ -1262,6 +1270,7 @@ export async function emitPrerenderPathManifest(
         const appPathResult = await collectAppPaths({
           appDir,
           baseUrl,
+          cacheComponents: config.cacheComponents,
           pageExtensions: config.pageExtensions,
           retryOptions: pathDiscoveryRetryOptions,
           secretHeaders,

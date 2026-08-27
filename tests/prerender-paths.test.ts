@@ -936,6 +936,34 @@ describe("prerender path manifest", () => {
   });
 
   it.each([
+    ["App Page", "app/posts/[slug]/page.tsx", "export default function Page() { return null; }"],
+    [
+      "App Route Handler",
+      "app/api/posts/[slug]/route.ts",
+      "export function GET() { return Response.json({ ok: true }); }",
+    ],
+  ])("rejects empty generateStaticParams for a Cache Components %s", async (_name, file, body) => {
+    // Ported from Next.js: test/e2e/app-dir/empty-generate-static-params
+    // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/empty-generate-static-params
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("next.config.js", "export default { cacheComponents: true };\n");
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(file, ["export function generateStaticParams() { return []; }", body].join("\n"));
+    vi.mocked(fetch).mockResolvedValue(Response.json([]));
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    await expect(
+      emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" }),
+    ).rejects.toThrow(
+      "When using Cache Components, all `generateStaticParams` functions must return at least one result.",
+    );
+  });
+
+  it.each([
     [
       "empty generateStaticParams",
       [
