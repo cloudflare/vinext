@@ -799,8 +799,9 @@ describe("prerenderPages — basePath export", () => {
         res.end("not found");
         return;
       }
+      const responsePath = req.url === "/docs/about" ? "/docs/about" : "/docs";
       res.setHeader("content-type", "text/html");
-      res.end(`<!DOCTYPE html><html><body>Pages basePath ${req.url}</body></html>`);
+      res.end(`<!DOCTYPE html><html><body>Pages basePath ${responsePath}</body></html>`);
     });
 
     const port = await listen(server);
