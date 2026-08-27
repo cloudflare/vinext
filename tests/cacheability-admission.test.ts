@@ -14,6 +14,11 @@ import {
   cacheabilityManifestRouteKey,
   type CacheabilityManifestRoute,
 } from "../packages/vinext/src/server/cacheability-manifest.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 const encoder = new TextEncoder();
 
@@ -663,5 +668,33 @@ describe("cacheability probe finalization", () => {
       state: "dynamic",
       status: 500,
     });
+  });
+
+  it("preserves build identity on Route Handler probe envelopes", async () => {
+    const previousBuildId = process.env.__VINEXT_BUILD_ID;
+    process.env.__VINEXT_BUILD_ID = "build-a";
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const state: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 1_000,
+        mode: "probe",
+        route: { kind: "app-route", pattern: "/api/data" },
+      };
+
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response("static", { headers: { "Cache-Control": "public, s-maxage=60" } }),
+        contextWith(state),
+      );
+
+      expect(response.headers.get("X-Vinext-Build-Id")).toBe("build-a");
+      await expect(response.json()).resolves.toMatchObject({
+        kind: "app-route",
+        state: "static-candidate",
+      });
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+      if (previousBuildId === undefined) delete process.env.__VINEXT_BUILD_ID;
+      else process.env.__VINEXT_BUILD_ID = previousBuildId;
+    }
   });
 });

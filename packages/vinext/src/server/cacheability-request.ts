@@ -6,6 +6,7 @@ import {
   type RouteCacheabilityState,
 } from "vinext/shims/cacheability-classification";
 import {
+  applyCdnResponseBuildIdentityHeaders,
   applyCdnResponseHeaders,
   hasExplicitNonCacheableResponsePolicy,
   isNonCacheableCacheControl,
@@ -150,9 +151,11 @@ function probeResponse(
     status,
     version: 1,
   };
-  return Response.json(body, {
-    headers: { "Cache-Control": NO_STORE_CACHE_CONTROL },
-  });
+  return applyCdnResponseBuildIdentityHeaders(
+    Response.json(body, {
+      headers: { "Cache-Control": NO_STORE_CACHE_CONTROL },
+    }),
+  );
 }
 
 async function drainProbeBody(response: Response, deadlineAt: number): Promise<string | null> {
