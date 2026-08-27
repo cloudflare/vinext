@@ -953,21 +953,35 @@ describe("staged Worker cacheability probes", () => {
     ]);
   });
 
-  it("embeds empty generateStaticParams fallbacks without a render probe", async () => {
+  it("embeds zero-path static fallback patterns without render probes", async () => {
     const root = createProbeRoot();
     const result = await probeStagedWorkerCacheability({
       buildId: "application-build",
-      fallbackRoutePatterns: [{ kind: "app-page", pattern: "/posts/:slug" }],
+      fallbackRoutePatterns: [
+        { kind: "app-page", pattern: "/posts/:slug" },
+        { kind: "app-route", pattern: "/api/posts/:slug" },
+        { kind: "pages-page", pattern: "/legacy/:slug" },
+      ],
       root,
       targetUrl: "https://example.com",
       targets: [],
     });
 
-    expect(result).toMatchObject({ classified: 1, probed: 0 });
+    expect(result).toMatchObject({ classified: 3, probed: 0 });
     expect(Object.values(result.manifest.routes)).toEqual([
       {
         kind: "app-page",
         pattern: "/posts/:slug",
+        state: "static-candidate",
+      },
+      {
+        kind: "app-route",
+        pattern: "/api/posts/:slug",
+        state: "static-candidate",
+      },
+      {
+        kind: "pages-page",
+        pattern: "/legacy/:slug",
         state: "static-candidate",
       },
     ]);

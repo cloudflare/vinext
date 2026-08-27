@@ -686,7 +686,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(JSON.parse(manifestJson)).toEqual({ buildId: "app-build-a", routes: {}, version: 1 });
   });
 
-  it("promotes compact pattern-only admission for an empty static params route", async () => {
+  it("promotes compact pattern-only admission for zero-path static fallbacks", async () => {
     writeTwoStageWorkerArtifact();
     const wrangler = mockTwoStageWrangler();
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
@@ -699,7 +699,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           appPaths: [],
           buildId: "app-build-a",
           buildIdentity: "app-build-a",
-          fallbackRoutePatterns: [{ kind: "app-page", pattern: "/posts/:slug" }],
+          fallbackRoutePatterns: [
+            { kind: "app-page", pattern: "/posts/:slug" },
+            { kind: "app-route", pattern: "/api/posts/:slug" },
+            { kind: "pages-page", pattern: "/legacy/:slug" },
+          ],
           loadingShellPaths: [],
           paths: [],
           rscPaths: [],
@@ -719,6 +723,16 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         '["app-page","/posts/:slug"]': {
           kind: "app-page",
           pattern: "/posts/:slug",
+          state: "static-candidate",
+        },
+        '["app-route","/api/posts/:slug"]': {
+          kind: "app-route",
+          pattern: "/api/posts/:slug",
+          state: "static-candidate",
+        },
+        '["pages-page","/legacy/:slug"]': {
+          kind: "pages-page",
+          pattern: "/legacy/:slug",
           state: "static-candidate",
         },
       },

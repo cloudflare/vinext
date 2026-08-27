@@ -935,6 +935,78 @@ describe("prerender path manifest", () => {
     ]);
   });
 
+  it.each([
+    [
+      "empty generateStaticParams",
+      [
+        "export function generateStaticParams() { return []; }",
+        "export function GET() { return Response.json({ ok: true }); }",
+      ].join("\n"),
+      Response.json([]),
+    ],
+    [
+      "force-static without generateStaticParams",
+      [
+        'export const dynamic = "force-static";',
+        "export function GET() { return Response.json({ ok: true }); }",
+      ].join("\n"),
+      new Response(null, { status: 204 }),
+    ],
+  ])("retains dynamic App Route Handler patterns with %s", async (_name, source, response) => {
+    // Ported from Next.js static App Route eligibility:
+    // packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/api/layout.tsx", 'export const dynamic = "force-dynamic";\n');
+    writeFile("app/api/posts/[slug]/route.ts", source);
+    vi.mocked(fetch).mockResolvedValue(response);
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" });
+
+    expect(manifest?.routeHandlerPaths).toBeUndefined();
+    expect(manifest?.fallbackRoutePatterns).toEqual([
+      { kind: "app-route", pattern: "/api/posts/:slug" },
+    ]);
+  });
+
+  it.each([
+    [true, true],
+    ["blocking", true],
+    [false, false],
+  ] as const)(
+    "retains zero-path Pages fallback=%s eligibility as a pattern record",
+    async (fallback, shouldRetain) => {
+      // Ported from Next.js:
+      // test/e2e/prerender/pages/non-json/[p].js
+      // test/e2e/prerender/pages/non-json-blocking/[p].js
+      writeFile("package.json", JSON.stringify({ type: "module" }));
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/entry.js", "export default {};\n");
+      writeFile(
+        "pages/posts/[slug].tsx",
+        [
+          "export function getStaticPaths() { return { paths: [], fallback: false }; }",
+          "export function getStaticProps() { return { props: {}, revalidate: 60 }; }",
+          "export default function Page() { return null; }",
+        ].join("\n"),
+      );
+      vi.mocked(fetch).mockResolvedValue(Response.json({ fallback, paths: [] }));
+
+      const { emitPrerenderPathManifest } =
+        await import("../packages/vinext/src/build/prerender-paths.js");
+      const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+
+      expect(manifest?.paths).toEqual([]);
+      expect(manifest?.fallbackRoutePatterns).toEqual(
+        shouldRetain ? [{ kind: "pages-page", pattern: "/posts/:slug" }] : undefined,
+      );
+    },
+  );
+
   it("retains force-static patterns without generateStaticParams", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");

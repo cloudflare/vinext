@@ -501,7 +501,11 @@ async function collectPagesPaths(options: {
   pageExtensions: readonly string[];
   retryOptions?: PathDiscoveryRetryOptions;
   secretHeaders: Record<string, string>;
-}): Promise<{ dataPaths: string[]; paths: string[] }> {
+}): Promise<{
+  dataPaths: string[];
+  fallbackRoutePatterns: PrerenderRoutePattern[];
+  paths: string[];
+}> {
   const [pageRoutes, apiRoutes] = await Promise.all([
     pagesRouter(options.pagesDir, options.pageExtensions),
     apiRouter(options.pagesDir, options.pageExtensions),
@@ -511,6 +515,7 @@ async function collectPagesPaths(options: {
   const seen = new Set<string>();
   const dataPaths: string[] = [];
   const seenDataPaths = new Set<string>();
+  const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
 
   for (const route of pageRoutes) {
     if (apiPatterns.has(route.pattern)) continue;
@@ -560,6 +565,9 @@ async function collectPagesPaths(options: {
       }
 
       const pathsResult = validatePagesStaticPathsResult(JSON.parse(text), route.pattern);
+      if (pathsResult.fallback !== false) {
+        fallbackRoutePatterns.push({ kind: "pages-page", pattern: route.pattern });
+      }
       for (const item of pathsResult.paths) {
         const validatedItem = validatePagesStaticPathsEntry(item, route.pattern);
         let itemToNormalize = validatedItem;
@@ -601,7 +609,7 @@ async function collectPagesPaths(options: {
     }
   }
 
-  return { dataPaths, paths };
+  return { dataPaths, fallbackRoutePatterns, paths };
 }
 
 async function excludePagesApiWarmPaths(options: {
@@ -806,6 +814,24 @@ async function collectAppPaths(options: {
       }
 
       if (!paramSets?.length) {
+        if (isRouteHandler) {
+          // App Route Handlers do not inherit page layouts or parallel slots.
+          // Match Next.js's route-module eligibility: an empty
+          // generateStaticParams result remains an on-demand static fallback,
+          // while a handler without generateStaticParams needs an explicit
+          // force-static/error contract.
+          const dynamicConfig = extractExportConstString(
+            fs.readFileSync(renderEntryPath, "utf8"),
+            "dynamic",
+          );
+          const hasStaticFallback =
+            paramSets !== null || dynamicConfig === "force-static" || dynamicConfig === "error";
+          if (hasStaticFallback) {
+            fallbackRoutePatterns.push({ kind: "app-route", pattern: route.pattern });
+          }
+          continue;
+        }
+
         const parallelSegments = route.parallelSlots.flatMap((slot) =>
           [
             slot.layoutPath,
@@ -1269,6 +1295,7 @@ export async function emitPrerenderPathManifest(
         for (const pathname of pagesPathResult.dataPaths) {
           addPath(discoveredPagesDataPaths, seenPagesDataPaths, pathname);
         }
+        fallbackRoutePatterns.push(...pagesPathResult.fallbackRoutePatterns);
       }
     } finally {
       if (prodServer) {
