@@ -88,6 +88,27 @@ test("classifies Pages Router data contracts inside the staged Worker", async ({
     status: 200,
     version: 1,
   });
+
+  for (const [pathname, reason] of [
+    ["/cacheability-pages/middleware", "middleware is eligible for this pathname"],
+    [
+      "/cacheability-pages/config-header",
+      "next.config headers depend on request headers, cookies, or hostnames",
+    ],
+  ] as const) {
+    const response = await request.get(pathname, {
+      headers: { ...headers, Accept: "text/html" },
+    });
+    expect(response.ok(), pathname).toBe(true);
+    await expect(response.json(), pathname).resolves.toMatchObject({
+      kind: "pages-page",
+      pattern: pathname,
+      reason,
+      state: "dynamic",
+      status: 200,
+      version: 1,
+    });
+  }
 });
 
 test("admits only exact manifest-backed Pages Router responses", async ({ request }) => {

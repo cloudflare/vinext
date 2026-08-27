@@ -451,6 +451,9 @@ function completedRouteOutcome(
   state: RouteCacheabilityState,
   rendererOutcome: RouteCacheabilityOutcome | null = state.outcome ?? null,
 ): RouteCacheabilityOutcome | null {
+  if (state.forcedDynamicReason) {
+    return { cacheable: false, reason: state.forcedDynamicReason };
+  }
   if (state.route?.kind === "app-page") {
     return inferFinalAppPageCacheability(response, state) ?? rendererOutcome;
   }
