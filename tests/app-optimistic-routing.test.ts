@@ -12,6 +12,7 @@ import {
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
+  resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
   type OptimisticRouteTemplate,
 } from "../packages/vinext/src/server/app-optimistic-routing.js";
@@ -359,6 +360,17 @@ describe("App Router optimistic routing", () => {
     });
 
     expect(navigationPayload?.params).toEqual({
+      teamID: "vercel",
+      folder: "other-folder",
+      catchAll: ["sub", "other-folder"],
+    });
+    expect(
+      resolveOptimisticNavigationParamsForHref({
+        basePath: "",
+        href: "/vercel/sub/other-folder",
+        routeManifest,
+      }),
+    ).toEqual({
       teamID: "vercel",
       folder: "other-folder",
       catchAll: ["sub", "other-folder"],

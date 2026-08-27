@@ -149,6 +149,36 @@ describe("App Router RSC cache-busting", () => {
     await expect(createRscRequestUrl("/docs/", headers)).resolves.toBe("/docs/?_rsc");
   });
 
+  // Ported from Next.js:
+  // packages/next/src/client/components/router-reducer/fetch-server-response.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/fetch-server-response.ts
+  it("addresses static export Flight payloads as .txt files", async () => {
+    vi.stubGlobal("window", {});
+    try {
+      await withEnvVar("NODE_ENV", "production", async () => {
+        await withEnvVar("__NEXT_CONFIG_OUTPUT", "export", async () => {
+          const headers = createRscRequestHeaders({ routerState: null });
+          await expect(createRscRequestUrl("/", headers)).resolves.toBe("/index.txt");
+          await expect(createRscRequestUrl("/docs/", headers)).resolves.toBe("/docs/index.txt");
+          await expect(createRscRequestUrl("/docs?tab=api", headers)).resolves.toBe(
+            "/docs.txt?tab=api",
+          );
+          await withEnvVar("__NEXT_ROUTER_BASEPATH", "/docs", async () => {
+            await expect(createRscRequestUrl("/docs", headers)).resolves.toBe("/docs/index.txt");
+            await expect(createRscRequestUrl("/docs?tab=api", headers)).resolves.toBe(
+              "/docs/index.txt?tab=api",
+            );
+            await expect(createRscRequestUrl("/docs/about", headers)).resolves.toBe(
+              "/docs/about.txt",
+            );
+          });
+        });
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("preserves encoded spaces while adding the RSC cache-busting query", async () => {
     const headers = createRscRequestHeaders();
 

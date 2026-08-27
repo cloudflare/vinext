@@ -6,13 +6,16 @@ const root = fileURLToPath(new URL("../dist/client/", import.meta.url));
 
 const expected = new Map([
   ["index.html", "Static does not mean inert"],
+  ["index.txt", "Static does not mean inert"],
   ["catalog/pocket-observatory/index.html", "Pocket Observatory"],
+  ["catalog/pocket-observatory/index.txt", "Pocket Observatory"],
   ["catalog/tide-clock/index.html", "Tide Clock"],
   ["catalog/trail-journal/index.html", "Trail Journal"],
   ["docs/building/the-artifact/index.html", "Read the artifact"],
   ["docs/deployment/cloudflare/index.html", "Deploy without a server"],
   ["browser-state/index.html", "Interactivity survives the export"],
   ["search/index.html", "The browser owns the query string"],
+  ["search/index.txt", "The browser owns the query string"],
   ["legacy/index.html", "Two routers, one static artifact"],
   ["products/atlas/index.html", "Atlas Field Kit"],
   ["products/lantern/index.html", "Low-light Lantern"],

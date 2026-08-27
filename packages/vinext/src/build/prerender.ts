@@ -495,8 +495,10 @@ function metadataOutputPath(servedUrl: string): string | null {
 function emitStaticMetadataFiles(
   metadataRoutes: readonly MetadataFileRoute[],
   outDir: string,
+  basePath = "",
 ): string[] {
   const outputFiles: string[] = [];
+  const outputPrefix = basePath.replace(/^\//, "").replace(/\/$/, "");
   for (const route of metadataRoutes) {
     if (route.isDynamic) continue;
 
@@ -504,10 +506,11 @@ function emitStaticMetadataFiles(
     // scanMetadataFiles controls servedUrl; this remains defensive against malformed route data.
     if (!outputPath) continue;
 
-    const fullPath = path.join(outDir, ...outputPath.split("/"));
+    const namespacedOutputPath = outputPrefix ? `${outputPrefix}/${outputPath}` : outputPath;
+    const fullPath = path.join(outDir, ...namespacedOutputPath.split("/"));
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     fs.copyFileSync(route.filePath, fullPath);
-    outputFiles.push(outputPath);
+    outputFiles.push(namespacedOutputPath);
   }
   return outputFiles;
 }
@@ -732,7 +735,12 @@ export async function prerenderPages({
       // by getStaticProps. Avoid confusing the framework's own canonical 308
       // with one of those application redirects by requesting the configured
       // trailing-slash form up front, as Next.js's export worker does.
-      const requestPath = config.trailingSlash && !urlPath.endsWith("/") ? `${urlPath}/` : urlPath;
+      const routeRequestPath =
+        config.trailingSlash && !urlPath.endsWith("/") ? `${urlPath}/` : urlPath;
+      const requestPath =
+        config.basePath && routeRequestPath === "/" && !config.trailingSlash
+          ? config.basePath
+          : `${config.basePath ?? ""}${routeRequestPath}`;
       return fetch(`http://127.0.0.1:${port}${requestPath}`, {
         headers: secretHeaders,
         redirect: "manual",
@@ -923,7 +931,11 @@ export async function prerenderPages({
         try {
           const response = await renderPage(urlPath);
           const outputFiles: string[] = [];
-          const htmlOutputPath = getOutputPath(urlPath, config.trailingSlash);
+          const htmlOutputPath = getOutputPath(
+            urlPath,
+            config.trailingSlash,
+            mode === "export" ? config.basePath : "",
+          );
           const htmlFullPath = path.join(outDir, htmlOutputPath);
 
           if (response.status >= 300 && response.status < 400) {
@@ -1038,7 +1050,7 @@ export async function prerenderPages({
  * Starts a local production server and fetches every static/ISR route via HTTP.
  * Works for both plain Node and Cloudflare Workers builds — the CF Workers bundle
  * (`dist/server/index.js`) is a standard Node-compatible server entry, so no
- * wrangler/miniflare is needed. Writes HTML files, `.rsc` files, and
+ * wrangler/miniflare is needed. Writes HTML files, Flight payloads, and
  * `vinext-prerender.json` to `outDir`.
  *
  * If the bundle does not exist, an error is thrown directing the user to run
@@ -1588,11 +1600,17 @@ export async function prerenderApp({
         // Match Next.js's export worker: when trailingSlash is enabled, render
         // the canonical slash form instead of letting the request pipeline
         // return a 308 that the exporter would misclassify as a failed route.
-        // Keep urlPath unchanged for manifest and output-file identity.
+        // Keep urlPath unchanged for route and manifest identity. Exported
+        // artifacts are rooted under basePath alongside the client assets so
+        // an ordinary static host can serve the output tree verbatim.
         // Ported from Next.js: packages/next/src/export/worker.ts
         // https://github.com/vercel/next.js/blob/canary/packages/next/src/export/worker.ts
-        const requestPath =
+        const routeRequestPath =
           config.trailingSlash && !urlPath.endsWith("/") ? `${urlPath}/` : urlPath;
+        const requestPath =
+          config.basePath && routeRequestPath === "/" && !config.trailingSlash
+            ? config.basePath
+            : `${config.basePath ?? ""}${routeRequestPath}`;
         const htmlRequest = new Request(`http://localhost${requestPath}`, {
           headers: htmlHeaders,
         });
@@ -1673,7 +1691,7 @@ export async function prerenderApp({
         // Reconstruct the RSC payload from the inline bootstrap chunks already
         // streamed into the HTML body. The generated RSC entry performs
         // framing-aware hint normalization at the stream source, so the
-        // resulting `.rsc` file contains the same Flight bytes.
+        // resulting Flight artifact contains the same bytes.
         //
         // Falls back to a second invocation with `RSC: 1` when the HTML has
         // no chunk scripts at all — covers cases where middleware
@@ -1706,14 +1724,24 @@ export async function prerenderApp({
         const outputFiles: string[] = [];
 
         // Write HTML
-        const htmlOutputPath = getOutputPath(urlPath, config.trailingSlash);
+        const htmlOutputPath = getOutputPath(
+          urlPath,
+          config.trailingSlash,
+          mode === "export" ? config.basePath : "",
+        );
         const htmlFullPath = path.join(outDir, htmlOutputPath);
         fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
         fs.writeFileSync(htmlFullPath, html, "utf-8");
         outputFiles.push(htmlOutputPath);
 
-        // Write RSC payload (.rsc file)
-        const rscOutputPath = getRscOutputPath(urlPath);
+        // Next.js writes export-mode Flight payloads as `.txt` so a plain
+        // static host serves a portable `text/plain` content type. Normal
+        // server prerenders retain vinext's internal `.rsc` artifact shape.
+        const rscOutputPath = getRscOutputPath(urlPath, {
+          mode,
+          trailingSlash: config.trailingSlash,
+          basePath: mode === "export" ? config.basePath : "",
+        });
         const rscFullPath = path.join(outDir, rscOutputPath);
         fs.mkdirSync(path.dirname(rscFullPath), { recursive: true });
         fs.writeFileSync(rscFullPath, rscData);
@@ -1793,7 +1821,7 @@ export async function prerenderApp({
 
     const outputFiles =
       mode === "export" && metadataRoutes.length > 0
-        ? emitStaticMetadataFiles(metadataRoutes, outDir)
+        ? emitStaticMetadataFiles(metadataRoutes, outDir, config.basePath)
         : [];
 
     // ── Render 404 page ───────────────────────────────────────────────────────
@@ -1805,7 +1833,9 @@ export async function prerenderApp({
         config.trailingSlash && !NOT_FOUND_SENTINEL_PATH.endsWith("/")
           ? `${NOT_FOUND_SENTINEL_PATH}/`
           : NOT_FOUND_SENTINEL_PATH;
-      const notFoundRequest = new Request(`http://localhost${notFoundPath}`);
+      const notFoundRequest = new Request(
+        `http://localhost${config.basePath ?? ""}${notFoundPath}`,
+      );
       const notFoundRes = await runWithHeadersContext(
         headersContextFromRequest(notFoundRequest),
         () => rscHandler(notFoundRequest),

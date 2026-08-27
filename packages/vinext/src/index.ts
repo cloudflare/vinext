@@ -1504,6 +1504,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // once while generating the RSC entry.
   let devPublicFileRoutes: Set<string> | null = null;
   let publicDirConflictOptions: Parameters<typeof assertNoPublicDirAssetConflict>[0] | null = null;
+  let copyPublicDirIntoStaticExportBasePath = false;
   let rscBuildIdentity: string | undefined;
   let rscCompatibilityId: string | undefined;
   let draftModeSecret = getPagesPreviewModeId();
@@ -2425,6 +2426,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_TRAILING_SLASH"] = JSON.stringify(
           nextConfig.trailingSlash ? "true" : "false",
         );
+        // Next.js uses this compile-time value to switch App Router navigation
+        // from header-selected RSC responses to static `.txt` Flight assets.
+        defines["process.env.__NEXT_CONFIG_OUTPUT"] = JSON.stringify(nextConfig.output ?? "");
         // Expose image remote patterns for validation in next/image shim
         defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.remotePatterns ?? []),
@@ -3599,6 +3603,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configEnvironment(name, config) {
+        if (name === "client" && nextConfig.output === "export" && nextConfig.basePath) {
+          // Vite normally copies publicDir into the client output root. Static
+          // exports are served verbatim, so files requested below basePath must
+          // live in that same on-disk namespace. Defer the copy to writeBundle,
+          // where we can target dist/client/<basePath> instead.
+          config.build ??= {};
+          copyPublicDirIntoStaticExportBasePath = config.build.copyPublicDir !== false;
+          config.build.copyPublicDir = false;
+        }
+
         if (name !== "client" && config.consumer !== "client") {
           // optimizeDeps runs its own Rolldown pipeline, outside Vite's plugin
           // container. Register only the thin adapter for the same module-
@@ -3834,6 +3848,44 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         handler() {
           if (this.environment?.name !== "client" || !publicDirConflictOptions) return;
           assertNoPublicDirAssetConflict(publicDirConflictOptions);
+        },
+      },
+
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(outputOptions) {
+          if (
+            this.environment?.name !== "client" ||
+            nextConfig.output !== "export" ||
+            !nextConfig.basePath ||
+            !copyPublicDirIntoStaticExportBasePath
+          ) {
+            return;
+          }
+
+          const envConfig = this.environment.config;
+          const publicDir = envConfig.publicDir;
+          if (!publicDir || !fs.existsSync(publicDir)) return;
+
+          // Re-check immediately before the deferred copy, including files
+          // generated after renderStart, so public assets cannot overwrite the
+          // framework's reserved asset namespace.
+          if (publicDirConflictOptions) {
+            assertNoPublicDirAssetConflict(publicDirConflictOptions);
+          }
+
+          const buildRoot = envConfig.root ?? process.cwd();
+          const clientOutDir = outputOptions.dir
+            ? path.resolve(buildRoot, outputOptions.dir)
+            : path.resolve(buildRoot, envConfig.build.outDir);
+          const basePathDir = path.join(clientOutDir, nextConfig.basePath.slice(1));
+          fs.mkdirSync(basePathDir, { recursive: true });
+          fs.cpSync(publicDir, basePathDir, {
+            recursive: true,
+            dereference: true,
+            force: true,
+          });
         },
       },
 

@@ -433,6 +433,25 @@ function toRscRequestPath(href: string): string {
 
 export async function createRscRequestUrl(href: string, headers: Headers): Promise<string> {
   const url = new URL(toRscRequestPath(href), "http://vinext.local");
+  if (
+    typeof window !== "undefined" &&
+    process.env.NODE_ENV === "production" &&
+    process.env.__NEXT_CONFIG_OUTPUT === "export"
+  ) {
+    // Ported from Next.js:
+    // packages/next/src/client/components/router-reducer/fetch-server-response.ts
+    // Static hosts cannot select Flight with request headers, so exported App
+    // Router navigations address the prebuilt payload directly. The bytes are
+    // still RSC; `.txt` supplies a portable MIME type across asset hosts.
+    const basePath = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+    const isBasePathRoot = basePath !== "" && url.pathname === basePath;
+    if (url.pathname.endsWith("/")) {
+      url.pathname += "index.txt";
+    } else {
+      url.pathname += isBasePathRoot ? "/index.txt" : ".txt";
+    }
+    return `${url.pathname}${url.search}`;
+  }
   const hash = await computeRscCacheBustingSearchParam(headers);
   setRscCacheBustingSearchParam(url, hash);
   return `${url.pathname}${url.search}`;

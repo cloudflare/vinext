@@ -256,6 +256,18 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "static-export-basepath": {
+    testDir: "./tests/e2e/static-export-basepath",
+    use: { baseURL: "http://localhost:4203/docs" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../tests/e2e/static-export/serve-static.mjs dist/client 4203",
+      cwd: "./tests/fixtures/static-export-basepath",
+      port: 4203,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
   "app-with-src": {
     testDir: "./tests/e2e/app-with-src",
     use: { baseURL: "http://localhost:4181" },

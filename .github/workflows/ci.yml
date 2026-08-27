@@ -545,6 +545,10 @@ jobs:
             label: static-export
             shardIndex: 1
             shardTotal: 1
+          - project: static-export-basepath
+            label: static-export-basepath
+            shardIndex: 1
+            shardTotal: 1
           - project: app-with-src
             label: app-with-src
             shardIndex: 1

@@ -37,6 +37,7 @@ const CONTEXTUAL_CASES: Array<[string, ContextualCaseOverrides]> = [
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 describe("shared App Router prefetch RSC request resolution", () => {
@@ -154,6 +155,26 @@ describe("shared App Router prefetch RSC request resolution", () => {
     expect(resolved).toEqual({
       additionalRscUrls: [destinationUrl],
       rscUrl: sourceUrl,
+      usesCanonicalPrewarmedRequest: false,
+    });
+  });
+
+  it("prefers the exported .txt artifact over deploy-warmer request sharing", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("__NEXT_CONFIG_OUTPUT", "export");
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    vi.stubGlobal("window", {});
+    const headers = createRscRequestHeaders({ nextUrl: "/source" });
+
+    await expect(
+      resolveAppPrefetchRscRequest({
+        ...DEFAULT_OPTIONS,
+        fullHref: "/target/",
+        headers,
+      }),
+    ).resolves.toEqual({
+      additionalRscUrls: [],
+      rscUrl: "/target/index.txt",
       usesCanonicalPrewarmedRequest: false,
     });
   });

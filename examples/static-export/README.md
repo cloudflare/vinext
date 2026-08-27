@@ -16,14 +16,16 @@ pnpm preview
 ```text
 dist/client/
 ├── index.html
+├── index.txt
 ├── 404.html
 ├── 404/index.html
 ├── catalog/pocket-observatory/index.html
+├── catalog/pocket-observatory/index.txt
 ├── docs/deployment/cloudflare/index.html
 ├── legacy/index.html
 ├── products/atlas/index.html
 ├── robots.txt
-└── assets and static RSC payloads
+└── assets and additional static Flight `.txt` payloads
 ```
 
 Deploy the directory to any static host. The hosting-only `deploy/wrangler.jsonc` uses Cloudflare Workers Static Assets. It lives outside the project root so vinext does not mistake a runtime-free export for a Worker application:
@@ -32,7 +34,7 @@ Deploy the directory to any static host. The hosting-only `deploy/wrangler.jsonc
 pnpm exec wrangler deploy --config deploy/wrangler.jsonc
 ```
 
-`trailingSlash: true` emits directory-style `index.html` files. Its matching `html_handling: "force-trailing-slash"` setting makes the deployed canonical URLs agree with the build output, while `not_found_handling: "404-page"` preserves the generated 404 page and status.
+`trailingSlash: true` emits directory-style `index.html` files plus matching `index.txt` Flight payloads for App Router soft navigation. The `.txt` extension is a portable `text/plain` transport name; the contents are still React Server Component data. The matching `html_handling: "force-trailing-slash"` setting makes the deployed canonical URLs agree with the build output, while `not_found_handling: "404-page"` preserves the generated 404 page and status.
 
 ## Capability tour
 

@@ -282,6 +282,25 @@ function resolveOptimisticNavigationParams(options: {
   return { navigationParams, routeParams };
 }
 
+export function resolveOptimisticNavigationParamsForHref(options: {
+  basePath: string;
+  href: string;
+  routeManifest: RouteManifest;
+}): Record<string, string | string[]> | null {
+  const urlParts = hrefToRouteParts(options.href, options.basePath);
+  if (urlParts === null) return null;
+
+  const match = matchOptimisticRouteManifestRoute(options);
+  if (match === null) return null;
+
+  return resolveOptimisticNavigationParams({
+    match,
+    rawUrlParts: urlParts.raw,
+    routeManifest: options.routeManifest,
+    urlParts: urlParts.normalized,
+  }).navigationParams;
+}
+
 function collectRenderedBfcacheSegmentIds(
   value: unknown,
   candidates: ReadonlySet<string>,

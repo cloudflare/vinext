@@ -1,3 +1,5 @@
+export const metadata = { title: "About — Static Export" };
+
 export default function AboutPage() {
   return (
     <main>

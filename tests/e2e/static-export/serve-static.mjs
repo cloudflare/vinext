@@ -56,6 +56,7 @@ const MIME_TYPES = {
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".rsc": "text/x-component",
+  ".txt": "text/plain; charset=utf-8",
 };
 
 async function tryFile(filePath) {
