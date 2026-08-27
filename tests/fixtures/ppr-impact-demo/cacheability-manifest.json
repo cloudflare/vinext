@@ -70,6 +70,11 @@
       "pattern": "/cacheability/route-handler-static",
       "state": "static-candidate"
     },
+    "[\"app-route\",\"/cacheability/route-handler-static-empty/:slug\"]": {
+      "kind": "app-route",
+      "pattern": "/cacheability/route-handler-static-empty/:slug",
+      "state": "static-candidate"
+    },
     "[\"pages-page\",\"/cacheability-pages/config-header\"]": {
       "kind": "pages-page",
       "pattern": "/cacheability-pages/config-header",

@@ -1,5 +1,5 @@
 export async function getStaticPaths() {
-  return { fallback: false, paths: [{ params: { slug: "known" } }] };
+  return { fallback: "blocking", paths: [] };
 }
 
 export async function getStaticProps({ params }: { params: { slug: string } }) {

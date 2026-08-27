@@ -604,9 +604,16 @@ export async function probeStagedWorkerCacheability(options: {
   let classified = 0;
   let dynamic = 0;
   let skipped = 0;
+  const fallbackRoutes = new Map<string, PrerenderRoutePattern>();
   for (const fallbackRoute of options.fallbackRoutePatterns ?? []) {
     const key = cacheabilityManifestRouteKey(fallbackRoute.kind, fallbackRoute.pattern);
-    if (routes[key]) continue;
+    fallbackRoutes.set(key, fallbackRoute);
+  }
+  for (const [key, fallbackRoute] of fallbackRoutes) {
+    // A pattern with concrete targets is classified below. Its fallback fact
+    // is merged into that one route record so exact runtime results still win
+    // without counting or serializing the pattern twice.
+    if (patterns.has(key)) continue;
     if (
       !addRouteWithinManifestLimits(key, {
         kind: fallbackRoute.kind,
@@ -683,6 +690,7 @@ export async function probeStagedWorkerCacheability(options: {
     const allObservedPathsStaticallyGenerated =
       allObservedPathsStatic &&
       Array.from(pattern.results.values()).every((result) => result.rendererStatic);
+    const hasStaticFallback = fallbackRoutes.has(pattern.key);
     const soleGroup = pattern.groups.length === 1 ? pattern.groups[0] : null;
     const literalPatternNamesSolePath =
       soleGroup !== null &&
@@ -721,7 +729,7 @@ export async function probeStagedWorkerCacheability(options: {
         kind: pattern.route.kind,
         pattern: pattern.route.pattern,
         state: "runtime-check",
-        ...(allObservedPathsStaticallyGenerated
+        ...(hasStaticFallback || allObservedPathsStaticallyGenerated
           ? { allowUnknown: true, unknownState: "static-candidate" as const }
           : {}),
         ...(runtimePathSet.size > 0 ? { runtimePaths: Array.from(runtimePathSet).sort() } : {}),

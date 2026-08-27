@@ -164,7 +164,9 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
               route !== null &&
               typeof route === "object" &&
               !Array.isArray(route) &&
-              route.kind === "app-page" &&
+              (route.kind === "app-page" ||
+                route.kind === "app-route" ||
+                route.kind === "pages-page") &&
               typeof route.pattern === "string" &&
               route.pattern.startsWith("/"),
           ))) ||

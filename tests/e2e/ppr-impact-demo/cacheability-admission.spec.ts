@@ -187,6 +187,16 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   await expect(certifiedRouteHandler.json()).resolves.toEqual({ kind: "static-route-handler" });
   expect(certifiedRouteHandler.headers()["cdn-cache-control"]).toContain("public");
 
+  const emptyStaticRouteHandler = await request.get(
+    "/cacheability/route-handler-static-empty/on-demand",
+  );
+  expect(emptyStaticRouteHandler.status()).toBe(200);
+  await expect(emptyStaticRouteHandler.json()).resolves.toEqual({
+    kind: "static-empty",
+    slug: "on-demand",
+  });
+  expect(emptyStaticRouteHandler.headers()["cdn-cache-control"]).toContain("public");
+
   const unlistedRouteHandlerQuery = await request.get(
     "/cacheability/route-handler-static?user=one",
   );

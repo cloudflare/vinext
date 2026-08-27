@@ -126,6 +126,7 @@ test("admits pattern-backed Pages Router responses after each completed render",
     "/cacheability-pages/isr",
     "/cacheability-pages/isr?unlisted=1",
     "/cacheability-pages/posts/known",
+    "/cacheability-pages/posts/unknown",
   ]) {
     const response = await request.get(pathname, { headers: { Accept: "text/html" } });
     expect(response.status(), pathname).toBe(200);
@@ -136,6 +137,7 @@ test("admits pattern-backed Pages Router responses after each completed render",
     `/_next/data/${buildId}/cacheability-pages/isr.json`,
     `/_next/data/${buildId}/cacheability-pages/isr.json?unlisted=1`,
     `/_next/data/${buildId}/cacheability-pages/posts/known.json`,
+    `/_next/data/${buildId}/cacheability-pages/posts/unknown.json`,
   ]) {
     const response = await request.get(pathname, { headers: { Accept: "application/json" } });
     expect(response.status(), pathname).toBe(200);
@@ -157,9 +159,7 @@ test("admits pattern-backed Pages Router responses after each completed render",
   for (const pathname of [
     "/cacheability-pages/gssp",
     "/cacheability-pages/get-initial-props",
-    "/cacheability-pages/posts/unknown",
     `/_next/data/${buildId}/cacheability-pages/gssp.json`,
-    `/_next/data/${buildId}/cacheability-pages/posts/unknown.json`,
   ]) {
     const response = await request.get(pathname, {
       headers: { Accept: pathname.includes("/_next/data/") ? "application/json" : "text/html" },

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { probeStagedWorkerCacheability } from "../packages/cloudflare/src/cacheability-probe.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import {
+  cacheabilityManifestRouteState,
   cacheabilityManifestRouteKey,
   type CacheabilityManifestRoute,
 } from "../packages/vinext/src/server/cacheability-manifest.js";
@@ -985,6 +986,48 @@ describe("staged Worker cacheability probes", () => {
         state: "static-candidate",
       },
     ]);
+  });
+
+  it("merges Pages fallback eligibility with exact private results", async () => {
+    const root = createProbeRoot();
+    const route = {
+      cacheabilityProbe: { canPrunePattern: true },
+      kind: "pages-page" as const,
+      pattern: "/legacy/:slug",
+    };
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fallbackRoutePatterns: [{ kind: "pages-page", pattern: route.pattern }],
+      fetchImpl: async () =>
+        Response.json({
+          kind: "pages-page",
+          pattern: route.pattern,
+          state: "dynamic",
+          status: 200,
+          version: 1,
+        }),
+      root,
+      targetUrl: "https://example.com",
+      targets: [{ ...target("/legacy/known"), route }],
+    });
+
+    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 1 });
+    const manifestRoute =
+      result.manifest.routes[cacheabilityManifestRouteKey("pages-page", route.pattern)];
+    expect(manifestRoute).toEqual({
+      allowUnknown: true,
+      kind: "pages-page",
+      pattern: route.pattern,
+      runtimePaths: ["/legacy/known"],
+      state: "runtime-check",
+      unknownState: "static-candidate",
+    });
+    expect(cacheabilityManifestRouteState(manifestRoute, "/legacy/known", "html")).toBe(
+      "runtime-check",
+    );
+    expect(cacheabilityManifestRouteState(manifestRoute, "/legacy/unlisted", "html")).toBe(
+      "static-candidate",
+    );
   });
 
   it("keeps response-policy-only cacheability as an exact runtime check", async () => {
