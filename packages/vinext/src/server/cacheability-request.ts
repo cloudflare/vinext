@@ -53,14 +53,15 @@ type CacheabilityProbeResult = {
   version: 1;
 };
 
-const SUPPORTED_CACHEABILITY_VARY_FIELDS = new Set(
+const FRAMEWORK_CACHEABILITY_VARY_FIELDS = new Set(
   VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
 );
 
-function hasUnsupportedCacheabilityVary(headers: Headers): boolean {
+function hasUnsupportedCacheabilityVary(headers: Headers, state: RouteCacheabilityState): boolean {
+  if (state.responseVary === "verbatim") return false;
   return (headers.get("Vary") ?? "").split(",").some((name) => {
     const normalized = name.trim().toLowerCase();
-    return normalized.length > 0 && !SUPPORTED_CACHEABILITY_VARY_FIELDS.has(normalized);
+    return normalized.length > 0 && !FRAMEWORK_CACHEABILITY_VARY_FIELDS.has(normalized);
   });
 }
 
@@ -68,6 +69,7 @@ export function createWorkerCacheabilityContext(
   base: ExecutionContextLike,
   request: Request,
   expectedSecret: string | null | undefined,
+  responseVary?: "verbatim",
 ): ExecutionContextLike {
   const requestedMode = request.headers.get(VINEXT_CACHEABILITY_PROBE_HEADER);
   if (requestedMode !== "1" && requestedMode !== "identity") return base;
@@ -84,6 +86,7 @@ export function createWorkerCacheabilityContext(
   const state: RouteCacheabilityState = {
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
     mode: requestedMode === "identity" ? "identity" : "probe",
+    responseVary,
   };
   return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
     [CACHEABILITY_REQUEST_STATE]: state,
@@ -109,6 +112,7 @@ export function createWorkerCacheabilityAdmissionContext(
   rawManifest: string | null | undefined,
   buildId: string | null | undefined,
   requiresCompletedResponseAdmission = rawManifest != null,
+  responseVary?: "verbatim",
 ): ExecutionContextLike {
   const identity = cacheabilityRequestIdentity(request);
   if (!rawManifest) {
@@ -126,6 +130,7 @@ export function createWorkerCacheabilityAdmissionContext(
         : { policy: "deny" },
       captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
       mode: "admit",
+      responseVary,
     };
     return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
       [CACHEABILITY_REQUEST_STATE]: state,
@@ -149,6 +154,7 @@ export function createWorkerCacheabilityAdmissionContext(
         : { policy: "deny" },
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
     mode: "admit",
+    responseVary,
   };
   return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
     [CACHEABILITY_REQUEST_STATE]: state,
@@ -494,8 +500,8 @@ function completedRouteOutcome(
     if (response.headers.has("set-cookie")) {
       return { cacheable: false, reason: "response sets a cookie" };
     }
-    if (hasUnsupportedCacheabilityVary(response.headers)) {
-      return { cacheable: false, reason: "response has unsupported Vary fields" };
+    if (hasUnsupportedCacheabilityVary(response.headers, state)) {
+      return { cacheable: false, reason: "response cache does not support custom Vary fields" };
     }
     return inferPagesPageCacheability(response);
   }
@@ -610,7 +616,7 @@ async function finalizeWorkerCacheabilityAdmission(
       response.status >= 500 ||
       state.forcedDynamicReason ||
       hasStrictFinalResponseVeto(response, state) ||
-      hasUnsupportedCacheabilityVary(response.headers)
+      hasUnsupportedCacheabilityVary(response.headers, state)
     ) {
       return responseWithCachePolicy(response, response.body, null);
     }
@@ -682,10 +688,9 @@ async function finalizeWorkerCacheabilityAdmission(
   if (hasStrictFinalResponseVeto(response, state)) {
     return responseWithCachePolicy(response, response.body, null);
   }
-  if (hasUnsupportedCacheabilityVary(response.headers)) {
+  if (hasUnsupportedCacheabilityVary(response.headers, state)) {
     return responseWithCachePolicy(response, response.body, null);
   }
-
   let captured: CapturedAdmissionBody;
   try {
     captured = await captureCacheabilityAdmissionBody(

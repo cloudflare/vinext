@@ -756,10 +756,6 @@ function validateRscWarmResponse(
   if (missingVary) {
     return { outcome: "failed", error: `response Vary is missing ${missingVary}` };
   }
-  const extraVary = Array.from(vary).find((name) => !REQUIRED_RSC_VARY_HEADERS.includes(name));
-  if (extraVary) {
-    return { outcome: "failed", error: `response Vary has unsupported field ${extraVary}` };
-  }
   return { outcome: "warmed" };
 }
 
@@ -781,13 +777,6 @@ function validateHtmlWarmResponse(
   }
   const cachePolicyValidation = validateCachePolicy(response, true, requireCacheHit);
   if (cachePolicyValidation.outcome !== "warmed") return cachePolicyValidation;
-  const extraVary = (response.headers.get("Vary") ?? "")
-    .split(",")
-    .map((name) => name.trim().toLowerCase())
-    .find((name) => name && !REQUIRED_RSC_VARY_HEADERS.includes(name));
-  if (extraVary) {
-    return { outcome: "failed", error: `response Vary has unsupported field ${extraVary}` };
-  }
   return { outcome: "warmed" };
 }
 

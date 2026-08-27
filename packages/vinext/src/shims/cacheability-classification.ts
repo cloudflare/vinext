@@ -43,6 +43,8 @@ export type RouteCacheabilityState = {
   mode: "admit" | "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
   preserveResponseCachePolicy?: boolean;
+  /** Cache-key behavior declared by the active CDN adapter. */
+  responseVary?: "verbatim";
   probeBailout?: {
     kind: "private-cache";
     outcome: RouteCacheabilityOutcome;

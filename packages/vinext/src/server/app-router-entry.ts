@@ -123,6 +123,7 @@ async function handleRequest(
   // Registration must precede admission setup: the active adapter declares
   // whether a completed response is required before public cache headers.
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
+  const cdnCacheAdapter = getCdnCacheAdapter();
   let ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, __rscPrerenderSecret);
   let finalizeCacheabilityResponse:
     | ((response: Response, ctx: ExecutionContextLike) => Promise<Response>)
@@ -135,6 +136,7 @@ async function handleRequest(
       ctx,
       request,
       __rscPrerenderSecret,
+      cdnCacheAdapter.responseVary,
     );
     if (probeContext !== ctx) {
       ctx = probeContext;
@@ -151,7 +153,7 @@ async function handleRequest(
     }
   }
   const requiresCompletedResponseAdmission =
-    getCdnCacheAdapter().requiresCompletedResponseAdmission === true;
+    cdnCacheAdapter.requiresCompletedResponseAdmission === true;
   if (
     !finalizeCacheabilityResponse &&
     (__rscCacheabilityManifest || requiresCompletedResponseAdmission) &&
@@ -164,6 +166,7 @@ async function handleRequest(
       __rscCacheabilityManifest,
       process.env.__VINEXT_BUILD_ID,
       requiresCompletedResponseAdmission,
+      cdnCacheAdapter.responseVary,
     );
     if (admissionContext !== ctx) {
       ctx = admissionContext;

@@ -745,7 +745,7 @@ describe("Cloudflare CDN warmup", () => {
     ).resolves.toMatchObject({ warmed: 2, skipped: 0, failed: 0 });
   });
 
-  it("requires browser-reusable variance for cacheable terminal responses", async () => {
+  it("accepts custom Vary fields on cacheable terminal responses", async () => {
     const fetchImpl = vi.fn(async () => {
       const response = cacheableRsc("flight not found");
       response.headers.set("vary", `${VINEXT_RSC_VARY_HEADER}, User-Agent`);
@@ -762,7 +762,7 @@ describe("Cloudflare CDN warmup", () => {
         strict: true,
         targetUrl: "https://app.example.com",
       }),
-    ).rejects.toThrow("response Vary has unsupported field user-agent");
+    ).resolves.toMatchObject({ warmed: 1, skipped: 0, failed: 0 });
   });
 
   it("does not treat same-build server errors as terminal route responses", async () => {
@@ -936,7 +936,7 @@ describe("Cloudflare CDN warmup", () => {
     ).rejects.toThrow("response is missing CF-Cache-Status");
   });
 
-  it("rejects HTML variants that the warmer request cannot share with browsers", async () => {
+  it("accepts HTML responses with custom Vary fields", async () => {
     const fetchImpl = vi.fn(async () => {
       const response = cacheableHtml();
       response.headers.set("vary", `${VINEXT_RSC_VARY_HEADER}, User-Agent`);
@@ -951,7 +951,7 @@ describe("Cloudflare CDN warmup", () => {
         strict: true,
         targetUrl: "https://app.example.com",
       }),
-    ).rejects.toThrow("response Vary has unsupported field user-agent");
+    ).resolves.toMatchObject({ warmed: 1, skipped: 0, failed: 0 });
   });
 
   it("accepts HTML varied only by framework RSC selector headers", async () => {
@@ -1042,7 +1042,7 @@ describe("Cloudflare CDN warmup", () => {
   it("does not retry permanent validation failures from the uploaded build", async () => {
     const fetchImpl = vi.fn(async () => {
       const response = cacheableRsc();
-      response.headers.set("vary", `${VINEXT_RSC_VARY_HEADER}, User-Agent`);
+      response.headers.set("vary", "User-Agent");
       return response;
     });
 
@@ -1059,7 +1059,7 @@ describe("Cloudflare CDN warmup", () => {
         strict: true,
         targetUrl: "https://app.example.com",
       }),
-    ).rejects.toThrow("response Vary has unsupported field user-agent");
+    ).rejects.toThrow("response Vary is missing rsc");
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 

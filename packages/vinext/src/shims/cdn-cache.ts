@@ -101,6 +101,12 @@ export function isNonCacheableCacheControl(cacheControl: string): boolean {
 // equivalent and stay CDN-specific.
 export type CdnCacheAdapter = {
   /**
+   * The shared cache selects response variants using every request header
+   * named by `Vary`, comparing values verbatim.
+   */
+  readonly responseVary?: "verbatim";
+
+  /**
    * Fresh App Page responses must reach clean EOF before this adapter may emit
    * shared-cache headers. Used by edge adapters whose cache sits in front of
    * the Worker; origin-managed adapters can stream privately and persist only

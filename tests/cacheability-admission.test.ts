@@ -418,23 +418,31 @@ describe("single-request cacheability admission", () => {
   });
 
   it.each(["*/*", "text/html"])(
-    "admits a manifest-backed Route Handler pattern for Accept: %s",
+    "admits a manifest-backed Route Handler pattern with custom Vary for Accept: %s",
     async (accept) => {
+      // Ported from Next.js:
+      // test/e2e/vary-header/test/index.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/vary-header/test/index.test.ts
       const { raw } = staticAppRouteManifest();
       const context = createWorkerCacheabilityAdmissionContext(
         { waitUntil() {} },
         new Request("https://example.com/api/data", { headers: { Accept: accept } }),
         raw,
         "build-a",
+        true,
+        "verbatim",
       );
       cacheabilityState(context).route = { kind: "app-route", pattern: "/api/data" };
 
       const response = await finalizeWorkerCacheabilityResponse(
-        new Response("public", { headers: { "Cache-Control": "public, s-maxage=60" } }),
+        new Response("public", {
+          headers: { "Cache-Control": "public, s-maxage=60", Vary: "User-Agent" },
+        }),
         context,
       );
 
       expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+      expect(response.headers.get("Vary")).toBe("User-Agent");
     },
   );
 
@@ -502,7 +510,39 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe("pages");
   });
 
-  it("keeps responses with unsupported Vary fields private", async () => {
+  it("admits custom Vary fields when the CDN keys them verbatim", async () => {
+    // Next.js preserves application Vary fields alongside its RSC selectors.
+    // The Cloudflare adapter's responseVary capability guarantees that the
+    // Workers Cache uses each named request header in the cache key.
+    // Ported from Next.js:
+    // test/e2e/vary-header/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/vary-header/test/index.test.ts
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+      "verbatim",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = {
+      cacheable: true,
+      cacheControl: "s-maxage=60, stale-while-revalidate=540",
+    };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("contextual", { headers: { Vary: "RSC, Cookie" } }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("s-maxage=60");
+    expect(response.headers.get("Vary")).toBe("RSC, Cookie");
+    await expect(response.text()).resolves.toBe("contextual");
+  });
+
+  it("keeps custom Vary fields private when the CDN cannot key them", async () => {
     const context = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },
       request,
@@ -523,7 +563,7 @@ describe("single-request cacheability admission", () => {
     );
 
     expect(response.headers.get("Cache-Control")).toContain("no-store");
-    await expect(response.text()).resolves.toBe("contextual");
+    expect(response.headers.get("Vary")).toBe("RSC, Cookie");
   });
 
   it("serves an intentionally private certified response without treating it as static-to-dynamic", async () => {
@@ -1019,11 +1059,14 @@ describe("cacheability probe finalization", () => {
       const state: RouteCacheabilityState = {
         captureDeadlineAt: Date.now() + 1_000,
         mode: "probe",
+        responseVary: "verbatim",
         route: { kind: "app-route", pattern: "/api/data" },
       };
 
       const response = await finalizeWorkerCacheabilityResponse(
-        new Response("static", { headers: { "Cache-Control": "public, s-maxage=60" } }),
+        new Response("static", {
+          headers: { "Cache-Control": "public, s-maxage=60", Vary: "User-Agent" },
+        }),
         contextWith(state),
       );
 
@@ -1039,10 +1082,7 @@ describe("cacheability probe finalization", () => {
     }
   });
 
-  it.each([
-    ["Set-Cookie", "session=private; Path=/", "response sets a cookie"],
-    ["Vary", "User-Agent", "response has unsupported Vary fields"],
-  ])("keeps Route Handler probes with unsafe %s private", async (name, value, reason) => {
+  it("keeps Route Handler probes that set cookies private", async () => {
     const state: RouteCacheabilityState = {
       captureDeadlineAt: Date.now() + 1_000,
       mode: "probe",
@@ -1050,14 +1090,37 @@ describe("cacheability probe finalization", () => {
     };
     const response = await finalizeWorkerCacheabilityResponse(
       new Response("unsafe", {
-        headers: { "Cache-Control": "public, s-maxage=60", [name]: value },
+        headers: {
+          "Cache-Control": "public, s-maxage=60",
+          "Set-Cookie": "session=private; Path=/",
+        },
       }),
       contextWith(state),
     );
 
     await expect(response.json()).resolves.toMatchObject({
       kind: "app-route",
-      reason,
+      reason: "response sets a cookie",
+      state: "dynamic",
+    });
+  });
+
+  it("keeps custom Route Handler Vary private for caches without header variants", async () => {
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "probe",
+      route: { kind: "app-route", pattern: "/api/data" },
+    };
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("unsafe", {
+        headers: { "Cache-Control": "public, s-maxage=60", Vary: "User-Agent" },
+      }),
+      contextWith(state),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "app-route",
+      reason: "response cache does not support custom Vary fields",
       state: "dynamic",
     });
   });

@@ -186,6 +186,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   expect(certifiedRouteHandler.status()).toBe(200);
   await expect(certifiedRouteHandler.json()).resolves.toEqual({ kind: "static-route-handler" });
   expect(certifiedRouteHandler.headers()["cdn-cache-control"]).toContain("public");
+  expect(certifiedRouteHandler.headers()["vary"]?.toLowerCase()).toContain("user-agent");
 
   const emptyStaticRouteHandler = await request.get(
     "/cacheability/route-handler-static-empty/on-demand",

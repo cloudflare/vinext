@@ -131,6 +131,7 @@ async function handleRequest(
   // whether public response headers require a completed-response proof even
   // when this build has no embedded two-stage manifest.
   registerConfiguredCacheAdapters(env);
+  const cdnCacheAdapter = getCdnCacheAdapter();
   let ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, pagesEntry.prerenderSecret);
   let finalizeCacheabilityResponse:
     | ((response: Response, ctx: ExecutionContextLike) => Promise<Response>)
@@ -141,6 +142,7 @@ async function handleRequest(
       ctx,
       request,
       pagesEntry.prerenderSecret,
+      cdnCacheAdapter.responseVary,
     );
     if (probeContext !== ctx) {
       ctx = probeContext;
@@ -153,7 +155,7 @@ async function handleRequest(
     }
   }
   const requiresCompletedResponseAdmission =
-    getCdnCacheAdapter().requiresCompletedResponseAdmission === true;
+    cdnCacheAdapter.requiresCompletedResponseAdmission === true;
   if (
     !finalizeCacheabilityResponse &&
     (__cacheabilityManifest || requiresCompletedResponseAdmission)
@@ -165,6 +167,7 @@ async function handleRequest(
       __cacheabilityManifest,
       pagesEntry.buildId,
       requiresCompletedResponseAdmission,
+      cdnCacheAdapter.responseVary,
     );
     if (admissionContext !== ctx) {
       ctx = admissionContext;
