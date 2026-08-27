@@ -388,6 +388,40 @@ function responseWithCachePolicy(
   });
 }
 
+function inferFinalAppPageCacheability(
+  response: Response,
+  state: RouteCacheabilityState,
+): RouteCacheabilityOutcome | null {
+  if (!state.frameworkResponseCachePolicy) return null;
+
+  // Config headers run after the framework snapshots its provisional policy.
+  // Match Next.js by honoring a later explicit public policy instead of
+  // replacing it with the renderer-derived default during admission.
+  const changedPolicy = (
+    ["cloudflare-cdn-cache-control", "cdn-cache-control", "cache-control"] as const
+  ).find((name) => {
+    const value = response.headers.get(name);
+    return value !== null && value !== state.frameworkResponseCachePolicy?.[name];
+  });
+  if (!changedPolicy) return null;
+
+  const cacheControl = response.headers.get(changedPolicy)!;
+  if (isNonCacheableCacheControl(cacheControl)) return { cacheable: false };
+  const cacheTag = response.headers.get("Cache-Tag");
+  return {
+    cacheable: true,
+    cacheControl,
+    ...(cacheTag
+      ? {
+          tags: cacheTag
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean),
+        }
+      : {}),
+  };
+}
+
 function staticToDynamicResponse(route: CacheabilityManifestRoute): Response {
   const headers = new Headers({ "Content-Type": "text/plain; charset=utf-8" });
   applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
@@ -503,7 +537,10 @@ async function finalizeWorkerCacheabilityAdmission(
     return responseWithCachePolicy(response, captured.body, null);
   }
 
-  const outcome = state.completion ? await state.completion : (state.outcome ?? null);
+  let outcome = state.completion ? await state.completion : (state.outcome ?? null);
+  if (state.route.kind === "app-page") {
+    outcome = inferFinalAppPageCacheability(response, state) ?? outcome;
+  }
   if (outcome?.cacheable !== true || !outcome.cacheControl) {
     // Next.js throws a static-to-dynamic error only when the runtime render
     // actually observed dynamic usage. An absent outcome can also mean the

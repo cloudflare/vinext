@@ -136,6 +136,34 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe("static");
   });
 
+  it("honors a final public App Page cache policy", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = {
+      cacheable: true,
+      cacheControl: "s-maxage=120, stale-while-revalidate=31535880",
+    };
+    state.frameworkResponseCachePolicy = { "cache-control": "no-store" };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("static", { headers: { "Cache-Control": "s-maxage=30" } }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("s-maxage=30");
+    await expect(response.text()).resolves.toBe("static");
+  });
+
   it("keeps a completed dynamic response private without a build manifest", async () => {
     const context = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },
