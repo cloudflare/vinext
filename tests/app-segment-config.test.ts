@@ -1,12 +1,31 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   isEdgeRuntime,
+  resolveAppPageDynamicConfig,
   resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig,
   resolveAppRouteHandlerFetchCacheMode,
 } from "../packages/vinext/src/server/app-segment-config.js";
 
 describe("resolveAppPageSegmentConfig", () => {
+  it("resolves the dynamic mode shared by build-time discovery and rendering", () => {
+    // Next.js applies these values while walking the component tree, where the
+    // nested-most main-chain config wins and force-dynamic remains sticky.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+    expect(
+      resolveAppPageDynamicConfig({
+        layouts: [{ dynamic: "force-static" }],
+        page: { dynamic: "auto" },
+      }),
+    ).toBe("auto");
+    expect(
+      resolveAppPageDynamicConfig({
+        page: { dynamic: "auto" },
+        parallelSegments: [{ dynamic: "force-static" }, { dynamic: "force-dynamic" }],
+      }),
+    ).toBe("force-dynamic");
+  });
+
   it("returns defaults when no segment config is present", () => {
     expect(resolveAppPageSegmentConfig({})).toEqual({
       revalidateSeconds: null,

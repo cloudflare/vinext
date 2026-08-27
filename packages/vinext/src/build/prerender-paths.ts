@@ -22,6 +22,7 @@ import {
   classifyAppRoute,
   classifyAppRouteHandler,
   classifyPagesRoute,
+  extractExportConstString,
 } from "./report.js";
 import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
@@ -34,6 +35,7 @@ import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
 import { matchHeaders, matchesRewriteSource } from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
+import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { buildPagesDataHref } from "vinext/shims/internal/pages-data-url";
@@ -45,7 +47,8 @@ export type PrerenderRoutePattern = {
   /** Closed-world safety facts for probe coordinator optimizations. */
   cacheabilityProbe?: {
     canPrunePattern: boolean;
-    canReuseHtmlForRsc: boolean;
+    /** HTML pathname shared by alternate representations of this route. */
+    concretePathname?: string;
   };
 };
 
@@ -72,6 +75,8 @@ export type PrerenderPathManifest = {
   pagesDataPaths?: string[];
   /** Public paths omitted because configured routes can replace their page response. */
   excludedWarmPaths?: string[];
+  /** Static dynamic-route patterns with no build-discovered concrete path. */
+  fallbackRoutePatterns?: PrerenderRoutePattern[];
   /** Resolved route ownership for grouping cacheability probes without re-matching paths. */
   routePatterns?: Record<string, PrerenderRoutePattern>;
   trailingSlash?: boolean;
@@ -615,6 +620,26 @@ async function excludePagesApiWarmPaths(options: {
   });
 }
 
+async function resolvePagesWarmRoutePatterns(options: {
+  i18n: ResolvedNextConfig["i18n"];
+  pagesDir: string;
+  pageExtensions: readonly string[];
+  paths: readonly string[];
+}): Promise<Record<string, PrerenderRoutePattern>> {
+  const pageRoutes = await pagesRouter(options.pagesDir, options.pageExtensions);
+  return Object.fromEntries(
+    options.paths.flatMap((pathname) => {
+      const pagesPathname = options.i18n
+        ? extractLocaleFromUrl(pathname, options.i18n).url
+        : pathname;
+      const match = matchRoute(pagesPathname, pageRoutes);
+      return match
+        ? [[pathname, { kind: "pages-page" as const, pattern: match.route.pattern }] as const]
+        : [];
+    }),
+  );
+}
+
 function localizePagesPath(
   pathname: string,
   locale: string | undefined,
@@ -660,7 +685,12 @@ async function collectAppPaths(options: {
   pageExtensions: readonly string[];
   retryOptions?: PathDiscoveryRetryOptions;
   secretHeaders: Record<string, string>;
-}): Promise<{ loadingShellPaths: string[]; paths: string[]; routeHandlerPaths: string[] }> {
+}): Promise<{
+  fallbackRoutePatterns: PrerenderRoutePattern[];
+  loadingShellPaths: string[];
+  paths: string[];
+  routeHandlerPaths: string[];
+}> {
   const routes = await appRouter(options.appDir, options.pageExtensions);
   const paths: string[] = [];
   const seen = new Set<string>();
@@ -668,6 +698,7 @@ async function collectAppPaths(options: {
   const seenLoadingShellPaths = new Set<string>();
   const routeHandlerPaths: string[] = [];
   const seenRouteHandlerPaths = new Set<string>();
+  const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
   const staticParamsCache = new Map<string, Promise<Record<string, string | string[]>[] | null>>();
   const staticParamsMap = new Proxy({} as StaticParamsMap, {
     get(_target, pattern: string) {
@@ -774,7 +805,36 @@ async function collectAppPaths(options: {
         }
       }
 
-      if (!paramSets?.length) continue;
+      if (!paramSets?.length) {
+        const parallelSegments = route.parallelSlots.flatMap((slot) =>
+          [
+            slot.layoutPath,
+            ...(slot.configLayoutPaths ?? []),
+            slot.pagePath ?? slot.defaultPath,
+          ].filter((filePath): filePath is string => typeof filePath === "string"),
+        );
+        const segmentClassifications = [...route.layouts, renderEntryPath, ...parallelSegments].map(
+          (filePath) => classifyAppRoute(filePath, null, false),
+        );
+        const hasDynamicSegment = segmentClassifications.some(
+          (classification) => classification.type === "ssr",
+        );
+        const readDynamicConfig = (filePath: string): { dynamic?: string } => {
+          const dynamic = extractExportConstString(fs.readFileSync(filePath, "utf8"), "dynamic");
+          return dynamic === null ? {} : { dynamic };
+        };
+        const dynamicConfig = resolveAppPageDynamicConfig({
+          layouts: route.layouts.map(readDynamicConfig),
+          page: readDynamicConfig(renderEntryPath),
+          parallelSegments: parallelSegments.map(readDynamicConfig),
+        });
+        const hasStaticFallback =
+          paramSets !== null || dynamicConfig === "force-static" || dynamicConfig === "error";
+        if (hasStaticFallback && !hasDynamicSegment) {
+          fallbackRoutePatterns.push({ kind: "app-page", pattern: route.pattern });
+        }
+        continue;
+      }
 
       for (const params of paramSets) {
         if (params === null || params === undefined) continue;
@@ -785,7 +845,7 @@ async function collectAppPaths(options: {
     }
   }
 
-  return { loadingShellPaths, paths, routeHandlerPaths };
+  return { fallbackRoutePatterns, loadingShellPaths, paths, routeHandlerPaths };
 }
 
 async function resolveAppWarmPaths(options: {
@@ -894,12 +954,6 @@ async function resolveAppWarmPaths(options: {
 }
 
 const CACHEABILITY_POLICY_HEADER_NAMES = new Set<string>(CACHEABILITY_POLICY_HEADERS);
-const CACHEABILITY_IDENTITY_HEADER_NAMES = new Set([
-  ...CACHEABILITY_POLICY_HEADERS,
-  "set-cookie",
-  "vary",
-]);
-
 function cachePolicyRuleMatchesWarmPath(
   pathname: string,
   rule: ResolvedNextConfig["headers"][number],
@@ -930,10 +984,53 @@ function cachePolicyRuleMatchesWarmPath(
   });
 }
 
+function cachePolicyRuleSourceMatchesWarmPath(
+  pathname: string,
+  rule: ResolvedNextConfig["headers"][number],
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
+): boolean {
+  return cachePolicyRuleMatchesWarmPath(
+    pathname,
+    { ...rule, has: undefined, missing: undefined },
+    config,
+  );
+}
+
+function staticConfigPatternSegments(pattern: string): string[] {
+  const segments: string[] = [];
+  for (const segment of pattern.split("/").filter(Boolean)) {
+    if (/[:*()[\]{}]/.test(segment)) break;
+    segments.push(segment);
+  }
+  return segments;
+}
+
+function routePatternCouldIntersectCachePolicyRule(
+  routePattern: string,
+  rule: ResolvedNextConfig["headers"][number],
+  basePath: string,
+): boolean {
+  let ruleSource = rule.source;
+  if (
+    rule.basePath !== false &&
+    basePath &&
+    (ruleSource === basePath || ruleSource.startsWith(`${basePath}/`))
+  ) {
+    ruleSource = ruleSource.slice(basePath.length) || "/";
+  }
+  const routeSegments = staticConfigPatternSegments(routePattern);
+  const ruleSegments = staticConfigPatternSegments(ruleSource);
+  const sharedLength = Math.min(routeSegments.length, ruleSegments.length);
+  for (let index = 0; index < sharedLength; index++) {
+    if (routeSegments[index] !== ruleSegments[index]) return false;
+  }
+  return true;
+}
+
 /**
- * Certify only probe collapses that cannot hide a path- or request-specific
- * next.config cache policy. The manifest contains a closed set of concrete
- * identities, so path uniformity is evaluated across that discovered set.
+ * Certify only route-config bailouts that cannot hide a path- or
+ * request-specific next.config cache policy. The final Worker still evaluates
+ * every concrete response before emitting public cache headers.
  */
 function annotateCacheabilityProbeSafety(
   routePatterns: Record<string, PrerenderRoutePattern>,
@@ -942,22 +1039,11 @@ function annotateCacheabilityProbeSafety(
   const cachePolicyRules = config.headers.filter((rule) =>
     rule.headers.some((header) => CACHEABILITY_POLICY_HEADER_NAMES.has(header.key.toLowerCase())),
   );
-  const identityRules = config.headers.filter((rule) =>
-    rule.headers.some((header) => CACHEABILITY_IDENTITY_HEADER_NAMES.has(header.key.toLowerCase())),
-  );
   const matchingPolicyRules = new Map(
     Object.keys(routePatterns).map((pathname) => [
       pathname,
       new Set(
         cachePolicyRules.filter((rule) => cachePolicyRuleMatchesWarmPath(pathname, rule, config)),
-      ),
-    ]),
-  );
-  const matchingIdentityRules = new Map(
-    Object.keys(routePatterns).map((pathname) => [
-      pathname,
-      new Set(
-        identityRules.filter((rule) => cachePolicyRuleMatchesWarmPath(pathname, rule, config)),
       ),
     ]),
   );
@@ -970,13 +1056,15 @@ function annotateCacheabilityProbeSafety(
   }
   const canPrunePatterns = new Map<string, boolean>();
   for (const [patternKey, patternPaths] of pathsByPattern) {
-    const relevantRules = new Set<ResolvedNextConfig["headers"][number]>();
-    for (const path of patternPaths) {
-      for (const rule of matchingPolicyRules.get(path) ?? []) relevantRules.add(rule);
-    }
+    const routePattern = routePatterns[patternPaths[0]].pattern;
+    const relevantRules = cachePolicyRules.filter(
+      (rule) =>
+        patternPaths.some((path) => cachePolicyRuleSourceMatchesWarmPath(path, rule, config)) ||
+        routePatternCouldIntersectCachePolicyRule(routePattern, rule, config.basePath),
+    );
     canPrunePatterns.set(
       patternKey,
-      Array.from(relevantRules).every(
+      relevantRules.every(
         (rule) =>
           !rule.has?.length &&
           !rule.missing?.length &&
@@ -989,14 +1077,11 @@ function annotateCacheabilityProbeSafety(
     Object.entries(routePatterns).map(([pathname, route]) => {
       const patternKey = `${route.kind}\0${route.pattern}`;
       const canPrunePattern = canPrunePatterns.get(patternKey) ?? false;
-      const canReuseHtmlForRsc = Array.from(matchingIdentityRules.get(pathname) ?? []).every(
-        (rule) => !rule.has?.length && !rule.missing?.length,
-      );
       return [
         pathname,
         {
           ...route,
-          cacheabilityProbe: { canPrunePattern, canReuseHtmlForRsc },
+          cacheabilityProbe: { canPrunePattern },
         },
       ];
     }),
@@ -1090,6 +1175,7 @@ export async function emitPrerenderPathManifest(
   const seenRouteHandlerPaths = new Set<string>();
   const discoveredLoadingShellPaths: string[] = [];
   const seenLoadingShellPaths = new Set<string>();
+  const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
   await withPrerenderEndpoints(async () => {
     let prodServer: { server: HttpServer; port: number } | null = null;
     const needsServer = await shouldStartPathDiscoveryServer({
@@ -1164,6 +1250,7 @@ export async function emitPrerenderPathManifest(
         for (const pathname of appPathResult.routeHandlerPaths) {
           addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
         }
+        fallbackRoutePatterns.push(...appPathResult.fallbackRoutePatterns);
       }
 
       if (pagesDir) {
@@ -1228,7 +1315,14 @@ export async function emitPrerenderPathManifest(
         htmlPaths: discoveredAppPaths,
         loadingShellPaths: discoveredLoadingShellPaths,
         pagesPaths: resolvedPagesWarmPaths,
-        routePatterns: {},
+        routePatterns: pagesDir
+          ? await resolvePagesWarmRoutePatterns({
+              i18n: config.i18n,
+              pagesDir,
+              pageExtensions: config.pageExtensions,
+              paths: resolvedPagesWarmPaths,
+            })
+          : {},
         rscPaths: discoveredAppPaths,
       };
   const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : resolvedPagesWarmPaths;
@@ -1245,6 +1339,22 @@ export async function emitPrerenderPathManifest(
     ),
   );
   const routePatterns = annotateCacheabilityProbeSafety(appOwnedWarmPaths.routePatterns, config);
+  for (let index = 0; index < resolvedPagesDataWarmPaths.length; index++) {
+    const route = routePatterns[resolvedPagesDataWarmPaths[index]];
+    if (route) {
+      const htmlPathname =
+        resolvedPagesDataWarmPaths[index] === "/"
+          ? config.basePath || "/"
+          : `${config.basePath}${resolvedPagesDataWarmPaths[index]}`;
+      routePatterns[pagesDataPaths[index]] = {
+        ...route,
+        cacheabilityProbe: {
+          ...route.cacheabilityProbe!,
+          concretePathname: htmlPathname,
+        },
+      };
+    }
+  }
 
   const manifest: PrerenderPathManifest = {
     ...(appDir ? { appPaths: appOwnedWarmPaths.appPaths } : {}),
@@ -1261,6 +1371,7 @@ export async function emitPrerenderPathManifest(
         }
       : {}),
     ...(excludedWarmPathSet.size > 0 ? { excludedWarmPaths: Array.from(excludedWarmPathSet) } : {}),
+    ...(fallbackRoutePatterns.length > 0 ? { fallbackRoutePatterns } : {}),
     ...(rscBuildId ? { rscBuildId } : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
     ...(options.responseVary ? { rscPaths: appOwnedWarmPaths.rscPaths } : {}),

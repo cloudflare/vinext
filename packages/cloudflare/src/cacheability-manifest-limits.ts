@@ -6,7 +6,7 @@ export function cacheabilityManifestRouteLimitError(
   limit = MAX_CACHEABILITY_MANIFEST_ROUTES,
 ): Error {
   return new Error(
-    `Two-stage CDN warming produced ${routeCount} cacheable identities; the limit is ${limit}. Narrow prerender discovery or split the deployment before retrying.`,
+    `Two-stage CDN warming produced ${routeCount} cacheable route patterns; the limit is ${limit}. Split the deployment before retrying.`,
   );
 }
 
@@ -15,6 +15,6 @@ export function cacheabilityManifestByteLimitError(
   limit = MAX_CACHEABILITY_MANIFEST_BYTES,
 ): Error {
   return new Error(
-    `Two-stage CDN warming produced a ${manifestBytes}-byte cacheability manifest; the limit is ${limit} bytes. Narrow prerender discovery or split the deployment before retrying.`,
+    `Two-stage CDN warming produced a ${manifestBytes}-byte route-pattern cacheability manifest; the limit is ${limit} bytes. Reduce the number or length of route patterns, or split the deployment before retrying.`,
   );
 }

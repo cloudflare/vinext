@@ -123,6 +123,36 @@ function getParallelSegments(
   );
 }
 
+/** Resolve the effective `dynamic` mode using the same traversal semantics as rendering. */
+export function resolveAppPageDynamicConfig(
+  options: Pick<
+    ResolveAppPageSegmentConfigOptions,
+    "layouts" | "page" | "parallelBranches" | "parallelSegments"
+  >,
+): AppRouteSegmentDynamic | undefined {
+  const segments = [...(options.layouts ?? []), options.page];
+  const parallelSegments = getParallelSegments(options);
+  let dynamicConfig: AppRouteSegmentDynamic | undefined;
+  let hasForceDynamic = false;
+
+  for (const segment of segments) {
+    if (!isRouteSegmentDynamic(segment?.dynamic)) continue;
+    if (segment.dynamic === "force-dynamic") hasForceDynamic = true;
+    dynamicConfig = hasForceDynamic ? "force-dynamic" : segment.dynamic;
+  }
+
+  for (const segment of parallelSegments) {
+    if (segment?.dynamic === "force-dynamic") {
+      hasForceDynamic = true;
+      dynamicConfig = "force-dynamic";
+    } else if (dynamicConfig === undefined && isRouteSegmentDynamic(segment?.dynamic)) {
+      dynamicConfig = segment.dynamic;
+    }
+  }
+
+  return dynamicConfig;
+}
+
 function resolveDynamicParamsConfig(
   options: ResolveAppPageSegmentConfigOptions,
 ): boolean | undefined {
@@ -236,7 +266,9 @@ export function resolveAppPageSegmentConfig(
   // - dynamicParams: false is sticky across the route tree.
   // - fetchCache: force/only modes take route-level precedence and reject conflicts.
   // - revalidate: the shortest numeric interval wins.
+  const dynamicConfig = resolveAppPageDynamicConfig(options);
   const config: EffectiveAppPageSegmentConfig = {
+    ...(dynamicConfig === undefined ? {} : { dynamicConfig }),
     revalidateSeconds: null,
   };
   config.dynamicParamsConfig = resolveDynamicParamsConfig(options);
@@ -245,17 +277,9 @@ export function resolveAppPageSegmentConfig(
   let hasOnlyCache = false;
   let hasOnlyNoStore = false;
   let hasParentDefaultNoStore = false;
-  let hasForceDynamic = false;
 
   for (const segment of segments) {
     if (!segment) continue;
-
-    if (isRouteSegmentDynamic(segment.dynamic)) {
-      if (segment.dynamic === "force-dynamic") {
-        hasForceDynamic = true;
-      }
-      config.dynamicConfig = hasForceDynamic ? "force-dynamic" : segment.dynamic;
-    }
 
     if (isRouteSegmentRuntime(segment.runtime)) {
       config.runtime = segment.runtime;
@@ -311,13 +335,6 @@ export function resolveAppPageSegmentConfig(
     // chain values remain authoritative when present. Slot-only values still
     // define the route, while sticky route-wide constraints aggregate across
     // every active branch.
-    if (segment.dynamic === "force-dynamic") {
-      hasForceDynamic = true;
-      config.dynamicConfig = "force-dynamic";
-    } else if (config.dynamicConfig === undefined && isRouteSegmentDynamic(segment.dynamic)) {
-      config.dynamicConfig = segment.dynamic;
-    }
-
     if (config.runtime === undefined && isRouteSegmentRuntime(segment.runtime)) {
       config.runtime = segment.runtime;
     }

@@ -1,8 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("admits only exact manifest-backed App Page responses after clean EOF", async ({
-  request,
-}) => {
+test("admits pattern-backed App responses only after each clean EOF", async ({ request }) => {
   const certified = await request.get("/cacheability/static", {
     headers: { Accept: "text/html" },
   });
@@ -60,8 +58,8 @@ test("admits only exact manifest-backed App Page responses after clean EOF", asy
     headers: { Accept: "text/html" },
   });
   expect(unlistedQuery.status()).toBe(200);
-  expect(unlistedQuery.headers()["cache-control"]).toContain("no-store");
-  expect(unlistedQuery.headers()["cdn-cache-control"]).toBeUndefined();
+  expect(unlistedQuery.headers()["cdn-cache-control"]).toContain("public");
+  expect(unlistedQuery.headers()["cache-control"]).toContain("must-revalidate");
 
   const knownDynamic = await request.get("/cacheability/dynamic", {
     headers: { Accept: "text/html" },
@@ -76,6 +74,91 @@ test("admits only exact manifest-backed App Page responses after clean EOF", asy
   expect(configPublicDynamic.status()).toBe(200);
   expect(configPublicDynamic.headers()["cdn-cache-control"]).toContain("max-age=32");
 
+  const configPrivateDynamic = await request.get("/cacheability/config-public-dynamic?preview=1", {
+    headers: { Accept: "text/html" },
+  });
+  expect(configPrivateDynamic.status()).toBe(200);
+  expect(configPrivateDynamic.headers()["cache-control"]).toContain("no-store");
+  expect(configPrivateDynamic.headers()["cdn-cache-control"]).toBeUndefined();
+
+  const ordinaryConfigPattern = await request.get("/cacheability/config-public-pattern/ordinary", {
+    headers: { Accept: "text/html" },
+  });
+  expect(ordinaryConfigPattern.status()).toBe(200);
+  expect(ordinaryConfigPattern.headers()["cache-control"]).toContain("no-store");
+  expect(ordinaryConfigPattern.headers()["cdn-cache-control"]).toBeUndefined();
+
+  const publicConfigPattern = await request.get("/cacheability/config-public-pattern/special", {
+    headers: { Accept: "text/html" },
+  });
+  expect(publicConfigPattern.status()).toBe(200);
+  expect(publicConfigPattern.headers()["cdn-cache-control"]).toContain("max-age=33");
+
+  const publicConfigRepresentation = await request.get(
+    "/cacheability/config-public-representation",
+    { headers: { Accept: "text/html" } },
+  );
+  expect(publicConfigRepresentation.status()).toBe(200);
+  expect(publicConfigRepresentation.headers()["cdn-cache-control"]).toContain("max-age=34");
+
+  const privateConfigRepresentation = await request.get(
+    "/cacheability/config-public-representation?_rsc",
+    { headers: { Accept: "text/x-component", RSC: "1" } },
+  );
+  expect(privateConfigRepresentation.status()).toBe(200);
+  expect(privateConfigRepresentation.headers()["cache-control"]).toContain("no-store");
+  expect(privateConfigRepresentation.headers()["cdn-cache-control"]).toBeUndefined();
+
+  // Next.js evaluates each generateStaticParams candidate separately: one
+  // sibling can remain ISR while another becomes request-time dynamic. The
+  // pattern manifest must preserve that behavior by probing each concrete
+  // path once while deduplicating its HTML/RSC identities.
+  // Ported from the concrete-path classification in Next.js:
+  // packages/next/src/build/index.ts
+  const staticPatternSibling = await request.get("/cacheability/pattern-runtime-dynamic/static", {
+    headers: { Accept: "text/html" },
+  });
+  expect(staticPatternSibling.status()).toBe(200);
+  expect(staticPatternSibling.headers()["cdn-cache-control"]).toContain("public");
+
+  const dynamicPatternSibling = await request.get("/cacheability/pattern-runtime-dynamic/dynamic", {
+    headers: { Accept: "text/html" },
+  });
+  expect(dynamicPatternSibling.status()).toBe(200);
+  const dynamicPatternBody = await dynamicPatternSibling.text();
+  expect(dynamicPatternBody).toContain("pattern runtime ");
+  expect(dynamicPatternBody).toContain("dynamic</main>");
+  expect(dynamicPatternSibling.headers()["cache-control"]).toContain("no-store");
+  expect(dynamicPatternSibling.headers()["cdn-cache-control"]).toBeUndefined();
+
+  const unlistedPatternSibling = await request.get(
+    "/cacheability/pattern-runtime-dynamic/unlisted",
+    { headers: { Accept: "text/html" } },
+  );
+  expect(unlistedPatternSibling.status()).toBe(200);
+  const unlistedPatternBody = await unlistedPatternSibling.text();
+  expect(unlistedPatternBody).toContain("pattern runtime ");
+  expect(unlistedPatternBody).toContain("unlisted</main>");
+  expect(unlistedPatternSibling.headers()["cache-control"]).toContain("no-store");
+  expect(unlistedPatternSibling.headers()["cdn-cache-control"]).toBeUndefined();
+
+  const allStaticFallback = await request.get(
+    "/cacheability/pattern-runtime-static/runtime-fallback",
+    { headers: { Accept: "text/html" } },
+  );
+  expect(allStaticFallback.status()).toBe(200);
+  expect(allStaticFallback.headers()["cdn-cache-control"]).toContain("public");
+  const allStaticFallbackBody = await allStaticFallback.text();
+  expect(allStaticFallbackBody).toContain("runtime static ");
+  expect(allStaticFallbackBody).toContain("runtime-fallback</main>");
+
+  const emptyStaticFallback = await request.get("/cacheability/static-empty/on-demand", {
+    headers: { Accept: "text/html" },
+  });
+  expect(emptyStaticFallback.status()).toBe(200);
+  expect(emptyStaticFallback.headers()["cdn-cache-control"]).toContain("public");
+  expect(await emptyStaticFallback.text()).toContain("empty fallback on-demand</main>");
+
   const staticToDynamic = await request.get("/cacheability/static-to-dynamic/runtime", {
     headers: { Accept: "text/html", "X-Probe-Value": "private-value" },
   });
@@ -83,6 +166,14 @@ test("admits only exact manifest-backed App Page responses after clean EOF", asy
   expect(await staticToDynamic.text()).toContain("changed from static to dynamic");
   expect(staticToDynamic.headers()["cache-control"]).toContain("no-store");
   expect(staticToDynamic.headers()["cdn-cache-control"]).toBeUndefined();
+
+  const fallbackStaticToDynamic = await request.get("/cacheability/static-to-dynamic/unlisted", {
+    headers: { Accept: "text/html", "X-Probe-Value": "private-value" },
+  });
+  expect(fallbackStaticToDynamic.status()).toBe(500);
+  expect(await fallbackStaticToDynamic.text()).toContain("changed from static to dynamic");
+  expect(fallbackStaticToDynamic.headers()["cache-control"]).toContain("no-store");
+  expect(fallbackStaticToDynamic.headers()["cdn-cache-control"]).toBeUndefined();
 
   const uncertifiedRsc = await request.get("/cacheability/prerender-phase/known?_rsc", {
     headers: { Accept: "text/x-component", RSC: "1" },
@@ -100,8 +191,7 @@ test("admits only exact manifest-backed App Page responses after clean EOF", asy
     "/cacheability/route-handler-static?user=one",
   );
   expect(unlistedRouteHandlerQuery.status()).toBe(200);
-  expect(unlistedRouteHandlerQuery.headers()["cache-control"]).toContain("no-store");
-  expect(unlistedRouteHandlerQuery.headers()["cdn-cache-control"]).toBeUndefined();
+  expect(unlistedRouteHandlerQuery.headers()["cdn-cache-control"]).toContain("public");
 
   // Next.js does not statically generate a GET+POST Route Handler, so this
   // route is intentionally absent from the probe manifest. Its handler-owned

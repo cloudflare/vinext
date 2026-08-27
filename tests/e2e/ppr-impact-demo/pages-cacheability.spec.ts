@@ -119,8 +119,14 @@ test("classifies Pages Router data contracts inside the staged Worker", async ({
   }
 });
 
-test("admits only exact manifest-backed Pages Router responses", async ({ request }) => {
-  for (const pathname of ["/cacheability-pages/isr", "/cacheability-pages/posts/known"]) {
+test("admits pattern-backed Pages Router responses after each completed render", async ({
+  request,
+}) => {
+  for (const pathname of [
+    "/cacheability-pages/isr",
+    "/cacheability-pages/isr?unlisted=1",
+    "/cacheability-pages/posts/known",
+  ]) {
     const response = await request.get(pathname, { headers: { Accept: "text/html" } });
     expect(response.status(), pathname).toBe(200);
     expect(response.headers()["cdn-cache-control"], pathname).toContain("max-age=60");
@@ -128,6 +134,7 @@ test("admits only exact manifest-backed Pages Router responses", async ({ reques
 
   for (const pathname of [
     `/_next/data/${buildId}/cacheability-pages/isr.json`,
+    `/_next/data/${buildId}/cacheability-pages/isr.json?unlisted=1`,
     `/_next/data/${buildId}/cacheability-pages/posts/known.json`,
   ]) {
     const response = await request.get(pathname, { headers: { Accept: "application/json" } });
@@ -150,10 +157,8 @@ test("admits only exact manifest-backed Pages Router responses", async ({ reques
   for (const pathname of [
     "/cacheability-pages/gssp",
     "/cacheability-pages/get-initial-props",
-    "/cacheability-pages/isr?unlisted=1",
     "/cacheability-pages/posts/unknown",
     `/_next/data/${buildId}/cacheability-pages/gssp.json`,
-    `/_next/data/${buildId}/cacheability-pages/isr.json?unlisted=1`,
     `/_next/data/${buildId}/cacheability-pages/posts/unknown.json`,
   ]) {
     const response = await request.get(pathname, {

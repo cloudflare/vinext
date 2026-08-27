@@ -100,6 +100,7 @@ describe("Cloudflare CDN warmup", () => {
         buildId: "build-a",
         buildIdentity: "rsc-build-a",
         deploymentId: "dpl_123",
+        fallbackRoutePatterns: [{ kind: "app-page", pattern: "/posts/:slug" }],
         loadingShellPaths: ["/dashboard"],
         pagesDataPaths: ["/docs/_next/data/build-a/pages.json"],
         paths: ["/dashboard", "/dynamic", "/pages"],
@@ -119,6 +120,7 @@ describe("Cloudflare CDN warmup", () => {
       buildId: "build-a",
       buildIdentity: "rsc-build-a",
       deploymentId: "dpl_123",
+      fallbackRoutePatterns: [{ kind: "app-page", pattern: "/posts/:slug" }],
       loadingShellPaths: ["/docs/dashboard/"],
       pagesDataPaths: ["/docs/_next/data/build-a/pages.json"],
       paths: ["/docs/dashboard/", "/docs/dynamic/", "/docs/pages/"],
@@ -233,6 +235,7 @@ describe("Cloudflare CDN warmup", () => {
       skipped: 0,
       failed: 0,
       failures: [],
+      skippedTargets: [],
       warmedPlan: {
         loadingShellPaths: ["/search?q=x"],
         pagesDataPaths: ["/_next/data/build-a/pages.json"],
@@ -327,16 +330,15 @@ describe("Cloudflare CDN warmup", () => {
       });
     });
 
-    await expect(
-      warmCdnCache({
-        expectedRscBuildId: "rsc-build-a",
-        fetchImpl: fetchImpl as typeof fetch,
-        paths: ["/dynamic"],
-        rscPaths: ["/dynamic"],
-        strict: true,
-        targetUrl: "https://app.example.com",
-      }),
-    ).resolves.toEqual({
+    const result = await warmCdnCache({
+      expectedRscBuildId: "rsc-build-a",
+      fetchImpl: fetchImpl as typeof fetch,
+      paths: ["/dynamic"],
+      rscPaths: ["/dynamic"],
+      strict: true,
+      targetUrl: "https://app.example.com",
+    });
+    expect(result).toMatchObject({
       total: 2,
       warmed: 0,
       skipped: 2,
@@ -345,6 +347,7 @@ describe("Cloudflare CDN warmup", () => {
       warmedPlan: { loadingShellPaths: [], pagesDataPaths: [], paths: [], rscPaths: [] },
       retryPlan: { loadingShellPaths: [], pagesDataPaths: [], paths: [], rscPaths: [] },
     });
+    expect(result.skippedTargets).toHaveLength(2);
   });
 
   it("rejects a Pages data response with a non-JSON representation", async () => {

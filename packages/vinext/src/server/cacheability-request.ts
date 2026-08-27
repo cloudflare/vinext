@@ -24,12 +24,14 @@ import {
   CACHEABILITY_PROBE_TIMEOUT_MS,
 } from "./cacheability-limits.js";
 import {
+  cacheabilityManifestRouteState,
   cacheabilityRequestIdentity,
-  cacheabilityManifestHasRoutePattern,
+  cacheabilityRoutePathname,
   findCacheabilityManifestRoute,
   parseCacheabilityManifest,
   type CacheabilityManifest,
   type CacheabilityManifestRoute,
+  type CacheabilityRepresentation,
 } from "./cacheability-manifest.js";
 
 type CacheabilityProbeRouteState =
@@ -43,6 +45,8 @@ type CacheabilityProbeResult = {
   kind?: "app-page" | "app-route" | "pages-page";
   pattern?: string;
   reason?: string;
+  /** The renderer itself completed with a reusable static policy. */
+  rendererStatic?: boolean;
   scope?: "identity" | "pattern";
   state: CacheabilityProbeRouteState;
   status: number;
@@ -110,7 +114,16 @@ export function createWorkerCacheabilityAdmissionContext(
   if (!rawManifest) {
     if (!requiresCompletedResponseAdmission) return base;
     const state: RouteCacheabilityState = {
-      admission: identity ? { policy: "runtime", ...identity } : { policy: "deny" },
+      admission: identity
+        ? {
+            policy: "runtime",
+            ...identity,
+            routePathname: cacheabilityRoutePathname(
+              new URL(request.url).pathname,
+              identity.representation,
+            ),
+          }
+        : { policy: "deny" },
       captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
       mode: "admit",
     };
@@ -123,7 +136,17 @@ export function createWorkerCacheabilityAdmissionContext(
 
   const state: RouteCacheabilityState = {
     admission:
-      manifest && identity ? { manifest, policy: "manifest", ...identity } : { policy: "deny" },
+      manifest && identity
+        ? {
+            manifest,
+            policy: "manifest",
+            ...identity,
+            routePathname: cacheabilityRoutePathname(
+              new URL(request.url).pathname,
+              identity.representation,
+            ),
+          }
+        : { policy: "deny" },
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
     mode: "admit",
   };
@@ -143,12 +166,14 @@ function probeResponse(
   routeState: CacheabilityProbeRouteState,
   outcome: RouteCacheabilityOutcome,
   status: number,
+  rendererStatic?: boolean,
 ): Response {
   const body: CacheabilityProbeResult = {
     cacheControl: outcome.cacheControl,
     kind: state.route?.kind,
     pattern: state.route?.pattern,
     reason: outcome.reason,
+    ...(rendererStatic !== undefined ? { rendererStatic } : {}),
     ...(routeState === "dynamic"
       ? { scope: state.patternDynamicReason ? ("pattern" as const) : ("identity" as const) }
       : {}),
@@ -544,12 +569,12 @@ async function finalizeWorkerCacheabilityAdmission(
   // boundary, so the outer Worker does not buffer them a second time. Config
   // headers run later, however, and can make an otherwise dynamic response
   // public. Capture only that unproven final-public case before it can escape.
-  // A manifest-bearing deployment must also authorize the exact route/path
-  // identity. Normalize HTML-shaped direct navigations to the same Route
-  // Handler representation as canonical fetches.
+  // A manifest-bearing deployment normally authorizes the route pattern. An
+  // unlisted Route Handler can still opt in with an explicit application or
+  // config cache policy, but only after this finalizer has checked the fully
+  // completed response.
   if (state.route?.kind === "app-route") {
     let manifestRoute: CacheabilityManifestRoute | null = null;
-    let manifestContainsRoutePattern = false;
     const hasExplicitRuntimePolicy =
       state.explicitResponseCachePolicy === true || state.explicitConfigCachePolicy === true;
     if (
@@ -562,33 +587,24 @@ async function finalizeWorkerCacheabilityAdmission(
     }
     if (admission.policy === "manifest") {
       const manifest = admission.manifest as CacheabilityManifest;
-      const representation =
-        admission.representation === "html" ? "app-route" : admission.representation;
       manifestRoute = findCacheabilityManifestRoute(
         manifest,
         state.route.kind,
         state.route.pattern,
-        {
-          representation: representation as Parameters<
-            typeof findCacheabilityManifestRoute
-          >[3]["representation"],
-          requestKey: admission.requestKey,
-        },
       );
-      if (!manifestRoute && hasExplicitRuntimePolicy) {
-        manifestContainsRoutePattern = cacheabilityManifestHasRoutePattern(
-          manifest,
-          state.route.kind,
-          state.route.pattern,
-        );
-      }
     }
     const isManifestAuthorized =
-      manifestRoute?.state === "static-candidate" && manifestRoute.status === response.status;
+      manifestRoute !== null &&
+      admission.routePathname !== undefined &&
+      cacheabilityManifestRouteState(
+        manifestRoute,
+        admission.routePathname,
+        admission.representation as CacheabilityRepresentation,
+      ) !== null;
     const canUseBoundedRuntimeAdmission =
       hasExplicitRuntimePolicy &&
       (admission.policy === "runtime" ||
-        (admission.policy === "manifest" && !manifestRoute && !manifestContainsRoutePattern));
+        (admission.policy === "manifest" && !isManifestAuthorized));
     if (
       (!isManifestAuthorized && !canUseBoundedRuntimeAdmission) ||
       response.status >= 500 ||
@@ -643,20 +659,19 @@ async function finalizeWorkerCacheabilityAdmission(
   }
 
   let manifestRoute: CacheabilityManifestRoute | null = null;
+  let manifestRouteState: ReturnType<typeof cacheabilityManifestRouteState> = null;
   if (admission.policy === "manifest") {
     const manifest = admission.manifest as CacheabilityManifest;
-    manifestRoute = findCacheabilityManifestRoute(manifest, state.route.kind, state.route.pattern, {
-      representation: admission.representation as Parameters<
-        typeof findCacheabilityManifestRoute
-      >[3]["representation"],
-      requestKey: admission.requestKey,
-    });
-    if (
-      !manifestRoute ||
-      manifestRoute.state === "dynamic" ||
-      manifestRoute.state === "probe-failed" ||
-      manifestRoute.status !== response.status
-    ) {
+    manifestRoute = findCacheabilityManifestRoute(manifest, state.route.kind, state.route.pattern);
+    manifestRouteState =
+      manifestRoute && admission.routePathname
+        ? cacheabilityManifestRouteState(
+            manifestRoute,
+            admission.routePathname,
+            admission.representation as CacheabilityRepresentation,
+          )
+        : null;
+    if (!manifestRoute || !manifestRouteState) {
       return responseWithCachePolicy(response, response.body, null);
     }
   }
@@ -694,7 +709,11 @@ async function finalizeWorkerCacheabilityAdmission(
     // renderer deliberately bypassed its cache-write path (notably draft mode
     // and nonce-bearing HTML), in which case the completed response must stay
     // private without being replaced by a 500.
-    if (manifestRoute?.state === "static-candidate" && outcome?.dynamicUsage === true) {
+    if (
+      manifestRoute &&
+      manifestRouteState === "static-candidate" &&
+      outcome?.dynamicUsage === true
+    ) {
       // The replacement 500 does not consume the captured replay stream. Its
       // cancellation releases the isolate-wide byte reservation immediately.
       await captured.body?.cancel().catch(() => {});
@@ -800,5 +819,6 @@ export async function finalizeWorkerCacheabilityResponse(
         : "dynamic",
     outcome,
     response.status,
+    rendererOutcome?.cacheable === true && rendererOutcome.dynamicUsage !== true,
   );
 }

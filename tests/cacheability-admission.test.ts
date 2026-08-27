@@ -100,17 +100,9 @@ function staticManifestRoute(): { raw: string; route: CacheabilityManifestRoute 
   const route: CacheabilityManifestRoute = {
     kind: "app-page",
     pattern: "/page",
-    representation: "html",
-    requestKey: "/page",
     state: "static-candidate",
-    status: 200,
   };
-  const key = cacheabilityManifestRouteKey(
-    route.kind,
-    route.pattern,
-    route.representation,
-    route.requestKey,
-  );
+  const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
   return {
     raw: JSON.stringify({ buildId: "build-a", routes: { [key]: route }, version: 1 }),
     route,
@@ -121,17 +113,9 @@ function staticPagesManifestRoute(): { raw: string; route: CacheabilityManifestR
   const route: CacheabilityManifestRoute = {
     kind: "pages-page",
     pattern: "/pages-route",
-    representation: "html",
-    requestKey: "/pages-route",
     state: "static-candidate",
-    status: 200,
   };
-  const key = cacheabilityManifestRouteKey(
-    route.kind,
-    route.pattern,
-    route.representation,
-    route.requestKey,
-  );
+  const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
   return {
     raw: JSON.stringify({ buildId: "build-a", routes: { [key]: route }, version: 1 }),
     route,
@@ -142,17 +126,9 @@ function staticAppRouteManifest(): { raw: string; route: CacheabilityManifestRou
   const route: CacheabilityManifestRoute = {
     kind: "app-route",
     pattern: "/api/data",
-    representation: "app-route",
-    requestKey: "/api/data",
     state: "static-candidate",
-    status: 200,
   };
-  const key = cacheabilityManifestRouteKey(
-    route.kind,
-    route.pattern,
-    route.representation,
-    route.requestKey,
-  );
+  const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
   return {
     raw: JSON.stringify({ buildId: "build-a", routes: { [key]: route }, version: 1 }),
     route,
@@ -300,6 +276,7 @@ describe("single-request cacheability admission", () => {
         policy: "runtime",
         representation: "app-route",
         requestKey: "/page",
+        routePathname: "/page",
       });
     },
   );
@@ -441,7 +418,7 @@ describe("single-request cacheability admission", () => {
   });
 
   it.each(["*/*", "text/html"])(
-    "admits only an exact manifest-backed Route Handler identity for Accept: %s",
+    "admits a manifest-backed Route Handler pattern for Accept: %s",
     async (accept) => {
       const { raw } = staticAppRouteManifest();
       const context = createWorkerCacheabilityAdmissionContext(
@@ -461,7 +438,7 @@ describe("single-request cacheability admission", () => {
     },
   );
 
-  it("does not let explicit policy bypass an exact manifest status mismatch", async () => {
+  it("lets the final completed render determine a pattern-backed response status", async () => {
     const { raw } = staticAppRouteManifest();
     const context = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },
@@ -483,10 +460,10 @@ describe("single-request cacheability admission", () => {
     );
 
     expect(response.status).toBe(302);
-    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
   });
 
-  it("keeps an unlisted Route Handler query identity private despite explicit policy", async () => {
+  it("admits another query identity only after its completed pattern-backed render", async () => {
     const { raw } = staticAppRouteManifest();
     const context = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },
@@ -503,7 +480,7 @@ describe("single-request cacheability admission", () => {
       context,
     );
 
-    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
   });
 
   it("preserves an independently classified hybrid Pages response", async () => {
@@ -595,6 +572,195 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toContain("changed from static to dynamic");
   });
 
+  it("checks every sibling render against the route-pattern classification", async () => {
+    const route: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pattern: "/posts/:slug",
+      state: "runtime-check",
+      staticPaths: { html: ["/posts/conditional", "/posts/static"] },
+    };
+    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
+    const raw = JSON.stringify({ buildId: "build-a", routes: { [key]: route }, version: 1 });
+
+    const dynamicContext = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/posts/conditional", {
+        headers: { Accept: "text/html" },
+      }),
+      raw,
+      "build-a",
+    );
+    const dynamicState = cacheabilityState(dynamicContext);
+    dynamicState.route = { kind: "app-page", pattern: route.pattern };
+    dynamicState.outcome = { cacheable: false, dynamicUsage: true };
+    const dynamicResponse = await finalizeWorkerCacheabilityResponse(
+      new Response("private sibling"),
+      dynamicContext,
+    );
+    expect(dynamicResponse.status).toBe(500);
+    expect(dynamicResponse.headers.get("Cache-Control")).toContain("no-store");
+
+    const staticContext = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/posts/static", { headers: { Accept: "text/html" } }),
+      raw,
+      "build-a",
+    );
+    const staticState = cacheabilityState(staticContext);
+    staticState.route = { kind: "app-page", pattern: route.pattern };
+    staticState.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+    const staticResponse = await finalizeWorkerCacheabilityResponse(
+      new Response("public sibling"),
+      staticContext,
+    );
+    expect(staticResponse.headers.get("Cache-Control")).toBe("s-maxage=60");
+
+    const rscContext = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/posts/static.rsc", {
+        headers: { Accept: "text/x-component", RSC: "1" },
+      }),
+      raw,
+      "build-a",
+    );
+    const rscState = cacheabilityState(rscContext);
+    rscState.route = { kind: "app-page", pattern: route.pattern };
+    rscState.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+    const rscResponse = await finalizeWorkerCacheabilityResponse(
+      new Response("public RSC sibling"),
+      rscContext,
+    );
+    expect(rscResponse.headers.get("Cache-Control")).toBe("s-maxage=60");
+  });
+
+  it("renders a concrete dynamic path normally beside an exact static path", async () => {
+    const route: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pattern: "/posts/:slug",
+      runtimePaths: ["/posts/conditionally-dynamic"],
+      state: "runtime-check",
+      staticPaths: { html: ["/posts/static"] },
+    };
+    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
+    const raw = JSON.stringify({ buildId: "build-a", routes: { [key]: route }, version: 1 });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/posts/conditionally-dynamic", {
+        headers: { Accept: "text/html" },
+      }),
+      raw,
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: route.pattern };
+    state.outcome = { cacheable: false, dynamicUsage: true };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("private sibling"),
+      context,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("private sibling");
+  });
+
+  it("keeps a conditionally public exact path dynamic when the condition changes", async () => {
+    const route: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pattern: "/posts/:slug",
+      runtimePaths: ["/posts/config-public"],
+      state: "runtime-check",
+    };
+    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
+    const raw = JSON.stringify({ buildId: "build-a", routes: { [key]: route }, version: 1 });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/posts/config-public?preview=1", {
+        headers: { Accept: "text/html" },
+      }),
+      raw,
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: route.pattern };
+    state.outcome = { cacheable: false, dynamicUsage: true };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("private preview"),
+      context,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("private preview");
+  });
+
+  it("keeps an unlisted fallback path private for a mixed pattern", async () => {
+    const route: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pattern: "/posts/:slug",
+      runtimePaths: ["/posts/dynamic"],
+      state: "runtime-check",
+      staticPaths: { html: ["/posts/generated"] },
+    };
+    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
+    const raw = JSON.stringify({ buildId: "build-a", routes: { [key]: route }, version: 1 });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/posts/runtime-fallback", {
+        headers: { Accept: "text/html" },
+      }),
+      raw,
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: route.pattern };
+    state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("runtime fallback"),
+      context,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("runtime fallback");
+  });
+
+  it("preserves static-to-dynamic errors for an all-static pattern fallback", async () => {
+    const route: CacheabilityManifestRoute = {
+      allowUnknown: true,
+      kind: "app-page",
+      unknownState: "static-candidate",
+      pattern: "/posts/:slug",
+      state: "runtime-check",
+      staticPaths: { html: ["/posts/generated"] },
+    };
+    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
+    const raw = JSON.stringify({ buildId: "build-a", routes: { [key]: route }, version: 1 });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/posts/runtime-fallback", {
+        headers: { Accept: "text/html" },
+      }),
+      raw,
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: route.pattern };
+    state.outcome = { cacheable: false, dynamicUsage: true };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("dynamic fallback"),
+      context,
+    );
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toContain("changed from static to dynamic");
+  });
+
   const lateFinalPolicyCases: Array<{
     finalHeaders: Record<string, string>;
     initialPolicy: NonNullable<RouteCacheabilityState["frameworkResponseCachePolicy"]>;
@@ -680,6 +846,27 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe("pages");
   });
 
+  it("serves an unlisted App route normally while withholding CDN admission", async () => {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      JSON.stringify({ buildId: "build-a", routes: {}, version: 1 }),
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("still rendered"),
+      context,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("still rendered");
+  });
+
   it("honors an explicit public Pages SSR policy over the default dynamic classification", async () => {
     // Ported from Next.js:
     // test/e2e/getserversideprops/test/index.test.ts
@@ -746,6 +933,37 @@ describe("cacheability probe finalization", () => {
       waitUntil() {},
     };
   }
+
+  it("reports whether the renderer itself produced the public cache policy", async () => {
+    const staticState: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "probe",
+      outcome: { cacheable: true, cacheControl: "s-maxage=60" },
+      route: { kind: "app-page", pattern: "/posts/:slug" },
+    };
+    const staticResponse = await finalizeWorkerCacheabilityResponse(
+      new Response("static"),
+      contextWith(staticState),
+    );
+    await expect(staticResponse.json()).resolves.toMatchObject({ rendererStatic: true });
+
+    const configuredState: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      explicitConfigCachePolicy: true,
+      frameworkResponseCachePolicy: { "cache-control": "no-store" },
+      mode: "probe",
+      outcome: { cacheable: false, dynamicUsage: true },
+      route: { kind: "app-page", pattern: "/posts/:slug" },
+    };
+    const configuredResponse = await finalizeWorkerCacheabilityResponse(
+      new Response("configured", { headers: { "Cache-Control": "s-maxage=60" } }),
+      contextWith(configuredState),
+    );
+    await expect(configuredResponse.json()).resolves.toMatchObject({
+      rendererStatic: false,
+      state: "static-candidate",
+    });
+  });
 
   it("does not let ordinary dynamic usage hide a route 500", async () => {
     const state: RouteCacheabilityState = {

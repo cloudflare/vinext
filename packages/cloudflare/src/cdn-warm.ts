@@ -79,6 +79,7 @@ export type CdnWarmResult = {
   skipped: number;
   failed: number;
   failures: Array<{ path: string; error: string }>;
+  skippedTargets: CdnWarmTarget[];
   warmedPlan: CdnWarmRequestPlan;
   retryPlan: CdnWarmRequestPlan;
 };
@@ -99,6 +100,7 @@ export type PrerenderWarmPlan = {
   buildId?: string;
   buildIdentity?: string;
   deploymentId?: string;
+  fallbackRoutePatterns?: PrerenderRoutePattern[];
   loadingShellPaths: string[];
   pagesDataPaths?: string[];
   pagesPaths?: string[];
@@ -155,6 +157,17 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
       (manifest.excludedWarmPaths !== undefined &&
         (!Array.isArray(manifest.excludedWarmPaths) ||
           !manifest.excludedWarmPaths.every((pathname) => typeof pathname === "string"))) ||
+      (manifest.fallbackRoutePatterns !== undefined &&
+        (!Array.isArray(manifest.fallbackRoutePatterns) ||
+          !manifest.fallbackRoutePatterns.every(
+            (route) =>
+              route !== null &&
+              typeof route === "object" &&
+              !Array.isArray(route) &&
+              route.kind === "app-page" &&
+              typeof route.pattern === "string" &&
+              route.pattern.startsWith("/"),
+          ))) ||
       (manifest.rscPaths !== undefined &&
         (!Array.isArray(manifest.rscPaths) ||
           !manifest.rscPaths.every((pathname) => typeof pathname === "string"))) ||
@@ -181,7 +194,9 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
                   typeof route.cacheabilityProbe === "object" &&
                   !Array.isArray(route.cacheabilityProbe) &&
                   typeof route.cacheabilityProbe.canPrunePattern === "boolean" &&
-                  typeof route.cacheabilityProbe.canReuseHtmlForRsc === "boolean")),
+                  (route.cacheabilityProbe.concretePathname === undefined ||
+                    (typeof route.cacheabilityProbe.concretePathname === "string" &&
+                      route.cacheabilityProbe.concretePathname.startsWith("/"))))),
           ))) ||
       (manifest.loadingShellPaths !== undefined &&
         (!Array.isArray(manifest.loadingShellPaths) ||
@@ -253,7 +268,7 @@ export function readPrerenderWarmPlan(
   const routePatterns = manifest.routePatterns
     ? Object.fromEntries(
         Object.entries(manifest.routePatterns).map(([pathname, route]) => [
-          applyConfig(pathname),
+          pathname.includes("/_next/data/") ? pathname : applyConfig(pathname),
           route,
         ]),
       )
@@ -287,6 +302,9 @@ export function readPrerenderWarmPlan(
     buildId: manifest.buildId,
     ...(manifest.buildIdentity ? { buildIdentity: manifest.buildIdentity } : {}),
     ...(manifest.deploymentId ? { deploymentId: manifest.deploymentId } : {}),
+    ...(manifest.fallbackRoutePatterns
+      ? { fallbackRoutePatterns: manifest.fallbackRoutePatterns }
+      : {}),
     loadingShellPaths: supportsCanonicalRsc
       ? (manifest.loadingShellPaths ?? []).map(applyConfig)
       : [],
@@ -1193,6 +1211,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       skipped: 0,
       failed: 0,
       failures: [],
+      skippedTargets: [],
       warmedPlan: { loadingShellPaths: [], pagesDataPaths: [], paths: [], rscPaths: [] },
       retryPlan: { loadingShellPaths: [], pagesDataPaths: [], paths: [], rscPaths: [] },
     };
@@ -1309,6 +1328,10 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     );
   const failures = failedRequests.map(({ result: { path, error } }) => ({ path, error }));
   const skippedResults = results.filter((result) => result.ok && result.skipped);
+  const skippedTargets = requests.filter((_target, index) => {
+    const result = results[index];
+    return result.ok && result.skipped;
+  });
   const warmedRequests = requests.filter((_target, index) => {
     const result = results[index];
     return result.ok && !result.skipped;
@@ -1342,6 +1365,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     skipped: skippedResults.length,
     failed: failures.length,
     failures,
+    skippedTargets,
     warmedPlan: {
       loadingShellPaths: warmedRequests
         .filter((target) => target.kind === "rsc-loading-shell")

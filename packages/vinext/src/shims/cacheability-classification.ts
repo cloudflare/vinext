@@ -25,6 +25,7 @@ export type RouteCacheabilityState = {
     policy: "deny" | "manifest" | "runtime";
     representation?: string;
     requestKey?: string;
+    routePathname?: string;
   };
   /** Optional admission budget override used by focused runtime tests. */
   captureBudget?: { maxBytes: number; reservedBytes: number };

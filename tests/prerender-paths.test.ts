@@ -46,6 +46,12 @@ describe("prerender path manifest", () => {
         }
         if (
           url.pathname === "/__vinext/prerender/static-params" &&
+          url.searchParams.get("pattern") === "/unlisted/:slug"
+        ) {
+          return Response.json([{ slug: "known" }]);
+        }
+        if (
+          url.pathname === "/__vinext/prerender/static-params" &&
           url.searchParams.get("pattern") === "/:path+"
         ) {
           return Response.json([
@@ -128,22 +134,22 @@ describe("prerender path manifest", () => {
       responseVary: "verbatim",
       routePatterns: {
         "/": {
-          cacheabilityProbe: { canPrunePattern: true, canReuseHtmlForRsc: true },
+          cacheabilityProbe: { canPrunePattern: true },
           kind: "app-page",
           pattern: "/",
         },
         "/cached/featured": {
-          cacheabilityProbe: { canPrunePattern: true, canReuseHtmlForRsc: true },
+          cacheabilityProbe: { canPrunePattern: true },
           kind: "app-page",
           pattern: "/cached/:slug",
         },
         "/cached/intro": {
-          cacheabilityProbe: { canPrunePattern: true, canReuseHtmlForRsc: true },
+          cacheabilityProbe: { canPrunePattern: true },
           kind: "app-page",
           pattern: "/cached/:slug",
         },
         "/dynamic": {
-          cacheabilityProbe: { canPrunePattern: true, canReuseHtmlForRsc: true },
+          cacheabilityProbe: { canPrunePattern: true },
           kind: "app-page",
           pattern: "/dynamic",
         },
@@ -193,6 +199,14 @@ describe("prerender path manifest", () => {
       "export const dynamic = 'force-dynamic'; export default function Page() { return null; }\n",
     );
     writeFile("app/cookie/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "app/unlisted/[slug]/page.tsx",
+      [
+        "export const dynamic = 'force-dynamic';",
+        "export function generateStaticParams() { return [{ slug: 'known' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
     writeFile("app/wildcard/path/page.tsx", "export default function Page() { return null; }\n");
     writeFile(
       "next.config.mjs",
@@ -202,6 +216,7 @@ describe("prerender path manifest", () => {
         "    { source: '/policy/special', headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
         "    { source: '/conditional', missing: [{ type: 'query', key: '_rsc' }], headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
         "    { source: '/cookie', has: [{ type: 'query', key: '_rsc', value: '.*' }], headers: [{ key: 'Set-Cookie', value: 'rsc=1' }] },",
+        "    { source: '/unlisted/public-only', headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
         "    { source: '/wildcard/*', missing: [{ type: 'query', key: '_rsc', value: '.*' }], headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
         "  ],",
         "};",
@@ -218,19 +233,22 @@ describe("prerender path manifest", () => {
 
     expect(manifest?.routePatterns).toMatchObject({
       "/conditional": {
-        cacheabilityProbe: { canPrunePattern: false, canReuseHtmlForRsc: false },
+        cacheabilityProbe: { canPrunePattern: false },
       },
       "/cookie": {
-        cacheabilityProbe: { canPrunePattern: true, canReuseHtmlForRsc: false },
+        cacheabilityProbe: { canPrunePattern: true },
       },
       "/policy/ordinary": {
-        cacheabilityProbe: { canPrunePattern: false, canReuseHtmlForRsc: true },
+        cacheabilityProbe: { canPrunePattern: false },
       },
       "/policy/special": {
-        cacheabilityProbe: { canPrunePattern: false, canReuseHtmlForRsc: true },
+        cacheabilityProbe: { canPrunePattern: false },
+      },
+      "/unlisted/known": {
+        cacheabilityProbe: { canPrunePattern: false },
       },
       "/wildcard/path": {
-        cacheabilityProbe: { canPrunePattern: false, canReuseHtmlForRsc: false },
+        cacheabilityProbe: { canPrunePattern: false },
       },
     });
   });
@@ -888,6 +906,156 @@ describe("prerender path manifest", () => {
     expect(manifest?.pagesPaths).toEqual(["/pages-dir/foobar"]);
   });
 
+  it("retains empty generateStaticParams patterns for on-demand admission", async () => {
+    // Ported from Next.js: test/e2e/app-dir/fallback-prefetch
+    // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/fallback-prefetch
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/posts/[slug]/page.tsx",
+      [
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockResolvedValue(Response.json([]));
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual([]);
+    expect(manifest?.fallbackRoutePatterns).toEqual([
+      { kind: "app-page", pattern: "/posts/:slug" },
+    ]);
+  });
+
+  it("retains force-static patterns without generateStaticParams", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/posts/[slug]/page.tsx",
+      [
+        'export const dynamic = "force-static";',
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 204 }));
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" });
+
+    expect(manifest?.fallbackRoutePatterns).toEqual([
+      { kind: "app-page", pattern: "/posts/:slug" },
+    ]);
+  });
+
+  it("does not certify an empty static params pattern beneath force-dynamic config", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/posts/layout.tsx", 'export const dynamic = "force-dynamic";\n');
+    writeFile(
+      "app/posts/[slug]/page.tsx",
+      [
+        'export const dynamic = "force-static";',
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockResolvedValue(Response.json([]));
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" });
+
+    expect(manifest?.fallbackRoutePatterns).toBeUndefined();
+  });
+
+  it("does not certify empty static params with a force-dynamic parallel default", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/posts/[slug]/page.tsx",
+      [
+        'export const dynamic = "force-static";',
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/posts/@sidebar/default.tsx",
+      [
+        'export const dynamic = "force-dynamic";',
+        "export default function Sidebar() { return null; }",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockResolvedValue(Response.json([]));
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" });
+
+    expect(manifest?.fallbackRoutePatterns).toBeUndefined();
+  });
+
+  it("does not treat revalidate without generateStaticParams as a static fallback", async () => {
+    // Next.js only treats a dynamic route without generateStaticParams as static
+    // when its effective dynamic config is `error` or `force-static`.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/posts/[slug]/page.tsx",
+      ["export const revalidate = 60;", "export default function Page() { return null; }"].join(
+        "\n",
+      ),
+    );
+    vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 204 }));
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" });
+
+    expect(manifest?.fallbackRoutePatterns).toBeUndefined();
+  });
+
+  it("does not inherit force-static past an explicit child auto without generateStaticParams", async () => {
+    // Next.js uses the nested-most dynamic config on the main segment chain.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/utils.ts#L1028
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/posts/layout.tsx", 'export const dynamic = "force-static";\n');
+    writeFile(
+      "app/posts/[slug]/page.tsx",
+      ['export const dynamic = "auto";', "export default function Page() { return null; }"].join(
+        "\n",
+      ),
+    );
+    vi.mocked(fetch).mockResolvedValue(new Response(null, { status: 204 }));
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" });
+
+    expect(manifest?.fallbackRoutePatterns).toBeUndefined();
+  });
+
   it("uses the runtime-best App route for App-only loading-shell discovery", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
@@ -1205,6 +1373,13 @@ describe("prerender path manifest", () => {
 
     expect(manifest?.paths).toEqual(["/pages-only"]);
     expect(manifest?.pagesPaths).toEqual(["/pages-only"]);
+    expect(manifest?.routePatterns).toEqual({
+      "/pages-only": {
+        cacheabilityProbe: { canPrunePattern: true },
+        kind: "pages-page",
+        pattern: "/pages-only",
+      },
+    });
   });
 
   it("excludes Pages API handlers from Pages-only concrete warm paths", async () => {
@@ -1313,6 +1488,10 @@ describe("prerender path manifest", () => {
       "/docs/_next/data/build-a/en/posts/%7Euser.json",
       "/docs/_next/data/build-a/en/posts/a%2fb.json",
     ]);
+    expect(
+      manifest?.routePatterns?.["/docs/_next/data/build-a/en/posts/hello.json"]?.cacheabilityProbe
+        ?.concretePathname,
+    ).toBe("/docs/posts/hello");
     expect(fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:43210/__vinext/prerender/pages-static-paths?pattern=%2Fposts%2F%3Aslug&locales=%5B%22en%22%2C%22fr%22%5D&defaultLocale=en",
       expect.any(Object),
@@ -1486,6 +1665,18 @@ describe("prerender path manifest", () => {
 
     expect(manifest?.pagesPaths).toEqual(["/gssp"]);
     expect(manifest?.pagesDataPaths).toEqual(["/_next/data/build-a/gssp.json"]);
+    expect(manifest?.routePatterns).toEqual({
+      "/_next/data/build-a/gssp.json": {
+        cacheabilityProbe: { canPrunePattern: true, concretePathname: "/gssp" },
+        kind: "pages-page",
+        pattern: "/gssp",
+      },
+      "/gssp": {
+        cacheabilityProbe: { canPrunePattern: true },
+        kind: "pages-page",
+        pattern: "/gssp",
+      },
+    });
   });
 
   it("does not reload disk config when supplied resolved config", async () => {

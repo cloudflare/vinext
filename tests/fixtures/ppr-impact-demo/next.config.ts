@@ -24,6 +24,7 @@ export default {
   headers: async () => [
     {
       source: "/cacheability/config-public-dynamic",
+      missing: [{ type: "query", key: "preview" }],
       headers: [{ key: "Cache-Control", value: "s-maxage=32" }],
     },
     {

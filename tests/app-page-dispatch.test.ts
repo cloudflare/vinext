@@ -1956,6 +1956,27 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>static cached</html>");
   });
 
+  it("treats an empty generateStaticParams route as an on-demand static page", async () => {
+    // Ported from Next.js build behavior: a defined empty prerenderedRoutes
+    // array still marks the route as SSG with the default revalidate=false.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
+    const { options } = createDispatchOptions({
+      generateStaticParams: async () => [],
+      isProduction: true,
+      route: createRoute({ isDynamic: true }),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    // Ordinary streaming misses remain private until the response completes;
+    // the CDN-admission E2E covers the manifest-backed public header.
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    expect(options.isrSet).toHaveBeenCalled();
+  });
+
   it("returns method policy responses instead of rendering unsupported methods", async () => {
     const { options } = createDispatchOptions({
       async buildPageElement() {

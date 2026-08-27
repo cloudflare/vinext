@@ -1,205 +1,99 @@
 {
   "buildId": "ppr-impact-demo-cacheability",
   "routes": {
-    "[\"app-page\",\"/cacheability/config-public-dynamic\",\"html\",\"/cacheability/config-public-dynamic\"]": {
+    "[\"app-page\",\"/cacheability/config-public-dynamic\"]": {
       "kind": "app-page",
       "pattern": "/cacheability/config-public-dynamic",
-      "representation": "html",
-      "requestKey": "/cacheability/config-public-dynamic",
-      "state": "static-candidate",
-      "status": 200
+      "state": "runtime-check"
     },
-    "[\"app-page\",\"/cacheability/dynamic\",\"html\",\"/cacheability/dynamic\"]": {
+    "[\"app-page\",\"/cacheability/config-public-pattern/:slug\"]": {
       "kind": "app-page",
-      "pattern": "/cacheability/dynamic",
-      "representation": "html",
-      "requestKey": "/cacheability/dynamic",
-      "state": "dynamic",
-      "status": 200
+      "pattern": "/cacheability/config-public-pattern/:slug",
+      "state": "runtime-check"
     },
-    "[\"app-page\",\"/cacheability/static\",\"html\",\"/cacheability/static\"]": {
+    "[\"app-page\",\"/cacheability/config-public-representation\"]": {
       "kind": "app-page",
-      "pattern": "/cacheability/static",
-      "representation": "html",
-      "requestKey": "/cacheability/static",
-      "state": "static-candidate",
-      "status": 200
+      "pattern": "/cacheability/config-public-representation",
+      "state": "runtime-check"
     },
-    "[\"app-page\",\"/cacheability/static\",\"html\",\"/cacheability/static?runtime=1\"]": {
+    "[\"app-page\",\"/cacheability/pattern-runtime-dynamic/:slug\"]": {
       "kind": "app-page",
-      "pattern": "/cacheability/static",
-      "representation": "html",
-      "requestKey": "/cacheability/static?runtime=1",
+      "pattern": "/cacheability/pattern-runtime-dynamic/:slug",
+      "runtimePaths": ["/cacheability/pattern-runtime-dynamic/dynamic"],
       "state": "runtime-check",
-      "status": 200
+      "staticPaths": {
+        "html": ["/cacheability/pattern-runtime-dynamic/static"]
+      }
     },
-    "[\"app-page\",\"/cacheability/static\",\"html\",\"/cacheability/static?late-policy=set-cookie\"]": {
+    "[\"app-page\",\"/cacheability/pattern-runtime-static/:slug\"]": {
+      "allowUnknown": true,
+      "kind": "app-page",
+      "unknownState": "static-candidate",
+      "pattern": "/cacheability/pattern-runtime-static/:slug",
+      "state": "runtime-check",
+      "staticPaths": {
+        "html": ["/cacheability/pattern-runtime-static/generated"]
+      }
+    },
+    "[\"app-page\",\"/cacheability/static\"]": {
       "kind": "app-page",
       "pattern": "/cacheability/static",
-      "representation": "html",
-      "requestKey": "/cacheability/static?late-policy=set-cookie",
-      "state": "static-candidate",
-      "status": 200
+      "state": "static-candidate"
     },
-    "[\"app-page\",\"/cacheability/static\",\"html\",\"/cacheability/static?late-policy=cache-control\"]": {
+    "[\"app-page\",\"/cacheability/static-empty/:slug\"]": {
       "kind": "app-page",
-      "pattern": "/cacheability/static",
-      "representation": "html",
-      "requestKey": "/cacheability/static?late-policy=cache-control",
-      "state": "static-candidate",
-      "status": 200
+      "pattern": "/cacheability/static-empty/:slug",
+      "state": "static-candidate"
     },
-    "[\"app-page\",\"/cacheability/static\",\"html\",\"/cacheability/static?late-policy=cdn-cache-control\"]": {
+    "[\"app-page\",\"/cacheability/static-to-dynamic/:slug\"]": {
+      "allowUnknown": true,
       "kind": "app-page",
-      "pattern": "/cacheability/static",
-      "representation": "html",
-      "requestKey": "/cacheability/static?late-policy=cdn-cache-control",
-      "state": "static-candidate",
-      "status": 200
-    },
-    "[\"app-page\",\"/cacheability/static\",\"html\",\"/cacheability/static?late-policy=cloudflare-cdn-cache-control\"]": {
-      "kind": "app-page",
-      "pattern": "/cacheability/static",
-      "representation": "html",
-      "requestKey": "/cacheability/static?late-policy=cloudflare-cdn-cache-control",
-      "state": "static-candidate",
-      "status": 200
-    },
-    "[\"app-page\",\"/cacheability/static\",\"rsc-full\",\"/cacheability/static?_rsc\"]": {
-      "kind": "app-page",
-      "pattern": "/cacheability/static",
-      "representation": "rsc-full",
-      "requestKey": "/cacheability/static?_rsc",
-      "state": "static-candidate",
-      "status": 200
-    },
-    "[\"app-page\",\"/cacheability/static\",\"rsc-loading-shell\",\"/cacheability/static?_rsc=9qLBDIU2NgN178cB\"]": {
-      "kind": "app-page",
-      "pattern": "/cacheability/static",
-      "representation": "rsc-loading-shell",
-      "requestKey": "/cacheability/static?_rsc=9qLBDIU2NgN178cB",
-      "state": "static-candidate",
-      "status": 200
-    },
-    "[\"app-page\",\"/cacheability/static-to-dynamic/:slug\",\"html\",\"/cacheability/static-to-dynamic/runtime\"]": {
-      "kind": "app-page",
+      "unknownState": "static-candidate",
       "pattern": "/cacheability/static-to-dynamic/:slug",
-      "representation": "html",
-      "requestKey": "/cacheability/static-to-dynamic/runtime",
-      "state": "static-candidate",
-      "status": 200
+      "state": "runtime-check",
+      "staticPaths": {
+        "html": ["/cacheability/static-to-dynamic/runtime"]
+      }
     },
-    "[\"app-route\",\"/cacheability/route-handler-config-public-late-error\",\"app-route\",\"/cacheability/route-handler-config-public-late-error\"]": {
+    "[\"app-route\",\"/cacheability/route-handler-config-public-late-error\"]": {
       "kind": "app-route",
       "pattern": "/cacheability/route-handler-config-public-late-error",
-      "representation": "app-route",
-      "requestKey": "/cacheability/route-handler-config-public-late-error",
-      "state": "static-candidate",
-      "status": 200
+      "state": "static-candidate"
     },
-    "[\"app-route\",\"/cacheability/route-handler-explicit-dynamic\",\"app-route\",\"/cacheability/route-handler-explicit-dynamic\"]": {
+    "[\"app-route\",\"/cacheability/route-handler-explicit-dynamic\"]": {
       "kind": "app-route",
       "pattern": "/cacheability/route-handler-explicit-dynamic",
-      "representation": "app-route",
-      "requestKey": "/cacheability/route-handler-explicit-dynamic",
-      "state": "static-candidate",
-      "status": 200
+      "state": "static-candidate"
     },
-    "[\"app-route\",\"/cacheability/route-handler-static\",\"app-route\",\"/cacheability/route-handler-static\"]": {
+    "[\"app-route\",\"/cacheability/route-handler-static\"]": {
       "kind": "app-route",
       "pattern": "/cacheability/route-handler-static",
-      "representation": "app-route",
-      "requestKey": "/cacheability/route-handler-static",
-      "state": "static-candidate",
-      "status": 200
+      "state": "static-candidate"
     },
-    "[\"pages-page\",\"/cacheability-pages/isr\",\"html\",\"/cacheability-pages/isr\"]": {
-      "kind": "pages-page",
-      "pattern": "/cacheability-pages/isr",
-      "representation": "html",
-      "requestKey": "/cacheability-pages/isr",
-      "state": "static-candidate",
-      "status": 200
-    },
-    "[\"pages-page\",\"/cacheability-pages/isr\",\"pages-data\",\"/_next/data/ppr-impact-demo-cacheability/cacheability-pages/isr.json\"]": {
-      "kind": "pages-page",
-      "pattern": "/cacheability-pages/isr",
-      "representation": "pages-data",
-      "requestKey": "/_next/data/ppr-impact-demo-cacheability/cacheability-pages/isr.json",
-      "state": "static-candidate",
-      "status": 200
-    },
-    "[\"pages-page\",\"/cacheability-pages/middleware\",\"html\",\"/cacheability-pages/middleware\"]": {
-      "kind": "pages-page",
-      "pattern": "/cacheability-pages/middleware",
-      "representation": "html",
-      "requestKey": "/cacheability-pages/middleware",
-      "state": "static-candidate",
-      "status": 200
-    },
-    "[\"pages-page\",\"/cacheability-pages/config-header\",\"html\",\"/cacheability-pages/config-header\"]": {
+    "[\"pages-page\",\"/cacheability-pages/config-header\"]": {
       "kind": "pages-page",
       "pattern": "/cacheability-pages/config-header",
-      "representation": "html",
-      "requestKey": "/cacheability-pages/config-header",
-      "state": "static-candidate",
-      "status": 200
+      "state": "static-candidate"
     },
-    "[\"pages-page\",\"/cacheability-pages/gssp\",\"html\",\"/cacheability-pages/gssp\"]": {
-      "kind": "pages-page",
-      "pattern": "/cacheability-pages/gssp",
-      "representation": "html",
-      "requestKey": "/cacheability-pages/gssp",
-      "state": "dynamic",
-      "status": 200
-    },
-    "[\"pages-page\",\"/cacheability-pages/gssp\",\"pages-data\",\"/_next/data/ppr-impact-demo-cacheability/cacheability-pages/gssp.json\"]": {
-      "kind": "pages-page",
-      "pattern": "/cacheability-pages/gssp",
-      "representation": "pages-data",
-      "requestKey": "/_next/data/ppr-impact-demo-cacheability/cacheability-pages/gssp.json",
-      "state": "dynamic",
-      "status": 200
-    },
-    "[\"pages-page\",\"/cacheability-pages/gssp-public\",\"html\",\"/cacheability-pages/gssp-public\"]": {
+    "[\"pages-page\",\"/cacheability-pages/gssp-public\"]": {
       "kind": "pages-page",
       "pattern": "/cacheability-pages/gssp-public",
-      "representation": "html",
-      "requestKey": "/cacheability-pages/gssp-public",
-      "state": "static-candidate",
-      "status": 200
+      "state": "static-candidate"
     },
-    "[\"pages-page\",\"/cacheability-pages/gssp-public\",\"pages-data\",\"/_next/data/ppr-impact-demo-cacheability/cacheability-pages/gssp-public.json\"]": {
+    "[\"pages-page\",\"/cacheability-pages/isr\"]": {
       "kind": "pages-page",
-      "pattern": "/cacheability-pages/gssp-public",
-      "representation": "pages-data",
-      "requestKey": "/_next/data/ppr-impact-demo-cacheability/cacheability-pages/gssp-public.json",
-      "state": "static-candidate",
-      "status": 200
+      "pattern": "/cacheability-pages/isr",
+      "state": "static-candidate"
     },
-    "[\"pages-page\",\"/cacheability-pages/get-initial-props\",\"html\",\"/cacheability-pages/get-initial-props\"]": {
+    "[\"pages-page\",\"/cacheability-pages/middleware\"]": {
       "kind": "pages-page",
-      "pattern": "/cacheability-pages/get-initial-props",
-      "representation": "html",
-      "requestKey": "/cacheability-pages/get-initial-props",
-      "state": "dynamic",
-      "status": 200
+      "pattern": "/cacheability-pages/middleware",
+      "state": "static-candidate"
     },
-    "[\"pages-page\",\"/cacheability-pages/posts/:slug\",\"html\",\"/cacheability-pages/posts/known\"]": {
+    "[\"pages-page\",\"/cacheability-pages/posts/:slug\"]": {
       "kind": "pages-page",
       "pattern": "/cacheability-pages/posts/:slug",
-      "representation": "html",
-      "requestKey": "/cacheability-pages/posts/known",
-      "state": "static-candidate",
-      "status": 200
-    },
-    "[\"pages-page\",\"/cacheability-pages/posts/:slug\",\"pages-data\",\"/_next/data/ppr-impact-demo-cacheability/cacheability-pages/posts/known.json\"]": {
-      "kind": "pages-page",
-      "pattern": "/cacheability-pages/posts/:slug",
-      "representation": "pages-data",
-      "requestKey": "/_next/data/ppr-impact-demo-cacheability/cacheability-pages/posts/known.json",
-      "state": "static-candidate",
-      "status": 200
+      "state": "static-candidate"
     }
   },
   "version": 1
