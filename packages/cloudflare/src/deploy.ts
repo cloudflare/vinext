@@ -1807,8 +1807,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
         });
         return readPrerenderWarmPlan(root, {
           includeFallbackShells: options.warmCdnIncludeFallbacks,
-          strict:
-            options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
+          strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
         });
       },
       warmCdnConcurrency: options.warmCdnConcurrency,
