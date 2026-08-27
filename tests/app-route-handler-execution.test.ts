@@ -532,7 +532,7 @@ describe("app route handler execution helpers", () => {
     await expect(response.json()).resolves.toEqual({ ping: "from-header" });
   });
 
-  it("completes a statically eligible custom-cache response before preserving its policy", async () => {
+  it("preserves a handler-owned public policy outside CDN admission", async () => {
     const dynamicUsage = createDynamicUsageState();
     const response = await executeAppRouteHandler({
       buildPageCacheTags() {
@@ -591,7 +591,7 @@ describe("app route handler execution helpers", () => {
       },
     });
 
-    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("cache-control")).toBe("public, s-maxage=60");
     await expect(response.text()).resolves.toBe("tenant-a");
   });
 

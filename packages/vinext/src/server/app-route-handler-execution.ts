@@ -11,7 +11,6 @@ import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import { runWithRootParamsUsage } from "vinext/shims/root-params";
 import {
   applyCdnResponseHeaders,
-  isNonCacheableCacheControl,
   NEVER_CACHE_CONTROL,
 } from "./cache-control.js";
 import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
@@ -452,14 +451,11 @@ export async function executeAppRouteHandler(
       ),
       shouldApplyDraftPolicy,
     );
-    // Outside probe/admission, preserve an explicit handler-owned opt-out as
-    // Next.js does. During CDN evaluation the adapter must own the fail-closed
-    // policy so provider-specific public headers cannot survive alongside it.
-    const preserveHandlerNonCacheablePolicy =
-      !isRouteCacheabilityEvaluation() &&
-      handlerSetCacheControl &&
-      isNonCacheableCacheControl(finalized.headers.get("Cache-Control") ?? "");
-    if (responseMustStayPrivate && !preserveHandlerNonCacheablePolicy) {
+    // Next.js preserves a Route Handler's explicit Cache-Control even when the
+    // handler used request data. During CDN probe/admission the adapter still
+    // owns fail-closed policy until the completed response is authorized.
+    const preserveHandlerPolicy = !isRouteCacheabilityEvaluation() && handlerSetCacheControl;
+    if (responseMustStayPrivate && !preserveHandlerPolicy) {
       const headers = new Headers(finalized.headers);
       applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
       finalized = new Response(finalized.body, {
