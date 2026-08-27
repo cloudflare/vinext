@@ -45,7 +45,7 @@ import {
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v5";
+const CACHE_KEY_PREFIX = "v6";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 // "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
@@ -1371,7 +1371,16 @@ function createPatchedFetch(): typeof globalThis.fetch {
       ? originalFetch(input, fetchInit)
       : dedupeFetch(input, fetchInit));
 
-    const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
+    let cacheValue: CachedFetchValue | null = null;
+    try {
+      cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
+    } catch (error) {
+      // A response body can fail after fetch has resolved (for example, a
+      // truncated compressed stream). Cache serialization must not turn that
+      // late body error into a rejected fetch before callers can inspect the
+      // response status and headers.
+      console.error("[vinext] fetch cache serialization error:", error);
+    }
     if (cacheValue) {
       handler
         .set(cacheKey, cacheValue, {

@@ -156,6 +156,32 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("returns the response when cache serialization hits a late body error", async () => {
+    const cacheError = new Error("truncated compressed body");
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(cacheError);
+      },
+    });
+    fetchMock.mockResolvedValueOnce(
+      new Response(body, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await fetch("https://api.example.com/truncated", { cache: "force-cache" });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).rejects.toThrow("truncated compressed body");
+    expect(consoleError).toHaveBeenCalledWith(
+      "[vinext] fetch cache serialization error:",
+      cacheError,
+    );
+    consoleError.mockRestore();
+  });
+
   it("preserves Response.url on cached fetch responses", async () => {
     const url = "https://api.example.com/force-url";
 
