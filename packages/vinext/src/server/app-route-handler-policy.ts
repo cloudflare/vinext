@@ -40,7 +40,7 @@ type AppRouteHandlerResponseCacheOptions = {
   dynamicConfig?: string;
   dynamicUsedInHandler: boolean;
   hasExplicitCacheablePolicy?: boolean;
-  handlerSetCacheControl: boolean;
+  handlerSetCachePolicy: boolean;
   isAutoHead: boolean;
   isDraftMode?: boolean;
   isProduction: boolean;
@@ -162,7 +162,7 @@ export function shouldApplyAppRouteHandlerRevalidateHeader(
     !options.isDraftMode &&
     !options.dynamicUsedInHandler &&
     (options.method === "GET" || options.isAutoHead) &&
-    !options.handlerSetCacheControl
+    !options.handlerSetCachePolicy
   );
 }
 

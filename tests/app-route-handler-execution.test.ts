@@ -303,6 +303,60 @@ describe("app route handler execution helpers", () => {
     expect(reportCalls).toEqual([]);
   });
 
+  it.each(["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"])(
+    "preserves handler-owned %s instead of applying framework revalidation",
+    async (policyHeader) => {
+      const dynamicUsage = createDynamicUsageState();
+      const isrSet = vi.fn();
+      const response = await executeAppRouteHandler({
+        buildPageCacheTags() {
+          return [];
+        },
+        cleanPathname: "/api/provider-private",
+        clearRequestContext() {},
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        executionContext: null,
+        getAndClearPendingCookies() {
+          return [];
+        },
+        getCollectedFetchTags() {
+          return [];
+        },
+        getDraftModeCookieHeader() {
+          return null;
+        },
+        handler: { dynamic: "auto", revalidate: 60 },
+        handlerFn() {
+          return new Response("private", {
+            headers: { [policyHeader]: "private, no-store" },
+          });
+        },
+        isAutoHead: false,
+        isProduction: true,
+        isrRouteKey(pathname) {
+          return pathname;
+        },
+        isrSet,
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        method: "GET",
+        middlewareContext: { headers: null, status: null },
+        params: null,
+        reportRequestError() {},
+        request: new Request("https://example.com/api/provider-private"),
+        revalidateSeconds: 60,
+        routePattern: "/api/provider-private",
+        setHeadersAccessPhase() {
+          return "render";
+        },
+      });
+
+      expect(response.headers.get(policyHeader)).toBe("private, no-store");
+      expect(response.headers.get("cache-control")).toBeNull();
+      expect(isrSet).not.toHaveBeenCalled();
+      await expect(response.text()).resolves.toBe("private");
+    },
+  );
+
   it.each([
     { enabled: true, initialDraftMode: false, expectedCookie: "__prerender_bypass=draft-secret" },
     { enabled: false, initialDraftMode: true, expectedCookie: "__prerender_bypass=;" },

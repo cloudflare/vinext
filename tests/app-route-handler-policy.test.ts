@@ -60,7 +60,7 @@ describe("app route handler policy helpers", () => {
     const writeBase = {
       dynamicConfig: "auto",
       dynamicUsedInHandler: false,
-      handlerSetCacheControl: false,
+      handlerSetCachePolicy: false,
       isAutoHead: false,
       isProduction: true,
       method: "GET",
@@ -81,7 +81,7 @@ describe("app route handler policy helpers", () => {
       shouldCompleteAppRouteHandlerResponse({
         dynamicConfig: "auto",
         dynamicUsedInHandler: false,
-        handlerSetCacheControl: false,
+        handlerSetCachePolicy: false,
         isAutoHead: false,
         isProduction: true,
         method: "GET",
@@ -161,7 +161,7 @@ describe("app route handler policy helpers", () => {
     const base = {
       dynamicConfig: "auto",
       dynamicUsedInHandler: false,
-      handlerSetCacheControl: false,
+      handlerSetCachePolicy: false,
       isAutoHead: false,
       isProduction: true,
       method: "GET",
@@ -173,7 +173,7 @@ describe("app route handler policy helpers", () => {
       shouldApplyAppRouteHandlerRevalidateHeader({ ...base, dynamicUsedInHandler: true }),
     ).toBe(false);
     expect(
-      shouldApplyAppRouteHandlerRevalidateHeader({ ...base, handlerSetCacheControl: true }),
+      shouldApplyAppRouteHandlerRevalidateHeader({ ...base, handlerSetCachePolicy: true }),
     ).toBe(false);
     expect(shouldWriteAppRouteHandlerCache(base)).toBe(true);
     expect(shouldWriteAppRouteHandlerCache({ ...base, isProduction: false })).toBe(false);
@@ -195,7 +195,7 @@ describe("app route handler policy helpers", () => {
     expect(
       shouldCompleteAppRouteHandlerResponse({
         dynamicUsedInHandler: false,
-        handlerSetCacheControl: true,
+        handlerSetCachePolicy: true,
         hasExplicitCacheablePolicy: true,
         isAutoHead: false,
         isProduction: true,

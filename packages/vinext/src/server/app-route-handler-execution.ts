@@ -324,7 +324,9 @@ export async function executeAppRouteHandler(
     }
     let { dynamicUsedInHandler, response } = handlerResult;
     assertSupportedAppRouteHandlerResponse(response);
-    const handlerSetCacheControl = response.headers.has("cache-control");
+    const handlerSetCachePolicy = CACHEABILITY_POLICY_HEADERS.some((name) =>
+      response.headers.has(name),
+    );
     const hasExplicitCacheablePolicy = hasExplicitCacheableResponsePolicy(response.headers);
     if (hasExplicitCacheablePolicy) {
       markRouteCacheabilityExplicitResponsePolicy();
@@ -339,7 +341,7 @@ export async function executeAppRouteHandler(
         dynamicConfig: options.handler.dynamic,
         dynamicUsedInHandler,
         hasExplicitCacheablePolicy,
-        handlerSetCacheControl,
+        handlerSetCachePolicy,
         isAutoHead: options.isAutoHead,
         isDraftMode: draftModeBeforeCompletion || handlerDraftCookieBeforeCompletion != null,
         isProduction: options.isProduction,
@@ -394,7 +396,7 @@ export async function executeAppRouteHandler(
     if (
       shouldApplyAppRouteHandlerRevalidateHeader({
         dynamicUsedInHandler: responseMustStayPrivate,
-        handlerSetCacheControl,
+        handlerSetCachePolicy,
         isAutoHead: options.isAutoHead,
         isDraftMode: shouldApplyDraftPolicy,
         method: options.method,
@@ -417,7 +419,7 @@ export async function executeAppRouteHandler(
       shouldWriteAppRouteHandlerCache({
         dynamicConfig: options.handler.dynamic,
         dynamicUsedInHandler: responseMustStayPrivate,
-        handlerSetCacheControl,
+        handlerSetCachePolicy,
         isAutoHead: options.isAutoHead,
         isDraftMode: shouldApplyDraftPolicy,
         isProduction: options.isProduction,
@@ -466,7 +468,7 @@ export async function executeAppRouteHandler(
     // owns fail-closed policy until the completed response is authorized.
     const preserveHandlerPolicy = isRouteCacheabilityEvaluation()
       ? hasExplicitCacheablePolicy
-      : handlerSetCacheControl;
+      : handlerSetCachePolicy;
     if (responseMustStayPrivate && !preserveHandlerPolicy) {
       const headers = new Headers(finalized.headers);
       applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
