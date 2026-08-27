@@ -3,5 +3,6 @@
   "name": "ppr-impact-demo",
   "compatibility_date": "2026-04-08",
   "compatibility_flags": ["nodejs_compat"],
+  "cache": { "enabled": true },
   "main": "vinext/server/fetch-handler",
 }

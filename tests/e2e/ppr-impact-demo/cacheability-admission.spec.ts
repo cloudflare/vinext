@@ -188,6 +188,15 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   expect(certifiedRouteHandler.headers()["cdn-cache-control"]).toContain("public");
   expect(certifiedRouteHandler.headers()["vary"]?.toLowerCase()).toContain("user-agent");
 
+  const largeRouteHandler = await request.get("/cacheability/route-handler-large");
+  expect(largeRouteHandler.status()).toBe(200);
+  expect((await largeRouteHandler.body()).byteLength).toBe(4 * 1024 * 1024 + 1);
+  expect(largeRouteHandler.headers()["cdn-cache-control"]).toContain("public");
+
+  const cachedLargeRouteHandler = await request.get("/cacheability/route-handler-large");
+  expect(cachedLargeRouteHandler.status()).toBe(200);
+  expect((await cachedLargeRouteHandler.body()).byteLength).toBe(4 * 1024 * 1024 + 1);
+
   const emptyStaticRouteHandler = await request.get(
     "/cacheability/route-handler-static-empty/on-demand",
   );

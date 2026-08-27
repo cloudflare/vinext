@@ -60,6 +60,11 @@
       "pattern": "/cacheability/route-handler-config-public-late-error",
       "state": "static-candidate"
     },
+    "[\"app-route\",\"/cacheability/route-handler-large\"]": {
+      "kind": "app-route",
+      "pattern": "/cacheability/route-handler-large",
+      "state": "static-candidate"
+    },
     "[\"app-route\",\"/cacheability/route-handler-explicit-dynamic\"]": {
       "kind": "app-route",
       "pattern": "/cacheability/route-handler-explicit-dynamic",

@@ -856,7 +856,7 @@ describe("app route handler execution helpers", () => {
     ).resolves.toHaveProperty("explicitResponseCachePolicy", true);
   });
 
-  it("falls back to private streaming and defers cleanup when bounded completion overflows", async () => {
+  it("falls back to private streaming and defers cleanup when completion times out", async () => {
     const request = new Request("https://example.com/api/large", {
       headers: { Accept: "*/*" },
     });
@@ -868,7 +868,7 @@ describe("app route handler execution helpers", () => {
       true,
     );
     const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
-    state.captureBudget = { maxBytes: 1, reservedBytes: 0 };
+    state.captureDeadlineAt = Date.now() + 5;
     let cleared = false;
     const phaseCalls: string[] = [];
 
@@ -896,7 +896,15 @@ describe("app route handler execution helpers", () => {
         },
         handler: { dynamic: "auto", revalidate: 60 },
         handlerFn() {
-          return new Response("large");
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              async pull(controller) {
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                controller.enqueue(new TextEncoder().encode("slow"));
+                controller.close();
+              },
+            }),
+          );
         },
         isAutoHead: false,
         isProduction: true,
@@ -904,7 +912,7 @@ describe("app route handler execution helpers", () => {
           return pathname;
         },
         async isrSet() {
-          throw new Error("overflow response must not be persisted");
+          throw new Error("incomplete response must not be persisted");
         },
         markDynamicUsage() {},
         method: "GET",
@@ -923,7 +931,7 @@ describe("app route handler execution helpers", () => {
 
     expect(cleared).toBe(false);
     expect(response.headers.get("cache-control")).toContain("no-store");
-    await expect(response.text()).resolves.toBe("large");
+    await expect(response.text()).resolves.toBe("slow");
     expect(cleared).toBe(true);
     expect(phaseCalls).toEqual(["route-handler", "render"]);
   });

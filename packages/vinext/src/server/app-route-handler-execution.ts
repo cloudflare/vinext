@@ -49,10 +49,7 @@ import {
   markRouteCacheabilityExplicitResponsePolicy,
   markRouteCacheabilityResponseBodyComplete,
 } from "vinext/shims/cacheability-classification";
-import {
-  CACHEABILITY_PROBE_BODY_LIMIT,
-  CACHEABILITY_PROBE_TIMEOUT_MS,
-} from "./cacheability-limits.js";
+import { CACHEABILITY_PROBE_TIMEOUT_MS } from "./cacheability-limits.js";
 
 export type AppRouteParams = Record<string, string | string[]>;
 export type AppRouteDynamicUsageFn = () => boolean;
@@ -131,16 +128,13 @@ async function completeAppRouteHandlerResponse(
   // artifact deterministic, this keeps request tracking active for stream
   // pulls and turns a late body failure into the normal Route Handler error
   // path before cacheable response headers are applied.
-  // Workers cannot safely buffer an unbounded or never-ending response. Reuse
-  // admission's isolate-wide bounded capture and fall back to private streaming
-  // when the response exceeds either the size or completion deadline.
+  // Reuse admission's completion deadline and fall back to private streaming
+  // when the response does not finish in time.
   const { captureCacheabilityAdmissionBody } = await import("./cacheability-request.js");
   const captureOptions = getRouteCacheabilityCaptureOptions();
   const captured = await captureCacheabilityAdmissionBody(
     response.body,
     captureOptions?.captureDeadlineAt ?? Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
-    CACHEABILITY_PROBE_BODY_LIMIT,
-    captureOptions?.captureBudget,
   );
   const completed = new Response(captured.body, {
     headers: response.headers,

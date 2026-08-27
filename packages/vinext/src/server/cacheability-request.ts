@@ -18,11 +18,7 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "./headers.js";
 import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
-import {
-  CACHEABILITY_ADMISSION_ISOLATE_BODY_LIMIT,
-  CACHEABILITY_PROBE_BODY_LIMIT,
-  CACHEABILITY_PROBE_TIMEOUT_MS,
-} from "./cacheability-limits.js";
+import { CACHEABILITY_PROBE_TIMEOUT_MS } from "./cacheability-limits.js";
 import {
   cacheabilityManifestRouteState,
   cacheabilityRequestIdentity,
@@ -204,7 +200,6 @@ function probeResponse(
 async function drainProbeBody(response: Response, deadlineAt: number): Promise<string | null> {
   if (!response.body) return null;
   const reader = response.body.getReader();
-  let total = 0;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     while (true) {
@@ -224,63 +219,24 @@ async function drainProbeBody(response: Response, deadlineAt: number): Promise<s
         timeout = undefined;
       }
       if (result.done) return null;
-      total += result.value.byteLength;
-      if (total > CACHEABILITY_PROBE_BODY_LIMIT) {
-        return `response body exceeded ${CACHEABILITY_PROBE_BODY_LIMIT} bytes`;
-      }
     }
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
-    await reader.cancel().catch(() => {});
-    reader.releaseLock();
+    // Cancellation is cleanup, not part of classification. A user stream may
+    // return a never-settling cancel promise; do not let it defeat the probe
+    // deadline after the body read has already timed out.
+    void reader.cancel().catch(() => {});
+    try {
+      reader.releaseLock();
+    } catch {}
   }
 }
 
 type CapturedAdmissionBody =
   | { body: ReadableStream<Uint8Array> | null; kind: "captured" }
   | { body: ReadableStream<Uint8Array>; kind: "fallback" };
-
-export type CacheabilityAdmissionCaptureBudget = {
-  maxBytes: number;
-  reservedBytes: number;
-};
-
-const isolateCaptureBudget: CacheabilityAdmissionCaptureBudget = {
-  maxBytes: CACHEABILITY_ADMISSION_ISOLATE_BODY_LIMIT,
-  reservedBytes: 0,
-};
-
-export function createCacheabilityAdmissionCaptureBudget(
-  maxBytes: number,
-): CacheabilityAdmissionCaptureBudget {
-  return { maxBytes, reservedBytes: 0 };
-}
-
-type CapturedChunk = { reserved: boolean; value: Uint8Array };
-
-function reserveChunk(budget: CacheabilityAdmissionCaptureBudget, byteLength: number): boolean {
-  if (byteLength > budget.maxBytes - budget.reservedBytes) return false;
-  budget.reservedBytes += byteLength;
-  return true;
-}
-
-function releaseChunk(budget: CacheabilityAdmissionCaptureBudget, chunk: CapturedChunk): void {
-  if (!chunk.reserved) return;
-  chunk.reserved = false;
-  budget.reservedBytes -= chunk.value.byteLength;
-}
-
-function releaseChunks(
-  budget: CacheabilityAdmissionCaptureBudget,
-  chunks: CapturedChunk[],
-  start = 0,
-): void {
-  for (let index = start; index < chunks.length; index++) {
-    releaseChunk(budget, chunks[index]);
-  }
-}
 
 async function readBeforeDeadline<T>(
   promise: Promise<T>,
@@ -303,8 +259,7 @@ async function readBeforeDeadline<T>(
 
 function continueCapturedBody(
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  captured: CapturedChunk[],
-  budget: CacheabilityAdmissionCaptureBudget,
+  captured: Uint8Array[],
   pendingRead?: Promise<ReadableStreamReadResult<Uint8Array>>,
 ): ReadableStream<Uint8Array> {
   let index = 0;
@@ -318,9 +273,7 @@ function continueCapturedBody(
     {
       async pull(controller) {
         if (index < captured.length) {
-          const chunk = captured[index++];
-          controller.enqueue(chunk.value);
-          releaseChunk(budget, chunk);
+          controller.enqueue(captured[index++]);
           return;
         }
         try {
@@ -341,7 +294,6 @@ function continueCapturedBody(
         try {
           await reader.cancel(reason);
         } finally {
-          releaseChunks(budget, captured, index);
           release();
         }
       },
@@ -350,10 +302,7 @@ function continueCapturedBody(
   );
 }
 
-function replayCapturedBody(
-  captured: CapturedChunk[],
-  budget: CacheabilityAdmissionCaptureBudget,
-): ReadableStream<Uint8Array> {
+function replayCapturedBody(captured: Uint8Array[]): ReadableStream<Uint8Array> {
   let index = 0;
   return new ReadableStream<Uint8Array>(
     {
@@ -362,12 +311,7 @@ function replayCapturedBody(
           controller.close();
           return;
         }
-        const chunk = captured[index++];
-        controller.enqueue(chunk.value);
-        releaseChunk(budget, chunk);
-      },
-      cancel() {
-        releaseChunks(budget, captured, index);
+        controller.enqueue(captured[index++]);
       },
     },
     { highWaterMark: 0 },
@@ -377,40 +321,29 @@ function replayCapturedBody(
 export async function captureCacheabilityAdmissionBody(
   body: ReadableStream<Uint8Array> | null,
   deadlineAt: number,
-  limit = CACHEABILITY_PROBE_BODY_LIMIT,
-  budget = isolateCaptureBudget,
 ): Promise<CapturedAdmissionBody> {
   if (!body) return { body: null, kind: "captured" };
   const reader = body.getReader();
-  const chunks: CapturedChunk[] = [];
-  let total = 0;
+  const chunks: Uint8Array[] = [];
   try {
     while (true) {
       const pendingRead = reader.read();
       const deadlineResult = await readBeforeDeadline(pendingRead, deadlineAt);
       if (deadlineResult.kind === "timeout") {
         return {
-          body: continueCapturedBody(reader, chunks, budget, pendingRead),
+          body: continueCapturedBody(reader, chunks, pendingRead),
           kind: "fallback",
         };
       }
       const result = deadlineResult.value;
       if (result.done) {
         reader.releaseLock();
-        return { body: replayCapturedBody(chunks, budget), kind: "captured" };
+        return { body: replayCapturedBody(chunks), kind: "captured" };
       }
-      const nextTotal = total + result.value.byteLength;
-      const withinResponseLimit = nextTotal <= limit;
-      const reserved = withinResponseLimit && reserveChunk(budget, result.value.byteLength);
-      chunks.push({ reserved, value: result.value });
-      total = nextTotal;
-      if (!reserved) {
-        return { body: continueCapturedBody(reader, chunks, budget), kind: "fallback" };
-      }
+      chunks.push(result.value);
     }
   } catch (error) {
     await reader.cancel(error).catch(() => {});
-    releaseChunks(budget, chunks);
     reader.releaseLock();
     throw error;
   }
@@ -635,12 +568,7 @@ async function finalizeWorkerCacheabilityAdmission(
 
     let captured: CapturedAdmissionBody;
     try {
-      captured = await captureCacheabilityAdmissionBody(
-        response.body,
-        state.captureDeadlineAt,
-        CACHEABILITY_PROBE_BODY_LIMIT,
-        state.captureBudget ?? isolateCaptureBudget,
-      );
+      captured = await captureCacheabilityAdmissionBody(response.body, state.captureDeadlineAt);
     } catch {
       return cacheabilityEvaluationFailureResponse(state.route.pattern);
     }
@@ -699,12 +627,7 @@ async function finalizeWorkerCacheabilityAdmission(
   }
   let captured: CapturedAdmissionBody;
   try {
-    captured = await captureCacheabilityAdmissionBody(
-      response.body,
-      state.captureDeadlineAt,
-      CACHEABILITY_PROBE_BODY_LIMIT,
-      state.captureBudget ?? isolateCaptureBudget,
-    );
+    captured = await captureCacheabilityAdmissionBody(response.body, state.captureDeadlineAt);
   } catch {
     return cacheabilityEvaluationFailureResponse(state.route.pattern);
   }
@@ -725,8 +648,7 @@ async function finalizeWorkerCacheabilityAdmission(
       manifestRouteState === "static-candidate" &&
       outcome?.dynamicUsage === true
     ) {
-      // The replacement 500 does not consume the captured replay stream. Its
-      // cancellation releases the isolate-wide byte reservation immediately.
+      // The replacement 500 does not consume the captured replay stream.
       await captured.body?.cancel().catch(() => {});
       return staticToDynamicResponse(manifestRoute);
     }

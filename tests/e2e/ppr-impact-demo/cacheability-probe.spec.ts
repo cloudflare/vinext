@@ -173,6 +173,17 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
+  const largeRouteHandlerProbe = await request.get("/cacheability/route-handler-large", {
+    headers: { ...headers, Accept: "*/*" },
+  });
+  await expect(largeRouteHandlerProbe.json()).resolves.toMatchObject({
+    kind: "app-route",
+    pattern: "/cacheability/route-handler-large",
+    state: "static-candidate",
+    status: 200,
+    version: 1,
+  });
+
   // Next.js lets revalidate make a Route Handler statically eligible, but a
   // dynamic API used by the completed handler still opts that route out.
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts

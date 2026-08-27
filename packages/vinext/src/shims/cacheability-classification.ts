@@ -27,8 +27,6 @@ export type RouteCacheabilityState = {
     requestKey?: string;
     routePathname?: string;
   };
-  /** Optional admission budget override used by focused runtime tests. */
-  captureBudget?: { maxBytes: number; reservedBytes: number };
   captureDeadlineAt: number;
   complete?: (outcome: RouteCacheabilityOutcome) => void;
   completion?: Promise<RouteCacheabilityOutcome>;
@@ -106,15 +104,13 @@ export function getRouteCacheabilityDynamicReason(): string | null {
   return readRouteCacheabilityState()?.forcedDynamicReason ?? null;
 }
 
-/** Reuse the active request's bounded response-capture envelope when available. */
+/** Reuse the active request's response-completion deadline when available. */
 export function getRouteCacheabilityCaptureOptions(): Pick<
   RouteCacheabilityState,
-  "captureBudget" | "captureDeadlineAt"
+  "captureDeadlineAt"
 > | null {
   const state = readRouteCacheabilityState();
-  return state
-    ? { captureBudget: state.captureBudget, captureDeadlineAt: state.captureDeadlineAt }
-    : null;
+  return state ? { captureDeadlineAt: state.captureDeadlineAt } : null;
 }
 
 /** Keep a completed response private without treating it as static-to-dynamic. */

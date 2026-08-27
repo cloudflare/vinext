@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   captureCacheabilityAdmissionBody,
-  createCacheabilityAdmissionCaptureBudget,
   createWorkerCacheabilityAdmissionContext,
   createWorkerCacheabilityContext,
   finalizeWorkerCacheabilityResponse,
@@ -23,20 +22,6 @@ import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-
 const encoder = new TextEncoder();
 
 describe("cacheability admission capture", () => {
-  it("preserves all bytes when the bounded capture limit is exceeded", async () => {
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(encoder.encode("first"));
-        controller.enqueue(encoder.encode("second"));
-        controller.close();
-      },
-    });
-
-    const captured = await captureCacheabilityAdmissionBody(body, Date.now() + 1_000, 5);
-    expect(captured.kind).toBe("fallback");
-    await expect(new Response(captured.body).text()).resolves.toBe("firstsecond");
-  });
-
   it("falls back to the private stream without cancelling a slow response", async () => {
     const body = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -49,46 +34,6 @@ describe("cacheability admission capture", () => {
     const captured = await captureCacheabilityAdmissionBody(body, Date.now() + 5);
     expect(captured.kind).toBe("fallback");
     await expect(new Response(captured.body).text()).resolves.toBe("slow");
-  });
-
-  it("bounds completed captures across concurrent isolate requests", async () => {
-    const budget = createCacheabilityAdmissionCaptureBudget(5);
-    const first = await captureCacheabilityAdmissionBody(
-      new Response("first").body,
-      Date.now() + 1_000,
-      10,
-      budget,
-    );
-    expect(first.kind).toBe("captured");
-    expect(budget.reservedBytes).toBe(5);
-
-    const second = await captureCacheabilityAdmissionBody(
-      new Response("second").body,
-      Date.now() + 1_000,
-      10,
-      budget,
-    );
-    expect(second.kind).toBe("fallback");
-    await expect(new Response(second.body).text()).resolves.toBe("second");
-    expect(budget.reservedBytes).toBe(5);
-
-    await expect(new Response(first.body).text()).resolves.toBe("first");
-    expect(budget.reservedBytes).toBe(0);
-  });
-
-  it("releases the isolate reservation when a captured response is cancelled", async () => {
-    const budget = createCacheabilityAdmissionCaptureBudget(5);
-    const captured = await captureCacheabilityAdmissionBody(
-      new Response("first").body,
-      Date.now() + 1_000,
-      10,
-      budget,
-    );
-    expect(captured.kind).toBe("captured");
-    expect(budget.reservedBytes).toBe(5);
-
-    await captured.body?.cancel();
-    expect(budget.reservedBytes).toBe(0);
   });
 });
 
@@ -158,6 +103,28 @@ describe("single-request cacheability admission", () => {
     );
     expect(response.headers.get("Cache-Control")).toBe("s-maxage=60, stale-while-revalidate=540");
     await expect(response.text()).resolves.toBe("static");
+  });
+
+  it("admits a completed static response larger than the removed 16 MiB limit", async () => {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = {
+      cacheable: true,
+      cacheControl: "s-maxage=60, stale-while-revalidate=540",
+    };
+    const body = new Uint8Array(16 * 1024 * 1024 + 1);
+
+    const response = await finalizeWorkerCacheabilityResponse(new Response(body), context);
+
+    expect(response.headers.get("Cache-Control")).toBe("s-maxage=60, stale-while-revalidate=540");
+    expect((await response.arrayBuffer()).byteLength).toBe(body.byteLength);
   });
 
   it("honors a final public App Page cache policy", async () => {
@@ -253,6 +220,64 @@ describe("single-request cacheability admission", () => {
       kind: "app-page",
       pattern: "/page",
       state: "static-candidate",
+      status: 200,
+    });
+  });
+
+  it("drains a probe response larger than 4 MiB without retaining its body", async () => {
+    const context = createWorkerCacheabilityContext(
+      { waitUntil() {} },
+      new Request("https://example.com/page", {
+        headers: {
+          "X-Vinext-Cacheability-Probe": "1",
+          "X-Vinext-Prerender-Secret": "probe-secret",
+        },
+      }),
+      "probe-secret",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response(new Uint8Array(4 * 1024 * 1024 + 1)),
+      context,
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      cacheControl: "s-maxage=60",
+      kind: "app-page",
+      pattern: "/page",
+      state: "static-candidate",
+      status: 200,
+    });
+  });
+
+  it("returns after the probe deadline when stream cancellation never settles", async () => {
+    const context = createWorkerCacheabilityContext(
+      { waitUntil() {} },
+      new Request("https://example.com/page", {
+        headers: {
+          "X-Vinext-Cacheability-Probe": "1",
+          "X-Vinext-Prerender-Secret": "probe-secret",
+        },
+      }),
+      "probe-secret",
+    );
+    const state = cacheabilityState(context);
+    state.captureDeadlineAt = Date.now() + 10;
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+    const body = new ReadableStream<Uint8Array>({
+      cancel: () => new Promise<void>(() => {}),
+      pull: () => new Promise<void>(() => {}),
+    });
+
+    const response = await finalizeWorkerCacheabilityResponse(new Response(body), context);
+
+    await expect(response.json()).resolves.toMatchObject({
+      reason: "response body did not complete before the probe deadline",
+      state: "probe-failed",
       status: 200,
     });
   });
@@ -625,15 +650,12 @@ describe("single-request cacheability admission", () => {
       "build-a",
     );
     const state = cacheabilityState(context);
-    const captureBudget = createCacheabilityAdmissionCaptureBudget(7);
-    state.captureBudget = captureBudget;
     state.route = { kind: "app-page", pattern: "/page" };
     state.outcome = { cacheable: false, dynamicUsage: true };
 
     const response = await finalizeWorkerCacheabilityResponse(new Response("dynamic"), context);
     expect(response.status).toBe(500);
     expect(response.headers.get("Cache-Control")).toContain("no-store");
-    expect(captureBudget.reservedBytes).toBe(0);
     await expect(response.text()).resolves.toContain("changed from static to dynamic");
   });
 
