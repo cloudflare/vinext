@@ -935,14 +935,7 @@ describe("prerender path manifest", () => {
     ]);
   });
 
-  it.each([
-    ["App Page", "app/posts/[slug]/page.tsx", "export default function Page() { return null; }"],
-    [
-      "App Route Handler",
-      "app/api/posts/[slug]/route.ts",
-      "export function GET() { return Response.json({ ok: true }); }",
-    ],
-  ])("rejects empty generateStaticParams for a Cache Components %s", async (_name, file, body) => {
+  it("rejects empty generateStaticParams for a Cache Components App Page", async () => {
     // Ported from Next.js: test/e2e/app-dir/empty-generate-static-params
     // https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir/empty-generate-static-params
     writeFile("package.json", JSON.stringify({ type: "module" }));
@@ -950,7 +943,13 @@ describe("prerender path manifest", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
     writeFile("dist/server/index.js", "export default {};\n");
-    writeFile(file, ["export function generateStaticParams() { return []; }", body].join("\n"));
+    writeFile(
+      "app/posts/[slug]/page.tsx",
+      [
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
     vi.mocked(fetch).mockResolvedValue(Response.json([]));
 
     const { emitPrerenderPathManifest } =
@@ -973,33 +972,49 @@ describe("prerender path manifest", () => {
       Response.json([]),
     ],
     [
+      "empty generateStaticParams with Cache Components",
+      [
+        "export function generateStaticParams() { return []; }",
+        "export function GET() { return Response.json({ ok: true }); }",
+      ].join("\n"),
+      Response.json([]),
+      true,
+    ],
+    [
       "force-static without generateStaticParams",
       [
         'export const dynamic = "force-static";',
         "export function GET() { return Response.json({ ok: true }); }",
       ].join("\n"),
       new Response(null, { status: 204 }),
+      false,
     ],
-  ])("retains dynamic App Route Handler patterns with %s", async (_name, source, response) => {
-    // Ported from Next.js static App Route eligibility:
-    // packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts
-    writeFile("package.json", JSON.stringify({ type: "module" }));
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
-    writeFile("dist/server/index.js", "export default {};\n");
-    writeFile("app/api/layout.tsx", 'export const dynamic = "force-dynamic";\n');
-    writeFile("app/api/posts/[slug]/route.ts", source);
-    vi.mocked(fetch).mockResolvedValue(response);
+  ])(
+    "retains dynamic App Route Handler patterns with %s",
+    async (_name, source, response, cacheComponents = false) => {
+      // Ported from Next.js static App Route eligibility:
+      // packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts
+      writeFile("package.json", JSON.stringify({ type: "module" }));
+      if (cacheComponents) {
+        writeFile("next.config.js", "export default { cacheComponents: true };\n");
+      }
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+      writeFile("dist/server/index.js", "export default {};\n");
+      writeFile("app/api/layout.tsx", 'export const dynamic = "force-dynamic";\n');
+      writeFile("app/api/posts/[slug]/route.ts", source);
+      vi.mocked(fetch).mockResolvedValue(response);
 
-    const { emitPrerenderPathManifest } =
-      await import("../packages/vinext/src/build/prerender-paths.js");
-    const manifest = await emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" });
+      const { emitPrerenderPathManifest } =
+        await import("../packages/vinext/src/build/prerender-paths.js");
+      const manifest = await emitPrerenderPathManifest({ root: tmpDir, responseVary: "verbatim" });
 
-    expect(manifest?.routeHandlerPaths).toBeUndefined();
-    expect(manifest?.fallbackRoutePatterns).toEqual([
-      { kind: "app-route", pattern: "/api/posts/:slug" },
-    ]);
-  });
+      expect(manifest?.routeHandlerPaths).toBeUndefined();
+      expect(manifest?.fallbackRoutePatterns).toEqual([
+        { kind: "app-route", pattern: "/api/posts/:slug" },
+      ]);
+    },
+  );
 
   it.each([
     [true, true],

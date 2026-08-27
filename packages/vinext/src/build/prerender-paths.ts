@@ -709,49 +709,54 @@ async function collectAppPaths(options: {
   const seenRouteHandlerPaths = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
   const staticParamsCache = new Map<string, Promise<Record<string, string | string[]>[] | null>>();
+  let requireNonEmptyStaticParams = false;
   const staticParamsMap = new Proxy({} as StaticParamsMap, {
     get(_target, pattern: string) {
       return async ({ params }: { params: Record<string, string | string[]> }) => {
         if (!options.baseUrl) return null;
         const cacheKey = `${pattern}\0${JSON.stringify(params)}`;
-        const cached = staticParamsCache.get(cacheKey);
-        if (cached !== undefined) return cached;
-        const request = (async () => {
-          const search = new URLSearchParams({ pattern });
-          if (Object.keys(params).length > 0) {
-            search.set("parentParams", JSON.stringify(params));
-          }
-          const text = await fetchDiscoveryEndpoint(
-            `${options.baseUrl}/__vinext/prerender/static-params?${search}`,
-            options.secretHeaders,
-            options.retryOptions,
-          );
-          if (text === null) return null;
-          const value = JSON.parse(text) as unknown;
-          if (!Array.isArray(value)) {
-            throw new Error(`generateStaticParams must return an array for ${pattern}.`);
-          }
-          if (options.cacheComponents && value.length === 0) {
-            throw new Error(
-              "When using Cache Components, all `generateStaticParams` functions must return at least one result. " +
-                "This is to ensure that we can perform build-time validation that there is no other dynamic accesses that would cause a runtime error.\n\n" +
-                "Learn more: https://nextjs.org/docs/messages/empty-generate-static-params",
-            );
-          }
-          return value.map((entry) => {
-            if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-              throw new Error(`generateStaticParams must return parameter objects for ${pattern}.`);
+        let request = staticParamsCache.get(cacheKey);
+        if (request === undefined) {
+          request = (async () => {
+            const search = new URLSearchParams({ pattern });
+            if (Object.keys(params).length > 0) {
+              search.set("parentParams", JSON.stringify(params));
             }
-            return validateDiscoveredParams(
-              { ...params, ...(entry as Record<string, unknown>) },
-              pattern,
-              "generateStaticParams",
+            const text = await fetchDiscoveryEndpoint(
+              `${options.baseUrl}/__vinext/prerender/static-params?${search}`,
+              options.secretHeaders,
+              options.retryOptions,
             );
-          });
-        })();
-        void request.catch(() => staticParamsCache.delete(cacheKey));
-        staticParamsCache.set(cacheKey, request);
-        return request;
+            if (text === null) return null;
+            const value = JSON.parse(text) as unknown;
+            if (!Array.isArray(value)) {
+              throw new Error(`generateStaticParams must return an array for ${pattern}.`);
+            }
+            return value.map((entry) => {
+              if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+                throw new Error(
+                  `generateStaticParams must return parameter objects for ${pattern}.`,
+                );
+              }
+              return validateDiscoveredParams(
+                { ...params, ...(entry as Record<string, unknown>) },
+                pattern,
+                "generateStaticParams",
+              );
+            });
+          })();
+          void request.catch(() => staticParamsCache.delete(cacheKey));
+          staticParamsCache.set(cacheKey, request);
+        }
+        const value = await request;
+        if (requireNonEmptyStaticParams && value?.length === 0) {
+          throw new Error(
+            "When using Cache Components, all `generateStaticParams` functions must return at least one result. " +
+              "This is to ensure that we can perform build-time validation that there is no other dynamic accesses that would cause a runtime error.\n\n" +
+              "Learn more: https://nextjs.org/docs/messages/empty-generate-static-params",
+          );
+        }
+        return value;
       };
     },
     has() {
@@ -788,6 +793,9 @@ async function collectAppPaths(options: {
       continue;
     }
 
+    // Next.js enables Cache Components PPR validation only for App Pages.
+    // App Route Handlers still permit empty generateStaticParams results.
+    requireNonEmptyStaticParams = options.cacheComponents && !isRouteHandler;
     try {
       const generateStaticParams = staticParamsMap[route.pattern];
       if (typeof generateStaticParams !== "function") continue;
