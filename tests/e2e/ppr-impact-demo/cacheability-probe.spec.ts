@@ -92,6 +92,7 @@ test("classifies completed App Page renders inside workerd", async ({ request })
   const staticRouteHandlerProbe = await request.get("/cacheability/route-handler-static", {
     headers: { ...headers, Accept: "*/*" },
   });
+  expect(staticRouteHandlerProbe.headers()["x-vinext-build-id"]).toBeDefined();
   await expect(staticRouteHandlerProbe.json()).resolves.toMatchObject({
     kind: "app-route",
     pattern: "/cacheability/route-handler-static",
