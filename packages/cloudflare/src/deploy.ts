@@ -85,7 +85,7 @@ import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { cacheabilityRoutePathname } from "vinext/internal/server/cacheability-manifest";
 import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
-import { withCacheabilityManifestArtifact } from "./cacheability-artifact.js";
+import { writeCacheabilityManifestArtifact } from "./cacheability-artifact.js";
 import {
   DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS,
   DEFAULT_CACHEABILITY_PROBE_RETRIES,
@@ -1600,19 +1600,14 @@ async function deployWithCacheabilityProbe(
       stagedProbeDeployment,
       "Two-stage CDN warming stopped because Worker deployment traffic or deployment identity changed while cacheability was being probed. No final version was promoted.",
     );
-    const finalUpload = withCacheabilityManifestArtifact(
-      root,
-      options.config,
-      probe.manifest,
-      (config) =>
-        runWranglerVersionUpload(root, {
-          config,
-          env: options.env,
-          name: options.name,
-          preview: options.preview,
-          verbose: options.verbose,
-        }),
-    );
+    const finalConfig = writeCacheabilityManifestArtifact(root, options.config, probe.manifest);
+    const finalUpload = runWranglerVersionUpload(root, {
+      config: finalConfig,
+      env: options.env,
+      name: options.name,
+      preview: options.preview,
+      verbose: options.verbose,
+    });
     assertDeploymentStateUnchanged(
       root,
       options,

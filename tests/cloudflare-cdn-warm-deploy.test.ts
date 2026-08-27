@@ -8,7 +8,7 @@ import {
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
-import { withCacheabilityManifestArtifact } from "../packages/cloudflare/src/cacheability-artifact.js";
+import { writeCacheabilityManifestArtifact } from "../packages/cloudflare/src/cacheability-artifact.js";
 import { MAX_CACHEABILITY_MANIFEST_ROUTES } from "../packages/cloudflare/src/cacheability-manifest-limits.js";
 import { CACHEABILITY_MANIFEST_MODULE } from "../packages/vinext/src/server/cacheability-manifest.js";
 import { VINEXT_CACHEABILITY_PROBE_HEADER } from "../packages/vinext/src/server/headers.js";
@@ -288,12 +288,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     writeFile("dist/server/index.js", "export default { fetch() {} };\n");
 
     expect(() =>
-      withCacheabilityManifestArtifact(
-        tmpDir,
-        "dist/server/wrangler.json",
-        { buildId: "build-a", routes: {}, version: 1 },
-        () => undefined,
-      ),
+      writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
+        buildId: "build-a",
+        routes: {},
+        version: 1,
+      }),
     ).toThrow(`Worker main module to import ${CACHEABILITY_MANIFEST_MODULE}`);
   });
 
@@ -321,12 +320,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     writeFile("dist/server/index.js", mainSource);
 
     expect(() =>
-      withCacheabilityManifestArtifact(
-        tmpDir,
-        "dist/server/wrangler.json",
-        { buildId: "build-a", routes: {}, version: 1 },
-        () => undefined,
-      ),
+      writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
+        buildId: "build-a",
+        routes: {},
+        version: 1,
+      }),
     ).toThrow(`Worker main module to import ${CACHEABILITY_MANIFEST_MODULE}`);
   });
 
@@ -343,14 +341,16 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     writeTwoStageWorkerArtifact();
     writeFile("dist/server/index.js", mainSource);
 
-    expect(() =>
-      withCacheabilityManifestArtifact(
-        tmpDir,
-        "dist/server/wrangler.json",
-        { buildId: "build-a", routes: {}, version: 1 },
-        () => undefined,
-      ),
-    ).not.toThrow();
+    expect(
+      writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
+        buildId: "build-a",
+        routes: {},
+        version: 1,
+      }),
+    ).toBe("dist/server/wrangler.json");
+    expect(
+      fs.readFileSync(path.join(tmpDir, "dist/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
+    ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
   });
 
   it("rejects a manifest with more route patterns than the deployment bound", () => {
@@ -371,12 +371,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
 
     expect(() =>
-      withCacheabilityManifestArtifact(
-        tmpDir,
-        "dist/server/wrangler.json",
-        { buildId: "build-a", routes, version: 1 },
-        () => undefined,
-      ),
+      writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
+        buildId: "build-a",
+        routes,
+        version: 1,
+      }),
     ).toThrow(`the limit is ${MAX_CACHEABILITY_MANIFEST_ROUTES}`);
   });
 
@@ -654,7 +653,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     );
     expect(
       fs.readFileSync(path.join(tmpDir, "dist/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
-    ).toBe("export default null;\n");
+    ).toBe(finalManifestSource);
   });
 
   it("promotes a final Worker with an empty manifest when discovery finds no identities", async () => {
@@ -1210,6 +1209,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).rejects.toThrow("final upload failed");
     expect(wrangler.uploads).toBe(2);
     expect(wrangler.triggerDeploys).toBe(0);
+    expect(
+      fs.readFileSync(path.join(tmpDir, "dist/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
+    ).not.toBe("export default null;\n");
   });
 
   it.each([
