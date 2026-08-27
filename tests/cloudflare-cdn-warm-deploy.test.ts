@@ -659,6 +659,47 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toBe(false);
   });
 
+  it("does not let the dangerous override bypass a failed initial certified fill", async () => {
+    writeTwoStageWorkerArtifact();
+    const wrangler = mockTwoStageWrangler();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
+        return appPageProbeResponse();
+      }
+      if (isReadinessFetch(input)) return cacheableHtml();
+      return new Response("failed fill", {
+        status: 500,
+        headers: {
+          "cache-control": "no-store",
+          [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a",
+        },
+      });
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        cacheabilityProbe: true,
+        config: "dist/server/wrangler.json",
+        discoverWarmPlan: async () => ({
+          appPaths: ["/about"],
+          buildId: "app-build-a",
+          buildIdentity: "app-build-a",
+          loadingShellPaths: [],
+          paths: ["/about"],
+          rscPaths: [],
+        }),
+        dangerouslyPromoteOnCdnWarmError: true,
+        warmCdnCertify: true,
+        warmCdnConcurrency: 1,
+        warmCdnPromotionDelay: 0,
+        warmCdnReadinessProbes: 1,
+        warmCdnRetries: 0,
+      }),
+    ).rejects.toThrow("HTTP 500");
+    expect(wrangler.promoted).toBe(false);
+  });
+
   it("does not overwrite deployment traffic changed before promotion", async () => {
     writeTwoStageWorkerArtifact();
     let uploadCount = 0;

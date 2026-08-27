@@ -38,8 +38,9 @@ export function formatDeployHelp(): string {
                              Total cacheability-probe deadline (default: 120000)
     --warm-cdn-probe-retries <n>
                              Cacheability-probe retries (default: 2)
-    --warm-cdn-certify      Re-request warmed entries using headers only and
-                             require reusable CDN hits before promotion
+    --warm-cdn-certify      With --experimental-warm-cdn-cache, re-request warmed
+                             entries using headers only and require every planned
+                             entry to be reusable before promotion
     --warm-cdn-readiness-timeout <ms>
                              Total staged-readiness deadline (default: 120000)
     --warm-cdn-readiness-retries <n>
@@ -50,7 +51,8 @@ export function formatDeployHelp(): string {
     --warm-cdn-readiness-probe-delay <ms>
                              Delay between staged-readiness probes (default: 1000)
     --dangerously-promote-on-cdn-warm-error
-                             Promote even when staged warmup cannot be verified
+                             Promote even when ordinary staged warmup cannot be
+                             verified (never bypasses --warm-cdn-certify)
     --warm-cdn-no-promote    Leave the warmed Worker version staged at 0% traffic;
                              production triggers are still applied before warming
     --warm-cdn-promotion-delay <ms>

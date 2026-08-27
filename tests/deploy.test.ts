@@ -737,6 +737,12 @@ describe("parseDeployArgs", () => {
     expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(false);
   });
 
+  it("requires CDN warming when certification is requested", () => {
+    expect(() => parseDeployArgs(["--warm-cdn-certify"])).toThrow(
+      "--warm-cdn-certify requires --experimental-warm-cdn-cache.",
+    );
+  });
+
   it("parses --env with space-separated value", () => {
     expect(parseDeployArgs(["--env", "staging"]).env).toBe("staging");
   });

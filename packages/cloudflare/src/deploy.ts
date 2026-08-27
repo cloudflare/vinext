@@ -251,6 +251,10 @@ const deployArgOptions = {
 export function parseDeployArgs(args: string[]) {
   const { values } = nodeParseArgs({ args, options: deployArgOptions, strict: true });
 
+  if (values["warm-cdn-certify"] && !values["experimental-warm-cdn-cache"]) {
+    throw new Error("--warm-cdn-certify requires --experimental-warm-cdn-cache.");
+  }
+
   function parseIntArg(name: string, raw: string | undefined): number | undefined {
     if (!raw) return undefined;
     const n = parseInt(raw, 10);
@@ -781,6 +785,11 @@ async function deployUploadedVersionWithCdnWarmup(
   paths: readonly string[],
   options: PreparedCdnWarmDeployOptions,
 ): Promise<string> {
+  // Certification is an explicit request to prove every planned cache entry
+  // reusable before promotion. The dangerous override may relax ordinary
+  // warming, but it must never bypass that stronger contract.
+  const allowUnverifiedPromotion =
+    options.dangerouslyPromoteOnCdnWarmError === true && options.warmCdnCertify !== true;
   let deploymentId = options.deploymentId;
   let expectedBuildId = options.expectedBuildId;
   let expectedRscBuildId = options.expectedRscBuildId;
@@ -798,7 +807,7 @@ async function deployUploadedVersionWithCdnWarmup(
 
   const prepareWarmPlan = (plan: CdnWarmRequestPlan): CdnWarmRequestPlan => {
     if (plan.paths.length === 0 || expectedBuildId !== undefined) return plan;
-    if (!options.dangerouslyPromoteOnCdnWarmError) {
+    if (!allowUnverifiedPromotion) {
       throw new Error(
         "CDN HTML warmup requires a CDN adapter that declares build-identity response headers. " +
           "Configure that adapter capability or deploy without --experimental-warm-cdn-cache.",
@@ -859,7 +868,7 @@ async function deployUploadedVersionWithCdnWarmup(
       timeoutMs: options.warmCdnTimeout,
       retries: options.warmCdnRetries,
       requireCacheHit,
-      strict: requireCacheHit || !options.dangerouslyPromoteOnCdnWarmError,
+      strict: requireCacheHit || !allowUnverifiedPromotion,
     });
 
   const wranglerConfig = parseWranglerConfig(root, options.config);
@@ -971,18 +980,25 @@ async function deployUploadedVersionWithCdnWarmup(
               options.warmCdnPromote === false
                 ? " CDN warmup cannot continue because promotion is disabled and the staged version was not warmed."
                 : "";
-            if (!options.dangerouslyPromoteOnCdnWarmError || options.warmCdnPromote === false) {
+            if (!allowUnverifiedPromotion || options.warmCdnPromote === false) {
               throw new Error(`${message}${noPromoteNote}`);
             }
             console.warn(`  ${message} Promoting because the dangerous override is enabled.`);
           } else {
             console.log("  CDN warmup: staged Worker version is stable.");
             const warmResult = await warmUploadedVersion(targetUrl, headers, true, stagedWarmPlan);
+            if (hasPreparedWarmPlan && options.warmCdnCertify) {
+              if (warmResult.warmed !== stagedWarmRequests) {
+                throw new Error(
+                  `CDN warmup cannot certify the staged cache because only ${warmResult.warmed}/${stagedWarmRequests} planned cache entries completed their initial fill.`,
+                );
+              }
+            }
             if (hasPreparedWarmPlan && warmResult.skipped > 0) {
               const message =
                 `Two-stage CDN warming could not fill ${warmResult.skipped}/${warmResult.total} ` +
                 "planned cache entries because Cloudflare refused cache admission.";
-              if (!options.dangerouslyPromoteOnCdnWarmError) {
+              if (!allowUnverifiedPromotion) {
                 throw new Error(message);
               }
               console.warn(`  ${message} Promoting because the dangerous override is enabled.`);
@@ -1021,7 +1037,7 @@ async function deployUploadedVersionWithCdnWarmup(
       const message =
         "CDN warmup failed: pre-traffic warmup needs a production URL and Worker name for version overrides. " +
         "Configure a route/custom domain and Worker name, or deploy without --experimental-warm-cdn-cache.";
-      if (!options.dangerouslyPromoteOnCdnWarmError) {
+      if (!allowUnverifiedPromotion) {
         throw new Error(`${message} ${getStagedVersionCleanupNote()}`);
       }
       console.warn(`  ${message} Promoting because the dangerous override is enabled.`);
@@ -1030,7 +1046,7 @@ async function deployUploadedVersionWithCdnWarmup(
     if (initialWarmRequests > 0) {
       const message =
         "CDN warmup cannot stage the uploaded Worker at 0% because the current deployment is not exactly one version serving 100% traffic.";
-      if (!options.dangerouslyPromoteOnCdnWarmError) {
+      if (!allowUnverifiedPromotion) {
         throw new Error(`${message} No traffic or triggers were changed.`);
       }
       console.warn(`  ${message} Promoting because the dangerous override is enabled.`);
@@ -1171,7 +1187,7 @@ async function deployUploadedVersionWithCdnWarmup(
       } catch (error) {
         throw withPromotedVersionWarmupNote(error);
       }
-    } else if (!options.dangerouslyPromoteOnCdnWarmError) {
+    } else if (!allowUnverifiedPromotion) {
       throw withPromotedVersionWarmupNote(
         new Error(
           "CDN warmup failed: no production URL could be inferred from wrangler config or output. " +
@@ -1791,7 +1807,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
         });
         return readPrerenderWarmPlan(root, {
           includeFallbackShells: options.warmCdnIncludeFallbacks,
-          strict: !options.dangerouslyPromoteOnCdnWarmError,
+          strict:
+            options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
         });
       },
       warmCdnConcurrency: options.warmCdnConcurrency,
