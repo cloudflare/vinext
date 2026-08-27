@@ -894,6 +894,11 @@ async function resolveAppWarmPaths(options: {
 }
 
 const CACHEABILITY_POLICY_HEADER_NAMES = new Set<string>(CACHEABILITY_POLICY_HEADERS);
+const CACHEABILITY_IDENTITY_HEADER_NAMES = new Set([
+  ...CACHEABILITY_POLICY_HEADERS,
+  "set-cookie",
+  "vary",
+]);
 
 function cachePolicyRuleMatchesWarmPath(
   pathname: string,
@@ -925,10 +930,19 @@ function annotateCacheabilityProbeSafety(
   const cachePolicyRules = config.headers.filter((rule) =>
     rule.headers.some((header) => CACHEABILITY_POLICY_HEADER_NAMES.has(header.key.toLowerCase())),
   );
-  const matchingRules = new Map(
+  const identityRules = config.headers.filter((rule) =>
+    rule.headers.some((header) => CACHEABILITY_IDENTITY_HEADER_NAMES.has(header.key.toLowerCase())),
+  );
+  const matchingPolicyRules = new Map(
     Object.keys(routePatterns).map((pathname) => [
       pathname,
       cachePolicyRules.filter((rule) => cachePolicyRuleMatchesWarmPath(pathname, rule, config)),
+    ]),
+  );
+  const matchingIdentityRules = new Map(
+    Object.keys(routePatterns).map((pathname) => [
+      pathname,
+      identityRules.filter((rule) => cachePolicyRuleMatchesWarmPath(pathname, rule, config)),
     ]),
   );
   const pathsByPattern = new Map<string, string[]>();
@@ -942,14 +956,16 @@ function annotateCacheabilityProbeSafety(
   return Object.fromEntries(
     Object.entries(routePatterns).map(([pathname, route]) => {
       const patternPaths = pathsByPattern.get(`${route.kind}\0${route.pattern}`) ?? [pathname];
-      const relevantRules = new Set(patternPaths.flatMap((path) => matchingRules.get(path) ?? []));
+      const relevantRules = new Set(
+        patternPaths.flatMap((path) => matchingPolicyRules.get(path) ?? []),
+      );
       const canPrunePattern = Array.from(relevantRules).every(
         (rule) =>
           !rule.has?.length &&
           !rule.missing?.length &&
-          patternPaths.every((path) => matchingRules.get(path)?.includes(rule) === true),
+          patternPaths.every((path) => matchingPolicyRules.get(path)?.includes(rule) === true),
       );
-      const canReuseHtmlForRsc = (matchingRules.get(pathname) ?? []).every(
+      const canReuseHtmlForRsc = (matchingIdentityRules.get(pathname) ?? []).every(
         (rule) => !rule.has?.length && !rule.missing?.length,
       );
       return [
