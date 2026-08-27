@@ -32,6 +32,9 @@ export type CdnWarmOptions = {
   pagesDataPaths?: readonly string[];
   /** Statically eligible App Route Handler request identities. */
   routeHandlerPaths?: readonly string[];
+  routePatterns?: Readonly<
+    Record<string, { kind: "app-page" | "app-route" | "pages-page"; pattern: string }>
+  >;
   /** App Router ISR paths whose definitive client-navigation payload is warmed. */
   rscPaths?: readonly string[];
   /** App Router paths whose deterministic loading-boundary payload is warmed. */
@@ -87,6 +90,10 @@ export type CdnWarmRequestPlan = {
   paths: string[];
   rscPaths: string[];
   routeHandlerPaths?: string[];
+  routePatterns?: Record<
+    string,
+    { kind: "app-page" | "app-route" | "pages-page"; pattern: string }
+  >;
 };
 
 export type CdnWarmReadinessResult = { ready: true } | { error: string; ready: false };
@@ -101,6 +108,10 @@ export type PrerenderWarmPlan = {
   pagesPaths?: string[];
   paths: string[];
   routeHandlerPaths?: string[];
+  routePatterns?: Record<
+    string,
+    { kind: "app-page" | "app-route" | "pages-page"; pattern: string }
+  >;
   rscBuildId?: string;
   rscPaths: string[];
 };
@@ -157,6 +168,22 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
       (manifest.routeHandlerPaths !== undefined &&
         (!Array.isArray(manifest.routeHandlerPaths) ||
           !manifest.routeHandlerPaths.every((pathname) => typeof pathname === "string"))) ||
+      (manifest.routePatterns !== undefined &&
+        (!manifest.routePatterns ||
+          typeof manifest.routePatterns !== "object" ||
+          Array.isArray(manifest.routePatterns) ||
+          !Object.entries(manifest.routePatterns).every(
+            ([pathname, route]) =>
+              pathname.startsWith("/") &&
+              route !== null &&
+              typeof route === "object" &&
+              !Array.isArray(route) &&
+              (route.kind === "app-page" ||
+                route.kind === "app-route" ||
+                route.kind === "pages-page") &&
+              typeof route.pattern === "string" &&
+              route.pattern.startsWith("/"),
+          ))) ||
       (manifest.loadingShellPaths !== undefined &&
         (!Array.isArray(manifest.loadingShellPaths) ||
           !manifest.loadingShellPaths.every((pathname) => typeof pathname === "string"))) ||
@@ -224,6 +251,14 @@ export function readPrerenderWarmPlan(
     manifest.rscPaths !== undefined &&
     manifest.rscBuildId !== undefined;
   const applyConfig = (pathname: string) => applyWarmPathConfig(pathname, manifest);
+  const routePatterns = manifest.routePatterns
+    ? Object.fromEntries(
+        Object.entries(manifest.routePatterns).map(([pathname, route]) => [
+          applyConfig(pathname),
+          route,
+        ]),
+      )
+    : undefined;
   let htmlPaths = pathPlan.paths;
   if (options?.includeFallbackShells === true) {
     const prerenderManifest = readPrerenderManifest(
@@ -264,6 +299,7 @@ export function readPrerenderWarmPlan(
     ...(manifest.routeHandlerPaths
       ? { routeHandlerPaths: manifest.routeHandlerPaths.map(applyConfig) }
       : {}),
+    ...(routePatterns ? { routePatterns } : {}),
   };
 }
 
@@ -378,6 +414,7 @@ export type CdnWarmTarget = {
   label: string;
   pathname: string;
   sourcePathname: string;
+  route?: { kind: "app-page" | "app-route" | "pages-page"; pattern: string };
 };
 
 export async function createCdnWarmTargets(
@@ -389,6 +426,7 @@ export async function createCdnWarmTargets(
     | "pagesDataPaths"
     | "paths"
     | "routeHandlerPaths"
+    | "routePatterns"
     | "rscPaths"
   >,
 ): Promise<CdnWarmTarget[]> {
@@ -408,6 +446,7 @@ export async function createCdnWarmTargets(
         label: `${pathname} (RSC full)`,
         pathname: createCanonicalRscRequestUrl(pathname),
         sourcePathname: pathname,
+        route: options.routePatterns?.[pathname],
       });
     }
 
@@ -424,6 +463,7 @@ export async function createCdnWarmTargets(
         label: `${pathname} (RSC loading shell)`,
         pathname: await createRscRequestUrl(pathname, loadingHeaders),
         sourcePathname: pathname,
+        route: options.routePatterns?.[pathname],
       });
     }
   }
@@ -437,6 +477,7 @@ export async function createCdnWarmTargets(
       label: pathname,
       pathname,
       sourcePathname: pathname,
+      route: options.routePatterns?.[pathname],
     });
   }
   for (const pathname of new Set(options.pagesDataPaths ?? [])) {
@@ -448,6 +489,7 @@ export async function createCdnWarmTargets(
       label: `${pathname} (Pages data)`,
       pathname,
       sourcePathname: pathname,
+      route: options.routePatterns?.[pathname],
     });
   }
   for (const pathname of new Set(options.routeHandlerPaths ?? [])) {
@@ -459,12 +501,13 @@ export async function createCdnWarmTargets(
       label: `${pathname} (Route Handler)`,
       pathname,
       sourcePathname: pathname,
+      route: options.routePatterns?.[pathname],
     });
   }
   return requests;
 }
 
-class CdnWarmProgress {
+export class CdnOperationProgress {
   private readonly isTTY = process.stderr.isTTY;
   private lastLineLength = 0;
 
@@ -1158,7 +1201,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
 
   console.log(`\n  Warming CDN cache with ${requests.length} discovered request(s)...`);
 
-  const progress = new CdnWarmProgress();
+  const progress = new CdnOperationProgress();
   let completedRequests = 0;
   progress.update(0, requests.length, "starting warmup");
 

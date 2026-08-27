@@ -429,7 +429,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       const headers = new Headers(init?.headers);
       if (headers.get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
         const pathname = new URL(formatFetchUrl(input)).pathname;
-        events.push(`probe:${pathname}`);
+        const isRsc = headers.get("RSC") === "1";
+        events.push(`probe:${pathname}${isRsc ? ":rsc" : ""}`);
         if (
           pathname === "/pages-about" ||
           pathname === "/_next/data/app-build-a/pages-about.json"
@@ -465,15 +466,21 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       if (isReadinessFetch(input)) events.push("readiness");
       else {
         const pathname = new URL(formatFetchUrl(input)).pathname;
-        const count = (cacheRequestCounts.get(pathname) ?? 0) + 1;
-        cacheRequestCounts.set(pathname, count);
-        events.push(`${count === 1 ? "warm" : "unexpected-second-request"}:${pathname}`);
+        const isRsc = headers.get("RSC") === "1";
+        const cacheKey = `${pathname}${isRsc ? "?_rsc" : ""}`;
+        const count = (cacheRequestCounts.get(cacheKey) ?? 0) + 1;
+        cacheRequestCounts.set(cacheKey, count);
+        events.push(`${count === 1 ? "warm" : "unexpected-second-request"}:${cacheKey}`);
       }
       const pathname = new URL(formatFetchUrl(input)).pathname;
-      const cacheStatus = (cacheRequestCounts.get(pathname) ?? 0) > 1 ? "HIT" : "MISS";
-      return pathname.startsWith("/_next/data/")
-        ? cacheablePagesData(cacheStatus)
-        : cacheableHtml("ok", cacheStatus);
+      const isRsc = headers.get("RSC") === "1";
+      const cacheKey = `${pathname}${isRsc ? "?_rsc" : ""}`;
+      const cacheStatus = (cacheRequestCounts.get(cacheKey) ?? 0) > 1 ? "HIT" : "MISS";
+      return isRsc
+        ? cacheableRsc()
+        : pathname.startsWith("/_next/data/")
+          ? cacheablePagesData(cacheStatus)
+          : cacheableHtml("ok", cacheStatus);
     });
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
@@ -489,7 +496,13 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         pagesPaths: ["/pages-about"],
         paths: ["/about", "/dynamic", "/pages-about"],
         routeHandlerPaths: ["/api/data"],
-        rscPaths: [],
+        routePatterns: {
+          "/about": { kind: "app-page", pattern: "/about" },
+          "/api/data": { kind: "app-route", pattern: "/api/data" },
+          "/dynamic": { kind: "app-page", pattern: "/dynamic" },
+          "/pages-about": { kind: "pages-page", pattern: "/pages-about" },
+        },
+        rscPaths: ["/about", "/dynamic"],
       }),
       warmCdnConcurrency: 1,
       warmCdnPromotionDelay: 0,
@@ -501,6 +514,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(uploadCount).toBe(2);
     expect(statusCount).toBe(7);
     expect(Array.from(cacheRequestCounts.entries())).toEqual([
+      ["/about?_rsc", 1],
       ["/_next/data/app-build-a/pages-about.json", 1],
       ["/api/data", 1],
       ["/about", 1],
@@ -514,6 +528,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "readiness",
       "probe:/about",
       "probe:/dynamic",
+      "probe:/dynamic:rsc",
       "probe:/pages-about",
       "probe:/_next/data/app-build-a/pages-about.json",
       "probe:/api/data",
@@ -525,6 +540,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status-6",
       "triggers",
       "readiness",
+      "warm:/about?_rsc",
       "warm:/_next/data/app-build-a/pages-about.json",
       "warm:/api/data",
       "warm:/about",
@@ -546,6 +562,13 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         expect.objectContaining({
           kind: "app-page",
           pattern: "/about",
+          representation: "html",
+          state: "static-candidate",
+        }),
+        expect.objectContaining({
+          kind: "app-page",
+          pattern: "/about",
+          representation: "rsc-full",
           state: "static-candidate",
         }),
         expect.objectContaining({

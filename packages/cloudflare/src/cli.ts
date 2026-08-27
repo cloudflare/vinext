@@ -47,6 +47,7 @@ async function deployCommand(): Promise<void> {
     config: parsed.config,
     skipBuild: parsed.skipBuild,
     dryRun: parsed.dryRun,
+    verbose: parsed.verbose,
     name: parsed.name,
     prerenderAll: parsed.prerenderAll,
     prerenderConcurrency: parsed.prerenderConcurrency,

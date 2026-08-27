@@ -36,6 +36,8 @@ export type RouteCacheabilityState = {
   explicitResponseCachePolicy?: boolean;
   finalResponseVetoReason?: string;
   forcedDynamicReason?: string;
+  /** A route-config decision that applies to every concrete identity for this pattern. */
+  patternDynamicReason?: string;
   frameworkResponseCachePolicy?: Partial<Record<CacheabilityPolicyHeader, string>>;
   mode: "admit" | "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
@@ -87,6 +89,13 @@ export function markRouteCacheabilityDynamic(reason: string): void {
   const state = readRouteCacheabilityState();
   if (!state) return;
   state.forcedDynamicReason = reason;
+}
+
+/** Mark an effective route configuration that makes the whole pattern dynamic. */
+export function markRouteCacheabilityPatternDynamic(reason: string): void {
+  const state = readRouteCacheabilityState();
+  if (!state) return;
+  state.patternDynamicReason = reason;
 }
 
 /** Read a request-specific routing veto without making the route globally dynamic. */

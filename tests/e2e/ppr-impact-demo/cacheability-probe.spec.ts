@@ -75,6 +75,31 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
+  // Next.js treats both effective force-dynamic and revalidate=0 segment
+  // configuration as pattern-wide dynamic decisions:
+  // test/e2e/app-dir/app-prefetch/prefetching.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch/prefetching.test.ts
+  // packages/next/src/build/utils.ts
+  // packages/next/src/server/app-render/create-component-tree.tsx
+  // This includes inherited layout configuration. The coordinator can prune
+  // later concrete identities only after the staged Worker certifies this
+  // authoritative pattern scope.
+  for (const pathname of [
+    "/cacheability/pattern-force-dynamic",
+    "/cacheability/pattern-revalidate-zero",
+  ]) {
+    const patternDynamicProbe = await request.get(pathname, { headers });
+    expect(patternDynamicProbe.ok()).toBe(true);
+    await expect(patternDynamicProbe.json()).resolves.toMatchObject({
+      kind: "app-page",
+      pattern: pathname,
+      scope: "pattern",
+      state: "dynamic",
+      status: 200,
+      version: 1,
+    });
+  }
+
   // Ported from Next.js:
   // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
   const configPublicDynamicProbe = await request.get("/cacheability/config-public-dynamic", {

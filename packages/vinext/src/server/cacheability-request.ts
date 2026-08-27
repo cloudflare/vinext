@@ -43,6 +43,7 @@ type CacheabilityProbeResult = {
   kind?: "app-page" | "app-route" | "pages-page";
   pattern?: string;
   reason?: string;
+  scope?: "identity" | "pattern";
   state: CacheabilityProbeRouteState;
   status: number;
   version: 1;
@@ -148,6 +149,9 @@ function probeResponse(
     kind: state.route?.kind,
     pattern: state.route?.pattern,
     reason: outcome.reason,
+    ...(routeState === "dynamic"
+      ? { scope: state.patternDynamicReason ? ("pattern" as const) : ("identity" as const) }
+      : {}),
     state: routeState,
     status,
     version: 1,
@@ -748,6 +752,21 @@ export async function finalizeWorkerCacheabilityResponse(
       state,
       "probe-failed",
       { cacheable: false, reason: `route returned HTTP ${response.status}` },
+      response.status,
+    );
+  }
+
+  if (state.patternDynamicReason && !state.explicitConfigCachePolicy) {
+    // Route configuration is pattern-wide, but Next.js lets a matching
+    // next.config public cache policy override force-dynamic/revalidate=0.
+    // Config headers are applied before this Worker finalizer, so only bypass
+    // the render body when no explicit policy still needs completed-response
+    // classification. A real route 5xx above must never be hidden by pruning.
+    await response.body?.cancel().catch(() => {});
+    return probeResponse(
+      state,
+      "dynamic",
+      { cacheable: false, reason: state.patternDynamicReason },
       response.status,
     );
   }

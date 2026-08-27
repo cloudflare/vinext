@@ -61,6 +61,11 @@ export type PrerenderPathManifest = {
   pagesDataPaths?: string[];
   /** Public paths omitted because configured routes can replace their page response. */
   excludedWarmPaths?: string[];
+  /** Resolved route ownership for grouping cacheability probes without re-matching paths. */
+  routePatterns?: Record<
+    string,
+    { kind: "app-page" | "app-route" | "pages-page"; pattern: string }
+  >;
   trailingSlash?: boolean;
   paths: string[];
 };
@@ -788,6 +793,7 @@ async function resolveAppWarmPaths(options: {
   loadingShellPaths: string[];
   pagesPaths: string[];
   rscPaths: string[];
+  routePatterns: Record<string, { kind: "app-page" | "app-route" | "pages-page"; pattern: string }>;
 }> {
   const appRoutes = await appRouter(options.appDir, options.pageExtensions);
   const routeHandlerClassifications = new Map(
@@ -810,6 +816,10 @@ async function resolveAppWarmPaths(options: {
   const htmlPaths: string[] = [];
   const loadingShellPaths: string[] = [];
   const pagesPaths: string[] = [];
+  const routePatterns: Record<
+    string,
+    { kind: "app-page" | "app-route" | "pages-page"; pattern: string }
+  > = {};
   for (const pathname of options.paths) {
     const appMatch = matchAppRoute(pathname, appRoutes);
     // Pages Router i18n prefixes are routing metadata rather than part of the
@@ -831,6 +841,7 @@ async function resolveAppWarmPaths(options: {
       if (!isPagesApiRequest) {
         htmlPaths.push(pathname);
         pagesPaths.push(pathname);
+        routePatterns[pathname] = { kind: "pages-page", pattern: pagesMatch.route.pattern };
       }
       continue;
     }
@@ -844,6 +855,7 @@ async function resolveAppWarmPaths(options: {
       const classification = routeHandlerClassifications.get(matchedAppRoute.routePath);
       if (classification?.hasGet && classification.staticGenerationEnabled) {
         appRoutePaths.push(pathname);
+        routePatterns[pathname] = { kind: "app-route", pattern: matchedAppRoute.pattern };
       }
       continue;
     }
@@ -860,11 +872,20 @@ async function resolveAppWarmPaths(options: {
     appPaths.push(pathname);
     htmlPaths.push(pathname);
     rscPaths.push(pathname);
+    routePatterns[pathname] = { kind: "app-page", pattern: matchedAppRoute.pattern };
     if (appRouteHasMainTreeLoadingBoundary(matchedAppRoute)) {
       loadingShellPaths.push(pathname);
     }
   }
-  return { appPaths, appRoutePaths, htmlPaths, loadingShellPaths, pagesPaths, rscPaths };
+  return {
+    appPaths,
+    appRoutePaths,
+    htmlPaths,
+    loadingShellPaths,
+    pagesPaths,
+    routePatterns,
+    rscPaths,
+  };
 }
 
 function configuredRouteAffectsWarmPath(
@@ -1092,6 +1113,7 @@ export async function emitPrerenderPathManifest(
         htmlPaths: discoveredAppPaths,
         loadingShellPaths: discoveredLoadingShellPaths,
         pagesPaths: resolvedPagesWarmPaths,
+        routePatterns: {},
         rscPaths: discoveredAppPaths,
       };
   const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : resolvedPagesWarmPaths;
@@ -1126,6 +1148,7 @@ export async function emitPrerenderPathManifest(
     ...(rscBuildId ? { rscBuildId } : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
     ...(options.responseVary ? { rscPaths: appOwnedWarmPaths.rscPaths } : {}),
+    routePatterns: appOwnedWarmPaths.routePatterns,
     ...(appOwnedWarmPaths.appRoutePaths.length > 0
       ? { routeHandlerPaths: appOwnedWarmPaths.appRoutePaths }
       : {}),

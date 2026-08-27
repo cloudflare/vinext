@@ -120,6 +120,12 @@ describe("prerender path manifest", () => {
       loadingShellPaths: ["/cached/intro", "/cached/featured"],
       rscBuildId: "rsc-build-a",
       responseVary: "verbatim",
+      routePatterns: {
+        "/": { kind: "app-page", pattern: "/" },
+        "/cached/featured": { kind: "app-page", pattern: "/cached/:slug" },
+        "/cached/intro": { kind: "app-page", pattern: "/cached/:slug" },
+        "/dynamic": { kind: "app-page", pattern: "/dynamic" },
+      },
       rscPaths: ["/", "/dynamic", "/cached/intro", "/cached/featured"],
       trailingSlash: false,
       paths: ["/", "/dynamic", "/cached/intro", "/cached/featured"],

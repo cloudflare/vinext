@@ -17,6 +17,7 @@ export function formatDeployHelp(): string {
     --config <path>          Wrangler config path (default: wrangler.jsonc/json/toml)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Validate setup without building or deploying
+    --verbose                Print raw output from internal Wrangler commands
     --prerender-all          Pre-render discovered routes after building (future
                              releases will auto-populate the remote cache)
     --prerender-concurrency <count>
@@ -35,7 +36,8 @@ export function formatDeployHelp(): string {
                              Optional staged path-discovery retry limit
                              (default: derived from the discovery deadline)
     --warm-cdn-probe-timeout <ms>
-                             Total cacheability-probe deadline (default: 120000)
+                             Abort when cacheability probing makes no progress for
+                             this duration (default: 120000)
     --warm-cdn-probe-retries <n>
                              Cacheability-probe retries (default: 2)
     --warm-cdn-certify      With --experimental-warm-cdn-cache, re-request warmed

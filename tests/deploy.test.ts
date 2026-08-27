@@ -70,6 +70,7 @@ import {
   parseCdnWarmupDeploymentUrl,
   parseWorkerDeploymentUrl,
 } from "../packages/cloudflare/src/worker-deployment-url.js";
+import { formatDeployHelp } from "../packages/cloudflare/src/deploy-help.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -726,6 +727,15 @@ describe("parseDeployArgs", () => {
     }
   });
 
+  it("forwards verbose output control through the deploy CLI", () => {
+    const cliSource = fs.readFileSync(
+      path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
+      "utf-8",
+    );
+
+    expect(cliSource).toContain("verbose: parsed.verbose");
+  });
+
   it("defaults to production deploy with no flags", () => {
     const parsed = parseDeployArgs([]);
     expect(parsed.preview).toBe(false);
@@ -733,6 +743,7 @@ describe("parseDeployArgs", () => {
     expect(parsed.name).toBeUndefined();
     expect(parsed.skipBuild).toBe(false);
     expect(parsed.dryRun).toBe(false);
+    expect(parsed.verbose).toBe(false);
     expect(parsed.warmCdnCache).toBe(false);
     expect(parsed.warmCdnCertify).toBe(false);
     expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(false);
@@ -767,10 +778,17 @@ describe("parseDeployArgs", () => {
   });
 
   it("parses boolean flags", () => {
-    const parsed = parseDeployArgs(["--preview", "--skip-build", "--dry-run"]);
+    const parsed = parseDeployArgs(["--preview", "--skip-build", "--dry-run", "--verbose"]);
     expect(parsed.preview).toBe(true);
     expect(parsed.skipBuild).toBe(true);
     expect(parsed.dryRun).toBe(true);
+    expect(parsed.verbose).toBe(true);
+  });
+
+  it("documents verbose Wrangler output and no-progress probe timeouts", () => {
+    const help = formatDeployHelp();
+    expect(help).toContain("--verbose");
+    expect(help).toContain("Abort when cacheability probing makes no progress");
   });
 
   it("parses numeric TPR flags from string values", () => {

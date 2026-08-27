@@ -54,6 +54,7 @@ import { parseWranglerConfig, runTPR } from "./tpr.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
 import {
   createCdnWarmTargets,
+  CdnOperationProgress,
   DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS,
   readPrerenderWarmPlan,
   waitForCdnWarmTargetReadiness,
@@ -110,6 +111,8 @@ export type DeployOptions = {
   skipBuild?: boolean;
   /** Dry run — validate setup but don't build or deploy */
   dryRun?: boolean;
+  /** Print raw output from internal Wrangler commands. */
+  verbose?: boolean;
   /** Pre-render all discovered routes into the dist output after building */
   prerenderAll?: boolean;
   /** Maximum number of routes to prerender in parallel */
@@ -126,7 +129,7 @@ export type DeployOptions = {
   warmCdnDiscoveryTimeout?: number;
   /** Number of transient staged Worker path discovery retries */
   warmCdnDiscoveryRetries?: number;
-  /** Maximum duration of staged Worker cacheability probing */
+  /** Abort after this duration without a completed cacheability probe */
   warmCdnProbeTimeout?: number;
   /** Number of transient staged Worker cacheability probe retries */
   warmCdnProbeRetries?: number;
@@ -223,6 +226,7 @@ const deployArgOptions = {
   config: { type: "string" },
   "skip-build": { type: "boolean", default: false },
   "dry-run": { type: "boolean", default: false },
+  verbose: { type: "boolean", default: false },
   "prerender-all": { type: "boolean", default: false },
   "prerender-concurrency": { type: "string" },
   "experimental-warm-cdn-cache": { type: "boolean", default: false },
@@ -273,6 +277,7 @@ export function parseDeployArgs(args: string[]) {
     config: values.config?.trim() || undefined,
     skipBuild: values["skip-build"],
     dryRun: values["dry-run"],
+    verbose: values.verbose,
     prerenderAll: values["prerender-all"],
     prerenderConcurrency:
       values["prerender-concurrency"] === undefined
@@ -714,6 +719,7 @@ type CdnWarmDeployOptions = Pick<
   | "env"
   | "name"
   | "config"
+  | "verbose"
   | "warmCdnConcurrency"
   | "warmCdnTimeout"
   | "warmCdnRetries"
@@ -738,6 +744,7 @@ type CdnWarmDeployOptions = Pick<
     | "loadingShellPaths"
     | "pagesDataPaths"
     | "routeHandlerPaths"
+    | "routePatterns"
     | "rscPaths"
   > & {
     /** Probe a staged Worker and upload the resulting manifest as a second version. */
@@ -825,6 +832,7 @@ async function deployUploadedVersionWithCdnWarmup(
     pagesDataPaths: [...(options.pagesDataPaths ?? [])],
     paths: [...paths],
     routeHandlerPaths: [...(options.routeHandlerPaths ?? [])],
+    routePatterns: options.routePatterns ? { ...options.routePatterns } : undefined,
     rscPaths: [...(options.rscPaths ?? [])],
   };
   let discoveredWarmRequests =
@@ -872,6 +880,7 @@ async function deployUploadedVersionWithCdnWarmup(
       pagesDataPaths: [...(plan.pagesDataPaths ?? [])],
       paths: [...plan.paths],
       routeHandlerPaths: [...(plan.routeHandlerPaths ?? [])],
+      routePatterns: plan.routePatterns ? { ...plan.routePatterns } : undefined,
       rscPaths: [...plan.rscPaths],
     };
     discoveredWarmRequests =
@@ -897,6 +906,7 @@ async function deployUploadedVersionWithCdnWarmup(
       pagesDataPaths: remainingWarmPlan.pagesDataPaths,
       paths: remainingWarmPlan.paths,
       routeHandlerPaths: remainingWarmPlan.routeHandlerPaths,
+      routePatterns: remainingWarmPlan.routePatterns,
       rscPaths: remainingWarmPlan.rscPaths,
     },
     requireCacheHit = false,
@@ -912,6 +922,7 @@ async function deployUploadedVersionWithCdnWarmup(
       loadingShellPaths: plan.loadingShellPaths,
       pagesDataPaths: plan.pagesDataPaths,
       routeHandlerPaths: plan.routeHandlerPaths,
+      routePatterns: plan.routePatterns,
       rscPaths: plan.rscPaths,
       concurrency: options.warmCdnConcurrency,
       phaseTimeoutMs: hasPreparedWarmPlan ? DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS : undefined,
@@ -1436,6 +1447,7 @@ async function deployWithCacheabilityProbe(
       pagesPaths: discovered.pagesPaths ? [...discovered.pagesPaths] : undefined,
       paths: [...discovered.paths],
       routeHandlerPaths: [...(discovered.routeHandlerPaths ?? [])],
+      routePatterns: discovered.routePatterns ? { ...discovered.routePatterns } : undefined,
       rscPaths: [...discovered.rscPaths],
     };
     if (!plan.appPaths && !plan.pagesPaths) {
@@ -1452,6 +1464,7 @@ async function deployWithCacheabilityProbe(
       pagesDataPaths: plan.pagesDataPaths,
       paths: plan.paths,
       routeHandlerPaths: plan.routeHandlerPaths,
+      routePatterns: plan.routePatterns,
       rscPaths: plan.rscPaths,
     });
     if (targets.length > 0) {
@@ -1476,29 +1489,48 @@ async function deployWithCacheabilityProbe(
       }
 
       console.log(
-        `  CDN warmup: probing ${targets.length} exact request identit${targets.length === 1 ? "y" : "ies"}...`,
+        `  CDN warmup: classifying ${targets.length} exact request identit${targets.length === 1 ? "y" : "ies"}; paired App HTML/RSC identities share a completed render when safe...`,
       );
     } else {
       console.log(
         "  CDN warmup: no page request identities were discovered; embedding an empty fail-closed cacheability manifest.",
       );
     }
-    const probe = await probeStagedWorkerCacheability({
-      buildId: discovered.buildId,
-      concurrency: options.warmCdnConcurrency,
-      expectedResponseBuildId: plan.buildIdentity,
-      phaseTimeoutMs: options.warmCdnProbeTimeout ?? DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS,
-      retries:
-        options.warmCdnProbeRetries ?? options.warmCdnRetries ?? DEFAULT_CACHEABILITY_PROBE_RETRIES,
-      retryDelayMs: DEFAULT_CACHEABILITY_PROBE_RETRY_DELAY_MS,
-      root,
-      targets,
-      targetUrl,
-      timeoutMs: options.warmCdnTimeout,
-    });
+    const probeProgress = new CdnOperationProgress();
+    let probe: Awaited<ReturnType<typeof probeStagedWorkerCacheability>>;
+    try {
+      probe = await probeStagedWorkerCacheability({
+        buildId: discovered.buildId,
+        concurrency: options.warmCdnConcurrency,
+        expectedResponseBuildId: plan.buildIdentity,
+        phaseTimeoutMs: options.warmCdnProbeTimeout ?? DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS,
+        retries:
+          options.warmCdnProbeRetries ??
+          options.warmCdnRetries ??
+          DEFAULT_CACHEABILITY_PROBE_RETRIES,
+        retryDelayMs: DEFAULT_CACHEABILITY_PROBE_RETRY_DELAY_MS,
+        root,
+        targets,
+        targetUrl,
+        timeoutMs: options.warmCdnTimeout,
+        onProgress(progress) {
+          probeProgress.update(
+            progress.completed,
+            progress.total,
+            `${progress.static} static, ${progress.dynamic} dynamic, ${progress.skipped} skipped`,
+            "Probing route cacheability",
+          );
+        },
+      });
+    } finally {
+      probeProgress.finish();
+    }
+    console.log(
+      `  CDN warmup: classified ${probe.classified} exact identities with ${probe.probed} render probe${probe.probed === 1 ? "" : "s"}; ${probe.dynamic} dynamic and ${probe.skipped} skipped by pattern proof.`,
+    );
     if (probe.failures.length > 0) {
       throw new Error(
-        `Two-stage CDN warming failed to classify ${probe.failures.length}/${probe.probed} request(s). First failure: ${probe.failures[0]}`,
+        `Two-stage CDN warming failed to classify ${probe.failures.length}/${targets.length} request identities after ${probe.probed} render probe(s). First failure: ${probe.failures[0]}`,
       );
     }
     const finalPlan: PrerenderWarmPlan & CdnWarmRequestPlan = {
@@ -1537,6 +1569,7 @@ async function deployWithCacheabilityProbe(
           env: options.env,
           name: options.name,
           preview: options.preview,
+          verbose: options.verbose,
         }),
     );
     assertDeploymentStateUnchanged(
@@ -1559,6 +1592,7 @@ async function deployWithCacheabilityProbe(
     loadingShellPaths: prepared.plan.loadingShellPaths,
     pagesDataPaths: prepared.plan.pagesDataPaths,
     routeHandlerPaths: prepared.plan.routeHandlerPaths,
+    routePatterns: prepared.plan.routePatterns,
     rscPaths: prepared.plan.rscPaths,
     uploadedVersion: prepared.upload,
   });
@@ -1857,6 +1891,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     env: deployEnv === "production" && !options.env ? undefined : deployEnv,
     name: options.name,
     config: options.config,
+    verbose: options.verbose,
   };
   let url: string;
 

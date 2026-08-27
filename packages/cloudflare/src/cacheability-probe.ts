@@ -37,13 +37,27 @@ type ProbePayload = {
   status?: number;
   version?: number;
   phaseTimedOut?: boolean;
+  scope?: "identity" | "pattern";
+};
+
+export type CacheabilityProbeProgress = {
+  completed: number;
+  dynamic: number;
+  failed: number;
+  probed: number;
+  skipped: number;
+  static: number;
+  total: number;
 };
 
 export type CacheabilityProbeResult = {
   cacheableTargets: CdnWarmTarget[];
+  classified: number;
+  dynamic: number;
   failures: string[];
   manifest: CacheabilityManifest;
   probed: number;
+  skipped: number;
 };
 
 function isProbeRouteState(value: unknown): value is CacheabilityManifestRoute["state"] {
@@ -111,7 +125,7 @@ async function probeTarget(options: {
   headers?: HeadersInit;
   retries: number;
   retryDelayMs: number;
-  deadlineAt: number;
+  getDeadlineAt: () => number;
   phaseTimeoutMs: number;
   secret: string;
   target: CdnWarmTarget;
@@ -128,12 +142,12 @@ async function probeTarget(options: {
   const probeId = randomUUID();
   const phaseTimeoutPayload = (): ProbePayload => ({
     phaseTimedOut: true,
-    reason: `cacheability probing exceeded its ${options.phaseTimeoutMs}ms phase deadline`,
+    reason: `cacheability probing made no progress for ${options.phaseTimeoutMs}ms`,
     state: "probe-failed",
     version: 1,
   });
   for (let attempt = 0; attempt <= options.retries; attempt++) {
-    const remainingMs = options.deadlineAt - Date.now();
+    const remainingMs = options.getDeadlineAt() - Date.now();
     if (remainingMs <= 0) return phaseTimeoutPayload();
 
     const controller = new AbortController();
@@ -177,12 +191,12 @@ async function probeTarget(options: {
         }, attemptTimeoutMs);
       });
       const result = await Promise.race([request, timedOut]);
-      if (Date.now() >= options.deadlineAt) return phaseTimeoutPayload();
+      if (Date.now() >= options.getDeadlineAt()) return phaseTimeoutPayload();
       if (result.kind === "complete") return result.payload;
       reason = result.reason;
       retryable = result.retryable;
     } catch (error) {
-      if (Date.now() >= options.deadlineAt) return phaseTimeoutPayload();
+      if (Date.now() >= options.getDeadlineAt()) return phaseTimeoutPayload();
       reason =
         error instanceof Error && error.name === "AbortError"
           ? `probe timed out after ${attemptTimeoutMs}ms`
@@ -194,7 +208,10 @@ async function probeTarget(options: {
     }
     if (!retryable || attempt === options.retries) break;
     if (options.retryDelayMs > 0) {
-      const delayMs = Math.min(options.retryDelayMs, Math.max(0, options.deadlineAt - Date.now()));
+      const delayMs = Math.min(
+        options.retryDelayMs,
+        Math.max(0, options.getDeadlineAt() - Date.now()),
+      );
       if (delayMs <= 0) return phaseTimeoutPayload();
       await delay(delayMs);
     }
@@ -215,6 +232,7 @@ export async function probeStagedWorkerCacheability(options: {
   targetUrl: string;
   timeoutMs?: number;
   phaseTimeoutMs?: number;
+  onProgress?: (progress: CacheabilityProbeProgress) => void;
   /** @internal Apply stricter artifact bounds for focused coordinator tests. */
   manifestLimits?: { maxBytes?: number; maxRoutes?: number };
 }): Promise<CacheabilityProbeResult> {
@@ -230,7 +248,8 @@ export async function probeStagedWorkerCacheability(options: {
     1,
     options.phaseTimeoutMs ?? DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS,
   );
-  const deadlineAt = Date.now() + phaseTimeoutMs;
+  let lastProgressAt = Date.now();
+  const getDeadlineAt = () => lastProgressAt + phaseTimeoutMs;
   const routes: Record<string, CacheabilityManifestRoute> = {};
   const cacheableTargets: CdnWarmTarget[] = [];
   const failures: string[] = [];
@@ -252,6 +271,39 @@ export async function probeStagedWorkerCacheability(options: {
   let limitFailure: Error | null = null;
   let phaseTimedOut = false;
   let nextIndex = 0;
+  let probed = 0;
+  let skipped = 0;
+  let staticCount = 0;
+  let dynamicCount = 0;
+  const patternDynamic = new Set<string>();
+  const rscBySourcePath = new Map(
+    options.targets
+      .filter((target) => target.kind === "rsc-full")
+      .map((target) => [target.sourcePathname, target] as const),
+  );
+  const htmlSources = new Set(
+    options.targets
+      .filter((target) => target.kind === "html")
+      .map((target) => target.sourcePathname),
+  );
+  const targets = options.targets.filter(
+    (target) => target.kind !== "rsc-full" || !htmlSources.has(target.sourcePathname),
+  );
+
+  const routeKey = (target: CdnWarmTarget): string | null =>
+    target.route ? `${target.route.kind}\0${target.route.pattern}` : null;
+
+  const reportProgress = (): void => {
+    options.onProgress?.({
+      completed: staticCount + dynamicCount + failures.length + skipped,
+      dynamic: dynamicCount,
+      failed: failures.length,
+      probed,
+      skipped,
+      static: staticCount,
+      total: options.targets.length,
+    });
+  };
 
   const addRouteWithinManifestLimits = (key: string, route: CacheabilityManifestRoute): boolean => {
     const previousBytes = routeEntryBytes.get(key);
@@ -282,85 +334,180 @@ export async function probeStagedWorkerCacheability(options: {
     return true;
   };
 
+  const classifyTarget = async (target: CdnWarmTarget): Promise<ProbePayload | null> => {
+    const knownPattern = routeKey(target);
+    if (knownPattern && patternDynamic.has(knownPattern)) {
+      skipped += 1;
+      reportProgress();
+      return null;
+    }
+
+    const request = new Request(new URL(target.pathname, options.targetUrl), {
+      headers: target.headers,
+    });
+    const identity = cacheabilityRequestIdentity(request);
+    if (!identity || identity.representation !== target.kind) {
+      failures.push(`${target.label}: warm request does not have a cacheable request identity`);
+      reportProgress();
+      return null;
+    }
+
+    const result = await probeTarget({
+      expectedBuildId: options.expectedResponseBuildId,
+      fetchImpl: options.fetchImpl ?? fetch,
+      getDeadlineAt,
+      headers: options.headers,
+      retries,
+      retryDelayMs,
+      phaseTimeoutMs,
+      secret,
+      target,
+      targetUrl: options.targetUrl,
+      timeoutMs,
+    });
+    probed += 1;
+    lastProgressAt = Date.now();
+    if (limitFailure) return null;
+    if (result.phaseTimedOut) {
+      phaseTimedOut = true;
+      return null;
+    }
+    if (
+      result.version !== 1 ||
+      (result.kind !== "app-page" && result.kind !== "app-route" && result.kind !== "pages-page") ||
+      typeof result.pattern !== "string" ||
+      !result.pattern.startsWith("/") ||
+      !isProbeRouteState(result.state) ||
+      (result.scope !== undefined && result.scope !== "identity" && result.scope !== "pattern") ||
+      (result.scope === "pattern" && result.state !== "dynamic") ||
+      !Number.isInteger(result.status) ||
+      result.status! < 100 ||
+      result.status! > 599
+    ) {
+      failures.push(`${target.label}: ${result.reason ?? "probe returned an invalid envelope"}`);
+      reportProgress();
+      return null;
+    }
+    if (result.state === "probe-failed") {
+      failures.push(`${target.label}: ${result.reason ?? "probe failed"}`);
+      reportProgress();
+      return null;
+    }
+
+    if (result.state !== "static-candidate") {
+      dynamicCount += 1;
+      if (result.scope === "pattern" && knownPattern === `${result.kind}\0${result.pattern}`) {
+        patternDynamic.add(`${result.kind}\0${result.pattern}`);
+      }
+      reportProgress();
+      return result;
+    }
+
+    const route: CacheabilityManifestRoute = {
+      kind: result.kind,
+      pattern: result.pattern,
+      representation: identity.representation,
+      requestKey: identity.requestKey,
+      state: result.state,
+      status: result.status!,
+    };
+    const key = cacheabilityManifestRouteKey(
+      route.kind,
+      route.pattern,
+      route.representation,
+      route.requestKey,
+    );
+    if (!addRouteWithinManifestLimits(key, route)) return null;
+    cacheableTargets.push(target);
+    staticCount += 1;
+    reportProgress();
+    return result;
+  };
+
   const worker = async (): Promise<void> => {
-    while (!limitFailure && !phaseTimedOut && nextIndex < options.targets.length) {
-      const target = options.targets[nextIndex++];
-      const request = new Request(new URL(target.pathname, options.targetUrl), {
-        headers: target.headers,
-      });
-      const identity = cacheabilityRequestIdentity(request);
-      if (!identity || identity.representation !== target.kind) {
-        failures.push(`${target.label}: warm request does not have a cacheable request identity`);
+    while (!limitFailure && !phaseTimedOut && nextIndex < targets.length) {
+      const target = targets[nextIndex++];
+      const pairedRsc = target.kind === "html" ? rscBySourcePath.get(target.sourcePathname) : null;
+      const knownPattern = routeKey(target);
+      if (knownPattern && patternDynamic.has(knownPattern)) {
+        skipped += pairedRsc ? 2 : 1;
+        reportProgress();
         continue;
       }
+      const result = await classifyTarget(target);
+      if (!result || limitFailure || phaseTimedOut) continue;
 
-      const result = await probeTarget({
-        expectedBuildId: options.expectedResponseBuildId,
-        deadlineAt,
-        fetchImpl: options.fetchImpl ?? fetch,
-        headers: options.headers,
-        retries,
-        retryDelayMs,
-        phaseTimeoutMs,
-        secret,
-        target,
-        targetUrl: options.targetUrl,
-        timeoutMs,
-      });
-      if (limitFailure) return;
-      if (result.phaseTimedOut) {
-        phaseTimedOut = true;
-        return;
-      }
+      if (!pairedRsc) continue;
+      // An HTML App Page render produces the RSC payload consumed by SSR, so a
+      // completed successful HTML render is a strict superset of the work done
+      // by the paired full-RSC request. Keep both exact CDN identities in the
+      // manifest, while avoiding a second user-code render. Runtime admission
+      // still rechecks the exact RSC identity, status, completed body, dynamic
+      // observations, and final response vetoes; a representation-specific
+      // dynamic observation therefore fails closed as static-to-dynamic.
+      // Terminal HTML and RSC requests can intentionally use different HTTP
+      // statuses, so classify those representations independently.
       if (
-        result.version !== 1 ||
-        (result.kind !== "app-page" &&
-          result.kind !== "app-route" &&
-          result.kind !== "pages-page") ||
-        typeof result.pattern !== "string" ||
-        !result.pattern.startsWith("/") ||
-        !isProbeRouteState(result.state) ||
-        !Number.isInteger(result.status) ||
-        result.status! < 100 ||
-        result.status! > 599
+        result.state === "static-candidate" &&
+        result.kind === "app-page" &&
+        result.status! >= 200 &&
+        result.status! < 300 &&
+        pairedRsc.route?.kind === "app-page" &&
+        pairedRsc.route.pattern === result.pattern
       ) {
-        failures.push(`${target.label}: ${result.reason ?? "probe returned an invalid envelope"}`);
+        const pairedRequest = new Request(new URL(pairedRsc.pathname, options.targetUrl), {
+          headers: pairedRsc.headers,
+        });
+        const pairedIdentity = cacheabilityRequestIdentity(pairedRequest);
+        if (!pairedIdentity || pairedIdentity.representation !== "rsc-full") {
+          failures.push(
+            `${pairedRsc.label}: warm request does not have a cacheable request identity`,
+          );
+          reportProgress();
+          continue;
+        }
+        const pairedRoute: CacheabilityManifestRoute = {
+          kind: "app-page",
+          pattern: result.pattern!,
+          representation: pairedIdentity.representation,
+          requestKey: pairedIdentity.requestKey,
+          state: "static-candidate",
+          status: result.status!,
+        };
+        const pairedKey = cacheabilityManifestRouteKey(
+          pairedRoute.kind,
+          pairedRoute.pattern,
+          pairedRoute.representation,
+          pairedRoute.requestKey,
+        );
+        if (!addRouteWithinManifestLimits(pairedKey, pairedRoute)) continue;
+        cacheableTargets.push(pairedRsc);
+        staticCount += 1;
+        reportProgress();
         continue;
       }
-      if (result.state === "probe-failed") {
-        failures.push(`${target.label}: ${result.reason ?? "probe failed"}`);
+      if (result.state === "static-candidate") {
+        await classifyTarget(pairedRsc);
+        continue;
       }
-
-      // Dynamic identities are represented by absence. The runtime treats a
-      // missing exact identity as private, which keeps the deployed asset small
-      // and prevents the final warm/certification pass from rendering it again.
-      if (result.state !== "static-candidate") continue;
-
-      const route: CacheabilityManifestRoute = {
-        kind: result.kind,
-        pattern: result.pattern,
-        representation: identity.representation,
-        requestKey: identity.requestKey,
-        state: result.state,
-        status: result.status!,
-      };
-      const key = cacheabilityManifestRouteKey(
-        route.kind,
-        route.pattern,
-        route.representation,
-        route.requestKey,
-      );
-      if (!addRouteWithinManifestLimits(key, route)) return;
-      cacheableTargets.push(target);
+      const resultPatternKey = `${result.kind}\0${result.pattern}`;
+      if (
+        result.state === "dynamic" &&
+        (result.scope !== "pattern" || routeKey(target) !== resultPatternKey)
+      ) {
+        await classifyTarget(pairedRsc);
+      } else if (result.state === "dynamic") {
+        skipped += 1;
+        reportProgress();
+      }
     }
   };
 
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, options.targets.length) }, () => worker()),
-  );
+  reportProgress();
+  await Promise.all(Array.from({ length: Math.min(concurrency, targets.length) }, () => worker()));
   if (limitFailure) throw limitFailure;
-  if (phaseTimedOut || Date.now() >= deadlineAt) {
-    throw new Error(`cacheability probing exceeded its ${phaseTimeoutMs}ms phase deadline`);
+  if (phaseTimedOut || Date.now() >= getDeadlineAt()) {
+    throw new Error(`cacheability probing made no progress for ${phaseTimeoutMs}ms`);
   }
   const sortedRoutes = Object.fromEntries(
     Object.entries(routes).sort(([first], [second]) => first.localeCompare(second)),
@@ -372,8 +519,11 @@ export async function probeStagedWorkerCacheability(options: {
   );
   return {
     cacheableTargets,
+    classified: staticCount + dynamicCount,
+    dynamic: dynamicCount,
     failures,
     manifest: { buildId: options.buildId, routes: sortedRoutes, version: 1 },
-    probed: options.targets.length,
+    probed,
+    skipped,
   };
 }

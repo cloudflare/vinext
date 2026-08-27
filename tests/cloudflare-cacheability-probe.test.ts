@@ -135,13 +135,13 @@ describe("staged Worker cacheability probes", () => {
     expect(result.cacheableTargets).toEqual([target]);
   });
 
-  it("bounds all target retries by one cacheability-probe phase deadline", async () => {
+  it("aborts when cacheability probing makes no progress", async () => {
     const root = createProbeRoot();
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response("staged version unavailable", { status: 503 }))
       .mockResolvedValueOnce(new Response("staged version unavailable", { status: 503 }))
-      // The phase deadline remains authoritative even if fetch ignores abort.
+      // The no-progress watchdog remains authoritative even if fetch ignores abort.
       .mockImplementation(() => new Promise<Response>(() => {}));
 
     await expect(
@@ -156,9 +156,280 @@ describe("staged Worker cacheability probes", () => {
         targetUrl: "https://example.com",
         targets: [target("/one"), target("/two")],
       }),
-    ).rejects.toThrow("cacheability probing exceeded its 25ms phase deadline");
+    ).rejects.toThrow("cacheability probing made no progress for 25ms");
     expect(fetchImpl).toHaveBeenCalled();
     expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(3);
+  });
+
+  it("allows a large serial workload to exceed the watchdog while requests keep completing", async () => {
+    const root = createProbeRoot();
+    const progress: number[] = [];
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      concurrency: 1,
+      fetchImpl: async (input) => {
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+        return Response.json({
+          kind: "app-page",
+          pattern: pathname,
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        });
+      },
+      onProgress(update) {
+        progress.push(update.completed);
+      },
+      phaseTimeoutMs: 25,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [target("/one"), target("/two"), target("/three")],
+    });
+
+    expect(result).toMatchObject({ classified: 3, probed: 3, skipped: 0 });
+    expect(progress).toEqual([0, 1, 2, 3]);
+  });
+
+  it("classifies paired App HTML and RSC identities from one completed HTML render", async () => {
+    const root = createProbeRoot();
+    const route = { kind: "app-page" as const, pattern: "/posts/:slug" };
+    const html = { ...target("/posts/one"), route };
+    const rsc = {
+      headers: { Accept: "text/x-component", RSC: "1" },
+      kind: "rsc-full" as const,
+      label: "/posts/one (RSC full)",
+      pathname: "/posts/one?_rsc",
+      route,
+      sourcePathname: "/posts/one",
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        kind: "app-page",
+        pattern: route.pattern,
+        state: "static-candidate",
+        status: 200,
+        version: 1,
+      }),
+    );
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [rsc, html],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ classified: 2, probed: 1, skipped: 0 });
+    expect(result.cacheableTargets).toEqual([html, rsc]);
+    expect(Object.values(result.manifest.routes).map((entry) => entry.representation)).toEqual([
+      "html",
+      "rsc-full",
+    ]);
+  });
+
+  it("probes terminal HTML and RSC identities separately because their statuses can differ", async () => {
+    const root = createProbeRoot();
+    const route = { kind: "app-page" as const, pattern: "/missing" };
+    const html = { ...target("/missing"), route };
+    const rsc = {
+      headers: { Accept: "text/x-component", RSC: "1" },
+      kind: "rsc-full" as const,
+      label: "/missing (RSC full)",
+      pathname: "/missing?_rsc",
+      route,
+      sourcePathname: "/missing",
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      const isRsc = new Headers(init?.headers).get("RSC") === "1";
+      return Response.json({
+        kind: "app-page",
+        pattern: route.pattern,
+        state: "static-candidate",
+        status: isRsc ? 200 : 404,
+        version: 1,
+      });
+    });
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [rsc, html],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ classified: 2, probed: 2, skipped: 0 });
+    expect(Object.values(result.manifest.routes)).toEqual([
+      expect.objectContaining({ representation: "html", status: 404 }),
+      expect.objectContaining({ representation: "rsc-full", status: 200 }),
+    ]);
+  });
+
+  it("requires matching discovered route ownership before sharing an HTML classification", async () => {
+    const root = createProbeRoot();
+    const html = target("/posts/one");
+    const rsc = {
+      headers: { Accept: "text/x-component", RSC: "1" },
+      kind: "rsc-full" as const,
+      label: "/posts/one (RSC full)",
+      pathname: "/posts/one?_rsc",
+      sourcePathname: "/posts/one",
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        kind: "app-page",
+        pattern: "/posts/:slug",
+        state: "static-candidate",
+        status: 200,
+        version: 1,
+      }),
+    );
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [rsc, html],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ classified: 2, probed: 2, skipped: 0 });
+  });
+
+  it("uses pattern-wide dynamic proof to skip sibling HTML and RSC renders", async () => {
+    const root = createProbeRoot();
+    const route = { kind: "app-page" as const, pattern: "/posts/:slug" };
+    const htmlOne = { ...target("/posts/one"), route };
+    const htmlTwo = { ...target("/posts/two"), route };
+    const rsc = (slug: string) => ({
+      headers: { Accept: "text/x-component", RSC: "1" },
+      kind: "rsc-full" as const,
+      label: `/posts/${slug} (RSC full)`,
+      pathname: `/posts/${slug}?_rsc`,
+      route,
+      sourcePathname: `/posts/${slug}`,
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        kind: "app-page",
+        pattern: route.pattern,
+        scope: "pattern",
+        state: "dynamic",
+        status: 204,
+        version: 1,
+      }),
+    );
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      concurrency: 1,
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [rsc("one"), rsc("two"), htmlOne, htmlTwo],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 1, skipped: 3 });
+    expect(result.cacheableTargets).toEqual([]);
+    expect(result.manifest.routes).toEqual({});
+  });
+
+  it("does not prune siblings from an identity-scoped dynamic observation", async () => {
+    const root = createProbeRoot();
+    const route = { kind: "app-page" as const, pattern: "/posts/:slug" };
+    const html = (slug: string) => ({ ...target(`/posts/${slug}`), route });
+    const rsc = (slug: string) => ({
+      headers: { Accept: "text/x-component", RSC: "1" },
+      kind: "rsc-full" as const,
+      label: `/posts/${slug} (RSC full)`,
+      pathname: `/posts/${slug}?_rsc`,
+      route,
+      sourcePathname: `/posts/${slug}`,
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        kind: "app-page",
+        pattern: route.pattern,
+        scope: "identity",
+        state: "dynamic",
+        status: 200,
+        version: 1,
+      }),
+    );
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      concurrency: 1,
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [rsc("one"), rsc("two"), html("one"), html("two")],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(result).toMatchObject({ classified: 4, dynamic: 4, probed: 4, skipped: 0 });
+  });
+
+  it("classifies a nodejs.org-sized paired workload with one render per App path", async () => {
+    const root = createProbeRoot();
+    const pathCount = 2_272;
+    const htmlTargets = Array.from({ length: pathCount }, (_, index) => {
+      const pathname = `/docs/${index}`;
+      return {
+        ...target(pathname),
+        route: { kind: "app-page" as const, pattern: "/docs/:slug" },
+      };
+    });
+    const rscTargets = htmlTargets.map((htmlTarget) => ({
+      headers: { Accept: "text/x-component", RSC: "1" },
+      kind: "rsc-full" as const,
+      label: `${htmlTarget.sourcePathname} (RSC full)`,
+      pathname: `${htmlTarget.sourcePathname}?_rsc`,
+      route: htmlTarget.route,
+      sourcePathname: htmlTarget.sourcePathname,
+    }));
+    const progress: number[] = [];
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        kind: "app-page",
+        pattern: "/docs/:slug",
+        state: "static-candidate",
+        status: 200,
+        version: 1,
+      }),
+    );
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      onProgress(update) {
+        progress.push(update.completed);
+      },
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [...rscTargets, ...htmlTargets],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(pathCount);
+    expect(result).toMatchObject({
+      classified: pathCount * 2,
+      probed: pathCount,
+      skipped: 0,
+    });
+    expect(progress.at(-1)).toBe(pathCount * 2);
   });
 
   it("rejects oversized probe envelopes without buffering the full response", async () => {

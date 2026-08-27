@@ -96,6 +96,7 @@ import {
   beginRouteCacheability,
   isRouteCacheabilityIdentityProbe,
   isRouteCacheabilityProbe,
+  markRouteCacheabilityPatternDynamic,
 } from "vinext/shims/cacheability-classification";
 
 type AppPageParams = Record<string, string | string[]>;
@@ -650,6 +651,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
+  if (isRouteCacheabilityProbe() && (isForceDynamic || currentRevalidateSeconds === 0)) {
+    markRouteCacheabilityPatternDynamic(
+      isForceDynamic ? 'dynamic = "force-dynamic"' : "revalidate = 0",
+    );
+  }
   const isPrerender = process.env.VINEXT_PRERENDER === "1";
   const serveStreamingMetadata = shouldServeStreamingMetadata(
     options.request.headers.get("user-agent") ?? "",
