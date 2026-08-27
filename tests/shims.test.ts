@@ -5918,7 +5918,8 @@ describe("next/cache shim", () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
 
-    setCacheHandler(new MemoryCacheHandler());
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
 
     let callCount = 0;
     const cached = unstable_cache(async () => {
@@ -5929,8 +5930,77 @@ describe("next/cache shim", () => {
     await expect(cached()).resolves.toBeUndefined();
     expect(callCount).toBe(1);
 
+    const stored = await handler.get("unstable_cache:undefined-result-test:[]", {
+      kind: "FETCH",
+      tags: [],
+    });
+    expect(stored?.value?.kind).toBe("FETCH");
+    if (stored?.value?.kind !== "FETCH") throw new Error("expected cached fetch value");
+    expect(JSON.parse(stored.value.data.body)).toEqual({ version: 2, undef: true });
+
     await expect(cached()).resolves.toBeUndefined();
     expect(callCount).toBe(1);
+
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("does not publish a framework-invalid fallback caught inside unstable_cache", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { headers } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+    let executions = 0;
+    const cached = unstable_cache(async () => {
+      executions++;
+      try {
+        await headers();
+      } catch {
+        return "caught-invalid-fallback";
+      }
+    }, ["caught-invalid-dynamic-usage"]);
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const context = createRequestContext({
+        headersContext: { headers: new Headers(), cookies: new Map() },
+      });
+      await runWithRequestContext(context, async () => {
+        await expect(cached()).rejects.toThrow("unstable_cache");
+        expect(context.invalidDynamicUsageError).toBeInstanceOf(Error);
+      });
+    }
+
+    expect(executions).toBe(2);
+    await expect(
+      handler.get("unstable_cache:caught-invalid-dynamic-usage:[]", {
+        kind: "FETCH",
+        tags: [],
+      }),
+    ).resolves.toBeNull();
+
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("executes concurrent unstable_cache cold misses independently", async () => {
+    // Current Next.js runs the callback directly for every cache miss; it does
+    // not install a process-global single-flight coordinator around cold fills.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+    let executions = 0;
+    const cached = unstable_cache(async () => {
+      const execution = ++executions;
+      await Promise.resolve();
+      return execution;
+    }, ["independent-cold-misses"]);
+
+    await expect(Promise.all([cached(), cached(), cached()])).resolves.toEqual([1, 2, 3]);
+    expect(executions).toBe(3);
 
     setCacheHandler(new MemoryCacheHandler());
   });
@@ -6576,8 +6646,8 @@ describe("next/cache shim", () => {
             kind: "FETCH",
             data: {
               headers: {},
-              body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:v2:stale-swr-test:[]",
+              body: JSON.stringify({ version: 2, v: "stale-value" }),
+              url: "unstable_cache:stale-swr-test:[]",
             },
             tags: ["stale-swr"],
             revalidate: 1,
@@ -6629,7 +6699,7 @@ describe("next/cache shim", () => {
 
       await Promise.all(waitUntilPromises);
 
-      expect(setBodies).toEqual([JSON.stringify({ v: "fresh-value" })]);
+      expect(setBodies).toEqual([JSON.stringify({ version: 2, v: "fresh-value" })]);
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
@@ -6651,8 +6721,8 @@ describe("next/cache shim", () => {
             kind: "FETCH",
             data: {
               headers: {},
-              body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:v2:foreground-test:[]",
+              body: JSON.stringify({ version: 2, v: "stale-value" }),
+              url: "unstable_cache:foreground-test:[]",
             },
             tags: ["foreground"],
             revalidate: 1,

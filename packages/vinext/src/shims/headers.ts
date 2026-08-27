@@ -231,6 +231,26 @@ function propagateInvalidDynamicUsageError(state: VinextHeadersShimState, error:
 }
 
 /**
+ * Preserve a framework-invalid cache-scope error on the current request even
+ * when user code catches the immediate throw.
+ */
+export function recordInvalidDynamicUsageError(error: unknown): void {
+  const state = isInsideUnifiedScope() ? getRequestContext() : _als.getStore();
+  // The module fallback is intentionally not request-owned. Persisting a fatal
+  // marker there would leak one standalone invocation into later requests.
+  if (!state) return;
+  if (state.invalidDynamicUsageError == null) {
+    state.invalidDynamicUsageError = error;
+  }
+  propagateInvalidDynamicUsageError(state, error);
+}
+
+/** Read a fatal cache-scope marker without consuming request ownership. */
+export function peekInvalidDynamicUsageError(): unknown {
+  return _getState().invalidDynamicUsageError;
+}
+
+/**
  * Measure dynamic usage in a child async scope without clearing the parent.
  * Concurrent work that already belongs to the request (such as deferred
  * metadata) keeps writing to the parent state and therefore remains visible
@@ -450,9 +470,7 @@ export function throwIfInsideCacheScope(apiName: string): void {
     try {
       const cacheCtx = _getUseCacheGuardContext();
       if (cacheCtx) cacheCtx.invalidDynamicUsageError = error;
-      const ctx = getRequestContext();
-      if (ctx) ctx.invalidDynamicUsageError = error;
-      propagateInvalidDynamicUsageError(_getState(), error);
+      recordInvalidDynamicUsageError(error);
     } catch {
       // Ignore — best-effort recording for dev diagnostics
     }
@@ -465,9 +483,7 @@ export function throwIfInsideCacheScope(apiName: string): void {
         "outside and pass the required data as an argument.",
     );
     try {
-      const ctx = getRequestContext();
-      if (ctx) ctx.invalidDynamicUsageError = error;
-      propagateInvalidDynamicUsageError(_getState(), error);
+      recordInvalidDynamicUsageError(error);
     } catch {
       // Ignore
     }

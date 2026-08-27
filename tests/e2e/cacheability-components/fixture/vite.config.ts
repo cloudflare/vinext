@@ -8,7 +8,11 @@ import { cdnAdapter } from "../../../../packages/cloudflare/src/cache/cdn-adapte
 
 export default defineConfig({
   plugins: [
-    vinext({ cache: { cdn: cdnAdapter() }, prerender: { routes: "*" } }),
+    // This fixture deliberately contains routes that Next.js rejects at
+    // runtime (for example, private cache scopes nested in shared caches).
+    // Keep it runtime-only so those negative cases do not make the fixture's
+    // production build fail before workerd can exercise the probe boundary.
+    vinext({ cache: { cdn: cdnAdapter() } }),
     cloudflare({
       viteEnvironment: {
         name: "rsc",

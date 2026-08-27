@@ -121,6 +121,24 @@ test("classifies completed App Page renders inside workerd", async ({ request })
       version: 1,
     });
   }
+  // Reject an unsafe legacy payload in place. Concurrent cold misses execute
+  // independently like Next.js, and every replacement uses an envelope that
+  // remains readable by the previous Worker during rollback.
+  const seedLegacyResult = await request.post("/cacheability/unstable-cache-upgrade");
+  expect(seedLegacyResult.status()).toBe(204);
+  const upgradedResponse = await request.get("/cacheability/unstable-cache-upgrade");
+  const upgraded = (await upgradedResponse.json()) as {
+    executions: number;
+    legacyReaderValue: number;
+    storedVersion: number;
+    values: number[];
+  };
+  expect(upgraded).toMatchObject({
+    executions: 3,
+    storedVersion: 2,
+    values: [1, 2, 3],
+  });
+  expect(upgraded.values).toContain(upgraded.legacyReaderValue);
 
   const identityProbe = await request.get("/cacheability/static", {
     headers: { ...headers, [probeHeader]: "identity" },

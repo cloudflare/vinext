@@ -888,12 +888,9 @@ export async function renderAppPageLifecycle(
     // promise resolves (app-render.tsx generateDynamicFlightRenderResultWithStagesInDev).
     // Ported from Next.js: https://github.com/vercel/next.js/commit/f5e54c06726b571a042fce67417e40a29f6b8689
     //
-    // Note: This only covers RSC responses (client-side navigations). The HTML path
-    // (initial page loads) intentionally defers this coverage — the error is still
-    // thrown through the RSC pipeline and captured by rscErrorTracker.onRenderError
-    // if uncaught by user code. Full parity with Next.js would require checking
-    // invalidDynamicUsageError after SSR rendering, which is deferred as out of scope
-    // for this PR focused on client-side navigations.
+    // The HTML path checks the same request marker once the completed capture
+    // is available and again at stream EOF. The wrapper here remains specific
+    // to RSC navigation responses because it also owns dev-overlay logging.
     const completionHeaders = new Headers(rscResponse.headers);
     completionHeaders.set(VINEXT_RSC_COMPLETION_METADATA_HEADER, "1");
     const completionResponse =
@@ -1155,6 +1152,11 @@ export async function renderAppPageLifecycle(
       revalidateSeconds,
     }));
   }
+  const invalidDynamicUsageError = options.consumeInvalidDynamicUsageError?.();
+  if (invalidDynamicUsageError) {
+    void htmlStream.cancel(invalidDynamicUsageError).catch(() => {});
+    throw invalidDynamicUsageError;
+  }
   dynamicUsedDuringRender = dynamicUsedDuringRender || consumeRenderDynamicUsage();
   dynamicUsedDuringHtmlRender = dynamicUsedDuringRender;
 
@@ -1171,7 +1173,11 @@ export async function renderAppPageLifecycle(
     dynamicUsedBeforeContextCleanup =
       dynamicUsedBeforeContextCleanup || consumeRenderDynamicUsage();
     dynamicUsedDuringHtmlRender = dynamicUsedBeforeContextCleanup;
+    const lateInvalidDynamicUsageError = options.consumeInvalidDynamicUsageError?.();
     options.clearRequestContext();
+    if (lateInvalidDynamicUsageError) {
+      throw lateInvalidDynamicUsageError;
+    }
   });
 
   const htmlResponsePolicy = resolveAppPageHtmlResponsePolicy({

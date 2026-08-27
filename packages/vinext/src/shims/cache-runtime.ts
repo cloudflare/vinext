@@ -49,7 +49,7 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
-import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
+import { isDraftModeEnabled, markDynamicUsage, recordInvalidDynamicUsageError } from "./headers.js";
 import {
   createPprFallbackShellSuspensePromise,
   trackPprFallbackShellCacheTask,
@@ -919,15 +919,13 @@ function throwPrivateUseCacheInsidePublicUseCacheError(): never {
   const error = new Error(
     '"use cache: private" must not be used within "use cache". It can only be nested inside of another "use cache: private".',
   );
-  const ctx = getRequestContext();
-  if (ctx) ctx.invalidDynamicUsageError = error;
+  recordInvalidDynamicUsageError(error);
   throw error;
 }
 
 function throwPrivateUseCacheInsideUnstableCacheError(): never {
   const error = new Error('"use cache: private" must not be used within `unstable_cache()`.');
-  const ctx = getRequestContext();
-  if (ctx) ctx.invalidDynamicUsageError = error;
+  recordInvalidDynamicUsageError(error);
   throw error;
 }
 
