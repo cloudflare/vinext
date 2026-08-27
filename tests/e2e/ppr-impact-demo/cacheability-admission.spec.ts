@@ -103,6 +103,26 @@ test("admits only exact manifest-backed App Page responses after clean EOF", asy
   expect(unlistedRouteHandlerQuery.headers()["cache-control"]).toContain("no-store");
   expect(unlistedRouteHandlerQuery.headers()["cdn-cache-control"]).toBeUndefined();
 
+  // Next.js does not statically generate a GET+POST Route Handler, so this
+  // route is intentionally absent from the probe manifest. Its handler-owned
+  // public policy still opts the completed response into runtime admission.
+  const explicitMixedRouteHandler = await request.get("/cacheability/route-handler-mixed-explicit");
+  await expect(explicitMixedRouteHandler.json()).resolves.toEqual({
+    kind: "explicit-mixed-route-handler",
+  });
+  expect(explicitMixedRouteHandler.headers()["cache-control"]).toBe("public, s-maxage=60");
+
+  // `revalidate` alone is framework policy, not an explicit response-level
+  // opt-in, and must not bypass the route's manifest absence.
+  const frameworkPolicyMixedRouteHandler = await request.get(
+    "/cacheability/route-handler-mixed-revalidate",
+  );
+  await expect(frameworkPolicyMixedRouteHandler.json()).resolves.toEqual({
+    kind: "framework-policy-mixed-route-handler",
+  });
+  expect(frameworkPolicyMixedRouteHandler.headers()["cache-control"]).toContain("no-store");
+  expect(frameworkPolicyMixedRouteHandler.headers()["cdn-cache-control"]).toBeUndefined();
+
   const dynamicRouteHandler = await request.get("/cacheability/route-handler-dynamic", {
     headers: { "X-Probe-Value": "private" },
   });

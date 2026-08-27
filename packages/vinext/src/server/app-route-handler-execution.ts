@@ -46,6 +46,7 @@ import {
   getRouteCacheabilityDynamicReason,
   CACHEABILITY_POLICY_HEADERS,
   isRouteCacheabilityEvaluation,
+  markRouteCacheabilityExplicitResponsePolicy,
   markRouteCacheabilityResponseBodyComplete,
 } from "vinext/shims/cacheability-classification";
 import {
@@ -325,6 +326,9 @@ export async function executeAppRouteHandler(
     assertSupportedAppRouteHandlerResponse(response);
     const handlerSetCacheControl = response.headers.has("cache-control");
     const hasExplicitCacheablePolicy = hasExplicitCacheableResponsePolicy(response.headers);
+    if (hasExplicitCacheablePolicy) {
+      markRouteCacheabilityExplicitResponsePolicy();
+    }
 
     const draftModeBeforeCompletion =
       options.getActiveDraftModeState?.() ?? options.isDraftMode === true;

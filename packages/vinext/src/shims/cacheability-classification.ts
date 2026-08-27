@@ -33,6 +33,7 @@ export type RouteCacheabilityState = {
   completion?: Promise<RouteCacheabilityOutcome>;
   completedResponseBody?: boolean;
   explicitConfigCachePolicy?: boolean;
+  explicitResponseCachePolicy?: boolean;
   finalResponseVetoReason?: string;
   forcedDynamicReason?: string;
   frameworkResponseCachePolicy?: Partial<Record<CacheabilityPolicyHeader, string>>;
@@ -116,6 +117,13 @@ export function markRouteCacheabilityExplicitConfigPolicy(): void {
   const state = readRouteCacheabilityState();
   if (!state) return;
   state.explicitConfigCachePolicy = true;
+}
+
+/** Record a public cache policy supplied by the Route Handler itself. */
+export function markRouteCacheabilityExplicitResponsePolicy(): void {
+  const state = readRouteCacheabilityState();
+  if (!state || state.mode !== "admit") return;
+  state.explicitResponseCachePolicy = true;
 }
 
 /** Record that the response body reached clean EOF and is now a replay stream. */

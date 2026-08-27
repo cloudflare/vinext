@@ -536,6 +536,9 @@ async function finalizeWorkerCacheabilityAdmission(
   // Handler representation as canonical fetches.
   if (state.route?.kind === "app-route") {
     let manifestRoute: CacheabilityManifestRoute | null = null;
+    let manifestContainsRoutePattern = false;
+    const hasExplicitRuntimePolicy =
+      state.explicitResponseCachePolicy === true || state.explicitConfigCachePolicy === true;
     if (
       !admission ||
       admission.policy === "deny" ||
@@ -559,12 +562,20 @@ async function finalizeWorkerCacheabilityAdmission(
           requestKey: admission.requestKey,
         },
       );
+      if (!manifestRoute && hasExplicitRuntimePolicy) {
+        manifestContainsRoutePattern = Object.values(manifest.routes).some(
+          (route) => route.kind === state.route?.kind && route.pattern === state.route?.pattern,
+        );
+      }
     }
+    const isManifestAuthorized =
+      manifestRoute?.state === "static-candidate" && manifestRoute.status === response.status;
+    const canUseBoundedRuntimeAdmission =
+      hasExplicitRuntimePolicy &&
+      (admission.policy === "runtime" ||
+        (admission.policy === "manifest" && !manifestContainsRoutePattern));
     if (
-      (admission.policy === "manifest" &&
-        (!manifestRoute ||
-          manifestRoute.state !== "static-candidate" ||
-          manifestRoute.status !== response.status)) ||
+      (!isManifestAuthorized && !canUseBoundedRuntimeAdmission) ||
       response.status >= 500 ||
       state.forcedDynamicReason ||
       hasStrictFinalResponseVeto(response, state) ||

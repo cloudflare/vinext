@@ -549,6 +549,24 @@ describe("classifyAppRouteHandler", () => {
       `),
     ).resolves.toEqual({ hasGet: true, staticGenerationEnabled: false });
   });
+
+  it("fails closed for value-bearing export stars without walking the module graph", async () => {
+    await expect(
+      classifySource(`
+        export const revalidate = 60;
+        export function GET() { return new Response("get"); }
+        export * from "./handlers";
+      `),
+    ).resolves.toEqual({ hasGet: true, staticGenerationEnabled: false });
+
+    await expect(
+      classifySource(`
+        export const revalidate = 60;
+        export function GET() { return new Response("get"); }
+        export type * from "./types";
+      `),
+    ).resolves.toEqual({ hasGet: true, staticGenerationEnabled: true });
+  });
 });
 
 // ─── buildReportRows ──────────────────────────────────────────────────────────

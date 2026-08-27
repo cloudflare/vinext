@@ -333,7 +333,73 @@ describe("single-request cacheability admission", () => {
       "build-a",
       true,
     );
-    cacheabilityState(context).route = { kind: "app-route", pattern: "/api/data" };
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-route", pattern: "/api/data" };
+    state.explicitResponseCachePolicy = true;
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("public", { headers: { "Cache-Control": "public, s-maxage=60" } }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+    await expect(response.text()).resolves.toBe("public");
+  });
+
+  it("admits an unmanifested Route Handler only with an explicit response policy", async () => {
+    const raw = JSON.stringify({ buildId: "build-a", routes: {}, version: 1 });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/api/mixed-methods", { headers: { Accept: "*/*" } }),
+      raw,
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-route", pattern: "/api/mixed-methods" };
+    state.explicitResponseCachePolicy = true;
+    state.completedResponseBody = true;
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("public", { headers: { "Cache-Control": "public, s-maxage=60" } }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+    await expect(response.text()).resolves.toBe("public");
+  });
+
+  it("does not treat framework revalidate policy as an explicit unmanifested opt-in", async () => {
+    const raw = JSON.stringify({ buildId: "build-a", routes: {}, version: 1 });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/api/mixed-methods", { headers: { Accept: "*/*" } }),
+      raw,
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-route", pattern: "/api/mixed-methods" };
+    state.completedResponseBody = true;
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("private", { headers: { "Cache-Control": "s-maxage=60" } }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("private");
+  });
+
+  it("admits an unmanifested Route Handler with an explicit config policy", async () => {
+    const raw = JSON.stringify({ buildId: "build-a", routes: {}, version: 1 });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/api/mixed-methods", { headers: { Accept: "*/*" } }),
+      raw,
+      "build-a",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-route", pattern: "/api/mixed-methods" };
+    state.explicitConfigCachePolicy = true;
 
     const response = await finalizeWorkerCacheabilityResponse(
       new Response("public", { headers: { "Cache-Control": "public, s-maxage=60" } }),
@@ -395,7 +461,7 @@ describe("single-request cacheability admission", () => {
     },
   );
 
-  it("keeps an unlisted Route Handler query identity private", async () => {
+  it("keeps an unlisted Route Handler query identity private despite explicit policy", async () => {
     const { raw } = staticAppRouteManifest();
     const context = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },
@@ -403,7 +469,9 @@ describe("single-request cacheability admission", () => {
       raw,
       "build-a",
     );
-    cacheabilityState(context).route = { kind: "app-route", pattern: "/api/data" };
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-route", pattern: "/api/data" };
+    state.explicitResponseCachePolicy = true;
 
     const response = await finalizeWorkerCacheabilityResponse(
       new Response("private", { headers: { "Cache-Control": "public, s-maxage=60" } }),

@@ -190,6 +190,12 @@ function hasRuntimeExportedNameInProgram(program: Program, name: string): boolea
   return false;
 }
 
+function hasRuntimeExportAllInProgram(program: Program): boolean {
+  return program.body.some(
+    (node) => node.type === "ExportAllDeclaration" && node.exportKind !== "type",
+  );
+}
+
 function unwrapStaticExpression(expression: Expression): Expression {
   let current = expression;
   while (
@@ -800,10 +806,15 @@ export function classifyAppRouteHandler(filePath: string): {
   const hasNonStaticMethod = ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"].some((method) =>
     hasRuntimeExportedNameInProgram(program, method),
   );
+  // A value-bearing export star can contribute any HTTP method. Resolving it
+  // would require walking and parsing the module graph, so fail closed instead
+  // of incorrectly warming a module that may export a non-static method.
+  const hasUnknownRuntimeExports = hasRuntimeExportAllInProgram(program);
   return {
     hasGet,
     staticGenerationEnabled:
       !hasNonStaticMethod &&
+      !hasUnknownRuntimeExports &&
       (dynamicValue === "force-static" ||
         dynamicValue === "error" ||
         revalidateValue === Infinity ||

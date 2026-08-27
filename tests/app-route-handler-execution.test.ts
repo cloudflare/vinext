@@ -668,6 +668,68 @@ describe("app route handler execution helpers", () => {
     await expect(response.text()).resolves.toBe("reusable");
   });
 
+  it("records handler-owned public policy separately from framework revalidate policy", async () => {
+    async function executeWithHeaders(headers?: HeadersInit) {
+      const request = new Request("https://example.com/api/mixed-methods");
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        request,
+        JSON.stringify({ buildId: "build-a", routes: {}, version: 1 }),
+        "build-a",
+      );
+      const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
+      const dynamicUsage = createDynamicUsageState();
+
+      await runWithExecutionContext(context, () =>
+        executeAppRouteHandler({
+          buildPageCacheTags() {
+            return [];
+          },
+          cleanPathname: "/api/mixed-methods",
+          clearRequestContext() {},
+          consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+          executionContext: null,
+          getAndClearPendingCookies() {
+            return [];
+          },
+          getCollectedFetchTags() {
+            return [];
+          },
+          getDraftModeCookieHeader() {
+            return null;
+          },
+          handler: { dynamic: "auto", revalidate: 60 },
+          handlerFn() {
+            return new Response("reusable", { headers });
+          },
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey(pathname) {
+            return pathname;
+          },
+          async isrSet() {},
+          markDynamicUsage: dynamicUsage.markDynamicUsage,
+          method: "GET",
+          middlewareContext: { headers: null, status: null },
+          params: null,
+          reportRequestError() {},
+          request,
+          revalidateSeconds: 60,
+          routePattern: "/api/mixed-methods",
+          setHeadersAccessPhase() {
+            return "render";
+          },
+        }),
+      );
+      return state;
+    }
+
+    await expect(executeWithHeaders()).resolves.not.toHaveProperty("explicitResponseCachePolicy");
+    await expect(
+      executeWithHeaders({ "Cache-Control": "public, s-maxage=60" }),
+    ).resolves.toHaveProperty("explicitResponseCachePolicy", true);
+  });
+
   it("falls back to private streaming and defers cleanup when bounded completion overflows", async () => {
     const request = new Request("https://example.com/api/large", {
       headers: { Accept: "*/*" },
