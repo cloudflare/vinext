@@ -789,6 +789,67 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(JSON.parse(manifestJson)).toEqual({ buildId: "app-build-a", routes: {}, version: 1 });
   });
 
+  it("excludes a Vary wildcard route from warming without blocking promotion", async () => {
+    writeTwoStageWorkerArtifact();
+    const wrangler = mockTwoStageWrangler();
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
+        return Response.json(
+          {
+            kind: "app-page",
+            pattern: "/wildcard",
+            reason: "response uses Vary: *",
+            scope: "identity",
+            state: "dynamic",
+            status: 200,
+            version: 1,
+          },
+          { headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a" } },
+        );
+      }
+      return isReadinessFetch(input)
+        ? cacheableHtml()
+        : new Response("unexpected warm request", { status: 500 });
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        cacheabilityProbe: true,
+        config: "dist/server/wrangler.json",
+        discoverWarmPlan: async () => ({
+          appPaths: ["/wildcard"],
+          buildId: "app-build-a",
+          buildIdentity: "app-build-a",
+          loadingShellPaths: [],
+          paths: ["/wildcard"],
+          routePatterns: appPageRoutePatterns(["/wildcard"], "/wildcard"),
+          rscPaths: [],
+        }),
+        warmCdnReadinessProbes: 1,
+        warmCdnRetries: 0,
+      }),
+    ).resolves.toBe("https://my-worker.example.workers.dev");
+
+    expect(wrangler.uploads).toBe(2);
+    expect(wrangler.promoted).toBe(true);
+    expect(getRealWarmFetchCalls()).toHaveLength(1);
+    const manifestJson = JSON.parse(
+      wrangler.finalManifestSource!.slice("export default ".length, -2),
+    ) as string;
+    expect(JSON.parse(manifestJson)).toEqual({
+      buildId: "app-build-a",
+      routes: {
+        '["app-page","/wildcard"]': {
+          kind: "app-page",
+          pattern: "/wildcard",
+          state: "runtime-check",
+        },
+      },
+      version: 1,
+    });
+  });
+
   it("probes a Pages-only concrete path once before warming HTML and data", async () => {
     writeTwoStageWorkerArtifact();
     const wrangler = mockTwoStageWrangler();

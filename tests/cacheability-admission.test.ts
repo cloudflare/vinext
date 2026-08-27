@@ -566,6 +566,31 @@ describe("single-request cacheability admission", () => {
     expect(response.headers.get("Vary")).toBe("RSC, Cookie");
   });
 
+  it("keeps Vary wildcard responses private for verbatim caches", async () => {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+      "verbatim",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = {
+      cacheable: true,
+      cacheControl: "s-maxage=60, stale-while-revalidate=540",
+    };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("wildcard", { headers: { Vary: "*" } }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get("Vary")).toBe("*");
+  });
+
   it("serves an intentionally private certified response without treating it as static-to-dynamic", async () => {
     // Next.js bypasses the Full Route Cache in draft mode. The HTML renderer
     // intentionally returns no-store without opening a cache-write completion,
@@ -933,6 +958,63 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe("gssp");
   });
 
+  it("admits named Pages Vary fields for verbatim caches", async () => {
+    const pagesRequest = new Request("https://example.com/pages-route", {
+      headers: { Accept: "text/html" },
+    });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      pagesRequest,
+      null,
+      "build-a",
+      true,
+      "verbatim",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "pages-page", pattern: "/pages-route" };
+    state.outcome = { cacheable: false, dynamicUsage: true };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("localized", {
+        headers: {
+          "Cache-Control": "public, s-maxage=36",
+          Vary: "Accept-Language",
+        },
+      }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=36");
+    expect(response.headers.get("Vary")).toBe("Accept-Language");
+  });
+
+  it("keeps Pages Vary wildcard responses private for verbatim caches", async () => {
+    const pagesRequest = new Request("https://example.com/pages-route", {
+      headers: { Accept: "text/html" },
+    });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      pagesRequest,
+      null,
+      "build-a",
+      true,
+      "verbatim",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "pages-page", pattern: "/pages-route" };
+    state.outcome = { cacheable: false, dynamicUsage: true };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("wildcard", {
+        headers: { "Cache-Control": "public, s-maxage=36", Vary: "*" },
+      }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get("Vary")).toBe("*");
+  });
+
   it("keeps manifest-backed Pages responses with a late Set-Cookie private", async () => {
     const { raw } = staticPagesManifestRoute();
     const pagesRequest = new Request("https://example.com/pages-route", {
@@ -1121,6 +1203,27 @@ describe("cacheability probe finalization", () => {
     await expect(response.json()).resolves.toMatchObject({
       kind: "app-route",
       reason: "response cache does not support custom Vary fields",
+      state: "dynamic",
+    });
+  });
+
+  it("classifies Vary wildcard Route Handlers as dynamic for verbatim caches", async () => {
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "probe",
+      responseVary: "verbatim",
+      route: { kind: "app-route", pattern: "/api/data" },
+    };
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("wildcard", {
+        headers: { "Cache-Control": "public, s-maxage=60", Vary: "*" },
+      }),
+      contextWith(state),
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "app-route",
+      reason: "response uses Vary: *",
       state: "dynamic",
     });
   });

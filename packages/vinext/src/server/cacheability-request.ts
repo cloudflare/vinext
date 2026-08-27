@@ -57,12 +57,19 @@ const FRAMEWORK_CACHEABILITY_VARY_FIELDS = new Set(
   VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
 );
 
-function hasUnsupportedCacheabilityVary(headers: Headers, state: RouteCacheabilityState): boolean {
-  if (state.responseVary === "verbatim") return false;
-  return (headers.get("Vary") ?? "").split(",").some((name) => {
-    const normalized = name.trim().toLowerCase();
-    return normalized.length > 0 && !FRAMEWORK_CACHEABILITY_VARY_FIELDS.has(normalized);
-  });
+function cacheabilityVaryRejectionReason(
+  headers: Headers,
+  state: RouteCacheabilityState,
+): string | null {
+  const fields = (headers.get("Vary") ?? "")
+    .split(",")
+    .map((name) => name.trim().toLowerCase())
+    .filter(Boolean);
+  if (fields.includes("*")) return "response uses Vary: *";
+  if (state.responseVary === "verbatim") return null;
+  return fields.some((name) => !FRAMEWORK_CACHEABILITY_VARY_FIELDS.has(name))
+    ? "response cache does not support custom Vary fields"
+    : null;
 }
 
 export function createWorkerCacheabilityContext(
@@ -500,9 +507,8 @@ function completedRouteOutcome(
     if (response.headers.has("set-cookie")) {
       return { cacheable: false, reason: "response sets a cookie" };
     }
-    if (hasUnsupportedCacheabilityVary(response.headers, state)) {
-      return { cacheable: false, reason: "response cache does not support custom Vary fields" };
-    }
+    const varyRejectionReason = cacheabilityVaryRejectionReason(response.headers, state);
+    if (varyRejectionReason) return { cacheable: false, reason: varyRejectionReason };
     return inferPagesPageCacheability(response);
   }
   if (state.route?.kind === "app-page") {
@@ -616,7 +622,7 @@ async function finalizeWorkerCacheabilityAdmission(
       response.status >= 500 ||
       state.forcedDynamicReason ||
       hasStrictFinalResponseVeto(response, state) ||
-      hasUnsupportedCacheabilityVary(response.headers, state)
+      cacheabilityVaryRejectionReason(response.headers, state) !== null
     ) {
       return responseWithCachePolicy(response, response.body, null);
     }
@@ -688,7 +694,7 @@ async function finalizeWorkerCacheabilityAdmission(
   if (hasStrictFinalResponseVeto(response, state)) {
     return responseWithCachePolicy(response, response.body, null);
   }
-  if (hasUnsupportedCacheabilityVary(response.headers, state)) {
+  if (cacheabilityVaryRejectionReason(response.headers, state) !== null) {
     return responseWithCachePolicy(response, response.body, null);
   }
   let captured: CapturedAdmissionBody;
