@@ -416,9 +416,19 @@ export async function captureCacheabilityAdmissionBody(
       }
     }
   } catch (error) {
-    await reader.cancel(error).catch(() => {});
     releaseChunks(budget, chunks);
-    reader.releaseLock();
+    const release = () => {
+      try {
+        reader.releaseLock();
+      } catch {}
+    };
+    try {
+      const cancellation = reader.cancel(error);
+      release();
+      void cancellation.catch(() => {}).finally(release);
+    } catch {
+      release();
+    }
     throw error;
   }
 }

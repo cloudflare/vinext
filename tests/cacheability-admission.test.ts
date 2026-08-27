@@ -101,6 +101,25 @@ describe("cacheability admission capture", () => {
     await captured.body?.cancel();
     expect(budget.reservedBytes).toBe(0);
   });
+
+  it("does not wait for user stream cancellation after a read failure", async () => {
+    const budget = createCacheabilityAdmissionCaptureBudget(5);
+    let readCount = 0;
+    const reader = {
+      cancel: () => new Promise<void>(() => {}),
+      read: () =>
+        readCount++ === 0
+          ? Promise.resolve({ done: false as const, value: encoder.encode("first") })
+          : Promise.reject(new Error("read failed")),
+      releaseLock() {},
+    };
+    const body = { getReader: () => reader } as unknown as ReadableStream<Uint8Array>;
+
+    await expect(
+      captureCacheabilityAdmissionBody(body, Date.now() + 1_000, 5, budget),
+    ).rejects.toThrow("read failed");
+    expect(budget.reservedBytes).toBe(0);
+  });
 });
 
 function cacheabilityState(context: object): RouteCacheabilityState {
