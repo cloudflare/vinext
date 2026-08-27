@@ -40,13 +40,22 @@ export function createWorkerPrerenderReadinessResponse(
   ctx: ExecutionContextLike,
   request: Request,
 ): Response | null {
+  // Keep the ordinary request path to one cheap string scan. Only parse the
+  // URL when it could be the reserved readiness endpoint.
+  if (!request.url.includes(VINEXT_PRERENDER_READINESS_PATH)) return null;
+  if (new URL(request.url).pathname !== VINEXT_PRERENDER_READINESS_PATH) return null;
+
   if (
     ctx.isPrerenderPathDiscovery !== true ||
     request.method !== "GET" ||
-    !request.headers.has(VINEXT_EXPECTED_WORKER_VERSION_HEADER) ||
-    new URL(request.url).pathname !== VINEXT_PRERENDER_READINESS_PATH
+    !request.headers.has(VINEXT_EXPECTED_WORKER_VERSION_HEADER)
   ) {
-    return null;
+    // This namespace is framework-owned. Never let a failed capability check
+    // fall through to middleware or a user route that could spoof readiness.
+    return new Response(null, {
+      status: 404,
+      headers: { "Cache-Control": "no-store" },
+    });
   }
   return new Response(null, {
     status: 204,

@@ -59,13 +59,13 @@ describe("Worker prerender path discovery authorization", () => {
     expect(response?.status).toBe(204);
     expect(response?.headers.get("cache-control")).toBe("no-store");
     expect(response?.headers.get("x-vinext-prerender-readiness")).toBe("1");
-    expect(
-      createWorkerPrerenderReadinessResponse(
-        base,
-        new Request("https://example.com/__vinext/prerender/readiness", {
-          headers: { "x-vinext-prerender-secret": "build-secret" },
-        }),
-      ),
-    ).toBeNull();
+    const unauthorized = createWorkerPrerenderReadinessResponse(
+      base,
+      new Request("https://example.com/__vinext/prerender/readiness", {
+        headers: { "x-vinext-prerender-secret": "build-secret" },
+      }),
+    );
+    expect(unauthorized?.status).toBe(404);
+    expect(unauthorized?.headers.get("cache-control")).toBe("no-store");
   });
 });

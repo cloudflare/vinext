@@ -63,10 +63,22 @@ describe("Pages Router production Worker readiness", () => {
         undefined,
         { waitUntil() {} },
       );
+      const unauthorizedResponse = await entry.default.fetch(
+        new Request("https://example.com/__vinext/prerender/readiness", {
+          headers: {
+            "x-vinext-expected-worker-version": "version-a",
+            "x-vinext-prerender-secret": "wrong-secret",
+          },
+        }),
+        undefined,
+        { waitUntil() {} },
+      );
 
       expect(response.status).toBe(204);
       expect(response.headers.get("cache-control")).toBe("no-store");
       expect(response.headers.get("x-vinext-prerender-readiness")).toBe("1");
+      expect(unauthorizedResponse.status).toBe(404);
+      expect(unauthorizedResponse.headers.get("cache-control")).toBe("no-store");
     } finally {
       await server.close();
     }

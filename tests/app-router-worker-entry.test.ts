@@ -115,11 +115,23 @@ describe("App Router Production server worker entry compatibility", () => {
         undefined,
         { waitUntil() {} },
       );
+      const unauthorizedReadiness = await entry.default.fetch(
+        new Request("https://example.com/__vinext/prerender/readiness", {
+          headers: {
+            "x-vinext-expected-worker-version": "version-a",
+            "x-vinext-prerender-secret": "wrong-secret",
+          },
+        }),
+        undefined,
+        { waitUntil() {} },
+      );
 
       expect(capturedRequests).toHaveLength(2);
       expect(readiness.status).toBe(204);
       expect(readiness.headers.get("cache-control")).toBe("no-store");
       expect(readiness.headers.get("x-vinext-prerender-readiness")).toBe("1");
+      expect(unauthorizedReadiness.status).toBe(404);
+      expect(unauthorizedReadiness.headers.get("cache-control")).toBe("no-store");
       expect(capturedRequests[0].headers.get("x-vinext-prerender-secret")).toBeNull();
       expect(capturedRequests[0].headers.get("x-vinext-prerender-route-params")).toBeNull();
       expect(capturedRequests[1].headers.get("x-vinext-prerender-secret")).toBeNull();
