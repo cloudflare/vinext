@@ -948,13 +948,17 @@ function annotateCacheabilityProbeSafety(
   const matchingPolicyRules = new Map(
     Object.keys(routePatterns).map((pathname) => [
       pathname,
-      cachePolicyRules.filter((rule) => cachePolicyRuleMatchesWarmPath(pathname, rule, config)),
+      new Set(
+        cachePolicyRules.filter((rule) => cachePolicyRuleMatchesWarmPath(pathname, rule, config)),
+      ),
     ]),
   );
   const matchingIdentityRules = new Map(
     Object.keys(routePatterns).map((pathname) => [
       pathname,
-      identityRules.filter((rule) => cachePolicyRuleMatchesWarmPath(pathname, rule, config)),
+      new Set(
+        identityRules.filter((rule) => cachePolicyRuleMatchesWarmPath(pathname, rule, config)),
+      ),
     ]),
   );
   const pathsByPattern = new Map<string, string[]>();
@@ -964,20 +968,28 @@ function annotateCacheabilityProbeSafety(
     paths.push(pathname);
     pathsByPattern.set(key, paths);
   }
-
-  return Object.fromEntries(
-    Object.entries(routePatterns).map(([pathname, route]) => {
-      const patternPaths = pathsByPattern.get(`${route.kind}\0${route.pattern}`) ?? [pathname];
-      const relevantRules = new Set(
-        patternPaths.flatMap((path) => matchingPolicyRules.get(path) ?? []),
-      );
-      const canPrunePattern = Array.from(relevantRules).every(
+  const canPrunePatterns = new Map<string, boolean>();
+  for (const [patternKey, patternPaths] of pathsByPattern) {
+    const relevantRules = new Set<ResolvedNextConfig["headers"][number]>();
+    for (const path of patternPaths) {
+      for (const rule of matchingPolicyRules.get(path) ?? []) relevantRules.add(rule);
+    }
+    canPrunePatterns.set(
+      patternKey,
+      Array.from(relevantRules).every(
         (rule) =>
           !rule.has?.length &&
           !rule.missing?.length &&
-          patternPaths.every((path) => matchingPolicyRules.get(path)?.includes(rule) === true),
-      );
-      const canReuseHtmlForRsc = (matchingIdentityRules.get(pathname) ?? []).every(
+          patternPaths.every((path) => matchingPolicyRules.get(path)?.has(rule) === true),
+      ),
+    );
+  }
+
+  return Object.fromEntries(
+    Object.entries(routePatterns).map(([pathname, route]) => {
+      const patternKey = `${route.kind}\0${route.pattern}`;
+      const canPrunePattern = canPrunePatterns.get(patternKey) ?? false;
+      const canReuseHtmlForRsc = Array.from(matchingIdentityRules.get(pathname) ?? []).every(
         (rule) => !rule.has?.length && !rule.missing?.length,
       );
       return [
