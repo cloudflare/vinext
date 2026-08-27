@@ -435,6 +435,32 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe("pages");
   });
 
+  it("honors an explicit public Pages SSR policy over the default dynamic classification", async () => {
+    // Ported from Next.js:
+    // test/e2e/getserversideprops/test/index.test.ts
+    const pagesRequest = new Request("https://example.com/pages-route", {
+      headers: { Accept: "text/html" },
+    });
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      pagesRequest,
+      null,
+      "build-a",
+      true,
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "pages-page", pattern: "/pages-route" };
+    state.outcome = { cacheable: false, dynamicUsage: true };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("gssp", { headers: { "Cache-Control": "public, s-maxage=36" } }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=36");
+    await expect(response.text()).resolves.toBe("gssp");
+  });
+
   it("keeps manifest-backed Pages responses with a late Set-Cookie private", async () => {
     const { raw } = staticPagesManifestRoute();
     const pagesRequest = new Request("https://example.com/pages-route", {

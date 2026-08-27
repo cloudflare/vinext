@@ -494,22 +494,28 @@ async function collectPagesPaths(options: {
       continue;
     }
 
-    const { hasStaticProps, type } = classifyPagesRoute(route.filePath);
-    if (type === "api" || type === "ssr") continue;
+    const { hasServerSideProps, hasStaticProps, type } = classifyPagesRoute(route.filePath);
+    if (type === "api") continue;
 
     if (!route.isDynamic) {
       if (options.i18n) {
         for (const locale of options.i18n.locales) {
           const pathname = localizePagesPath(route.pattern, locale, options.i18n);
           addPath(paths, seen, pathname);
-          if (hasStaticProps) addPath(dataPaths, seenDataPaths, pathname);
+          if (hasStaticProps || hasServerSideProps) addPath(dataPaths, seenDataPaths, pathname);
         }
       } else {
         addPath(paths, seen, route.pattern);
-        if (hasStaticProps) addPath(dataPaths, seenDataPaths, route.pattern);
+        if (hasStaticProps || hasServerSideProps) {
+          addPath(dataPaths, seenDataPaths, route.pattern);
+        }
       }
       continue;
     }
+
+    // A dynamic GSSP route has no enumerable parameter source. It remains
+    // fail-closed unless another deployment input supplies a concrete path.
+    if (type === "ssr") continue;
 
     if (!options.baseUrl) continue;
 

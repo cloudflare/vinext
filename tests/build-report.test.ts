@@ -413,7 +413,7 @@ describe("classifyPagesRoute", () => {
 
   it("classifies ssr.tsx as ssr", () => {
     const filePath = path.join(FIXTURES_PAGES, "ssr.tsx");
-    expect(classifyPagesRoute(filePath)).toEqual({ type: "ssr" });
+    expect(classifyPagesRoute(filePath)).toEqual({ hasServerSideProps: true, type: "ssr" });
   });
 
   it("classifies index.tsx as static", () => {

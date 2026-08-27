@@ -568,23 +568,17 @@ export function createPagesPageHandler(
     });
     const isCacheabilityProbe = isRouteCacheabilityProbe();
     const isTopLevelPageRoute = !isRouteMissErrorRender && options?.__forcedRoute === undefined;
-    const hasRequestTimeData =
-      pagesReadiness.gssp === true ||
-      pagesReadiness.gip === true ||
-      (pagesReadiness.appGip === true && !isStaticPropsRoute);
-
     if (isTopLevelPageRoute) {
       beginRouteCacheability("pages-page", route.pattern);
       if (isRouteCacheabilityIdentityProbe()) {
         return new Response(null, { status: 204 });
       }
-      if (hasRequestTimeData) {
-        recordRouteCacheability({ cacheable: false, dynamicUsage: true });
-        // Next.js never executes request-time Pages data functions while
-        // deciding which routes can be prerendered. The staged probe can make
-        // the same decision from the matched module contract.
-        if (isCacheabilityProbe) return new Response(null, { status: 204 });
-      } else if (!isStaticPropsRoute) {
+      if (
+        pagesReadiness.gssp !== true &&
+        pagesReadiness.gip !== true &&
+        !(pagesReadiness.appGip === true && !isStaticPropsRoute) &&
+        !isStaticPropsRoute
+      ) {
         // Automatic Static Optimization is the Pages Router equivalent of a
         // `getStaticProps` page with no revalidation window. It has no origin
         // ISR entry to copy policy from, so carry Next.js's static policy into

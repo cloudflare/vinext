@@ -1328,6 +1328,26 @@ describe("prerender path manifest", () => {
     expect(manifest?.excludedWarmPaths).toEqual(["/fr/about"]);
   });
 
+  it("discovers concrete getServerSideProps HTML and data identities", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile(
+      "pages/gssp.tsx",
+      [
+        "export async function getServerSideProps() { return { props: {} }; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+
+    expect(manifest?.pagesPaths).toEqual(["/gssp"]);
+    expect(manifest?.pagesDataPaths).toEqual(["/_next/data/build-a/gssp.json"]);
+  });
+
   it("does not reload disk config when supplied resolved config", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("next.config.mjs", 'throw new Error("disk config loaded unexpectedly");\n');

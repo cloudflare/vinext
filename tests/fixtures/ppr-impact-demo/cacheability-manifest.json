@@ -119,7 +119,31 @@
       "representation": "html",
       "requestKey": "/cacheability-pages/gssp",
       "state": "dynamic",
-      "status": 204
+      "status": 200
+    },
+    "[\"pages-page\",\"/cacheability-pages/gssp\",\"pages-data\",\"/_next/data/ppr-impact-demo-cacheability/cacheability-pages/gssp.json\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/gssp",
+      "representation": "pages-data",
+      "requestKey": "/_next/data/ppr-impact-demo-cacheability/cacheability-pages/gssp.json",
+      "state": "dynamic",
+      "status": 200
+    },
+    "[\"pages-page\",\"/cacheability-pages/gssp-public\",\"html\",\"/cacheability-pages/gssp-public\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/gssp-public",
+      "representation": "html",
+      "requestKey": "/cacheability-pages/gssp-public",
+      "state": "static-candidate",
+      "status": 200
+    },
+    "[\"pages-page\",\"/cacheability-pages/gssp-public\",\"pages-data\",\"/_next/data/ppr-impact-demo-cacheability/cacheability-pages/gssp-public.json\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/gssp-public",
+      "representation": "pages-data",
+      "requestKey": "/_next/data/ppr-impact-demo-cacheability/cacheability-pages/gssp-public.json",
+      "state": "static-candidate",
+      "status": 200
     },
     "[\"pages-page\",\"/cacheability-pages/get-initial-props\",\"html\",\"/cacheability-pages/get-initial-props\"]": {
       "kind": "pages-page",
@@ -127,7 +151,7 @@
       "representation": "html",
       "requestKey": "/cacheability-pages/get-initial-props",
       "state": "dynamic",
-      "status": 204
+      "status": 200
     },
     "[\"pages-page\",\"/cacheability-pages/posts/:slug\",\"html\",\"/cacheability-pages/posts/known\"]": {
       "kind": "pages-page",

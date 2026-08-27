@@ -461,7 +461,14 @@ function completedRouteOutcome(
   ) {
     return { cacheable: false };
   }
-  return rendererOutcome ?? inferPagesPageCacheability(response);
+  // Pages request-time routes (GSSP/GIP) are dynamic by default, but Next.js
+  // deliberately honors an explicit public response policy. ASO/config-header
+  // responses likewise use the completed policy rather than a hardcoded TTL.
+  // Ported from Next.js:
+  // test/e2e/getserversideprops/test/index.test.ts
+  // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
+  const responseOutcome = inferPagesPageCacheability(response);
+  return responseOutcome.cacheable ? responseOutcome : (rendererOutcome ?? responseOutcome);
 }
 
 function staticToDynamicResponse(route: CacheabilityManifestRoute): Response {

@@ -660,6 +660,7 @@ export function classifyLayoutSegmentConfig(code: string): LayoutBuildClassifica
  */
 export function classifyPagesRoute(filePath: string): {
   hasStaticProps?: boolean;
+  hasServerSideProps?: boolean;
   type: RouteType;
   revalidate?: number;
 } {
@@ -679,7 +680,7 @@ export function classifyPagesRoute(filePath: string): {
   const program = parseRouteModule(code);
 
   if (program && hasNamedExportInProgram(program, "getServerSideProps")) {
-    return { type: "ssr" };
+    return { hasServerSideProps: true, type: "ssr" };
   }
 
   if (program && hasNamedExportInProgram(program, "getStaticProps")) {

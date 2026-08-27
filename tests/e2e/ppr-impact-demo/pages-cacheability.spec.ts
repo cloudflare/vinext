@@ -57,7 +57,23 @@ test("classifies Pages Router data contracts inside the staged Worker", async ({
       kind: "pages-page",
       pattern: pathname,
       state: "dynamic",
-      status: 204,
+      status: 200,
+      version: 1,
+    });
+  }
+
+  for (const pathname of [
+    "/cacheability-pages/gssp-public",
+    `/_next/data/${buildId}/cacheability-pages/gssp-public.json`,
+  ]) {
+    const response = await request.get(pathname, { headers });
+    expect(response.ok(), pathname).toBe(true);
+    await expect(response.json(), pathname).resolves.toMatchObject({
+      cacheControl: "public, s-maxage=36",
+      kind: "pages-page",
+      pattern: "/cacheability-pages/gssp-public",
+      state: "static-candidate",
+      status: 200,
       version: 1,
     });
   }
@@ -69,7 +85,7 @@ test("classifies Pages Router data contracts inside the staged Worker", async ({
     kind: "pages-page",
     pattern: "/cacheability-pages/gssp",
     state: "dynamic",
-    status: 204,
+    status: 200,
     version: 1,
   });
 });
@@ -89,6 +105,17 @@ test("admits only exact manifest-backed Pages Router responses", async ({ reques
     expect(response.status(), pathname).toBe(200);
     expect(response.headers()["content-type"], pathname).toContain("application/json");
     expect(response.headers()["cdn-cache-control"], pathname).toContain("max-age=60");
+  }
+
+  for (const pathname of [
+    "/cacheability-pages/gssp-public",
+    `/_next/data/${buildId}/cacheability-pages/gssp-public.json`,
+  ]) {
+    const response = await request.get(pathname, {
+      headers: { Accept: pathname.includes("/_next/data/") ? "application/json" : "text/html" },
+    });
+    expect(response.status(), pathname).toBe(200);
+    expect(response.headers()["cdn-cache-control"], pathname).toContain("max-age=36");
   }
 
   for (const pathname of [

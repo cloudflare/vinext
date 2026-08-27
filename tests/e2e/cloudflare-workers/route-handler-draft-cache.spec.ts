@@ -202,6 +202,19 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(response.headers()["cache-tag"]).toBeUndefined();
     expect(response.headers()["x-vinext-cache"]).toBeUndefined();
   });
+
+  test("fails hybrid Pages handoffs closed for non-browser Accept variants", async ({
+    request,
+  }) => {
+    for (const accept of [undefined, "*/*", "application/json"]) {
+      const response = await request.get(`${BASE_URL}/pages-home`, {
+        headers: accept ? { Accept: accept } : undefined,
+      });
+      expect(response.status(), accept ?? "missing Accept").toBe(200);
+      expect(response.headers()["cache-control"], accept ?? "missing Accept").toContain("no-store");
+      expect(response.headers()["cdn-cache-control"], accept ?? "missing Accept").toBeUndefined();
+    }
+  });
 });
 
 test.describe("Cloudflare Pages-only completed-response admission", () => {
@@ -245,5 +258,16 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
     expect(response.headers()["cdn-cache-control"]).toBeUndefined();
     expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
     expect(response.headers()["cache-tag"]).toBeUndefined();
+  });
+
+  test("fails closed without an HTML Accept header", async ({ request }) => {
+    for (const accept of [undefined, "*/*", "application/json"]) {
+      const response = await request.get(`${pagesBaseUrl}/pages-home`, {
+        headers: accept ? { Accept: accept } : undefined,
+      });
+      expect(response.status(), accept ?? "missing Accept").toBe(200);
+      expect(response.headers()["cache-control"], accept ?? "missing Accept").toContain("no-store");
+      expect(response.headers()["cdn-cache-control"], accept ?? "missing Accept").toBeUndefined();
+    }
   });
 });
