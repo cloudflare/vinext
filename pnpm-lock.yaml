@@ -1729,6 +1729,8 @@ importers:
 
   tests/fixtures/hybrid-i18n-api-handoff: {}
 
+  tests/fixtures/interception-source-authz: {}
+
   tests/fixtures/middleware-matcher-auth: {}
 
   tests/fixtures/og-font-package: {}
