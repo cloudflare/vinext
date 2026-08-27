@@ -73,7 +73,9 @@ test("classifies Pages data contracts inside the staged Worker", async ({ reques
       kind: "pages-page",
       pattern: pathname,
       state: "dynamic",
-      status: 204,
+      // Request-time Pages routes must run to completion during the probe so
+      // an explicit public response policy can override their dynamic default.
+      status: 200,
       version: 1,
     });
   }
@@ -85,7 +87,7 @@ test("classifies Pages data contracts inside the staged Worker", async ({ reques
     kind: "pages-page",
     pattern: "/ssr",
     state: "dynamic",
-    status: 204,
+    status: 200,
     version: 1,
   });
 });
