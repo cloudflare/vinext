@@ -9,7 +9,11 @@ import type { CachedRouteValue } from "vinext/shims/cache-handler";
 import type { NextRequest } from "vinext/shims/server";
 import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import { runWithRootParamsUsage } from "vinext/shims/root-params";
-import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  isNonCacheableCacheControl,
+  NEVER_CACHE_CONTROL,
+} from "./cache-control.js";
 import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
 import {
   createStaticGenerationHeadersContext,
@@ -448,7 +452,14 @@ export async function executeAppRouteHandler(
       ),
       shouldApplyDraftPolicy,
     );
-    if (responseMustStayPrivate) {
+    // Outside probe/admission, preserve an explicit handler-owned opt-out as
+    // Next.js does. During CDN evaluation the adapter must own the fail-closed
+    // policy so provider-specific public headers cannot survive alongside it.
+    const preserveHandlerNonCacheablePolicy =
+      !isRouteCacheabilityEvaluation() &&
+      handlerSetCacheControl &&
+      isNonCacheableCacheControl(finalized.headers.get("Cache-Control") ?? "");
+    if (responseMustStayPrivate && !preserveHandlerNonCacheablePolicy) {
       const headers = new Headers(finalized.headers);
       applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
       finalized = new Response(finalized.body, {
