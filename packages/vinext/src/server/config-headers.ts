@@ -147,6 +147,14 @@ export function applyConfigHeadersToResponse(
         header.key,
         postConfigLink ? `${header.value}, ${postConfigLink}` : header.value,
       );
+    } else if (
+      !ADDITIVE_CONFIG_HEADER_NAMES.has(lowerName) &&
+      options.middlewareHeaders?.has(lowerName)
+    ) {
+      // Middleware runs after next.config headers in Next.js, so it remains
+      // authoritative even when this config field may replace a renderer-owned
+      // default (notably Cache-Control).
+      continue;
     } else if (ADDITIVE_CONFIG_HEADER_NAMES.has(lowerName)) {
       responseHeaders.append(header.key, header.value);
     } else if (options.overwriteExisting?.has(lowerName) || !responseHeaders.has(lowerName)) {
