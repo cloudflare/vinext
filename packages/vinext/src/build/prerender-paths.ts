@@ -17,7 +17,12 @@ import {
   normalizeStaticPathsEntry,
   type StaticPathsEntry,
 } from "../routing/route-pattern.js";
-import { getAppRouteRenderEntryPath, classifyAppRoute, classifyPagesRoute } from "./report.js";
+import {
+  getAppRouteRenderEntryPath,
+  classifyAppRoute,
+  classifyAppRouteHandler,
+  classifyPagesRoute,
+} from "./report.js";
 import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
@@ -46,6 +51,8 @@ export type PrerenderPathManifest = {
   responseVary?: CdnCacheAdapterCapabilities["responseVary"];
   /** App Router paths discovered without rendering their page responses. */
   rscPaths?: string[];
+  /** Statically eligible App Route Handler request paths. */
+  routeHandlerPaths?: string[];
   /** App Router paths with an ordinary main-tree loading boundary. */
   loadingShellPaths?: string[];
   /** Pages Router paths selected by the existing HTML warm discovery pass. */
@@ -640,12 +647,14 @@ async function collectAppPaths(options: {
   pageExtensions: readonly string[];
   retryOptions?: PathDiscoveryRetryOptions;
   secretHeaders: Record<string, string>;
-}): Promise<{ loadingShellPaths: string[]; paths: string[] }> {
+}): Promise<{ loadingShellPaths: string[]; paths: string[]; routeHandlerPaths: string[] }> {
   const routes = await appRouter(options.appDir, options.pageExtensions);
   const paths: string[] = [];
   const seen = new Set<string>();
   const loadingShellPaths: string[] = [];
   const seenLoadingShellPaths = new Set<string>();
+  const routeHandlerPaths: string[] = [];
+  const seenRouteHandlerPaths = new Set<string>();
   const staticParamsCache = new Map<string, Promise<Record<string, string | string[]>[] | null>>();
   const staticParamsMap = new Proxy({} as StaticParamsMap, {
     get(_target, pattern: string) {
@@ -691,14 +700,23 @@ async function collectAppPaths(options: {
   });
 
   for (const route of routes) {
-    const renderEntryPath = getAppRouteRenderEntryPath(route);
+    const isRouteHandler = route.routePath !== null && route.pagePath === null;
+    const renderEntryPath = isRouteHandler ? route.routePath : getAppRouteRenderEntryPath(route);
     if (!renderEntryPath) continue;
-
-    const { type } = classifyAppRoute(renderEntryPath, route.routePath, route.isDynamic);
-    if (type === "api") continue;
+    if (isRouteHandler) {
+      const classification = classifyAppRouteHandler(route.routePath!);
+      if (!classification.hasGet || !classification.staticGenerationEnabled) continue;
+    } else {
+      const { type } = classifyAppRoute(renderEntryPath, route.routePath, route.isDynamic);
+      if (type === "api") continue;
+    }
 
     const hasMainTreeLoadingBoundary = appRouteHasMainTreeLoadingBoundary(route);
     const addDiscoveredPath = (pathname: string): void => {
+      if (isRouteHandler) {
+        addPath(routeHandlerPaths, seenRouteHandlerPaths, pathname);
+        return;
+      }
       addPath(paths, seen, pathname);
       if (hasMainTreeLoadingBoundary) {
         addPath(loadingShellPaths, seenLoadingShellPaths, pathname);
@@ -754,7 +772,7 @@ async function collectAppPaths(options: {
     }
   }
 
-  return { loadingShellPaths, paths };
+  return { loadingShellPaths, paths, routeHandlerPaths };
 }
 
 async function resolveAppWarmPaths(options: {
@@ -765,12 +783,20 @@ async function resolveAppWarmPaths(options: {
   paths: readonly string[];
 }): Promise<{
   appPaths: string[];
+  appRoutePaths: string[];
   htmlPaths: string[];
   loadingShellPaths: string[];
   pagesPaths: string[];
   rscPaths: string[];
 }> {
   const appRoutes = await appRouter(options.appDir, options.pageExtensions);
+  const routeHandlerClassifications = new Map(
+    appRoutes.flatMap((route) =>
+      route.routePath && !route.pagePath
+        ? [[route.routePath, classifyAppRouteHandler(route.routePath)] as const]
+        : [],
+    ),
+  );
   const [pageRoutes, apiRoutes] = options.pagesDir
     ? await Promise.all([
         pagesRouter(options.pagesDir, options.pageExtensions),
@@ -780,6 +806,7 @@ async function resolveAppWarmPaths(options: {
 
   const rscPaths: string[] = [];
   const appPaths: string[] = [];
+  const appRoutePaths: string[] = [];
   const htmlPaths: string[] = [];
   const loadingShellPaths: string[] = [];
   const pagesPaths: string[] = [];
@@ -813,6 +840,14 @@ async function resolveAppWarmPaths(options: {
     // exposes the shared AppRoute fields, so recover the graph-owned metadata
     // here without rescanning the route table for every concrete path.
     const matchedAppRoute = appMatch.route as (typeof appRoutes)[number];
+    if (matchedAppRoute.routePath && !matchedAppRoute.pagePath) {
+      const classification = routeHandlerClassifications.get(matchedAppRoute.routePath);
+      if (classification?.hasGet && classification.staticGenerationEnabled) {
+        appRoutePaths.push(pathname);
+      }
+      continue;
+    }
+
     const appRenderEntryPath = getAppRouteRenderEntryPath(matchedAppRoute);
     if (!appRenderEntryPath) continue;
     if (
@@ -829,7 +864,7 @@ async function resolveAppWarmPaths(options: {
       loadingShellPaths.push(pathname);
     }
   }
-  return { appPaths, htmlPaths, loadingShellPaths, pagesPaths, rscPaths };
+  return { appPaths, appRoutePaths, htmlPaths, loadingShellPaths, pagesPaths, rscPaths };
 }
 
 function configuredRouteAffectsWarmPath(
@@ -915,6 +950,8 @@ export async function emitPrerenderPathManifest(
   const seenPagesDataPaths = new Set<string>();
   const discoveredAppPaths: string[] = [];
   const seenAppPaths = new Set<string>();
+  const discoveredRouteHandlerPaths: string[] = [];
+  const seenRouteHandlerPaths = new Set<string>();
   const discoveredLoadingShellPaths: string[] = [];
   const seenLoadingShellPaths = new Set<string>();
   await withPrerenderEndpoints(async () => {
@@ -988,6 +1025,9 @@ export async function emitPrerenderPathManifest(
         for (const pathname of appPathResult.loadingShellPaths) {
           addPath(discoveredLoadingShellPaths, seenLoadingShellPaths, pathname);
         }
+        for (const pathname of appPathResult.routeHandlerPaths) {
+          addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
+        }
       }
 
       if (pagesDir) {
@@ -1016,7 +1056,9 @@ export async function emitPrerenderPathManifest(
 
   const excludedWarmPathSet = new Set(
     options.responseVary
-      ? paths.filter((pathname) => configuredRouteAffectsWarmPath(pathname, config))
+      ? [...paths, ...discoveredRouteHandlerPaths].filter((pathname) =>
+          configuredRouteAffectsWarmPath(pathname, config),
+        )
       : [],
   );
   const configuredPagesWarmPaths = discoveredPagesPaths.filter(
@@ -1033,16 +1075,20 @@ export async function emitPrerenderPathManifest(
       : configuredPagesWarmPaths;
   const discoveredPagesDataPathSet = new Set(discoveredPagesDataPaths);
   const configuredCandidatePaths = paths.filter((pathname) => !excludedWarmPathSet.has(pathname));
+  const configuredRouteHandlerPaths = discoveredRouteHandlerPaths.filter(
+    (pathname) => !excludedWarmPathSet.has(pathname),
+  );
   const appOwnedWarmPaths = appDir
     ? await resolveAppWarmPaths({
         appDir,
         i18n: config.i18n,
         pagesDir,
         pageExtensions: config.pageExtensions,
-        paths: configuredCandidatePaths,
+        paths: [...configuredCandidatePaths, ...configuredRouteHandlerPaths],
       })
     : {
         appPaths: [],
+        appRoutePaths: [],
         htmlPaths: discoveredAppPaths,
         loadingShellPaths: discoveredLoadingShellPaths,
         pagesPaths: resolvedPagesWarmPaths,
@@ -1080,6 +1126,9 @@ export async function emitPrerenderPathManifest(
     ...(rscBuildId ? { rscBuildId } : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
     ...(options.responseVary ? { rscPaths: appOwnedWarmPaths.rscPaths } : {}),
+    ...(appOwnedWarmPaths.appRoutePaths.length > 0
+      ? { routeHandlerPaths: appOwnedWarmPaths.appRoutePaths }
+      : {}),
     ...(options.responseVary ? { loadingShellPaths: appOwnedWarmPaths.loadingShellPaths } : {}),
     trailingSlash: config.trailingSlash,
     paths: warmPaths,
@@ -1090,7 +1139,9 @@ export async function emitPrerenderPathManifest(
     JSON.stringify(manifest, null, 2) + "\n",
     "utf-8",
   );
-  console.log(`  Discovered ${warmPaths.length} CDN warmup path(s).`);
+  console.log(
+    `  Discovered ${warmPaths.length + appOwnedWarmPaths.appRoutePaths.length} CDN warmup path(s).`,
+  );
 
   return manifest;
 }

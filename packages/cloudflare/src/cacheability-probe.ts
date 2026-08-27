@@ -314,7 +314,9 @@ export async function probeStagedWorkerCacheability(options: {
       }
       if (
         result.version !== 1 ||
-        (result.kind !== "app-page" && result.kind !== "pages-page") ||
+        (result.kind !== "app-page" &&
+          result.kind !== "app-route" &&
+          result.kind !== "pages-page") ||
         typeof result.pattern !== "string" ||
         !result.pattern.startsWith("/") ||
         !isProbeRouteState(result.state) ||

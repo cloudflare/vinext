@@ -243,6 +243,14 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(hasCdnWarmRequests({ loadingShellPaths: ["/dashboard"], paths: [], rscPaths: [] })).toBe(
       true,
     );
+    expect(
+      hasCdnWarmRequests({
+        loadingShellPaths: [],
+        paths: [],
+        routeHandlerPaths: ["/api/data"],
+        rscPaths: [],
+      }),
+    ).toBe(true);
     expect(hasCdnWarmRequests({ loadingShellPaths: [], paths: [], rscPaths: [] })).toBe(false);
   });
 
@@ -440,6 +448,18 @@ describe("Cloudflare CDN warmup deploy flow", () => {
             { headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a" } },
           );
         }
+        if (pathname === "/api/data") {
+          return Response.json(
+            {
+              kind: "app-route",
+              pattern: "/api/data",
+              state: "static-candidate",
+              status: 200,
+              version: 1,
+            },
+            { headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a" } },
+          );
+        }
         return appPageProbeResponse();
       }
       if (isReadinessFetch(input)) events.push("readiness");
@@ -468,6 +488,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         pagesDataPaths: ["/_next/data/app-build-a/pages-about.json"],
         pagesPaths: ["/pages-about"],
         paths: ["/about", "/dynamic", "/pages-about"],
+        routeHandlerPaths: ["/api/data"],
         rscPaths: [],
       }),
       warmCdnConcurrency: 1,
@@ -481,6 +502,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(statusCount).toBe(7);
     expect(Array.from(cacheRequestCounts.entries())).toEqual([
       ["/_next/data/app-build-a/pages-about.json", 1],
+      ["/api/data", 1],
       ["/about", 1],
       ["/pages-about", 1],
     ]);
@@ -494,6 +516,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "probe:/dynamic",
       "probe:/pages-about",
       "probe:/_next/data/app-build-a/pages-about.json",
+      "probe:/api/data",
       "status-3",
       "upload-final",
       "status-4",
@@ -503,6 +526,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "triggers",
       "readiness",
       "warm:/_next/data/app-build-a/pages-about.json",
+      "warm:/api/data",
       "warm:/about",
       "warm:/pages-about",
       "status-7",
@@ -522,6 +546,12 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         expect.objectContaining({
           kind: "app-page",
           pattern: "/about",
+          state: "static-candidate",
+        }),
+        expect.objectContaining({
+          kind: "app-route",
+          pattern: "/api/data",
+          representation: "app-route",
           state: "static-candidate",
         }),
         expect.objectContaining({

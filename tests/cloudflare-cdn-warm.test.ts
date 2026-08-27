@@ -106,6 +106,7 @@ describe("Cloudflare CDN warmup", () => {
         responseVary: "verbatim",
         rscBuildId: "rsc-build-a",
         rscPaths: ["/dashboard", "/dynamic"],
+        routeHandlerPaths: ["/api/data"],
         trailingSlash: true,
       }),
     );
@@ -123,6 +124,7 @@ describe("Cloudflare CDN warmup", () => {
       paths: ["/docs/dashboard/", "/docs/dynamic/", "/docs/pages/"],
       rscBuildId: "rsc-build-a",
       rscPaths: ["/docs/dashboard/", "/docs/dynamic/"],
+      routeHandlerPaths: ["/docs/api/data/"],
     });
   });
 
@@ -286,6 +288,25 @@ describe("Cloudflare CDN warmup", () => {
     for (const call of fetchImpl.mock.calls) {
       expect(new Headers(call[1]?.headers).get("user-agent")).toBe("vinext-cloudflare-cdn-warm");
     }
+  });
+
+  it("warms Route Handlers with the canonical fetch request identity", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("Accept")).toBe("*/*");
+      return cacheablePagesData('{"ok":true}');
+    });
+
+    const result = await warmCdnCache({
+      expectedBuildId: "build-a",
+      fetchImpl: fetchImpl as typeof fetch,
+      paths: [],
+      routeHandlerPaths: ["/api/data"],
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(result.warmed).toBe(1);
+    expect(result.warmedPlan.routeHandlerPaths).toEqual(["/api/data"]);
+    expect(requestHref(fetchImpl.mock.calls[0]?.[0])).toBe("https://app.example.com/api/data");
   });
 
   it("counts coherent no-store/BYPASS responses as skipped, including in strict mode", async () => {

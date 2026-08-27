@@ -89,6 +89,14 @@
       "state": "static-candidate",
       "status": 200
     },
+    "[\"app-route\",\"/cacheability/route-handler-static\",\"app-route\",\"/cacheability/route-handler-static\"]": {
+      "kind": "app-route",
+      "pattern": "/cacheability/route-handler-static",
+      "representation": "app-route",
+      "requestKey": "/cacheability/route-handler-static",
+      "state": "static-candidate",
+      "status": 200
+    },
     "[\"pages-page\",\"/cacheability-pages/isr\",\"html\",\"/cacheability-pages/isr\"]": {
       "kind": "pages-page",
       "pattern": "/cacheability-pages/isr",

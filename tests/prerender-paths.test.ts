@@ -67,6 +67,12 @@ describe("prerender path manifest", () => {
         ) {
           return Response.json([{ category: "news" }]);
         }
+        if (
+          url.pathname === "/__vinext/prerender/static-params" &&
+          url.searchParams.get("pattern") === "/api/items/:slug"
+        ) {
+          return Response.json([{ slug: "one" }, { slug: "two" }]);
+        }
         return new Response(null, { status: 204 });
       }),
     );
@@ -135,6 +141,48 @@ describe("prerender path manifest", () => {
       }),
     );
     expect(closeMock).toHaveBeenCalledOnce();
+  });
+
+  it("discovers only Next.js-static Route Handler GET identities", async () => {
+    // Ported from Next.js static eligibility and dynamic Route Handler params:
+    // packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts
+    // test/e2e/app-dir/app-static/app-static.test.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/api/static/route.ts",
+      "export const revalidate = 60; export function GET() { return Response.json({ ok: true }); }",
+    );
+    writeFile(
+      "app/api/dynamic/route.ts",
+      "export function GET(request) { return Response.json({ url: request.url }); }",
+    );
+    writeFile(
+      "app/api/items/[slug]/route.ts",
+      [
+        "export const revalidate = false;",
+        "export function generateStaticParams() { return [{ slug: 'one' }, { slug: 'two' }]; }",
+        "export function GET(_request, { params }) { return Response.json(params); }",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      buildIdentity: "response-header",
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.routeHandlerPaths).toEqual([
+      "/api/static",
+      "/api/items/one",
+      "/api/items/two",
+    ]);
+    expect(manifest?.paths).toEqual([]);
+    expect(manifest?.rscPaths).toEqual([]);
   });
 
   it("discovers dynamic paths from an uploaded Worker without loading its bundle in Node", async () => {

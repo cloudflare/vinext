@@ -183,6 +183,20 @@ describe("app route handler policy helpers", () => {
     ).toBe(true);
   });
 
+  it("completes explicit public policies even without a static segment config", () => {
+    expect(
+      shouldCompleteAppRouteHandlerResponse({
+        dynamicUsedInHandler: false,
+        handlerSetCacheControl: true,
+        hasExplicitCacheablePolicy: true,
+        isAutoHead: false,
+        isProduction: true,
+        method: "GET",
+        revalidateSeconds: null,
+      }),
+    ).toBe(true);
+  });
+
   it("maps special route handler digests to typed redirect and status results", () => {
     expect(
       resolveAppRouteHandlerSpecialError(

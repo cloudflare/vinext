@@ -133,6 +133,27 @@ function staticPagesManifestRoute(): { raw: string; route: CacheabilityManifestR
   };
 }
 
+function staticAppRouteManifest(): { raw: string; route: CacheabilityManifestRoute } {
+  const route: CacheabilityManifestRoute = {
+    kind: "app-route",
+    pattern: "/api/data",
+    representation: "app-route",
+    requestKey: "/api/data",
+    state: "static-candidate",
+    status: 200,
+  };
+  const key = cacheabilityManifestRouteKey(
+    route.kind,
+    route.pattern,
+    route.representation,
+    route.requestKey,
+  );
+  return {
+    raw: JSON.stringify({ buildId: "build-a", routes: { [key]: route }, version: 1 }),
+    route,
+  };
+}
+
 describe("single-request cacheability admission", () => {
   const request = new Request("https://example.com/page", {
     headers: { Accept: "text/html" },
@@ -270,7 +291,11 @@ describe("single-request cacheability admission", () => {
       );
 
       expect(context).not.toBe(base);
-      expect(cacheabilityState(context).admission).toEqual({ policy: "deny" });
+      expect(cacheabilityState(context).admission).toEqual({
+        policy: "runtime",
+        representation: "app-route",
+        requestKey: "/page",
+      });
     },
   );
 
@@ -312,6 +337,45 @@ describe("single-request cacheability admission", () => {
 
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
     await expect(response.text()).resolves.toBe("public");
+  });
+
+  it.each(["*/*", "text/html"])(
+    "admits only an exact manifest-backed Route Handler identity for Accept: %s",
+    async (accept) => {
+      const { raw } = staticAppRouteManifest();
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        new Request("https://example.com/api/data", { headers: { Accept: accept } }),
+        raw,
+        "build-a",
+      );
+      cacheabilityState(context).route = { kind: "app-route", pattern: "/api/data" };
+
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response("public", { headers: { "Cache-Control": "public, s-maxage=60" } }),
+        context,
+      );
+
+      expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+    },
+  );
+
+  it("keeps an unlisted Route Handler query identity private", async () => {
+    const { raw } = staticAppRouteManifest();
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/api/data?user=one"),
+      raw,
+      "build-a",
+    );
+    cacheabilityState(context).route = { kind: "app-route", pattern: "/api/data" };
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response("private", { headers: { "Cache-Control": "public, s-maxage=60" } }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
   });
 
   it("preserves an independently classified hybrid Pages response", async () => {

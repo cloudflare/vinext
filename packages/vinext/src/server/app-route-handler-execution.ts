@@ -9,7 +9,11 @@ import type { CachedRouteValue } from "vinext/shims/cache-handler";
 import type { NextRequest } from "vinext/shims/server";
 import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import { runWithRootParamsUsage } from "vinext/shims/root-params";
-import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  hasExplicitNonCacheableResponsePolicy,
+  NEVER_CACHE_CONTROL,
+} from "./cache-control.js";
 import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
 import {
   createStaticGenerationHeadersContext,
@@ -40,6 +44,7 @@ import {
 import {
   getRouteCacheabilityCaptureOptions,
   getRouteCacheabilityDynamicReason,
+  CACHEABILITY_POLICY_HEADERS,
   isRouteCacheabilityEvaluation,
   markRouteCacheabilityFinalResponseUncacheable,
 } from "vinext/shims/cacheability-classification";
@@ -109,6 +114,13 @@ type CompletedAppRouteHandlerResponse = {
   completed: boolean;
   response: Response;
 };
+
+function hasExplicitCacheableResponsePolicy(headers: Headers): boolean {
+  return (
+    !hasExplicitNonCacheableResponsePolicy(headers) &&
+    CACHEABILITY_POLICY_HEADERS.some((name) => headers.has(name))
+  );
+}
 
 async function completeAppRouteHandlerResponse(
   response: Response,
@@ -312,6 +324,7 @@ export async function executeAppRouteHandler(
     let { dynamicUsedInHandler, response } = handlerResult;
     assertSupportedAppRouteHandlerResponse(response);
     const handlerSetCacheControl = response.headers.has("cache-control");
+    const hasExplicitCacheablePolicy = hasExplicitCacheableResponsePolicy(response.headers);
 
     const draftModeBeforeCompletion =
       options.getActiveDraftModeState?.() ?? options.isDraftMode === true;
@@ -321,6 +334,7 @@ export async function executeAppRouteHandler(
       shouldCompleteAppRouteHandlerResponse({
         dynamicConfig: options.handler.dynamic,
         dynamicUsedInHandler,
+        hasExplicitCacheablePolicy,
         handlerSetCacheControl,
         isAutoHead: options.isAutoHead,
         isDraftMode: draftModeBeforeCompletion || handlerDraftCookieBeforeCompletion != null,

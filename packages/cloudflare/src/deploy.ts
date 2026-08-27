@@ -691,6 +691,7 @@ export function hasCdnWarmRequests(
   return (
     plan.paths.length +
       (plan.pagesDataPaths?.length ?? 0) +
+      (plan.routeHandlerPaths?.length ?? 0) +
       plan.rscPaths.length +
       plan.loadingShellPaths.length >
     0
@@ -736,6 +737,7 @@ type CdnWarmDeployOptions = Pick<
     | "expectedRscBuildId"
     | "loadingShellPaths"
     | "pagesDataPaths"
+    | "routeHandlerPaths"
     | "rscPaths"
   > & {
     /** Probe a staged Worker and upload the resulting manifest as a second version. */
@@ -822,32 +824,41 @@ async function deployUploadedVersionWithCdnWarmup(
     loadingShellPaths: [...(options.loadingShellPaths ?? [])],
     pagesDataPaths: [...(options.pagesDataPaths ?? [])],
     paths: [...paths],
+    routeHandlerPaths: [...(options.routeHandlerPaths ?? [])],
     rscPaths: [...(options.rscPaths ?? [])],
   };
   let discoveredWarmRequests =
     remainingWarmPlan.paths.length +
     remainingWarmPlan.pagesDataPaths.length +
+    (remainingWarmPlan.routeHandlerPaths?.length ?? 0) +
     remainingWarmPlan.rscPaths.length +
     remainingWarmPlan.loadingShellPaths.length;
 
   const prepareWarmPlan = (plan: CdnWarmRequestPlan): CdnWarmRequestPlan => {
     if (
-      (plan.paths.length === 0 && plan.pagesDataPaths.length === 0) ||
+      (plan.paths.length === 0 &&
+        plan.pagesDataPaths.length === 0 &&
+        (plan.routeHandlerPaths?.length ?? 0) === 0) ||
       expectedBuildId !== undefined
     ) {
       return plan;
     }
     if (!allowUnverifiedPromotion) {
-      const warmupKind = plan.paths.length > 0 ? "CDN HTML warmup" : "CDN Pages data warmup";
+      const warmupKind =
+        plan.paths.length > 0
+          ? "CDN HTML warmup"
+          : plan.pagesDataPaths.length > 0
+            ? "CDN Pages data warmup"
+            : "CDN Route Handler warmup";
       throw new Error(
         `${warmupKind} requires a CDN adapter that declares build-identity response headers. ` +
           "Configure that adapter capability or deploy without --experimental-warm-cdn-cache.",
       );
     }
     console.warn(
-      `  CDN warmup: skipping ${plan.paths.length} HTML and ${plan.pagesDataPaths.length} Pages data request(s) because the CDN adapter does not declare build-identity response headers.`,
+      `  CDN warmup: skipping ${plan.paths.length} HTML, ${plan.pagesDataPaths.length} Pages data, and ${plan.routeHandlerPaths?.length ?? 0} Route Handler request(s) because the CDN adapter does not declare build-identity response headers.`,
     );
-    return { ...plan, pagesDataPaths: [], paths: [] };
+    return { ...plan, pagesDataPaths: [], paths: [], routeHandlerPaths: [] };
   };
 
   const discoverWarmPlan = async (targetUrl: string, headers?: HeadersInit): Promise<void> => {
@@ -860,11 +871,13 @@ async function deployUploadedVersionWithCdnWarmup(
       loadingShellPaths: [...plan.loadingShellPaths],
       pagesDataPaths: [...(plan.pagesDataPaths ?? [])],
       paths: [...plan.paths],
+      routeHandlerPaths: [...(plan.routeHandlerPaths ?? [])],
       rscPaths: [...plan.rscPaths],
     };
     discoveredWarmRequests =
       remainingWarmPlan.paths.length +
       remainingWarmPlan.pagesDataPaths.length +
+      (remainingWarmPlan.routeHandlerPaths?.length ?? 0) +
       remainingWarmPlan.rscPaths.length +
       remainingWarmPlan.loadingShellPaths.length;
     warmPlanDiscovered = true;
@@ -883,6 +896,7 @@ async function deployUploadedVersionWithCdnWarmup(
       loadingShellPaths: remainingWarmPlan.loadingShellPaths,
       pagesDataPaths: remainingWarmPlan.pagesDataPaths,
       paths: remainingWarmPlan.paths,
+      routeHandlerPaths: remainingWarmPlan.routeHandlerPaths,
       rscPaths: remainingWarmPlan.rscPaths,
     },
     requireCacheHit = false,
@@ -897,6 +911,7 @@ async function deployUploadedVersionWithCdnWarmup(
       expectedRscBuildId,
       loadingShellPaths: plan.loadingShellPaths,
       pagesDataPaths: plan.pagesDataPaths,
+      routeHandlerPaths: plan.routeHandlerPaths,
       rscPaths: plan.rscPaths,
       concurrency: options.warmCdnConcurrency,
       phaseTimeoutMs: hasPreparedWarmPlan ? DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS : undefined,
@@ -930,6 +945,7 @@ async function deployUploadedVersionWithCdnWarmup(
     options.discoverWarmPlan === undefined || hasPreparedWarmPlan
       ? remainingWarmPlan.paths.length +
         remainingWarmPlan.pagesDataPaths.length +
+        (remainingWarmPlan.routeHandlerPaths?.length ?? 0) +
         remainingWarmPlan.rscPaths.length +
         remainingWarmPlan.loadingShellPaths.length
       : 1;
@@ -981,18 +997,20 @@ async function deployUploadedVersionWithCdnWarmup(
           await discoverWarmPlan(targetUrl, headers);
           remainingWarmPlan = prepareWarmPlan(remainingWarmPlan);
           console.log(
-            `  CDN warmup: discovered ${remainingWarmPlan.paths.length} HTML, ${remainingWarmPlan.pagesDataPaths.length} Pages data, ${remainingWarmPlan.rscPaths.length} RSC, and ${remainingWarmPlan.loadingShellPaths.length} loading-shell request(s).`,
+            `  CDN warmup: discovered ${remainingWarmPlan.paths.length} HTML, ${remainingWarmPlan.pagesDataPaths.length} Pages data, ${remainingWarmPlan.routeHandlerPaths?.length ?? 0} Route Handler, ${remainingWarmPlan.rscPaths.length} RSC, and ${remainingWarmPlan.loadingShellPaths.length} loading-shell request(s).`,
           );
         }
         const stagedWarmPlan: CdnWarmRequestPlan = {
           loadingShellPaths: remainingWarmPlan.loadingShellPaths,
           pagesDataPaths: remainingWarmPlan.pagesDataPaths,
           paths: remainingWarmPlan.paths,
+          routeHandlerPaths: remainingWarmPlan.routeHandlerPaths,
           rscPaths: remainingWarmPlan.rscPaths,
         };
         const stagedWarmRequests =
           stagedWarmPlan.paths.length +
           stagedWarmPlan.pagesDataPaths.length +
+          (stagedWarmPlan.routeHandlerPaths?.length ?? 0) +
           stagedWarmPlan.rscPaths.length +
           stagedWarmPlan.loadingShellPaths.length;
         if (stagedWarmRequests > 0) {
@@ -1045,6 +1063,7 @@ async function deployUploadedVersionWithCdnWarmup(
               loadingShellPaths: warmResult.retryPlan.loadingShellPaths,
               pagesDataPaths: warmResult.retryPlan.pagesDataPaths,
               paths: warmResult.retryPlan.paths,
+              routeHandlerPaths: warmResult.retryPlan.routeHandlerPaths,
               rscPaths: warmResult.retryPlan.rscPaths,
             };
             if (hasPreparedWarmPlan && options.warmCdnCertify && warmResult.warmed > 0) {
@@ -1098,6 +1117,7 @@ async function deployUploadedVersionWithCdnWarmup(
   const countRemainingWarmRequests = (): number =>
     remainingWarmPlan.paths.length +
     remainingWarmPlan.pagesDataPaths.length +
+    (remainingWarmPlan.routeHandlerPaths?.length ?? 0) +
     remainingWarmPlan.rscPaths.length +
     remainingWarmPlan.loadingShellPaths.length;
 
@@ -1415,6 +1435,7 @@ async function deployWithCacheabilityProbe(
       pagesDataPaths: [...(discovered.pagesDataPaths ?? [])],
       pagesPaths: discovered.pagesPaths ? [...discovered.pagesPaths] : undefined,
       paths: [...discovered.paths],
+      routeHandlerPaths: [...(discovered.routeHandlerPaths ?? [])],
       rscPaths: [...discovered.rscPaths],
     };
     if (!plan.appPaths && !plan.pagesPaths) {
@@ -1430,6 +1451,7 @@ async function deployWithCacheabilityProbe(
       loadingShellPaths: plan.loadingShellPaths,
       pagesDataPaths: plan.pagesDataPaths,
       paths: plan.paths,
+      routeHandlerPaths: plan.routeHandlerPaths,
       rscPaths: plan.rscPaths,
     });
     if (targets.length > 0) {
@@ -1490,6 +1512,9 @@ async function deployWithCacheabilityProbe(
       paths: probe.cacheableTargets
         .filter((target) => target.kind === "html")
         .map((target) => target.sourcePathname),
+      routeHandlerPaths: probe.cacheableTargets
+        .filter((target) => target.kind === "app-route")
+        .map((target) => target.sourcePathname),
       rscPaths: probe.cacheableTargets
         .filter((target) => target.kind === "rsc-full")
         .map((target) => target.sourcePathname),
@@ -1533,6 +1558,7 @@ async function deployWithCacheabilityProbe(
     expectedDeploymentState: stagedProbeDeployment,
     loadingShellPaths: prepared.plan.loadingShellPaths,
     pagesDataPaths: prepared.plan.pagesDataPaths,
+    routeHandlerPaths: prepared.plan.routeHandlerPaths,
     rscPaths: prepared.plan.rscPaths,
     uploadedVersion: prepared.upload,
   });

@@ -16,8 +16,13 @@ import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "./app-rsc-render-mod
 
 export const CACHEABILITY_MANIFEST_MODULE = "__vinext_cacheability_manifest.js";
 
-export type CacheabilityRouteKind = "app-page" | "pages-page";
-export type CacheabilityRepresentation = "html" | "pages-data" | "rsc-full" | "rsc-loading-shell";
+export type CacheabilityRouteKind = "app-page" | "app-route" | "pages-page";
+export type CacheabilityRepresentation =
+  | "app-route"
+  | "html"
+  | "pages-data"
+  | "rsc-full"
+  | "rsc-loading-shell";
 type CacheabilityManifestRouteState =
   | "static-candidate"
   | "runtime-check"
@@ -50,6 +55,7 @@ export function cacheabilityManifestRouteKey(
 
 function isRepresentation(value: unknown): value is CacheabilityRepresentation {
   return (
+    value === "app-route" ||
     value === "html" ||
     value === "pages-data" ||
     value === "rsc-full" ||
@@ -70,7 +76,7 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const route = value as Record<string, unknown>;
   if (
-    (route.kind !== "app-page" && route.kind !== "pages-page") ||
+    (route.kind !== "app-page" && route.kind !== "app-route" && route.kind !== "pages-page") ||
     typeof route.pattern !== "string" ||
     !route.pattern.startsWith("/") ||
     !isRepresentation(route.representation) ||
@@ -158,7 +164,9 @@ export function cacheabilityRequestIdentity(request: Request): {
   const isRsc = request.headers.get(RSC_HEADER) === "1" || url.pathname.endsWith(".rsc");
   if (!isRsc) {
     const accept = request.headers.get("Accept")?.toLowerCase() ?? "";
-    return accept.includes("text/html") ? { representation: "html", requestKey } : null;
+    return accept.includes("text/html")
+      ? { representation: "html", requestKey }
+      : { representation: "app-route", requestKey };
   }
 
   if (CONTEXTUAL_RSC_HEADERS.some((header) => request.headers.has(header))) return null;

@@ -66,6 +66,31 @@ describe("cacheability manifest", () => {
     ).toEqual(pagesRoute);
   });
 
+  it("accepts an exact App Route Handler identity", () => {
+    const appRoute: CacheabilityManifestRoute = {
+      ...route,
+      kind: "app-route",
+      representation: "app-route",
+      requestKey: "/api/products/one",
+    };
+    const appRouteKey = cacheabilityManifestRouteKey(
+      appRoute.kind,
+      appRoute.pattern,
+      appRoute.representation,
+      appRoute.requestKey,
+    );
+    const manifest = parseCacheabilityManifest(
+      JSON.stringify({ buildId: "build-a", routes: { [appRouteKey]: appRoute }, version: 1 }),
+      "build-a",
+    );
+    expect(
+      findCacheabilityManifestRoute(manifest!, "app-route", appRoute.pattern, {
+        representation: "app-route",
+        requestKey: appRoute.requestKey,
+      }),
+    ).toEqual(appRoute);
+  });
+
   it("rejects malformed routes instead of partially trusting a manifest", () => {
     expect(
       parseCacheabilityManifest(
@@ -104,6 +129,9 @@ describe("cacheability manifest", () => {
         }),
       ),
     ).toEqual({ representation: "rsc-full", requestKey: "/products/one?_rsc" });
+    expect(
+      cacheabilityRequestIdentity(new Request("https://example.com/api/products/one")),
+    ).toEqual({ representation: "app-route", requestKey: "/api/products/one" });
   });
 
   it("fails closed for contextual RSC and action requests", () => {

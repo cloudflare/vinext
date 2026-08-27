@@ -354,4 +354,39 @@ describe("staged Worker cacheability probes", () => {
       }),
     ]);
   });
+
+  it("records a statically eligible App Route Handler identity", async () => {
+    const root = createProbeRoot();
+    const appRouteTarget = {
+      headers: { Accept: "*/*" },
+      kind: "app-route" as const,
+      label: "/api/data (Route Handler)",
+      pathname: "/api/data",
+      sourcePathname: "/api/data",
+    };
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl: async () =>
+        Response.json({
+          kind: "app-route",
+          pattern: "/api/data",
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        }),
+      root,
+      targetUrl: "https://example.com",
+      targets: [appRouteTarget],
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.cacheableTargets).toEqual([appRouteTarget]);
+    expect(Object.values(result.manifest.routes)).toEqual([
+      expect.objectContaining({
+        kind: "app-route",
+        representation: "app-route",
+        requestKey: "/api/data",
+      }),
+    ]);
+  });
 });

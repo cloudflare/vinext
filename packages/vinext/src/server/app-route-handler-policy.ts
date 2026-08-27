@@ -39,6 +39,7 @@ type AppRouteHandlerCacheReadOptions = {
 type AppRouteHandlerResponseCacheOptions = {
   dynamicConfig?: string;
   dynamicUsedInHandler: boolean;
+  hasExplicitCacheablePolicy?: boolean;
   handlerSetCacheControl: boolean;
   isAutoHead: boolean;
   isDraftMode?: boolean;
@@ -172,7 +173,8 @@ export function shouldCompleteAppRouteHandlerResponse(
   return (
     options.isProduction &&
     ((options.revalidateSeconds !== null && options.revalidateSeconds > 0) ||
-      options.requiresCompletedResponseAdmission === true) &&
+      options.requiresCompletedResponseAdmission === true ||
+      options.hasExplicitCacheablePolicy === true) &&
     options.dynamicConfig !== "force-dynamic" &&
     !options.isDraftMode &&
     !options.dynamicUsedInHandler &&

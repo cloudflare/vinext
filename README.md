@@ -725,6 +725,11 @@ must prove every planned entry reusable before promotion.
 
 While the data adapter can store entries and serve HIT/STALE itself, the CDN adapter delegates serving to Cloudflare's edge: the origin renders fresh responses and tags them with `Cache-Tag`, and `revalidateTag()` / `revalidatePath()` purge the edge through `ctx.cache.purge({ tags })`. See [examples/workers-cache](examples/workers-cache) for both adapters wired up together.
 
+Keep Cloudflare's incoming cache key query-sensitive when using `cdnAdapter()`.
+The two-stage cacheability manifest authorizes exact pathname + query
+identities, and a Cache Rule that ignores or normalizes query strings can serve
+an edge HIT before the Worker has a chance to enforce that identity.
+
 Each builder returns a plain, serializable `{ adapter, options }` descriptor — **it never touches the Workers runtime**, so nothing throws at build or dev time when bindings aren't available. The actual adapter (and its `env` binding lookup) is instantiated lazily on the first request.
 
 Registration is wired into **every router and runtime** — App Router and Pages Router, on Cloudflare Workers as well as the Node.js server (`vinext start`) and dev. It self-guards (instantiated once per isolate) and is resilient: if an adapter can't initialize on a given runtime (e.g. a KV binding doesn't exist on the Node server), vinext logs a warning and falls back to the default handler instead of failing requests.

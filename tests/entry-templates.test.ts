@@ -735,6 +735,28 @@ describe("App Router generated manifest construction", () => {
     expect(routeEntry).toContain("loadingTreePositions: [1,2]");
   });
 
+  it("wires Route Handler generateStaticParams into staged path discovery", () => {
+    const route = {
+      ...minimalAppRoutes[1],
+      pattern: "/api/items/:slug",
+      patternParts: ["api", "items", ":slug"],
+      pagePath: null,
+      routePath: "/tmp/test/app/api/items/[slug]/route.ts",
+      routeSegments: ["api", "items", "[slug]"],
+      isDynamic: true,
+      params: ["slug"],
+    } satisfies AppRoute;
+
+    const manifest = buildAppRscManifestCode({ routes: [route] });
+
+    expect(manifest.imports).toContain(
+      'const load_0 = () => import("/tmp/test/app/api/items/[slug]/route.ts");',
+    );
+    expect(manifest.generateStaticParamsEntries).toEqual([
+      '  "/api/items/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], []),',
+    ]);
+  });
+
   it("emits positional loading modules for named slots and intercepted branches", () => {
     const route = {
       ...minimalAppRoutes[0],

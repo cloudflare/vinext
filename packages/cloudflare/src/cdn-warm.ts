@@ -30,6 +30,8 @@ export type CdnWarmOptions = {
   paths: readonly string[];
   /** Pages Router JSON data identities used by client navigation. */
   pagesDataPaths?: readonly string[];
+  /** Statically eligible App Route Handler request identities. */
+  routeHandlerPaths?: readonly string[];
   /** App Router ISR paths whose definitive client-navigation payload is warmed. */
   rscPaths?: readonly string[];
   /** App Router paths whose deterministic loading-boundary payload is warmed. */
@@ -84,6 +86,7 @@ export type CdnWarmRequestPlan = {
   pagesDataPaths: string[];
   paths: string[];
   rscPaths: string[];
+  routeHandlerPaths?: string[];
 };
 
 export type CdnWarmReadinessResult = { ready: true } | { error: string; ready: false };
@@ -97,6 +100,7 @@ export type PrerenderWarmPlan = {
   pagesDataPaths?: string[];
   pagesPaths?: string[];
   paths: string[];
+  routeHandlerPaths?: string[];
   rscBuildId?: string;
   rscPaths: string[];
 };
@@ -150,6 +154,9 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
       (manifest.rscPaths !== undefined &&
         (!Array.isArray(manifest.rscPaths) ||
           !manifest.rscPaths.every((pathname) => typeof pathname === "string"))) ||
+      (manifest.routeHandlerPaths !== undefined &&
+        (!Array.isArray(manifest.routeHandlerPaths) ||
+          !manifest.routeHandlerPaths.every((pathname) => typeof pathname === "string"))) ||
       (manifest.loadingShellPaths !== undefined &&
         (!Array.isArray(manifest.loadingShellPaths) ||
           !manifest.loadingShellPaths.every((pathname) => typeof pathname === "string"))) ||
@@ -254,6 +261,9 @@ export function readPrerenderWarmPlan(
     paths: htmlPaths,
     ...(supportsCanonicalRsc ? { rscBuildId: manifest.rscBuildId } : {}),
     rscPaths: supportsCanonicalRsc ? manifest.rscPaths!.map(applyConfig) : [],
+    ...(manifest.routeHandlerPaths
+      ? { routeHandlerPaths: manifest.routeHandlerPaths.map(applyConfig) }
+      : {}),
   };
 }
 
@@ -364,7 +374,7 @@ async function fetchHeadersWithTimeout(
 
 export type CdnWarmTarget = {
   headers?: HeadersInit;
-  kind: "html" | "pages-data" | "rsc-full" | "rsc-loading-shell";
+  kind: "app-route" | "html" | "pages-data" | "rsc-full" | "rsc-loading-shell";
   label: string;
   pathname: string;
   sourcePathname: string;
@@ -373,7 +383,13 @@ export type CdnWarmTarget = {
 export async function createCdnWarmTargets(
   options: Pick<
     CdnWarmOptions,
-    "deploymentId" | "headers" | "loadingShellPaths" | "pagesDataPaths" | "paths" | "rscPaths"
+    | "deploymentId"
+    | "headers"
+    | "loadingShellPaths"
+    | "pagesDataPaths"
+    | "paths"
+    | "routeHandlerPaths"
+    | "rscPaths"
   >,
 ): Promise<CdnWarmTarget[]> {
   const requests: CdnWarmTarget[] = [];
@@ -430,6 +446,17 @@ export async function createCdnWarmTargets(
       headers: dataHeaders,
       kind: "pages-data",
       label: `${pathname} (Pages data)`,
+      pathname,
+      sourcePathname: pathname,
+    });
+  }
+  for (const pathname of new Set(options.routeHandlerPaths ?? [])) {
+    const routeHeaders = new Headers(commonHeaders);
+    routeHeaders.set("Accept", "*/*");
+    requests.push({
+      headers: routeHeaders,
+      kind: "app-route",
+      label: `${pathname} (Route Handler)`,
       pathname,
       sourcePathname: pathname,
     });
@@ -717,7 +744,7 @@ function validatePagesDataWarmResponse(
 
 function validateReadinessResponse(
   response: Response,
-  kind: "html" | "pages-data" | "rsc",
+  kind: "app-route" | "html" | "pages-data" | "rsc",
   expectedBuildId?: string,
   expectedRscBuildId?: string,
 ): string | null {
@@ -774,8 +801,9 @@ export async function waitForCdnWarmTargetReadiness(
   const rscPath = options.plan.rscPaths[0] ?? options.plan.loadingShellPaths[0];
   const htmlPath = options.plan.paths[0];
   const pagesDataPath = options.plan.pagesDataPaths[0];
-  const kind = rscPath ? "rsc" : htmlPath ? "html" : "pages-data";
-  const pathname = rscPath ?? htmlPath ?? pagesDataPath;
+  const routeHandlerPath = options.plan.routeHandlerPaths?.[0];
+  const kind = rscPath ? "rsc" : htmlPath ? "html" : pagesDataPath ? "pages-data" : "app-route";
+  const pathname = rscPath ?? htmlPath ?? pagesDataPath ?? routeHandlerPath;
   if (!pathname) return { ready: true };
   if (options.expectedBuildId === undefined && options.expectedRscBuildId === undefined) {
     return {
@@ -792,8 +820,10 @@ export async function waitForCdnWarmTargetReadiness(
     }
   } else if (kind === "html") {
     headers.set("Accept", "text/html");
-  } else {
+  } else if (kind === "pages-data") {
     headers.set("Accept", "application/json");
+  } else {
+    headers.set("Accept", "*/*");
   }
   headers.set("Cache-Control", "no-cache");
   headers.set("Pragma", "no-cache");
@@ -1242,6 +1272,12 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     return result.ok && !result.skipped;
   });
   const warmed = results.length - failures.length - skippedResults.length;
+  const warmedRouteHandlerPaths = warmedRequests
+    .filter((target) => target.kind === "app-route")
+    .map((target) => target.sourcePathname);
+  const failedRouteHandlerPaths = failedRequests
+    .filter(({ target }) => target.kind === "app-route")
+    .map(({ target }) => target.sourcePathname);
 
   console.log(
     `  CDN warmup: ${warmed} warmed, ${skippedResults.length} skipped, ${failures.length} failed.`,
@@ -1277,6 +1313,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       rscPaths: warmedRequests
         .filter((target) => target.kind === "rsc-full")
         .map((target) => target.sourcePathname),
+      ...(warmedRouteHandlerPaths.length > 0 ? { routeHandlerPaths: warmedRouteHandlerPaths } : {}),
     },
     retryPlan: {
       loadingShellPaths: failedRequests
@@ -1291,6 +1328,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       rscPaths: failedRequests
         .filter(({ target }) => target.kind === "rsc-full")
         .map(({ target }) => target.sourcePathname),
+      ...(failedRouteHandlerPaths.length > 0 ? { routeHandlerPaths: failedRouteHandlerPaths } : {}),
     },
   };
 
@@ -1316,6 +1354,7 @@ export async function warmCdnCacheFromPrerender(
     loadingShellPaths: plan.loadingShellPaths,
     pagesDataPaths: plan.pagesDataPaths,
     paths: plan.paths,
+    routeHandlerPaths: plan.routeHandlerPaths,
     rscPaths: plan.rscPaths,
   };
   return warmCdnCache({

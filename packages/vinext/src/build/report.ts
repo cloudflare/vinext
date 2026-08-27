@@ -758,6 +758,42 @@ export function classifyAppRoute(
   return { type: "unknown" };
 }
 
+/**
+ * Return whether a Route Handler has a GET contract that Next.js considers
+ * eligible for static generation. This intentionally examines only the route
+ * module's direct segment config; request-time dynamic usage is decided by the
+ * staged Worker probe after the module has executed to completion.
+ *
+ * Ported from Next.js:
+ * packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts
+ */
+export function classifyAppRouteHandler(filePath: string): {
+  hasGet: boolean;
+  staticGenerationEnabled: boolean;
+} {
+  let code: string;
+  try {
+    code = fs.readFileSync(filePath, "utf8");
+  } catch {
+    return { hasGet: false, staticGenerationEnabled: false };
+  }
+
+  const program = parseRouteModule(code);
+  if (!program) return { hasGet: false, staticGenerationEnabled: false };
+
+  const dynamicValue = extractExportConstStringFromProgram(program, "dynamic");
+  const revalidateValue = extractExportConstNumberFromProgram(program, "revalidate");
+  return {
+    hasGet: hasNamedExportInProgram(program, "GET"),
+    staticGenerationEnabled:
+      dynamicValue === "force-static" ||
+      dynamicValue === "error" ||
+      revalidateValue === Infinity ||
+      (revalidateValue !== null && revalidateValue > 0) ||
+      hasNamedExportInProgram(program, "generateStaticParams"),
+  };
+}
+
 // ─── Row building ─────────────────────────────────────────────────────────────
 
 /**

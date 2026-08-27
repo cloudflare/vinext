@@ -17,6 +17,7 @@ import {
   extractGetStaticPropsRevalidate,
   classifyPagesRoute,
   classifyAppRoute,
+  classifyAppRouteHandler,
   classifyLayoutSegmentConfig,
   buildReportRows,
   formatBuildReport,
@@ -494,6 +495,17 @@ describe("classifyAppRoute", () => {
     // revalidate = false means "cache indefinitely" — same as Infinity.
     const pagePath = path.join(FIXTURES_APP, "revalidate-false-test", "page.tsx");
     expect(classifyAppRoute(pagePath, null, false)).toEqual({ type: "static" });
+  });
+});
+
+describe("classifyAppRouteHandler", () => {
+  it("matches Next.js static generation eligibility", () => {
+    expect(
+      classifyAppRouteHandler(path.join(FIXTURES_APP, "api", "static-data", "route.ts")),
+    ).toEqual({ hasGet: true, staticGenerationEnabled: true });
+    expect(classifyAppRouteHandler(path.join(FIXTURES_APP, "api", "no-cache", "route.ts"))).toEqual(
+      { hasGet: true, staticGenerationEnabled: false },
+    );
   });
 });
 

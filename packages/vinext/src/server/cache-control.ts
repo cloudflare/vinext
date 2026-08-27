@@ -89,6 +89,11 @@ export function applyCdnResponseIdentityHeaders(response: Response, request: Req
   if (request.headers.get("RSC") !== "1" && !accept.includes("text/html") && !isPagesDataRequest) {
     return response;
   }
+  return applyCdnResponseBuildIdentityHeaders(response);
+}
+
+/** Apply adapter-owned build identity to an already-classified response. */
+export function applyCdnResponseBuildIdentityHeaders(response: Response): Response {
   const map = getCdnCacheAdapter().buildResponseIdentityHeaders?.();
   if (!map || Object.keys(map).length === 0) return response;
 

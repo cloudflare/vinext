@@ -67,6 +67,10 @@ makes one final fill request per admitted identity. Add `--warm-cdn-certify`
 only when you want an opt-in second, header-only request that must prove every
 planned entry reusable before promotion.
 
+Do not configure a Cache Rule that ignores or normalizes query strings for
+these responses. The two-stage cacheability manifest authorizes the full
+pathname + query identity, but an edge HIT happens before Worker admission.
+
 ## Deploy
 
 Deploy Cloudflare Workers projects with the package CLI:

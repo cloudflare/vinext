@@ -57,6 +57,7 @@ import { createStaticGenerationHeadersContext } from "./app-static-generation.js
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { reportRequestError } from "./instrumentation.js";
+import { applyCdnResponseBuildIdentityHeaders } from "./cache-control.js";
 
 type AppRouteHandlerDispatchRoute = {
   pattern: string;
@@ -196,11 +197,13 @@ export async function dispatchAppRouteHandler(
       isHead,
     });
     options.clearRequestContext();
-    return applyDraftModeCachePolicy(
-      applyRouteHandlerMiddlewareContext(finalized, options.middlewareContext, {
-        appendResponseLink,
-      }),
-      isDraftMode || hasDraftModeTransition,
+    return applyCdnResponseBuildIdentityHeaders(
+      applyDraftModeCachePolicy(
+        applyRouteHandlerMiddlewareContext(finalized, options.middlewareContext, {
+          appendResponseLink,
+        }),
+        isDraftMode || hasDraftModeTransition,
+      ),
     );
   };
 
@@ -312,12 +315,12 @@ export async function dispatchAppRouteHandler(
       setNavigationContext,
     });
     if (cachedRouteResponse) {
-      return cachedRouteResponse;
+      return applyCdnResponseBuildIdentityHeaders(cachedRouteResponse);
     }
   }
 
   if (resolvedHandlerFn) {
-    return executeAppRouteHandler({
+    const response = await executeAppRouteHandler({
       basePath: options.basePath,
       buildPageCacheTags(pathname, extraTags) {
         return buildRouteHandlerPageCacheTags(pathname, extraTags, route.routeSegments);
@@ -356,6 +359,7 @@ export async function dispatchAppRouteHandler(
       routePattern: route.pattern,
       setHeadersAccessPhase,
     });
+    return applyCdnResponseBuildIdentityHeaders(response);
   }
 
   return finalizeFrameworkResponse(new Response(null, { status: 405 }));
