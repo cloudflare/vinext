@@ -1735,10 +1735,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   };
   const explicitProjectRoot = options.projectRoot ? path.resolve(options.projectRoot) : null;
   const earlyBaseDir = explicitProjectRoot ?? path.resolve(options.appDir ?? process.cwd());
-  const earlyAppDirExists =
-    !options.disableAppRouter &&
-    (fs.existsSync(path.join(earlyBaseDir, "app")) ||
-      fs.existsSync(path.join(earlyBaseDir, "src", "app")));
 
   // IMPORTANT: Resolve @vitejs/plugin-rsc subpath imports from the user's
   // project root, not from vinext's own package location. When vinext is
@@ -1800,7 +1796,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           cause,
         });
       });
-  } else if (!autoRsc && earlyAppDirExists && resolvedRscPath) {
+  } else if (!autoRsc && resolvedRscPath) {
     rscPluginModulePromise = import(pathToFileURL(resolvedRscPath).href);
     manualUseCachePluginPromise = createUseCacheCallablePlugin({
       projectRoot: earlyBaseDir,
@@ -1808,7 +1804,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       getAppDir: () => appDir,
       matchesPageExtension: (fileName) => fileMatcher.extensionRegex.test(fileName),
       allowMissingRsc: true,
-    });
+    }).then(applyOnlyToAppRouter);
   }
 
   const rscRuntimeResolverPlugin: Plugin = {
