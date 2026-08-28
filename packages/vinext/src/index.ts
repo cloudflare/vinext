@@ -146,9 +146,14 @@ import { matchesRewriteSource, proxyExternalRequest } from "./config/config-matc
 import { encodeMiddlewareRequestHeaders } from "./utils/middleware-request-headers.js";
 import {
   detectPackageManager,
+  detectPackageManagerProductionCommand,
   formatMissingCloudflarePluginError,
   hasWranglerConfig,
 } from "./utils/project.js";
+import {
+  getReactUpgradeDeps,
+  resolveReactServerDomWebpackOverride,
+} from "./utils/react-version.js";
 import {
   hasReactCompilerPlugin,
   isReactCompilerPlugin,
@@ -391,12 +396,21 @@ function hasServerOnlyMarkerImport(code: string): boolean {
 
 const __dirname = import.meta.dirname;
 type VitePluginReactModule = typeof import("@vitejs/plugin-react");
+const PLUGIN_RSC_VENDOR_RUNTIME = "@vitejs/plugin-rsc/vendor/react-server-dom";
+const RSDW_RUNTIME = "react-server-dom-webpack";
+
+function resolveDependencyFromRoot(projectRoot: string, specifier: string): string | null {
+  try {
+    const projectRequire = createRequire(path.join(path.resolve(projectRoot), "package.json"));
+    return projectRequire.resolve(specifier);
+  } catch {
+    return null;
+  }
+}
 
 function resolveOptionalDependency(projectRoot: string, specifier: string): string | null {
-  try {
-    const projectRequire = createRequire(path.join(projectRoot, "package.json"));
-    return projectRequire.resolve(specifier);
-  } catch {}
+  const projectResolution = resolveDependencyFromRoot(projectRoot, specifier);
+  if (projectResolution) return projectResolution;
 
   try {
     const selfRequire = createRequire(import.meta.url);
@@ -404,6 +418,53 @@ function resolveOptionalDependency(projectRoot: string, specifier: string): stri
   } catch {}
 
   return null;
+}
+
+function resolvePluginRscVendorRuntimeRoot(resolvedPluginPath: string | null): string | null {
+  if (!resolvedPluginPath) return null;
+  try {
+    const clientEntry = createRequire(resolvedPluginPath).resolve(
+      `${PLUGIN_RSC_VENDOR_RUNTIME}/client.browser`,
+    );
+    return path.dirname(clientEntry);
+  } catch {
+    return null;
+  }
+}
+
+function sameResolvedModule(left: string | null, right: string | null): boolean {
+  if (!left || !right) return left === right;
+  return (tryRealpathSync(left) ?? left) === (tryRealpathSync(right) ?? right);
+}
+
+function replaceRscRuntimeSpecifier(specifier: string, runtimePackage: string): string {
+  for (const packageName of [PLUGIN_RSC_VENDOR_RUNTIME, RSDW_RUNTIME]) {
+    if (specifier === packageName) return runtimePackage;
+    if (specifier.startsWith(`${packageName}/`)) {
+      return `${runtimePackage}/${specifier.slice(packageName.length + 1)}`;
+    }
+  }
+  return specifier;
+}
+
+function pinRscRuntimeConfig(
+  config: UserConfig | ResolvedConfig | null | void,
+  runtimePackage: string,
+): void {
+  if (!config?.environments) return;
+  for (const environment of Object.values(config.environments)) {
+    const include = environment?.optimizeDeps?.include;
+    if (include) {
+      environment.optimizeDeps!.include = include.map((specifier: string) =>
+        replaceRscRuntimeSpecifier(specifier, runtimePackage),
+      );
+    }
+    const noExternal = environment?.resolve?.noExternal;
+    if (!Array.isArray(noExternal)) continue;
+    const filtered = noExternal.filter((specifier) => specifier !== RSDW_RUNTIME);
+    if (runtimePackage === RSDW_RUNTIME) filtered.push(RSDW_RUNTIME);
+    environment.resolve!.noExternal = [...new Set(filtered)];
+  }
 }
 
 function resolveShimModulePath(shimsDir: string, moduleName: string): string {
@@ -1282,6 +1343,13 @@ function getClientOutputConfig(assetsDir: string, preserveAppRouteBoundaries = f
 
 export type VinextOptions = {
   /**
+   * Project root used to resolve vinext's optional Vite plugin peers before
+   * Vite runs config hooks. Set this when invoking Vite programmatically with
+   * a `root` that differs from `process.cwd()` and may have a distinct
+   * dependency graph.
+   */
+  projectRoot?: string;
+  /**
    * Base directory containing the app/ and pages/ directories.
    * Can be an absolute path or a path relative to the Vite root.
    *
@@ -1616,10 +1684,57 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   }
 
   // Auto-register @vitejs/plugin-rsc when App Router is detected.
-  // Check eagerly at call time using the same heuristic as config().
-  // Must mirror the full detection logic: check {base}/app then {base}/src/app.
+  // Plugin `apply` receives Vite's configured root before config hooks run, so
+  // use it instead of process.cwd() for programmatic/custom-root Vite callers.
   const autoRsc = options.rsc !== false;
-  const earlyBaseDir = options.appDir ?? process.cwd();
+  const appRouterPluginApplies = (config: UserConfig): boolean => {
+    if (options.disableAppRouter) return false;
+    const configuredRoot = path.resolve(config.root ?? process.cwd());
+    if (options.appDir) {
+      const baseDir = path.isAbsolute(options.appDir)
+        ? options.appDir
+        : path.resolve(configuredRoot, options.appDir);
+      return fs.existsSync(path.join(baseDir, "app"));
+    }
+    return (
+      fs.existsSync(path.join(configuredRoot, "app")) ||
+      fs.existsSync(path.join(configuredRoot, "src", "app"))
+    );
+  };
+  const applyOnlyToAppRouter = (plugin: Plugin): Plugin => {
+    const originalApply = plugin.apply;
+    return {
+      ...plugin,
+      apply(config, env) {
+        if (!appRouterPluginApplies(config)) return false;
+        if (!originalApply) return true;
+        if (typeof originalApply === "string") return originalApply === env.command;
+        return originalApply(config, env);
+      },
+    };
+  };
+  let rscRuntimePackage = PLUGIN_RSC_VENDOR_RUNTIME;
+  const pinRscRuntimePlugin = (plugin: Plugin): Plugin => {
+    if (plugin.name !== "rsc" || !plugin.config) return plugin;
+    const originalConfig = plugin.config;
+    const originalHandler =
+      typeof originalConfig === "function" ? originalConfig : originalConfig.handler;
+    const handler = async function (
+      this: ThisParameterType<typeof originalHandler>,
+      config: UserConfig,
+      env: Parameters<typeof originalHandler>[1],
+    ) {
+      const result = await originalHandler.call(this, config, env);
+      pinRscRuntimeConfig(result, rscRuntimePackage);
+      return result;
+    };
+    return {
+      ...plugin,
+      config: typeof originalConfig === "function" ? handler : { ...originalConfig, handler },
+    } as Plugin;
+  };
+  const explicitProjectRoot = options.projectRoot ? path.resolve(options.projectRoot) : null;
+  const earlyBaseDir = explicitProjectRoot ?? path.resolve(options.appDir ?? process.cwd());
   const earlyAppDirExists =
     !options.disableAppRouter &&
     (fs.existsSync(path.join(earlyBaseDir, "app")) ||
@@ -1639,27 +1754,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // consistent resolution.
   let resolvedReactPath: string | null = null;
   let resolvedRscPath: string | null = null;
+  let rscRuntimeRoot: string | null = null;
   let rscPluginModulePromise: Promise<typeof import("@vitejs/plugin-rsc")> | null = null;
   // Prefer the user's project graph so vinext shares the app's Vite/plugin
   // instances. In source/workspace development, test fixtures may not declare
   // peer deps explicitly, so fall back to vinext's own install location.
   resolvedReactPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-react");
   resolvedRscPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-rsc");
+  const pluginRscVendorRuntimeRoot = resolvePluginRscVendorRuntimeRoot(resolvedRscPath);
 
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
   // will resolve this before processing the plugin list.
   let rscPluginPromise: Promise<Plugin[]> | null = null;
   let manualUseCachePluginPromise: Promise<Plugin> | null = null;
-  if (earlyAppDirExists && autoRsc) {
-    if (!resolvedRscPath) {
-      throw new Error(
-        "vinext: App Router detected but @vitejs/plugin-rsc is not installed.\n" +
-          "Run: " +
-          detectPackageManager(process.cwd()) +
-          " @vitejs/plugin-rsc",
-      );
-    }
+  if (autoRsc && resolvedRscPath) {
     const rscImport = import(pathToFileURL(resolvedRscPath).href);
     rscPluginModulePromise = rscImport;
     rscPluginPromise = rscImport
@@ -1684,14 +1793,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           throw new Error("vinext: Failed to locate @vitejs/plugin-rsc use-server plugin.");
         }
         plugins.splice(useServerIndex, 0, useCachePlugin);
-        return plugins;
+        return plugins.map((plugin) => applyOnlyToAppRouter(pinRscRuntimePlugin(plugin)));
       })
       .catch((cause) => {
         throw new Error("vinext: Failed to load @vitejs/plugin-rsc.", {
           cause,
         });
       });
-  } else if (earlyAppDirExists && resolvedRscPath) {
+  } else if (!autoRsc && earlyAppDirExists && resolvedRscPath) {
     rscPluginModulePromise = import(pathToFileURL(resolvedRscPath).href);
     manualUseCachePluginPromise = createUseCacheCallablePlugin({
       projectRoot: earlyBaseDir,
@@ -1701,6 +1810,33 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       allowMissingRsc: true,
     });
   }
+
+  const rscRuntimeResolverPlugin: Plugin = {
+    name: "vinext:rsc-runtime-root",
+    enforce: "pre",
+    apply: appRouterPluginApplies,
+    resolveId: {
+      order: "pre",
+      filter: {
+        id: /^(?:@vitejs\/plugin-rsc\/vendor\/react-server-dom|react-server-dom-webpack)(?:\/|$)/,
+      },
+      async handler(source, importer, resolveOptions) {
+        if (!rscRuntimeRoot) return;
+        const runtimePackage = source.startsWith(PLUGIN_RSC_VENDOR_RUNTIME)
+          ? PLUGIN_RSC_VENDOR_RUNTIME
+          : RSDW_RUNTIME;
+        const subpath = source.slice(runtimePackage.length).replace(/^\//, "");
+        const target = subpath ? path.join(rscRuntimeRoot, subpath) : rscRuntimeRoot;
+        return this.resolve(target, importer, { ...resolveOptions, skipSelf: true });
+      },
+    },
+    configResolved(config) {
+      // Auto mode normalizes the RSC config hook result before Vite computes
+      // optimizer metadata. Manual rsc() runs after vinext by contract, so its
+      // final merged config needs one last normalization here.
+      if (!autoRsc) pinRscRuntimeConfig(config, rscRuntimePackage);
+    },
+  };
 
   async function resolveHasServerActions(
     config: Pick<ResolvedConfig, "command" | "plugins">,
@@ -2137,7 +2273,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
       async config(config, env) {
         isServeCommand = env.command === "serve";
-        root = toSlash(config.root ?? process.cwd());
+        root = toSlash(path.resolve(config.root ?? process.cwd()));
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         let tsconfigPathAliases: Record<string, string> = {};
         let sassTsconfigPathAliases: SassTsconfigPathAlias[] = [];
@@ -2203,6 +2339,44 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         appDir = path.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
+
+        if (!explicitProjectRoot && options.react !== false) {
+          const configuredReactPath = resolveDependencyFromRoot(root, "@vitejs/plugin-react");
+          if (configuredReactPath && !sameResolvedModule(resolvedReactPath, configuredReactPath)) {
+            throw new Error(
+              "vinext: @vitejs/plugin-react resolves differently from the configured Vite root.\n" +
+                `Pass projectRoot: ${JSON.stringify(root)} to vinext() when using a programmatic custom root.`,
+            );
+          }
+        }
+
+        if (hasAppDir) {
+          if (!explicitProjectRoot && autoRsc) {
+            const configuredRscPath = resolveDependencyFromRoot(root, "@vitejs/plugin-rsc");
+            if (configuredRscPath && !sameResolvedModule(resolvedRscPath, configuredRscPath)) {
+              throw new Error(
+                "vinext: @vitejs/plugin-rsc resolves differently from the configured Vite root.\n" +
+                  `Pass projectRoot: ${JSON.stringify(root)} to vinext() when using a programmatic custom root.`,
+              );
+            }
+          }
+          if (autoRsc && !rscPluginPromise) {
+            throw new Error(
+              "vinext: App Router detected but @vitejs/plugin-rsc is not installed.\n" +
+                `Run: ${detectPackageManager(root)} @vitejs/plugin-rsc`,
+            );
+          }
+          const compatibilityDeps = getReactUpgradeDeps(root, pluginRscVendorRuntimeRoot);
+          if (compatibilityDeps.length > 0) {
+            throw new Error(
+              "vinext: React is incompatible with the selected App Router Flight runtime.\n" +
+                `Run: ${detectPackageManagerProductionCommand(root)} ${compatibilityDeps.join(" ")}`,
+            );
+          }
+          const overrideRuntimeRoot = resolveReactServerDomWebpackOverride(root);
+          rscRuntimePackage = overrideRuntimeRoot ? RSDW_RUNTIME : PLUGIN_RSC_VENDOR_RUNTIME;
+          rscRuntimeRoot = overrideRuntimeRoot ?? pluginRscVendorRuntimeRoot;
+        }
 
         // Route scans are cached at module scope so the generated entries and
         // request handlers can share them. A Vite restart can create a new
@@ -3043,6 +3217,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ...tsconfigPathAliases,
                 ...nextConfig.aliases,
                 ...nextShimMap,
+                ...(rscRuntimeRoot
+                  ? {
+                      [PLUGIN_RSC_VENDOR_RUNTIME]: rscRuntimeRoot,
+                    }
+                  : {}),
                 "vinext/server/pages-client-assets": _pagesClientAssetsPath,
               },
               tsconfigPathAliases,
@@ -3354,11 +3533,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               optimizeDeps: {
                 exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
                 entries: optimizeEntries,
-                // plugin-rsc pre-includes server.edge, but not its vendored
-                // static.edge import, which it rewrites to this package specifier.
-                // Prebundle both so they share the large development renderer
-                // instead of transforming its raw CJS source on the first request.
-                include: [...new Set([...incomingInclude, "react-server-dom-webpack/static.edge"])],
+                // plugin-rsc owns the Flight-runtime includes. It selects its
+                // vendored runtime by default and an explicitly installed
+                // react-server-dom-webpack package as an opt-in override.
+                ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -7266,29 +7444,31 @@ export const loadServerActionClient = ${
 
   // Append auto-injected RSC plugins if applicable
   if (rscPluginPromise) {
+    // Run before plugin-rsc's own cwd-based override resolver so the resolved
+    // Vite root, not an unrelated parent workspace, selects the Flight runtime.
+    plugins.push(rscRuntimeResolverPlugin);
     plugins.push(rscPluginPromise);
-  }
-  if (earlyAppDirExists) {
     plugins.push(
-      createActionOwnerManifestPlugin({
-        canonicalizeModuleId: canonicalize,
-        async getManager(config) {
-          const rscPluginModule = await rscPluginModulePromise;
-          return rscPluginModule?.getPluginApi(config)?.manager;
-        },
-        getRoutes: () => rscActionOwnerRoutes ?? [],
-        getSharedRoots: () => rscActionOwnerSharedRoots,
-        onComplete() {
-          rscActionOwnerRoutes = null;
-          rscActionOwnerSharedRoots = [];
-        },
-      }),
+      applyOnlyToAppRouter(
+        createActionOwnerManifestPlugin({
+          canonicalizeModuleId: canonicalize,
+          async getManager(config) {
+            const rscPluginModule = await rscPluginModulePromise;
+            return rscPluginModule?.getPluginApi(config)?.manager;
+          },
+          getRoutes: () => rscActionOwnerRoutes ?? [],
+          getSharedRoots: () => rscActionOwnerSharedRoots,
+          onComplete() {
+            rscActionOwnerRoutes = null;
+            rscActionOwnerSharedRoots = [];
+          },
+        }),
+      ),
     );
-  }
-  if (rscPluginPromise) {
-    plugins.push(createRscReferenceValidationNormalizerPlugin());
-    plugins.push(createRscClientReferenceLoadersPlugin());
+    plugins.push(applyOnlyToAppRouter(createRscReferenceValidationNormalizerPlugin()));
+    plugins.push(applyOnlyToAppRouter(createRscClientReferenceLoadersPlugin()));
   } else if (manualUseCachePluginPromise) {
+    plugins.push(rscRuntimeResolverPlugin);
     plugins.push(manualUseCachePluginPromise);
   }
 

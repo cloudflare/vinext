@@ -13,7 +13,6 @@
     "vite": "catalog:",
     "vinext": "workspace:*",
     "@vitejs/plugin-rsc": "catalog:",
-    "react-server-dom-webpack": "catalog:",
     "@cloudflare/vite-plugin": "catalog:",
     "@cloudflare/kumo": "catalog:",
     "@phosphor-icons/react": "catalog:",

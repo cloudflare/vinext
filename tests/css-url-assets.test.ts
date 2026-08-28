@@ -319,7 +319,7 @@ describe.each(["plain", "cloudflare"] as const)(
       // Build an isolated copy so the client output (which vinext writes to
       // <root>/dist/client) lands in a temp dir instead of the committed fixture.
       // Borrow app-basic's node_modules for the RSC/React-server deps the App
-      // Router build needs (@vitejs/plugin-rsc, react-server-dom-webpack, …).
+      // Router build needs (@vitejs/plugin-rsc and its vendored Flight runtime).
       tmpDir = await createIsolatedFixture(
         APP_CSS_FIXTURE,
         "vinext-css-url-app-",

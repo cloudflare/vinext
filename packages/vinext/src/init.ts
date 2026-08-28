@@ -25,6 +25,7 @@ import {
   renameCJSConfigs,
   detectPackageManager,
   detectPackageManagerName,
+  detectPackageManagerProductionCommand,
   findViteConfigPath,
   hasViteConfig,
 } from "./utils/project.js";
@@ -223,7 +224,6 @@ export function getInitDependencyGroups(
   const dependencies = ["vinext"];
   const devDependencies = ["vite", "@vitejs/plugin-react"];
   if (isAppRouter) {
-    dependencies.push("react-server-dom-webpack");
     devDependencies.push("@vitejs/plugin-rsc");
   }
   if (platform === "cloudflare") {
@@ -291,6 +291,8 @@ function addDependencyEntries(root: string, deps: string[], { dev }: { dev: bool
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as {
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+    peerDependencies?: Record<string, string>;
   };
   const targetKey = dev ? "devDependencies" : "dependencies";
   const target = (pkg[targetKey] ??= {});
@@ -298,6 +300,7 @@ function addDependencyEntries(root: string, deps: string[], { dev }: { dev: bool
 
   for (const dep of deps) {
     const { name, version, hasExplicitVersion } = parseDependencySpecifier(dep);
+    let changed = false;
     const existingTarget =
       pkg.dependencies?.[name] !== undefined
         ? pkg.dependencies
@@ -306,13 +309,27 @@ function addDependencyEntries(root: string, deps: string[], { dev }: { dev: bool
           : undefined;
 
     if (existingTarget) {
-      if (!hasExplicitVersion || existingTarget[name] === version) continue;
-      existingTarget[name] = version;
-      added.push(name);
+      if (hasExplicitVersion && existingTarget[name] !== version) {
+        existingTarget[name] = version;
+        changed = true;
+      }
+      if (!dev) {
+        for (const section of [pkg.optionalDependencies, pkg.peerDependencies]) {
+          if (section?.[name] !== undefined) {
+            delete section[name];
+            changed = true;
+          }
+        }
+      }
+      if (changed) added.push(name);
       continue;
     }
 
     target[name] = version;
+    if (!dev) {
+      delete pkg.optionalDependencies?.[name];
+      delete pkg.peerDependencies?.[name];
+    }
     added.push(name);
   }
 
@@ -323,20 +340,7 @@ function addDependencyEntries(root: string, deps: string[], { dev }: { dev: bool
   return added;
 }
 
-/**
- * Check if react/react-dom need upgrading for react-server-dom-webpack compatibility.
- *
- * react-server-dom-webpack versions are pinned to match their React version
- * (e.g. rsdw@19.2.6 requires react@^19.2.6). When a project has an older
- * React (e.g. create-next-app ships react@19.2.3), we need to upgrade
- * react/react-dom BEFORE installing rsdw to avoid peer-dep conflicts.
- *
- * Uses createRequire to resolve react's package.json through Node's module
- * resolution, which works correctly across all package managers (npm, pnpm,
- * yarn, Yarn PnP) and monorepo layouts with hoisting/symlinking.
- *
- * Returns ["react@latest", "react-dom@latest"] if upgrade is needed, [] otherwise.
- */
+/** Install dependency specs using the project's package manager. */
 async function installDeps(
   root: string,
   deps: string[],
@@ -348,9 +352,10 @@ async function installDeps(
 ): Promise<string> {
   if (deps.length === 0) return "";
 
-  const baseCmd = detectPackageManager(root);
-  // Strip " -D" for non-dev installs (keeps deps in "dependencies", not "devDependencies")
-  const installCmd = dev ? baseCmd : baseCmd.replace(/ -D$/, "");
+  // npm and pnpm otherwise preserve an existing optional/peer classification.
+  // Force runtime packages into dependencies so plugin-rsc's framework crawl
+  // can see an explicit RSDW override.
+  const installCmd = dev ? detectPackageManager(root) : detectPackageManagerProductionCommand(root);
   const depsStr = deps.join(" ");
 
   return (
@@ -602,11 +607,28 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const dependencyEntriesAdded: string[] = [];
   const devDependencyEntriesAdded: string[] = [];
 
-  // For App Router: react-server-dom-webpack requires react/react-dom versions
-  // to match exactly (e.g. rsdw@19.2.6 needs react@^19.2.6). If the installed
-  // React is too old (common with create-next-app), upgrade it first as a
-  // regular dependency to avoid ERESOLVE peer-dep conflicts.
-  if (isApp && missingDependencies.includes("react-server-dom-webpack")) {
+  // Install plugin-rsc first so compatibility checks read the exact vendored
+  // Flight version selected by this project instead of guessing which React
+  // release a future plugin version will carry.
+  const missingRscPluginIndex = missingDevDependencies.indexOf("@vitejs/plugin-rsc");
+  if (isApp && shouldInstall && missingRscPluginIndex !== -1) {
+    console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Installing devDependencies:"))}`);
+    console.log(formatList(["@vitejs/plugin-rsc"], "    "));
+    try {
+      const installOutput = await installDeps(root, ["@vitejs/plugin-rsc"], exec);
+      devDependencyEntriesAdded.push("@vitejs/plugin-rsc");
+      if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+    } catch (error) {
+      if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
+      dependencyInstallNeedsApproval = true;
+    }
+    missingDevDependencies.splice(missingRscPluginIndex, 1);
+    console.log();
+  }
+
+  // Keep App Router's React pair compatible with its Flight runtime. Stable
+  // React uses plugin-rsc's vendor; prereleases need a matching RSDW override.
+  if (isApp) {
     const reactUpgrade = getReactUpgradeDeps(root);
     if (reactUpgrade.length > 0) {
       console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Upgrading dependencies:"))}`);

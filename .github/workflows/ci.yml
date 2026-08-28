@@ -553,6 +553,14 @@ jobs:
             label: app-with-src
             shardIndex: 1
             shardTotal: 1
+          - project: app-rsdw-override-prod
+            label: app-rsdw-override-prod
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-rsc-isolated-standalone
+            label: app-rsc-isolated-standalone
+            shardIndex: 1
+            shardTotal: 1
           - project: standalone-output
             label: standalone-output
             shardIndex: 1

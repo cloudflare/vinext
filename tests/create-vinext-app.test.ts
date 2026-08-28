@@ -154,9 +154,9 @@ describe("createVinextApp", () => {
       react: "latest",
       "react-dom": "latest",
       vinext: "latest",
-      "react-server-dom-webpack": "latest",
       "@vinext/cloudflare": "latest",
     });
+    expect(pkg.dependencies).not.toHaveProperty("react-server-dom-webpack");
     expect(pkg.dependencies).not.toHaveProperty("next");
     expect(readFile(appPath, "tsconfig.json")).not.toContain('"name": "next"');
     expect(pkg.scripts).not.toHaveProperty("postinstall");
@@ -208,7 +208,8 @@ describe("createVinextApp", () => {
     );
 
     expect(readPkg(appPath).packageManager).toMatch(/^pnpm(?:@|$)/);
-    expect(calls).toContain("pnpm add vinext react-server-dom-webpack @vinext/cloudflare");
+    expect(calls).toContain("pnpm add vinext @vinext/cloudflare");
+    expect(calls.some((command) => command.includes("react-server-dom-webpack"))).toBe(false);
     expect(calls).toContain(
       "pnpm add -D vite @vitejs/plugin-react @vitejs/plugin-rsc @cloudflare/vite-plugin wrangler",
     );
@@ -322,8 +323,8 @@ describe("createVinextApp", () => {
     const pkg = readPkg(appPath);
     expect(pkg.dependencies).toMatchObject({
       vinext: "latest",
-      "react-server-dom-webpack": "latest",
     });
+    expect(pkg.dependencies).not.toHaveProperty("react-server-dom-webpack");
     expect(pkg.dependencies).not.toHaveProperty("@vinext/cloudflare");
     expect(pkg.devDependencies).not.toHaveProperty("@cloudflare/vite-plugin");
     expect(pkg.devDependencies).not.toHaveProperty("wrangler");

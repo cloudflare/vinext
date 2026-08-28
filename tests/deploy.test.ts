@@ -23,6 +23,7 @@ import {
 import {
   detectPackageManager,
   detectPackageManagerName,
+  detectPackageManagerProductionCommand,
   detectProject,
   findInNodeModules,
   formatMissingCloudflarePluginError,
@@ -2241,7 +2242,7 @@ describe("getMissingDeps", () => {
     expect(missing).not.toContainEqual(expect.objectContaining({ name: "@vitejs/plugin-rsc" }));
   });
 
-  it("reports missing react-server-dom-webpack for App Router", () => {
+  it("does not require react-server-dom-webpack for App Router", () => {
     mkdir(tmpDir, "app");
     const info = detectProject(tmpDir);
     info.hasCloudflarePlugin = true;
@@ -2253,7 +2254,9 @@ describe("getMissingDeps", () => {
     // on filesystem isolation in tmpdir.)
     const notResolvable = () => false;
     const missing = getMissingDeps(info, notResolvable);
-    expect(missing).toContainEqual(expect.objectContaining({ name: "react-server-dom-webpack" }));
+    expect(missing).not.toContainEqual(
+      expect.objectContaining({ name: "react-server-dom-webpack" }),
+    );
   });
 
   it("does not require react-server-dom-webpack for Pages Router", () => {
@@ -3207,18 +3210,21 @@ describe("detectPackageManager", () => {
     writeFile(tmpDir, "pnpm-lock.yaml", "");
     expect(detectPackageManager(tmpDir)).toBe("pnpm add -D");
     expect(detectPackageManagerName(tmpDir)).toBe("pnpm");
+    expect(detectPackageManagerProductionCommand(tmpDir)).toBe("pnpm add --save-prod");
   });
 
   it("detects yarn from yarn.lock", () => {
     writeFile(tmpDir, "yarn.lock", "");
     expect(detectPackageManager(tmpDir)).toBe("yarn add -D");
     expect(detectPackageManagerName(tmpDir)).toBe("yarn");
+    expect(detectPackageManagerProductionCommand(tmpDir)).toBe("yarn add");
   });
 
   it("detects bun from bun.lock (text format, Bun v1.0+)", () => {
     writeFile(tmpDir, "bun.lock", "");
     expect(detectPackageManager(tmpDir)).toBe("bun add -D");
     expect(detectPackageManagerName(tmpDir)).toBe("bun");
+    expect(detectPackageManagerProductionCommand(tmpDir)).toBe("bun add");
   });
 
   it("detects bun from bun.lockb (legacy binary format)", () => {
@@ -3235,6 +3241,7 @@ describe("detectPackageManager", () => {
     try {
       expect(detectPackageManager(tmpDir)).toBe("npm install -D");
       expect(detectPackageManagerName(tmpDir)).toBe("npm");
+      expect(detectPackageManagerProductionCommand(tmpDir)).toBe("npm install --save-prod");
     } finally {
       if (savedUA !== undefined) process.env.npm_config_user_agent = savedUA;
     }

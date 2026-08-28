@@ -12,8 +12,7 @@
     "clsx": "catalog:",
     "tailwind-merge": "catalog:",
     "vinext": "workspace:*",
-    "@vitejs/plugin-rsc": "catalog:",
-    "react-server-dom-webpack": "catalog:"
+    "@vitejs/plugin-rsc": "catalog:"
   },
   "devDependencies": {
     "vite": "catalog:",
