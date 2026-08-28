@@ -17,6 +17,10 @@ type InstalledPackage = {
 
 const RSDW_PACKAGE = "react-server-dom-webpack";
 const PLUGIN_RSC_VENDOR_CLIENT = "@vitejs/plugin-rsc/vendor/react-server-dom/client.browser";
+// @vitejs/plugin-rsc 0.5.34, vinext's minimum supported release, vendors this
+// React Flight version. Keep the floor available when `vinext init --install=false`
+// runs before the optional plugin has been installed.
+const MINIMUM_PLUGIN_RSC_VENDOR_REACT_VERSION: [number, number, number] = [19, 2, 8];
 const EXACT_VERSION_RE = /^=?([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/;
 
 function readProjectPackage(root: string): ProjectPackageJson | null {
@@ -86,8 +90,12 @@ function getVendoredReactVersion(
       // Fall through to root-based package resolution.
     }
   }
-  version ??= getInstalledPackage(root, PLUGIN_RSC_VENDOR_CLIENT, RSDW_PACKAGE)?.version ?? null;
-  if (!version) {
+  // An explicit null lets callers and tests represent a plugin that is known
+  // to be unavailable. Undefined retains the normal project/self lookup.
+  if (!version && vendoredRuntimeRoot !== null) {
+    version = getInstalledPackage(root, PLUGIN_RSC_VENDOR_CLIENT, RSDW_PACKAGE)?.version ?? null;
+  }
+  if (!version && vendoredRuntimeRoot !== null) {
     try {
       const resolvedEntry = createRequire(import.meta.url).resolve(PLUGIN_RSC_VENDOR_CLIENT);
       version = findPackage(resolvedEntry, RSDW_PACKAGE)?.version ?? null;
@@ -95,7 +103,7 @@ function getVendoredReactVersion(
       // The optional RSC plugin may not be installed yet during `vinext init`.
     }
   }
-  return parseVersionTuple(version ?? "");
+  return parseVersionTuple(version ?? "") ?? MINIMUM_PLUGIN_RSC_VENDOR_REACT_VERSION;
 }
 
 function getEffectiveVersion(

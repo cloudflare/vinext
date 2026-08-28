@@ -491,6 +491,16 @@ describe("getReactUpgradeDeps", () => {
     expect(deps).toEqual(["react@latest", "react-dom@latest"]);
   });
 
+  it("uses the minimum vendor floor when plugin-rsc is not installed yet", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.7");
+
+    // null models a published vinext install where the optional plugin cannot
+    // resolve; the source workspace's devDependency must not satisfy this test.
+    const deps = getReactUpgradeDeps(tmpDir, null);
+    expect(deps).toEqual(["react@latest", "react-dom@latest"]);
+  });
+
   it("returns empty array when React is new enough", () => {
     setupProject(tmpDir, { router: "app" });
     setupFakeReact(tmpDir, "19.2.8");
