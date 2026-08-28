@@ -2355,7 +2355,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
 
         if (hasAppDir) {
-          if (!explicitProjectRoot && autoRsc) {
+          if (!explicitProjectRoot) {
             const configuredRscPath = resolveDependencyFromRoot(root, "@vitejs/plugin-rsc");
             if (configuredRscPath && !sameResolvedModule(resolvedRscPath, configuredRscPath)) {
               throw new Error(

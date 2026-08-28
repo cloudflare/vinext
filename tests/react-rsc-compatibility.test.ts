@@ -64,28 +64,30 @@ describe("App Router React/RSC compatibility validation", () => {
     ).rejects.toThrow("npm install --save-prod react-server-dom-webpack@19.3.0-canary-test");
   });
 
-  it("requires projectRoot when a custom root resolves a distinct RSC plugin copy", async () => {
-    const pluginRoot = path.join(root, "node_modules", "@vitejs", "plugin-rsc");
-    fs.mkdirSync(path.join(pluginRoot, "dist"), { recursive: true });
-    fs.writeFileSync(
-      path.join(pluginRoot, "package.json"),
-      JSON.stringify({
-        name: "@vitejs/plugin-rsc",
-        version: "0.0.0-distinct-test",
-        type: "module",
-        exports: { ".": "./dist/index.js" },
-      }),
-    );
-    fs.writeFileSync(path.join(pluginRoot, "dist", "index.js"), "export default () => [];\n");
+  for (const rscMode of ["auto", "manual"] as const) {
+    it(`requires projectRoot when a custom root resolves a distinct RSC plugin copy in ${rscMode} mode`, async () => {
+      const pluginRoot = path.join(root, "node_modules", "@vitejs", "plugin-rsc");
+      fs.mkdirSync(path.join(pluginRoot, "dist"), { recursive: true });
+      fs.writeFileSync(
+        path.join(pluginRoot, "package.json"),
+        JSON.stringify({
+          name: "@vitejs/plugin-rsc",
+          version: "0.0.0-distinct-test",
+          type: "module",
+          exports: { ".": "./dist/index.js" },
+        }),
+      );
+      fs.writeFileSync(path.join(pluginRoot, "dist", "index.js"), "export default () => [];\n");
 
-    await expect(
-      resolveConfig(
-        { root, configFile: false, plugins: vinext({ react: false }) },
-        "build",
-        "production",
-      ),
-    ).rejects.toThrow(`Pass projectRoot: ${JSON.stringify(root)} to vinext()`);
-  });
+      const plugins =
+        rscMode === "auto"
+          ? vinext({ react: false })
+          : [vinext({ react: false, rsc: false }), rsc({ entries: RSC_ENTRIES })];
+      await expect(
+        resolveConfig({ root, configFile: false, plugins }, "build", "production"),
+      ).rejects.toThrow(`Pass projectRoot: ${JSON.stringify(root)} to vinext()`);
+    });
+  }
 
   it("aliases the active RSC plugin vendor to an override from a relative custom root", async () => {
     const config = await resolveConfig(
