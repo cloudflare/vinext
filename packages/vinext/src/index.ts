@@ -1825,6 +1825,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const runtimePackage = source.startsWith(PLUGIN_RSC_VENDOR_RUNTIME)
           ? PLUGIN_RSC_VENDOR_RUNTIME
           : RSDW_RUNTIME;
+        // Let the selected runtime keep its bare package specifier so Vite can
+        // serve the matching optimizeDeps output in development. Only redirect
+        // references to the non-selected runtime onto the selected package root.
+        if (runtimePackage === rscRuntimePackage) return;
+        if (this.environment?.name === "client") {
+          const target = replaceRscRuntimeSpecifier(source, rscRuntimePackage);
+          return this.resolve(target, importer, { ...resolveOptions, skipSelf: true });
+        }
         const subpath = source.slice(runtimePackage.length).replace(/^\//, "");
         const target = subpath ? path.join(rscRuntimeRoot, subpath) : rscRuntimeRoot;
         return this.resolve(target, importer, { ...resolveOptions, skipSelf: true });
@@ -7470,6 +7478,25 @@ export const loadServerActionClient = ${
   } else if (manualUseCachePluginPromise) {
     plugins.push(rscRuntimeResolverPlugin);
     plugins.push(manualUseCachePluginPromise);
+    plugins.push(
+      applyOnlyToAppRouter(
+        createActionOwnerManifestPlugin({
+          canonicalizeModuleId: canonicalize,
+          async getManager(config) {
+            const rscPluginModule = await rscPluginModulePromise;
+            return rscPluginModule?.getPluginApi(config)?.manager;
+          },
+          getRoutes: () => rscActionOwnerRoutes ?? [],
+          getSharedRoots: () => rscActionOwnerSharedRoots,
+          onComplete() {
+            rscActionOwnerRoutes = null;
+            rscActionOwnerSharedRoots = [];
+          },
+        }),
+      ),
+    );
+    plugins.push(applyOnlyToAppRouter(createRscReferenceValidationNormalizerPlugin()));
+    plugins.push(applyOnlyToAppRouter(createRscClientReferenceLoadersPlugin()));
   }
 
   return plugins;
