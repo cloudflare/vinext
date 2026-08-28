@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createServer, resolveConfig } from "vite";
 import rsc from "@vitejs/plugin-rsc";
@@ -10,6 +12,47 @@ import { RSC_ENTRIES } from "./helpers.js";
 const APP_WITH_SRC_ROOT = path.resolve(import.meta.dirname, "fixtures/app-with-src");
 const APP_BASIC_ROOT = path.resolve(import.meta.dirname, "fixtures/app-basic");
 const RSDW_VENDOR_ALIAS = "@vitejs/plugin-rsc/vendor/react-server-dom";
+const testRequire = createRequire(import.meta.url);
+const realRscPackageJson = testRequire.resolve("@vitejs/plugin-rsc/package.json");
+const realRscRoot = path.dirname(realRscPackageJson);
+const realRscDependencyRoot = path.resolve(realRscRoot, "../..");
+const realRscDependencies = Object.keys(
+  JSON.parse(fs.readFileSync(realRscPackageJson, "utf8")).dependencies as Record<string, string>,
+);
+
+function resolvePackageRoot(req: NodeJS.Require, packageName: string): string {
+  let current = path.dirname(req.resolve(packageName));
+  while (current !== path.dirname(current)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(current, "package.json"), "utf8"));
+      if (pkg.name === packageName) return current;
+    } catch {}
+    current = path.dirname(current);
+  }
+  throw new Error(`Unable to resolve package root for ${packageName}`);
+}
+
+function linkPackage(root: string, packageName: string, packageRoot: string): void {
+  const target = path.join(root, "node_modules", packageName);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.symlinkSync(packageRoot, target, "junction");
+}
+
+function installDistinctRscPluginCopy(root: string): string {
+  const pluginRoot = path.join(root, "node_modules", "@vitejs", "plugin-rsc");
+  const nestedNodeModules = path.join(realRscRoot, "node_modules");
+  fs.mkdirSync(path.dirname(pluginRoot), { recursive: true });
+  fs.cpSync(realRscRoot, pluginRoot, {
+    recursive: true,
+    filter(source) {
+      return source !== nestedNodeModules && !source.startsWith(`${nestedNodeModules}${path.sep}`);
+    },
+  });
+  for (const dependency of [...realRscDependencies, "vite"]) {
+    linkPackage(root, dependency, fs.realpathSync(path.join(realRscDependencyRoot, dependency)));
+  }
+  return path.join(pluginRoot, "dist", "index.js");
+}
 
 describe("App Router React/RSC compatibility validation", () => {
   let root: string;
@@ -66,18 +109,7 @@ describe("App Router React/RSC compatibility validation", () => {
 
   for (const rscMode of ["auto", "manual"] as const) {
     it(`requires projectRoot when a custom root resolves a distinct RSC plugin copy in ${rscMode} mode`, async () => {
-      const pluginRoot = path.join(root, "node_modules", "@vitejs", "plugin-rsc");
-      fs.mkdirSync(path.join(pluginRoot, "dist"), { recursive: true });
-      fs.writeFileSync(
-        path.join(pluginRoot, "package.json"),
-        JSON.stringify({
-          name: "@vitejs/plugin-rsc",
-          version: "0.0.0-distinct-test",
-          type: "module",
-          exports: { ".": "./dist/index.js" },
-        }),
-      );
-      fs.writeFileSync(path.join(pluginRoot, "dist", "index.js"), "export default () => [];\n");
+      installDistinctRscPluginCopy(root);
 
       const plugins =
         rscMode === "auto"
@@ -88,6 +120,56 @@ describe("App Router React/RSC compatibility validation", () => {
       ).rejects.toThrow(`Pass projectRoot: ${JSON.stringify(root)} to vinext()`);
     });
   }
+
+  it("validates the registered manual RSC plugin copy after applying projectRoot", async () => {
+    const distinctRscEntry = installDistinctRscPluginCopy(root);
+    const reactVersion = JSON.parse(
+      fs.readFileSync(path.join(resolvePackageRoot(testRequire, "react"), "package.json"), "utf8"),
+    ).version;
+    fs.writeFileSync(
+      path.join(root, "package.json"),
+      JSON.stringify({
+        name: "react-rsc-compat-test",
+        private: true,
+        dependencies: { react: reactVersion, "react-dom": reactVersion },
+      }),
+    );
+    fs.rmSync(path.join(root, "node_modules", "react"), { recursive: true, force: true });
+    linkPackage(root, "react", resolvePackageRoot(testRequire, "react"));
+    linkPackage(root, "react-dom", resolvePackageRoot(testRequire, "react-dom"));
+
+    await expect(
+      resolveConfig(
+        {
+          root,
+          configFile: false,
+          plugins: [
+            vinext({ projectRoot: root, react: false, rsc: false }),
+            rsc({ entries: RSC_ENTRIES }),
+          ],
+        },
+        "build",
+        "production",
+      ),
+    ).rejects.toThrow(
+      "manually registered @vitejs/plugin-rsc was created by a different module copy",
+    );
+
+    const rootRsc = (await import(pathToFileURL(distinctRscEntry).href)).default;
+    const config = await resolveConfig(
+      {
+        root,
+        configFile: false,
+        plugins: [
+          vinext({ projectRoot: root, react: false, rsc: false }),
+          rootRsc({ entries: RSC_ENTRIES }),
+        ],
+      },
+      "build",
+      "production",
+    );
+    expect(config.plugins.some((plugin) => plugin.name === "rsc:minimal")).toBe(true);
+  });
 
   it("aliases the active RSC plugin vendor to an override from a relative custom root", async () => {
     const config = await resolveConfig(

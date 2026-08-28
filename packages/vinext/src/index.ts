@@ -1807,6 +1807,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     }).then(applyOnlyToAppRouter);
   }
 
+  const getRscManager = (plugins: readonly Plugin[]): object | null => {
+    const minimalPlugin = plugins.find((plugin) => plugin.name === "rsc:minimal");
+    const api = minimalPlugin?.api as { manager?: unknown } | undefined;
+    return api?.manager !== null && typeof api?.manager === "object" ? api.manager : null;
+  };
+
   const rscRuntimeResolverPlugin: Plugin = {
     name: "vinext:rsc-runtime-root",
     enforce: "pre",
@@ -1834,11 +1840,29 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         return this.resolve(target, importer, { ...resolveOptions, skipSelf: true });
       },
     },
-    configResolved(config) {
+    async configResolved(config) {
       // Auto mode normalizes the RSC config hook result before Vite computes
       // optimizer metadata. Manual rsc() runs after vinext by contract, so its
       // final merged config needs one last normalization here.
-      if (!autoRsc) pinRscRuntimeConfig(config, rscRuntimePackage);
+      if (!autoRsc) {
+        const configuredManager = getRscManager(config.plugins);
+        if (configuredManager && rscPluginModulePromise) {
+          const resolvedRscModule = await rscPluginModulePromise;
+          const resolvedManager = getRscManager(resolvedRscModule.default());
+          if (
+            resolvedManager &&
+            Object.getPrototypeOf(configuredManager).constructor !==
+              Object.getPrototypeOf(resolvedManager).constructor
+          ) {
+            throw new Error(
+              "vinext: The manually registered @vitejs/plugin-rsc was created by a different module copy than vinext resolved.\n" +
+                `Import rsc() from the dependency graph rooted at ${JSON.stringify(root)}, ` +
+                "or remove rsc: false and the explicit rsc() call so vinext can register it.",
+            );
+          }
+        }
+        pinRscRuntimeConfig(config, rscRuntimePackage);
+      }
     },
   };
 
