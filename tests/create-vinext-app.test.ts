@@ -208,10 +208,11 @@ describe("createVinextApp", () => {
     );
 
     expect(readPkg(appPath).packageManager).toMatch(/^pnpm(?:@|$)/);
-    expect(calls).toContain("pnpm add vinext @vinext/cloudflare");
+    expect(calls).toContain("pnpm add -D @vitejs/plugin-rsc");
+    expect(calls).toContain("pnpm add --save-prod vinext @vinext/cloudflare");
     expect(calls.some((command) => command.includes("react-server-dom-webpack"))).toBe(false);
     expect(calls).toContain(
-      "pnpm add -D vite @vitejs/plugin-react @vitejs/plugin-rsc @cloudflare/vite-plugin wrangler",
+      "pnpm add -D vite @vitejs/plugin-react @cloudflare/vite-plugin wrangler",
     );
     expect(calls.some((command) => command.split(/\s+/).includes("next"))).toBe(false);
     expect(calls.some((command) => command.includes("typegen"))).toBe(false);
