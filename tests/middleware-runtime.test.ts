@@ -433,6 +433,59 @@ describe("middleware redirect protocol", () => {
     expect((capturedRequest as NextRequest & { __isData?: boolean }).__isData).toBeUndefined();
   });
 
+  // Ported from Next.js:
+  // packages/next/src/server/web/adapter.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+  it("exposes the normalized page URL without a build ID for Pages data requests", async () => {
+    let capturedRequest: NextRequest | undefined;
+
+    await executeMiddleware({
+      isDataRequest: true,
+      isProxy: false,
+      module: {
+        default: (request: NextRequest) => {
+          capturedRequest = request;
+        },
+      },
+      // Pages request adapters normalize the data endpoint before entering the
+      // middleware runtime unless skipProxyUrlNormalize is enabled.
+      request: new Request("http://localhost:3000/about?from=data"),
+    });
+
+    expect(capturedRequest?.nextUrl.buildId).toBeUndefined();
+    expect(capturedRequest?.nextUrl.pathname).toBe("/about");
+    expect(capturedRequest?.nextUrl.href).toBe("http://localhost:3000/about?from=data");
+    expect(capturedRequest?.url).toBe("http://localhost:3000/about?from=data");
+  });
+
+  // Ported from Next.js:
+  // test/e2e/skip-trailing-slash-redirect/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/skip-trailing-slash-redirect/index.test.ts
+  it("preserves the original Pages data URL when proxy URL normalization is disabled", async () => {
+    let capturedRequest: NextRequest | undefined;
+
+    await executeMiddleware({
+      isDataRequest: true,
+      isProxy: false,
+      module: {
+        default: (request: NextRequest) => {
+          capturedRequest = request;
+        },
+      },
+      request: new Request("http://localhost:3000/_next/data/request-build/about.json?from=data"),
+      skipProxyUrlNormalize: true,
+    });
+
+    expect(capturedRequest?.nextUrl.buildId).toBe("request-build");
+    expect(capturedRequest?.nextUrl.pathname).toBe("/_next/data/request-build/about.json");
+    expect(capturedRequest?.nextUrl.href).toBe(
+      "http://localhost:3000/_next/data/request-build/about.json?from=data",
+    );
+    expect(capturedRequest?.url).toBe(
+      "http://localhost:3000/_next/data/request-build/about.json?from=data",
+    );
+  });
+
   it("relativizes the Location header for same-host redirects", async () => {
     const module = {
       default: (req: Request) => {

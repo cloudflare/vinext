@@ -11308,43 +11308,16 @@ describe("NextRequest API", () => {
     expect(req.geo).toBeUndefined();
   });
 
-  it("nextUrl.buildId returns process.env.__VINEXT_BUILD_ID when set", async () => {
+  // Ported from Next.js: test/unit/web-runtime/next-url.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/unit/web-runtime/next-url.test.ts
+  it("nextUrl.buildId is absent for ordinary request URLs", async () => {
     const original = process.env.__VINEXT_BUILD_ID;
     try {
       process.env.__VINEXT_BUILD_ID = "test-build-123";
       const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
       const req = new NextRequest("http://localhost/");
-      expect(req.nextUrl.buildId).toBe("test-build-123");
-    } finally {
-      if (original === undefined) {
-        delete process.env.__VINEXT_BUILD_ID;
-      } else {
-        process.env.__VINEXT_BUILD_ID = original;
-      }
-    }
-  });
-
-  it("nextUrl.buildId returns undefined when __VINEXT_BUILD_ID is not set", async () => {
-    const original = process.env.__VINEXT_BUILD_ID;
-    try {
-      delete process.env.__VINEXT_BUILD_ID;
-      const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-      const req = new NextRequest("http://localhost/");
       expect(req.nextUrl.buildId).toBeUndefined();
-    } finally {
-      if (original !== undefined) {
-        process.env.__VINEXT_BUILD_ID = original;
-      }
-    }
-  });
-
-  it("buildId pass-through on NextRequest delegates to nextUrl.buildId", async () => {
-    const original = process.env.__VINEXT_BUILD_ID;
-    try {
-      process.env.__VINEXT_BUILD_ID = "test-build-456";
-      const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-      const req = new NextRequest("http://localhost/");
-      expect(req.buildId).toBe(req.nextUrl.buildId);
+      expect(req.buildId).toBeUndefined();
     } finally {
       if (original === undefined) {
         delete process.env.__VINEXT_BUILD_ID;
@@ -11352,6 +11325,111 @@ describe("NextRequest API", () => {
         process.env.__VINEXT_BUILD_ID = original;
       }
     }
+  });
+
+  it("nextUrl parses the build ID and page pathname from a Pages data URL", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost:3000/_next/data/request-build/about.json");
+
+    expect(req.nextUrl.buildId).toBe("request-build");
+    expect(req.buildId).toBe("request-build");
+    expect(req.nextUrl.pathname).toBe("/about");
+    expect(req.nextUrl.href).toBe("http://localhost:3000/_next/data/request-build/about.json");
+  });
+
+  it("nextUrl parses and formats the Pages data URL for the root page", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost:3000/_next/data/request-build/index.json");
+
+    expect(req.nextUrl.buildId).toBe("request-build");
+    expect(req.nextUrl.pathname).toBe("/");
+    expect(req.nextUrl.href).toBe("http://localhost:3000/_next/data/request-build/index.json");
+  });
+
+  it("nextUrl buildId and pathname setters preserve Pages data URL formatting", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost:3000/about/");
+
+    url.buildId = "request-build";
+    expect(url.href).toBe("http://localhost:3000/_next/data/request-build/about.json");
+
+    url.pathname = "/";
+    expect(url.href).toBe("http://localhost:3000/_next/data/request-build/index.json");
+
+    url.buildId = "";
+    expect(url.href).toBe("http://localhost:3000/");
+  });
+
+  it("nextUrl preserves basePath and the default locale in Pages data URLs", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL(
+      "http://localhost:3000/docs/_next/data/request-build/en/hello.json",
+      undefined,
+      {
+        basePath: "/docs",
+        nextConfig: {
+          i18n: { defaultLocale: "en", locales: ["en", "es", "fr"] },
+        },
+      },
+    );
+
+    expect(url.buildId).toBe("request-build");
+    expect(url.basePath).toBe("/docs");
+    expect(url.locale).toBe("en");
+    expect(url.pathname).toBe("/hello");
+    expect(url.href).toBe("http://localhost:3000/docs/_next/data/request-build/en/hello.json");
+  });
+
+  it("nextUrl preserves the real localized-root Pages data endpoint", async () => {
+    // Next's client and middleware matcher tests use /en.json for a localized
+    // root data request. Its current formatter emits /enindex.json after
+    // mutation, so vinext deliberately preserves the real request endpoint.
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-matcher/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/format-next-pathname-info.ts
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost:3000/_next/data/request-build/en.json", undefined, {
+      nextConfig: {
+        i18n: { defaultLocale: "en", locales: ["en", "fr"] },
+      },
+    });
+
+    expect(url.buildId).toBe("request-build");
+    expect(url.locale).toBe("en");
+    expect(url.pathname).toBe("/");
+    expect(url.href).toBe("http://localhost:3000/_next/data/request-build/en.json");
+  });
+
+  it("nextUrl clones keep their independent Pages data URL identity", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost:3000/_next/data/request-build/about.json");
+    const clone = url.clone();
+
+    clone.buildId = "other-build";
+    clone.pathname = "/contact";
+
+    expect(url.href).toBe("http://localhost:3000/_next/data/request-build/about.json");
+    expect(clone.href).toBe("http://localhost:3000/_next/data/other-build/contact.json");
+  });
+
+  it("nextUrl preserves raw Pages data URLs when proxy URL normalization is disabled", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest(
+      "http://localhost:3000/_next/data/request-build/about.json?from=data",
+      { nextConfig: { skipProxyUrlNormalize: true } },
+    );
+
+    expect(req.nextUrl.buildId).toBe("request-build");
+    expect(req.nextUrl.pathname).toBe("/_next/data/request-build/about.json");
+    expect(req.nextUrl.href).toBe(
+      "http://localhost:3000/_next/data/request-build/about.json?from=data",
+    );
+    expect(req.nextUrl.toString()).toBe(
+      "http://localhost:3000/_next/data/request-build/about.json?from=data",
+    );
+    expect(req.nextUrl.clone().href).toBe(
+      "http://localhost:3000/_next/data/request-build/about.json?from=data",
+    );
+    expect(req.url).toBe("http://localhost:3000/_next/data/request-build/about.json?from=data");
   });
 });
 

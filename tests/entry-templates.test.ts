@@ -1614,6 +1614,7 @@ describe("Pages Router entry template", () => {
       );
       expect(code).toContain("export const hasMiddleware = true");
       expect(code).toContain('"skipProxyUrlNormalize":true');
+      expect(code).toContain("skipProxyUrlNormalize: vinextConfig.skipProxyUrlNormalize");
       expect(code).not.toContain('request.headers.get("x-nextjs-data")');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

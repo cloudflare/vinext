@@ -237,6 +237,25 @@ describe("config redirects", () => {
 
 // 4. Middleware redirect short-circuit → {type:"response"} status 307
 describe("middleware", () => {
+  it("presents the normalized page URL to middleware for data requests by default", async () => {
+    // Next.js clears NextURL.buildId before invoking middleware so user code
+    // observes the page request rather than the internal data endpoint.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/adapter.ts
+    const runMiddleware = makeMiddleware({ continue: true });
+    await runPagesRequest(
+      makeRequest("/journal?x=1"),
+      baseDeps({
+        isDataReq: true,
+        isDataRequest: true,
+        runMiddleware,
+        matchPageRoute: vi.fn().mockReturnValue({ route: { isDynamic: false } }),
+        renderPage: makeRenderPage(),
+      }),
+    );
+
+    expect(runMiddleware.mock.calls[0]?.[0].url).toBe("http://localhost/journal?x=1");
+  });
+
   it("can present the raw data URL to middleware while routing the normalized page", async () => {
     // Ported from Next.js: packages/next/src/server/next-server.ts
     // (`skipProxyUrlNormalize` selects request meta `initURL` for middleware).
