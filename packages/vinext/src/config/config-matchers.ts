@@ -163,6 +163,8 @@ type LocaleStaticEntry = {
   altRe: RegExp;
   /** Whether the locale segment is optional (the source had `?` after the group). */
   optional: boolean;
+  /** Whether the source requires a canonical trailing-slash request. */
+  trailingSlash: boolean;
   /** The original redirect rule. */
   redirect: NextRedirect;
   /** Position of this rule in the original redirects array. */
@@ -202,7 +204,8 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
       const paramName = redirect.source.slice(2, redirect.source.indexOf("("));
       const alternation = m[1];
       const optional = m[2] === "?";
-      const suffix = "/" + m[3]; // e.g. "/security"
+      const trailingSlash = redirect.source.endsWith("/");
+      const suffix = stripTrailingSlashForConfigMatch("/" + m[3]); // e.g. "/security"
       // Build a small regex to validate the captured locale value against the
       // alternation. Using anchored match to avoid partial matches.
       // The alternation comes from user config; run it through safeRegExp to
@@ -217,6 +220,7 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
         paramName,
         altRe,
         optional,
+        trailingSlash,
         redirect,
         originalIndex: i,
       };
@@ -633,7 +637,7 @@ function extractConstraint(str: string, re: RegExp): string | null {
  *   :param(constraint) - named param with inline regex constraint
  */
 /**
- * Strip a single trailing slash from a pathname for config-source matching.
+ * Strip a single trailing slash from a config pathname or source pattern.
  *
  * Next.js conditionally appends `(/)?` to rewrite/redirect/header source
  * regexes when `trailingSlash: true` (see Next.js
@@ -838,6 +842,8 @@ export function matchRedirect(
 ): { destination: string; permanent: boolean } | null {
   if (redirects.length === 0) return null;
 
+  const originalPathname = pathname;
+  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
   // Strip trailing slash for the locale-static fast path (Map.get on the
   // pathname) matches keys derived from slash-free source patterns. The
   // linear fallback receives the original pathname so matchConfigPattern can
@@ -872,6 +878,7 @@ export function matchRedirect(
     if (noLocaleBucket) {
       for (const entry of noLocaleBucket) {
         if (!entry.optional) continue; // mandatory-locale rule — skip
+        if (entry.trailingSlash && !pathnameHadTrailingSlash) continue;
         if (entry.originalIndex >= localeMatchIndex) continue; // already have a better match
         const redirect = entry.redirect;
         if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
@@ -901,6 +908,7 @@ export function matchRedirect(
       const localeBucket = index.localeStatic.get(suffix.toLowerCase());
       if (localeBucket) {
         for (const entry of localeBucket) {
+          if (entry.trailingSlash && !pathnameHadTrailingSlash) continue;
           if (entry.originalIndex >= localeMatchIndex) continue;
           // Validate that `localePart` is one of the allowed alternation values.
           if (!entry.altRe.test(localePart)) continue;
@@ -934,7 +942,7 @@ export function matchRedirect(
       break;
     }
     if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
-    const params = matchConfigPattern(pathname, redirect.source);
+    const params = matchConfigPattern(originalPathname, redirect.source);
     if (params) {
       const conditionParams =
         redirect.has || redirect.missing

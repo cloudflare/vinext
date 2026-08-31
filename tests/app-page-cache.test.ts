@@ -121,6 +121,11 @@ describe("app page cache helpers", () => {
     ]);
   });
 
+  it("normalizes terminal slashes in prerender-seeded page tags", () => {
+    expect(buildAppPageCacheTags("/en/legacy/", [])).toContain("_N_T_/en/legacy");
+    expect(buildAppPageCacheTags("/en/legacy/", [])).not.toContain("_N_T_/en/legacy/");
+  });
+
   it("builds cached HTML and RSC responses", async () => {
     const rscData = new TextEncoder().encode("flight").buffer;
     const cachedValue = buildCachedAppPageValue("<h1>cached</h1>", rscData, 201);

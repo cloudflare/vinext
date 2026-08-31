@@ -12549,6 +12549,13 @@ describe("matchConfigPattern", () => {
     expect(matchConfigPattern("/en", "/:lang(en|es)/")).toBeNull();
   });
 
+  it("matches a trailing-slash config source against the canonical pathname", async () => {
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
+    expect(matchConfigPattern("/en/", "/:lang(en|es)/")).toEqual({ lang: "en" });
+    expect(matchConfigPattern("/en", "/:lang(en|es)/")).toBeNull();
+    expect(matchConfigPattern("/fr/", "/:lang(en|es)/")).toBeNull();
+  });
+
   it("preserves the root path and catch-all semantics under trailing slash", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // The root pathname "/" stays "/" — never stripped to "".
@@ -12839,6 +12846,31 @@ describe("matchRedirect locale-static index", () => {
       permanent: false as const,
     }));
   }
+
+  it("preserves terminal-slash source semantics in the linear fallback", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [{ source: "/old/", destination: "/new", permanent: false }];
+    expect(matchRedirect("/old/", redirects, emptyCtx)?.destination).toBe("/new");
+    expect(matchRedirect("/old", redirects, emptyCtx)).toBeNull();
+  });
+
+  it("preserves terminal-slash source semantics for locale-static redirects", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: "/:locale(en|fr)?/security/",
+        destination: "/:locale/security-dest",
+        permanent: false,
+      },
+    ];
+
+    expect(matchRedirect("/en/security/", redirects, emptyCtx)?.destination).toBe(
+      "/en/security-dest",
+    );
+    expect(matchRedirect("/security/", redirects, emptyCtx)?.destination).toBe("/security-dest");
+    expect(matchRedirect("/en/security", redirects, emptyCtx)).toBeNull();
+    expect(matchRedirect("/security", redirects, emptyCtx)).toBeNull();
+  });
 
   it("matches a locale-prefixed pathname (locale present)", async () => {
     const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
@@ -13493,6 +13525,29 @@ describe("matchHeaders", () => {
     const docsMatched = matchHeaders("/docs/", rules, makeCtx());
     expect(docsMatched).toEqual([{ key: "x-docs-header", value: "1" }]);
     expect(matchHeaders("/docs", rules, makeCtx())).toEqual([]);
+  });
+
+  it("preserves terminal-slash source semantics for headers", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules: any[] = [
+      {
+        source: "/blog/",
+        headers: [{ key: "x-static-header", value: "1" }],
+      },
+      {
+        source: "/api/:path*/",
+        headers: [{ key: "x-api-header", value: "1" }],
+      },
+    ];
+
+    expect(matchHeaders("/blog/", rules, makeCtx())).toEqual([
+      { key: "x-static-header", value: "1" },
+    ]);
+    expect(matchHeaders("/api/users/", rules, makeCtx())).toEqual([
+      { key: "x-api-header", value: "1" },
+    ]);
+    expect(matchHeaders("/blog", rules, makeCtx())).toEqual([]);
+    expect(matchHeaders("/api/users", rules, makeCtx())).toEqual([]);
   });
 });
 
