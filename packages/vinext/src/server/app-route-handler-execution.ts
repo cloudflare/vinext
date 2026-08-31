@@ -212,8 +212,17 @@ export async function executeAppRouteHandler(
       // finalization clears the request context.
       await _drainPendingRevalidations();
     }
-    const { dynamicUsedInHandler, response } = handlerResult;
-    assertSupportedAppRouteHandlerResponse(response);
+    const { dynamicUsedInHandler, response: handlerResponse } = handlerResult;
+    assertSupportedAppRouteHandlerResponse(handlerResponse);
+    // Ownership transfers here. fetch() responses have immutable headers, so
+    // copy before the ISR, cache-state, and cookie stamping below. Reusing the
+    // response as the init carries runtime-specific state (`cf`, `webSocket`)
+    // that a field-by-field copy would drop. Statuses the constructor rejects
+    // pass through untouched; none of that stamping applies to them anyway.
+    const canCopy = handlerResponse.status >= 200 && handlerResponse.status <= 599;
+    const response = canCopy
+      ? new Response(handlerResponse.body, handlerResponse)
+      : handlerResponse;
     const handlerSetCacheControl = response.headers.has("cache-control");
 
     if (dynamicUsedInHandler) {

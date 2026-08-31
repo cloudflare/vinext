@@ -9,6 +9,7 @@ import {
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { createAppRscHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
+import { dispatchAppRouteHandler } from "../packages/vinext/src/server/app-route-handler-dispatch.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
@@ -49,7 +50,7 @@ type TestRoute = {
   page?: { default?: unknown } | null;
   pattern: string;
   rootParamNames?: readonly string[];
-  routeHandler?: { GET?: () => Response; runtime?: string } | null;
+  routeHandler?: { GET?: () => Response | Promise<Response>; runtime?: string } | null;
   routeSegments: readonly string[];
   slots?: AppRouteTreePrefetchRoute["slots"];
 };
@@ -5723,5 +5724,67 @@ describe("createAppRscHandler", () => {
       expect(observedLang).toBe("en");
       expect(observedSlug).toBeUndefined();
     });
+  });
+});
+
+describe("createAppRscHandler — proxying an upstream fetch() response", () => {
+  it("serves the upstream body instead of a 500", async () => {
+    // `return fetch(upstream)` from a Route Handler used to 500 on every
+    // request: fetch() responses have immutable headers, and finalization
+    // stamped Vary onto them. Drives the real dispatcher, not the stub seam.
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain", "x-upstream": "yes" });
+      res.end("upstream payload");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const routeHandler = { GET: () => fetch(`http://127.0.0.1:${port}`) };
+    const route = createPageRoute({
+      __loadPage: undefined,
+      __loadRouteHandler() {},
+      page: null,
+      pattern: "/api/proxy",
+      routeHandler,
+      routeSegments: ["api", "proxy"],
+    });
+
+    try {
+      const handler = createHandler({
+        configHeaders: [{ source: "/api/proxy", headers: [{ key: "x-config", value: "applied" }] }],
+        dispatchMatchedRouteHandler: (dispatch) =>
+          dispatchAppRouteHandler({
+            cleanPathname: dispatch.cleanPathname,
+            clearRequestContext() {},
+            draftModeSecret: "test-draft-secret",
+            i18n: null,
+            isDevelopment: false,
+            isProduction: true,
+            async isrGet() {
+              return null;
+            },
+            isrRouteKey: (pathname) => `route:${pathname}`,
+            async isrSet() {},
+            middlewareContext: dispatch.middlewareContext,
+            middlewareRequestHeaders: null,
+            params: dispatch.params,
+            request: dispatch.request,
+            route: { pattern: "/api/proxy", routeHandler, routeSegments: ["api", "proxy"] },
+            scheduleBackgroundRegeneration() {},
+            searchParams: dispatch.searchParams,
+          }),
+        matchRoute: (pathname) => (pathname === "/api/proxy" ? { params: {}, route } : null),
+      });
+
+      const response = await handler(new Request("https://example.test/docs/api/proxy"), null);
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("upstream payload");
+      expect(response.headers.get("x-upstream")).toBe("yes");
+      // Finalization still runs, it just writes to the framework-owned copy.
+      expect(response.headers.get("Vary")).toBe(VINEXT_RSC_VARY_HEADER);
+      expect(response.headers.get("x-config")).toBe("applied");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
