@@ -9,7 +9,7 @@ import {
   readAppPageFallbackShellCacheResponse,
   scheduleAppPageRscCacheWrite,
 } from "../packages/vinext/src/server/app-page-cache.js";
-import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
+import type { AppPageCacheSetter, ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
@@ -1209,6 +1209,36 @@ describe("app page cache helpers", () => {
       },
     ]);
     expect(debugCalls).toEqual([["HTML cache written", "html:/fresh"]]);
+  });
+
+  it("does not persist middleware-only Link headers in the App page artifact", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+    const response = finalizeAppPageHtmlCacheResponse(
+      new Response("<h1>fresh</h1>", {
+        headers: { Link: "</visitor-a.css>; rel=preload; as=style" },
+      }),
+      {
+        capturedRscDataPromise: null,
+        cleanPathname: "/middleware-link",
+        consumeDynamicUsage: () => false,
+        getPageTags: () => [],
+        isrHtmlKey: (pathname) => "html:" + pathname,
+        isrRscKey: (pathname) => "rsc:" + pathname,
+        isrSet,
+        linkHeader: null,
+        revalidateSeconds: 60,
+        waitUntil(promise) {
+          pendingCacheWrites.push(promise);
+        },
+      },
+    );
+
+    await response.text();
+    await pendingCacheWrites[0];
+
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    expect(isrSet.mock.calls[0]?.[1].headers?.link).toBeUndefined();
   });
 
   it("skips HTML and RSC cache writes when dynamic usage appears during stream rendering", async () => {

@@ -1,3 +1,5 @@
+import { applyOriginManagedPageCacheResponseHeaders } from "./cache-control.js";
+
 const ADDITIVE_RESPONSE_HEADER_NAMES = new Set(["set-cookie", "vary"]);
 
 export function mergeVaryHeader(target: Headers, value: string): void {
@@ -39,28 +41,28 @@ export function mergeMiddlewareResponseHeaders(
   target: Headers,
   middlewareHeaders: Headers | null,
 ): void {
-  if (!middlewareHeaders) {
-    return;
+  if (middlewareHeaders) {
+    for (const [key, value] of middlewareHeaders) {
+      const lowerName = key.toLowerCase();
+      // Next.js only stages truthy middleware response-header values. Keep an
+      // empty Link from erasing config or renderer-owned Link values.
+      if (lowerName === "link" && !value) {
+        continue;
+      }
+
+      if (lowerName === "vary") {
+        mergeVaryHeader(target, value);
+        continue;
+      }
+
+      if (ADDITIVE_RESPONSE_HEADER_NAMES.has(lowerName)) {
+        target.append(key, value);
+        continue;
+      }
+
+      target.set(key, value);
+    }
   }
 
-  for (const [key, value] of middlewareHeaders) {
-    const lowerName = key.toLowerCase();
-    // Next.js only stages truthy middleware response-header values. Keep an
-    // empty Link from erasing config or renderer-owned Link values.
-    if (lowerName === "link" && !value) {
-      continue;
-    }
-
-    if (lowerName === "vary") {
-      mergeVaryHeader(target, value);
-      continue;
-    }
-
-    if (ADDITIVE_RESPONSE_HEADER_NAMES.has(lowerName)) {
-      target.append(key, value);
-      continue;
-    }
-
-    target.set(key, value);
-  }
+  applyOriginManagedPageCacheResponseHeaders(target);
 }

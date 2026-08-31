@@ -20,7 +20,7 @@ import {
   type CachedPagesValue,
   type CachedAppPageValue,
 } from "vinext/shims/cache-handler";
-import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { getCdnCacheStorageAdapter } from "vinext/shims/cdn-cache";
 import { fnv1a64 } from "../utils/hash.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
@@ -168,7 +168,7 @@ export type ISRCacheEntry = {
 export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
   // Page-level reads go through the CDN cache adapter. The default adapter
   // reads the data cache; an edge adapter may return null so the CDN serves.
-  const result = await getCdnCacheAdapter().get(key);
+  const result = await getCdnCacheStorageAdapter().get(key);
   if (!result) return null;
   const isExpired = result.cacheState === "expired";
 
@@ -214,7 +214,7 @@ export async function isrSet(
   data: IncrementalCacheValue | null,
   policy: IsrWritePolicy,
 ): Promise<void> {
-  await getCdnCacheAdapter().set(key, data, {
+  await getCdnCacheStorageAdapter().set(key, data, {
     cacheControl: policy.cacheControl,
     // `revalidate` is the legacy vinext CacheHandler context field. `expire`
     // and `stale` are newer metadata and intentionally only live inside
@@ -265,7 +265,7 @@ export async function isrSetPrerenderedAppPage(
   if (tags && tags.length > 0) {
     ctx.tags = tags;
   }
-  await getCdnCacheAdapter().set(key, data, ctx);
+  await getCdnCacheStorageAdapter().set(key, data, ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +337,7 @@ export function triggerBackgroundRegeneration(
 ): void {
   // Edge-managed CDN adapters revalidate by re-requesting the origin, so the
   // origin must not also run in-process regeneration.
-  if (!getCdnCacheAdapter().ownsBackgroundRevalidation) return;
+  if (!getCdnCacheStorageAdapter().ownsBackgroundRevalidation) return;
   if (pendingRegenerations.has(key)) return;
 
   const promise = renderFn()

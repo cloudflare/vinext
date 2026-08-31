@@ -243,7 +243,7 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
         request: new Request(`http://localhost${pathname}`),
       });
 
-      expect(result).toEqual({ continue: true });
+      expect(result).toEqual({ continue: true, middlewarePathMatched: false });
     },
   );
 
@@ -259,7 +259,7 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
         request: new Request(`http://localhost${pathname}`),
       });
 
-      expect(result).toEqual({ continue: true });
+      expect(result).toEqual({ continue: true, middlewarePathMatched: false });
     },
   );
 
@@ -275,7 +275,7 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
         request: new Request(`http://localhost${pathname}`),
       });
 
-      expect(result).toEqual({ continue: true });
+      expect(result).toEqual({ continue: true, middlewarePathMatched: false });
     },
   );
 });

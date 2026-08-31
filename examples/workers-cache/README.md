@@ -7,7 +7,12 @@ vinext ships two Cloudflare cache adapters you declare in `vite.config.ts`:
   HIT/STALE traffic, revalidating in the background; `revalidateTag()` /
   `revalidatePath()` fan out to `ctx.cache.purge({ tags })`.
 - **`kvDataAdapter()`** backs the inner `"use cache"` / fetch data cache with
-  a **Workers KV** namespace instead of in-memory.
+  a **Workers KV** namespace instead of in-memory. It also stores page-level
+  ISR artifacts for responses whose request-time composition must always run,
+  including middleware pathname scopes and header/cookie-dependent config
+  rules. Edge HITs bypass the Worker, so those artifacts stay at the origin.
+  Configure this durable adapter whenever `cdnAdapter()` is combined with such
+  routing; otherwise that fallback is isolate-local.
 
 Both are wired up in [`vite.config.ts`](./vite.config.ts):
 

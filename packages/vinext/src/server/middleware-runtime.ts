@@ -17,6 +17,7 @@ import {
 } from "./headers.js";
 import {
   matchesMiddleware,
+  matchesMiddlewarePathname,
   type MatcherConfig,
   type MiddlewareLocaleMatchContext,
 } from "./middleware-matcher.js";
@@ -36,6 +37,8 @@ export type MiddlewareModule = Record<string, unknown>;
 
 export type MiddlewareResult = {
   continue: boolean;
+  /** False only when no configured source pattern can match this pathname. */
+  middlewarePathMatched?: boolean;
   redirectUrl?: string;
   redirectStatus?: number;
   rewriteUrl?: string;
@@ -155,6 +158,135 @@ function middlewareMatcher(mod: MiddlewareModule): MatcherConfig | undefined {
   const config = mod.config;
   if (!isMiddlewareConfigExport(config)) return undefined;
   return config.matcher;
+}
+
+function prepareMiddlewareMatcherRequest(options: {
+  basePath?: string;
+  hadBasePath?: boolean;
+  i18nConfig?: NextI18nConfig | null;
+  matcher: MatcherConfig | undefined;
+  request: Request;
+}): {
+  decodedMatchPathname: string | null;
+  encodedMatchPathname: string | null;
+  localeContext: MiddlewareLocaleMatchContext | undefined;
+} {
+  const requestUrl = new URL(options.request.url);
+  // Next.js tests the normalized encoded pathname first, then retries after
+  // decoding the full path once. Testing only a segment-decoded form lets
+  // percent-encoded line terminators turn into characters that `.` cannot
+  // match, while preserving encoded delimiters misses matchers that Next.js
+  // evaluates against their decoded path structure.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/next-server.ts
+  // Next.js removes the request pathname's terminal slash before evaluating
+  // the compiled middleware matcher. The matcher compiler still appends its
+  // own optional terminal delimiter, so a source without a slash matches both
+  // request spellings while a source that includes a slash remains distinct.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/next-server.ts
+  const encodedRequestPathname = removeTrailingSlash(normalizePath(requestUrl.pathname));
+  const prepareMatcherPathname = (candidate: string): string | null => {
+    if (!options.basePath) return candidate;
+    if (hasBasePath(candidate, options.basePath)) {
+      return stripBasePath(candidate, options.basePath);
+    }
+    if (
+      candidate.length === options.basePath.length + 1 &&
+      candidate.startsWith(options.basePath) &&
+      (candidate.endsWith("?") || candidate.endsWith("#"))
+    ) {
+      return "/";
+    }
+    // App Router and Pages dev may pass a URL that the adapter already
+    // stripped after recording that it crossed the configured basePath.
+    if (options.hadBasePath === true) return candidate;
+    // Next.js prefixes configured matchers with basePath at build time. Keep
+    // default middleware eligible on absolute paths, but custom matchers must
+    // not apply outside the basePath.
+    return options.matcher === undefined ? candidate : null;
+  };
+  const encodedMatchPathname = prepareMatcherPathname(encodedRequestPathname);
+  let decodedMatchPathname = encodedMatchPathname;
+  try {
+    if (encodedMatchPathname !== null) {
+      decodedMatchPathname = decodeURIComponent(encodedMatchPathname);
+    } else if (!options.i18nConfig) {
+      // Without i18n, Next.js can discover an encoded basePath on the decoded
+      // matcher attempt. With i18n, default-locale insertion has already made
+      // that path ineligible for the compiled basePath-prefixed matcher.
+      decodedMatchPathname = prepareMatcherPathname(decodeURIComponent(encodedRequestPathname));
+    }
+  } catch {
+    // Match Next.js: malformed encoding is non-fatal for matcher eligibility.
+  }
+
+  let localeContext: MiddlewareLocaleMatchContext | undefined;
+  if (options.i18nConfig && encodedMatchPathname !== null) {
+    const hostname = normalizeHost(options.request.headers.get("host"), requestUrl.hostname);
+    const firstSegment = encodedMatchPathname.split("/", 3)[1];
+    const hasLiteralLocale =
+      firstSegment !== undefined &&
+      options.i18nConfig.locales.some(
+        (locale) => locale.toLowerCase() === firstSegment.toLowerCase(),
+      );
+    if (hasLiteralLocale) {
+      localeContext = { kind: "literal" };
+    } else {
+      const localeDefaultedPathname = normalizeDefaultLocalePathname(
+        encodedMatchPathname,
+        options.i18nConfig,
+        { hostname },
+      );
+      localeContext =
+        localeDefaultedPathname === encodedMatchPathname
+          ? { kind: "internal" }
+          : {
+              defaultLocale: normalizeDefaultLocalePathname("/", options.i18nConfig, {
+                hostname,
+              }).slice(1),
+              kind: "defaulted",
+            };
+    }
+  }
+
+  return { decodedMatchPathname, encodedMatchPathname, localeContext };
+}
+
+/**
+ * Whether a middleware module's pathname matcher can select this request.
+ * Request-dependent `has` / `missing` conditions are deliberately ignored:
+ * requests to the same URL can vary those inputs, so the pathname is the
+ * cache-safety boundary shared by normal traffic and on-demand regeneration.
+ */
+export function matchesMiddlewareModulePathname(options: {
+  basePath?: string;
+  i18nConfig?: NextI18nConfig | null;
+  module: MiddlewareModule;
+  normalizedPathname?: string;
+  request: Request;
+}): boolean {
+  const normalizedPathname =
+    options.normalizedPathname ?? resolveMiddlewarePathname(options.request);
+  // Malformed URL decoding returns a 400 response in the execution path. Fail
+  // safe here so an auxiliary cache-mode decision never makes it public.
+  if (normalizedPathname instanceof Response) return true;
+
+  const matcher = middlewareMatcher(options.module);
+  const { decodedMatchPathname, encodedMatchPathname, localeContext } =
+    prepareMiddlewareMatcherRequest({
+      basePath: options.basePath,
+      i18nConfig: options.i18nConfig,
+      matcher,
+      request: options.request,
+    });
+  const encodedMatches =
+    encodedMatchPathname !== null &&
+    matchesMiddlewarePathname(encodedMatchPathname, matcher, options.i18nConfig, localeContext);
+  return (
+    encodedMatches ||
+    (decodedMatchPathname !== null &&
+      decodedMatchPathname !== encodedMatchPathname &&
+      matchesMiddlewarePathname(decodedMatchPathname, matcher, options.i18nConfig, localeContext))
+  );
 }
 
 function stripMiddlewareHeadersFromResponse(response: Response): Response {
@@ -326,8 +458,7 @@ export async function executeMiddleware(
   if (normalizedPathname instanceof Response) {
     return { continue: false, response: normalizedPathname };
   }
-  const requestUrl = new URL(options.request.url);
-  const requestPathname = requestUrl.pathname;
+  const requestPathname = new URL(options.request.url).pathname;
 
   // Default: derive in-basePath state from the request URL. The Pages
   // prod/deploy adapters pass the original URL — prefixed for in-basePath
@@ -348,82 +479,27 @@ export async function executeMiddleware(
     ? stripBasePath(normalizedPathname, options.basePath)
     : normalizedPathname;
   const matchPathname = basePathStrippedPathname;
-  // Next.js tests the normalized encoded pathname first, then retries after
-  // decoding the full path once. Testing only a segment-decoded form lets
-  // percent-encoded line terminators turn into characters that `.` cannot
-  // match, while preserving encoded delimiters misses matchers that Next.js
-  // evaluates against their decoded path structure.
-  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/next-server.ts
-  // Next.js removes the request pathname's terminal slash before evaluating
-  // the compiled middleware matcher. The matcher compiler still appends its
-  // own optional terminal delimiter, so a source without a slash matches both
-  // request spellings while a source that includes a slash remains distinct.
-  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/next-server.ts
-  const encodedRequestPathname = removeTrailingSlash(normalizePath(requestPathname));
   const matcher = middlewareMatcher(options.module);
-  const prepareMatcherPathname = (candidate: string): string | null => {
-    if (!options.basePath) return candidate;
-    if (hasBasePath(candidate, options.basePath)) {
-      return stripBasePath(candidate, options.basePath);
-    }
-    if (
-      candidate.length === options.basePath.length + 1 &&
-      candidate.startsWith(options.basePath) &&
-      (candidate.endsWith("?") || candidate.endsWith("#"))
-    ) {
-      return "/";
-    }
-    // App Router and Pages dev may pass a URL that the adapter already
-    // stripped after recording that it crossed the configured basePath.
-    if (options.hadBasePath === true) return candidate;
-    // Next.js prefixes configured matchers with basePath at build time. Keep
-    // default middleware eligible on absolute paths, but custom matchers must
-    // not apply outside the basePath.
-    return matcher === undefined ? candidate : null;
-  };
-  const encodedMatchPathname = prepareMatcherPathname(encodedRequestPathname);
-  let decodedMatchPathname = encodedMatchPathname;
-  try {
-    if (encodedMatchPathname !== null) {
-      decodedMatchPathname = decodeURIComponent(encodedMatchPathname);
-    } else if (!options.i18nConfig) {
-      // Without i18n, Next.js can discover an encoded basePath on the decoded
-      // matcher attempt. With i18n, default-locale insertion has already made
-      // that path ineligible for the compiled basePath-prefixed matcher.
-      decodedMatchPathname = prepareMatcherPathname(decodeURIComponent(encodedRequestPathname));
-    }
-  } catch {
-    // Match Next.js: malformed encoding is non-fatal for matcher eligibility.
+  const { decodedMatchPathname, encodedMatchPathname, localeContext } =
+    prepareMiddlewareMatcherRequest({
+      basePath: options.basePath,
+      hadBasePath: options.hadBasePath,
+      i18nConfig: options.i18nConfig,
+      matcher,
+      request: options.request,
+    });
+  const encodedPathMatches =
+    encodedMatchPathname !== null &&
+    matchesMiddlewarePathname(encodedMatchPathname, matcher, options.i18nConfig, localeContext);
+  const decodedPathMatches =
+    !encodedPathMatches &&
+    decodedMatchPathname !== null &&
+    decodedMatchPathname !== encodedMatchPathname &&
+    matchesMiddlewarePathname(decodedMatchPathname, matcher, options.i18nConfig, localeContext);
+  if (!encodedPathMatches && !decodedPathMatches) {
+    return { continue: true, middlewarePathMatched: false };
   }
 
-  let localeContext: MiddlewareLocaleMatchContext | undefined;
-  if (options.i18nConfig && encodedMatchPathname !== null) {
-    const hostname = normalizeHost(options.request.headers.get("host"), requestUrl.hostname);
-    const firstSegment = encodedMatchPathname.split("/", 3)[1];
-    const hasLiteralLocale =
-      firstSegment !== undefined &&
-      options.i18nConfig.locales.some(
-        (locale) => locale.toLowerCase() === firstSegment.toLowerCase(),
-      );
-    if (hasLiteralLocale) {
-      localeContext = { kind: "literal" };
-    } else {
-      const localeDefaultedPathname = normalizeDefaultLocalePathname(
-        encodedMatchPathname,
-        options.i18nConfig,
-        { hostname },
-      );
-      localeContext =
-        localeDefaultedPathname === encodedMatchPathname
-          ? { kind: "internal" }
-          : {
-              defaultLocale: normalizeDefaultLocalePathname("/", options.i18nConfig, {
-                hostname,
-              }).slice(1),
-              kind: "defaulted",
-            };
-    }
-  }
   const encodedMatches =
     encodedMatchPathname !== null &&
     matchesMiddleware(
@@ -444,9 +520,10 @@ export async function executeMiddleware(
       options.i18nConfig,
       localeContext,
     );
-
   if (!encodedMatches && !decodedMatches) {
-    return { continue: true };
+    // The pathname is in middleware's cache-safety scope even though this
+    // request missed a has/missing condition.
+    return { continue: true, middlewarePathMatched: true };
   }
 
   const nextRequest = createNextRequest(

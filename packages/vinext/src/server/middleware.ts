@@ -29,7 +29,11 @@ import {
   type MiddlewareResult,
 } from "./middleware-runtime.js";
 
-export { matchPattern, matchesMiddleware } from "./middleware-matcher.js";
+export {
+  matchPattern,
+  matchesMiddleware,
+  matchesMiddlewarePathname,
+} from "./middleware-matcher.js";
 
 /**
  * Determine whether a middleware/proxy file path refers to a proxy file.

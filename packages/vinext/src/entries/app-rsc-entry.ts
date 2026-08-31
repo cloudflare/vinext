@@ -329,7 +329,10 @@ import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewp
 ${
   middlewarePath
     ? `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};
-import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};`
+import {
+  applyAppMiddleware as __applyAppMiddleware,
+  matchesMiddlewareModulePathname as __matchesMiddlewareModulePathname,
+} from ${JSON.stringify(appMiddlewarePath)};`
     : ""
 }
 ${
@@ -1410,7 +1413,15 @@ const __appRscHandler = createAppRscHandler({
   },
   ${
     middlewarePath
-      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, validateExternalRewriteRequest }) {
+      ? `middlewarePathMatches(request) {
+    return __matchesMiddlewareModulePathname({
+      basePath: __basePath,
+      i18nConfig: __i18nConfig,
+      module: middlewareModule,
+      request,
+    });
+  },
+  runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, validateExternalRewriteRequest }) {
     return __applyAppMiddleware({
       basePath: __basePath,
       cleanPathname,
@@ -1437,9 +1448,9 @@ const __appRscHandler = createAppRscHandler({
   },
   ${
     hasPagesDir
-      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url }) {
+      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, isDataRequest, isRscRequest, matchKind, middlewareContext, originManagedPageCache, pathname, pagesDataRequest, request, url }) {
     return __renderPagesFallback(
-      { allowRscDocumentFallback, appRouteMatch, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url },
+      { allowRscDocumentFallback, appRouteMatch, isDataRequest, isRscRequest, matchKind, middlewareContext, originManagedPageCache, pathname, pagesDataRequest, request, url },
       {
         loadPagesEntry() {
           return import.meta.viteRsc.loadModule("ssr", "index");

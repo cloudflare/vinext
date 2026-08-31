@@ -3,8 +3,11 @@
   "compatibility_date": "2026-02-12",
   "compatibility_flags": ["nodejs_compat"],
   "main": "worker/index.ts",
+  "cache": { "enabled": true },
+  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "00000000000000000000000000000000" }],
   "assets": {
     "not_found_handling": "none",
     "binding": "ASSETS",
+    "run_worker_first": ["/internal-header-secret.txt"],
   },
 }

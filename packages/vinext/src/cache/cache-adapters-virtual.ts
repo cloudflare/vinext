@@ -136,16 +136,24 @@ function inlineOptions(adapter: string, options: Record<string, unknown> | undef
  * Generate the source of the `virtual:vinext-cache-adapters` module for the
  * given config. Always exports `registerConfiguredCacheAdapters(env)`.
  */
-export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
+export function generateCacheAdaptersModule(
+  cache?: VinextCacheConfig,
+  registrationScope = "standalone",
+): string {
   const data = cache?.data;
   const cdn = cache?.cdn;
 
-  // Nothing configured → a no-op so the unconditional import in the server
-  // entries stays valid and tree-shakes to almost nothing.
+  // Nothing configured → clear generated state from an earlier build while
+  // preserving authoritative manual setters.
   if (!data?.adapter && !cdn?.adapter) {
     return [
-      "// vinext: no cache.cdn/cache.data adapter configured — registration is a no-op.",
-      "export function registerConfiguredCacheAdapters() {}",
+      'import { deactivateGeneratedDataCacheHandler, deactivateGeneratedCdnCacheAdapter } from "vinext/shims/cache-adapter-registration";',
+      "// vinext: no cache.cdn/cache.data adapter configured — use safe defaults.",
+      "export function registerConfiguredCacheAdapters() {",
+      "  if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
+      "  deactivateGeneratedDataCacheHandler();",
+      "  deactivateGeneratedCdnCacheAdapter();",
+      "}",
       "",
     ].join("\n");
   }
@@ -156,12 +164,35 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
 
   if (data?.adapter) {
     lines.push(`import __vinextDataAdapterFactory from ${JSON.stringify(data.adapter)};`);
-    lines.push(`import { setDataCacheHandler } from "vinext/shims/cache-handler";`);
+    lines.push(
+      `import { deactivateGeneratedDataCacheHandler, hasDataCacheAdapterRegistrationFailed, isConfiguredDataCacheHandlerActive, markDataCacheAdapterRegistrationFailed, setConfiguredDataCacheHandler } from "vinext/shims/cache-handler";`,
+    );
+  } else {
+    lines.push(
+      `import { deactivateGeneratedDataCacheHandler } from "vinext/shims/cache-adapter-registration";`,
+    );
   }
   if (cdn?.adapter) {
     lines.push(`import __vinextCdnAdapterFactory from ${JSON.stringify(cdn.adapter)};`);
-    lines.push(`import { setCdnCacheAdapter } from "vinext/shims/cdn-cache";`);
+    lines.push(
+      `import { deactivateGeneratedCdnCacheAdapter, hasCdnCacheAdapterRegistrationFailed, isConfiguredCdnCacheAdapterActive, markCdnCacheAdapterRegistrationFailed, setConfiguredCdnCacheAdapter } from "vinext/shims/cdn-cache";`,
+    );
+  } else {
+    lines.push(
+      `import { deactivateGeneratedCdnCacheAdapter } from "vinext/shims/cache-adapter-registration";`,
+    );
   }
+
+  const dataRegistrationId = data?.adapter
+    ? JSON.stringify(
+        `${registrationScope}:data:${data.adapter}:${inlineOptions(data.adapter, data.options)}`,
+      )
+    : null;
+  const cdnRegistrationId = cdn?.adapter
+    ? JSON.stringify(
+        `${registrationScope}:cdn:${cdn.adapter}:${inlineOptions(cdn.adapter, cdn.options)}`,
+      )
+    : null;
 
   lines.push(
     "",
@@ -176,38 +207,56 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     "  }",
     "}",
     "",
-    "let __vinextCacheAdaptersRegistered = false;",
-    "",
     "export function registerConfiguredCacheAdapters(env) {",
     "  if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
-    "  if (__vinextCacheAdaptersRegistered) return;",
-    "  __vinextCacheAdaptersRegistered = true;",
   );
   if (data?.adapter) {
     lines.push(
-      "  try {",
-      `    setDataCacheHandler(__vinextDataAdapterFactory({ env, options: ${inlineOptions(
+      `    const dataRegistrationId = ${dataRegistrationId};`,
+      "    if (!isConfiguredDataCacheHandlerActive(dataRegistrationId, env)) {",
+      "      if (hasDataCacheAdapterRegistrationFailed(dataRegistrationId, env)) {",
+      "        deactivateGeneratedDataCacheHandler();",
+      "      } else {",
+      "        try {",
+      `          setConfiguredDataCacheHandler(__vinextDataAdapterFactory({ env, options: ${inlineOptions(
         data.adapter,
         data.options,
-      )} }));`,
-      "  } catch (error) {",
-      '    console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
+      )} }), dataRegistrationId, env);`,
+      "        } catch (error) {",
+      "          markDataCacheAdapterRegistrationFailed(dataRegistrationId, env);",
+      "          deactivateGeneratedDataCacheHandler();",
+      '          console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
         'using the default handler.\\n" + __vinextFormatAdapterError(error));',
+      "        }",
+      "      }",
       "  }",
     );
+  } else {
+    lines.push("  deactivateGeneratedDataCacheHandler();");
   }
   if (cdn?.adapter) {
     lines.push(
-      "  try {",
-      `    setCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: ${inlineOptions(
+      `    const cdnRegistrationId = ${cdnRegistrationId};`,
+      "    if (!isConfiguredCdnCacheAdapterActive(cdnRegistrationId, env)) {",
+      "      if (hasCdnCacheAdapterRegistrationFailed(cdnRegistrationId, env)) {",
+      "        deactivateGeneratedCdnCacheAdapter();",
+      "      } else {",
+      "        try {",
+      `          setConfiguredCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: ${inlineOptions(
         cdn.adapter,
         cdn.options,
-      )} }));`,
-      "  } catch (error) {",
-      '    console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
+      )} }), cdnRegistrationId, env);`,
+      "        } catch (error) {",
+      "          markCdnCacheAdapterRegistrationFailed(cdnRegistrationId, env);",
+      "          deactivateGeneratedCdnCacheAdapter();",
+      '          console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
         'using the default adapter.\\n" + __vinextFormatAdapterError(error));',
+      "        }",
+      "      }",
       "  }",
     );
+  } else {
+    lines.push("  deactivateGeneratedCdnCacheAdapter();");
   }
   lines.push("}", "");
 

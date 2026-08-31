@@ -196,10 +196,21 @@ export async function runMiddleware(request, ctx, options) {
     trailingSlash: vinextConfig.trailingSlash,
   });
 }
+export function middlewarePathMatches(request) {
+  return __matchesMiddlewareModulePathname({
+    basePath: vinextConfig.basePath,
+    i18nConfig,
+    module: middlewareModule,
+    request,
+  });
+}
 `
     : `
 export async function runMiddleware(request) {
   return { continue: true };
+}
+export function middlewarePathMatches() {
+  return false;
 }
 `;
 
@@ -230,7 +241,10 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 import { sanitizeDestination as sanitizeDestinationLocal } from ${JSON.stringify(resolveEntryPath("../config/config-matchers.js", import.meta.url))};
 import { runWithExecutionContext as _runWithExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
-import { runGeneratedMiddleware as __runGeneratedMiddleware } from ${JSON.stringify(_middlewareRuntimePath)};
+import {
+  matchesMiddlewareModulePathname as __matchesMiddlewareModulePathname,
+  runGeneratedMiddleware as __runGeneratedMiddleware,
+} from ${JSON.stringify(_middlewareRuntimePath)};
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
@@ -251,6 +265,12 @@ export const authorizeOnDemandRevalidate = __isOnDemandRevalidateRequest;
 
 // i18n config (embedded at build time)
 const i18nConfig = ${i18nConfigJson};
+
+// Node production must install adapters before config redirects or middleware
+// can return early, while Worker callers may pass binding-backed env here.
+export function registerConfiguredCacheAdapters(env) {
+  __registerConfiguredCacheAdapters(env);
+}
 
 // Build ID (embedded at build time). Exported so the production server can
 // match _next/data requests against the embedded buildId without needing
@@ -479,7 +499,7 @@ const _renderPage = __createPagesPageHandler({
 });
 
 export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options) {
-  __registerConfiguredCacheAdapters();
+  registerConfiguredCacheAdapters(ctx?.cacheAdapterEnv);
   if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options));
   return _renderPage(request, url, manifest, middlewareHeaders, options);
 }
@@ -487,7 +507,7 @@ export async function renderPage(request, url, manifest, ctx, middlewareHeaders,
 
 
 export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin, edgeRuntime = "worker") {
-  __registerConfiguredCacheAdapters();
+  registerConfiguredCacheAdapters(ctx?.cacheAdapterEnv);
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
     ctx,

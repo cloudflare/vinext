@@ -9116,7 +9116,8 @@ describe("middleware matcher patterns", () => {
   });
 
   it("matchesMiddleware: object matchers respect has and missing conditions", async () => {
-    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { matchesMiddleware, matchesMiddlewarePathname } =
+      await import("../packages/vinext/src/server/middleware.js");
     const matcher: any = [
       {
         source: "/dashboard",
@@ -9126,6 +9127,8 @@ describe("middleware matcher patterns", () => {
     ];
 
     expect(matchesMiddleware("/dashboard", matcher)).toBe(false);
+    expect(matchesMiddlewarePathname("/dashboard", matcher)).toBe(true);
+    expect(matchesMiddlewarePathname("/outside", matcher)).toBe(false);
     expect(
       matchesMiddleware(
         "/dashboard",

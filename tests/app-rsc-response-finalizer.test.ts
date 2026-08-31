@@ -5,6 +5,11 @@ import {
   markAppRscResponseConfigHeadersApplied,
 } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   markEdgeRouteHandlerLinkHeaders,
   markFrameworkLinkHeaders,
@@ -16,8 +21,16 @@ import {
   type CdnResponseHeaders,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { createStaticFileSignal } from "../packages/vinext/src/server/request-pipeline.js";
+import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
+import { resolveStaticAssetSignal } from "../packages/vinext/src/server/worker-utils.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
+
+const CDN_ADAPTER_KEY = Symbol.for("vinext.cdnCacheAdapter");
+
+afterEach(() => {
+  delete (globalThis as Record<PropertyKey, unknown>)[CDN_ADAPTER_KEY];
+});
 
 function makeRequestContext(headers: Headers = new Headers()): RequestContext {
   return {
@@ -128,6 +141,60 @@ describe("finalizeAppRscResponse — config header application", () => {
     });
 
     expect(response.headers.get("x-route-value")).toBe("target");
+  });
+
+  it("does not let matching config headers restore shared caching above middleware", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = new Response("personalized", {
+      headers: { "x-visitor-id": "visitor-a" },
+    });
+
+    await runWithRequestContext(
+      createRequestContext({ originManagedPageCache: true }),
+      async () => {
+        await finalizeAppRscResponse(response, new Request("http://example.com/personalized"), {
+          basePath: "",
+          configHeaders: [
+            {
+              source: "/personalized",
+              headers: [
+                { key: "Cache-Control", value: "public, s-maxage=3600" },
+                { key: "CDN-Cache-Control", value: "public, max-age=3600" },
+              ],
+            },
+          ],
+          i18nConfig: null,
+          requestContext: makeRequestContext(),
+        });
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+  });
+
+  it("reasserts middleware-safe caching when target config headers were already applied", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = markAppRscResponseConfigHeadersApplied(
+      new Response("target", {
+        headers: {
+          "Cache-Control": "public, s-maxage=3600",
+          "CDN-Cache-Control": "public, max-age=3600",
+        },
+      }),
+    );
+
+    await runWithRequestContext(createRequestContext({ originManagedPageCache: true }), () =>
+      finalizeAppRscResponse(response, new Request("http://example.com/source"), {
+        basePath: "",
+        configHeaders: [],
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      }),
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
   });
 
   it("preserves config Link headers alongside framework preload links", async () => {
@@ -495,6 +562,111 @@ describe("finalizeAppRscResponse — redirect responses are not mutated", () => 
     });
 
     expect(response.headers.get("x-added")).toBeNull();
+  });
+
+  it("removes shared-cache headers from a middleware-scoped redirect", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = Response.redirect("http://example.com/personalized", 307);
+    const result = await runWithRequestContext(
+      createRequestContext({ originManagedPageCache: true }),
+      () =>
+        finalizeAppRscResponse(response, new Request("http://example.com/old"), {
+          basePath: "",
+          configHeaders: [],
+          i18nConfig: null,
+          requestContext: makeRequestContext(),
+        }),
+    );
+
+    expect(result).not.toBe(response);
+    expect(result.status).toBe(307);
+    expect(result.headers.get("location")).toBe("http://example.com/personalized");
+    expect(result.headers.get("cache-control")).toContain("no-store");
+    expect(result.headers.get("cdn-cache-control")).toBeNull();
+    expect(result.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+  });
+
+  it("preserves a middleware-scoped 3xx static-file signal", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = createStaticFileSignal("/public.txt", {
+      headers: new Headers({ "CDN-Cache-Control": "public, max-age=3600" }),
+      status: 307,
+    });
+    const result = await runWithRequestContext(
+      createRequestContext({ originManagedPageCache: true }),
+      () =>
+        finalizeAppRscResponse(response, new Request("http://example.com/public.txt"), {
+          basePath: "",
+          configHeaders: [],
+          i18nConfig: null,
+          requestContext: makeRequestContext(),
+        }),
+    );
+
+    expect(result).toBe(response);
+    expect(readStaticFileSignal(result)).toBe("%2Fpublic.txt");
+    expect(result.headers.get("cache-control")).toContain("no-store");
+    expect(result.headers.get("cdn-cache-control")).toBeNull();
+  });
+
+  it("reapplies middleware-safe caching after resolving a public asset", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const signal = createStaticFileSignal("/public.txt", {
+      headers: new Headers({
+        "Cache-Control": "public, s-maxage=60",
+        "CDN-Cache-Control": "public, max-age=60",
+        "x-visitor-id": "visitor-a",
+      }),
+      status: 200,
+    });
+    const finalized = await runWithRequestContext(
+      createRequestContext({ originManagedPageCache: true }),
+      () =>
+        finalizeAppRscResponse(signal, new Request("http://example.com/public.txt"), {
+          basePath: "",
+          configHeaders: [],
+          i18nConfig: null,
+          requestContext: makeRequestContext(),
+        }),
+    );
+
+    const result = await resolveStaticAssetSignal(finalized, {
+      fetchAsset: async () =>
+        new Response("asset body", {
+          headers: {
+            "Cache-Control": "public, max-age=86400",
+            "Content-Type": "text/plain",
+          },
+        }),
+    });
+
+    expect(await result!.text()).toBe("asset body");
+    expect(result!.headers.get("content-type")).toBe("text/plain");
+    expect(result!.headers.get("x-visitor-id")).toBe("visitor-a");
+    expect(result!.headers.get("cache-control")).toContain("no-store");
+    expect(result!.headers.get("cdn-cache-control")).toBeNull();
+  });
+
+  it("keeps matcher-excluded public assets edge-cacheable after resolution", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const signal = createStaticFileSignal("/public.txt", { headers: null, status: 200 });
+    const finalized = await runWithRequestContext(createRequestContext(), () =>
+      finalizeAppRscResponse(signal, new Request("http://example.com/public.txt"), {
+        basePath: "",
+        configHeaders: [],
+        i18nConfig: null,
+        requestContext: makeRequestContext(),
+      }),
+    );
+
+    const result = await resolveStaticAssetSignal(finalized, {
+      fetchAsset: async () =>
+        new Response("asset body", {
+          headers: { "Cache-Control": "public, max-age=86400" },
+        }),
+    });
+
+    expect(result!.headers.get("cache-control")).toBe("public, max-age=86400");
   });
 });
 

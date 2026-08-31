@@ -16,6 +16,7 @@
 import {
   fetchWorkerFilesystemRoute,
   runPagesRequest,
+  wrapMiddlewarePathMatcherWithBasePath,
   wrapMiddlewareWithBasePath,
 } from "./pages-request-pipeline.js";
 import type { PagesPipelineDeps } from "./pages-request-pipeline.js";
@@ -69,6 +70,7 @@ const {
   hasMiddleware,
   matchApiRoute,
   matchPageRoute,
+  middlewarePathMatches,
   normalizeDataRequest,
   publicFiles,
   renderPage,
@@ -112,8 +114,10 @@ async function handleRequest(
   env: PagesWorkerEnv | undefined,
   platformCtx: PagesWorkerExecutionContext | ExecutionContextLike | undefined,
 ): Promise<Response> {
-  const ctx = createWorkerRevalidationContext(platformCtx, (internalRequest, internalCtx) =>
-    handleRequest(internalRequest, env, internalCtx),
+  const ctx = createWorkerRevalidationContext(
+    platformCtx,
+    (internalRequest, internalCtx) => handleRequest(internalRequest, env, internalCtx),
+    env,
   );
 
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
@@ -197,6 +201,10 @@ async function handleRequest(
       dataNotFoundResponse: vinextConfig?.skipProxyUrlNormalize ? dataNorm.notFoundResponse : null,
       authorizeOnDemandRevalidate:
         typeof authorizeOnDemandRevalidate === "function" ? authorizeOnDemandRevalidate : undefined,
+      middlewarePathMatches:
+        typeof middlewarePathMatches === "function"
+          ? wrapMiddlewarePathMatcherWithBasePath(middlewarePathMatches, basePath, hadBasePath)
+          : undefined,
       matchApiRoute: typeof matchApiRoute === "function" ? matchApiRoute : null,
       matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
       runMiddleware:

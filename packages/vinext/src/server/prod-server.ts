@@ -45,6 +45,7 @@ import {
 import { notFoundResponse } from "./http-error-responses.js";
 import {
   runPagesRequest,
+  wrapMiddlewarePathMatcherWithBasePath,
   wrapMiddlewareWithBasePath,
   type PagesPipelineDeps,
   type PagesRenderOptions,
@@ -1912,10 +1913,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     renderPage,
     handleApiRoute: handleApi,
     authorizeOnDemandRevalidate,
+    registerConfiguredCacheAdapters,
+    middlewarePathMatches,
     runMiddleware,
     vinextConfig,
     buildId: pagesBuildId,
   } = serverEntry;
+  if (typeof registerConfiguredCacheAdapters === "function") {
+    registerConfiguredCacheAdapters();
+  }
   const matchPageRoute =
     typeof serverEntry.matchPageRoute === "function" ? serverEntry.matchPageRoute : undefined;
   const matchApiRoute =
@@ -2194,6 +2200,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           typeof authorizeOnDemandRevalidate === "function"
             ? authorizeOnDemandRevalidate
             : undefined,
+        middlewarePathMatches:
+          typeof middlewarePathMatches === "function"
+            ? wrapMiddlewarePathMatcherWithBasePath(middlewarePathMatches, basePath, hadBasePath)
+            : undefined,
         configMatchPathname,
         matchPageRoute: matchPageRoute ?? null,
         matchApiRoute: matchApiRoute ?? null,
@@ -2266,6 +2276,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
               "Content-Disposition":
                 pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
             };
+            const imageResponseHeaders = { ...stagedHeaders, ...imageSecurityHeaders };
             if (
               await tryServeStatic(
                 req,
@@ -2274,7 +2285,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
                 params.imageUrl,
                 false,
                 staticCache,
-                imageSecurityHeaders,
+                imageResponseHeaders,
               )
             ) {
               return true;

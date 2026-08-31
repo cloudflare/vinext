@@ -1,8 +1,10 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
-import { isStaticFileSignal } from "./static-file-signal.js";
+import { isStaticFileSignal, markOriginManagedStaticFileSignal } from "./static-file-signal.js";
 import {
   applyCdnResponseHeaders,
+  applyOriginManagedPageCacheResponseHeaders,
+  finalizeMiddlewareSafePageCacheResponse,
   hasExplicitNonCacheableResponsePolicy,
   isNonCacheableCacheControl,
   NO_STORE_CACHE_CONTROL,
@@ -13,6 +15,7 @@ import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
 import { hasPostConfigLinkHeaders } from "./app-response-header-provenance.js";
+import { shouldUseOriginManagedPageCache } from "vinext/shims/cdn-cache";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -90,22 +93,32 @@ export async function applyAppRscConfigHeaders(
  * handling, so that every response path (page, route handler, server action,
  * metadata, not-found) gets headers applied consistently.
  *
- * Skips 3xx redirect responses. Response.redirect() creates immutable
- * headers that throw on mutation, and Next.js does not apply config headers
- * to redirects regardless.
+ * Skips config headers on 3xx redirect responses. Response.redirect() creates
+ * immutable headers, so middleware-scoped redirects are rebuilt before the
+ * safe composed-response cache policy is applied.
  */
 export async function finalizeAppRscResponse(
   response: Response,
   request: Request,
   options: FinalizeAppRscResponseOptions,
 ): Promise<Response> {
-  // 3xx responses: Response.redirect() headers are immutable (throws on write),
-  // and Next.js deliberately excludes config headers from redirect responses.
-  if (response.status >= 300 && response.status < 400) {
-    return response;
+  const staticFileSignal = isStaticFileSignal(response);
+  const originManagedPageCache = shouldUseOriginManagedPageCache();
+  if (staticFileSignal && originManagedPageCache) {
+    markOriginManagedStaticFileSignal(response);
   }
 
-  if (!isStaticFileSignal(response)) {
+  // Next.js deliberately excludes config headers from redirect responses.
+  // Outside middleware's cache-safety scope preserve the original response
+  // identity, including Response.redirect()'s immutable header guard. Inside
+  // that scope rebuild it with mutable headers before removing any shared-cache
+  // policy that could replay a personalized redirect above the Worker.
+  if (response.status >= 300 && response.status < 400) {
+    if (!originManagedPageCache) return response;
+    return finalizeMiddlewareSafePageCacheResponse(response, true);
+  }
+
+  if (!staticFileSignal) {
     const varyHeader = response.headers.get("Vary");
     if (varyHeader === null) {
       response.headers.set("Vary", VINEXT_RSC_VARY_HEADER);
@@ -127,10 +140,10 @@ export async function finalizeAppRscResponse(
 
   if (configHeadersAlreadyApplied.has(response)) {
     normalizeExplicitNonCacheablePolicy(response.headers);
-    return response;
+  } else {
+    await applyAppRscConfigHeaders(response.headers, request, options);
+    normalizeExplicitNonCacheablePolicy(response.headers);
   }
-  await applyAppRscConfigHeaders(response.headers, request, options);
-  normalizeExplicitNonCacheablePolicy(response.headers);
 
   // Static-file 405 responses are synthesized before config headers run.
   // Reassert their body metadata afterward so a matching headers() rule cannot
@@ -138,6 +151,12 @@ export async function finalizeAppRscResponse(
   if (response.status === 405 && response.headers.get("Allow") === "GET, HEAD") {
     sanitizeMethodNotAllowedHeaders(response.headers, "GET, HEAD");
   }
+
+  // This is the outermost App Router response boundary. Reassert the safe
+  // policy after next.config headers (including internally dispatched target
+  // headers marked as already applied), so neither source can restore shared
+  // caching above middleware.
+  applyOriginManagedPageCacheResponseHeaders(response.headers);
 
   return response;
 }

@@ -12,6 +12,9 @@ import {
 } from "./middleware-runtime.js";
 import { cloneRequestWithHeaders, processMiddlewareHeaders } from "./request-pipeline.js";
 import { internalServerErrorResponse } from "./http-error-responses.js";
+import { getRequestContext, isInsideUnifiedScope } from "vinext/shims/unified-request-context";
+
+export { matchesMiddlewareModulePathname } from "./middleware-runtime.js";
 
 export type AppMiddlewareContext = {
   headers: Headers | null;
@@ -336,6 +339,10 @@ export async function applyAppMiddleware(
       cancelRequestBody(middlewareRequest);
     }
 
+    if (isInsideUnifiedScope() && result.middlewarePathMatched !== false) {
+      getRequestContext().originManagedPageCache = true;
+    }
+
     if (!result.continue) {
       cancelRequestBody(options.request);
       if (result.redirectUrl) {
@@ -386,6 +393,10 @@ export async function applyAppMiddleware(
 
   if (forwarded.applied && options.middlewareRequest) {
     cancelRequestBody(options.middlewareRequest);
+  }
+
+  if (forwarded.applied && isInsideUnifiedScope()) {
+    getRequestContext().originManagedPageCache = true;
   }
 
   if (options.context.headers || options.context.requestHeaders) {

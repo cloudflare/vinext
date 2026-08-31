@@ -51,6 +51,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
+  /** Page-owned preload metadata, before middleware response headers are merged. */
   linkHeader: string | null;
   waitUntil?: (promise: Promise<void>) => void;
 };

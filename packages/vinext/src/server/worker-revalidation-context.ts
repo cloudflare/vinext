@@ -6,6 +6,7 @@ function deriveExecutionContext(
   base: PlatformExecutionContext | undefined,
   dispatchPagesRevalidate: (request: Request) => Promise<Response>,
   isInternalPagesRevalidation: boolean,
+  cacheAdapterEnv?: Record<string, unknown>,
 ): ExecutionContextLike {
   return {
     waitUntil(promise) {
@@ -24,6 +25,7 @@ function deriveExecutionContext(
       : {}),
     hostRuntime: "worker",
     ...(base?.cache === undefined ? {} : { cache: base.cache }),
+    ...(cacheAdapterEnv === undefined ? {} : { cacheAdapterEnv }),
     ...(base?.trustedRevalidateOrigin === undefined
       ? {}
       : { trustedRevalidateOrigin: base.trustedRevalidateOrigin }),
@@ -41,13 +43,25 @@ function deriveExecutionContext(
 export function createWorkerRevalidationContext(
   base: PlatformExecutionContext | undefined,
   handleInternalRequest: (request: Request, ctx: ExecutionContextLike) => Promise<Response>,
+  cacheAdapterEnv?: Record<string, unknown>,
 ): ExecutionContextLike {
   if (typeof base?.dispatchPagesRevalidate === "function") {
-    return base as ExecutionContextLike;
+    if (cacheAdapterEnv === undefined || base.cacheAdapterEnv !== undefined) {
+      return base as ExecutionContextLike;
+    }
+    return deriveExecutionContext(
+      base,
+      base.dispatchPagesRevalidate,
+      base.isInternalPagesRevalidation === true,
+      cacheAdapterEnv,
+    );
   }
 
   const dispatchPagesRevalidate = (request: Request): Promise<Response> =>
-    handleInternalRequest(request, deriveExecutionContext(base, dispatchPagesRevalidate, true));
+    handleInternalRequest(
+      request,
+      deriveExecutionContext(base, dispatchPagesRevalidate, true, cacheAdapterEnv),
+    );
 
-  return deriveExecutionContext(base, dispatchPagesRevalidate, false);
+  return deriveExecutionContext(base, dispatchPagesRevalidate, false, cacheAdapterEnv);
 }

@@ -373,20 +373,110 @@ export class MemoryCacheHandler implements CacheHandler {
 }
 
 const HANDLER_KEY = Symbol.for("vinext.cacheHandler");
+const MEMORY_FALLBACK_KEY = Symbol.for("vinext.memoryCacheHandlerFallback");
+const MEMORY_FALLBACK_SIZE_KEY = Symbol.for("vinext.memoryCacheHandlerFallbackSize");
 const globalHandlers = globalThis as unknown as Record<PropertyKey, CacheHandler>;
+const memoryFallbackState = globalThis as unknown as Record<PropertyKey, unknown>;
+const CONFIGURED_HANDLER_KEY = Symbol.for("vinext.configuredCacheHandler");
+type ConfiguredHandlerRegistration =
+  | {
+      env: unknown;
+      handler: CacheHandler;
+      id: string;
+      kind: "generated";
+    }
+  | {
+      handler: CacheHandler;
+      kind: "manual";
+    };
+const configuredHandlerState = globalThis as unknown as Record<
+  PropertyKey,
+  ConfiguredHandlerRegistration | undefined
+>;
 
 function getActiveHandler(): CacheHandler {
   return globalHandlers[HANDLER_KEY] ?? (globalHandlers[HANDLER_KEY] = new MemoryCacheHandler());
 }
 
 export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions): void {
+  const fallbackSize = resolveMemoryCacheMaxSize(options);
   const current = globalHandlers[HANDLER_KEY];
-  if (current && !(current instanceof MemoryCacheHandler)) return;
-  globalHandlers[HANDLER_KEY] = new MemoryCacheHandler(options);
+  let fallback = globalHandlers[MEMORY_FALLBACK_KEY];
+  if (
+    !fallback ||
+    fallback !== current ||
+    memoryFallbackState[MEMORY_FALLBACK_SIZE_KEY] !== fallbackSize
+  ) {
+    fallback = new MemoryCacheHandler(options);
+    globalHandlers[MEMORY_FALLBACK_KEY] = fallback;
+    memoryFallbackState[MEMORY_FALLBACK_SIZE_KEY] = fallbackSize;
+  }
+  const registration = configuredHandlerState[CONFIGURED_HANDLER_KEY];
+  if (registration && registration.handler === current) return;
+  globalHandlers[HANDLER_KEY] = fallback;
 }
 
 export function setDataCacheHandler(handler: CacheHandler): void {
   globalHandlers[HANDLER_KEY] = handler;
+  configuredHandlerState[CONFIGURED_HANDLER_KEY] = { handler, kind: "manual" };
+}
+
+/** @internal Install a generated adapter and retain its build/env identity across module graphs. */
+export function setConfiguredDataCacheHandler(
+  handler: CacheHandler,
+  id: string,
+  env: unknown,
+): void {
+  globalHandlers[HANDLER_KEY] = handler;
+  configuredHandlerState[CONFIGURED_HANDLER_KEY] = { env, handler, id, kind: "generated" };
+}
+
+/** @internal Whether this generated adapter is already the active handler. */
+export function isConfiguredDataCacheHandlerActive(id: string, env: unknown): boolean {
+  const registration = configuredHandlerState[CONFIGURED_HANDLER_KEY];
+  return (
+    registration !== undefined &&
+    registration.handler === globalHandlers[HANDLER_KEY] &&
+    (registration.kind === "manual" || (registration.id === id && registration.env === env))
+  );
+}
+
+export { deactivateGeneratedDataCacheHandler } from "./cache-adapter-registration.js";
+
+const FAILED_HANDLER_REGISTRATIONS_KEY = Symbol.for("vinext.failedCacheHandlerRegistrations");
+type FailedRegistrations = {
+  objectEnvs: WeakMap<object, Set<string>>;
+  otherEnvs: Map<unknown, Set<string>>;
+};
+
+function getFailedHandlerRegistrations(): FailedRegistrations {
+  const state = globalThis as unknown as Record<PropertyKey, FailedRegistrations | undefined>;
+  return (state[FAILED_HANDLER_REGISTRATIONS_KEY] ??= {
+    objectEnvs: new WeakMap(),
+    otherEnvs: new Map(),
+  });
+}
+
+function failedRegistrationIds(state: FailedRegistrations, env: unknown): Set<string> {
+  if ((typeof env === "object" && env !== null) || typeof env === "function") {
+    const objectEnv = env as object;
+    let ids = state.objectEnvs.get(objectEnv);
+    if (!ids) state.objectEnvs.set(objectEnv, (ids = new Set()));
+    return ids;
+  }
+  let ids = state.otherEnvs.get(env);
+  if (!ids) state.otherEnvs.set(env, (ids = new Set()));
+  return ids;
+}
+
+/** @internal Record a failed generated factory once per exact build/env identity. */
+export function markDataCacheAdapterRegistrationFailed(id: string, env: unknown): void {
+  failedRegistrationIds(getFailedHandlerRegistrations(), env).add(id);
+}
+
+/** @internal Whether the exact generated factory identity already failed. */
+export function hasDataCacheAdapterRegistrationFailed(id: string, env: unknown): boolean {
+  return failedRegistrationIds(getFailedHandlerRegistrations(), env).has(id);
 }
 
 export function getDataCacheHandler(): CacheHandler {

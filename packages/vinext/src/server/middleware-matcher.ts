@@ -75,6 +75,35 @@ export function matchesMiddleware(
   return false;
 }
 
+/**
+ * Whether any middleware source pattern can match this pathname, ignoring
+ * request-dependent `has` / `missing` conditions. A path that can match must
+ * not be cached above middleware even when the current request fails a header,
+ * cookie, or query condition: a later request for the same URL may satisfy it.
+ */
+export function matchesMiddlewarePathname(
+  pathname: string,
+  matcher: MatcherConfig | undefined,
+  i18nConfig?: NextI18nConfig | null,
+  localeContext?: MiddlewareLocaleMatchContext,
+): boolean {
+  if (!matcher) return true;
+  if (typeof matcher === "string") {
+    return matchMatcherPattern(pathname, matcher, i18nConfig, localeContext);
+  }
+  if (!Array.isArray(matcher)) return true;
+
+  for (const item of matcher) {
+    if (typeof item === "string") {
+      if (matchMatcherPattern(pathname, item, i18nConfig, localeContext)) return true;
+      continue;
+    }
+    if (!isValidMiddlewareMatcherObjectConfig(item)) return true;
+    if (matchObjectMatcher(pathname, item, i18nConfig, localeContext)) return true;
+  }
+  return false;
+}
+
 function matchMatcherPattern(
   pathname: string,
   pattern: string,

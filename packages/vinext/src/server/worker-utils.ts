@@ -5,7 +5,8 @@
  * Router worker entry through "vinext/server/worker-utils".
  */
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
-import { readStaticFileSignal } from "./static-file-signal.js";
+import { finalizeMiddlewareSafePageCacheResponse } from "./cache-control.js";
+import { isOriginManagedStaticFileSignal, readStaticFileSignal } from "./static-file-signal.js";
 
 /**
  * Merge middleware/config headers into a response.
@@ -129,6 +130,7 @@ export async function resolveStaticAssetSignal(
 ): Promise<Response | null> {
   const signal = readStaticFileSignal(signalResponse);
   if (!signal) return null;
+  const originManagedPageCache = isOriginManagedStaticFileSignal(signalResponse);
 
   let assetPath = "/";
   try {
@@ -153,7 +155,10 @@ export async function resolveStaticAssetSignal(
     assetResponse.ok && assetResponse.status !== 206 && signalResponse.status !== 200
       ? signalResponse.status
       : undefined;
-  return mergeHeaders(assetResponse, extraHeaders, statusOverride);
+  return finalizeMiddlewareSafePageCacheResponse(
+    mergeHeaders(assetResponse, extraHeaders, statusOverride),
+    originManagedPageCache,
+  );
 }
 
 /** Retarget a Worker asset request without dropping its conditional/range fields. */
