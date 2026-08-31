@@ -652,8 +652,58 @@ describe("paired performance benchmarks", () => {
     expect(comment).toContain(
       "using alternating same-runner rounds. Next.js was unchanged and skipped.",
     );
-    expect(comment).toContain("1 improved · 0 regressed · 0 within ±1.5%");
+    expect(comment).toContain("1 improved · 0 regressed · 0 within noise threshold");
     expect(comment).not.toContain("Next.js |");
+  });
+
+  it("uses a wider noise threshold for dev cold start", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-cold-start-comment-"));
+    const resultsPath = join(directory, "results.json");
+    const responsePath = join(directory, "response.json");
+    const outputPath = join(directory, "comment.md");
+    writeFileSync(
+      resultsPath,
+      JSON.stringify({
+        run: {
+          kind: "pull_request",
+          pullRequest: 42,
+          baseSha: "b".repeat(40),
+          measuredAt: "2026-01-01T00:00:00.000Z",
+        },
+        benchmarks: [],
+      }),
+    );
+    writeFileSync(
+      responsePath,
+      JSON.stringify({
+        comparison: {
+          head: { shortSha: "aaaaaaa" },
+          baseline: { shortSha: "bbbbbbb" },
+          measurements: [
+            {
+              ...commentMeasurement("vinext-dev-cold-start-root", 1000, 977),
+              label: "Dev server cold start",
+            },
+            {
+              ...commentMeasurement("vinext-production-build", 100, 98),
+              label: "Production build time",
+            },
+          ],
+        },
+      }),
+    );
+
+    execFileSync(
+      process.execPath,
+      ["benchmarks/perf/format-pr-comment.mjs", resultsPath, responsePath, outputPath],
+      { cwd: join(import.meta.dirname, "..") },
+    );
+
+    const comment = readFileSync(outputPath, "utf8");
+    expect(comment).toContain("1 improved · 0 regressed · 1 within noise threshold");
+    expect(comment).toContain("| Dev server cold start | vinext | 1.00 s | 977 ms | ⚫ -2.3% |");
+    expect(comment).toContain("| Production build time | vinext | 100 ms | 98 ms | 🟢 -2.0% |");
+    expect(comment).toContain("3% dev cold start; 1.5% otherwise");
   });
 
   it("labels mixed paired and historical PR comment baselines", () => {

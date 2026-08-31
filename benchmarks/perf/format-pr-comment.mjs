@@ -7,6 +7,8 @@ const resultsPath = resolve(process.argv[2] ?? "performance-artifact/perf-result
 const responsePath = resolve(process.argv[3] ?? "performance-upload.json");
 const outputPath = resolve(process.argv[4] ?? "performance-comment.md");
 const results = JSON.parse(await readFile(resultsPath, "utf8"));
+const DEFAULT_CHANGE_THRESHOLD = 1.5;
+const DEV_COLD_START_CHANGE_THRESHOLD = 3;
 
 if (results.run.kind !== "pull_request") {
   await writeFile(outputPath, "");
@@ -71,10 +73,16 @@ function measurementChange(measurement) {
   );
 }
 
+function changeThreshold(measurement) {
+  return measurement.benchmarkId?.endsWith("-dev-cold-start-root")
+    ? DEV_COLD_START_CHANGE_THRESHOLD
+    : DEFAULT_CHANGE_THRESHOLD;
+}
+
 function changeCell(measurement, hasComparisonBaseline) {
   const change = measurementChange(measurement);
   if (change === null) return hasComparisonBaseline ? "Current only" : "New";
-  const neutral = Math.abs(change) < 1.5;
+  const neutral = Math.abs(change) < changeThreshold(measurement);
   const improved = measurement.lowerIsBetter ? change < 0 : change > 0;
   const indicator = neutral ? "⚫" : improved ? "🟢" : "🔴";
   return `${indicator} ${change > 0 ? "+" : ""}${change.toFixed(1)}%`;
@@ -90,7 +98,7 @@ const regressions = measurements.filter((measurement) => {
   const change = measurementChange(measurement);
   return (
     change !== null &&
-    Math.abs(change) >= 1.5 &&
+    Math.abs(change) >= changeThreshold(measurement) &&
     (measurement.lowerIsBetter ? change > 0 : change < 0)
   );
 }).length;
@@ -98,7 +106,7 @@ const improvements = measurements.filter((measurement) => {
   const change = measurementChange(measurement);
   return (
     change !== null &&
-    Math.abs(change) >= 1.5 &&
+    Math.abs(change) >= changeThreshold(measurement) &&
     (measurement.lowerIsBetter ? change < 0 : change > 0)
   );
 }).length;
@@ -143,7 +151,7 @@ const body = [
     : `Measured \`${comparison.head.shortSha}\`. No benchmark run is available for base \`${results.run.baseSha.slice(0, 7)}\`.`,
   "",
   comparison.baseline
-    ? `**${improvements} improved · ${regressions} regressed · ${neutral} within ±1.5%**`
+    ? `**${improvements} improved · ${regressions} regressed · ${neutral} within noise threshold**`
     : `**${measurements.length} measurements recorded · baseline unavailable**`,
   "",
   "| Scenario | Framework | Baseline | Current | Change |",
@@ -152,7 +160,7 @@ const body = [
   "",
   `[View detailed results and traces](${dashboardUrl})`,
   "",
-  `<sub>🟢 improvement · 🔴 regression · ⚫ change below 1.5%${
+  `<sub>🟢 improvement · 🔴 regression · ⚫ below threshold (3% dev cold start; 1.5% otherwise)${
     hasPairedBaseline
       ? hasUnpairedMeasurement
         ? hasHistoricalBaseline && hasCurrentOnlyMeasurement
