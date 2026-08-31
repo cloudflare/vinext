@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -1731,6 +1732,74 @@ describe("App Router Production server (startProdServer)", () => {
     const html = await response.text();
     expect(html).toContain("<title>Slot-local not-found metadata</title>");
     expect(html).not.toContain("<title>Primary not-found metadata</title>");
+  });
+
+  it("does not report client-aborted renders via instrumentation", async () => {
+    const resetRes = await fetch(`${baseUrl}/api/instrumentation-test`, {
+      method: "DELETE",
+    });
+    expect(resetRes.status).toBe(200);
+
+    // Spec-compliant runtimes (Nitro/h3, Workers, Deno) cancel the response
+    // body stream when the client disconnects mid-stream. Node's fromWeb +
+    // pipeline path in prod-server does not, so exercise the entry directly.
+    const entryModule = await import(pathToFileURL(path.join(outDir, "server", "index.js")).href);
+    const entryHandler =
+      typeof entryModule.default === "function"
+        ? entryModule.default
+        : entryModule.default.fetch.bind(entryModule.default);
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    let response: Response = await entryHandler(
+      new Request(`${baseUrl}/slow-stream-abort-test`, { headers: rscHeaders }),
+    );
+    if (response.status === 307) {
+      const location = response.headers.get("location")!;
+      response = await entryHandler(
+        new Request(new URL(location, baseUrl), { headers: rscHeaders }),
+      );
+    }
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const shellChunk = await reader.read();
+    expect(shellChunk.done).toBe(false);
+    await reader.cancel();
+
+    // Give the suspended section time to settle server-side after the abort.
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+
+    const stateRes = await fetch(`${baseUrl}/api/instrumentation-test`);
+    expect(stateRes.status).toBe(200);
+    const state = await stateRes.json();
+
+    expect(state.errors.map((error: { message: string }) => error.message)).toEqual([]);
+  });
+
+  it("does not report client-aborted document renders via instrumentation", async () => {
+    const resetRes = await fetch(`${baseUrl}/api/instrumentation-test`, {
+      method: "DELETE",
+    });
+    expect(resetRes.status).toBe(200);
+
+    const entryModule = await import(pathToFileURL(path.join(outDir, "server", "index.js")).href);
+    const entryHandler =
+      typeof entryModule.default === "function"
+        ? entryModule.default
+        : entryModule.default.fetch.bind(entryModule.default);
+    const response: Response = await entryHandler(new Request(`${baseUrl}/slow-stream-abort-test`));
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    const shellChunk = await reader.read();
+    expect(shellChunk.done).toBe(false);
+    await reader.cancel();
+
+    // Give the suspended section time to settle server-side after the abort.
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+
+    const stateRes = await fetch(`${baseUrl}/api/instrumentation-test`);
+    expect(stateRes.status).toBe(200);
+    const state = await stateRes.json();
+
+    expect(state.errors.map((error: { message: string }) => error.message)).toEqual([]);
   });
 
   it("reports server component render errors via instrumentation in production", async () => {

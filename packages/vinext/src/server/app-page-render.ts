@@ -591,19 +591,18 @@ function wrapRscResponseForDevErrorReporting(
     }
   };
 
-  const cleanup = new TransformStream<Uint8Array, Uint8Array>({
-    flush() {
-      onConsumed();
-    },
-  });
-
-  const piped = originalBody.pipeThrough(cleanup);
-  const reader = piped.getReader();
+  // A manual passthrough instead of pipeThrough(new TransformStream(...)):
+  // the transform's only job was firing `onConsumed` on clean drain, which
+  // the `done` branch below covers. It also avoids the internal pipeTo
+  // promise, which rejects unhandled when the consumer cancels the stream
+  // with a reason.
+  const reader = originalBody.getReader();
   const wrappedStream = new ReadableStream<Uint8Array>({
     pull(controller) {
       return reader.read().then(
         ({ done, value }) => {
           if (done) {
+            onConsumed();
             controller.close();
           } else {
             controller.enqueue(value);

@@ -14,6 +14,8 @@ import {
   fixPreloadAs,
   waitAtLeastOneReactRenderTask,
 } from "../packages/vinext/src/server/app-ssr-stream.js";
+import { deferUntilStreamConsumed } from "../packages/vinext/src/server/defer-until-stream-consumed.js";
+import { pumpThrough } from "../packages/vinext/src/server/stream-pump.js";
 
 it("serializes dynamic stale time into the hydration bootstrap", () => {
   expect(
@@ -974,5 +976,36 @@ describe("createTickBufferedTransform inline CSS", () => {
 
     expect(out).toContain("<style data-vinext-inline-css");
     expect(out).not.toContain("nonce=");
+  });
+
+  it("settles when cancelled while the embed flush awaits a suspended flight stream", async () => {
+    const neverEndingFlight = new ReadableStream<Uint8Array>({
+      pull() {
+        return new Promise(() => {});
+      },
+    });
+    const rscEmbed = createRscEmbedTransform(neverEndingFlight);
+    const htmlSource = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("<html><body>x</body></html>"));
+        controller.close();
+      },
+    });
+
+    const finalStream = deferUntilStreamConsumed(
+      pumpThrough(htmlSource, createTickBufferedTransform(rscEmbed)),
+      () => {
+        rscEmbed.abort?.();
+      },
+    );
+
+    const reader = finalStream.getReader();
+    await reader.read();
+    await Promise.race([
+      reader.cancel(new Error("consumer went away")),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("cancellation hung on pending flush")), 2000),
+      ),
+    ]);
   });
 });
