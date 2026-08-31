@@ -186,6 +186,7 @@ import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
   SSR_EXTERNAL_REACT_ENTRIES,
+  stripBrowserConditionFromServerEnv,
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
@@ -3767,6 +3768,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               (entry) => typeof entry !== "string" || !SSR_EXTERNAL_REACT_ENTRIES.includes(entry),
             );
           }
+
+          // Strip the `browser` export condition from the server (rsc/ssr)
+          // environments. SSR/RSC run in Node or the Cloudflare Workers runtime,
+          // never in a browser, so isomorphic libraries that gate DOM access on
+          // the `browser` condition (e.g. `esm-env`'s `BROWSER`) must resolve
+          // their server-safe entry. Without this, a `"use client"` component
+          // that imports a library which evaluates `class extends HTMLElement`
+          // at module-init time (number-flow, lit-based web components, etc.)
+          // crashes with `ReferenceError: HTMLElement is not defined` on Workers,
+          // where `@cloudflare/vite-plugin` injects `browser` into every worker
+          // environment's resolve conditions. No-op on plain Node (the server
+          // environments never carry `browser` there). The client environment is
+          // intentionally left untouched.
+          stripBrowserConditionFromServerEnv(config.environments?.rsc);
+          stripBrowserConditionFromServerEnv(config.environments?.ssr);
         }
 
         // Detect double React plugin registration. When vinext auto-injects

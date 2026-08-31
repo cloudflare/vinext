@@ -54,3 +54,85 @@ export function mergeOptimizeDepsExclude(
 
   return [...seen];
 }
+
+// The `browser` export condition must never be active when vinext resolves
+// modules for server-side rendering. The RSC and SSR environments execute in
+// Node.js or the Cloudflare Workers runtime — neither is a browser, and neither
+// defines DOM globals like `HTMLElement`, `window`, or `customElements`.
+//
+// Isomorphic libraries use the `browser` condition (often via `esm-env`'s
+// `BROWSER` flag, whose `./browser` export resolves to `true` only under the
+// `browser` condition) to decide whether to touch the DOM at module-init time.
+// A common pattern — used by `number-flow` / `@number-flow/react`, among others
+// that register a custom element — is:
+//
+//     const Base = BROWSER ? HTMLElement : class {};
+//     class MyElement extends Base {}   // evaluated at import time
+//
+// When the SSR/RSC bundle resolves such a library with the `browser` condition,
+// `BROWSER` becomes `true` and `class extends HTMLElement` runs as soon as the
+// module loads — crashing with `ReferenceError: HTMLElement is not defined` in
+// Node and Workers.
+//
+// Plain Node SSR already resolves with server conditions (no `browser`), so the
+// crash only appears on bundled runtimes whose plugins add `browser` to the
+// worker environment's resolve conditions — most notably `@cloudflare/vite-plugin`,
+// which sets `["workerd", "worker", "module", "browser", ...]` for every worker
+// environment (including the rsc/ssr environments vinext renders through).
+// Removing `browser` makes those environments resolve the same server-safe entry
+// that `next build && next start` does. The client environment keeps `browser`,
+// so the browser bundle is unaffected.
+const BROWSER_RESOLVE_CONDITION = "browser";
+
+/**
+ * Return a copy of `conditions` with the `browser` export condition removed.
+ * Returns the input unchanged when it is not an array (so callers can pass an
+ * absent/undefined conditions list through without a guard).
+ */
+export function withoutBrowserCondition(
+  conditions: readonly string[] | undefined,
+): string[] | undefined {
+  if (!Array.isArray(conditions)) return conditions as string[] | undefined;
+  return conditions.filter((condition) => condition !== BROWSER_RESOLVE_CONDITION);
+}
+
+/**
+ * Minimal structural shape of a resolved Vite environment's resolution config.
+ * Kept loose on purpose so this helper works across Vite's `esbuild`/`rolldown`
+ * dep-optimizer variants without depending on version-specific types.
+ */
+type ServerEnvResolveConfig = {
+  resolve?: { conditions?: string[] };
+  optimizeDeps?: {
+    rolldownOptions?: { resolve?: { conditionNames?: string[] } };
+    esbuildOptions?: { conditions?: string[] };
+  };
+};
+
+/**
+ * Strip the `browser` export condition from a server environment's resolve
+ * conditions and its dep-optimizer conditions, in place.
+ *
+ * No-op when `browser` is absent, so this is safe to call unconditionally on
+ * plain-Node builds where the server environments never carry the `browser`
+ * condition. Both the resolver conditions (used by production builds) and the
+ * dep-optimizer conditions (used by dev/`wrangler dev`) are handled so the two
+ * code paths stay in sync.
+ */
+export function stripBrowserConditionFromServerEnv(env: ServerEnvResolveConfig | undefined): void {
+  if (!env) return;
+
+  if (env.resolve?.conditions) {
+    env.resolve.conditions = withoutBrowserCondition(env.resolve.conditions) ?? [];
+  }
+
+  const rolldownResolve = env.optimizeDeps?.rolldownOptions?.resolve;
+  if (rolldownResolve?.conditionNames) {
+    rolldownResolve.conditionNames = withoutBrowserCondition(rolldownResolve.conditionNames) ?? [];
+  }
+
+  const esbuildOptions = env.optimizeDeps?.esbuildOptions;
+  if (esbuildOptions?.conditions) {
+    esbuildOptions.conditions = withoutBrowserCondition(esbuildOptions.conditions) ?? [];
+  }
+}
