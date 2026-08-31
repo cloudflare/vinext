@@ -959,6 +959,89 @@ describe("vinext:google-fonts plugin", () => {
     }
   });
 
+  it("does not shadow outer scope font imports when redeclared inside nested blocks", async () => {
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-shadow-nested");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `if (process.env.NODE_ENV === "test") {`,
+        `  const Inter = () => null;`,
+        `}`,
+        `const inter = Inter({ weight: '400', subsets: ['latin'] });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("virtual:vinext-google-fonts?");
+      const matches = result.code.match(/selfHostedCSS/g);
+      expect(matches?.length).toBe(1);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not inject self-host metadata into commented-out font calls", async () => {
+    // Next.js discovers next/font calls by walking the SWC AST:
+    // crates/next-custom-transforms/src/transforms/fonts/font_imports_generator.rs
+    // https://github.com/vercel/next.js/blob/canary/crates/next-custom-transforms/src/transforms/fonts/font_imports_generator.rs
+    // Text in comments is therefore not a font call and must not trigger the
+    // self-hosting rewrite.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-commented-call");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `// const inter = Inter({ weight: '400', subsets: ['latin'] });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("virtual:vinext-google-fonts?");
+      expect(result.code).not.toContain("selfHostedCSS");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("injects self-host metadata when an options comment contains a brace", async () => {
+    // The AST owns the object range, so braces inside comments cannot make the
+    // font call look prematurely closed.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-comment-brace");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({`,
+        `  weight: '400',`,
+        `  subsets: ['latin'], /* } */`,
+        `});`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("selfHostedCSS");
+      expect(result.code).toContain("virtual:vinext-google-fonts?");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not produce double-comma when font options have a trailing comma", async () => {
     // Regression test: Inter({ subsets: ["latin"], }) already has a trailing comma.
     // injectSelfHostedCss must not prepend another ", " making the object literal
@@ -1353,6 +1436,151 @@ describe("vinext:google-fonts plugin", () => {
       const result = await transform.call(plugin, code, "/app/layout.tsx");
       expect(result).not.toBeNull();
       expect(result.code).toContain("selfHostedCSS");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not rewrite calls to shadowed font identifiers", async () => {
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-shadowed");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `function myComponent(Inter: any) {`,
+        `  return Inter({ weight: '400', subsets: ['latin'] });`,
+        `}`,
+        `const realInter = Inter({ weight: '400', subsets: ['latin'] });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      // The outer call realInter must be self-hosted
+      expect(result.code).toContain(
+        "const realInter = Inter({ weight: '400', subsets: ['latin'] , _vinext: {",
+      );
+      // The inner call to shadowed Inter must NOT be rewritten
+      expect(result.code).toContain("return Inter({ weight: '400', subsets: ['latin'] });");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not rewrite calls shadowed by a var hoisted from a nested block", async () => {
+    // `var` is function-scoped, so a `var Inter` inside an if-block shadows the
+    // imported Google font loader for the whole function body, including calls
+    // that are siblings of the block.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-shadow-var-hoist");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `function render(condition: boolean) {`,
+        `  if (condition) {`,
+        `    var Inter = () => null;`,
+        `  }`,
+        `  return Inter({ weight: '400', subsets: ['latin'] });`,
+        `}`,
+        `const realInter = Inter({ weight: '400', subsets: ['latin'] });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      // The top-level call is the real import and must be self-hosted.
+      expect(result.code).toContain(
+        "const realInter = Inter({ weight: '400', subsets: ['latin'] , _vinext: {",
+      );
+      // The call inside render is shadowed by the hoisted var and must NOT be rewritten.
+      expect(result.code).toContain("return Inter({ weight: '400', subsets: ['latin'] });");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not rewrite calls shadowed by a const inside a switch case", async () => {
+    // The switch block is a single lexical scope, so a `const Inter` in any
+    // case shadows the imported loader for the whole switch.
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-shadow-switch");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      // No braces around the case body: the SwitchStatement itself is the only
+      // lexical scope boundary, so this only passes if `switch` is a scope node.
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `function render(kind: string) {`,
+        `  switch (kind) {`,
+        `    case "custom":`,
+        `      const Inter = (options: unknown) => options;`,
+        `      return Inter({ weight: '400', subsets: ['latin'] });`,
+        `  }`,
+        `}`,
+        `const realInter = Inter({ weight: '400', subsets: ['latin'] });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain(
+        "const realInter = Inter({ weight: '400', subsets: ['latin'] , _vinext: {",
+      );
+      // The call inside the switch case is shadowed and must NOT be rewritten.
+      expect(result.code).toContain("return Inter({ weight: '400', subsets: ['latin'] });");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("handles comments inside import statement containing 'from'", async () => {
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-import-comment");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter /* comment with from here */ } from 'next/font/google';`,
+        `const inter = Inter({ weight: '400', subsets: ['latin'] });`,
+      ].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("virtual:vinext-google-fonts?");
+      expect(result.code).toContain("selfHostedCSS");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("handles comments inside export statement containing 'from'", async () => {
+    const plugin = getGoogleFontsPlugin();
+    const root = path.join(import.meta.dirname, ".test-font-root-export-comment");
+    initPlugin(plugin, { command: "build", root });
+
+    mockGoogleFontsCSS("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }");
+
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [`export { Inter /* comment with from */ } from 'next/font/google';`].join("\n");
+
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("virtual:vinext-google-fonts?");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
