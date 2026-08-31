@@ -211,6 +211,25 @@ describe("App Router ISR cache key primitives", () => {
     expect(key).toMatch(/^app:__hash:[a-z0-9]+:rsc$/);
   });
 
+  it("decides hashing independently of the artifact suffix (#1965)", () => {
+    delete process.env.__VINEXT_BUILD_ID;
+
+    // Boundary pathname: the suffix-free key is exactly 200 chars, but adding
+    // the ":html" artifact suffix pushes it to 205. Seed time builds the key as
+    // isrCacheKey(...) + ":html" (threshold evaluated on the unsuffixed key);
+    // read time builds appIsrHtmlKey() (threshold evaluated on the suffixed
+    // key). If the hash decision differs, the seeded entry is written under one
+    // key and looked up under another — a silent cache miss.
+    const pathname = "/" + "a".repeat(195); // "app:" + 196 = 200 chars unsuffixed
+    expect(`app:${pathname}`.length).toBe(200);
+
+    const seedKey = isrCacheKey("app", pathname) + ":html";
+    const readKey = appIsrHtmlKey(pathname);
+
+    expect(seedKey).toBe(readKey);
+    expect(seedKey).not.toContain("__hash:"); // 200-char base stays unhashed
+  });
+
   it("keys mounted-slot RSC variants by normalized mounted-slot header", () => {
     delete process.env.__VINEXT_BUILD_ID;
 

@@ -420,8 +420,16 @@ function normalizeCachePathname(pathname: string): string {
 function buildCacheKey(prefix: string, pathname: string, suffix?: string): string {
   const normalized = normalizeCachePathname(pathname);
   const suffixPart = suffix ? `:${suffix}` : "";
-  const key = `${prefix}:${normalized}${suffixPart}`;
-  if (key.length <= 200) return key;
+  // Decide hashing on the suffix-free base key, then append the suffix. The hash
+  // decision must not depend on whether the artifact suffix (":html", ":rsc", …)
+  // is passed here or appended by the caller (seed time builds the key as
+  // `isrCacheKey(...) + ":html"`, evaluating the threshold on the unsuffixed
+  // key, while read time calls appIsrHtmlKey() with the suffix). Keying the
+  // threshold off the base makes both paths agree, so a boundary-length
+  // pathname (base <= 200 but base + suffix > 200) is no longer seeded under an
+  // unhashed key but read under a hashed one — a silent cache miss (#1965).
+  const base = `${prefix}:${normalized}`;
+  if (base.length <= 200) return `${base}${suffixPart}`;
   return `${prefix}:__hash:${fnv1a64(normalized)}${suffixPart}`;
 }
 
