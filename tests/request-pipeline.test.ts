@@ -23,12 +23,14 @@ import {
   applyConfigHeadersToResponse,
 } from "../packages/vinext/src/server/config-headers.js";
 import {
+  VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
+import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
 
 // Ported from the URL boundary used by Next.js request handling: WHATWG URL
 // pathname parsing canonicalizes recognized dot segments before routing.
@@ -306,7 +308,8 @@ describe("resolvePublicFileRoute", () => {
 
     expect(response).not.toBeNull();
     expect(response!.status).toBe(203);
-    expect(response!.headers.get("x-vinext-static-file")).toBe("%2Flogo.svg");
+    expect(readStaticFileSignal(response!)).toBe("%2Flogo.svg");
+    expect(response!.headers.get("x-vinext-static-file")).toBeNull();
     expect(response!.headers.get("x-from-middleware")).toBe("1");
   });
 
@@ -372,7 +375,8 @@ describe("resolvePublicFileRoute", () => {
     });
 
     expect(response.status).toBe(202);
-    expect(response.headers.get("x-vinext-static-file")).toBe("%2Frobots.txt");
+    expect(readStaticFileSignal(response)).toBe("%2Frobots.txt");
+    expect(response.headers.get("x-vinext-static-file")).toBeNull();
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 });
@@ -866,6 +870,8 @@ describe("filterInternalHeaders", () => {
 
   it("strips vinext-only internal headers without extending Next.js INTERNAL_HEADERS", () => {
     const headers = new Headers({
+      "cloudflare-workers-version-overrides": 'downstream="version-id"',
+      [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "expected-version",
       [VINEXT_PRERENDER_CACHE_LIFE_HEADER]: "forged",
       [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
       [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "forged",
@@ -879,6 +885,7 @@ describe("filterInternalHeaders", () => {
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_SPECULATIVE_HEADER);
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
     expect(VINEXT_INTERNAL_HEADERS).toEqual([
+      VINEXT_EXPECTED_WORKER_VERSION_HEADER.toLowerCase(),
       VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
       VINEXT_PRERENDER_SPECULATIVE_HEADER,
       VINEXT_PRERENDER_CACHE_LIFE_HEADER,
@@ -888,9 +895,11 @@ describe("filterInternalHeaders", () => {
       expect(name).toBe(name.toLowerCase());
     }
     expect(result.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)).toBe(false);
+    expect(result.has(VINEXT_EXPECTED_WORKER_VERSION_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_SPECULATIVE_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
     expect(result.has(VINEXT_REVALIDATE_HOST_HEADER)).toBe(false);
+    expect(result.get("cloudflare-workers-version-overrides")).toBe('downstream="version-id"');
     expect(result.get("user-agent")).toBe("test");
   });
 

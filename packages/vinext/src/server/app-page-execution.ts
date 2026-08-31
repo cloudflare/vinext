@@ -380,11 +380,11 @@ export async function buildAppPageSpecialErrorResponse(
       // Mirror the regular RSC response by stamping the build-time compatibility
       // ID. Without it, the client treats the response as cross-build and hard-
       // navigates instead of following the redirect through the soft-nav loop.
-      applyRscCompatibilityIdHeader(headers);
-      applyRscDeploymentIdHeader(headers);
       // Preserve middleware response headers (Set-Cookie, custom headers, etc.)
       // exactly like the 307 path does — the client will still see them.
       mergeMiddlewareResponseHeaders(headers, options.middlewareContext?.headers ?? null);
+      applyRscCompatibilityIdHeader(headers);
+      applyRscDeploymentIdHeader(headers);
       // Framework-owned redirect semantics must win over middleware headers.
       // The Flight digest remains authoritative; these headers are only the
       // early client side-channel for following it without decoding first.

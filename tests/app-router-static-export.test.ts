@@ -65,6 +65,43 @@ describe("App Router Static export", () => {
     expect(html404).toContain("Page Not Found");
   });
 
+  it("generates 404/index.html when trailingSlash is enabled", async () => {
+    const { staticExportApp } = await import("../packages/vinext/src/build/static-export.js");
+    const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+    const { loadNextConfig, resolveNextConfig } =
+      await import("../packages/vinext/src/config/next-config.js");
+
+    const appDir = path.resolve(APP_FIXTURE_DIR, "app");
+    const routes = await appRouter(appDir);
+    const trailingConfig = {
+      ...(await loadNextConfig(APP_FIXTURE_DIR)),
+      trailingSlash: true,
+    };
+    const trailingRscBundlePath = await buildAppFixture(APP_FIXTURE_DIR, trailingConfig);
+    const config = await resolveNextConfig({ ...trailingConfig, output: "export" });
+    const trailingDir = path.resolve(APP_FIXTURE_DIR, "out-trailing-app");
+
+    try {
+      const result = await staticExportApp({
+        routes,
+        appDir,
+        rscBundlePath: trailingRscBundlePath,
+        outDir: trailingDir,
+        config,
+      });
+
+      // Ported from Next.js: test/e2e/app-dir-export/test/utils.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir-export/test/utils.ts
+      expect(result.files).toContain("404.html");
+      expect(result.files).toContain("404/index.html");
+      expect(fs.readFileSync(path.join(trailingDir, "404.html"), "utf-8")).toBe(
+        fs.readFileSync(path.join(trailingDir, "404", "index.html"), "utf-8"),
+      );
+    } finally {
+      fs.rmSync(trailingDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports errors for dynamic routes without generateStaticParams", async () => {
     const { staticExportApp } = await import("../packages/vinext/src/build/static-export.js");
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");

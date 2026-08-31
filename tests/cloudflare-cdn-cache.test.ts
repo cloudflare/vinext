@@ -9,7 +9,9 @@
  *    explicitly configured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
-import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import createCloudflareCdnCacheAdapter, {
+  CloudflareCdnCacheAdapter,
+} from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import {
   getCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -20,11 +22,25 @@ import {
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
 } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
+import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import { applyCdnResponseIdentityHeaders } from "../packages/vinext/src/server/cache-control.js";
+import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
+import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
+import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
 
 const CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
 
 function resetActiveAdapter(): void {
   delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
+}
+
+function makeRequestContext(): RequestContext {
+  return {
+    headers: new Headers(),
+    cookies: {},
+    query: new URLSearchParams(),
+    host: "example.com",
+  };
 }
 
 function finalizePendingDynamicRscResponse(): Response {
@@ -57,7 +73,10 @@ function finalizePendingDynamicRscResponse(): Response {
 }
 
 beforeEach(resetActiveAdapter);
-afterEach(resetActiveAdapter);
+afterEach(() => {
+  resetActiveAdapter();
+  vi.unstubAllEnvs();
+});
 
 // ─── Adapter behavior ────────────────────────────────────────────────────
 
@@ -66,6 +85,112 @@ describe("CloudflareCdnCacheAdapter", () => {
 
   it("does not own background revalidation (the edge re-requests origin)", () => {
     expect(adapter.ownsBackgroundRevalidation).toBe(false);
+  });
+
+  it("accepts a staged warmup only in its expected Worker version", async () => {
+    const routedAdapter = createCloudflareCdnCacheAdapter({
+      env: { CF_VERSION_METADATA: { id: "version-b", tag: "", timestamp: "" } },
+    });
+    const matching = new Request("https://example.com/page", {
+      headers: {
+        "Cloudflare-Workers-Version-Overrides": 'upstream="version-a", app="version-b"',
+        [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-b",
+      },
+    });
+    const mismatching = new Request("https://example.com/page", {
+      headers: {
+        "Cloudflare-Workers-Version-Overrides": 'app="version-c"',
+        [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-c",
+      },
+    });
+
+    expect(await routedAdapter.validateRequest?.(matching)).toBeNull();
+    const response = await routedAdapter.validateRequest?.(mismatching);
+    expect(response?.status).toBe(503);
+    expect(response?.headers.get("Cache-Control")).toBe("no-store");
+    await expect(response?.text()).resolves.toContain(
+      "Cloudflare invoked Worker version version-b, but vinext warmup expected version-c",
+    );
+  });
+
+  it("ignores version overrides that are not vinext staged warmup assertions", async () => {
+    const routedAdapter = createCloudflareCdnCacheAdapter({
+      env: { CF_VERSION_METADATA: { id: "version-a", tag: "", timestamp: "" } },
+    });
+    const downstreamOnly = new Request("https://example.com/page", {
+      headers: {
+        "Cloudflare-Workers-Version-Overrides": 'downstream="version-b"',
+      },
+    });
+
+    expect(await routedAdapter.validateRequest?.(downstreamOnly)).toBeNull();
+  });
+
+  it("rejects a vinext version assertion without a Cloudflare version override", async () => {
+    const routedAdapter = createCloudflareCdnCacheAdapter({
+      env: { CF_VERSION_METADATA: { id: "version-a", tag: "", timestamp: "" } },
+    });
+    const request = new Request("https://example.com/page", {
+      headers: { [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-a" },
+    });
+
+    const response = await routedAdapter.validateRequest?.(request);
+    expect(response?.status).toBe(503);
+    await expect(response?.text()).resolves.toContain(
+      `received ${VINEXT_EXPECTED_WORKER_VERSION_HEADER} without Cloudflare-Workers-Version-Overrides`,
+    );
+  });
+
+  it("fails an override loudly when its configured version metadata binding is missing", async () => {
+    const routedAdapter = createCloudflareCdnCacheAdapter({
+      env: {},
+      options: { versionMetadataBinding: "CUSTOM_VERSION" },
+    });
+    const request = new Request("https://example.com/page", {
+      headers: {
+        "Cloudflare-Workers-Version-Overrides": 'app="version-b"',
+        [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-b",
+      },
+    });
+
+    const response = await routedAdapter.validateRequest?.(request);
+    expect(response?.status).toBe(503);
+    const body = await response?.text();
+    expect(body).toContain("requires the `CUSTOM_VERSION` version metadata binding");
+    expect(body).toContain("Named environments do not inherit this binding");
+  });
+
+  it("does not require version metadata for ordinary requests without an override", async () => {
+    const routedAdapter = createCloudflareCdnCacheAdapter();
+    expect(
+      await routedAdapter.validateRequest?.(new Request("https://example.com/page")),
+    ).toBeNull();
+  });
+
+  it("stamps the application build identity on cacheable and no-store responses", () => {
+    vi.stubEnv("__VINEXT_BUILD_ID", "pinned-build");
+    vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "instance-a");
+
+    expect(adapter.buildResponseHeaders({ cacheControl: "s-maxage=60" })).toMatchObject({
+      [VINEXT_CDN_BUILD_ID_HEADER]: "instance-a",
+    });
+    expect(adapter.buildResponseHeaders({ cacheControl: "no-store" })).toMatchObject({
+      [VINEXT_CDN_BUILD_ID_HEADER]: "instance-a",
+    });
+  });
+
+  it("stamps build identity at the outer response boundary, including redirects", () => {
+    vi.stubEnv("__VINEXT_BUILD_ID", "build-a");
+    setCdnCacheAdapter(adapter);
+
+    const response = applyCdnResponseIdentityHeaders(
+      Response.redirect("https://example.com/target", 307),
+      new Request("https://example.com/source", { headers: { Accept: "text/html" } }),
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe("https://example.com/target");
+    expect(response.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("build-a");
   });
 
   it("get returns null so the origin always renders fresh", async () => {
@@ -158,6 +283,41 @@ describe("CloudflareCdnCacheAdapter", () => {
         new Headers({ "Cloudflare-CDN-Cache-Control": "private, no-store" }),
       ),
     ).toBe(true);
+  });
+
+  it("preserves mixed-case generic opt-outs during final response normalization", async () => {
+    setCdnCacheAdapter(adapter);
+    const response = new Response("body", { headers: { "Cache-Control": "No-Cache" } });
+
+    await finalizeAppRscResponse(response, new Request("https://example.com/page"), {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("No-Cache");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+  });
+
+  it("does not promote an adapter opt-out when Cache-Control has a similar extension", async () => {
+    setCdnCacheAdapter(adapter);
+    const response = new Response("body", {
+      headers: {
+        "Cache-Control": "xprivate=1, s-maxage=60",
+        "CDN-Cache-Control": "no-store",
+      },
+    });
+
+    await finalizeAppRscResponse(response, new Request("https://example.com/page"), {
+      basePath: "",
+      configHeaders: [],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
   });
 
   it("replaces Cloudflare headers on pending HTML and still skips a late-dynamic cache write", async () => {

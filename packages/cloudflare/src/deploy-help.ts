@@ -25,10 +25,20 @@ export function formatDeployHelp(): string {
                              Upload a Worker version, warm build-discovered paths
                              through the production URL, then promote it (experimental)
     --warm-cdn-concurrency <count>
-                             Maximum number of CDN warmup requests in parallel
-    --warm-cdn-timeout <ms>  Per-request CDN warmup timeout (default: 5000)
-    --warm-cdn-retries <n>   Retries for transient CDN warmup failures (default: 1)
-    --warm-cdn-strict        Fail deploy when any CDN warmup request fails
+                             Maximum number of CDN warmup requests in parallel (default: 25)
+    --warm-cdn-timeout <ms>  Per-request CDN warmup timeout (default: 10000)
+    --warm-cdn-retries <n>   Retries per failed CDN warmup request (default: 1;
+                             staged-version propagation default: 60)
+    --warm-cdn-readiness-probes <count>
+                             Consecutive successful staged-readiness probes
+                             required before warming (default: 6)
+    --warm-cdn-readiness-probe-delay <ms>
+                             Delay between staged-readiness probes (default: 1000)
+    --dangerously-promote-on-cdn-warm-error
+                             Promote even when staged warmup cannot be verified
+    --warm-cdn-no-promote    Leave the warmed Worker version staged at 0% traffic
+    --warm-cdn-promotion-delay <ms>
+                             Delay before promotion after warmup (default: 15000)
     --warm-cdn-include-fallbacks
                              Also warm PPR fallback-shell placeholder paths
     -h, --help               Show this help
@@ -45,8 +55,9 @@ export function formatDeployHelp(): string {
   a custom domain (zone analytics are unavailable on *.workers.dev) and the
   CLOUDFLARE_API_TOKEN environment variable with Zone.Analytics read permission.
 
-  CDN warmup requests populate the edge cache only in the Cloudflare data centers
-  reached by the warmup run; they do not globally prefill every edge location.
+  Workers Cache automatically uses tiered caching. Warmed entries can therefore
+  be reused outside the data center reached by the warmup request after cache
+  propagation, but the deploy does not wait for every edge location to fill.
 
   Examples:
     npx @vinext/cloudflare deploy                                      Build and deploy to production

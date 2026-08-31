@@ -4,7 +4,7 @@ import type {
   VinextPagesLinkPrefetchRoute,
 } from "../client/vinext-next-data.js";
 import { toClientRewrites } from "../client/client-rewrites.js";
-import type { AppRoute } from "../routing/app-router.js";
+import { appRouteHasMainTreeLoadingBoundary, type AppRoute } from "../routing/app-router.js";
 import { patternsStructurallyEquivalent, type RouteManifest } from "../routing/app-route-graph.js";
 import type { NextRewrite } from "../config/next-config.js";
 
@@ -24,6 +24,7 @@ export function generateBrowserEntry(
     beforeFiles: [],
     fallback: [],
   },
+  locales: readonly string[] = [],
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
@@ -41,6 +42,7 @@ window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(prefetchRoutes)};
 // the same — whichever entry runs first emits both globals).
 window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(pagesPrefetchRoutes)};
 window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(clientRewrites)};
+window.__VINEXT_LOCALES__ = ${JSON.stringify(locales)};
 registerNavigationRuntimeBootstrap({
     routeManifest: ${buildRouteManifestExpression(routeManifest)}
 });
@@ -115,6 +117,9 @@ export function toLinkPrefetchRoute(
 ): VinextLinkPrefetchRoute {
   return {
     canPrefetchLoadingShell: hasLoadingBoundary(route, hasSiblingInterceptLoading),
+    ...(appRouteHasMainTreeLoadingBoundary(route)
+      ? { canUseCanonicalLoadingShell: true as const }
+      : {}),
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
     ...(requiresDynamicNavigationRequest(route) ? { requiresDynamicNavigationRequest: true } : {}),

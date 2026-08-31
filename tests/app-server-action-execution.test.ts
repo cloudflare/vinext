@@ -520,6 +520,88 @@ describe("app server action execution helpers", () => {
     expect((await request.formData()).get("field")).toBe("value");
   });
 
+  it("routes bound progressive actions before decoding their modules", async () => {
+    const body = new FormData();
+    body.set("$ACTION_ID_earlier-action", "");
+    body.set("$ACTION_REF_1", "");
+    body.set("$ACTION_1:0", JSON.stringify({ id: "bound-action", bound: "$@1" }));
+    const decodeAction = vi.fn();
+    const forwardAction = vi.fn(async () => new Response("forwarded"));
+
+    const response = requireProgressiveActionResponse(
+      await handleProgressiveServerActionRequest(
+        createOptions({
+          decodeAction,
+          forwardAction,
+          readFormDataWithLimit: async () => body,
+        }),
+      ),
+    );
+
+    expect(await response.text()).toBe("forwarded");
+    expect(forwardAction).toHaveBeenCalledWith("bound-action");
+    expect(decodeAction).not.toHaveBeenCalled();
+  });
+
+  it("rejects outlined action metadata before decoding its module", async () => {
+    const body = new FormData();
+    body.set("$ACTION_REF_1", "");
+    body.set("$ACTION_1:0", JSON.stringify("$1"));
+    body.set("$ACTION_1:1", JSON.stringify({ id: "protected-action", bound: null }));
+    const decodeAction = vi.fn();
+    const forwardAction = vi.fn();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const response = requireProgressiveActionResponse(
+        await handleProgressiveServerActionRequest(
+          createOptions({
+            decodeAction,
+            forwardAction,
+            readFormDataWithLimit: async () => body,
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+      expect(decodeAction).not.toHaveBeenCalled();
+      expect(forwardAction).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("validates nested bound server references before decoding modules", async () => {
+    const body = new FormData();
+    body.set("$ACTION_REF_1", "");
+    body.set("$ACTION_1:0", JSON.stringify({ id: "selected-action", bound: "$@1" }));
+    body.set("$ACTION_1:1", JSON.stringify(["$ha"]));
+    body.set("$ACTION_1:10", JSON.stringify({ id: "nested-action", bound: null }));
+    const decodeAction = vi.fn();
+    const validateActionReferences = vi.fn(() => false);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const response = requireProgressiveActionResponse(
+        await handleProgressiveServerActionRequest(
+          createOptions({
+            decodeAction,
+            forwardAction: async () => null,
+            readFormDataWithLimit: async () => body,
+            validateActionReferences,
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(404);
+      expect(validateActionReferences).toHaveBeenCalledWith(["selected-action", "nested-action"]);
+      expect(decodeAction).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it("enforces content-length and stream body limits", async () => {
     const clearContext = vi.fn();
     const lengthResponse = requireProgressiveActionResponse(
@@ -3185,6 +3267,7 @@ describe("app server action execution helpers", () => {
   it("resolves the re-render target route's dynamic config and fetch cache mode for force-dynamic fetch defaults", async () => {
     const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
     const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
     const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
 
     const targetRoute: TestRoute = {
@@ -3208,6 +3291,9 @@ describe("app server action execution helpers", () => {
         resolveRouteFetchCacheMode(route) {
           return route === targetRoute ? "force-no-store" : null;
         },
+        resolveRouteRevalidateSeconds(route) {
+          return route === targetRoute ? 45 : null;
+        },
         resolveRouteDynamicConfig(route) {
           return route === targetRoute ? "force-dynamic" : null;
         },
@@ -3216,9 +3302,11 @@ describe("app server action execution helpers", () => {
 
     expect(response?.status).toBe(200);
     expect(modeSpy).toHaveBeenCalledWith("force-no-store");
+    expect(revalidateSpy).toHaveBeenCalledWith(45);
     expect(forceDynamicSpy).toHaveBeenCalledWith(true);
 
     modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
   });
 });

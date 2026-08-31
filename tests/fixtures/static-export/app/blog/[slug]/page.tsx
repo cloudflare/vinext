@@ -13,6 +13,8 @@ export default async function BlogPost({ params }: { params: Promise<{ slug: str
     <main>
       <h1>Blog Post</h1>
       <p>Slug: {slug}</p>
+      <ClientSlug />
     </main>
   );
 }
+import { ClientSlug } from "./client-slug";

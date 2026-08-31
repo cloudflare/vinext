@@ -44,8 +44,6 @@ import {
 } from "../routing/file-matcher.js";
 import {
   extractLocaleFromUrl as extractLocaleFromUrlShared,
-  detectLocaleFromAcceptLanguage,
-  parseCookieLocaleFromHeader,
   resolvePagesI18nRequest,
 } from "./pages-i18n.js";
 import { buildDefaultPagesNotFoundResponse } from "./pages-default-404.js";
@@ -569,25 +567,6 @@ export function extractLocaleFromUrl(
 }
 
 /**
- * Detect the preferred locale from the Accept-Language header.
- * Returns the best matching locale or null.
- */
-export function detectLocaleFromHeaders(
-  req: IncomingMessage,
-  i18nConfig: NextI18nConfig,
-): string | null {
-  return detectLocaleFromAcceptLanguage(req.headers["accept-language"], i18nConfig);
-}
-
-/**
- * Parse the NEXT_LOCALE cookie from a request.
- * Returns the cookie value if it matches a configured locale, otherwise null.
- */
-export function parseCookieLocale(req: IncomingMessage, i18nConfig: NextI18nConfig): string | null {
-  return parseCookieLocaleFromHeader(req.headers.cookie, i18nConfig);
-}
-
-/**
  * Create an SSR request handler for the Pages Router.
  *
  * For each request:
@@ -627,6 +606,8 @@ export function createSSRHandler(
   /** Next.js `expireTime`, used when formatting terminal GSP responses. */
   expireTime = PAGES_CACHE_ONE_YEAR_SECONDS,
   crossOrigin?: string,
+  /** Resolved Pages Router build ID shared with the dev data-route parser. */
+  buildId = process.env.__VINEXT_BUILD_ID ?? "development",
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -718,6 +699,7 @@ export function createSSRHandler(
 
     const errorPageContext = {
       basePath,
+      buildId,
       clientTraceMetadata,
       locale: locale ?? currentDefaultLocale,
       locales: i18nConfig?.locales,
@@ -974,8 +956,8 @@ export function createSSRHandler(
 
           if (fallback === false && !isValidPath && requestPreviewData === false) {
             if (isDataReq) {
-              // Data requests get a JSON 404 so the client router can
-              // hard-navigate instead of trying to parse HTML as JSON.
+              // Data requests get Next.js's canonical notFound JSON so the
+              // client router can render the 404 route without parsing HTML.
               // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
               // `_next/data` notFound exits for deployment-skew protection. Fixes #1829.
               const deploymentId =
@@ -1177,7 +1159,10 @@ export function createSSRHandler(
               undefined,
               undefined,
               reactStrictMode,
-              errorPageContext,
+              {
+                ...errorPageContext,
+                notFoundSrcPage: patternToNextFormat(route.pattern),
+              },
             );
             return;
           }
@@ -1342,7 +1327,10 @@ export function createSSRHandler(
               undefined,
               undefined,
               reactStrictMode,
-              errorPageContext,
+              {
+                ...errorPageContext,
+                notFoundSrcPage: patternToNextFormat(route.pattern),
+              },
             );
             return;
           }
@@ -1563,7 +1551,7 @@ export function createSSRHandler(
             props: renderProps,
             page: patternToNextFormat(route.pattern),
             query: isFallbackRender ? {} : params,
-            buildId: process.env.__VINEXT_BUILD_ID,
+            buildId,
             isFallback: isFallbackRender,
             locale: locale ?? currentDefaultLocale,
             locales: i18nConfig?.locales,
@@ -1778,11 +1766,14 @@ async function renderErrorPage(
   reactStrictMode = false,
   context: {
     basePath: string;
+    buildId?: string;
     clientTraceMetadata?: readonly string[];
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
     crossOrigin?: string;
+    /** Original Pages route that produced this development-only notFound render. */
+    notFoundSrcPage?: string;
   } = { basePath: "" },
 ): Promise<void> {
   attachPagesRequestCookies(req);
@@ -1959,9 +1950,15 @@ async function renderErrorPage(
         [appAssetPath, errorAssetPath],
         nonceAttr,
       );
+      const errorModuleUrl = errorAssetPath
+        ? createPagesDevModuleUrl(server.config.root, errorAssetPath, server.config.base)
+        : null;
       const errorModuleSource = errorAssetPath
         ? createPagesDevModuleUrl(server.config.root, errorAssetPath, "/")
         : "next/error";
+      const appModuleUrl = appAssetPath
+        ? createPagesDevModuleUrl(server.config.root, appAssetPath, server.config.base)
+        : null;
       const appModuleSource = appAssetPath
         ? createPagesDevModuleUrl(server.config.root, appAssetPath, "/")
         : null;
@@ -1970,8 +1967,13 @@ async function renderErrorPage(
           props: renderProps,
           page: errorPage,
           query: parseQuery(url),
-          buildId: process.env.__VINEXT_BUILD_ID,
+          buildId: context.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development",
           isFallback: false,
+          notFoundSrcPage: context.notFoundSrcPage,
+          __vinext: {
+            pageModuleUrl: errorModuleUrl ?? undefined,
+            appModuleUrl: appModuleUrl ?? undefined,
+          },
         },
       )}</script>`;
       const errorHydrationScript = createPagesDevHydrationScript({

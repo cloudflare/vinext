@@ -27,6 +27,8 @@ import {
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
   VINEXT_REVALIDATE_HOST_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
@@ -82,6 +84,7 @@ import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
+import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
 import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
@@ -149,6 +152,13 @@ function haveSamePageParams(first: AppPageParams, second: AppPageParams): boolea
   return true;
 }
 
+function hasUrlParserDotSegment(pathname: string): boolean {
+  return pathname.split("/").some((segment) => {
+    const decodedDots = segment.replaceAll(/%2e/gi, ".");
+    return decodedDots === "." || decodedDots === "..";
+  });
+}
+
 type RunAppMiddlewareOptions = {
   cleanPathname: string;
   context: AppRscMiddlewareContext;
@@ -176,6 +186,7 @@ type AppRscHandlerRoute = {
 };
 
 type AppRscRouteMatch<TRoute> = {
+  interceptionSourceIsConcrete?: boolean;
   params: AppPageParams;
   route: TRoute;
 };
@@ -202,6 +213,7 @@ function applyMiddlewareContextToResponse(
 }
 
 type DispatchMatchedPageOptions<TRoute> = {
+  bypassInterceptionContextCache: boolean;
   clientReuseManifest: ClientReuseManifestParseResult;
   cleanPathname: string;
   displayPathname: string;
@@ -210,6 +222,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   actionFailed?: boolean;
   handlerStart: number;
   interceptionContext: string | null;
+  interceptionId: string | null;
   interceptionPathname: string;
   isProgressiveActionRender: boolean;
   isRscRequest: boolean;
@@ -379,10 +392,12 @@ type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   i18nConfig: NextI18nConfig | null;
   imageConfig?: ImageConfig;
   isDev: boolean;
+  hasInterceptionId: (interceptionId: string) => boolean;
   loadPrerenderPagesRoutes?: () => Promise<unknown>;
   matchInterceptRoute?: (
     pathname: string,
     sourcePathname: string,
+    interceptionId?: string | null,
   ) => AppRscRouteMatch<TRoute> | null;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   matchRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
@@ -413,6 +428,17 @@ function isEdgeRouteHandler(handler: unknown): boolean {
 function isExecutionContextLike(value: unknown): value is ExecutionContextLike {
   if (!value || typeof value !== "object") return false;
   return hasProperty(value, "waitUntil") && typeof value.waitUntil === "function";
+}
+
+function isForwardedActionContext(
+  value: unknown,
+): value is { actionForwarded: true } & Partial<ExecutionContextLike> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    hasProperty(value, "actionForwarded") &&
+    value.actionForwarded === true
+  );
 }
 
 function createMissingServerActionResponse(
@@ -557,6 +583,27 @@ function requestWithoutRscSuffix(request: Request): Request {
   return cloneRequestWithUrl(request, url.toString());
 }
 
+function markUnverifiedInterceptionResponseUncacheable(response: Response): Response {
+  const applyNoStore = (headers: Headers): void => {
+    applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
+  };
+  let markedResponse = response;
+  try {
+    applyNoStore(markedResponse.headers);
+  } catch {
+    // Response.redirect() and some middleware responses expose immutable
+    // headers. Rebuild them before applying the fail-closed cache policy.
+    const headers = new Headers(response.headers);
+    applyNoStore(headers);
+    markedResponse = new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+  return markedResponse;
+}
+
 async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
   request: Request,
@@ -567,6 +614,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   pagesDataRequest: Request | null,
   dispatchInternalRequest: (request: Request) => Promise<Response>,
   allowInternalRscDocumentFallback: boolean,
+  setInterceptionResponseUncacheable: (uncacheable: boolean) => void,
 ): Promise<Response> {
   const handlerStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
 
@@ -585,17 +633,64 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       ...options.configHeaders,
     ].some((rule) => rule.basePath === false);
   const normalized = normalizeRscRequest(request, options.basePath, canHandleOutsideBasePath);
-  if (normalized instanceof Response) return normalized;
+  if (normalized instanceof Response) {
+    if (
+      request.headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER) ||
+      request.headers.has(VINEXT_INTERCEPTION_ID_HEADER)
+    ) {
+      setInterceptionResponseUncacheable(true);
+    }
+    return normalized;
+  }
 
   const {
     url,
     isRscRequest,
     interceptionContextHeader,
+    interceptionIdHeader,
     mountedSlotsHeader,
     renderMode,
     clientReuseManifest,
     hadBasePath,
   } = normalized;
+  const hasRawInterceptionContext =
+    isRscRequest && request.headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER);
+  if (hasRawInterceptionContext) {
+    // Header normalization deliberately treats malformed/oversized values as
+    // absent for progressive enhancement, but the raw value still contributes
+    // to the RSC URL hash. Keep those attacker-selected variants out of every
+    // shared cache even when routing proceeds as a direct request.
+    setInterceptionResponseUncacheable(true);
+  }
+  // Validate the client-supplied source pathname immediately after request
+  // normalization, before redirects, middleware, rewrites, or cache-busting
+  // responses can observe a structurally different identity. Keep the raw
+  // header for the route matcher's deliberate one-decode contract, while
+  // carrying the decoded canonical pathname for middleware authorization.
+  let interceptionSourcePathname: string | null = null;
+  if (isRscRequest && interceptionContextHeader !== null) {
+    try {
+      if (!isInterceptionMatchedUrlPath(interceptionContextHeader)) {
+        throw new Error("Invalid interception source pathname");
+      }
+      const decodedInterceptionSourcePathname =
+        normalizePathnameForRouteMatchStrict(interceptionContextHeader);
+      if (/[\t\n\r]/.test(decodedInterceptionSourcePathname)) {
+        throw new Error("Interception source contains a stripped URL character");
+      }
+      if (hasUrlParserDotSegment(decodedInterceptionSourcePathname)) {
+        throw new Error("Interception source contains a URL dot segment");
+      }
+      interceptionSourcePathname = normalizePath(decodedInterceptionSourcePathname);
+      if (interceptionSourcePathname !== decodedInterceptionSourcePathname) {
+        throw new Error("Non-canonical interception source pathname");
+      }
+    } catch {
+      options.clearRequestContext();
+      setInterceptionResponseUncacheable(true);
+      return badRequestResponse();
+    }
+  }
   const { requestCleanPathname } = normalized;
   let { pathname, cleanPathname } = normalized;
   let resolvedUrl = cleanPathname + url.search;
@@ -615,6 +710,62 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     cleanPathnameIsRequestPathname && options.matchRequestRoute
       ? options.matchRequestRoute(requestCleanPathname)
       : options.matchRoute(cleanPathname);
+
+  if (
+    interceptionIdHeader !== null &&
+    (!isRscRequest ||
+      interceptionContextHeader === null ||
+      (request.method !== "GET" && request.method !== "HEAD") ||
+      !options.hasInterceptionId(interceptionIdHeader))
+  ) {
+    // Reject attacker-selected selector values before middleware, redirects,
+    // or other early responders can attach a cacheable policy. Exact
+    // source/target verification still happens after rewrites below.
+    setInterceptionResponseUncacheable(true);
+    return badRequestResponse();
+  }
+
+  if (interceptionIdHeader !== null) {
+    // Canonicalize selector-bearing URLs before any cacheable redirect can
+    // depend on the selector. During rollout, a pre-selector `_rsc` hash can
+    // otherwise give two graph-owned IDs the same request URL while producing
+    // different redirect locations.
+    const selectorCacheBustingRedirect = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest,
+      request,
+    });
+    if (selectorCacheBustingRedirect) return selectorCacheBustingRedirect;
+  }
+
+  const provesConcreteInterceptionSource = (
+    sourceMatch: AppRscRouteMatch<TRoute> | null,
+  ): boolean => {
+    if (sourceMatch === null) return false;
+    if (sourceMatch.interceptionSourceIsConcrete !== undefined) {
+      return sourceMatch.interceptionSourceIsConcrete;
+    }
+    // Backward-compatible fallback for custom/older entry glue. Route identity
+    // proves existence without decoding the already-once-decoded context again
+    // for a parameter comparison.
+    return (
+      interceptionSourcePathname !== null &&
+      options.matchRoute(interceptionSourcePathname)?.route === sourceMatch.route
+    );
+  };
+  const directInterceptionSourceMatch =
+    hadBasePath && hasRawInterceptionContext && interceptionContextHeader !== null
+      ? (options.matchInterceptRoute?.(
+          requestCleanPathname,
+          interceptionContextHeader,
+          interceptionIdHeader,
+        ) ?? null)
+      : null;
+  if (provesConcreteInterceptionSource(directInterceptionSourceMatch)) {
+    // Direct targets with a concrete source can be proven before config
+    // redirects or middleware. If routing later changes the target, the
+    // post-rewrite proof below replaces this state before page dispatch.
+    setInterceptionResponseUncacheable(false);
+  }
 
   if (
     pathname === VINEXT_PRERENDER_STATIC_PARAMS_PATH ||
@@ -697,9 +848,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     });
   }
 
-  const rscCacheBustingRedirect = hadBasePath
-    ? await resolveInvalidRscCacheBustingRequest({ isRscRequest, request })
-    : null;
+  const rscCacheBustingRedirect =
+    hadBasePath && interceptionIdHeader === null
+      ? await resolveInvalidRscCacheBustingRequest({ isRscRequest, request })
+      : null;
   if (rscCacheBustingRedirect) return rscCacheBustingRedirect;
 
   let filesystemRouteEligible = hadBasePath;
@@ -972,24 +1124,39 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // a client header, so authorize it before anything downstream renders from it.
   // Skipped when the source resolves to the route already matched and authorized
   // for this request, which is also the case where interception does not fire.
-  let interceptionSourcePathname: string | null = null;
-  if (filesystemRouteEligible && isRscRequest && interceptionContextHeader !== null) {
-    try {
-      if (!isInterceptionMatchedUrlPath(interceptionContextHeader)) {
-        throw new Error("Invalid interception source pathname");
-      }
-      interceptionSourcePathname = normalizePath(
-        normalizePathnameForRouteMatchStrict(interceptionContextHeader),
-      );
-    } catch {
-      options.clearRequestContext();
-      return badRequestResponse();
-    }
-  }
   const interceptionSourceMatch =
-    interceptionSourcePathname !== null && interceptionContextHeader !== null
-      ? (options.matchInterceptRoute?.(preActionRoutePathname, interceptionContextHeader) ?? null)
+    filesystemRouteEligible &&
+    interceptionSourcePathname !== null &&
+    interceptionContextHeader !== null
+      ? (options.matchInterceptRoute?.(
+          preActionRoutePathname,
+          interceptionContextHeader,
+          interceptionIdHeader,
+        ) ?? null)
       : null;
+  const hasVerifiedInterceptionSource = provesConcreteInterceptionSource(interceptionSourceMatch);
+  if (interceptionIdHeader !== null && !hasVerifiedInterceptionSource) {
+    // The supplemental-refresh selector is an untrusted request header. Only
+    // graph-owned identities that match this exact target and source may reach
+    // rendering or shared caches; otherwise arbitrary short values can create
+    // unbounded `_rsc` and Vary variants.
+    options.clearRequestContext();
+    setInterceptionResponseUncacheable(true);
+    return badRequestResponse();
+  }
+  let bypassInterceptionContextCache = hasRawInterceptionContext && !hasVerifiedInterceptionSource;
+  if (interceptionContextHeader !== null) {
+    // Replace any direct-target proof after rewrites. Exact graph ownership is
+    // the only point where the source identity is safe for shared variants.
+    setInterceptionResponseUncacheable(bypassInterceptionContextCache);
+  }
+  let interceptionCacheProofInvalidated = false;
+  const invalidateInterceptionCacheProof = (): void => {
+    if (!hasRawInterceptionContext) return;
+    interceptionCacheProofInvalidated = true;
+    bypassInterceptionContextCache = true;
+    setInterceptionResponseUncacheable(true);
+  };
   if (
     interceptionSourceMatch !== null &&
     interceptionSourcePathname !== null &&
@@ -1315,11 +1482,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         },
         matchPathname(cleanPathname),
       );
-      if (afterFilesRewrite instanceof Response) return afterFilesRewrite;
+      if (afterFilesRewrite instanceof Response) {
+        invalidateInterceptionCacheProof();
+        return afterFilesRewrite;
+      }
       if (!afterFilesRewrite) continue;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, afterFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
+      invalidateInterceptionCacheProof();
       filesystemRouteEligible = true;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
@@ -1365,11 +1536,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         },
         matchPathname(cleanPathname),
       );
-      if (fallbackRewrite instanceof Response) return fallbackRewrite;
+      if (fallbackRewrite instanceof Response) {
+        invalidateInterceptionCacheProof();
+        return fallbackRewrite;
+      }
       if (!fallbackRewrite) continue;
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
+      invalidateInterceptionCacheProof();
       filesystemRouteEligible = true;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
@@ -1386,6 +1561,33 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }
       if (match) break;
     }
+  }
+
+  if (interceptionCacheProofInvalidated && interceptionContextHeader !== null) {
+    const finalInterceptionTargetPathname = cleanPathnameIsRequestPathname
+      ? requestCleanPathname
+      : cleanPathname;
+    const finalInterceptionSourceMatch =
+      filesystemRouteEligible && match !== null
+        ? (options.matchInterceptRoute?.(
+            finalInterceptionTargetPathname,
+            interceptionContextHeader,
+            interceptionIdHeader,
+          ) ?? null)
+        : null;
+    const hasVerifiedFinalInterceptionSource =
+      hasVerifiedInterceptionSource &&
+      interceptionSourceMatch !== null &&
+      provesConcreteInterceptionSource(finalInterceptionSourceMatch) &&
+      finalInterceptionSourceMatch?.route === interceptionSourceMatch.route &&
+      haveSamePageParams(finalInterceptionSourceMatch.params, interceptionSourceMatch.params);
+    if (interceptionIdHeader !== null && !hasVerifiedFinalInterceptionSource) {
+      options.clearRequestContext();
+      setInterceptionResponseUncacheable(true);
+      return badRequestResponse();
+    }
+    bypassInterceptionContextCache = !hasVerifiedFinalInterceptionSource;
+    setInterceptionResponseUncacheable(bypassInterceptionContextCache);
   }
 
   if (!filesystemRouteEligible) {
@@ -1524,6 +1726,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const pageResponse = await options.dispatchMatchedPage({
+    bypassInterceptionContextCache,
     clientReuseManifest,
     cleanPathname,
     displayPathname: canonicalPathname,
@@ -1532,6 +1735,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     actionFailed,
     handlerStart,
     interceptionContext: interceptionContextHeader,
+    interceptionId: interceptionIdHeader,
     interceptionPathname: cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
     isProgressiveActionRender,
     isRscRequest,
@@ -1685,6 +1889,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       ? new Headers(rawRequest.headers)
       : filterInternalHeaders(rawRequest.headers);
     filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
+    if (isForwardedActionContext(ctx)) {
+      filteredHeaders.set("x-action-forwarded", "1");
+    }
     if (mwCtx !== null) {
       filteredHeaders.set(VINEXT_MW_CTX_HEADER, mwCtx);
     }
@@ -1716,6 +1923,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
       executionContext,
       unstableCacheRevalidation: "background",
     });
+    let interceptionResponseUncacheable = false;
 
     const responsePromise = runWithRequestContext(requestContext, () =>
       runWithPrerenderWorkUnit(
@@ -1740,6 +1948,9 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
               pagesDataRequest,
               (internalRequest) => appRscHandler(internalRequest, ctx, true),
               allowInternalRscDocumentFallback,
+              (uncacheable) => {
+                interceptionResponseUncacheable = uncacheable;
+              },
             );
           } catch (error) {
             if (process.env.NODE_ENV !== "production") {
@@ -1748,13 +1959,16 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
             throw error;
           }
 
-          return finalizeAppRscResponse(response, request, {
+          response = await finalizeAppRscResponse(response, request, {
             basePath: options.basePath,
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
             middlewareHeaders: middlewareContext.headers,
             requestContext: preMiddlewareRequestContext,
           });
+          return interceptionResponseUncacheable
+            ? markUnverifiedInterceptionResponseUncacheable(response)
+            : response;
         },
         { route: () => new URL(request.url).pathname },
       ),

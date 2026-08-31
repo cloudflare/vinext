@@ -25,6 +25,17 @@ it("serializes dynamic stale time into the hydration bootstrap", () => {
   ).toContain("dynamicStaleTimeSeconds:30");
 });
 
+it("serializes browser search-param ownership into the early hydration bootstrap", () => {
+  expect(
+    createNavigationRuntimeRscMetadataScript(
+      {},
+      { pathname: "/static", searchParams: [] },
+      undefined,
+      true,
+    ),
+  ).toContain("searchParamsFromBrowser:true");
+});
+
 describe("App SSR stream helpers", () => {
   describe("fixPreloadAs", () => {
     it('replaces as="stylesheet" with as="style" for preload links', () => {
@@ -419,8 +430,13 @@ async function readSingleTransformChunk(
 
   await writer.write(new TextEncoder().encode(chunk));
   const result = await reader.read();
-  await writer.close();
-  await reader.cancel();
+  const close = writer.close();
+  while (!(await reader.read()).done) {
+    // Drain the transform so its asynchronous flush can finish before the
+    // helper releases the reader. Cancelling here races flush() under Node
+    // 24.20 and can close the controller before it emits the document suffix.
+  }
+  await close;
 
   if (result.done) {
     throw new Error("Expected transform to emit a chunk");

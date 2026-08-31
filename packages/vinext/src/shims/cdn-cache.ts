@@ -61,6 +61,36 @@ export type CdnCacheableHeaderInput = {
   tags?: readonly string[];
 };
 
+/** Whether a Cache-Control value contains an exact non-cacheable directive. */
+export function isNonCacheableCacheControl(cacheControl: string): boolean {
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+
+  for (let index = 0; index <= cacheControl.length; index++) {
+    const char = cacheControl[index];
+    if (index === cacheControl.length || (char === "," && !quoted)) {
+      const directive = cacheControl.slice(start, index);
+      const equals = directive.indexOf("=");
+      const name = (equals === -1 ? directive : directive.slice(0, equals)).trim().toLowerCase();
+      if (name === "no-store" || (equals === -1 && (name === "private" || name === "no-cache"))) {
+        return true;
+      }
+      start = index + 1;
+      continue;
+    }
+
+    if (quoted && char === "\\" && !escaped) {
+      escaped = true;
+      continue;
+    }
+    if (char === '"' && !escaped) quoted = !quoted;
+    escaped = false;
+  }
+
+  return false;
+}
+
 /**
  * The serving strategy for page-level ISR. Implement this to delegate
  * page/route/image caching to a CDN edge instead of the origin store.
@@ -70,6 +100,16 @@ export type CdnCacheableHeaderInput = {
 // `buildResponseHeaders` / `ownsBackgroundRevalidation` have no data-cache
 // equivalent and stay CDN-specific.
 export type CdnCacheAdapter = {
+  /**
+   * Validate provider-specific request routing before the application handles
+   * the request. Returning a response short-circuits the request pipeline;
+   * returning `null` continues normally.
+   *
+   * Core deliberately passes the untouched request and does not interpret any
+   * provider headers or bindings itself.
+   */
+  validateRequest?(request: Request): Response | null | Promise<Response | null>;
+
   /**
    * Read a page-level artifact. Returning a value lets the origin serve it
    * (HIT/STALE); returning `null` makes the origin render fresh.
@@ -99,6 +139,13 @@ export type CdnCacheAdapter = {
    * names or deletes headers the active adapter did not claim.
    */
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders;
+
+  /**
+   * Build adapter-owned headers that identify the deployed application build.
+   * Core applies these at the outer page-response boundary, including response
+   * paths that do not pass through cache-policy finalization.
+   */
+  buildResponseIdentityHeaders?(): CdnResponseHeaders;
 
   /**
    * Whether existing response headers explicitly opt out of storage. Adapters

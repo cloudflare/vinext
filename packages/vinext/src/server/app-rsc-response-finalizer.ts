@@ -1,7 +1,12 @@
 import type { NextHeader, NextI18nConfig } from "../config/next-config.js";
 import type { RequestContext } from "../config/request-context.js";
-import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import { isStaticFileSignal } from "./static-file-signal.js";
+import {
+  applyCdnResponseHeaders,
+  hasExplicitNonCacheableResponsePolicy,
+  isNonCacheableCacheControl,
+  NO_STORE_CACHE_CONTROL,
+} from "./cache-control.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
@@ -32,6 +37,17 @@ type FinalizeAppRscResponseOptions = {
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const configHeadersAlreadyApplied = new WeakSet<Response>();
+
+function normalizeExplicitNonCacheablePolicy(headers: Headers): void {
+  if (!hasExplicitNonCacheableResponsePolicy(headers)) return;
+  const cacheControl = headers.get("Cache-Control");
+  applyCdnResponseHeaders(headers, {
+    cacheControl:
+      cacheControl && isNonCacheableCacheControl(cacheControl)
+        ? cacheControl
+        : NO_STORE_CACHE_CONTROL,
+  });
+}
 
 /** Mark a response whose final target pipeline has already applied config headers. */
 export function markAppRscResponseConfigHeadersApplied(response: Response): Response {
@@ -89,7 +105,7 @@ export async function finalizeAppRscResponse(
     return response;
   }
 
-  if (!response.headers.has(VINEXT_STATIC_FILE_HEADER)) {
+  if (!isStaticFileSignal(response)) {
     const varyHeader = response.headers.get("Vary");
     if (varyHeader === null) {
       response.headers.set("Vary", VINEXT_RSC_VARY_HEADER);
@@ -110,9 +126,11 @@ export async function finalizeAppRscResponse(
   }
 
   if (configHeadersAlreadyApplied.has(response)) {
+    normalizeExplicitNonCacheablePolicy(response.headers);
     return response;
   }
   await applyAppRscConfigHeaders(response.headers, request, options);
+  normalizeExplicitNonCacheablePolicy(response.headers);
 
   // Static-file 405 responses are synthesized before config headers run.
   // Reassert their body metadata afterward so a matching headers() rule cannot

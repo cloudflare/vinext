@@ -43,6 +43,7 @@ import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
+import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -102,7 +103,7 @@ export default {
     env?: PagesWorkerEnv,
     ctx?: PagesWorkerExecutionContext,
   ): Promise<Response> {
-    return handleRequest(request, env, ctx);
+    return applyCdnResponseIdentityHeaders(await handleRequest(request, env, ctx), request);
   },
 };
 
@@ -121,6 +122,9 @@ async function handleRequest(
   registerConfiguredImageOptimizer(env);
 
   try {
+    const cdnValidationResponse = await validateCdnRequest(request);
+    if (cdnValidationResponse) return cdnValidationResponse;
+
     const url = new URL(request.url);
     let pathname = url.pathname;
 

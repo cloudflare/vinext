@@ -25,7 +25,11 @@ import {
 import { INITIAL_BFCACHE_ID, PUBLIC_INITIAL_BFCACHE_ID } from "../server/app-bfcache-id.js";
 import { AppElementsWire, type AppElements } from "../server/app-elements.js";
 import { resolveManifestNavigationInterceptionContext } from "../server/app-browser-interception-context.js";
-import { createHashOnlyHistoryStatePreservingNavigationMetadata } from "../server/app-history-state.js";
+import {
+  createExternalHistoryStatePreservingMetadata,
+  createHashOnlyHistoryStatePreservingNavigationMetadata,
+  isAppOwnedHistoryState,
+} from "../server/app-history-state.js";
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -43,13 +47,14 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../server/headers.js";
 import { extractRscCompletionMetadata } from "../server/rsc-completion-metadata.js";
 import {
   isHashOnlyBrowserUrlChange,
-  toBrowserNavigationHref,
+  toCanonicalBrowserNavigationHref,
   toSameOriginAppPath,
   withBasePath,
 } from "./url-utils.js";
@@ -64,7 +69,11 @@ import {
   markPprFallbackShellDynamicBoundary,
 } from "./ppr-fallback-shell.js";
 import { BailoutToCSRError as NavigationBailoutToCSRError } from "./navigation-errors.js";
-import type { AppRscRenderMode } from "../server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  type AppRscRenderMode,
+} from "../server/app-rsc-render-mode.js";
 import { AppRouterContext, type AppRouterInstance } from "./internal/app-router-context.js";
 import { getPagesNavigationContext as _getPagesNavigationContext } from "./internal/pages-router-accessor.js";
 import {
@@ -241,6 +250,8 @@ const isServer = typeof window === "undefined";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 export const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+/** trailingSlash from next.config.js, injected by the plugin at build time */
+const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
 /** prefetch inlining (Segment Cache wire mode), injected by the plugin at build time */
 const __prefetchInlining: boolean = process.env.__VINEXT_PREFETCH_INLINING === "true";
 
@@ -341,6 +352,7 @@ export type PrefetchCacheEntry = {
   pending?: Promise<void>;
   preparedElements?: AppElements;
   prefetchKind?: PrefetchCacheKind;
+  reuseAfterHistoryRestore?: boolean;
   searchAgnosticShell?: boolean;
   size?: number;
   timestamp: number;
@@ -503,7 +515,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   timestamp: number,
   cached: Pick<CachedRscResponse, "dynamicStaleTimeSeconds" | "expiresAt" | "serverStaleTime">,
   fallbackTtlMs: number,
-  honorDynamicStaleTime: boolean,
+  dynamicStaleTime: "verbatim" | "full-prefetch" | "ignore",
 ): number {
   if (isCacheExpiresAt(cached.expiresAt)) {
     return cached.expiresAt;
@@ -515,11 +527,14 @@ function resolvePrefetchedRscResponseExpiresAt(
   // is unresolved. If the render completes with a real cacheLife or dynamic
   // bound, completion metadata replaces the provisional marker below.
   const serverSeconds =
-    cached.serverStaleTime?.kind === "pending" && !honorDynamicStaleTime
+    cached.serverStaleTime?.kind === "pending" && dynamicStaleTime !== "verbatim"
       ? undefined
       : serverStaleTimeSeconds(cached.serverStaleTime);
   if (serverSeconds !== undefined) {
     return timestamp + serverSeconds * 1000;
+  }
+  if (dynamicStaleTime === "ignore") {
+    return timestamp + Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS);
   }
   const seconds = isStaleTimeSeconds(cached.dynamicStaleTimeSeconds)
     ? cached.dynamicStaleTimeSeconds
@@ -535,7 +550,7 @@ function resolvePrefetchedRscResponseExpiresAt(
   // reuse. `prefetch={true}` uses Next's Full fetch strategy, so a config
   // dynamic bound of zero selects STATIC_STALETIME_MS. Nonzero completed
   // dynamic bounds keep their existing per-page expiry.
-  return honorDynamicStaleTime
+  return dynamicStaleTime === "verbatim"
     ? timestamp + seconds * 1000
     : timestamp +
         (seconds === 0
@@ -886,7 +901,12 @@ function toAppPrefetchDestination(href: string): string | null {
     if (localPath == null) return null;
     localHref = localPath;
   }
-  const browserHref = toBrowserNavigationHref(localHref, window.location.href, __basePath);
+  const browserHref = toCanonicalBrowserNavigationHref(
+    localHref,
+    window.location.href,
+    __basePath,
+    __trailingSlash,
+  );
   try {
     const url = new URL(browserHref, window.location.href);
     return `${url.pathname}${url.search}`;
@@ -1100,12 +1120,32 @@ export function invalidatePrefetchCache(): void {
   }
 }
 
+/**
+ * Prevent completed navigation responses from becoming authoritative again
+ * after restoring a history snapshot. Explicit Link/router prefetches remain
+ * consumable. Responses with a positive cache lifetime and interception
+ * responses retain the cache reuse licensed by Next's segment cache.
+ */
+export function disableNavigationResponsePrefetchCacheReuse(): void {
+  let didDemote = false;
+  for (const entry of new Set(getPrefetchCache().values())) {
+    if (entry.prefetchKind === undefined && entry.reuseAfterHistoryRestore !== true) {
+      didDemote ||= entry.cacheForNavigation !== false;
+      entry.cacheForNavigation = false;
+    }
+  }
+  if (didDemote && !isServer) {
+    getNavigationRuntime()?.functions.pingVisibleLinks?.();
+  }
+}
+
 export function seedPrefetchResponseSnapshot(
   rscUrl: string,
   snapshot: CachedRscResponse,
   interceptionContext: string | null = null,
   mountedSlotsHeader: string | null = null,
   fallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
+  reuseAfterHistoryRestore: boolean = false,
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -1120,6 +1160,7 @@ export function seedPrefetchResponseSnapshot(
     expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
     mountedSlotsHeader,
     outcome: "cache-seeded",
+    reuseAfterHistoryRestore,
     size: snapshot.buffer.byteLength,
     snapshot,
     timestamp,
@@ -1434,8 +1475,8 @@ export function prefetchRscResponse(
   options?: PrefetchOptions,
   behavior: {
     cacheForNavigation?: boolean;
+    dynamicStaleTime?: "verbatim" | "full-prefetch" | "ignore";
     fallbackTtlMs?: number;
-    honorDynamicStaleTime?: boolean;
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
     prepareSnapshot?: (snapshot: CachedRscResponse) => Promise<AppElements>;
@@ -1447,12 +1488,13 @@ export function prefetchRscResponse(
   const prefetched = getPrefetchedUrls();
   const now = Date.now();
   const existing = cache.get(cacheKey);
+  const cacheForNavigation = behavior.cacheForNavigation ?? true;
   if (existing) {
     deletePrefetchCacheEntry(cache, prefetched, cacheKey, existing, false);
   }
 
   const entry: PrefetchCacheEntry = {
-    cacheForNavigation: behavior.cacheForNavigation ?? true,
+    cacheForNavigation,
     cacheKeys: new Set([cacheKey]),
     mountedSlotsHeader,
     optimisticRouteShell: behavior.optimisticRouteShell === true,
@@ -1483,7 +1525,10 @@ export function prefetchRscResponse(
           // data and is never navigation-consumable. Keep it on the prefetch
           // freshness lattice so another search string can reuse the shell;
           // the later navigation response still honors dynamicStaleTime.
-          behavior.honorDynamicStaleTime !== false && behavior.searchAgnosticShell !== true,
+          behavior.searchAgnosticShell === true
+            ? "ignore"
+            : (behavior.dynamicStaleTime ??
+                (behavior.optimisticRouteShell === true ? "ignore" : "verbatim")),
         );
         if (behavior.prepareSnapshot) {
           try {
@@ -1984,6 +2029,10 @@ const _EMPTY_PARAMS: Record<string, string | string[]> = {};
 
 export type ClientNavigationRenderSnapshot = {
   pathname: string;
+  // Preserve the browser URL's raw query spelling for exact navigation
+  // identity. ReadonlyURLSearchParams intentionally canonicalizes `%20` to `+`
+  // when serialized, so it cannot reconstruct the href used for a commit.
+  search: string;
   searchParams: ReadonlyURLSearchParams;
   params: Record<string, string | string[]>;
 };
@@ -2027,14 +2076,14 @@ export function createClientNavigationRenderSnapshot(
 
   return {
     pathname: stripBasePath(url.pathname, __basePath),
+    search: url.search,
     searchParams: new ReadonlyURLSearchParams(url.search),
     params,
   };
 }
 
 export function createSnapshotPathAndSearch(snapshot: ClientNavigationRenderSnapshot): string {
-  const query = snapshot.searchParams.toString();
-  return query === "" ? snapshot.pathname : `${snapshot.pathname}?${query}`;
+  return snapshot.pathname + snapshot.search;
 }
 
 // Module-level fallback for environments without window (tests, SSR).
@@ -2540,7 +2589,12 @@ export async function navigateClientSide(
   // `link.tsx`.
   const hybridOwner = resolveHybridClientRouteOwner(normalizedHref);
   if (hybridOwner === "pages" || hybridOwner === "document") {
-    const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
+    const fullHref = toCanonicalBrowserNavigationHref(
+      normalizedHref,
+      window.location.href,
+      __basePath,
+      __trailingSlash,
+    );
     notifyAppRouterTransitionStart(fullHref, mode);
     if (mode === "push") {
       saveScrollPosition();
@@ -2550,7 +2604,12 @@ export async function navigateClientSide(
     return;
   }
 
-  const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
+  const fullHref = toCanonicalBrowserNavigationHref(
+    normalizedHref,
+    window.location.href,
+    __basePath,
+    __trailingSlash,
+  );
   stageAppNavigationFailureTarget(fullHref);
   // Match Next.js: App Router reports navigation start before dispatching,
   // including hash-only navigations that short-circuit after URL update.
@@ -2566,6 +2625,7 @@ export async function navigateClientSide(
   // an RSC fetch; everything else proceeds to the RSC navigation below.
   const earlyIntent = navigationPlanner.classifyEarlyNavigationIntent({
     basePath: __basePath,
+    currentUrlSpace: "browser",
     currentHref: window.location.href,
     mode,
     scroll,
@@ -2626,6 +2686,7 @@ export async function navigateClientSide(
         undefined,
         scrollIntent,
         visibleCommitMode,
+        earlyIntent.bypassNavigationCache,
       );
     } else {
       if (mode === "replace") {
@@ -2835,8 +2896,14 @@ const _appRouter: AppRouterInstance = {
       const kind = options?.kind === "full" ? "full" : "auto";
       // Dynamic import keeps the policy module and its route-trie
       // dependencies off the startup path of every next/navigation consumer.
-      const { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch } =
-        await import("./internal/app-route-prefetch-policy.js");
+      const [
+        { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch },
+        { resolveAppPrefetchRscRequest },
+      ] = await Promise.all([
+        import("./internal/app-route-prefetch-policy.js"),
+        import("./internal/app-prefetch-rsc-request.js"),
+      ]);
+      if (setup.cancelled) return;
       const policy =
         kind === "full"
           ? resolveFullAppRoutePrefetch()
@@ -2855,14 +2922,28 @@ const _appRouter: AppRouterInstance = {
           __prefetchInlining || requiresRouteTreePrefetch ? "/__PAGE__" : "1",
         );
       }
-      // Both derive from the same headers and neither feeds the other, so the
-      // rewrite variant is generated alongside rather than after.
-      const [rscUrl, ...additionalRscUrls] = await Promise.all([
-        createRscRequestUrl(fullHref, headers),
-        ...(rewrittenPrefetchHref !== null && rewrittenPrefetchHref !== fullHref
-          ? [createRscRequestUrl(rewrittenPrefetchHref, headers)]
-          : []),
-      ]);
+      const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
+      if (!reusable && kind === "auto") {
+        headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
+        headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
+        headers.set(
+          VINEXT_RSC_RENDER_MODE_HEADER,
+          hasSearchParams
+            ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
+            : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        );
+      }
+      const { additionalRscUrls, rscUrl, usesCanonicalPrewarmedRequest } =
+        await resolveAppPrefetchRscRequest({
+          canUseCanonicalLoadingShell: policy.canUseCanonicalLoadingShell === true,
+          fullHref,
+          headers,
+          interceptionContext,
+          mountedSlotsHeader,
+          prefetchInlining: __prefetchInlining,
+          requiresRouteTreePrefetch,
+          rewrittenPrefetchHref,
+        });
       // A navigation to this same href can start in the same task as this call
       // and win the race above (hybrid-route module load, policy import, RSC
       // URL generation). Nothing was registered in the cache during that
@@ -2904,7 +2985,7 @@ const _appRouter: AppRouterInstance = {
           "low",
         );
       const fetchPromise =
-        reusable && kind === "auto" && requiresRouteTreePrefetch
+        !usesCanonicalPrewarmedRequest && reusable && kind === "auto" && requiresRouteTreePrefetch
           ? fetchRouteTreeGatedPrefetch({
               fetchFullRscPayload,
               fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>
@@ -2937,13 +3018,18 @@ const _appRouter: AppRouterInstance = {
                 policy.fallbackTtl === "dynamic"
                   ? DYNAMIC_NAVIGATION_CACHE_TTL
                   : PREFETCH_CACHE_TTL,
-              honorDynamicStaleTime: policy.honorDynamicStaleTime,
+              dynamicStaleTime: policy.dynamicStaleTime,
               optimisticRouteShell: false,
               prefetchKind: "navigation",
               prepareSnapshot: prepareNavigationPrefetchSnapshot,
             }
           : {
               cacheForNavigation: false,
+              fallbackTtlMs:
+                policy.fallbackTtl === "dynamic"
+                  ? DYNAMIC_NAVIGATION_CACHE_TTL
+                  : PREFETCH_CACHE_TTL,
+              dynamicStaleTime: policy.dynamicStaleTime,
               optimisticRouteShell: true,
               prefetchKind: "navigation",
             },
@@ -3181,10 +3267,37 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
-      const commitShallowHistory = getNavigationRuntime()?.functions.commitShallowHistory;
-      if (!commitShallowHistory?.(data, url, "push")) {
+      // Match Next.js' `data?.__NA` escape hatch. Reusing a captured internal
+      // history entry must remain a real traversal target so back/forward can
+      // fetch it (and follow redirects) instead of treating it as a copied
+      // shallow tree.
+      if (isAppOwnedHistoryState(data)) {
+        const previousHistoryState = window.history.state;
         state.originalPushState.call(window.history, data, unused, url);
+        getNavigationRuntime()?.functions.commitAppOwnedHistoryStateWrite?.(
+          "push",
+          previousHistoryState,
+        );
+        return;
       }
+      if (getNavigationRuntime()?.functions.commitShallowHistory?.(data, url, "push")) {
+        if (state.suppressUrlNotifyCount === 0) {
+          resetStaleLinkStatus();
+          commitClientNavigationState();
+        }
+        return;
+      }
+      const previousHistoryState = window.history.state;
+      state.originalPushState.call(
+        window.history,
+        createExternalHistoryStatePreservingMetadata(data, window.history.state),
+        unused,
+        url,
+      );
+      getNavigationRuntime()?.functions.claimCurrentHistoryTreeSnapshot?.(
+        "push",
+        previousHistoryState,
+      );
       if (state.suppressUrlNotifyCount === 0) {
         // A raw history.pushState (shallow routing) supersedes a pending link,
         // but changes browser state only — it issues no RSC request, so it must
@@ -3199,10 +3312,33 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
-      const commitShallowHistory = getNavigationRuntime()?.functions.commitShallowHistory;
-      if (!commitShallowHistory?.(data, url, "replace")) {
+      if (isAppOwnedHistoryState(data)) {
+        const previousHistoryState = window.history.state;
         state.originalReplaceState.call(window.history, data, unused, url);
+        getNavigationRuntime()?.functions.commitAppOwnedHistoryStateWrite?.(
+          "replace",
+          previousHistoryState,
+        );
+        return;
       }
+      if (getNavigationRuntime()?.functions.commitShallowHistory?.(data, url, "replace")) {
+        if (state.suppressUrlNotifyCount === 0) {
+          resetStaleLinkStatus();
+          commitClientNavigationState();
+        }
+        return;
+      }
+      const previousHistoryState = window.history.state;
+      state.originalReplaceState.call(
+        window.history,
+        createExternalHistoryStatePreservingMetadata(data, window.history.state),
+        unused,
+        url,
+      );
+      getNavigationRuntime()?.functions.claimCurrentHistoryTreeSnapshot?.(
+        "replace",
+        previousHistoryState,
+      );
       if (state.suppressUrlNotifyCount === 0) {
         resetStaleLinkStatus();
         commitClientNavigationState();

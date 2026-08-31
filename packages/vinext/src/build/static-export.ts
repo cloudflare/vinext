@@ -42,7 +42,7 @@ export type StaticExportOptions = {
 };
 
 export type StaticExportResult = {
-  /** Number of HTML files generated */
+  /** Number of rendered route entries */
   pageCount: number;
   /** Generated file paths (relative to outDir) */
   files: string[];
@@ -69,9 +69,8 @@ function toStaticExportResult(
   for (const r of routes) {
     if (r.status === "rendered") {
       // `pageCount` counts rendered route entries (one per concrete URL).
-      // `files` counts only .html output files — RSC-only entries (no .html)
-      // would cause pageCount > files.length, but in practice every rendered
-      // entry emits exactly one .html file, so they stay in sync.
+      // `files` counts .html output artifacts, so auxiliary files such as
+      // trailing-slash 404/index.html can make files.length exceed pageCount.
       result.pageCount++;
       // Only add .html files (not .json or .rsc) from route entries.
       // Static metadata files are route-adjacent assets and are appended below.

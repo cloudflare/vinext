@@ -180,6 +180,11 @@ describe("patternToNextFormat", () => {
     expect(patternToNextFormat("/:a*b")).toBe("/[a*b]");
     expect(patternToNextFormat("/utils/:a+b/c")).toBe("/utils/[a+b]/c");
   });
+
+  it("handles adversarial parameter names in linear time", () => {
+    const parameter = `${":.".repeat(20_000)}value`;
+    expect(patternToNextFormat(`/${parameter}`)).toBe(`/[${parameter.slice(1)}]`);
+  });
 });
 
 describe("validateRoutePatterns", () => {

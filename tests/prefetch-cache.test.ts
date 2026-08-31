@@ -42,6 +42,7 @@ let restoreRscResponse: Navigation["restoreRscResponse"];
 let resolveCachedRscResponseTtlMs: Navigation["resolveCachedRscResponseTtlMs"];
 let prefetchRscResponse: Navigation["prefetchRscResponse"];
 let invalidatePrefetchCache: Navigation["invalidatePrefetchCache"];
+let disableNavigationResponsePrefetchCacheReuse: Navigation["disableNavigationResponsePrefetchCacheReuse"];
 let hasPrefetchCacheEntryForNavigation: Navigation["hasPrefetchCacheEntryForNavigation"];
 let hasSearchAgnosticPrefetchShellForRoute: Navigation["hasSearchAgnosticPrefetchShellForRoute"];
 let peekPrefetchResponseForNavigation: Navigation["peekPrefetchResponseForNavigation"];
@@ -82,6 +83,7 @@ beforeEach(async () => {
   resolveCachedRscResponseTtlMs = nav.resolveCachedRscResponseTtlMs;
   prefetchRscResponse = nav.prefetchRscResponse;
   invalidatePrefetchCache = nav.invalidatePrefetchCache;
+  disableNavigationResponsePrefetchCacheReuse = nav.disableNavigationResponsePrefetchCacheReuse;
   hasPrefetchCacheEntryForNavigation = nav.hasPrefetchCacheEntryForNavigation;
   hasSearchAgnosticPrefetchShellForRoute = nav.hasSearchAgnosticPrefetchShellForRoute;
   peekPrefetchResponseForNavigation = nav.peekPrefetchResponseForNavigation;
@@ -186,7 +188,7 @@ describe("prefetch cache eviction", () => {
 
   it("router.prefetch normalizes same-origin absolute URLs before caching", async () => {
     let fetchedUrl: unknown;
-    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       fetchedUrl = input;
       return new Response("flight", { headers: { "content-type": "text/x-component" } });
     });
@@ -200,6 +202,93 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().has(AppElementsWire.encodeCacheKey(String(fetchedUrl), null))).toBe(
       true,
     );
+  });
+
+  it("full router.prefetch uses the canonical warmed path with trailingSlash enabled", async () => {
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    const navigate = vi.fn(async (_href: string) => {});
+    (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate },
+    };
+
+    navigation.appRouterInstance.prefetch("/dashboard", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    navigation.appRouterInstance.push("/dashboard");
+    await waitForPrefetchSetup(() => navigate.mock.calls.length === 1);
+
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/dashboard/?_rsc");
+    expect(navigate.mock.calls[0]?.[0]).toBe("/dashboard/");
+    const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
+    expect(headers.get("rsc")).toBe("1");
+    expect(headers.get("next-router-state-tree")).toBeNull();
+    expect(headers.get("next-router-prefetch")).toBeNull();
+  });
+
+  it("uses the same canonical basePath root for router.prefetch and router.push", async () => {
+    vi.stubEnv("__NEXT_ROUTER_BASEPATH", "/docs");
+    vi.stubEnv("__VINEXT_TRAILING_SLASH", "false");
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    const navigate = vi.fn(async (_href: string) => {});
+    (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate },
+    };
+
+    navigation.appRouterInstance.prefetch("/", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    navigation.appRouterInstance.push("/");
+    await waitForPrefetchSetup(() => navigate.mock.calls.length === 1);
+
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/docs?_rsc");
+    expect(navigate.mock.calls[0]?.[0]).toBe("/docs");
+  });
+
+  it("automatic router.prefetch uses the canonical loading-shell variant", async () => {
+    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: true,
+        canUseCanonicalLoadingShell: true,
+        patternParts: ["dashboard"],
+        isDynamic: false,
+      },
+    ];
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate: vi.fn() },
+    };
+
+    navigation.appRouterInstance.prefetch("/dashboard");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/dashboard?_rsc=9qLBDIU2NgN178cB");
+    const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
+    expect(headers.get("next-router-prefetch")).toBe("1");
+    expect(headers.get("next-router-segment-prefetch")).toBe("1");
+    expect(headers.get("x-vinext-rsc-render-mode")).toBe("prefetch-loading-shell");
   });
 
   it("router.prefetch calls onInvalidate once when the prefetched response is invalidated", async () => {
@@ -249,6 +338,120 @@ describe("prefetch cache eviction", () => {
 
     expect(firstInvalidate).toHaveBeenCalledTimes(1);
     expect(secondInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps canonical full and loading-shell entries independent", async () => {
+    const fullUrl = "/dashboard?_rsc";
+    const loadingUrl = "/dashboard?_rsc=9qLBDIU2NgN178cB";
+    const fullInvalidate = vi.fn();
+    const loadingInvalidate = vi.fn();
+
+    prefetchRscResponse(
+      fullUrl,
+      Promise.resolve(new Response("full")),
+      null,
+      null,
+      { onInvalidate: fullInvalidate },
+      { cacheForNavigation: true },
+    );
+    prefetchRscResponse(
+      loadingUrl,
+      Promise.resolve(new Response("loading")),
+      null,
+      null,
+      { onInvalidate: loadingInvalidate },
+      { cacheForNavigation: false, optimisticRouteShell: true },
+    );
+    await waitForPrefetchSetup(
+      () =>
+        getPrefetchCache().get(fullUrl)?.outcome === "cache-seeded" &&
+        getPrefetchCache().get(loadingUrl)?.outcome === "cache-seeded",
+    );
+
+    const full = getPrefetchCache().get(fullUrl);
+    const loading = getPrefetchCache().get(loadingUrl);
+    expect(new TextDecoder().decode(full?.snapshot?.buffer)).toBe("full");
+    expect(full?.cacheForNavigation).toBe(true);
+    expect(new TextDecoder().decode(loading?.snapshot?.buffer)).toBe("loading");
+    expect(loading?.cacheForNavigation).toBe(false);
+
+    invalidatePrefetchCache();
+    expect(fullInvalidate).toHaveBeenCalledTimes(1);
+    expect(loadingInvalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("demotes completed navigation snapshots without discarding explicit prefetches", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const navigationKey = "/departed.rsc";
+    const prefetchKey = "/prefetched.rsc";
+    const staticKey = "/static.rsc";
+    const dynamicKey = "/dynamic.rsc";
+    const interceptedKey = "/intercepted.rsc\0/";
+    const snapshot = {
+      buffer: new TextEncoder().encode("flight").buffer,
+      contentType: "text/x-component",
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: navigationKey,
+    };
+
+    cache.set(navigationKey, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      snapshot,
+      timestamp: Date.now(),
+    });
+    cache.set(prefetchKey, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      prefetchKind: "navigation",
+      snapshot: { ...snapshot, url: prefetchKey },
+      timestamp: Date.now(),
+    });
+    cache.set(staticKey, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      reuseAfterHistoryRestore: true,
+      snapshot: { ...snapshot, url: staticKey },
+      timestamp: Date.now(),
+    });
+    cache.set(dynamicKey, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      reuseAfterHistoryRestore: true,
+      snapshot: { ...snapshot, dynamicStaleTimeSeconds: 30, url: dynamicKey },
+      timestamp: Date.now(),
+    });
+    cache.set(interceptedKey, {
+      cacheForNavigation: true,
+      outcome: "cache-seeded",
+      reuseAfterHistoryRestore: true,
+      snapshot: { ...snapshot, url: "/intercepted.rsc" },
+      timestamp: Date.now(),
+    });
+    prefetched.add(navigationKey);
+    prefetched.add(prefetchKey);
+    const pingVisibleLinks = vi.fn();
+    Reflect.set(globalThis.window, Symbol.for("vinext.navigationRuntime"), {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { pingVisibleLinks },
+    });
+
+    disableNavigationResponsePrefetchCacheReuse();
+
+    expect(cache.get(navigationKey)?.cacheForNavigation).toBe(false);
+    expect(cache.get(prefetchKey)?.cacheForNavigation).toBe(true);
+    expect(cache.get(staticKey)?.cacheForNavigation).toBe(true);
+    expect(cache.get(dynamicKey)?.cacheForNavigation).toBe(true);
+    expect(cache.get(interceptedKey)?.cacheForNavigation).toBe(true);
+    expect(prefetched).toEqual(new Set([navigationKey, prefetchKey]));
+    expect(pingVisibleLinks).toHaveBeenCalledTimes(1);
+
+    cache.delete(navigationKey);
+    pingVisibleLinks.mockClear();
+    disableNavigationResponsePrefetchCacheReuse();
+    expect(pingVisibleLinks).not.toHaveBeenCalled();
   });
 
   it("reuses a prefetched response only when mounted-slot context matches", () => {
@@ -1285,6 +1488,61 @@ describe("prefetch cache eviction", () => {
     expect(consumePrefetchResponse(fetchedUrl, null, null)).toBeNull();
   });
 
+  it("keeps automatic loading shells on the static window across dynamic bounds (#2937)", async () => {
+    // Next.js parity:
+    // test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    // A loading-boundary prefetch contains static shell data. Next keeps that
+    // shell cached when the same Link is hovered again, even though the
+    // default dynamic stale time reported by the server is zero.
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: true, patternParts: ["items", ":slug"], isDynamic: true },
+    ];
+    const dynamicStaleTimes = new Map([
+      ["alpha", 0],
+      ["bravo", 60],
+      ["charlie", 600],
+    ]);
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(toRscUrlString(input), "http://localhost").pathname;
+      const slug = pathname.split("/").at(-1);
+      const dynamicStaleTime = slug === undefined ? undefined : dynamicStaleTimes.get(slug);
+      if (dynamicStaleTime === undefined) throw new Error(`Unexpected prefetch URL: ${pathname}`);
+      return new Response("loading shell", {
+        headers: {
+          "content-type": "text/x-component",
+          [VINEXT_DYNAMIC_STALE_TIME_HEADER]: String(dynamicStaleTime),
+        },
+      });
+    });
+    (globalThis as any).fetch = fetch;
+
+    for (const [slug, dynamicStaleTime] of dynamicStaleTimes) {
+      appRouterInstance.prefetch(`/items/${slug}`);
+      await waitForPrefetchSetup(() =>
+        Array.from(getPrefetchCache().values()).some(
+          (entry) =>
+            entry.snapshot?.dynamicStaleTimeSeconds === dynamicStaleTime &&
+            entry.outcome === "cache-seeded" &&
+            entry.pending === undefined,
+        ),
+      );
+
+      const entry = Array.from(getPrefetchCache().values()).find(
+        (candidate) => candidate.snapshot?.dynamicStaleTimeSeconds === dynamicStaleTime,
+      );
+      expect(entry).toBeDefined();
+      if (!entry) return;
+      expect(entry.cacheForNavigation).toBe(false);
+      expect(entry.optimisticRouteShell).toBe(true);
+      expect(entry.expiresAt).toBe(entry.timestamp + PREFETCH_CACHE_TTL);
+    }
+
+    appRouterInstance.prefetch("/items/alpha");
+    await settlePrefetchSetup();
+    expect(fetch).toHaveBeenCalledTimes(dynamicStaleTimes.size);
+  });
+
   it("dedupes pending and fresh Cache Components encoded dynamic router.prefetch calls but refetches after expiry", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/segment-cache/encoded-slash-params/encoded-slash-params.test.ts
@@ -1547,6 +1805,33 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchCache().get(rscUrl)?.expiresAt).toBe(now + 30_000);
   });
 
+  it("defaults optimistic loading shells to the static prefetch window", async () => {
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const rscUrl = "/implicit-loading-shell.rsc";
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("loading shell", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { cacheForNavigation: false, optimisticRouteShell: true },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    const entry = getPrefetchCache().get(rscUrl);
+    expect(entry?.prefetchKind).toBe("loading-shell");
+    expect(entry?.expiresAt).toBe(now + PREFETCH_CACHE_TTL);
+  });
+
   it("expires a zero dynamic stale time immediately instead of flooring it", async () => {
     // Every dynamic render emits this header (app-page-render.ts defaults it
     // to `experimental.staleTimes.dynamic`, which is 0). Next keeps the two
@@ -1665,7 +1950,7 @@ describe("prefetch cache eviction", () => {
       null,
       null,
       undefined,
-      { fallbackTtlMs: staticStaleTimeMs, honorDynamicStaleTime: false },
+      { fallbackTtlMs: staticStaleTimeMs, dynamicStaleTime: "full-prefetch" },
     );
     await getPrefetchCache().get(rscUrl)?.pending;
 
@@ -1690,7 +1975,7 @@ describe("prefetch cache eviction", () => {
       null,
       null,
       undefined,
-      { fallbackTtlMs: 300_000, honorDynamicStaleTime: false },
+      { fallbackTtlMs: 300_000, dynamicStaleTime: "full-prefetch" },
     );
     await getPrefetchCache().get(rscUrl)?.pending;
 

@@ -90,6 +90,7 @@ async function handleStaticParamsEndpoint(
       pattern,
       rootParamNamesByPattern: options.rootParamNamesByPattern ?? {},
     });
+    if (result === null) return jsonNullResponse();
     return jsonResponse(result);
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);
@@ -137,10 +138,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function jsonNullResponse(): Response {
-  return new Response("null", {
-    headers: JSON_HEADERS,
-    status: 200,
-  });
+  return new Response(null, { status: 204 });
 }
 
 function parseParentParams(raw: string | null): RootParams {

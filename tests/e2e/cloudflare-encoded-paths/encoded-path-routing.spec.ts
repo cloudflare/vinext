@@ -38,6 +38,20 @@ test("keeps lazy Route Handler params stable across first and later Worker reque
   expect(await optional.json()).toEqual({ path: null });
 });
 
+test("does not treat a route handler's reflected static-file header as a Worker asset signal", async ({
+  request,
+}) => {
+  // Next.js serves public files from a filesystem route match in router-server.ts;
+  // an application response header never changes a Route Handler into that match.
+  const reflected = await request.get("/api/reflect-static-file-header", {
+    headers: { "x-vinext-static-file": "/internal-header-secret.txt" },
+  });
+  expect(reflected.status()).toBe(200);
+  expect(reflected.headers()["x-vinext-static-file"]).toBe("/internal-header-secret.txt");
+  expect(reflected.headers().vary).toContain("RSC");
+  expect(await reflected.text()).toBe("route handler body");
+});
+
 test("keeps direct and middleware-rewritten Worker App Page params canonical", async ({
   request,
 }) => {

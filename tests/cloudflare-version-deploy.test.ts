@@ -208,6 +208,21 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     });
   });
 
+  it("prefers Wrangler's labeled version ID over UUIDs in uploaded asset paths", () => {
+    const output = `
+      + /_next/static/82859cda-4cfe-4924-96da-fe471138612a/_buildManifest.js
+      Uploaded rsc-prewarm-32362416100 (4.16 sec)
+      Worker Version ID: 7283300a-90b0-45d6-ba08-7c4b76797f38
+      Version Preview URL: https://7283300a-rsc-prewarm-32362416100.vinext.workers.dev
+    `;
+
+    expect(parseWranglerVersionUploadOutput(output)).toMatchObject({
+      versionId: "7283300a-90b0-45d6-ba08-7c4b76797f38",
+      workerName: "rsc-prewarm-32362416100",
+      previewUrl: "https://7283300a-rsc-prewarm-32362416100.vinext.workers.dev",
+    });
+  });
+
   it("does not treat unrelated nested JSON IDs and URLs as upload metadata", () => {
     expect(
       parseWranglerVersionUploadOutput(

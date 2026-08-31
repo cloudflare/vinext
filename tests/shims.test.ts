@@ -12,6 +12,11 @@ import { toClientRewrites } from "../packages/vinext/src/client/client-rewrites.
 import { isValidModulePath } from "../packages/vinext/src/client/validate-module-path.js";
 import vinext from "../packages/vinext/src/index.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
+import { isProxyFile } from "../packages/vinext/src/server/middleware.js";
+import {
+  resolveMiddlewareModuleHandler,
+  type MiddlewareModule,
+} from "../packages/vinext/src/server/middleware-runtime.js";
 import { buildPagesNextDataScript } from "../packages/vinext/src/server/pages-page-response.js";
 import type { Plugin } from "vite-plus";
 import type { NextPageContext } from "next";
@@ -223,6 +228,23 @@ describe("next/navigation shim", () => {
     expect(typeof nav.useSearchParams).toBe("function");
     expect(typeof nav.useParams).toBe("function");
     expect(typeof nav.useRouter).toBe("function");
+  });
+
+  it("preserves raw search spelling in client navigation snapshots", async () => {
+    const nav = await import("../packages/vinext/src/shims/navigation.js");
+
+    const percentEncoded = nav.createClientNavigationRenderSnapshot(
+      "https://example.com/search?q=%20",
+      {},
+    );
+    const plusEncoded = nav.createClientNavigationRenderSnapshot(
+      "https://example.com/search?q=+",
+      {},
+    );
+
+    expect(nav.createSnapshotPathAndSearch(percentEncoded)).toBe("/search?q=%20");
+    expect(nav.createSnapshotPathAndSearch(plusEncoded)).toBe("/search?q=+");
+    expect(percentEncoded.searchParams.toString()).toBe(plusEncoded.searchParams.toString());
   });
 
   // Next.js parity: next/navigation's useRouter reads AppRouterContext and
@@ -540,6 +562,7 @@ describe("next/navigation shim", () => {
     const previousWindow = (globalThis as any).window;
     const previousDocument = (globalThis as any).document;
     let historyState: unknown = {
+      __vinext_activeRoutePaths: ["/current"],
       __vinext_bfcacheIds: { "page:/current": "_b_1_" },
       __vinext_bfcacheVersion: 2,
       __vinext_previousNextUrl: "/feed",
@@ -608,6 +631,7 @@ describe("next/navigation shim", () => {
       );
       expect(pushState).toHaveBeenCalledWith(
         {
+          __vinext_activeRoutePaths: ["/current"],
           __vinext_bfcacheIds: { "page:/current": "_b_1_" },
           __vinext_bfcacheVersion: 2,
           __vinext_previousNextUrl: "/feed",
@@ -791,6 +815,8 @@ describe("next/navigation shim", () => {
 
   it("preserves arbitrary caller state before App Router state is available", async () => {
     const previousWindow = (globalThis as any).window;
+    const externalHistoryStateKey = "__vinext_externalHistoryState";
+    const historyActiveRoutePathsKey = "__vinext_activeRoutePaths";
     const historyPreviousNextUrlKey = "__vinext_previousNextUrl";
     const historyTraversalIndexKey = "__vinext_historyIndex";
     const win = {
@@ -803,6 +829,7 @@ describe("next/navigation shim", () => {
       },
       history: {
         state: {
+          [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
           [historyPreviousNextUrlKey]: "/feed",
           [historyTraversalIndexKey]: 4,
         } as unknown,
@@ -831,34 +858,85 @@ describe("next/navigation shim", () => {
 
     try {
       vi.resetModules();
-      const { NAVIGATION_RUNTIME_KEY } =
+      const { registerNavigationRuntimeFunctions } =
         await import("../packages/vinext/src/client/navigation-runtime.js");
-      (win as any)[NAVIGATION_RUNTIME_KEY] = {
-        bootstrap: { routeManifest: null, rsc: undefined },
-        functions: {
-          commitShallowHistory: () => false,
-          navigate: vi.fn(async () => {}),
-        },
-      };
+      const claimCurrentHistoryTreeSnapshot = vi.fn();
+      const commitAppOwnedHistoryStateWrite = vi.fn();
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot,
+        commitAppOwnedHistoryStateWrite,
+      });
       await import("../packages/vinext/src/shims/navigation.js");
 
       win.history.pushState({ myData: { foo: "bar" } }, "", "/photo/1?filter=active");
-      expect(win.history.state).toEqual({ myData: { foo: "bar" } });
+      expect(win.history.state).toEqual({
+        [externalHistoryStateKey]: true,
+        [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
+        [historyPreviousNextUrlKey]: "/feed",
+        [historyTraversalIndexKey]: 4,
+        myData: { foo: "bar" },
+      });
 
       win.history.pushState(null, "", "/photo/1?filter=pending");
-      expect(win.history.state).toBeNull();
+      expect(win.history.state).toEqual({
+        [externalHistoryStateKey]: true,
+        [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
+        [historyPreviousNextUrlKey]: "/feed",
+        [historyTraversalIndexKey]: 4,
+      });
 
-      win.history.replaceState(42, "", "/photo/1?filter=archived");
-      expect(win.history.state).toBe(42);
+      win.history.replaceState(null, "", "/photo/1?filter=archived");
+      expect(win.history.state).toEqual({
+        [externalHistoryStateKey]: true,
+        [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
+        [historyPreviousNextUrlKey]: "/feed",
+        [historyTraversalIndexKey]: 4,
+      });
 
-      win.history.replaceState(["filter", "all"], "", "/photo/1?filter=all");
-      expect(win.history.state).toEqual(["filter", "all"]);
+      win.history.replaceState(undefined, "", "/photo/1?filter=all");
+      expect(win.history.state).toEqual({
+        [externalHistoryStateKey]: true,
+        [historyActiveRoutePathsKey]: ["/feed", "/photo/1"],
+        [historyPreviousNextUrlKey]: "/feed",
+        [historyTraversalIndexKey]: 4,
+      });
 
-      const date = new Date("2026-08-08T00:00:00.000Z");
-      win.history.pushState(date, "", "/photo/1?filter=done");
-      expect(win.history.state).toEqual(date);
+      win.history.state = { [historyTraversalIndexKey]: 7 };
+      win.history.pushState({ next: true }, "", "/photo/1?filter=done");
+      expect(win.history.state).toEqual({
+        [externalHistoryStateKey]: true,
+        [historyTraversalIndexKey]: 7,
+        next: true,
+      });
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(5);
 
-      expect(() => win.history.pushState(() => {}, "", "/photo/1?filter=invalid")).toThrow();
+      // Next.js bypasses its external History API wrapper when caller data is
+      // a captured App Router entry (`data?.__NA`). Vinext's traversal index is
+      // the equivalent ownership signal. This keeps the entry eligible for an
+      // RSC traversal (including redirects) instead of restoring a copied tree.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx#L331-L370
+      const capturedAppState = {
+        [historyTraversalIndexKey]: 3,
+        captured: true,
+      };
+      win.history.pushState(capturedAppState, "", "/redirect-target");
+      expect(win.history.state).toEqual(capturedAppState);
+      win.history.replaceState(capturedAppState, "", "/replacement-target");
+      expect(win.history.state).toEqual(capturedAppState);
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(5);
+      expect(commitAppOwnedHistoryStateWrite).toHaveBeenNthCalledWith(
+        1,
+        "push",
+        expect.objectContaining({
+          [externalHistoryStateKey]: true,
+          [historyTraversalIndexKey]: 7,
+        }),
+      );
+      expect(commitAppOwnedHistoryStateWrite).toHaveBeenNthCalledWith(
+        2,
+        "replace",
+        capturedAppState,
+      );
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -8479,8 +8557,10 @@ describe("runMiddleware preserves x-middleware-request-* headers (dev mode)", ()
 // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
 
 describe("middleware/proxy export validation", () => {
+  const resolveMiddlewareForTest = (mod: MiddlewareModule, filePath: string) =>
+    resolveMiddlewareModuleHandler(mod, { filePath, isProxy: isProxyFile(filePath) });
+
   it("isProxyFile returns true for proxy files", async () => {
-    const { isProxyFile } = await import("../packages/vinext/src/server/middleware.js");
     expect(isProxyFile("/app/proxy.ts")).toBe(true);
     expect(isProxyFile("/app/proxy.js")).toBe(true);
     expect(isProxyFile("/app/proxy.mjs")).toBe(true);
@@ -8489,117 +8569,90 @@ describe("middleware/proxy export validation", () => {
   });
 
   it("isProxyFile returns false for middleware files", async () => {
-    const { isProxyFile } = await import("../packages/vinext/src/server/middleware.js");
     expect(isProxyFile("/app/middleware.ts")).toBe(false);
     expect(isProxyFile("/app/middleware.js")).toBe(false);
     expect(isProxyFile("/app/middleware.mjs")).toBe(false);
     expect(isProxyFile("/app/src/middleware.ts")).toBe(false);
   });
 
-  it("resolveMiddlewareHandler: proxy.ts with named proxy export", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
+  it("resolveMiddlewareModuleHandler: proxy.ts with named proxy export", async () => {
     const fn = () => {};
-    const handler = resolveMiddlewareHandler({ proxy: fn }, "/app/proxy.ts");
+    const handler = resolveMiddlewareForTest({ proxy: fn }, "/app/proxy.ts");
     expect(handler).toBe(fn);
   });
 
-  it("resolveMiddlewareHandler: proxy.ts with default export", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
+  it("resolveMiddlewareModuleHandler: proxy.ts with default export", async () => {
     const fn = () => {};
-    const handler = resolveMiddlewareHandler({ default: fn }, "/app/proxy.ts");
+    const handler = resolveMiddlewareForTest({ default: fn }, "/app/proxy.ts");
     expect(handler).toBe(fn);
   });
 
-  it("resolveMiddlewareHandler: proxy.ts prefers named proxy over default", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
+  it("resolveMiddlewareModuleHandler: proxy.ts prefers named proxy over default", async () => {
     const proxyFn = () => {};
     const defaultFn = () => {};
-    const handler = resolveMiddlewareHandler(
+    const handler = resolveMiddlewareForTest(
       { proxy: proxyFn, default: defaultFn },
       "/app/proxy.ts",
     );
     expect(handler).toBe(proxyFn);
   });
 
-  it("resolveMiddlewareHandler: proxy.ts with default arrow function export", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
+  it("resolveMiddlewareModuleHandler: proxy.ts with default arrow function export", async () => {
     const fn = () => {};
-    const handler = resolveMiddlewareHandler({ default: fn }, "/app/proxy.ts");
+    const handler = resolveMiddlewareForTest({ default: fn }, "/app/proxy.ts");
     expect(handler).toBe(fn);
   });
 
-  it("resolveMiddlewareHandler: proxy.ts throws when only 'middleware' is exported (wrong name)", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
-    expect(() => resolveMiddlewareHandler({ middleware: () => {} }, "/app/proxy.ts")).toThrow(
+  it("resolveMiddlewareModuleHandler: proxy.ts throws when only 'middleware' is exported (wrong name)", async () => {
+    expect(() => resolveMiddlewareForTest({ middleware: () => {} }, "/app/proxy.ts")).toThrow(
       'The file "./proxy.ts" must export a function, either as a default export or as a named "proxy" export.',
     );
   });
 
-  it("resolveMiddlewareHandler: proxy.ts throws when export is aliased to wrong name", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
-    expect(() => resolveMiddlewareHandler({ handler: () => {} }, "/app/proxy.ts")).toThrow(
+  it("resolveMiddlewareModuleHandler: proxy.ts throws when export is aliased to wrong name", async () => {
+    expect(() => resolveMiddlewareForTest({ handler: () => {} }, "/app/proxy.ts")).toThrow(
       'The file "./proxy.ts" must export a function, either as a default export or as a named "proxy" export.',
     );
   });
 
-  it("resolveMiddlewareHandler: proxy.ts throws when no exports", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
-    expect(() => resolveMiddlewareHandler({}, "/app/proxy.ts")).toThrow(
+  it("resolveMiddlewareModuleHandler: proxy.ts throws when no exports", async () => {
+    expect(() => resolveMiddlewareForTest({}, "/app/proxy.ts")).toThrow(
       'The file "./proxy.ts" must export a function, either as a default export or as a named "proxy" export.',
     );
   });
 
-  it("resolveMiddlewareHandler: proxy.ts throws when export is not a function", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
-    expect(() => resolveMiddlewareHandler({ proxy: "not a function" }, "/app/proxy.ts")).toThrow(
+  it("resolveMiddlewareModuleHandler: proxy.ts throws when export is not a function", async () => {
+    expect(() => resolveMiddlewareForTest({ proxy: "not a function" }, "/app/proxy.ts")).toThrow(
       'The file "./proxy.ts" must export a function, either as a default export or as a named "proxy" export.',
     );
   });
 
-  it("resolveMiddlewareHandler: proxy.ts throws when default export is not a function", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
-    expect(() => resolveMiddlewareHandler({ default: {} }, "/app/proxy.ts")).toThrow(
+  it("resolveMiddlewareModuleHandler: proxy.ts throws when default export is not a function", async () => {
+    expect(() => resolveMiddlewareForTest({ default: {} }, "/app/proxy.ts")).toThrow(
       'The file "./proxy.ts" must export a function, either as a default export or as a named "proxy" export.',
     );
   });
 
-  it("resolveMiddlewareHandler: middleware.ts with named middleware export", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
+  it("resolveMiddlewareModuleHandler: middleware.ts with named middleware export", async () => {
     const fn = () => {};
-    const handler = resolveMiddlewareHandler({ middleware: fn }, "/app/middleware.ts");
+    const handler = resolveMiddlewareForTest({ middleware: fn }, "/app/middleware.ts");
     expect(handler).toBe(fn);
   });
 
-  it("resolveMiddlewareHandler: middleware.ts with default export", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
+  it("resolveMiddlewareModuleHandler: middleware.ts with default export", async () => {
     const fn = () => {};
-    const handler = resolveMiddlewareHandler({ default: fn }, "/app/middleware.ts");
+    const handler = resolveMiddlewareForTest({ default: fn }, "/app/middleware.ts");
     expect(handler).toBe(fn);
   });
 
-  it("resolveMiddlewareHandler: middleware.ts throws when only 'proxy' is exported (wrong name)", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
-    expect(() => resolveMiddlewareHandler({ proxy: () => {} }, "/app/middleware.ts")).toThrow(
+  it("resolveMiddlewareModuleHandler: middleware.ts throws when only 'proxy' is exported (wrong name)", async () => {
+    expect(() => resolveMiddlewareForTest({ proxy: () => {} }, "/app/middleware.ts")).toThrow(
       'The file "./middleware.ts" must export a function, either as a default export or as a named "middleware" export.',
     );
   });
 
-  it("resolveMiddlewareHandler: middleware.ts throws when no exports", async () => {
-    const { resolveMiddlewareHandler } =
-      await import("../packages/vinext/src/server/middleware.js");
-    expect(() => resolveMiddlewareHandler({}, "/app/middleware.ts")).toThrow(
+  it("resolveMiddlewareModuleHandler: middleware.ts throws when no exports", async () => {
+    expect(() => resolveMiddlewareForTest({}, "/app/middleware.ts")).toThrow(
       'The file "./middleware.ts" must export a function, either as a default export or as a named "middleware" export.',
     );
   });
@@ -9549,7 +9602,12 @@ describe("double-encoded path handling in middleware", () => {
       "utf8",
     );
     expect(routeMatchingSource).toContain("trieMatchRaw(routeTrie");
-    expect(routeMatchingSource).toContain("encodeURIComponent(decodeURIComponent(value))");
+    expect(routeMatchingSource).toContain("canonicalizeAppPageParams(result.params)");
+    const segmentStateSource = await readFile(
+      new URL("../packages/vinext/src/server/app-page-segment-state.ts", import.meta.url),
+      "utf8",
+    );
+    expect(segmentStateSource).toContain("encodeURIComponent(decodeURIComponent(value))");
   });
 
   it("App Router middleware receives a Request with the original encoded pathname", async () => {
@@ -15095,13 +15153,10 @@ describe("next/dynamic shim", () => {
     expect(htmlB).toContain("Component B");
   });
 
-  it("flushPreloads second call resolves immediately (queue drained)", async () => {
+  it("flushPreloads remains an immediate no-op across repeated calls", async () => {
     const { flushPreloads } = await import("../packages/vinext/src/shims/dynamic.js");
 
-    // First call should drain whatever's in the queue
     await flushPreloads();
-
-    // Second call should resolve immediately with empty array
     const result = await flushPreloads();
     expect(result).toEqual([]);
   });
@@ -17300,6 +17355,19 @@ describe("Pages Router concurrent navigation", () => {
     return "/@fs/" + toSlash(absolutePath);
   }
 
+  function buildDevNotFoundHtml(notFoundSrcPage: string, pageModuleUrl?: string): string {
+    return `<html><head></head><body><script id="__NEXT_DATA__" type="application/json">${safeJsonStringify(
+      {
+        props: { pageProps: { statusCode: 404 } },
+        page: "/404",
+        query: {},
+        isFallback: false,
+        notFoundSrcPage,
+        __vinext: pageModuleUrl ? { pageModuleUrl } : {},
+      },
+    )}</script></body></html>`;
+  }
+
   function getFetchHref(url: RequestInfo | URL): string {
     if (typeof url === "string") return url;
     if (url instanceof URL) return url.href;
@@ -18502,6 +18570,114 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("soft-renders a development GSSP notFound response at the requested route", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(buildDevNotFoundHtml("/gssp-not-found/[slug]", pageModuleUrl), {
+          status: 404,
+        }),
+    );
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      await expect(Router.push("/gssp-not-found/first?hiding=true")).resolves.toBe(true);
+
+      expect(render).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/gssp-not-found/[slug]",
+        query: { hiding: "true", slug: "first" },
+      });
+      expect(win.location.href).toBe("http://localhost/gssp-not-found/first?hiding=true");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("soft-renders a development GSSP notFound with the default error page", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(buildDevNotFoundHtml("/gssp-not-found"), {
+          status: 404,
+        }),
+    );
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      await expect(Router.push("/gssp-not-found?hiding=true")).resolves.toBe(true);
+
+      expect(render).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/gssp-not-found",
+        query: { hiding: "true" },
+      });
+      expect(win.location.href).toBe("http://localhost/gssp-not-found?hiding=true");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not commit a development notFound route after a newer navigation wins", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createNavWindow();
+    const pageModuleUrl = fixtureModuleUrl("fixtures/client-navigation-page.tsx");
+    const staleLoader = createDeferred<{ default: () => null }>();
+    const loadStale404 = vi.fn(() => staleLoader.promise);
+    Object.assign(win, {
+      __VINEXT_PAGE_LOADERS__: { "/404": loadStale404 },
+    });
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const href = getFetchHref(input);
+      if (href.startsWith("/gssp-not-found/")) {
+        return new Response(buildDevNotFoundHtml("/gssp-not-found/[slug]"), {
+          status: 404,
+        });
+      }
+      return new Response(buildNavHtml("/about", pageModuleUrl));
+    });
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      const staleNavigation = Router.push("/gssp-not-found/first?hiding=true");
+      await vi.waitFor(() => expect(loadStale404).toHaveBeenCalledTimes(1));
+
+      await expect(Router.push("/about")).resolves.toBe(true);
+      staleLoader.resolve({ default: () => null });
+      await expect(staleNavigation).resolves.toBe(true);
+
+      expect(win.__NEXT_DATA__.page).toBe("/about");
+      expect(win.__NEXT_DATA__.query).toEqual({});
+      expect(win.location.href).toBe("http://localhost/about");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("last push() wins when two overlap — superseded navigation does not render", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -19656,6 +19832,92 @@ describe("Pages Router concurrent navigation", () => {
       } else {
         (globalThis as any).window = previousWindow;
       }
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
+  it("soft-renders a middleware SSG notFound response with the registered error page", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win, render } = createNavWindow();
+    const pageLoader = vi.fn(async () => ({ default: () => null }));
+    const getErrorInitialProps = vi.fn((ctx: { pathname: string; query: unknown }) => ({
+      fromCustomError: true,
+      pathname: ctx.pathname,
+      query: ctx.query,
+      statusCode: 404,
+    }));
+    const CustomError = Object.assign(() => null, { getInitialProps: getErrorInitialProps });
+    const errorLoader = vi.fn(async () => ({ default: CustomError }));
+    Object.assign(win.location, { origin: "http://localhost" });
+    Object.assign(win.__NEXT_DATA__, {
+      buildId: "build-1",
+      __vinext: { ...win.__NEXT_DATA__.__vinext, hasMiddleware: true },
+    });
+    Object.assign(win, {
+      __VINEXT_PAGE_PATTERNS__: ["/ssg/[slug]"],
+      __VINEXT_PAGE_LOADERS__: {
+        "/ssg/[slug]": pageLoader,
+        "/_error": errorLoader,
+      },
+      __VINEXT_PAGES_SSG_PATTERNS__: ["/ssg/[slug]"],
+      __VINEXT_PAGES_SSP_PATTERNS__: [],
+    });
+    (globalThis as any).window = win;
+
+    const fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getFetchHref(url);
+      if (href === "/_next/data/build-1/ssg/not-found-1.json") {
+        return new Response('{"notFound":true}', { status: 404 });
+      }
+      throw new Error(`Unexpected fetch: ${href}`);
+    });
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+
+      await expect(Router.push("/ssg/not-found-1")).resolves.toBe(true);
+
+      expect(fetch).toHaveBeenNthCalledWith(
+        1,
+        "/_next/data/build-1/ssg/not-found-1.json",
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-nextjs-data": "1" }),
+        }),
+      );
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(pageLoader).not.toHaveBeenCalled();
+      expect(errorLoader).toHaveBeenCalledOnce();
+      expect(getErrorInitialProps).toHaveBeenCalledWith(
+        expect.objectContaining({
+          asPath: "/ssg/not-found-1",
+          pathname: "/_error",
+          query: { slug: "not-found-1" },
+        }),
+      );
+      expect(render).toHaveBeenCalledOnce();
+      expect(treeContainsReactType(render.mock.calls[0]?.[0], CustomError)).toBe(true);
+      expect(win.__NEXT_DATA__).toMatchObject({
+        page: "/ssg/[slug]",
+        query: { slug: "not-found-1" },
+        props: {
+          pageProps: {
+            fromCustomError: true,
+            pathname: "/_error",
+            query: { slug: "not-found-1" },
+            statusCode: 404,
+          },
+        },
+      });
+      expect(win.location.href).toBe("http://localhost/ssg/not-found-1");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
       globalThis.fetch = originalFetch;
     }
   });

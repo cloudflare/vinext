@@ -31,11 +31,11 @@ export const NEXTJS_CACHE_HEADER = "x-nextjs-cache";
 /** Next.js cache-tag metadata carried by prerendered App Router responses. */
 export const NEXT_CACHE_TAGS_HEADER = "x-next-cache-tags";
 
-/** Static file signal — value is URL-encoded pathname. */
-export const VINEXT_STATIC_FILE_HEADER = "x-vinext-static-file";
-
 /** Timing metrics: `handlerStart,compileMs,renderMs`. */
 export const VINEXT_TIMING_HEADER = "x-vinext-timing";
+
+/** Expected Worker version asserted by vinext staged warmup requests. */
+export const VINEXT_EXPECTED_WORKER_VERSION_HEADER = "X-Vinext-Expected-Worker-Version";
 
 export {
   VINEXT_MW_CTX_HEADER,
@@ -78,11 +78,17 @@ export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-An
 /** Prerender-only JSON side channel carrying request cacheLife metadata. */
 export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
 
+/** Marks a local prerender-server 500 that originated from a thrown render error. */
+export const VINEXT_PRERENDER_RENDER_ERROR_HEADER = "x-vinext-prerender-render-error";
+
 /** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
 export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
 
 /** Route interception context for parallel/intercepting routes. */
 export const VINEXT_INTERCEPTION_CONTEXT_HEADER = "X-Vinext-Interception-Context";
+
+/** Exact interception declaration requested by supplemental refreshes. */
+export const VINEXT_INTERCEPTION_ID_HEADER = "X-Vinext-Interception-Id";
 
 /** RSC render mode (e.g. "navigation", "prefetch"). */
 export const VINEXT_RSC_RENDER_MODE_HEADER = "X-Vinext-Rsc-Render-Mode";
@@ -198,6 +204,20 @@ export const NEXT_ROUTER_STATE_TREE_HEADER = "Next-Router-State-Tree";
 export const NEXT_ROUTER_PREFETCH_HEADER = "Next-Router-Prefetch";
 export const NEXT_ROUTER_SEGMENT_PREFETCH_HEADER = "Next-Router-Segment-Prefetch";
 export const NEXT_URL_HEADER = "Next-Url";
+
+/** Request selectors that define a reusable full-route RSC response variant. */
+export const VINEXT_RSC_VARY_HEADER = [
+  RSC_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_URL_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_RSC_RENDER_MODE_HEADER,
+  VINEXT_RSC_STATE_FINGERPRINT_HEADER,
+].join(", ");
 export const NEXT_REQUEST_ID_HEADER = "x-nextjs-request-id";
 export const NEXT_HTML_REQUEST_ID_HEADER = "x-nextjs-html-request-id";
 
@@ -248,6 +268,7 @@ export const INTERNAL_HEADERS = [
 
 /** Vinext-only internal headers stripped alongside Next.js protocol internals. */
 export const VINEXT_INTERNAL_HEADERS = [
+  VINEXT_EXPECTED_WORKER_VERSION_HEADER.toLowerCase(),
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,

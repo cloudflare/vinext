@@ -2,6 +2,8 @@
 
 Run Next.js applications on Vite, with Cloudflare Workers as the primary deployment target.
 
+**Website:** [vinext.dev](https://vinext.dev)
+
 > **Read the announcement:** [How we rebuilt Next.js with AI in one week](https://blog.cloudflare.com/vinext/)
 
 > **Under active development.** vinext supports substantial Next.js applications today, but it is not yet a drop-in replacement for every application or production workload. Expect compatibility gaps, especially in newer App Router features, and evaluate it against your own application before adopting it.
@@ -515,13 +517,14 @@ These are deployed to Cloudflare Workers and updated on every push to `main`:
 | Nextra Docs            | Nextra docs site (MDX, App Router)                                                                               | [nextra-docs-template.vinext.workers.dev](https://nextra-docs-template.vinext.workers.dev)       |
 | App Router (minimal)   | Minimal App Router on Workers                                                                                    | [app-router-cloudflare.vinext.workers.dev](https://app-router-cloudflare.vinext.workers.dev)     |
 | Pages Router (minimal) | Minimal Pages Router on Workers                                                                                  | [pages-router-cloudflare.vinext.workers.dev](https://pages-router-cloudflare.vinext.workers.dev) |
+| Static export          | [Hybrid App/Pages Router site](examples/static-export) served as assets only                                     | [static-export.vinext.workers.dev](https://static-export.vinext.workers.dev)                     |
 | RealWorld API          | REST API routes example                                                                                          | [realworld-api-rest.vinext.workers.dev](https://realworld-api-rest.vinext.workers.dev)           |
-| Benchmarks Dashboard   | Build performance tracking over time (D1-backed)                                                                 | [vinext-web.vinext.workers.dev/benchmarks](https://vinext-web.vinext.workers.dev/benchmarks)     |
+| Benchmarks Dashboard   | Build performance tracking over time (D1-backed)                                                                 | [vinext.dev/benchmarks](https://vinext.dev/benchmarks)                                           |
 | App Router + Nitro     | App Router deployed via Nitro (multi-platform)                                                                   | [examples/app-router-nitro](examples/app-router-nitro)                                           |
 
 ## API coverage
 
-~94% of the Next.js 16 API surface has full or partial support. The remaining gaps are intentional stubs for deprecated features and Partial Prerendering (which Next.js 16 reworked into `"use cache"` — that directive is fully supported).
+~94% of the Next.js 16 API surface has full or partial support. The remaining gaps are intentional stubs for deprecated features, plus Partial Prerendering and Cache Components. Next.js 16 reworked PPR into `"use cache"`; vinext implements that directive for file-level and function-level caching, but full `cacheComponents` behavior is still incomplete — see [Known gaps we're working on](#known-gaps-were-working-on).
 
 > ✅ = full implementation | 🟡 = partial (runtime behavior correct, some build-time optimizations missing) | ⬜ = intentional stub/no-op
 
@@ -604,6 +607,33 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `images` config                                  | 🟡  | Parsed but not used for optimization                                                                                                                                                                                   |
 | `experimental.optimizePackageImports`            | ✅  | Rewrites barrel imports to direct sub-module imports in RSC/SSR environments. A default set (lucide-react, date-fns, radix-ui, antd, MUI, and others) are always optimized. Add package names here to extend the list. |
 | `vinext({ nextConfig })`                         | ✅  | Inline Next-style config from `vite.config.*`. Supports object-form and function-form config. When provided, this overrides root `next.config.*`.                                                                      |
+| `vinext({ react: { compiler: true } })`          | ✅  | React Compiler auto memoization. Needs `@vitejs/plugin-react` 6.1+ and the optional `oxc-transform-react` package.                                                                                                     |
+
+### React Compiler
+
+vinext auto-registers `@vitejs/plugin-react`, so the React Compiler is enabled through the same `react` option:
+
+```ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [vinext({ react: { compiler: true } })],
+});
+```
+
+The transform itself ships separately, so install it alongside:
+
+```bash
+npm install -D oxc-transform-react
+```
+
+This requires `@vitejs/plugin-react` 6.1.0 or newer. Older versions accept the option and drop it, so vinext fails with an actionable error instead of leaving the compiler silently disabled. The compiler runs on the client environment only.
+
+One caveat: modules whose JSX is lowered earlier in the pipeline are not memoized. Those build and behave correctly, they just miss auto memoization:
+
+- JSX in plain `.js` files, which `vinext:jsx-in-js` compiles first so the compiler can parse them at all. Rename to `.jsx` or `.tsx` to get memoization.
+- Components using `<style jsx>`, which `vinext:styled-jsx` compiles through the Next.js SWC transform before the compiler runs.
 
 ### Environment variable loading (`.env*`)
 
@@ -643,16 +673,21 @@ The cache is pluggable. The default `MemoryCacheHandler` works out of the box. S
 Instead of wiring up cache handlers imperatively from a worker entry, you can declare them in the `vinext()` plugin config. The `@vinext/cloudflare` package ships Cloudflare adapters for this:
 
 - **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the `"use cache"` data cache with a Workers KV namespace.
+- **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — serves page-level ISR from the Cloudflare Workers Cache (`ctx.cache`) instead of from the origin.
+
+The two fill different slots and can be used together:
 
 ```ts
 import { defineConfig } from "vite";
 import vinext from "vinext";
+import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 
 export default defineConfig({
   plugins: [
     vinext({
       cache: {
+        cdn: cdnAdapter(),
         data: kvDataAdapter(),
       },
     }),
@@ -669,6 +704,16 @@ The KV data adapter reads `env[binding]` at runtime, so add the matching KV name
 ```
 
 `binding` defaults to `VINEXT_KV_CACHE`, so `kvDataAdapter()` with no options works as long as that's your binding name. Other options: `appPrefix` (namespace cache keys to isolate multiple apps in one KV namespace), `ttlSeconds` (default KV `expirationTtl`, default 30 days), and `tagCacheTtlMs` (in-memory tag-invalidation cache TTL, default 5s).
+
+`cdnAdapter()` takes no options, but the Workers Cache only exposes `ctx.cache` when `cache.enabled` is set in `wrangler.jsonc`:
+
+```jsonc
+{
+  "cache": { "enabled": true },
+}
+```
+
+While the data adapter can store entries and serve HIT/STALE itself, the CDN adapter delegates serving to Cloudflare's edge: the origin renders fresh responses and tags them with `Cache-Tag`, and `revalidateTag()` / `revalidatePath()` purge the edge through `ctx.cache.purge({ tags })`. See [examples/workers-cache](examples/workers-cache) for both adapters wired up together.
 
 Each builder returns a plain, serializable `{ adapter, options }` descriptor — **it never touches the Workers runtime**, so nothing throws at build or dev time when bindings aren't available. The actual adapter (and its `env` binding lookup) is instantiated lazily on the first request.
 
@@ -713,7 +758,7 @@ We measure three things:
 - **Client bundle size** — gzipped output of each build.
 - **Dev server cold start** — 10 runs, randomized execution order. Vite's dependency optimizer cache is cleared before each run.
 
-Benchmarks run on GitHub CI runners (2-core Ubuntu) on every merge to `main`. See the launch numbers in the [announcement blog post](https://blog.cloudflare.com/vinext/) and the latest results at **[vinext-web.vinext.workers.dev/benchmarks](https://vinext-web.vinext.workers.dev/benchmarks)**.
+Benchmarks run on GitHub CI runners (2-core Ubuntu) on every merge to `main`. See the launch numbers in the [announcement blog post](https://blog.cloudflare.com/vinext/) and the latest results at **[vinext.dev/benchmarks](https://vinext.dev/benchmarks)**.
 
 <details>
 <summary>Why the bundle size difference?</summary>

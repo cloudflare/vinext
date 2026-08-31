@@ -455,16 +455,13 @@ test.describe("Server action forwarding loop guard", () => {
     await expect(page.locator("h1")).toHaveText("Action Forward Loop Test");
     await waitForAppRouterHydration(page);
 
-    // Click the action button. Middleware rewrites POST to rewrite-target page,
-    // but vinext's single-worker bundle still finds the action locally.
-    // The action should succeed without any infinite loop / timeout.
+    // Click the action button. Middleware rewrites POST to a page that does not
+    // own the action, so the forwarded request must settle without executing it
+    // or entering another forwarding cycle.
     await page.click("#run-action");
 
-    // Wait for action result to appear (or the boundary text if the action fails)
-    await expect(async () => {
-      const text = await page.locator("#action-result").textContent();
-      expect(text).toContain("action-ok");
-    }).toPass({ timeout: 10_000 });
+    await expect(page.locator("#action-result")).not.toContainText("action-ok");
+    await expect(page.locator("h1")).toHaveText("Action Forward Loop Test");
   });
 
   // This tests the pre-existing "unknown action ID" path, not the new

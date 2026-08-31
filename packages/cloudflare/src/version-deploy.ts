@@ -5,6 +5,7 @@ import {
   validateWranglerEnvName,
   type DeployOptions,
 } from "./deploy.js";
+import { parseCdnWarmupDeploymentUrl } from "./worker-deployment-url.js";
 import { parseWorkersDevUrl } from "./workers-dev-url.js";
 
 export { parseWorkersDevUrl } from "./workers-dev-url.js";
@@ -12,6 +13,7 @@ export { parseWorkersDevUrl } from "./workers-dev-url.js";
 export type WranglerVersionUploadResult = {
   versionId: string;
   previewUrl: string | null;
+  workerName: string | null;
   output: string;
 };
 
@@ -80,23 +82,30 @@ function findPreviewUrlInUploadJson(parsed: JsonRecord | unknown[] | null): stri
 }
 
 export function parseVersionId(output: string): string | null {
-  return (
-    output.match(
-      /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/,
-    )?.[0] ?? null
-  );
+  const versionIdPattern =
+    "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+  const labeledVersionId = output.match(
+    new RegExp(`Worker\\s+Version\\s+ID\\s*:\\s*(${versionIdPattern})\\b`, "i"),
+  )?.[1];
+  if (labeledVersionId) return labeledVersionId;
+  return output.match(new RegExp(`\\b${versionIdPattern}\\b`))?.[0] ?? null;
+}
+
+export function parseUploadedWorkerName(output: string): string | null {
+  return output.match(/^\s*Uploaded\s+(\S+)\s+\(\d+(?:\.\d+)?\s+sec\)\s*$/im)?.[1] ?? null;
 }
 
 export function parseWranglerVersionUploadOutput(output: string): WranglerVersionUploadResult {
   const parsed = parseJsonObject(output);
   const versionId = findVersionIdInUploadJson(parsed) ?? parseVersionId(output);
   const previewUrl = findPreviewUrlInUploadJson(parsed) ?? parseWorkersDevUrl(output);
+  const workerName = parseUploadedWorkerName(output);
 
   if (!versionId) {
     throw new Error("Could not detect Worker version ID from `wrangler versions upload` output.");
   }
 
-  return { versionId, previewUrl, output };
+  return { versionId, previewUrl, workerName, output };
 }
 
 export function buildWranglerVersionUploadArgs(
@@ -322,5 +331,5 @@ export function runWranglerTriggersDeploy(
     console.log("\n  Applying Worker triggers...");
   }
   const output = runWranglerCommand(root, args, execute);
-  return { deployedUrl: parseWorkersDevUrl(output), output };
+  return { deployedUrl: parseCdnWarmupDeploymentUrl(output), output };
 }

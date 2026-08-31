@@ -1,0 +1,5 @@
+{
+  "name": "interception-source-authz-fixture",
+  "private": true,
+  "type": "module"
+}

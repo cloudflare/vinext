@@ -141,7 +141,6 @@ test.describe("Parallel Routes", () => {
     );
   });
 });
-
 test.describe("Intercepting Routes", () => {
   // Ported and strengthened from Next.js intercepted route coverage:
   // - test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts
@@ -669,135 +668,189 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     );
   });
 
-  test("pushState pathname is restored by browser back and forward", async ({ page }) => {
-    // Ported from Next.js's shallow-routing compatibility coverage:
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
+  // Ported from Next.js:
+  // test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
+  test("pushState pathname is restored across back and forward", async ({ page }) => {
     await page.goto(`${BASE}/shallow-test`);
-
-    await page.waitForFunction(
-      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
-      null,
-      { timeout: 10000 },
-    );
-
-    const pathname = page.locator('[data-testid="pathname"]');
-    await expect(pathname).toHaveText("pathname: /shallow-test");
+    await waitForAppRouterHydration(page);
 
     await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
-    await expect(pathname).toHaveText("pathname: /shallow-test/sub", { timeout: 10_000 });
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+    );
 
     await page.goBack();
-    await expect(pathname).toHaveText("pathname: /shallow-test", { timeout: 10_000 });
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /shallow-test");
 
     await page.goForward();
-    await expect(pathname).toHaveText("pathname: /shallow-test/sub", { timeout: 10_000 });
-  });
-
-  test("restores the shallow entry tree after navigating to another route", async ({ page }) => {
-    await page.goto(`${BASE}/shallow-test`);
-
-    await page.waitForFunction(
-      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
-      null,
-      { timeout: 10000 },
-    );
-
-    await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
-    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
-      "pathname: /shallow-test/sub",
-    );
-
-    await page.locator('[data-testid="shallow-to-about"]').click();
-    await expect(page.locator("h1#app-page")).toHaveText("About");
-
-    await page.goBack();
-    await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
     await expect(page.locator('[data-testid="pathname"]')).toHaveText(
       "pathname: /shallow-test/sub",
     );
   });
 
-  test("restores a shallow entry after a hash-only push", async ({ page }) => {
-    // Next.js keeps pushState and hash navigation entries traversable together:
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/shallow-routing/shallow-routing.test.ts
-    await page.goto(`${BASE}/shallow-test`);
-
-    await page.waitForFunction(
-      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
-      null,
-      { timeout: 10000 },
-    );
-
-    await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
-    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
-      "pathname: /shallow-test/sub",
-    );
-    await page.locator('[data-testid="push-hash"]').click({ noWaitAfter: true });
-    await expect.poll(() => new URL(page.url()).hash).toBe("#content");
-
-    await page.locator('[data-testid="shallow-to-about"]').click();
-    await expect(page.locator("h1#app-page")).toHaveText("About");
-
-    await page.goBack();
-    await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
-    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
-      "pathname: /shallow-test/sub",
-    );
-    await expect.poll(() => new URL(page.url()).hash).toBe("#content");
-  });
-
-  test("restores a shallow tree when a multi-entry traversal lands on the current URL", async ({
+  test("pushState entry restores its copied tree after a later app navigation", async ({
     page,
   }) => {
     await page.goto(`${BASE}/shallow-test`);
-
-    await page.waitForFunction(
-      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
-      null,
-      { timeout: 10000 },
-    );
-
-    // Save the shallow-test tree under /about, then render /about normally via
-    // an intermediate route. history.go(-2) lands on the same visible URL but
-    // must restore the older entry's shallow-test tree.
-    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /shallow-test");
-    await page.locator('[data-testid="push-about-path"]').click({ noWaitAfter: true });
-    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /about");
-
-    await page.locator('[data-testid="shallow-to-home"]').click();
-    await expect(page.getByRole("heading", { name: "Welcome to App Router" })).toBeVisible();
-    await page.getByRole("link", { name: "Go to About" }).click();
-    await expect(page.locator("h1#app-page")).toHaveText("About");
-
-    await page.evaluate(() => window.history.go(-2));
-    await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
-    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /about");
-  });
-
-  test("restores the shallow entry tree after navigation cache invalidation", async ({ page }) => {
-    await page.goto(`${BASE}/shallow-test`);
-
-    await page.waitForFunction(
-      () => typeof (window as any).__VINEXT_RSC_ROOT__ !== "undefined",
-      null,
-      { timeout: 10000 },
-    );
+    await waitForAppRouterHydration(page);
 
     await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
-    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
-      "pathname: /shallow-test/sub",
-    );
-
-    await page.locator('[data-testid="shallow-to-about"]').click();
-    await expect(page.locator("h1#app-page")).toHaveText("About");
-    await page.locator('[data-testid="about-refresh"]').click();
-    await expect(page.locator('[data-testid="about-refresh-count"]')).toHaveText("refreshes: 1");
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.push("/about");
+    });
+    await expect(page.getByRole("heading", { name: "About" })).toBeVisible();
 
     await page.goBack();
     await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
     await expect(page.locator('[data-testid="pathname"]')).toHaveText(
       "pathname: /shallow-test/sub",
     );
+
+    await page.goForward();
+    await expect(page.getByRole("heading", { name: "About" })).toBeVisible();
+    await page.goBack();
+    await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+    );
+  });
+
+  test("pushState entry survives a same-index app replace", async ({ page }) => {
+    await page.goto(`${BASE}/shallow-test`);
+    await waitForAppRouterHydration(page);
+
+    await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
+    await page.goBack();
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.replace("/about");
+    });
+    await expect(page.getByRole("heading", { name: "About" })).toBeVisible();
+
+    await page.goForward();
+    await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+    );
+  });
+
+  test("same-URL app replace detaches one shared pushState tree", async ({ page }) => {
+    await page.goto(`${BASE}/shallow-test`);
+    await waitForAppRouterHydration(page);
+
+    await page.evaluate(() => {
+      window.history.pushState(null, "", "/external-one");
+      window.history.pushState(null, "", "/about");
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.replace("/about");
+    });
+    await expect(page.getByRole("heading", { name: "About" })).toBeVisible();
+
+    await page.goBack();
+    await expect(page).toHaveURL(/\/external-one$/);
+    await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /external-one");
+  });
+
+  test("hash navigation retains a pushState entry's copied tree", async ({ page }) => {
+    await page.goto(`${BASE}/shallow-test`);
+    await waitForAppRouterHydration(page);
+
+    await page.locator('[data-testid="push-path"]').click({ noWaitAfter: true });
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.push("#content");
+    });
+    await expect(page).toHaveURL(/\/shallow-test\/sub#content$/);
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.push("/about");
+    });
+    await expect(page.getByRole("heading", { name: "About" })).toBeVisible();
+
+    await page.goBack();
+    await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+    );
+  });
+
+  test("pushState restores the exact copied tree when BFCache identities are reused", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/search?q=one`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#search-result")).toHaveText("Results for: one");
+
+    await page.evaluate(() => {
+      window.history.pushState(null, "", "/external?q=ext");
+    });
+    await page.goBack();
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.replace("/search?q=two");
+    });
+    await expect(page.locator("#search-result")).toHaveText("Results for: two");
+
+    await page.goForward();
+    await expect(page).toHaveURL(/\/external\?q=ext$/);
+    await expect(page.locator("#search-result")).toHaveText("Results for: one");
+  });
+
+  test("same-URL forward restores a different external copied tree", async ({ page }) => {
+    await page.goto(`${BASE}/search?q=one`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#search-result")).toHaveText("Results for: one");
+
+    await page.evaluate(() => {
+      window.history.pushState(null, "", "/search?q=two");
+    });
+    await page.goBack();
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.replace("/search?q=two");
+    });
+    await expect(page.locator("#search-result")).toHaveText("Results for: two");
+
+    await page.goForward();
+    await expect(page).toHaveURL(/\/search\?q=two$/);
+    await expect(page.locator("#search-result")).toHaveText("Results for: one");
+  });
+
+  test("pushState entry keeps its copied tree across router refresh", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/refresh-test`);
+    await waitForAppRouterHydration(page);
+    const initialTime = await page.locator("#time").textContent();
+    expect(initialTime).toBeTruthy();
+
+    await page.evaluate(() => {
+      window.history.pushState(null, "", "/external-refresh-copy");
+    });
+    await page.goBack();
+
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router || !("refresh" in router)) {
+        throw new Error("window.next App Router is not installed");
+      }
+      router.refresh();
+    });
+    await expect(page.locator("#time")).not.toHaveText(initialTime!);
+    const refreshedTime = await page.locator("#time").textContent();
+    expect(refreshedTime).toBeTruthy();
+
+    await page.goForward();
+    await expect(page).toHaveURL(/\/external-refresh-copy$/);
+    await expect(page.locator("#time")).toHaveText(refreshedTime!);
   });
 
   test.fixme("multiple pushState calls update search params correctly", async ({ page }) => {

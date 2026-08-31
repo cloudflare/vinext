@@ -35,12 +35,19 @@ export default {
         "tests/helpers.ts",
         // Filesystem route entries in the standalone Vite/Worker fixture.
         "tests/e2e/cloudflare-workers/fixture/app/**/route.ts",
+        // Started by the package-export Workerd E2E's shell command.
+        "tests/e2e/cloudflare-workers/fixtures/client-module-with-package-type/vite.config.ts",
         // Isolated E2E fixtures loaded through Playwright server commands and
         // Vite's filesystem route/worker discovery rather than static imports.
         "tests/e2e/web-worker/fixtures/**/{vite.config.ts,*.worker.ts}",
         "tests/e2e/nextjs-worker/fixture/**/*.{js,ts,tsx}",
       ],
       project: ["tests/**/*.{js,ts}", "!tests/fixtures/**"],
+      ignoreDependencies: [
+        // Loaded dynamically by @vitejs/plugin-react when the React Compiler
+        // integration test enables `react: { compiler: true }`.
+        "oxc-transform-react",
+      ],
     },
     "packages/vinext": {
       entry: [

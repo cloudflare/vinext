@@ -16,12 +16,14 @@ import {
   findVinextCacheConfigInPlugins,
   loadVinextCacheConfigFromViteConfig,
   generateCacheAdaptersModule,
+  hasBuildIdentityResponseHeader,
+  hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
 } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generateServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
-import { readPagesRouterEntrySource } from "./worker-entry-source.js";
+import { readAppRouterEntrySource, readPagesRouterEntrySource } from "./worker-entry-source.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
@@ -267,6 +269,16 @@ describe("registration is wired into every router/runtime entry", () => {
     const code = readPagesRouterEntrySource();
     expect(code).toContain('from "virtual:vinext-cache-adapters"');
     expect(code).toContain("registerConfiguredCacheAdapters(env)");
+    expect(code).toContain("await validateCdnRequest(request)");
+  });
+
+  it("App Router worker entry validates CDN routing after registering with env", () => {
+    const code = readAppRouterEntrySource();
+    expect(code).toContain("registerConfiguredCacheAdapters(env");
+    expect(code).toContain("await validateCdnRequest(request)");
+    expect(code.indexOf("registerConfiguredCacheAdapters(env")).toBeLessThan(
+      code.indexOf("await validateCdnRequest(request)"),
+    );
   });
 });
 
@@ -276,6 +288,14 @@ describe("cdnAdapter builder + factory", () => {
     expect(path.isAbsolute(descriptor.adapter)).toBe(true);
     expect(descriptor.adapter.endsWith("cdn-adapter.runtime.js")).toBe(true);
     expect(descriptor.options).toBeUndefined();
+    expect(descriptor.capabilities).toEqual({
+      buildIdentity: "response-header",
+      responseVary: "verbatim",
+    });
+    expect(hasBuildIdentityResponseHeader({ cdn: descriptor })).toBe(true);
+    expect(hasVerbatimResponseVary({ cdn: descriptor })).toBe(true);
+    expect(hasBuildIdentityResponseHeader({ cdn: { adapter: "custom-cache" } })).toBe(false);
+    expect(hasVerbatimResponseVary({ cdn: { adapter: "url-only-cache" } })).toBe(false);
   });
 
   it("factory returns a CloudflareCdnCacheAdapter", () => {
@@ -283,5 +303,14 @@ describe("cdnAdapter builder + factory", () => {
     expect(adapter).toBeInstanceOf(CloudflareCdnCacheAdapter);
     // Edge adapter does not own in-process background regeneration.
     expect(adapter.ownsBackgroundRevalidation).toBe(false);
+  });
+
+  it("forwards a custom version metadata binding", () => {
+    expect(cdnAdapter({ versionMetadataBinding: "CUSTOM_VERSION" }).options).toEqual({
+      versionMetadataBinding: "CUSTOM_VERSION",
+    });
+    expect(() => cdnAdapter({ versionMetadataBinding: "" })).toThrow(
+      "must be a non-empty string binding name",
+    );
   });
 });

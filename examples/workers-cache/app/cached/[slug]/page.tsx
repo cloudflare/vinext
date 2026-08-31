@@ -60,6 +60,7 @@ export default async function CachedSlugPage({
 
   return (
     <main>
+      <output data-testid="build-id">{process.env.__VINEXT_BUILD_ID}</output>
       <nav className="crumbs">
         <Link prefetch={false} href="/">&larr; Demo home</Link>
       </nav>

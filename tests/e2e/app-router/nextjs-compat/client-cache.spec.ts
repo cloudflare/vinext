@@ -163,6 +163,51 @@ test.describe("Next.js compat: client cache", () => {
     expect(requestsFor(requests, `${ROOT}/1`)).toEqual([]);
   });
 
+  test("re-hovering an auto loading shell reuses the cached prefetch (#2937)", async ({ page }) => {
+    // Next.js parity:
+    // test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-client-cache/client-cache.experimental.test.ts
+    const requests = trackRscRequests(page);
+    const target = `${ROOT}/default-stale/1`;
+    await openHome(page);
+
+    await expect
+      .poll(() => requestsFor(requests, target).some((request) => request.partial))
+      .toBe(true);
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const cache = Reflect.get(window, "__VINEXT_RSC_PREFETCH_CACHE__") as Map<
+            string,
+            {
+              cacheForNavigation?: boolean;
+              expiresAt?: number;
+              outcome?: string;
+              pending?: Promise<void>;
+              timestamp: number;
+            }
+          >;
+          return Array.from(cache.entries()).some(
+            ([key, entry]) =>
+              key.includes("/nextjs-compat/client-cache/default-stale/1") &&
+              entry.cacheForNavigation === false &&
+              entry.outcome === "cache-seeded" &&
+              entry.pending === undefined &&
+              entry.expiresAt !== undefined &&
+              entry.expiresAt - entry.timestamp === 300_000,
+          );
+        }),
+      )
+      .toBe(true);
+
+    requests.length = 0;
+    await page.hover("#client-cache-home");
+    await page.hover("#client-cache-default-stale-auto");
+    await page.waitForTimeout(250);
+
+    expect(requestsFor(requests, target)).toEqual([]);
+  });
+
   test("hovering prefetch={false} emits zero requests", async ({ page }) => {
     const requests = trackRscRequests(page);
     await openHome(page);

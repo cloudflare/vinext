@@ -57,6 +57,11 @@ jobs:
             working_directory: examples/workers-cache
             wrangler_config: dist/server/wrangler.json
             warm_cdn_cache: true
+          - name: static-export
+            project: static-export
+            working_directory: examples/static-export
+            wrangler_config: deploy/wrangler.jsonc
+            static_export: true
           - name: web
             project: vinext-web
             working_directory: apps/web
@@ -72,7 +77,18 @@ jobs:
         run: vp run build
 
       - name: Build example
+        if: matrix.example.static_export != true
         run: vp build
+        working-directory: ${{ matrix.example.working_directory }}
+
+      - name: Build static export
+        if: matrix.example.static_export == true
+        run: vp exec vinext build
+        working-directory: ${{ matrix.example.working_directory }}
+
+      - name: Verify static export artifact
+        if: matrix.example.static_export == true
+        run: node scripts/verify-output.mjs
         working-directory: ${{ matrix.example.working_directory }}
 
       - name: Apply D1 migrations (benchmarks only)
@@ -118,6 +134,111 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ matrix.example.working_directory }}
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
+
+      # `versions upload` does not apply non-versioned workers.dev/preview URL
+      # settings. A newly added assets-only Worker has no routes until this runs.
+      - name: Apply Static Export Preview Routes
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.static_export == true
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ${{ matrix.example.working_directory }}
+          command: triggers deploy --config ${{ matrix.example.wrangler_config }}
+
+      - name: Seed RSC prewarm test Worker
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          vp exec wrangler deploy
+          --config ../../tests/fixtures/rsc-prewarm-seed/wrangler.jsonc
+          --name rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Install Chromium for RSC prewarm verification
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
+        run: vp exec playwright install chromium
+
+      - name: Deploy and prewarm RSC test Worker
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VINEXT_CDN_WARM_DEBUG: "1"
+        run: >-
+          vp exec vinext-cloudflare deploy
+          --skip-build
+          --config ${{ matrix.example.wrangler_config }}
+          --name rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}
+          --experimental-warm-cdn-cache
+
+      - name: Verify deploy-prewarmed RSC browser reuse
+        id: verify-rsc-prewarm
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
+        continue-on-error: true
+        env:
+          PLAYWRIGHT_PROJECT: cloudflare-workers
+          VINEXT_E2E_BASE_URL: https://rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}.vinext.workers.dev
+        run: vp exec playwright test tests/e2e/cloudflare-workers/rsc-prewarm.spec.ts
+
+      # A Playwright retry against the same keys could pass because the failed
+      # first attempt filled them. Repeat the deployment under a fresh hostname.
+      - name: Seed fresh Worker for RSC prewarm verification retry
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache' && steps.verify-rsc-prewarm.outcome == 'failure'
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          vp exec wrangler deploy
+          --config ../../tests/fixtures/rsc-prewarm-seed/wrangler.jsonc
+          --name rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}-retry
+
+      - name: Retry deploy and RSC prewarm with fresh Worker
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache' && steps.verify-rsc-prewarm.outcome == 'failure'
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VINEXT_CDN_WARM_DEBUG: "1"
+        run: >-
+          vp exec vinext-cloudflare deploy
+          --skip-build
+          --config ${{ matrix.example.wrangler_config }}
+          --name rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}-retry
+          --experimental-warm-cdn-cache
+
+      - name: Retry deploy-prewarmed RSC browser reuse with fresh Worker
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache' && steps.verify-rsc-prewarm.outcome == 'failure'
+        env:
+          PLAYWRIGHT_PROJECT: cloudflare-workers
+          VINEXT_E2E_BASE_URL: https://rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}-retry.vinext.workers.dev
+        run: vp exec playwright test tests/e2e/cloudflare-workers/rsc-prewarm.spec.ts
+
+      - name: Delete RSC prewarm retry Worker
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache' && steps.verify-rsc-prewarm.outcome == 'failure'
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          vp exec wrangler delete rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}-retry
+          --config ${{ matrix.example.wrangler_config }}
+          --force
+
+      - name: Delete RSC prewarm test Worker
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >-
+          vp exec wrangler delete rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}
+          --config ${{ matrix.example.wrangler_config }}
+          --force
 
   smoke-test:
     name: Smoke Test Deployments
@@ -168,7 +289,10 @@ jobs:
         env:
           PLAYWRIGHT_PROJECT: cloudflare-workers
           VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-app-router-cloudflare.vinext.workers.dev', github.event.pull_request.number) || 'https://app-router-cloudflare.vinext.workers.dev' }}
-        run: vp exec playwright test tests/e2e/cloudflare-workers/web-worker.spec.ts
+        run: >-
+          vp exec playwright test
+          tests/e2e/cloudflare-workers/web-worker.spec.ts
+          tests/e2e/cloudflare-workers/optimistic-search-navigation.spec.ts
 
   comment:
     name: Comment Preview URLs
@@ -194,7 +318,8 @@ jobs:
               { name: 'benchmarks', project: 'benchmarks' },
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
               { name: 'workers-cache', project: 'workers-cache' },
-              { name: 'web', project: 'vinext-web' },
+              { name: 'static-export', project: 'static-export' },
+              { name: 'web', project: 'vinext-web', production: 'https://vinext.dev' },
             ];
 
             const { data: comments } = await github.rest.issues.listComments({
@@ -209,7 +334,8 @@ jobs:
             const rows = examples
               .map(e => {
                 const orig = e.original ? `[original](${e.original})` : '';
-                return `| ${e.name} | [preview](https://${alias}-${e.project}.vinext.workers.dev) | [production](https://${e.project}.vinext.workers.dev) | ${orig} |`;
+                const production = e.production || `https://${e.project}.vinext.workers.dev`;
+                return `| ${e.name} | [preview](https://${alias}-${e.project}.vinext.workers.dev) | [production](${production}) | ${orig} |`;
               })
               .join('\n');
 

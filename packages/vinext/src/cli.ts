@@ -62,6 +62,12 @@ import {
   type ResolvedVinextPrerenderConfig,
   type VinextRouteRootConfig,
 } from "./config/prerender.js";
+import {
+  findVinextCacheConfigInPlugins,
+  hasBuildIdentityResponseHeader,
+  hasVerbatimResponseVary,
+  type VinextCacheConfig,
+} from "./cache/cache-adapters-virtual.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -230,6 +236,7 @@ function hasPagesDir(): boolean {
 }
 
 type BuildViteConfigMetadata = {
+  cacheConfig: VinextCacheConfig | null;
   emptyOutDir?: boolean;
   nextConfig: NextConfigInput | null;
   prerenderConfig: ResolvedVinextPrerenderConfig | null;
@@ -242,7 +249,7 @@ async function loadBuildViteConfigMetadata(
   mode: string,
 ): Promise<BuildViteConfigMetadata> {
   if (!hasViteConfig(root)) {
-    return { nextConfig: null, prerenderConfig: null, routeRootConfig: null };
+    return { cacheConfig: null, nextConfig: null, prerenderConfig: null, routeRootConfig: null };
   }
 
   // Read the raw user config before the multi-environment build so
@@ -250,6 +257,7 @@ async function loadBuildViteConfigMetadata(
   const loaded = await vite.loadConfigFromFile({ command: "build", mode }, undefined, root);
   const emptyOutDir = loaded?.config.build?.emptyOutDir;
   return {
+    cacheConfig: await findVinextCacheConfigInPlugins(loaded?.config.plugins),
     emptyOutDir: typeof emptyOutDir === "boolean" ? emptyOutDir : undefined,
     nextConfig: await findVinextNextConfigInPlugins(loaded?.config.plugins),
     prerenderConfig: await findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
@@ -530,6 +538,11 @@ async function buildApp() {
   // instances).
   process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = createRscCompatibilityId(resolvedNextConfig);
 
+  // Unlike buildId and deploymentId, this identity is always fresh for each
+  // build. Deploy warmers use it to distinguish an uploaded Worker from a
+  // still-propagating previous version even when user-facing IDs are pinned.
+  process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY = randomBytes(16).toString("hex");
+
   // On-demand ISR revalidation secret — the vinext analog of Next.js's
   // prerender-manifest `previewModeId`. `res.revalidate()` loops back into the
   // server via an internal `fetch()`; on Cloudflare Workers that loopback can
@@ -717,6 +730,12 @@ async function buildApp() {
     await emitPrerenderPathManifest({
       root,
       nextConfig: resolvedNextConfig,
+      buildIdentity: hasBuildIdentityResponseHeader(buildConfigMetadata.cacheConfig)
+        ? "response-header"
+        : undefined,
+      responseVary: hasVerbatimResponseVary(buildConfigMetadata.cacheConfig)
+        ? "verbatim"
+        : undefined,
       routeRootConfig: buildConfigMetadata.routeRootConfig,
     });
   }

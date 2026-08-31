@@ -6,6 +6,7 @@ import {
   buildRevalidateCacheControl,
   hasExplicitNonCacheableResponsePolicy,
   shouldUseNextDeployCacheControl,
+  validateCdnRequest,
 } from "../packages/vinext/src/server/cache-control.js";
 import {
   setCdnCacheAdapter,
@@ -186,6 +187,32 @@ describe("applyCdnResponseHeaders", () => {
     ).toBe(false);
   });
 
+  it("matches exact non-cacheable directives case-insensitively", () => {
+    expect(
+      hasExplicitNonCacheableResponsePolicy(new Headers({ "Cache-Control": "No-Cache" })),
+    ).toBe(true);
+    expect(
+      hasExplicitNonCacheableResponsePolicy(
+        new Headers({ "Cache-Control": 'extension="value, no-store", xprivate=1, s-maxage=60' }),
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps field-qualified private and no-cache policies cacheable", () => {
+    expect(
+      hasExplicitNonCacheableResponsePolicy(
+        new Headers({
+          "Cache-Control": 'public, max-age=60, private="set-cookie", no-cache="set-cookie"',
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      hasExplicitNonCacheableResponsePolicy(
+        new Headers({ "Cache-Control": 'private="set-cookie", no-store' }),
+      ),
+    ).toBe(true);
+  });
+
   it("delegates provider-specific policy interpretation to the active adapter", () => {
     const edge: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
@@ -214,5 +241,30 @@ describe("applyCdnResponseHeaders", () => {
     expect(
       hasExplicitNonCacheableResponsePolicy(new Headers({ "X-Example-Edge-Policy": "no-store" })),
     ).toBe(true);
+  });
+
+  it("delegates request routing validation without interpreting provider headers", async () => {
+    const rejected = new Response("retry", { status: 503 });
+    const request = new Request("https://example.com/page", {
+      headers: { "X-Provider-Version": "version-b" },
+    });
+    const edge: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders() {
+        return {};
+      },
+      validateRequest(received) {
+        expect(received).toBe(request);
+        return rejected;
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edge);
+
+    await expect(validateCdnRequest(request)).resolves.toBe(rejected);
   });
 });
