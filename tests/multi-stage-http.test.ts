@@ -8,6 +8,7 @@ const ROOT = process.cwd();
 const FIXTURE_ROOT = path.join(ROOT, "tests/fixtures/multi-stage-http");
 const VINEXT_CLI = path.join(ROOT, "packages/vinext/dist/cli.js");
 const READY_PREFIX = "VINEXT_HTTP_STAGE_READY:";
+const STAGE_TOKEN = "multi-stage-http-test-token";
 
 type ManifestEntry = {
   dynamicImports?: string[];
@@ -193,9 +194,11 @@ beforeAll(async () => {
   [requestServer, responseServer] = await Promise.all([
     startStageServer(path.join(FIXTURE_ROOT, "dist/server", requestEntry.file), requestPort, {
       VINEXT_RESPONSE_STAGE_ORIGIN: `http://127.0.0.1:${responsePort}`,
+      VINEXT_STAGE_TOKEN: STAGE_TOKEN,
     }),
     startStageServer(path.join(FIXTURE_ROOT, "dist/server", responseEntry.file), responsePort, {
       VINEXT_REQUEST_STAGE_ORIGIN: `http://127.0.0.1:${requestPort}`,
+      VINEXT_STAGE_TOKEN: STAGE_TOKEN,
     }),
   ]);
 }, 60_000);
@@ -206,6 +209,16 @@ afterAll(async () => {
 });
 
 describe("generic HTTP multi-stage transport", () => {
+  it("requires authentication on both internal stage endpoints", async () => {
+    const [requestResponse, responseResponse] = await Promise.all([
+      fetch(`${requestServer.origin}/__vinext_request_stage`, { method: "POST" }),
+      fetch(`${responseServer.origin}/__vinext_response_stage`, { method: "POST" }),
+    ]);
+
+    expect(requestResponse.status).toBe(401);
+    expect(responseResponse.status).toBe(401);
+  });
+
   it("keeps renderer and user-route modules out of the request-stage dynamic closure", () => {
     expect(findEntry("virtual:vinext-rsc-entry")).toBeTruthy();
     expect(findEntry("http-stage-request.ts")).toBeTruthy();

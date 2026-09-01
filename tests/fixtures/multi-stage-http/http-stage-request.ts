@@ -11,6 +11,17 @@ import {
 
 type RequestStageEnvelope = { request: SerializedRequest };
 
+function internalStageHeaders(): Record<string, string> {
+  const token = process.env.VINEXT_STAGE_TOKEN;
+  if (!token) throw new Error("Missing VINEXT_STAGE_TOKEN");
+  return { authorization: `Bearer ${token}`, "content-type": "application/json" };
+}
+
+function isAuthorizedStageRequest(request: Request): boolean {
+  const token = process.env.VINEXT_STAGE_TOKEN;
+  return token !== undefined && request.headers.get("authorization") === `Bearer ${token}`;
+}
+
 const assets = {
   async fetch(request: Request): Promise<Response> {
     if (new URL(request.url).pathname !== "/stage-asset.txt") {
@@ -27,9 +38,11 @@ const assets = {
 };
 
 const gatewayFetch = async (transportRequest: Request): Promise<Response> => {
-  const isInternalDispatch =
-    transportRequest.method === "POST" &&
-    new URL(transportRequest.url).pathname === "/__vinext_request_stage";
+  const isInternalPath = new URL(transportRequest.url).pathname === "/__vinext_request_stage";
+  if (isInternalPath && !isAuthorizedStageRequest(transportRequest)) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const isInternalDispatch = transportRequest.method === "POST" && isInternalPath;
   const request = isInternalDispatch
     ? deserializeRequest(((await transportRequest.json()) as RequestStageEnvelope).request)
     : transportRequest;
@@ -47,7 +60,7 @@ const gatewayFetch = async (transportRequest: Request): Promise<Response> => {
         props,
         request: await serializeRequest(stageRequest),
       }),
-      headers: { "content-type": "application/json" },
+      headers: internalStageHeaders(),
       method: "POST",
     });
     return response;

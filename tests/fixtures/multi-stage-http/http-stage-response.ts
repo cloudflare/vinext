@@ -20,6 +20,17 @@ type ResponseSnapshot = {
   statusText: string;
 };
 
+function internalStageHeaders(): Record<string, string> {
+  const token = process.env.VINEXT_STAGE_TOKEN;
+  if (!token) throw new Error("Missing VINEXT_STAGE_TOKEN");
+  return { authorization: `Bearer ${token}`, "content-type": "application/json" };
+}
+
+function isAuthorizedStageRequest(request: Request): boolean {
+  const token = process.env.VINEXT_STAGE_TOKEN;
+  return token !== undefined && request.headers.get("authorization") === `Bearer ${token}`;
+}
+
 const cache = new Map<string, Promise<ResponseSnapshot | null>>();
 const STREAM_DELAY_MS = 250;
 
@@ -118,6 +129,9 @@ const responseStageFetch = async (transportRequest: Request): Promise<Response> 
   if (new URL(transportRequest.url).pathname !== "/__vinext_response_stage") {
     return new Response("Not Found", { status: 404 });
   }
+  if (!isAuthorizedStageRequest(transportRequest)) {
+    return new Response("Unauthorized", { status: 401 });
+  }
   const envelope = (await transportRequest.json()) as StageEnvelope;
   const request = deserializeRequest(envelope.request);
   const cacheKey = responseCacheKey(request, envelope.props);
@@ -132,7 +146,7 @@ const responseStageFetch = async (transportRequest: Request): Promise<Response> 
   const dispatchRequestStage: VinextRequestStageTransport = async (stageRequest) =>
     fetch(new URL("/__vinext_request_stage", requestOrigin), {
       body: JSON.stringify({ request: await serializeRequest(stageRequest) }),
-      headers: { "content-type": "application/json" },
+      headers: internalStageHeaders(),
       method: "POST",
     });
   const { handleResponseStage } = await loadVinextResponseStage();
