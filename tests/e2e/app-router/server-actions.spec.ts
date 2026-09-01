@@ -506,16 +506,16 @@ test.describe("Data-returning server actions", () => {
     await expect(page.locator("h1")).toHaveText("Action Form Preserved Test");
     await waitForAppRouterHydration(page);
 
-    const renderCount = async () =>
-      parseInt(
-        (await page.locator('[data-testid="server-render-count"]').textContent())!.split(": ")[1],
-        10,
-      );
-    const renderCountBefore = await renderCount();
-
     // Type an edit, then move focus away to trigger the blur action.
     await page.fill("#edit-input", "pending-edit");
+    const actionResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === "/action-form-preserved" &&
+        response.headers()["content-type"]?.startsWith("text/x-component") === true,
+    );
     await page.click("#blur-target");
+    const actionResponse = await actionResponsePromise;
 
     // The action's return value surfaces through client state...
     await expect(page.locator('[data-testid="action-result"]')).toHaveText(
@@ -526,7 +526,11 @@ test.describe("Data-returning server actions", () => {
     // ...and the pending edit survives because the server tree was not re-applied.
     await expect(page.locator("#edit-input")).toHaveValue("pending-edit");
 
-    // The page did not re-render on the server.
-    expect(await renderCount()).toBe(renderCountBefore);
+    // Omitting a page root is the stable protocol proof that the server skipped
+    // the rerender. A module-level counter can reset when another parallel dev
+    // test invalidates the Vite module graph.
+    const actionPayload = (await actionResponse.body()).toString("utf8");
+    expect(actionPayload).toContain('"returnValue"');
+    expect(actionPayload).not.toContain('"root"');
   });
 });

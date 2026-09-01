@@ -406,6 +406,7 @@ async function fetchHeadersWithTimeout(
   url: URL,
   timeoutMs: number,
   headers?: HeadersInit,
+  method: "GET" | "POST" = "GET",
 ): Promise<Response> {
   const controller = new AbortController();
   const requestHeaders = new Headers(headers);
@@ -420,7 +421,7 @@ async function fetchHeadersWithTimeout(
     });
     return await Promise.race([
       fetchImpl(url, {
-        method: "GET",
+        method,
         redirect: "manual",
         headers: requestHeaders,
         signal: controller.signal,
@@ -698,9 +699,10 @@ function validateBuildIdentity(
     expectedBuildId !== undefined &&
     response.headers.get(VINEXT_CDN_BUILD_ID_HEADER) !== expectedBuildId
   ) {
+    const actualBuildId = response.headers.get(VINEXT_CDN_BUILD_ID_HEADER) ?? "missing";
     return {
       outcome: "failed",
-      error: `response ${VINEXT_CDN_BUILD_ID_HEADER} does not match build ${expectedBuildId}`,
+      error: `response ${VINEXT_CDN_BUILD_ID_HEADER} does not match build ${expectedBuildId} (received ${actualBuildId})`,
     };
   }
   return null;
@@ -951,6 +953,7 @@ export async function waitForCdnWarmTargetReadiness(
         url,
         Math.min(timeoutMs, remainingMs),
         headers,
+        useReadinessEndpoint ? "POST" : "GET",
       );
       const validationError = useReadinessEndpoint
         ? validatePrerenderReadinessResponse(response, options.expectedBuildId)

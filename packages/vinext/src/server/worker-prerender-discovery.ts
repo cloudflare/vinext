@@ -47,7 +47,7 @@ export function createWorkerPrerenderReadinessResponse(
 
   if (
     ctx.isPrerenderPathDiscovery !== true ||
-    request.method !== "GET" ||
+    (request.method !== "GET" && request.method !== "POST") ||
     !request.headers.has(VINEXT_EXPECTED_WORKER_VERSION_HEADER)
   ) {
     // This namespace is framework-owned. Never let a failed capability check

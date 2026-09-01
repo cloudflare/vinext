@@ -72,6 +72,13 @@ describe("vinext.dev canonical host handling", () => {
         new Request("https://vinext-web.vinext.workers.dev/benchmarks", { method: "POST" }),
       ),
     ).toBeNull();
+    expect(
+      getCanonicalRedirect(
+        new Request("https://vinext-web.vinext.workers.dev/__vinext/prerender/readiness", {
+          method: "POST",
+        }),
+      ),
+    ).toBeNull();
   });
 
   it("marks preview aliases as non-indexable without buffering the response body", async () => {

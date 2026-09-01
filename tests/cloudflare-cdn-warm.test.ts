@@ -822,6 +822,7 @@ describe("Cloudflare CDN warmup", () => {
       const headers = new Headers(init?.headers);
       expect(url.pathname).toBe("/__vinext/prerender/readiness");
       expect(url.searchParams.has("__vinext_cdn_warm_readiness")).toBe(true);
+      expect(init?.method).toBe("POST");
       expect(headers.get("accept")).toBe("text/html");
       expect(headers.get("rsc")).toBeNull();
       expect(headers.get("x-vinext-prerender-secret")).toBe("build-secret");

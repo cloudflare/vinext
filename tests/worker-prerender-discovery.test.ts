@@ -68,4 +68,17 @@ describe("Worker prerender path discovery authorization", () => {
     expect(unauthorized?.status).toBe(404);
     expect(unauthorized?.headers.get("cache-control")).toBe("no-store");
   });
+
+  it("accepts POST readiness probes so custom entries do not treat them as public documents", () => {
+    const request = new Request("https://example.com/__vinext/prerender/readiness", {
+      method: "POST",
+      headers: {
+        "x-vinext-expected-worker-version": "version-a",
+        "x-vinext-prerender-secret": "build-secret",
+      },
+    });
+    const authorized = createWorkerPrerenderDiscoveryContext(base, request, "build-secret");
+
+    expect(createWorkerPrerenderReadinessResponse(authorized, request)?.status).toBe(204);
+  });
 });
