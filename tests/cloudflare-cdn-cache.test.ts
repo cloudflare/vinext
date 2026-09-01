@@ -107,6 +107,7 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(await routedAdapter.validateRequest?.(matching)).toBeNull();
     const response = await routedAdapter.validateRequest?.(mismatching);
     expect(response?.status).toBe(503);
+    expect(response?.headers.get("Content-Type")).toContain("application/json");
     expect(response?.headers.get("Cache-Control")).toBe("no-store");
     await expect(response?.text()).resolves.toContain(
       "Cloudflare invoked Worker version version-b, but vinext warmup expected version-c",
@@ -135,7 +136,8 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
 
     const response = await routedAdapter.validateRequest?.(request);
-    expect(response?.status).toBe(503);
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("Content-Type")).toContain("application/json");
     await expect(response?.text()).resolves.toContain(
       `received ${VINEXT_EXPECTED_WORKER_VERSION_HEADER} without Cloudflare-Workers-Version-Overrides`,
     );
@@ -154,10 +156,11 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
 
     const response = await routedAdapter.validateRequest?.(request);
-    expect(response?.status).toBe(503);
-    const body = await response?.text();
-    expect(body).toContain("requires the `CUSTOM_VERSION` version metadata binding");
-    expect(body).toContain("Named environments do not inherit this binding");
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("Content-Type")).toContain("application/json");
+    const body = (await response?.json()) as { error: string };
+    expect(body.error).toContain("requires the `CUSTOM_VERSION` version metadata binding");
+    expect(body.error).toContain("Named environments do not inherit this binding");
   });
 
   it("does not require version metadata for ordinary requests without an override", async () => {

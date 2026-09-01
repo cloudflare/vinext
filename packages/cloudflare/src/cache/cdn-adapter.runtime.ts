@@ -56,14 +56,16 @@ type CdnAdapterOptions = {
   versionMetadataBinding?: string;
 };
 
-function versionValidationFailure(message: string): Response {
-  return new Response(`[vinext] ${message}\n`, {
-    status: 503,
-    headers: {
-      "Cache-Control": "no-store",
-      "Content-Type": "text/plain; charset=utf-8",
+function versionValidationFailure(message: string, status = 500): Response {
+  return Response.json(
+    { error: message },
+    {
+      status,
+      headers: {
+        "Cache-Control": "no-store",
+      },
     },
-  });
+  );
 }
 
 const CACHEABLE_EDGE_DIRECTIVE_RE = /(?:^|,)\s*(?:s-maxage|max-age)\s*=/i;
@@ -209,6 +211,7 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     if (expectedVersionId !== this.versionMetadata.id) {
       return versionValidationFailure(
         `Cloudflare invoked Worker version ${this.versionMetadata.id}, but vinext warmup expected ${expectedVersionId}.`,
+        503,
       );
     }
     return null;
