@@ -3959,6 +3959,12 @@ describe("createMultiStageChunkFileNames", () => {
     expect(fileName({ name: "runtime~\\0virtual_stage" } as never)).toBe(
       "_next/static/runtime~virtual_stage-[hash].js",
     );
+    expect(
+      fileName({
+        moduleIds: ["/repo/packages/vinext/src/server/app-ssr-entry.ts"],
+        name: "vinext-stage-runtime~index",
+      } as never),
+    ).toBe("vinext-stage-runtime~index-[hash].js");
   });
 
   it("preserves a host-provided chunk filename function", () => {

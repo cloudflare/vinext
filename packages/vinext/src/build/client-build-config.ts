@@ -349,6 +349,9 @@ export function createMultiStageChunkFileNames(
   return (chunk) => {
     const name = sanitizeRscChunkFileName(chunk.name);
     if (
+      chunk.moduleIds?.some((id) =>
+        /\/server\/app-ssr-entry\.[cm]?[jt]sx?$/.test(toSlash(id.split("?", 1)[0] ?? "")),
+      ) ||
       [
         "app-router-entry",
         "pages-router-entry",
