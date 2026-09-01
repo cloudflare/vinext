@@ -7,9 +7,7 @@ import {
 } from "vinext/internal/server/cacheability-manifest";
 import {
   cacheabilityManifestByteLimitError,
-  cacheabilityManifestRouteLimitError,
   MAX_CACHEABILITY_MANIFEST_BYTES,
-  MAX_CACHEABILITY_MANIFEST_ROUTES,
 } from "./cacheability-manifest-limits.js";
 
 type JavaScriptToken = {
@@ -211,10 +209,6 @@ export function writeCacheabilityManifestArtifact(
     throw new Error(
       `Two-stage CDN warming requires ${CACHEABILITY_MANIFEST_MODULE} in the generated Worker artifact. Rebuild the app before deploying.`,
     );
-  }
-  const routeCount = Object.keys(manifest.routes).length;
-  if (routeCount > MAX_CACHEABILITY_MANIFEST_ROUTES) {
-    throw cacheabilityManifestRouteLimitError(routeCount);
   }
   const serializedManifest = JSON.stringify(manifest);
   const manifestBytes = Buffer.byteLength(serializedManifest);

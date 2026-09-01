@@ -1,14 +1,4 @@
-export const MAX_CACHEABILITY_MANIFEST_BYTES = 1024 * 1024;
-export const MAX_CACHEABILITY_MANIFEST_ROUTES = 10_000;
-
-export function cacheabilityManifestRouteLimitError(
-  routeCount: number,
-  limit = MAX_CACHEABILITY_MANIFEST_ROUTES,
-): Error {
-  return new Error(
-    `Two-stage CDN warming produced ${routeCount} cacheable route patterns; the limit is ${limit}. Split the deployment before retrying.`,
-  );
-}
+export const MAX_CACHEABILITY_MANIFEST_BYTES = 2 * 1024 * 1024;
 
 export function cacheabilityManifestByteLimitError(
   manifestBytes: number,

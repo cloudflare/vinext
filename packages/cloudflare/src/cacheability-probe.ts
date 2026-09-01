@@ -21,9 +21,7 @@ import { VINEXT_CDN_BUILD_ID_HEADER } from "./cache/cdn-build-id.js";
 import type { CdnWarmTarget } from "./cdn-warm.js";
 import {
   cacheabilityManifestByteLimitError,
-  cacheabilityManifestRouteLimitError,
   MAX_CACHEABILITY_MANIFEST_BYTES,
-  MAX_CACHEABILITY_MANIFEST_ROUTES,
 } from "./cacheability-manifest-limits.js";
 
 export const DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS = 120_000;
@@ -312,7 +310,7 @@ export async function probeStagedWorkerCacheability(options: {
   phaseTimeoutMs?: number;
   onProgress?: (progress: CacheabilityProbeProgress) => void;
   /** @internal Apply stricter artifact bounds for focused coordinator tests. */
-  manifestLimits?: { maxBytes?: number; maxRoutes?: number };
+  manifestLimits?: { maxBytes?: number };
 }): Promise<CacheabilityProbeResult> {
   const secret = readPrerenderSecret(options.root);
   const concurrency = Math.max(1, options.concurrency ?? 25);
@@ -335,10 +333,6 @@ export async function probeStagedWorkerCacheability(options: {
   const maxManifestBytes = Math.min(
     options.manifestLimits?.maxBytes ?? MAX_CACHEABILITY_MANIFEST_BYTES,
     MAX_CACHEABILITY_MANIFEST_BYTES,
-  );
-  const maxManifestRoutes = Math.min(
-    options.manifestLimits?.maxRoutes ?? MAX_CACHEABILITY_MANIFEST_ROUTES,
-    MAX_CACHEABILITY_MANIFEST_ROUTES,
   );
   const emptyManifest: CacheabilityManifest = {
     buildId: options.buildId,
@@ -447,13 +441,6 @@ export async function probeStagedWorkerCacheability(options: {
 
   const addRouteWithinManifestLimits = (key: string, route: CacheabilityManifestRoute): boolean => {
     const previousBytes = routeEntryBytes.get(key);
-    const nextRouteCount =
-      previousBytes === undefined ? routeEntryBytes.size + 1 : routeEntryBytes.size;
-    if (nextRouteCount > maxManifestRoutes) {
-      limitFailure = cacheabilityManifestRouteLimitError(nextRouteCount, maxManifestRoutes);
-      return false;
-    }
-
     // This is the exact UTF-8 contribution of the entry to JSON.stringify's
     // routes object. Counting entries incrementally avoids repeatedly
     // serializing an ever-growing manifest while preserving the artifact's

@@ -837,25 +837,6 @@ describe("staged Worker cacheability probes", () => {
     ]);
   });
 
-  it("enforces the route bound after concrete-path classification", async () => {
-    const root = createProbeRoot();
-    const fetchImpl = createStaticProbeFetch();
-
-    await expect(
-      probeStagedWorkerCacheability({
-        buildId: "application-build",
-        concurrency: 1,
-        fetchImpl,
-        manifestLimits: { maxRoutes: 1 },
-        retries: 0,
-        root,
-        targetUrl: "https://example.com",
-        targets: [target("/one"), target("/two"), target("/three")],
-      }),
-    ).rejects.toThrow("produced 2 cacheable route patterns; the limit is 1");
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
-  });
-
   it("uses the exact serialized-byte boundary and stops before later probes", async () => {
     const root = createProbeRoot();
     const firstTarget = target("/one");

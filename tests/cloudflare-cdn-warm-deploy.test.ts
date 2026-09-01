@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { Buffer } from "node:buffer";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,8 +10,11 @@ import {
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
 import { writeCacheabilityManifestArtifact } from "../packages/cloudflare/src/cacheability-artifact.js";
-import { MAX_CACHEABILITY_MANIFEST_ROUTES } from "../packages/cloudflare/src/cacheability-manifest-limits.js";
-import { CACHEABILITY_MANIFEST_MODULE } from "../packages/vinext/src/server/cacheability-manifest.js";
+import {
+  CACHEABILITY_MANIFEST_MODULE,
+  cacheabilityManifestRouteKey,
+  type CacheabilityManifest,
+} from "../packages/vinext/src/server/cacheability-manifest.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_PRERENDER_READINESS_HEADER,
@@ -367,30 +371,25 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
   });
 
-  it("rejects a manifest with more route patterns than the deployment bound", () => {
+  it("accepts a manifest over one MiB with more than 10,000 route patterns", () => {
     writeTwoStageWorkerArtifact();
-    const route = {
-      kind: "app-page" as const,
-      pattern: "/page",
-      representation: "html" as const,
-      requestKey: "/page",
-      state: "static-candidate" as const,
-      status: 200,
-    };
     const routes = Object.fromEntries(
-      Array.from({ length: MAX_CACHEABILITY_MANIFEST_ROUTES + 1 }, (_, index) => [
-        `route-${index}`,
-        route,
-      ]),
+      Array.from({ length: 10_001 }, (_, index) => {
+        const pattern = `/route-${index}-${"x".repeat(30)}`;
+        return [
+          cacheabilityManifestRouteKey("app-page", pattern),
+          { kind: "app-page" as const, pattern, state: "runtime-check" as const },
+        ];
+      }),
     );
+    const manifest: CacheabilityManifest = { buildId: "build-a", routes, version: 1 };
+    const manifestBytes = Buffer.byteLength(JSON.stringify(manifest));
+    expect(manifestBytes).toBeGreaterThan(1024 * 1024);
+    expect(manifestBytes).toBeLessThan(2 * 1024 * 1024);
 
     expect(() =>
-      writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
-        buildId: "build-a",
-        routes,
-        version: 1,
-      }),
-    ).toThrow(`the limit is ${MAX_CACHEABILITY_MANIFEST_ROUTES}`);
+      writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", manifest),
+    ).not.toThrow();
   });
 
   it("warms concrete static paths while tolerating a private paired representation", async () => {
