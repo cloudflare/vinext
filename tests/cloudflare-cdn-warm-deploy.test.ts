@@ -705,6 +705,51 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(JSON.parse(manifestJson)).toEqual({ buildId: "app-build-a", routes: {}, version: 1 });
   });
 
+  it("uses an explicit warm target for both stages of a cacheability-probed deploy", async () => {
+    writeTwoStageWorkerArtifact();
+    const wrangler = mockTwoStageWrangler();
+    const fetchOrigins: string[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      fetchOrigins.push(new URL(formatFetchUrl(input)).origin);
+      const headers = new Headers(init?.headers);
+      if (headers.get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
+        return appPageProbeResponse();
+      }
+      if (isReadinessFetch(input)) return readinessResponse();
+      return cacheableHtml();
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        cacheabilityProbe: true,
+        config: "dist/server/wrangler.json",
+        discoverWarmPlan: async ({ targetUrl }) => {
+          expect(targetUrl).toBe("https://app.example.com");
+          return {
+            appPaths: ["/about"],
+            buildId: "app-build-a",
+            buildIdentity: "app-build-a",
+            loadingShellPaths: [],
+            paths: ["/about"],
+            routePatterns: appPageRoutePatterns(["/about"]),
+            rscPaths: [],
+          };
+        },
+        warmCdnConcurrency: 1,
+        warmCdnPromotionDelay: 0,
+        warmCdnReadinessProbes: 1,
+        warmCdnRetries: 0,
+        warmCdnTarget: "https://app.example.com/",
+      }),
+    ).resolves.toBe("https://my-worker.example.workers.dev");
+
+    expect(wrangler.uploads).toBe(2);
+    expect(wrangler.promoted).toBe(true);
+    expect(fetchOrigins.length).toBeGreaterThan(0);
+    expect(new Set(fetchOrigins)).toEqual(new Set(["https://app.example.com"]));
+  });
+
   it("promotes compact pattern-only admission for zero-path static fallbacks", async () => {
     writeTwoStageWorkerArtifact();
     const wrangler = mockTwoStageWrangler();

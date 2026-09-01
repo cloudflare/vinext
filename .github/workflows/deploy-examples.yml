@@ -67,6 +67,7 @@ jobs:
             working_directory: apps/web
             wrangler_config: dist/server/wrangler.json
             warm_cdn_cache: true
+            warm_cdn_target: https://vinext.dev
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -124,7 +125,13 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: vp exec vinext-cloudflare deploy --skip-build --config ${{ matrix.example.wrangler_config }} --experimental-warm-cdn-cache
+          WARM_CDN_TARGET: ${{ matrix.example.warm_cdn_target }}
+        run: |
+          args=(--skip-build --config "${{ matrix.example.wrangler_config }}" --experimental-warm-cdn-cache)
+          if [[ -n "$WARM_CDN_TARGET" ]]; then
+            args+=(--warm-cdn-target "$WARM_CDN_TARGET")
+          fi
+          vp exec vinext-cloudflare deploy "${args[@]}"
 
       - name: Deploy Preview Version
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository

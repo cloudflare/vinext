@@ -25,6 +25,9 @@ export function formatDeployHelp(): string {
     --experimental-warm-cdn-cache
                              Upload a Worker version, warm build-discovered paths
                              through the production URL, then promote it (experimental)
+    --warm-cdn-target <origin>
+                             HTTPS origin to use for discovery, probing, and warming
+                             (overrides URLs inferred from Wrangler output)
     --warm-cdn-concurrency <count>
                              Maximum number of CDN warmup requests in parallel (default: 25)
     --warm-cdn-timeout <ms>  Per-request CDN warmup timeout (default: 10000)
@@ -90,6 +93,8 @@ export function formatDeployHelp(): string {
     vinext-cloudflare deploy --dry-run                                 Validate setup without building or deploying
     vinext-cloudflare deploy --name my-app                             Deploy with a custom Worker name
     vinext-cloudflare deploy --experimental-warm-cdn-cache              Warm build-discovered paths during version deploy (experimental)
+    vinext-cloudflare deploy --experimental-warm-cdn-cache --warm-cdn-target https://example.com
+                                                                          Warm an explicit production origin
     vinext-cloudflare deploy --experimental-tpr                        Enable TPR during deploy
     vinext-cloudflare deploy --experimental-tpr --tpr-coverage 95      Cover 95% of traffic
     vinext-cloudflare deploy --experimental-tpr --tpr-limit 500        Cap at 500 pages

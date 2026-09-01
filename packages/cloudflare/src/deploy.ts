@@ -121,6 +121,8 @@ export type DeployOptions = {
   prerenderConcurrency?: number;
   /** Warm Cloudflare's CDN cache by requesting build-discovered paths for the uploaded version */
   warmCdnCache?: boolean;
+  /** Explicit production origin to use for CDN discovery, probing, and warming */
+  warmCdnTarget?: string;
   /** Maximum number of CDN warmup requests to issue in parallel */
   warmCdnConcurrency?: number;
   /** Per-request CDN warmup timeout in milliseconds */
@@ -212,6 +214,30 @@ function validatePromotionDelay(value: number, raw = String(value)): number {
   return validateTimerDelay(value, "--warm-cdn-promotion-delay", raw);
 }
 
+function validateCdnWarmTarget(raw: string): string {
+  const value = raw.trim();
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`--warm-cdn-target expects an HTTPS origin, but got "${raw}".`);
+  }
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.port !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    throw new Error(
+      `--warm-cdn-target expects an HTTPS origin without a path, query, credentials, or port, but got "${raw}".`,
+    );
+  }
+  return url.origin;
+}
+
 function formatUnknownError(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return String(error);
@@ -232,6 +258,7 @@ const deployArgOptions = {
   "prerender-all": { type: "boolean", default: false },
   "prerender-concurrency": { type: "string" },
   "experimental-warm-cdn-cache": { type: "boolean", default: false },
+  "warm-cdn-target": { type: "string" },
   "warm-cdn-concurrency": { type: "string" },
   "warm-cdn-timeout": { type: "string" },
   "warm-cdn-retries": { type: "string" },
@@ -260,6 +287,9 @@ export function parseDeployArgs(args: string[]) {
   if (values["warm-cdn-certify"] && !values["experimental-warm-cdn-cache"]) {
     throw new Error("--warm-cdn-certify requires --experimental-warm-cdn-cache.");
   }
+  if (values["warm-cdn-target"] && !values["experimental-warm-cdn-cache"]) {
+    throw new Error("--warm-cdn-target requires --experimental-warm-cdn-cache.");
+  }
 
   function parseIntArg(name: string, raw: string | undefined): number | undefined {
     if (!raw) return undefined;
@@ -286,6 +316,10 @@ export function parseDeployArgs(args: string[]) {
         ? undefined
         : parsePositiveIntegerArg(values["prerender-concurrency"], "--prerender-concurrency"),
     warmCdnCache: values["experimental-warm-cdn-cache"],
+    warmCdnTarget:
+      values["warm-cdn-target"] === undefined
+        ? undefined
+        : validateCdnWarmTarget(values["warm-cdn-target"]),
     warmCdnConcurrency:
       values["warm-cdn-concurrency"] === undefined
         ? undefined
@@ -722,6 +756,7 @@ type CdnWarmDeployOptions = Pick<
   | "name"
   | "config"
   | "verbose"
+  | "warmCdnTarget"
   | "warmCdnConcurrency"
   | "warmCdnTimeout"
   | "warmCdnRetries"
@@ -775,6 +810,9 @@ export async function deployWithCdnWarmup(
   paths: readonly string[],
   options: CdnWarmDeployOptions,
 ): Promise<string> {
+  if (options.warmCdnTarget !== undefined) {
+    options = { ...options, warmCdnTarget: validateCdnWarmTarget(options.warmCdnTarget) };
+  }
   if (options.warmCdnDiscoveryTimeout !== undefined) {
     parsePositiveIntegerArg(
       String(options.warmCdnDiscoveryTimeout),
@@ -1647,14 +1685,14 @@ export function resolveCdnWarmupTargetUrl(root: string, deployedUrl: string | nu
 export function resolveCdnWarmupTargetUrl(
   root: string,
   deployedUrl: string | null,
-  options: Pick<DeployOptions, "preview" | "env" | "config">,
+  options: Pick<DeployOptions, "preview" | "env" | "config" | "warmCdnTarget">,
 ): string | null;
 export function resolveCdnWarmupTargetUrl(
   _root: string,
   deployedUrl: string | null,
-  _options?: Pick<DeployOptions, "preview" | "env" | "config">,
+  options?: Pick<DeployOptions, "preview" | "env" | "config" | "warmCdnTarget">,
 ): string | null {
-  return deployedUrl;
+  return options?.warmCdnTarget ?? deployedUrl;
 }
 
 export function getZeroPercentStagingTraffic(
@@ -1760,6 +1798,11 @@ function withPromotedVersionWarmupNote(error: unknown): Error {
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
 export async function deploy(options: DeployOptions): Promise<void> {
+  if (options.warmCdnTarget !== undefined && !options.warmCdnCache) {
+    throw new Error("--warm-cdn-target requires --experimental-warm-cdn-cache.");
+  }
+  const warmCdnTarget =
+    options.warmCdnTarget === undefined ? undefined : validateCdnWarmTarget(options.warmCdnTarget);
   const deployEnv = validateWranglerEnvName(
     options.env || (options.preview ? "preview" : "production"),
   );
@@ -1966,6 +2009,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
         });
       },
       warmCdnConcurrency: options.warmCdnConcurrency,
+      warmCdnTarget,
       warmCdnTimeout: options.warmCdnTimeout,
       warmCdnRetries: options.warmCdnRetries,
       warmCdnDiscoveryTimeout: options.warmCdnDiscoveryTimeout,

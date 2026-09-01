@@ -722,6 +722,7 @@ describe("parseDeployArgs", () => {
       "warmCdnCertify",
       "warmCdnReadinessTimeout",
       "warmCdnReadinessRetries",
+      "warmCdnTarget",
     ]) {
       expect(cliSource).toContain(`${option}: parsed.${option}`);
     }
@@ -745,6 +746,7 @@ describe("parseDeployArgs", () => {
     expect(parsed.dryRun).toBe(false);
     expect(parsed.verbose).toBe(false);
     expect(parsed.warmCdnCache).toBe(false);
+    expect(parsed.warmCdnTarget).toBeUndefined();
     expect(parsed.warmCdnCertify).toBe(false);
     expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(false);
   });
@@ -752,6 +754,12 @@ describe("parseDeployArgs", () => {
   it("requires CDN warming when certification is requested", () => {
     expect(() => parseDeployArgs(["--warm-cdn-certify"])).toThrow(
       "--warm-cdn-certify requires --experimental-warm-cdn-cache.",
+    );
+  });
+
+  it("requires CDN warming when an explicit warm target is requested", () => {
+    expect(() => parseDeployArgs(["--warm-cdn-target", "https://app.example.com"])).toThrow(
+      "--warm-cdn-target requires --experimental-warm-cdn-cache.",
     );
   });
 
@@ -834,6 +842,7 @@ describe("parseDeployArgs", () => {
   it("parses CDN warmup flags", () => {
     const parsed = parseDeployArgs([
       "--experimental-warm-cdn-cache",
+      "--warm-cdn-target=https://app.example.com/",
       "--warm-cdn-concurrency",
       "6",
       "--warm-cdn-timeout=1500",
@@ -856,6 +865,7 @@ describe("parseDeployArgs", () => {
     ]);
 
     expect(parsed.warmCdnCache).toBe(true);
+    expect(parsed.warmCdnTarget).toBe("https://app.example.com");
     expect(parsed.warmCdnConcurrency).toBe(6);
     expect(parsed.warmCdnTimeout).toBe(1500);
     expect(parsed.warmCdnRetries).toBe(0);
@@ -872,6 +882,19 @@ describe("parseDeployArgs", () => {
     expect(parsed.warmCdnPromote).toBe(false);
     expect(parsed.warmCdnPromotionDelay).toBe(2500);
     expect(parsed.warmCdnIncludeFallbacks).toBe(true);
+  });
+
+  it.each([
+    "http://app.example.com",
+    "https://app.example.com/path",
+    "https://app.example.com?preview=1",
+    "https://user@app.example.com",
+    "https://app.example.com:8443",
+    "not-a-url",
+  ])("rejects invalid CDN warm target %s", (target) => {
+    expect(() =>
+      parseDeployArgs(["--experimental-warm-cdn-cache", "--warm-cdn-target", target]),
+    ).toThrow("--warm-cdn-target expects an HTTPS origin");
   });
 
   it("promotes warmed Worker versions by default", () => {
