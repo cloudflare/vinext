@@ -6,18 +6,16 @@ import {
   startNodeFetchServer,
   type SerializedRequest,
 } from "./http-stage-node";
+import {
+  getHostCacheEntry,
+  setHostCacheEntry,
+  type ResponseSnapshot,
+} from "./http-stage-host-cache";
 
 type StageEnvelope = {
   options: { cache: "shared" | "bypass" };
   props: unknown;
   request: SerializedRequest;
-};
-
-type ResponseSnapshot = {
-  body: ArrayBuffer;
-  headers: Array<[string, string]>;
-  status: number;
-  statusText: string;
 };
 
 function internalStageHeaders(): Record<string, string> {
@@ -31,7 +29,6 @@ function isAuthorizedStageRequest(request: Request): boolean {
   return token !== undefined && request.headers.get("authorization") === `Bearer ${token}`;
 }
 
-const cache = new Map<string, Promise<ResponseSnapshot | null>>();
 const STREAM_DELAY_MS = 250;
 
 function responseCacheKey(request: Request, props: unknown): string {
@@ -125,6 +122,13 @@ function isSharedCacheable(response: Response): boolean {
   );
 }
 
+function responseCacheTags(response: Response): string[] {
+  return (response.headers.get("cache-tag") ?? "")
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
 const responseStageFetch = async (transportRequest: Request): Promise<Response> => {
   if (new URL(transportRequest.url).pathname !== "/__vinext_response_stage") {
     return new Response("Not Found", { status: 404 });
@@ -137,7 +141,7 @@ const responseStageFetch = async (transportRequest: Request): Promise<Response> 
   const cacheKey = responseCacheKey(request, envelope.props);
 
   if (envelope.options.cache === "shared") {
-    const snapshot = await cache.get(cacheKey);
+    const snapshot = await getHostCacheEntry(cacheKey);
     if (snapshot) return withHostHeaders(responseFromSnapshot(snapshot), "HIT");
   }
 
@@ -163,14 +167,19 @@ const responseStageFetch = async (transportRequest: Request): Promise<Response> 
   }
 
   if (!rendered.body) {
-    cache.set(cacheKey, Promise.resolve(await snapshotResponse(rendered.clone())));
+    setHostCacheEntry(
+      cacheKey,
+      Promise.resolve(await snapshotResponse(rendered.clone())),
+      responseCacheTags(rendered),
+    );
     return withHostHeaders(rendered, "MISS");
   }
   const [foregroundBody, cacheBody] = rendered.body.tee();
   const foreground = delayAfterFirstBytes(new Response(foregroundBody, rendered));
-  cache.set(
+  setHostCacheEntry(
     cacheKey,
     snapshotResponse(new Response(cacheBody, rendered)).catch(() => null),
+    responseCacheTags(rendered),
   );
   return withHostHeaders(foreground, "MISS");
 };

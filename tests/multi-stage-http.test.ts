@@ -333,6 +333,7 @@ describe("generic HTTP multi-stage transport", () => {
     const cachedBody = await cached.text();
 
     expect(first.headers.get("x-http-stage-cache")).toBe("MISS");
+    expect(first.headers.get("cache-tag")).toContain(`_N_T_${path}`);
     expect(cached.headers.get("x-http-stage-cache")).toBe("HIT");
     expect(renderToken(cachedBody)).toBe(renderToken(firstBody));
 
@@ -343,16 +344,18 @@ describe("generic HTTP multi-stage transport", () => {
     expect(revalidated.headers.get("x-http-stage-cache")).toBe("BYPASS");
     expect(await revalidated.json()).toEqual({ revalidated: true });
 
-    const refreshed = await fetch(`${requestServer.origin}${path}`, {
-      headers: { "cache-control": "no-cache" },
-    });
+    const refreshed = await fetch(`${requestServer.origin}${path}`);
     const refreshedBody = await refreshed.text();
     expect(refreshed.status, refreshedBody).toBe(200);
-    expect(refreshed.headers.get("x-http-stage-cache")).toBe("BYPASS");
+    expect(refreshed.headers.get("x-http-stage-cache")).toBe("MISS");
     expect(renderToken(refreshedBody)).not.toBe(renderToken(firstBody));
+
+    const refreshedHit = await fetch(`${requestServer.origin}${path}`);
+    expect(refreshedHit.headers.get("x-http-stage-cache")).toBe("HIT");
+    expect(renderToken(await refreshedHit.text())).toBe(renderToken(refreshedBody));
   });
 
-  it("shares the Pages HTML variant between HEAD and GET", async () => {
+  it("preserves Pages HEAD rendering without poisoning the GET representation", async () => {
     const url = `${requestServer.origin}/head-${Date.now()}`;
     const head = await fetch(url, { method: "HEAD" });
     expect(head.status).toBe(200);
@@ -361,8 +364,11 @@ describe("generic HTTP multi-stage transport", () => {
 
     const get = await fetch(url);
     expect(get.status).toBe(200);
-    expect(get.headers.get("x-http-stage-cache")).toBe("HIT");
+    expect(get.headers.get("x-http-stage-cache")).toBe("MISS");
     expect(renderToken(await get.text())).toBeTruthy();
+
+    const getHit = await fetch(url);
+    expect(getHit.headers.get("x-http-stage-cache")).toBe("HIT");
   });
 
   it("sends bypass POST requests to the remote response process", async () => {
