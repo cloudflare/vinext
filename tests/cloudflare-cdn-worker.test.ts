@@ -176,11 +176,11 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(renderedRequest.url).toBe("https://tenant.example/original?view=one");
   });
 
-  it("partitions by request.cf without letting it replace the cache-facing URL", async () => {
-    let cacheFacingRequest: Request | undefined;
+  it("preserves request.cf on misses without fragmenting or replacing the cache key", async () => {
+    const cacheFacingRequests: Request[] = [];
     const binding = vi.fn(({ props }: { props: unknown }) => ({
       async fetch(request: Request) {
-        cacheFacingRequest = request;
+        cacheFacingRequests.push(request);
         return createEntrypoint(props).fetch(request);
       },
     }));
@@ -188,23 +188,30 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       dispatch(request, { kind: "app-route-handler" }, { cache: "shared" }),
     );
     stages.response.mockResolvedValue(new Response("rendered"));
-    const source = new Request("https://example.com/geo", {
-      headers: { "x-vinext-internal-request-cf": "forged" },
-    });
-    const requestCf = { cacheKey: "attacker-controlled", colo: "LHR", country: "GB" };
-    Object.defineProperty(source, "cf", { enumerable: true, value: requestCf });
+    const requestCfValues = [
+      { cacheKey: "attacker-controlled", clientTcpRtt: 12, colo: "LHR", country: "GB" },
+      { cacheKey: "other-attacker-key", clientTcpRtt: 87, colo: "SJC", country: "US" },
+    ];
+    for (const requestCf of requestCfValues) {
+      const source = new Request("https://example.com/geo", {
+        headers: { "x-vinext-internal-request-cf": "forged" },
+      });
+      Object.defineProperty(source, "cf", { enumerable: true, value: requestCf });
+      await worker.fetch(source, {}, { exports: { VinextCachedResponse: binding } });
+    }
 
-    await worker.fetch(source, {}, { exports: { VinextCachedResponse: binding } });
-
-    expect(cacheFacingRequest?.url).toMatch(
+    expect(cacheFacingRequests[0]?.url).toMatch(
       /^https:\/\/example\.com\/geo\?__vinext_cache_key=[0-9a-f]{64}$/,
     );
-    expect(Reflect.get(cacheFacingRequest!, "cf")).toBeUndefined();
-    expect(cacheFacingRequest?.headers.get("x-vinext-internal-request-cf")).not.toBe("forged");
-    const renderedRequest = stages.response.mock.calls[0]![0] as Request;
-    expect(renderedRequest.url).toBe(source.url);
-    expect(Reflect.get(renderedRequest, "cf")).toEqual(requestCf);
-    expect(renderedRequest.headers.has("x-vinext-internal-request-cf")).toBe(false);
+    expect(cacheFacingRequests[1]?.url).toBe(cacheFacingRequests[0]?.url);
+    expect(cacheFacingRequests[0]?.headers.get("x-vinext-internal-request-cf")).not.toBe("forged");
+    expect(cacheFacingRequests[1]?.headers.get("x-vinext-internal-request-cf")).not.toBe("forged");
+    for (const [index, requestCf] of requestCfValues.entries()) {
+      const renderedRequest = stages.response.mock.calls[index]![0] as Request;
+      expect(renderedRequest.url).toBe("https://example.com/geo");
+      expect(Reflect.get(renderedRequest, "cf")).toEqual(requestCf);
+      expect(renderedRequest.headers.has("x-vinext-internal-request-cf")).toBe(false);
+    }
   });
 
   it("strips forged request.cf transport metadata when no platform metadata exists", async () => {

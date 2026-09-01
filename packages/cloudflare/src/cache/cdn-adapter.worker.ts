@@ -115,9 +115,10 @@ async function createCacheFacingRequest(
       // A non-serializable platform extension cannot safely cross the stage.
     }
   }
-  const bytes = new TextEncoder().encode(
-    `${request.url}\0${serializedInvocation}\0${serializedRequestCf ?? ""}`,
-  );
+  // Incoming `request.cf` describes the caller/connection, not the public
+  // representation. Keep it available to a cold response-stage render without
+  // fragmenting warmed cache entries by colo, geography, TCP RTT, or bot data.
+  const bytes = new TextEncoder().encode(`${request.url}\0${serializedInvocation}`);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const key = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   const url = new URL(request.url);
@@ -127,7 +128,17 @@ async function createCacheFacingRequest(
   if (serializedRequestCf !== null) {
     headers.set(REQUEST_CF_TRANSPORT_HEADER, serializedRequestCf);
   }
-  return new Request(new Request(url, request), { headers });
+  const init = {
+    // Explicitly replace inherited inbound `cf` metadata. In workerd,
+    // Request-from-Request construction otherwise preserves values such as a
+    // caller-supplied cacheKey. The response stage receives the original
+    // platform metadata through the authenticated internal header above.
+    cf: { vary: { default: { action: "passthrough" } } },
+    headers,
+  } satisfies RequestInit & {
+    cf: { vary: { default: { action: "passthrough" } } };
+  };
+  return new Request(new Request(url, request), init);
 }
 
 function restoreResponseStageRequest(request: Request, requestUrl: string): Request {

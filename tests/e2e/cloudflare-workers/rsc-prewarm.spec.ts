@@ -312,6 +312,21 @@ test("deploy-prewarmed App, Pages, and RSC variants are reused", async ({
   expect(anonymousAfterDraft.headers()["cf-cache-status"]).toBe("HIT");
   expect(await anonymousAfterDraft.text()).toBe(appHtmlBody);
 
+  for (const variant of ["alpha", "beta"]) {
+    const first = await getResponseAfterPromotion(request, `${baseURL}/vary`, {
+      "x-cache-variant": variant,
+    });
+    expect(first.ok(), JSON.stringify(first.headers())).toBe(true);
+    expect(await first.text()).toBe(variant);
+    expect(first.headers()["vary"]?.toLowerCase()).toContain("x-cache-variant");
+
+    const cached = await getResponseAfterPromotion(request, `${baseURL}/vary`, {
+      "x-cache-variant": variant,
+    });
+    expect(cached.headers()["cf-cache-status"], JSON.stringify(cached.headers())).toBe("HIT");
+    expect(await cached.text()).toBe(variant);
+  }
+
   const fullResponse = await getResponseAfterPromotion(request, `${baseURL}${TARGET_PATH}?_rsc`, {
     ...fullHeaders,
     "x-test-visitor-id": "visitor-a",
