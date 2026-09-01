@@ -693,7 +693,9 @@ async function finalizeWorkerCacheabilityAdmission(
     if (!outcome.cacheable || !outcome.cacheControl) {
       return responseWithCachePolicy(response, response.body, null);
     }
-    if (state.completedResponseBody) return response;
+    if (state.completedResponseBody) {
+      return responseWithCachePolicy(response, response.body, outcome);
+    }
 
     let captured: CapturedAdmissionBody;
     try {

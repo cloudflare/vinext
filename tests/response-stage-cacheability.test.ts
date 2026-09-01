@@ -220,4 +220,42 @@ describe("response-stage cacheability", () => {
     expect(response.headers.get("CDN-Cache-Control")).toBe("public, s-maxage=90");
     await expect(response.text()).resolves.toBe("dynamic");
   });
+
+  it("applies adapter policy headers to a route response whose body already completed", async () => {
+    const adapter = admissionAdapter();
+    setCdnCacheAdapter({
+      ...adapter,
+      buildResponseHeaders: ({ cacheControl }) => ({
+        "Cache-Control": "max-age=0, must-revalidate",
+        "CDN-Cache-Control": cacheControl,
+      }),
+    });
+
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "shared",
+        context: baseContext(),
+        rawManifest: null,
+        registerCacheAdapters() {},
+        request: new Request("https://example.com/api/explicit", {
+          headers: { Accept: "application/json" },
+        }),
+        resolvedRoutePathname: "/api/explicit",
+      },
+      async (context) => {
+        const state = contextState(context)!;
+        state.route = { kind: "app-route", pattern: "/api/explicit" };
+        state.completedResponseBody = true;
+        state.explicitResponseCachePolicy = true;
+        return new Response("complete", {
+          headers: { "Cache-Control": "public, s-maxage=60" },
+        });
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("max-age=0, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBe("public, s-maxage=60");
+    await expect(response.text()).resolves.toBe("complete");
+  });
 });
