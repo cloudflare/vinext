@@ -142,17 +142,18 @@ describe("after() in deploy mode — Pages Router worker entry", () => {
     // Regression for #1365: handleApiRoute previously ignored ctx, leaving
     // after() inside Pages Router api routes without a way to call
     // ctx.waitUntil(). Rendering now lives in the response stage, which must
-    // preserve that context when it invokes the generated Pages entry.
+    // preserve that context in the cacheability wrapper it passes to the
+    // generated Pages entry.
     const content = readPagesResponseStageEntrySource();
     expect(content).toMatch(
-      /pagesEntry\.handleApiRoute\(\s*request,\s*props\.apiUrl,\s*ctx,\s*new URL\(request\.url\)\.origin,/,
+      /pagesEntry\.handleApiRoute\(\s*request,\s*props\.apiUrl,\s*cacheabilityContext,\s*new URL\(request\.url\)\.origin,/,
     );
   });
 
   it("forwards ctx and staged middleware headers to renderPage so page renders can call after() and apply CSP nonces", () => {
     const content = readPagesResponseStageEntrySource();
     expect(content).toMatch(
-      /pagesEntry\.renderPage\(\s*request,\s*props\.resolvedUrl,\s*null,\s*ctx,\s*renderHeaders,\s*props\.renderOptions/,
+      /pagesEntry\.renderPage\(\s*request,\s*props\.resolvedUrl,\s*null,\s*cacheabilityContext,\s*renderHeaders,\s*props\.renderOptions/,
     );
   });
 });
