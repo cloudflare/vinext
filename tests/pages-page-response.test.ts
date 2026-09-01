@@ -296,6 +296,25 @@ describe("pages page response", () => {
     );
   });
 
+  it("reports the resolved Pages tag after an on-demand regeneration", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      DocumentComponent: null,
+      getSSRHeadHTML: undefined,
+      isOnDemandRevalidate: true,
+      isrCachePathname: "/posts/resolved",
+      isrRevalidateSeconds: 60,
+      routeUrl: "/posts/alias",
+    });
+
+    expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
+    expect(response.headers.get("x-vinext-revalidated-cache-tag")).toBe(
+      "_N_T_/posts/resolved",
+    );
+  });
+
   it("persists indefinite Pages results while formatting a static response policy", async () => {
     const common = createCommonOptions();
 

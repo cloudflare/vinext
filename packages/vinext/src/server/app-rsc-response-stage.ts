@@ -349,7 +349,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
             cleanPathname: props.cleanPathname,
             middlewareContext,
             params: route.isDynamic ? renderParams : null,
-            request: new Request(routeHandlerUrl, routeHandlerRequest),
+            request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),
             route,
             searchParams,
           });
