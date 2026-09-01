@@ -25,6 +25,11 @@ import {
 } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import { applyCdnResponseIdentityHeaders } from "../packages/vinext/src/server/cache-control.js";
+import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
@@ -283,6 +288,48 @@ describe("CloudflareCdnCacheAdapter", () => {
   it("does not re-encode tags recovered during completed-response admission", () => {
     const encoded = encodeCloudflareCacheTag("posts");
     expect(encodeCloudflareCacheTag(encoded)).toBe(encoded);
+  });
+
+  it("keeps admitted response tags aligned with later purge tags", async () => {
+    setCdnCacheAdapter(adapter);
+    const encoded = encodeCloudflareCacheTag("posts");
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "shared",
+        context: { waitUntil() {} },
+        rawManifest: null,
+        registerCacheAdapters() {},
+        request: new Request("https://example.com/posts", {
+          headers: { Accept: "text/html" },
+        }),
+        resolvedRoutePathname: "/posts",
+      },
+      async (context) => {
+        const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
+        state.route = { kind: "pages-page", pattern: "/posts" };
+        const headers = new Headers();
+        for (const [name, value] of Object.entries(
+          adapter.buildResponseHeaders({
+            cacheControl: "s-maxage=60",
+            tags: ["posts"],
+          }),
+        )) {
+          if (value !== null && value !== undefined) headers.set(name, value);
+        }
+        return new Response("posts", {
+          headers,
+        });
+      },
+    );
+
+    expect(response.headers.get("Cache-Tag")).toBe(encoded);
+
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, () =>
+      adapter.revalidateTag("posts"),
+    );
+    expect(purge).toHaveBeenCalledWith({ tags: [encoded] });
   });
 
   it("makes a response uncacheable rather than emitting incomplete tag metadata", () => {
