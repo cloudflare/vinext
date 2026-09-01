@@ -30,6 +30,9 @@ type CloudflarePluginFactory = (opts?: {
   viteEnvironment?: { name: string; childEnvironments?: string[] };
 }) => import("vite").Plugin;
 
+const LOCAL_ADAPTER_MARKER = "__VINEXT_LOCAL_DATA_ADAPTER_MARKER__";
+const RESPONSE_STAGE_MARKER = "__VINEXT_RESPONSE_STAGE_USER_CODE_MARKER__";
+
 function writeFixtureFile(root: string, filePath: string, content: string) {
   const absPath = path.join(root, filePath);
   fs.mkdirSync(path.dirname(absPath), { recursive: true });
@@ -79,6 +82,27 @@ function readStaticEntryClosure(root: string, entryKey: string): string {
     }
   }
 
+  return output;
+}
+
+function readStaticJavaScriptClosure(entryPath: string): string {
+  const visited = new Set<string>();
+  let output = "";
+  const visit = (filePath: string) => {
+    if (visited.has(filePath)) return;
+    visited.add(filePath);
+    const source = fs.readFileSync(filePath, "utf8");
+    output += source;
+    for (const match of source.matchAll(
+      /(?:import|export)\s*(?:[^"']*?\sfrom\s*)?["']([^"']+)["']/g,
+    )) {
+      const specifier = match[1];
+      if (!specifier?.startsWith(".")) continue;
+      const dependency = path.resolve(path.dirname(filePath), specifier);
+      if (fs.existsSync(dependency) && fs.statSync(dependency).isFile()) visit(dependency);
+    }
+  };
+  visit(entryPath);
   return output;
 }
 
@@ -141,7 +165,7 @@ function writeCloudflareAppFixture(root: string, name: string) {
     root,
     "app/page.tsx",
     `export default function HomePage() {
-  return <main>home</main>;
+  return <main>home ${RESPONSE_STAGE_MARKER}</main>;
 }
 `,
   );
@@ -159,8 +183,6 @@ function writeCloudflareAppFixture(root: string, name: string) {
     `import handler from ${JSON.stringify(workerEntryPath)};\n\nexport default handler;\n`,
   );
 }
-
-const LOCAL_ADAPTER_MARKER = "__VINEXT_LOCAL_DATA_ADAPTER_MARKER__";
 
 describe("config-driven cache adapter — local file by absolute path", () => {
   afterEach(() => {
@@ -282,8 +304,12 @@ export default createAdapter;
 
     await builder.buildApp();
 
-    const worker = fs.readFileSync(path.join(root, "dist/server/index.js"), "utf8");
+    const workerPath = path.join(root, "dist/server/index.js");
+    const worker = fs.readFileSync(workerPath, "utf8");
     expect(worker).toMatch(/export\s*\{[^}]*\b(?:[A-Za-z_$][\w$]*\s+as\s+)?VinextCachedResponse\b/);
+    expect(worker).toMatch(/import\s*["']\.\/__vinext_cacheability_manifest\.js["']/);
+    expect(readTextFilesRecursive(path.join(root, "dist/server"))).toContain(RESPONSE_STAGE_MARKER);
+    expect(readStaticJavaScriptClosure(workerPath)).not.toContain(RESPONSE_STAGE_MARKER);
     const wrangler = JSON.parse(
       fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"),
     );
@@ -291,6 +317,7 @@ export default createAdapter;
       default: { type: "worker", cache: { enabled: false } },
       VinextCachedResponse: { type: "worker", cache: { enabled: true } },
     });
+    expect(wrangler.cache).toBeUndefined();
   }, 60_000);
 
   it("keeps the adapter-owned response entrypoint when a custom Worker uses its reserved export", async () => {

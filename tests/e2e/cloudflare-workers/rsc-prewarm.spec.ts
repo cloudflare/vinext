@@ -215,11 +215,10 @@ test("deploy-prewarmed App, Pages, and RSC variants are reused", async ({
   expect(mismatchedOverride.headers()["cache-control"]).toBe("no-store");
   expect(await mismatchedOverride.text()).toContain("Cloudflare invoked Worker version");
 
-  const pagesResponse = await getResponseAfterPromotion(
-    request,
-    `${baseURL}${PAGES_TARGET_PATH}`,
-    { ...htmlHeaders, "x-test-visitor-id": "visitor-a" },
-  );
+  const pagesResponse = await getResponseAfterPromotion(request, `${baseURL}${PAGES_TARGET_PATH}`, {
+    ...htmlHeaders,
+    "x-test-visitor-id": "visitor-a",
+  });
   const pagesResponseHeaders = pagesResponse.headers();
   expect(pagesResponse.ok(), JSON.stringify(pagesResponseHeaders)).toBe(true);
   expect(pagesResponseHeaders["content-type"]).toContain("text/html");
@@ -248,11 +247,10 @@ test("deploy-prewarmed App, Pages, and RSC variants are reused", async ({
   expect(secondPagesResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
   expect(await secondPagesResponse.text()).toBe(pagesBody);
 
-  const appHtmlResponse = await getResponseAfterPromotion(
-    request,
-    `${baseURL}${TARGET_PATH}`,
-    { ...htmlHeaders, "x-test-visitor-id": "visitor-a" },
-  );
+  const appHtmlResponse = await getResponseAfterPromotion(request, `${baseURL}${TARGET_PATH}`, {
+    ...htmlHeaders,
+    "x-test-visitor-id": "visitor-a",
+  });
   const appHtmlResponseHeaders = appHtmlResponse.headers();
   expect(appHtmlResponse.ok(), JSON.stringify(appHtmlResponseHeaders)).toBe(true);
   expect(appHtmlResponseHeaders["content-type"]).toContain("text/html");
@@ -279,6 +277,40 @@ test("deploy-prewarmed App, Pages, and RSC variants are reused", async ({
   ).toBe("HIT");
   expect(secondAppHtmlResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
   expect(await secondAppHtmlResponse.text()).toBe(appHtmlBody);
+
+  // Next.js skips its shared response cache in draft mode. This must be
+  // decided in the uncached request entrypoint because a named-entrypoint HIT
+  // cannot inspect the draft cookie before replaying anonymous bytes.
+  const draftRequest = await playwright.request.newContext();
+  try {
+    const enableDraft = await draftRequest.get(`${baseURL}/api/draft-enable`);
+    expect(enableDraft.ok()).toBe(true);
+    expect(enableDraft.headers()["set-cookie"]).toContain("__prerender_bypass=");
+    expect(enableDraft.headers()["cache-control"]).toContain("no-store");
+
+    for (const pathname of [TARGET_PATH, PAGES_TARGET_PATH]) {
+      const draftResponse = await draftRequest.get(`${baseURL}${pathname}`, {
+        headers: htmlHeaders,
+      });
+      const draftHeaders = draftResponse.headers();
+      expect(draftResponse.ok(), JSON.stringify(draftHeaders)).toBe(true);
+      expect(draftHeaders["cf-cache-status"]).not.toBe("HIT");
+      expect(draftHeaders["cache-control"]).toContain("no-store");
+      expect(await draftResponse.text()).toContain(
+        '<output data-testid="draft-mode">true</output>',
+      );
+    }
+  } finally {
+    await draftRequest.dispose();
+  }
+
+  const anonymousAfterDraft = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    htmlHeaders,
+  );
+  expect(anonymousAfterDraft.headers()["cf-cache-status"]).toBe("HIT");
+  expect(await anonymousAfterDraft.text()).toBe(appHtmlBody);
 
   const fullResponse = await getResponseAfterPromotion(request, `${baseURL}${TARGET_PATH}?_rsc`, {
     ...fullHeaders,

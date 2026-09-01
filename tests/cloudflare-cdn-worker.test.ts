@@ -58,6 +58,11 @@ function pagesPageProps(
 ): PagesPageResponseStageProps {
   return {
     buildId: "test-build",
+    cacheability: {
+      policyHeaders: null,
+      probeMode: null,
+      resolvedRoutePathname: new URL(resolvedUrl, "https://example.com").pathname,
+    },
     kind: "pages-page",
     protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
     requestHost: "example.com",
