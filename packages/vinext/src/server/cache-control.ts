@@ -80,6 +80,30 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
   }
 }
 
+const CDN_POLICY_HEADERS = [
+  "Cache-Control",
+  "CDN-Cache-Control",
+  "Cloudflare-CDN-Cache-Control",
+] as const;
+
+/**
+ * Reconcile request-stage policy composed above a reusable response artifact.
+ * A newly applied private policy must clear any cacheable provider headers that
+ * belonged to the inner artifact before the final response leaves the gateway.
+ */
+export function reconcileCdnResponseHeadersAfterOuterPolicy(
+  headers: Headers,
+  innerHeaders: Headers,
+): void {
+  for (const name of CDN_POLICY_HEADERS) {
+    const value = headers.get(name);
+    if (value !== null && value !== innerHeaders.get(name) && isNonCacheableCacheControl(value)) {
+      applyCdnResponseHeaders(headers, { cacheControl: value });
+      return;
+    }
+  }
+}
+
 /** Apply adapter-owned build identity to an HTML or RSC page response. */
 export function applyCdnResponseIdentityHeaders(response: Response, request: Request): Response {
   const accept = request.headers.get("Accept")?.toLowerCase() ?? "";

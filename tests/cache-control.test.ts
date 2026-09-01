@@ -5,6 +5,7 @@ import {
   buildCachedRevalidateCacheControl,
   buildRevalidateCacheControl,
   hasExplicitNonCacheableResponsePolicy,
+  reconcileCdnResponseHeadersAfterOuterPolicy,
   shouldUseNextDeployCacheControl,
   validateCdnRequest,
 } from "../packages/vinext/src/server/cache-control.js";
@@ -158,6 +159,38 @@ describe("applyCdnResponseHeaders", () => {
 
     expect(headers.get("Cache-Control")).toBe("no-store");
     expect(headers.get("X-Example-Edge-Policy")).toBeNull();
+    expect(headers.get("X-Example-Cache-Tag")).toBeNull();
+  });
+
+  it("clears an inner artifact's provider policy when outer composition turns private", () => {
+    const edge: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders(input) {
+        return {
+          "Cache-Control": input.cacheControl,
+          "CDN-Cache-Control": null,
+          "X-Example-Cache-Tag": null,
+        };
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edge);
+    const innerHeaders = new Headers({
+      "Cache-Control": "public, max-age=0, must-revalidate",
+      "CDN-Cache-Control": "public, max-age=60",
+      "X-Example-Cache-Tag": "inner",
+    });
+    const headers = new Headers(innerHeaders);
+    headers.set("Cache-Control", "private, no-store");
+
+    reconcileCdnResponseHeadersAfterOuterPolicy(headers, innerHeaders);
+
+    expect(headers.get("Cache-Control")).toBe("private, no-store");
+    expect(headers.get("CDN-Cache-Control")).toBeNull();
     expect(headers.get("X-Example-Cache-Tag")).toBeNull();
   });
 

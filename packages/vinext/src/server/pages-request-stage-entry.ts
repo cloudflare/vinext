@@ -40,7 +40,11 @@ import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { requestContextFromRequest } from "../config/request-context.js";
 import { resolveResponseStageCachePolicy } from "./config-headers.js";
-import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
+import {
+  applyCdnResponseIdentityHeaders,
+  reconcileCdnResponseHeadersAfterOuterPolicy,
+  validateCdnRequest,
+} from "./cache-control.js";
 import {
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
   prepareResponseStageDispatch,
@@ -181,6 +185,7 @@ async function handleRequest(
   defaultHostRuntime: "node" | "worker",
   assets: VinextAssetFetcher | undefined,
 ): Promise<Response> {
+  let sharedResponseHeaders: Headers | null = null;
   let ctx = createWorkerRevalidationContext(
     platformCtx,
     (internalRequest, internalCtx) =>
@@ -366,8 +371,15 @@ async function handleRequest(
           env,
           ctx,
         );
-        if (!isHeadRequest || cache === "bypass") return dispatched;
-        return dispatched.then(async (response) => {
+        const responsePromise =
+          cache === "shared"
+            ? dispatched.then((response) => {
+                sharedResponseHeaders = new Headers(response.headers);
+                return response;
+              })
+            : dispatched;
+        if (!isHeadRequest || cache === "bypass") return responsePromise;
+        return responsePromise.then(async (response) => {
           await response.body?.cancel();
           return new Response(null, {
             headers: response.headers,
@@ -401,7 +413,19 @@ async function handleRequest(
                 request: req,
                 stagedHeaders,
               });
-        return dispatchResponseStage(req, responseStageProps(cache), { cache }, env, ctx);
+        const dispatched = dispatchResponseStage(
+          req,
+          responseStageProps(cache),
+          { cache },
+          env,
+          ctx,
+        );
+        return cache === "shared"
+          ? dispatched.then((response) => {
+              sharedResponseHeaders = new Headers(response.headers);
+              return response;
+            })
+          : dispatched;
       },
       serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase, resolvedUrl) => {
         if (!assets) return false;
@@ -433,7 +457,11 @@ async function handleRequest(
 
     const result = await runPagesRequest(request, deps);
     if (result.type === "response") {
-      return finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
+      const response = finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
+      if (sharedResponseHeaders) {
+        reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedResponseHeaders);
+      }
+      return response;
     }
 
     // Should not reach here for a production Worker because all callbacks are

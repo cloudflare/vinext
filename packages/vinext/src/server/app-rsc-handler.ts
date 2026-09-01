@@ -98,7 +98,11 @@ import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
-import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  NEVER_CACHE_CONTROL,
+  reconcileCdnResponseHeadersAfterOuterPolicy,
+} from "./cache-control.js";
 import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
@@ -1166,10 +1170,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     );
   };
   const composeResponseStageResponse = async (response: Response): Promise<Response> => {
+    const innerHeaders = new Headers(response.headers);
     response = await applyConfigHeadersToResponseStage(response);
-    return markAppRscResponseConfigHeadersApplied(
-      applyMiddlewareContextToResponse(response, middlewareContext),
-    );
+    response = applyMiddlewareContextToResponse(response, middlewareContext);
+    reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, innerHeaders);
+    return markAppRscResponseConfigHeadersApplied(response);
   };
   const postMiddlewareRequestContext = buildPostMwRequestContext(userlandRequest);
   filesystemRouteEligible ||= didMiddlewareRewrite;
