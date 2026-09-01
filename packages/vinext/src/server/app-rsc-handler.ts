@@ -1677,6 +1677,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     matchKind: "dynamic" | "static",
   ): Promise<Response | null> => {
     if (!filesystemRouteEligible) return null;
+    let sharedResponseHeaders: Headers | null = null;
     const dispatchPagesResponseStage = dispatchResponseStage
       ? async (stageRequest: Request, resourceKind: "api" | "page") => {
           const pagesOnDemandRevalidate =
@@ -1692,37 +1693,37 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             responseStageRequest(stageRequest),
             cache,
           );
-          return applyConfigHeadersToResponseStage(
-            await dispatchResponseStage(
-              renderRequest,
-              {
-                kind: "hybrid-pages",
-                buildId: options.buildId,
-                cacheability: {
-                  ...responseStageCacheability(resolvedUrl),
-                  policyHeaders: await loadResponseStagePolicy(),
-                },
-                allowRscDocumentFallback:
-                  didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
-                appRouteMatch: match
-                  ? { isDynamic: match.route.isDynamic, pattern: match.route.pattern }
-                  : null,
-                canonicalPathname,
-                cleanPathname,
-                draftModeCookie,
-                isDataRequest,
-                isRscRequest,
-                matchKind,
-                middlewareCookieOverlay,
-                protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
-                resourceKind,
-                requestUrl: request.url,
-                resolvedUrl,
-                scriptNonce: scriptNonce ?? null,
+          const response = await dispatchResponseStage(
+            renderRequest,
+            {
+              kind: "hybrid-pages",
+              buildId: options.buildId,
+              cacheability: {
+                ...responseStageCacheability(resolvedUrl),
+                policyHeaders: await loadResponseStagePolicy(),
               },
-              { cache },
-            ),
+              allowRscDocumentFallback:
+                didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
+              appRouteMatch: match
+                ? { isDynamic: match.route.isDynamic, pattern: match.route.pattern }
+                : null,
+              canonicalPathname,
+              cleanPathname,
+              draftModeCookie,
+              isDataRequest,
+              isRscRequest,
+              matchKind,
+              middlewareCookieOverlay,
+              protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+              resourceKind,
+              requestUrl: request.url,
+              resolvedUrl,
+              scriptNonce: scriptNonce ?? null,
+            },
+            { cache },
           );
+          if (cache === "shared") sharedResponseHeaders = new Headers(response.headers);
+          return applyConfigHeadersToResponseStage(response);
         }
       : undefined;
     const response =
@@ -1744,6 +1745,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         : null;
     if (response) preserveRouteCacheabilityResponsePolicy();
     if (!response) return null;
+    if (sharedResponseHeaders) {
+      reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedResponseHeaders);
+    }
 
     if (!pagesDataRequest || resolvedUrl === originalResolvedUrl) {
       return dispatchPagesResponseStage

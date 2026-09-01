@@ -56,6 +56,11 @@ import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 
 type TestRoute = {
   __loadPage?: unknown;
@@ -329,6 +334,64 @@ describe("createAppRscHandler", () => {
         policyHeaders: [["Cache-Control", "public, s-maxage=36"]],
       },
     });
+  });
+
+  it("clears shared Pages stage metadata when outer config makes the response private", async () => {
+    const adapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders({ cacheControl }) {
+        return {
+          "Cache-Control": cacheControl,
+          "CDN-Cache-Control": null,
+          "Cache-Tag": null,
+        };
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(adapter);
+    try {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+        Promise.resolve(
+          new Response("pages-stage", {
+            headers: {
+              "Cache-Control": "public, max-age=0, must-revalidate",
+              "CDN-Cache-Control": "public, max-age=60",
+              "Cache-Tag": "pages",
+            },
+          }),
+        ),
+      );
+      const handler = createHandler({
+        configHeaders: [
+          {
+            source: "/pages",
+            headers: [{ key: "Cache-Control", value: "private, no-store" }],
+          },
+        ],
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+        renderPagesFallback: async (options) =>
+          options.dispatchPagesResponseStage?.(options.request, "page") ?? null,
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/pages"),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      expect(response.headers.get("cache-tag")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("bypasses the staged cache for an unverified interception context", async () => {
