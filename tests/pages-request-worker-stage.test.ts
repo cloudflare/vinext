@@ -33,6 +33,8 @@ vi.mock("virtual:vinext-image-adapters", () => ({
   registerConfiguredImageOptimizer: mocks.registerImageOptimizer,
 }));
 
+vi.mock("virtual:vinext-cacheability-manifest", () => ({ default: null }));
+
 vi.mock("virtual:vinext-pages-request-entry", () => ({
   authorizeOnDemandRevalidate: mocks.authorizeOnDemandRevalidate,
   buildId: "request-build",
@@ -45,7 +47,10 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
   prerenderSecret: "prerender-secret",
   publicFiles: new Set(),
   runMiddleware: mocks.runMiddleware,
-  vinextConfig: { headers: mocks.configHeaders },
+  vinextConfig: {
+    headers: mocks.configHeaders,
+    i18n: { defaultLocale: "en", locales: ["en", "fr"] },
+  },
 }));
 
 vi.mock("../packages/vinext/src/server/pages-response-stage-entry.js", () => ({
@@ -159,14 +164,14 @@ describe("Pages Worker request stage", () => {
     expect(options).toEqual({ cache: "bypass" });
   });
 
-  it("transports only request-key-safe positive config cache policy", async () => {
+  it("transports only request-key-safe positive config cache policy using the i18n match path", async () => {
     mocks.configHeaders.push(
       {
-        source: "/page",
+        source: "/en/page",
         headers: [{ key: "Cache-Control", value: "public, s-maxage=60" }],
       },
       {
-        source: "/page",
+        source: "/en/page",
         has: [{ type: "cookie", key: "preview", value: "1" }],
         headers: [{ key: "CDN-Cache-Control", value: "public, s-maxage=120" }],
       },

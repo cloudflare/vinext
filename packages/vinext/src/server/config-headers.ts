@@ -33,7 +33,7 @@ export type ResponseStageCachePolicyOptions = {
 /**
  * Resolve positive config cache policy that may safely accompany an inner artifact.
  * Header/cookie/host conditions stay in the uncached composition stage; query
- * conditions are safe because the public Workers Cache key already includes them.
+ * conditions are safe because shared stage transports must key the exact query.
  */
 export function resolveResponseStageCachePolicy({
   basePathState,
@@ -63,9 +63,9 @@ function markConditionalConfigHeaderCacheability(rule: NextHeader): void {
         condition.type === "header" || condition.type === "cookie" || condition.type === "host",
     )
   ) {
-    // Query values are already part of the public Workers Cache key. Headers,
+    // Query values are part of the shared response-stage identity. Headers,
     // cookies, and hostnames are not, so a response header selected by any of
-    // them cannot be shared safely under the request URL.
+    // them cannot be shared safely under the request path and query.
     markRouteCacheabilityDynamic(
       "next.config headers depend on request headers, cookies, or hostnames",
     );

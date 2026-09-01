@@ -1677,11 +1677,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           const pagesOnDemandRevalidate =
             resourceKind === "page" &&
             isOnDemandRevalidateRequest(stageRequest.headers.get(PRERENDER_REVALIDATE_HEADER));
-          const cache = pagesOnDemandRevalidate
-            ? "bypass"
-            : canUseSharedWorkerResponseStage
-              ? "shared"
-              : "bypass";
+          const cache =
+            responseStageProbeMode || pagesOnDemandRevalidate
+              ? "bypass"
+              : canUseSharedWorkerResponseStage
+                ? "shared"
+                : "bypass";
           const renderRequest = prepareResponseStageDispatch(
             responseStageRequest(stageRequest),
             cache,
@@ -1692,7 +1693,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               {
                 kind: "hybrid-pages",
                 buildId: options.buildId,
-                cacheability: responseStageCacheability(resolvedUrl),
+                cacheability: {
+                  ...responseStageCacheability(resolvedUrl),
+                  policyHeaders: await loadResponseStagePolicy(),
+                },
                 allowRscDocumentFallback:
                   didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
                 appRouteMatch: match

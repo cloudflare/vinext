@@ -239,9 +239,8 @@ export function isRscFrameworkModule(id: string): boolean {
 /**
  * Keep virtual entry ids out of emitted RSC chunk filenames.
  *
- * Rolldown's entries-aware chunk names can contain the `\\0` virtual-id
- * marker. Wrangler treats that backslash as a path separator when loading the
- * module graph, so the emitted file can no longer be found. Preserve every
+ * Rolldown's entries-aware chunk names can contain the `\\0` virtual-id marker,
+ * which is not a portable module-specifier or filesystem name. Preserve every
  * other character and remove both the printable and actual-NUL forms.
  */
 export function sanitizeRscChunkFileName(name: string): string {

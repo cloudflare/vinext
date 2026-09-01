@@ -37,6 +37,7 @@ import {
 } from "./headers.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
+import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { requestContextFromRequest } from "../config/request-context.js";
 import { resolveResponseStageCachePolicy } from "./config-headers.js";
 import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
@@ -107,6 +108,9 @@ const {
   runMiddleware,
   vinextConfig,
 } = pagesEntry;
+
+export const pagesRequestStageBuildId: string | null = pagesEntry.buildId ?? null;
+export const pagesRequestStagePrerenderSecret: string | null = pagesEntry.prerenderSecret ?? null;
 
 const basePath: string = vinextConfig?.basePath ?? "";
 const assetPathPrefix: string = assetPrefixPathname(vinextConfig?.assetPrefix ?? "");
@@ -294,10 +298,13 @@ async function handleRequest(
       request = dataNorm.request;
       pathname = dataNorm.normalizedPathname;
     }
+    const responseStagePolicyPathname = i18nConfig
+      ? normalizeDefaultLocalePathname(pathname, i18nConfig, { hostname: url.hostname })
+      : pathname;
     const responseStagePolicyHeaders = resolveResponseStageCachePolicy({
       basePathState: { basePath, hadBasePath },
       configHeaders,
-      pathname,
+      pathname: responseStagePolicyPathname,
       requestContext: requestContextFromRequest(request),
     });
 

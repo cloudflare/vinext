@@ -291,6 +291,46 @@ describe("createAppRscHandler", () => {
     ]);
   });
 
+  it("transports safe config cache policy to a hybrid Pages response stage", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("pages-stage")),
+    );
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/pages",
+          headers: [{ key: "Cache-Control", value: "public, s-maxage=36" }],
+        },
+        {
+          source: "/pages",
+          has: [{ type: "cookie", key: "preview", value: "1" }],
+          headers: [{ key: "CDN-Cache-Control", value: "public, s-maxage=120" }],
+        },
+      ],
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async (options) =>
+        options.dispatchPagesResponseStage?.(options.request, "page") ?? null,
+    });
+
+    await handler(
+      new Request("https://example.test/docs/pages", {
+        headers: { Cookie: "preview=1" },
+      }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage).toHaveBeenCalledOnce();
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
+      kind: "hybrid-pages",
+      cacheability: {
+        policyHeaders: [["Cache-Control", "public, s-maxage=36"]],
+      },
+    });
+  });
+
   it("bypasses the staged cache for an unverified interception context", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
@@ -357,6 +397,33 @@ describe("createAppRscHandler", () => {
         PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
       ),
     ).toBe("1");
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+  });
+
+  it("dispatches authenticated hybrid Pages probes outside the shared cache", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("probe")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async (options) =>
+        options.dispatchPagesResponseStage?.(options.request, "page") ?? null,
+    });
+
+    await handler(
+      new Request("https://example.test/docs/pages"),
+      null,
+      false,
+      dispatchResponseStage,
+      "probe",
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
+      kind: "hybrid-pages",
+      cacheability: { probeMode: "probe" },
+    });
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
   });
 
