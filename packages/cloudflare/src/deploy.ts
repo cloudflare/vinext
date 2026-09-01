@@ -66,12 +66,14 @@ import {
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
+  resolveCdnAdapterConfig,
   resolveKvDataAdapterConfig,
   viteConfigHasCacheAdapter,
   viteConfigHasCloudflarePlugin,
   viteConfigHasImageAdapter,
   workerEntryHasCacheHandler,
 } from "./deploy-config.js";
+import { assertCdnVersionMetadataConfig } from "./wrangler-version-metadata.js";
 import {
   runWranglerDeploymentStatus,
   runWranglerTriggersDeploy,
@@ -166,6 +168,20 @@ export type DeployOptions = {
 };
 
 type ProjectViteApi = Pick<typeof import("vite"), "createBuilder" | "loadConfigFromFile">;
+
+type ProjectWranglerApi = {
+  unstable_readConfig(
+    args: { config?: string; env?: string },
+    options: {
+      hideWarnings: true;
+      preserveOriginalMain: true;
+      useRedirectIfAvailable: true;
+    },
+  ): {
+    configPath?: string;
+    version_metadata?: { binding: string };
+  };
+};
 
 type DeployViteConfigMetadata = {
   cacheConfig: VinextCacheConfig | null;
@@ -457,6 +473,18 @@ async function loadProjectViteApi(root: string): Promise<ProjectViteApi> {
   return (await import(/* @vite-ignore */ viteUrl)) as ProjectViteApi;
 }
 
+async function loadProjectWranglerApi(root: string): Promise<ProjectWranglerApi> {
+  const req = createRequire(path.join(root, "package.json"));
+  let wranglerPath: string;
+  try {
+    wranglerPath = req.resolve("wrangler");
+  } catch {
+    const cloudflarePluginPath = req.resolve("@cloudflare/vite-plugin");
+    wranglerPath = createRequire(cloudflarePluginPath).resolve("wrangler");
+  }
+  return (await import(/* @vite-ignore */ pathToFileURL(wranglerPath).href)) as ProjectWranglerApi;
+}
+
 async function loadDeployViteConfigMetadata(root: string): Promise<DeployViteConfigMetadata> {
   const vite = await loadProjectViteApi(root);
   const loaded = await vite.loadConfigFromFile(
@@ -466,9 +494,9 @@ async function loadDeployViteConfigMetadata(root: string): Promise<DeployViteCon
   );
   const plugins = loaded?.config.plugins;
   return {
-    cacheConfig: viteConfigHasCacheAdapter(root)
-      ? await findVinextCacheConfigInPlugins(plugins)
-      : null,
+    // The executed Vite config is authoritative. Source scans cannot see
+    // imported or composed cache objects and must not suppress valid metadata.
+    cacheConfig: await findVinextCacheConfigInPlugins(plugins),
     nextConfig: await findVinextNextConfigInPlugins(plugins),
     prerenderConfig: await findVinextPrerenderConfigInPlugins(plugins),
     routeRootConfig: await findVinextRouteRootConfigInPlugins(plugins),
@@ -1883,6 +1911,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   const viteConfigMetadata = await withCloudflareEnv(buildEnv, () =>
     loadDeployViteConfigMetadata(info.root),
   );
+  const cdnAdapterConfig = resolveCdnAdapterConfig(viteConfigMetadata.cacheConfig);
   const nextConfig = await withCloudflareEnv(buildEnv, async () => {
     const inlineNextConfig = viteConfigMetadata.nextConfig;
     const rawNextConfig = inlineNextConfig
@@ -1907,12 +1936,35 @@ export async function deploy(options: DeployOptions): Promise<void> {
     viteConfigMetadata.cacheConfig,
   );
   const shouldEmitPrerenderPathManifest = !options.skipBuild && prerenderDecision;
-
   // Step 5: Build
   if (!options.skipBuild) {
     await runBuild(info, buildEnv);
   } else {
     console.log("\n  Skipping build (--skip-build)");
+  }
+
+  if (options.warmCdnCache && cdnAdapterConfig) {
+    const wrangler = await loadProjectWranglerApi(info.root);
+    const previousCwd = process.cwd();
+    try {
+      // Wrangler resolves its generated deploy redirect relative to cwd.
+      process.chdir(info.root);
+      const config = wrangler.unstable_readConfig(
+        { config: options.config, env: buildEnv },
+        {
+          hideWarnings: true,
+          preserveOriginalMain: true,
+          useRedirectIfAvailable: true,
+        },
+      );
+      assertCdnVersionMetadataConfig({
+        binding: cdnAdapterConfig.versionMetadataBinding,
+        configuredBinding: config.version_metadata?.binding,
+        configPath: config.configPath,
+      });
+    } finally {
+      process.chdir(previousCwd);
+    }
   }
 
   if (shouldEmitPrerenderPathManifest) {

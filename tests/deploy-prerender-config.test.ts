@@ -1,12 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
 const emitPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
+const realWranglerUrl = pathToFileURL(
+  createRequire(path.join(process.cwd(), "examples/app-router-cloudflare/package.json")).resolve(
+    "wrangler",
+  ),
+).href;
 
 vi.mock("vinext/internal/build/run-prerender", () => ({
   runPrerender: runPrerenderMock,
@@ -164,18 +171,27 @@ function writeApiOnlyProject(): void {
     "export function cloudflare() { return { name: 'test-cloudflare-plugin' }; }\n",
   );
   writeFile(
+    "node_modules/wrangler/package.json",
+    JSON.stringify({ name: "wrangler", type: "module", main: "index.js" }),
+  );
+  writeFile(
+    "node_modules/wrangler/index.js",
+    `export * from ${JSON.stringify(realWranglerUrl)};\n`,
+  );
+  writeFile(
     "wrangler.jsonc",
-    '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"},"version_metadata":{"binding":"CF_VERSION_METADATA"}}\n',
   );
   writeFile(
     "vite.config.ts",
     [
       'import { defineConfig } from "vite";',
       'import { cloudflare } from "@cloudflare/vite-plugin";',
+      'import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter";',
       'import vinext from "../packages/vinext/src/index";',
       "",
       "export default defineConfig({",
-      "  plugins: [vinext(), cloudflare()],",
+      "  plugins: [vinext({ cache: { cdn: { adapter: cdnAdapter().adapter } } }), cloudflare()],",
       "});",
       "",
     ].join("\n"),
@@ -195,6 +211,21 @@ describe("deploy prerender config wiring", () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("rejects a missing CDN version binding before uploading", async () => {
+    writeApiOnlyProject();
+    writeFile(
+      "wrangler.jsonc",
+      '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true })).rejects.toThrow(
+      "does not declare version_metadata",
+    );
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it("runs prerender during deploy when vinext config uses the true shorthand", async () => {

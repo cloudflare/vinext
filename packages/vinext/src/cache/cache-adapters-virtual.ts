@@ -49,6 +49,13 @@ export type CdnCacheAdapterCapabilities = {
   routeCacheability?: "probe-manifest";
 };
 
+export type CacheAdapterBuildOutput = {
+  /** Whether this adapter owns output for the resolved build platform. */
+  matchesBuild?: (build: { plugins: readonly { name?: string }[] }) => boolean;
+  /** Finalize an emitted directory after other platform output hooks. */
+  finalizeBuildOutput?: (output: { root: string; outDir: string }) => Promise<void> | void;
+};
+
 export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
   /**
    * Module specifier (or absolute path, e.g. from `require.resolve(...)`) whose
@@ -57,6 +64,8 @@ export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<st
   adapter: string;
   /** JSON-serializable options forwarded to the factory at runtime. */
   options?: O;
+  /** Optional adapter-owned finalization for platform-generated build output. */
+  output?: CacheAdapterBuildOutput;
   /** Build-time cache semantics used by shared request protocol code. */
   capabilities?: CdnCacheAdapterCapabilities;
 };
