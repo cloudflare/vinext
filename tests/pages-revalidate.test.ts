@@ -6,6 +6,11 @@ import {
 } from "../packages/vinext/src/server/isr-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { VINEXT_REVALIDATE_HOST_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { encodeCacheTag } from "../packages/vinext/src/utils/encode-cache-tag.js";
 
 function stubFetch() {
   const fetchMock = vi.fn(
@@ -57,6 +62,7 @@ function fetchHeadersAt(
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  setCdnCacheAdapter(new DefaultCdnCacheAdapter());
 });
 
 describe("performOnDemandRevalidate", () => {
@@ -99,6 +105,20 @@ describe("performOnDemandRevalidate", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     const url = firstFetchUrl(fetchMock);
     expect(url.href).toBe("http://app.local:3000/fixed-page");
+  });
+
+  it("purges the regenerated path from a fronting CDN after success", async () => {
+    stubFetch();
+    const adapter = new DefaultCdnCacheAdapter();
+    const revalidateTag = vi.spyOn(adapter, "revalidateTag");
+    setCdnCacheAdapter(adapter);
+
+    await performOnDemandRevalidate(
+      new Headers({ host: "app.local:3000" }),
+      "/fixed-page/?view=one",
+    );
+
+    expect(revalidateTag).toHaveBeenCalledExactlyOnceWith(encodeCacheTag("_N_T_/fixed-page"));
   });
 
   it("preserves unstable_onlyGenerated on the pinned request", async () => {
@@ -196,6 +216,9 @@ describe("performOnDemandRevalidate", () => {
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
+    const adapter = new DefaultCdnCacheAdapter();
+    const revalidateTag = vi.spyOn(adapter, "revalidateTag");
+    setCdnCacheAdapter(adapter);
     const headers = new Headers({ host: "app.local:3000" });
 
     await expect(performOnDemandRevalidate(headers, "/fixed-page")).rejects.toThrow(
@@ -204,6 +227,7 @@ describe("performOnDemandRevalidate", () => {
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchUrlAt(fetchMock, 0).href).toBe("http://app.local:3000/fixed-page");
+    expect(revalidateTag).not.toHaveBeenCalled();
   });
 
   it("accepts a terminal external GSP redirect marked REVALIDATED without following it", async () => {

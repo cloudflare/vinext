@@ -25,7 +25,9 @@ import {
 } from "./isr-cache.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { normalizeDomainHostname } from "../utils/domain-locale.js";
+import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 
 export type RevalidateOptions = {
   /**
@@ -102,6 +104,15 @@ export async function performOnDemandRevalidate(
   if (!ok) {
     throw new Error(`Failed to revalidate ${urlPath}: ${res.status}`);
   }
+
+  // The regenerated Pages artifact has already been written to the origin
+  // cache at this point. Propagate the same implicit path invalidation to a
+  // fronting CDN so its next ordinary request cannot replay the old response.
+  // Do not invalidate the data-cache tag here: that would delete the fresh
+  // artifact that the authenticated HEAD request just produced.
+  const pathname = target.pathname;
+  const stem = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  await getCdnCacheAdapter().revalidateTag(encodeCacheTag(`_N_T_${stem || "/"}`));
 }
 
 function readSourceHeader(source: IncomingMessage | Headers, key: string): string | undefined {
