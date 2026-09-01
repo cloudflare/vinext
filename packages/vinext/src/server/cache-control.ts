@@ -3,6 +3,7 @@ import {
   isNonCacheableCacheControl,
   type CdnCacheableHeaderInput,
 } from "vinext/shims/cdn-cache";
+import { recordRouteCacheabilityCdnTags } from "vinext/shims/cacheability-classification";
 
 export { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 
@@ -82,6 +83,7 @@ export async function validateCdnRequest(request: Request): Promise<Response | n
  * owns before applying that map.
  */
 export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
+  recordRouteCacheabilityCdnTags(input.tags);
   headers.delete("Cache-Control");
   const useNextDeployPolicy =
     shouldUseNextDeployCacheControl() && isSharedCacheControl(input.cacheControl);

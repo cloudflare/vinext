@@ -27,6 +27,8 @@ export type RouteCacheabilityState = {
   captureDeadlineAt: number;
   complete?: (outcome: RouteCacheabilityOutcome) => void;
   completion?: Promise<RouteCacheabilityOutcome>;
+  /** Canonical framework tags most recently handed to the active CDN adapter. */
+  cdnCacheTags?: readonly string[];
   completedResponseBody?: boolean;
   /** Whether admission must translate a completed response through the active adapter. */
   applyCompletedResponsePolicy?: boolean;
@@ -55,6 +57,14 @@ export type RouteCacheabilityState = {
     pattern: string;
   };
 };
+
+/** Retain canonical tags across completed-response admission and adapter header shaping. */
+export function recordRouteCacheabilityCdnTags(tags: readonly string[] | undefined): void {
+  if (tags === undefined) return;
+  const state = readRouteCacheabilityState();
+  if (state?.mode !== "admit") return;
+  state.cdnCacheTags = [...tags];
+}
 
 /** Preserve the existing policy when hybrid routing hands the request to Pages Router. */
 export function preserveRouteCacheabilityResponsePolicy(): void {

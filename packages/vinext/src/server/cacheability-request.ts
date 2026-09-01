@@ -612,18 +612,10 @@ function inferFinalAppPageCacheability(
 
   const cacheControl = response.headers.get(changedPolicy)!;
   if (isNonCacheableCacheControl(cacheControl)) return { cacheable: false };
-  const cacheTag = response.headers.get("Cache-Tag");
   return {
     cacheable: true,
     cacheControl,
-    ...(cacheTag
-      ? {
-          tags: cacheTag
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean),
-        }
-      : {}),
+    ...(state.cdnCacheTags ? { tags: state.cdnCacheTags } : {}),
   };
 }
 
@@ -638,18 +630,10 @@ function inferPagesPageCacheability(
   if (!cacheControl || isNonCacheableCacheControl(cacheControl)) {
     return { cacheable: false };
   }
-  const cacheTag = response.headers.get("Cache-Tag");
   return {
     cacheable: true,
     cacheControl,
-    ...(cacheTag
-      ? {
-          tags: cacheTag
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean),
-        }
-      : {}),
+    ...(state.cdnCacheTags ? { tags: state.cdnCacheTags } : {}),
   };
 }
 
