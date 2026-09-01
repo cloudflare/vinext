@@ -6,8 +6,9 @@ export type VinextResponseStageDispatchOptions = {
   /**
    * Whether the adapter may use its shared response transport. Bypassed work
    * still uses the same response stage, but must not pass through a host cache.
-   * A shared transport must partition entries by the exact request path and
-   * query plus the complete serialized stage props; both can affect the bytes.
+   * A shared transport must partition entries by the request method, exact
+   * path and query, plus the complete serialized stage props; each can affect
+   * handler selection or response bytes.
    */
   cache: "shared" | "bypass";
 };
@@ -29,8 +30,8 @@ export type VinextResponseStageCacheability = {
  *
  * The props and options are serializable stage metadata. An adapter may carry
  * them over in-process dispatch, platform RPC, a service binding, or HTTP. If
- * it caches shared dispatches, its identity must include the exact request path
- * and query plus the complete serialized props.
+ * it caches shared dispatches, its identity must include the request method,
+ * exact path and query, plus the complete serialized props.
  */
 export type VinextResponseStageTransport<Props = unknown> = (
   request: Request,

@@ -5,7 +5,10 @@ import {
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
-import { VINEXT_REVALIDATE_HOST_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_REVALIDATED_CACHE_TAG_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -107,18 +110,25 @@ describe("performOnDemandRevalidate", () => {
     expect(url.href).toBe("http://app.local:3000/fixed-page");
   });
 
-  it("purges the regenerated path from a fronting CDN after success", async () => {
-    stubFetch();
+  it.each([
+    ["a rewritten source", "/alias?view=one", "_N_T_/source"],
+    ["a base-path-stripped source", "/docs/fixed-page", "_N_T_/fixed-page"],
+  ])("purges the actual regenerated tag for %s", async (_name, requestedPath, regeneratedTag) => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(null, {
+          headers: { [VINEXT_REVALIDATED_CACHE_TAG_HEADER]: regeneratedTag },
+          status: 200,
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
     const adapter = new DefaultCdnCacheAdapter();
     const revalidateTag = vi.spyOn(adapter, "revalidateTag");
     setCdnCacheAdapter(adapter);
 
-    await performOnDemandRevalidate(
-      new Headers({ host: "app.local:3000" }),
-      "/fixed-page/?view=one",
-    );
+    await performOnDemandRevalidate(new Headers({ host: "app.local:3000" }), requestedPath);
 
-    expect(revalidateTag).toHaveBeenCalledExactlyOnceWith(encodeCacheTag("_N_T_/fixed-page"));
+    expect(revalidateTag).toHaveBeenCalledExactlyOnceWith(encodeCacheTag(regeneratedTag));
   });
 
   it("preserves unstable_onlyGenerated on the pinned request", async () => {

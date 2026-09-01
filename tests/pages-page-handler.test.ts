@@ -27,6 +27,7 @@ import {
   PRERENDER_REVALIDATE_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
+import { VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -356,7 +357,7 @@ describe("createPagesPageHandler — on-demand terminal responses", () => {
       }),
     );
     const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
-    const request = new Request("http://localhost/redirect", {
+    const request = new Request("http://localhost/alias", {
       headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
     });
 
@@ -364,6 +365,7 @@ describe("createPagesPageHandler — on-demand terminal responses", () => {
 
     expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
     expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get(VINEXT_REVALIDATED_CACHE_TAG_HEADER)).toBe("_N_T_/redirect");
   });
 });
 

@@ -28,6 +28,7 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATED_CACHE_TAG_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
@@ -919,6 +920,7 @@ describe("filterInternalHeaders", () => {
       [VINEXT_PRERENDER_CACHE_LIFE_HEADER]: "forged",
       [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
       [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "forged",
+      [VINEXT_REVALIDATED_CACHE_TAG_HEADER]: "forged",
       [VINEXT_REVALIDATE_HOST_HEADER]: "example.fr",
       "user-agent": "test",
     });
@@ -935,6 +937,7 @@ describe("filterInternalHeaders", () => {
       VINEXT_PRERENDER_SPECULATIVE_HEADER,
       VINEXT_PRERENDER_CACHE_LIFE_HEADER,
       VINEXT_REVALIDATE_HOST_HEADER,
+      VINEXT_REVALIDATED_CACHE_TAG_HEADER,
     ]);
     for (const name of VINEXT_INTERNAL_HEADERS) {
       expect(name).toBe(name.toLowerCase());
@@ -945,6 +948,7 @@ describe("filterInternalHeaders", () => {
     expect(result.has(VINEXT_PRERENDER_SPECULATIVE_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
     expect(result.has(VINEXT_REVALIDATE_HOST_HEADER)).toBe(false);
+    expect(result.has(VINEXT_REVALIDATED_CACHE_TAG_HEADER)).toBe(false);
     expect(result.get("cloudflare-workers-version-overrides")).toBe('downstream="version-id"');
     expect(result.get("user-agent")).toBe("test");
   });
@@ -1210,6 +1214,25 @@ describe("cloneRequestWithHeaders", () => {
     expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
   });
 
+  it("preserves a lazy cf accessor without reading it while cloning headers", () => {
+    const original = new Request("http://localhost");
+    let reads = 0;
+    Object.defineProperty(original, "cf", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        reads += 1;
+        return { country: "US" };
+      },
+    });
+
+    const cloned = cloneRequestWithHeaders(original, new Headers());
+
+    expect(reads).toBe(0);
+    expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
+    expect(reads).toBe(1);
+  });
+
   it("replaces headers while preserving all other metadata", () => {
     const controller = new AbortController();
     const original = new Request("http://localhost/path?x=1", {
@@ -1273,6 +1296,25 @@ describe("cloneRequestWithUrl", () => {
     });
     const cloned = cloneRequestWithUrl(original, "http://localhost/path");
     expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
+  });
+
+  it("preserves a lazy cf accessor without reading it while cloning URLs", () => {
+    const original = new Request("http://localhost/path?_rsc=abc");
+    let reads = 0;
+    Object.defineProperty(original, "cf", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        reads += 1;
+        return { country: "US" };
+      },
+    });
+
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path");
+
+    expect(reads).toBe(0);
+    expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
+    expect(reads).toBe(1);
   });
 
   it("preserves body readability for streaming requests", async () => {
