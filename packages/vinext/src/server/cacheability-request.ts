@@ -72,14 +72,15 @@ function cacheabilityVaryRejectionReason(
     : null;
 }
 
-export function createWorkerCacheabilityContext(
-  base: ExecutionContextLike,
+export type WorkerCacheabilityProbeMode = "identity" | "probe";
+
+/** Authenticate and read the cacheability probe mode before internal headers are filtered. */
+export function readWorkerCacheabilityProbeMode(
   request: Request,
   expectedSecret: string | null | undefined,
-  responseVary?: "verbatim",
-): ExecutionContextLike {
+): WorkerCacheabilityProbeMode | null {
   const requestedMode = request.headers.get(VINEXT_CACHEABILITY_PROBE_HEADER);
-  if (requestedMode !== "1" && requestedMode !== "identity") return base;
+  if (requestedMode !== "1" && requestedMode !== "identity") return null;
   if (
     !expectedSecret ||
     !workerCapabilityMatches(
@@ -87,17 +88,36 @@ export function createWorkerCacheabilityContext(
       expectedSecret,
     )
   ) {
-    return base;
+    return null;
   }
 
+  return requestedMode === "identity" ? "identity" : "probe";
+}
+
+/** Create probe state from a mode that was authenticated at the request boundary. */
+export function createWorkerCacheabilityProbeContext(
+  base: ExecutionContextLike,
+  mode: WorkerCacheabilityProbeMode,
+  responseVary?: "verbatim",
+): ExecutionContextLike {
   const state: RouteCacheabilityState = {
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
-    mode: requestedMode === "identity" ? "identity" : "probe",
+    mode,
     responseVary,
   };
   return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
     [CACHEABILITY_REQUEST_STATE]: state,
   });
+}
+
+export function createWorkerCacheabilityContext(
+  base: ExecutionContextLike,
+  request: Request,
+  expectedSecret: string | null | undefined,
+  responseVary?: "verbatim",
+): ExecutionContextLike {
+  const mode = readWorkerCacheabilityProbeMode(request, expectedSecret);
+  return mode ? createWorkerCacheabilityProbeContext(base, mode, responseVary) : base;
 }
 
 let cachedManifest:
@@ -120,8 +140,15 @@ export function createWorkerCacheabilityAdmissionContext(
   buildId: string | null | undefined,
   requiresCompletedResponseAdmission = rawManifest != null,
   responseVary?: "verbatim",
+  resolvedRoutePathname?: string,
 ): ExecutionContextLike {
   const identity = cacheabilityRequestIdentity(request);
+  const routePathname = identity
+    ? cacheabilityRoutePathname(
+        resolvedRoutePathname ?? new URL(request.url).pathname,
+        identity.representation,
+      )
+    : undefined;
   if (!rawManifest) {
     if (!requiresCompletedResponseAdmission) return base;
     const state: RouteCacheabilityState = {
@@ -129,10 +156,7 @@ export function createWorkerCacheabilityAdmissionContext(
         ? {
             policy: "runtime",
             ...identity,
-            routePathname: cacheabilityRoutePathname(
-              new URL(request.url).pathname,
-              identity.representation,
-            ),
+            routePathname,
           }
         : { policy: "deny" },
       captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
@@ -153,10 +177,7 @@ export function createWorkerCacheabilityAdmissionContext(
             manifest,
             policy: "manifest",
             ...identity,
-            routePathname: cacheabilityRoutePathname(
-              new URL(request.url).pathname,
-              identity.representation,
-            ),
+            routePathname,
           }
         : { policy: "deny" },
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
