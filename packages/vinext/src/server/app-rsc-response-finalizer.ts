@@ -39,6 +39,8 @@ type FinalizeAppRscResponseOptions = {
   overwriteExisting?: ReadonlySet<string>;
   /** Response headers emitted by middleware after config matching. */
   middlewareHeaders?: Headers | null;
+  /** Whether config matching should update the active cacheability classification. */
+  recordCacheability?: boolean;
 };
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
@@ -86,6 +88,7 @@ export async function applyAppRscConfigHeaders(
     basePathState: { basePath: options.basePath, hadBasePath },
     appendToPostConfigLink: hasPostConfigLinkHeaders(headers),
     middlewareHeaders: options.middlewareHeaders,
+    recordCacheability: options.recordCacheability,
     // Next.js next.config headers override its renderer-owned Cache-Control,
     // including for force-dynamic App Pages. Other response headers retain
     // the existing merge precedence.

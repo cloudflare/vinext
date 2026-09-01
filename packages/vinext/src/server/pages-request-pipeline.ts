@@ -172,6 +172,8 @@ export type PagesPipelineDeps = {
   isDataRequest: boolean; // trusted data classification for middleware protocol handling
   hasMiddleware: boolean; // true only when the app defines middleware/proxy
   ctx?: unknown; // Cloudflare ExecutionContext or undefined (for Node)
+  /** False when routing and middleware run outside the shared response stage. */
+  recordCacheability?: boolean;
   // Raw, un-re-encoded query string (incl. leading "?") for building redirect Location
   // headers. Node adapters that build the Web Request from a raw req.url string should
   // pass it so the redirect query isn't re-encoded by URL parsing (e.g. a literal "#"
@@ -343,6 +345,10 @@ export async function runPagesRequest(
     isDataReq,
     isDataRequest,
   } = deps;
+  const conditionalRedirectCacheability =
+    deps.recordCacheability === false ? undefined : markConditionalRedirectCacheability;
+  const conditionalRewriteCacheability =
+    deps.recordCacheability === false ? undefined : markConditionalRewriteCacheability;
 
   // Proxy helper: use deps.proxyExternal when supplied (dev adapter forwards
   // Node req body), otherwise fall back to proxyExternalRequest(currentReq, url).
@@ -392,7 +398,7 @@ export async function runPagesRequest(
       configRedirects,
       reqCtx,
       basePathState,
-      markConditionalRedirectCacheability,
+      conditionalRedirectCacheability,
     );
     if (redirect) {
       // Only prepend basePath when the request was actually under basePath.
@@ -431,6 +437,7 @@ export async function runPagesRequest(
       pathname: requestConfigMatchPathname,
       requestContext: reqCtx,
       basePathState,
+      recordCacheability: deps.recordCacheability,
     });
     return mergeHeaders(response, matchedConfigHeaders);
   };
@@ -473,7 +480,7 @@ export async function runPagesRequest(
       isDataRequest,
     });
 
-    if (result.pathnameEligible) {
+    if (deps.recordCacheability !== false && result.pathnameEligible) {
       markRouteCacheabilityDynamic("middleware can match this pathname");
     }
 
@@ -630,6 +637,7 @@ export async function runPagesRequest(
       pathname: requestConfigMatchPathname,
       requestContext: reqCtx,
       basePathState,
+      recordCacheability: deps.recordCacheability,
     });
   }
 
@@ -660,7 +668,7 @@ export async function runPagesRequest(
       rewriteRequestContext(),
       basePathState,
       configSourcePathname(),
-      markConditionalRewriteCacheability,
+      conditionalRewriteCacheability,
     );
     if (rewritten) {
       if (isExternalUrl(rewritten)) {
@@ -767,7 +775,7 @@ export async function runPagesRequest(
         rewriteRequestContext(),
         basePathState,
         configSourcePathname(),
-        markConditionalRewriteCacheability,
+        conditionalRewriteCacheability,
       );
       if (rewritten) {
         if (isExternalUrl(rewritten)) {
@@ -821,7 +829,7 @@ export async function runPagesRequest(
           rewriteRequestContext(),
           basePathState,
           configSourcePathname(),
-          markConditionalRewriteCacheability,
+          conditionalRewriteCacheability,
         );
         if (!fallbackRewrite) continue;
         if (isExternalUrl(fallbackRewrite)) {
@@ -875,7 +883,7 @@ export async function runPagesRequest(
           rewriteRequestContext(),
           basePathState,
           configSourcePathname(),
-          markConditionalRewriteCacheability,
+          conditionalRewriteCacheability,
         );
         if (!fallbackRewrite) continue;
         if (isExternalUrl(fallbackRewrite)) {
@@ -966,7 +974,7 @@ export async function runPagesRequest(
         rewriteRequestContext(),
         basePathState,
         configSourcePathname(),
-        markConditionalRewriteCacheability,
+        conditionalRewriteCacheability,
       );
       if (!fallbackRewrite) continue;
       if (isExternalUrl(fallbackRewrite)) {

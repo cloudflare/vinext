@@ -108,6 +108,8 @@ type ApplyConfigHeadersOptions = {
   appendToPostConfigLink?: boolean;
   /** Middleware response headers run after config and therefore suppress config values. */
   middlewareHeaders?: Headers | null;
+  /** Whether this composition participates in response-cache admission. */
+  recordCacheability?: boolean;
 };
 
 function retainLastSingularConfigValues(
@@ -173,10 +175,10 @@ export function applyConfigHeadersToResponse(
       options.configHeaders,
       options.requestContext,
       options.basePathState,
-      markConditionalConfigHeaderCacheability,
+      options.recordCacheability === false ? undefined : markConditionalConfigHeaderCacheability,
     ),
   );
-  markExplicitConfigResponseVeto(matched);
+  if (options.recordCacheability !== false) markExplicitConfigResponseVeto(matched);
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "link") {
@@ -214,10 +216,10 @@ export function applyConfigHeadersToHeaderRecord(
       options.configHeaders,
       options.requestContext,
       options.basePathState,
-      markConditionalConfigHeaderCacheability,
+      options.recordCacheability === false ? undefined : markConditionalConfigHeaderCacheability,
     ),
   );
-  markExplicitConfigResponseVeto(matched);
+  if (options.recordCacheability !== false) markExplicitConfigResponseVeto(matched);
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "set-cookie") {

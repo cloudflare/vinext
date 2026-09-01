@@ -4,6 +4,11 @@ import worker from "../packages/vinext/src/server/pages-router-entry.js";
 import { PAGES_RESPONSE_STAGE_PROTOCOL_VERSION } from "../packages/vinext/src/server/worker-stages.js";
 import type { DispatchWorkerResponseStage } from "../packages/vinext/src/server/worker-stages.js";
 import type { MiddlewareResult } from "../packages/vinext/src/server/pages-request-pipeline.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
 
 const mocks = vi.hoisted(() => ({
   authorizeOnDemandRevalidate: vi.fn<(value: string | null) => boolean>(() => false),
@@ -110,6 +115,22 @@ describe("Pages Worker request stage", () => {
     expect(mocks.renderResponse).not.toHaveBeenCalled();
   });
 
+  it("keeps pathname-eligible middleware outside shared-stage classification", async () => {
+    mocks.runMiddleware.mockResolvedValue({ continue: true, pathnameEligible: true });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("remote"));
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "admit",
+    };
+
+    await runWithExecutionContext({ [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} }, () =>
+      handleRequestStage(new Request("https://example.com/page"), undefined, undefined, dispatch),
+    );
+
+    expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+    expect(state.forcedDynamicReason).toBeUndefined();
+  });
+
   it("dispatches a preview request through the non-shared response stage", async () => {
     const request = new Request("https://example.com/page", {
       headers: { Cookie: "__prerender_bypass=preview" },
@@ -178,16 +199,23 @@ describe("Pages Worker request stage", () => {
     );
     const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("page"));
 
-    await handleRequestStage(
-      new Request("https://example.com/page", { headers: { Cookie: "preview=1" } }),
-      undefined,
-      undefined,
-      dispatch,
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "admit",
+    };
+    await runWithExecutionContext({ [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} }, () =>
+      handleRequestStage(
+        new Request("https://example.com/page", { headers: { Cookie: "preview=1" } }),
+        undefined,
+        undefined,
+        dispatch,
+      ),
     );
 
     expect(dispatch.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
       ["Cache-Control", "public, s-maxage=60"],
     ]);
+    expect(state.forcedDynamicReason).toBeUndefined();
   });
 
   it("dispatches authenticated revalidation through the uncached response stage", async () => {

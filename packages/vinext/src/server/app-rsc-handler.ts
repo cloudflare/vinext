@@ -561,6 +561,7 @@ async function applyRewrite(
     validateExternalRewriteRequest: () => Promise<Response | null>;
   },
   cleanPathname: string,
+  recordCacheability = true,
 ): Promise<Response | string | null> {
   if (!HAS_CONFIG_REWRITES || !options.rewrites.length) return null;
 
@@ -572,7 +573,7 @@ async function applyRewrite(
     options.requestContext,
     options.basePathState,
     options.paramsPathname,
-    markConditionalRewriteCacheability,
+    recordCacheability ? markConditionalRewriteCacheability : undefined,
   );
   if (!rewritten) return null;
 
@@ -609,6 +610,7 @@ async function applyConfigHeadersToMiddlewareRedirect(
     basePathState: BasePathMatchState;
     configHeaders: NextHeader[];
     pathname: string;
+    recordCacheability: boolean;
     requestContext: RequestContext;
   },
 ): Promise<Response> {
@@ -625,6 +627,7 @@ async function applyConfigHeadersToMiddlewareRedirect(
     pathname: options.pathname,
     requestContext: options.requestContext,
     basePathState: options.basePathState,
+    recordCacheability: options.recordCacheability,
   });
 
   if (!headers.entries().next().done) {
@@ -917,7 +920,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         options.configRedirects,
         preMiddlewareRequestContext,
         basePathState,
-        markConditionalRedirectCacheability,
+        dispatchResponseStage ? undefined : markConditionalRedirectCacheability,
       )
     : null;
   if (configMatchers && redirect) {
@@ -985,7 +988,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       request: userlandRequest,
       validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
     });
-    if (middlewareResult.pathnameEligible) {
+    if (!dispatchResponseStage && middlewareResult.pathnameEligible) {
       // Next.js runs matched middleware before serving a page response. A CDN
       // HIT in front of this Worker would skip that request-specific boundary,
       // so this architecture must remain private until middleware is isolated
@@ -1004,6 +1007,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         basePathState,
         configHeaders: options.configHeaders,
         pathname: matchPathname(requestCleanPathname),
+        recordCacheability: dispatchResponseStage === undefined,
         requestContext: preMiddlewareRequestContext,
       });
     }
@@ -1158,6 +1162,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       configHeaders: options.configHeaders,
       i18nConfig: options.i18nConfig,
       overwriteExisting: STAGED_CONFIG_HEADER_OVERRIDES,
+      recordCacheability: dispatchResponseStage === undefined,
       requestContext: preMiddlewareRequestContext,
     });
     return preserveFullyBufferedBodyMetadata(
@@ -1204,6 +1209,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
       },
       matchPathname(cleanPathname),
+      dispatchResponseStage === undefined,
     );
     if (beforeFilesRewrite instanceof Response) return beforeFilesRewrite;
     if (beforeFilesRewrite) {
@@ -1244,6 +1250,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
         matchPathname(cleanPathname),
+        dispatchResponseStage === undefined,
       );
       if (rewritten instanceof Response) return rewritten;
       if (!rewritten) continue;
@@ -1273,6 +1280,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
           },
           matchPathname(cleanPathname),
+          dispatchResponseStage === undefined,
         );
         if (rewritten instanceof Response) return rewritten;
         if (!rewritten) continue;
@@ -1488,7 +1496,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         void sourceRequest.body.cancel().catch(() => {});
       }
     }
-    if (sourceMiddlewareResult.pathnameEligible) {
+    if (!dispatchResponseStage && sourceMiddlewareResult.pathnameEligible) {
       markRouteCacheabilityDynamic(
         sourceMiddlewareResult.matched
           ? "middleware matched this request"
@@ -1644,6 +1652,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         basePath: options.basePath,
         configHeaders: options.configHeaders,
         i18nConfig: options.i18nConfig,
+        recordCacheability: dispatchResponseStage === undefined,
         requestContext: preMiddlewareRequestContext,
       },
     );
@@ -1791,6 +1800,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
         matchPathname(cleanPathname),
+        dispatchResponseStage === undefined,
       );
       if (afterFilesRewrite instanceof Response) {
         invalidateInterceptionCacheProof();
@@ -1849,6 +1859,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
         matchPathname(cleanPathname),
+        dispatchResponseStage === undefined,
       );
       if (fallbackRewrite instanceof Response) {
         invalidateInterceptionCacheProof();
@@ -2393,6 +2404,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
             middlewareHeaders: middlewareContext.headers,
+            recordCacheability: dispatchResponseStage === undefined,
             requestContext: preMiddlewareRequestContext,
           });
           return interceptionResponseUncacheable

@@ -282,18 +282,25 @@ describe("createAppRscHandler", () => {
       ],
     });
 
-    await handler(
-      new Request("https://example.test/docs/about", {
-        headers: { Cookie: "preview=1" },
-      }),
-      null,
-      false,
-      dispatchResponseStage,
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "admit",
+    };
+    await runWithExecutionContext({ [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} }, () =>
+      handler(
+        new Request("https://example.test/docs/about", {
+          headers: { Cookie: "preview=1" },
+        }),
+        null,
+        false,
+        dispatchResponseStage,
+      ),
     );
 
     expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
       ["Cache-Control", "public, s-maxage=60"],
     ]);
+    expect(state.forcedDynamicReason).toBeUndefined();
   });
 
   it("transports safe config cache policy to a hybrid Pages response stage", async () => {
@@ -654,15 +661,19 @@ describe("createAppRscHandler", () => {
       dispatchMatchedPage,
     });
 
-    const response = await handler(
-      new Request("https://example.test/docs/about"),
-      null,
-      false,
-      dispatchResponseStage,
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "admit",
+    };
+    const response = await runWithExecutionContext(
+      { [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} },
+      () =>
+        handler(new Request("https://example.test/docs/about"), null, false, dispatchResponseStage),
     );
 
     expect(dispatchResponseStage).toHaveBeenCalledOnce();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    expect(state.finalResponseVetoReason).toBeUndefined();
     expect(response.headers.get(name)).toBe(value);
     expect(await response.text()).toBe("shared-stage");
   });
@@ -682,15 +693,19 @@ describe("createAppRscHandler", () => {
       },
     });
 
-    const response = await handler(
-      new Request("https://example.test/docs/about"),
-      null,
-      false,
-      dispatchResponseStage,
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "admit",
+    };
+    const response = await runWithExecutionContext(
+      { [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} },
+      () =>
+        handler(new Request("https://example.test/docs/about"), null, false, dispatchResponseStage),
     );
 
     expect(dispatchResponseStage).toHaveBeenCalledOnce();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    expect(state.forcedDynamicReason).toBeUndefined();
     expect(response.headers.get("Vary")).toContain("Cookie");
     expect(await response.text()).toBe("shared-stage");
   });

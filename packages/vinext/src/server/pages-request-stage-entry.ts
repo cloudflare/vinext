@@ -325,6 +325,7 @@ async function handleRequest(
       isDataRequest: isDataReq,
       hasMiddleware,
       ctx,
+      recordCacheability: forceCacheBypass,
       middlewareRequest:
         isDataReq && vinextConfig?.skipProxyUrlNormalize ? middlewareRequest : undefined,
       dataNotFoundResponse: vinextConfig?.skipProxyUrlNormalize ? dataNorm.notFoundResponse : null,
