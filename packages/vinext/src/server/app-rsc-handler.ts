@@ -80,7 +80,7 @@ import {
   isOnDemandRevalidateRequest,
   PRERENDER_REVALIDATE_HEADER,
 } from "./revalidation-request.js";
-import { prepareResponseStageDispatch } from "./worker-stages.js";
+import { prepareSharedAppPageDispatch } from "./worker-stages.js";
 import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
@@ -1075,8 +1075,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               : canUseSharedWorkerResponseStage
                 ? "shared"
                 : "bypass";
-          const response = await dispatchResponseStage(
-            prepareResponseStageDispatch(stageRequest, cache),
+          let response = await dispatchResponseStage(
+            props.kind === "app-page"
+              ? prepareSharedAppPageDispatch(stageRequest, cache)
+              : stageRequest,
             {
               ...props,
               cacheability: {
@@ -1086,6 +1088,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             },
             { cache },
           );
+          if (stageRequest.method.toUpperCase() === "HEAD" && response.body) {
+            await response.body.cancel();
+            response = new Response(null, {
+              headers: response.headers,
+              status: response.status,
+              statusText: response.statusText,
+            });
+          }
           if (props.kind !== "app-page" || !props.isRscRequest) {
             return response;
           }
@@ -1698,10 +1708,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               : canUseSharedWorkerResponseStage
                 ? "shared"
                 : "bypass";
-          const renderRequest = prepareResponseStageDispatch(
-            responseStageRequest(stageRequest),
-            cache,
-          );
+          const renderRequest = responseStageRequest(stageRequest);
           const response = await dispatchResponseStage(
             renderRequest,
             {

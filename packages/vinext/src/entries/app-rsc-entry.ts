@@ -406,14 +406,14 @@ function __isMetadataPath(pathname) {
     return false;
   });
 }
-function __usesFullRequestGraph(request) {
+function __usesFullRequestGraph(request, probeMode) {
   if (request.method !== "GET" && request.method !== "HEAD") return true;
   if (request.headers.get("upgrade")?.split(",").some((value) => value.trim().toLowerCase() === "websocket")) return true;
   if (process.env.VINEXT_PRERENDER === "1") return true;
   if (isDraftModeRequest(request, __draftModeSecret)) return true;
   if (request.headers.has("x-vinext-prerender-route-params")) return true;
   const cacheControl = request.headers.get("cache-control")?.toLowerCase() ?? "";
-  if (/(?:^|,)\\s*(?:no-cache|no-store)(?:\\s*(?:,|$)|\\s*=)/.test(cacheControl)) return true;
+  if (!probeMode && /(?:^|,)\\s*(?:no-cache|no-store)(?:\\s*(?:,|$)|\\s*=)/.test(cacheControl)) return true;
   if (__getScriptNonce(request.headers) !== undefined || __isRouteTreePrefetchRequest(request)) return true;
   const url = new URL(request.url);
   const pathname = __basePath && url.pathname.startsWith(__basePath + "/")
@@ -530,7 +530,7 @@ export default async function handleAppRequestStage(
   if (!dispatchResponseStage) {
     throw new Error("App request stage requires a response-stage dispatcher");
   }
-  if (__usesFullRequestGraph(request)) {
+  if (__usesFullRequestGraph(request, probeMode)) {
     const staticFileSignalToken = crypto.randomUUID();
     const response = await dispatchResponseStage(request, {
       kind: "app-full-request",

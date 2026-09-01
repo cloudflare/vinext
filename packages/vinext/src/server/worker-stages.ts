@@ -50,8 +50,8 @@ export type WorkerResponseStageProps =
  */
 export type DispatchWorkerResponseStage = VinextResponseStageTransport<WorkerResponseStageProps>;
 
-/** Normalize cacheable HEAD requests onto the GET representation. */
-export function prepareResponseStageDispatch(
+/** Normalize a shared App page HEAD request onto its method-invariant GET representation. */
+export function prepareSharedAppPageDispatch(
   request: Request,
   cache: VinextResponseStageDispatchOptions["cache"],
 ): Request {

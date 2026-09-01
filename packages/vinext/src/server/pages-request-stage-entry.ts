@@ -47,7 +47,6 @@ import {
 } from "./cache-control.js";
 import {
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
-  prepareResponseStageDispatch,
   type DispatchWorkerResponseStage,
   type WorkerResponseStageProps,
 } from "./worker-stages.js";
@@ -363,10 +362,9 @@ async function handleRequest(
                 request: req,
                 stagedHeaders,
               });
-        const renderRequest = prepareResponseStageDispatch(req, cache);
         const isHeadRequest = req.method.toUpperCase() === "HEAD";
         const dispatched = dispatchResponseStage(
-          renderRequest,
+          req,
           responseStageProps(cache),
           { cache },
           env,
@@ -379,7 +377,7 @@ async function handleRequest(
                 return response;
               })
             : dispatched;
-        if (!isHeadRequest || cache === "bypass") return responsePromise;
+        if (!isHeadRequest) return responsePromise;
         return responsePromise.then(async (response) => {
           await response.body?.cancel();
           return new Response(null, {

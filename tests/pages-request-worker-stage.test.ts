@@ -4,7 +4,10 @@ import worker from "../packages/vinext/src/server/pages-router-entry.js";
 import { PAGES_RESPONSE_STAGE_PROTOCOL_VERSION } from "../packages/vinext/src/server/worker-stages.js";
 import type { DispatchWorkerResponseStage } from "../packages/vinext/src/server/worker-stages.js";
 import type { MiddlewareResult } from "../packages/vinext/src/server/pages-request-pipeline.js";
-import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import {
+  runWithExecutionContext,
+  type ExecutionContextLike,
+} from "../packages/vinext/src/shims/request-context.js";
 import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
@@ -29,6 +32,12 @@ const mocks = vi.hoisted(() => ({
   })),
   runMiddleware: vi.fn<() => Promise<MiddlewareResult>>(async () => ({ continue: true })),
 }));
+
+function cacheabilityContext(state: RouteCacheabilityState): ExecutionContextLike {
+  const context: ExecutionContextLike = { waitUntil() {} };
+  Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+  return context;
+}
 
 vi.mock("virtual:vinext-cache-adapters", () => ({
   registerConfiguredCacheAdapters: mocks.registerCacheAdapters,
@@ -123,7 +132,7 @@ describe("Pages Worker request stage", () => {
       mode: "admit",
     };
 
-    await runWithExecutionContext({ [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} }, () =>
+    await runWithExecutionContext(cacheabilityContext(state), () =>
       handleRequestStage(new Request("https://example.com/page"), undefined, undefined, dispatch),
     );
 
@@ -203,7 +212,7 @@ describe("Pages Worker request stage", () => {
       captureDeadlineAt: Date.now() + 1_000,
       mode: "admit",
     };
-    await runWithExecutionContext({ [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} }, () =>
+    await runWithExecutionContext(cacheabilityContext(state), () =>
       handleRequestStage(
         new Request("https://example.com/page", { headers: { Cookie: "preview=1" } }),
         undefined,
@@ -247,7 +256,7 @@ describe("Pages Worker request stage", () => {
     expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
   });
 
-  it("normalizes shared HEAD requests to the HTML GET generation and strips the body", async () => {
+  it("preserves shared Pages HEAD request semantics and strips the body", async () => {
     const dispatch = vi.fn<DispatchWorkerResponseStage>(
       async () => new Response("cached-html", { headers: { "x-generation": "one" } }),
     );
@@ -259,7 +268,7 @@ describe("Pages Worker request stage", () => {
       dispatch,
     );
 
-    expect(dispatch.mock.calls[0]?.[0].method).toBe("GET");
+    expect(dispatch.mock.calls[0]?.[0].method).toBe("HEAD");
     expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
     expect(response.headers.get("x-generation")).toBe("one");
     expect(response.body).toBeNull();

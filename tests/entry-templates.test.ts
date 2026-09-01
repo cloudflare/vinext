@@ -1157,6 +1157,8 @@ describe("App Router entry templates", () => {
     );
     expect(code).toContain('{ cache: "bypass" }');
     expect(code).toContain('request.headers.get("upgrade")');
+    expect(code).toContain("__usesFullRequestGraph(request, probeMode)");
+    expect(code).toContain("if (!probeMode && /(?:^|,)\\s*(?:no-cache|no-store)");
     expect(code).not.toContain("|| __isMetadataPath(pathname)");
   });
 

@@ -51,7 +51,10 @@ import {
   headers as requestHeaders,
 } from "../packages/vinext/src/shims/headers.js";
 import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
-import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import {
+  runWithExecutionContext,
+  type ExecutionContextLike,
+} from "../packages/vinext/src/shims/request-context.js";
 import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
@@ -193,6 +196,12 @@ function prerenderRouteParamsHeader(payload: unknown): string {
   return encodeURIComponent(JSON.stringify(payload));
 }
 
+function cacheabilityContext(state: RouteCacheabilityState): ExecutionContextLike {
+  const context: ExecutionContextLike = { waitUntil() {} };
+  Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+  return context;
+}
+
 describe("createAppRscHandler", () => {
   it("dispatches a matched GET through the App response stage and composes request-stage headers", async () => {
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async (_request, props) => {
@@ -222,6 +231,57 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("x-test-header")).toBe("applied");
     expect(response.headers.get("x-response-stage")).toBe("yes");
     expect(await response.text()).toBe("response-stage");
+  });
+
+  it("shares the method-invariant App page representation for HEAD and strips its body", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("page-body", { headers: { "x-generation": "one" } })),
+    );
+    const handler = createHandler({ configHeaders: [] });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", { method: "HEAD" }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[0].method).toBe("GET");
+    expect(dispatchResponseStage.mock.calls[0]?.[1].kind).toBe("app-page");
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+    expect(response.headers.get("x-generation")).toBe("one");
+    expect(response.body).toBeNull();
+  });
+
+  it("preserves HEAD for App route handlers and strips their response body", async () => {
+    const route = createPageRoute({
+      __loadPage: undefined,
+      __loadRouteHandler() {},
+      page: null,
+      pattern: "/route",
+      routeHandler: { GET: () => new Response("get") },
+      routeSegments: ["route"],
+    });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("head-handler-body", { headers: { "x-handler": "head" } })),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: (pathname) => (pathname === "/route" ? { params: {}, route } : null),
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/route", { method: "HEAD" }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[0].method).toBe("HEAD");
+    expect(dispatchResponseStage.mock.calls[0]?.[1].kind).toBe("app-route-handler");
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+    expect(response.headers.get("x-handler")).toBe("head");
+    expect(response.body).toBeNull();
   });
 
   it("bypasses the shared response stage for valid draft mode requests", async () => {
@@ -286,7 +346,7 @@ describe("createAppRscHandler", () => {
       captureDeadlineAt: Date.now() + 1_000,
       mode: "admit",
     };
-    await runWithExecutionContext({ [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} }, () =>
+    await runWithExecutionContext(cacheabilityContext(state), () =>
       handler(
         new Request("https://example.test/docs/about", {
           headers: { Cookie: "preview=1" },
@@ -665,10 +725,8 @@ describe("createAppRscHandler", () => {
       captureDeadlineAt: Date.now() + 1_000,
       mode: "admit",
     };
-    const response = await runWithExecutionContext(
-      { [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} },
-      () =>
-        handler(new Request("https://example.test/docs/about"), null, false, dispatchResponseStage),
+    const response = await runWithExecutionContext(cacheabilityContext(state), () =>
+      handler(new Request("https://example.test/docs/about"), null, false, dispatchResponseStage),
     );
 
     expect(dispatchResponseStage).toHaveBeenCalledOnce();
@@ -697,10 +755,8 @@ describe("createAppRscHandler", () => {
       captureDeadlineAt: Date.now() + 1_000,
       mode: "admit",
     };
-    const response = await runWithExecutionContext(
-      { [CACHEABILITY_REQUEST_STATE]: state, waitUntil() {} },
-      () =>
-        handler(new Request("https://example.test/docs/about"), null, false, dispatchResponseStage),
+    const response = await runWithExecutionContext(cacheabilityContext(state), () =>
+      handler(new Request("https://example.test/docs/about"), null, false, dispatchResponseStage),
     );
 
     expect(dispatchResponseStage).toHaveBeenCalledOnce();
