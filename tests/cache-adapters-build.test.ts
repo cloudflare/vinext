@@ -94,7 +94,7 @@ function readStaticJavaScriptClosure(entryPath: string): string {
     const source = fs.readFileSync(filePath, "utf8");
     output += source;
     for (const match of source.matchAll(
-      /(?:import|export)\s*(?:[^"']*?\sfrom\s*)?["']([^"']+)["']/g,
+      /(?:import|export)\s*(?:[^"']*?\bfrom\s*)?["']([^"']+)["']/g,
     )) {
       const specifier = match[1];
       if (!specifier?.startsWith(".")) continue;
@@ -307,9 +307,25 @@ export default createAdapter;
     const workerPath = path.join(root, "dist/server/index.js");
     const worker = fs.readFileSync(workerPath, "utf8");
     expect(worker).toMatch(/export\s*\{[^}]*\b(?:[A-Za-z_$][\w$]*\s+as\s+)?VinextCachedResponse\b/);
-    expect(worker).toMatch(/import\s*["']\.\/__vinext_cacheability_manifest\.js["']/);
+    expect(worker).not.toMatch(/import\s*["']\.\/__vinext_cacheability_manifest\.js["']/);
     expect(readTextFilesRecursive(path.join(root, "dist/server"))).toContain(RESPONSE_STAGE_MARKER);
     expect(readStaticJavaScriptClosure(workerPath)).not.toContain(RESPONSE_STAGE_MARKER);
+    expect(readStaticJavaScriptClosure(workerPath)).not.toContain(
+      "__vinext_cacheability_manifest.js",
+    );
+    const viteManifest = JSON.parse(
+      fs.readFileSync(path.join(root, "dist/server/.vite/manifest.json"), "utf8"),
+    );
+    const responseStageEntry = Object.entries(viteManifest).find(
+      ([key, entry]) =>
+        key.endsWith("virtual:vinext-response-stage") ||
+        (entry as { src?: string }).src?.endsWith("virtual:vinext-response-stage"),
+    )?.[1] as { file: string } | undefined;
+    expect(responseStageEntry).toBeDefined();
+    const responseStagePath = path.join(root, "dist/server", responseStageEntry!.file);
+    expect(readStaticJavaScriptClosure(responseStagePath)).toContain(
+      "__vinext_cacheability_manifest.js",
+    );
     const wrangler = JSON.parse(
       fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"),
     );

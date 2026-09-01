@@ -65,10 +65,7 @@ export function cdnAdapter(options?: CdnAdapterOptions) {
         if (cleanId !== CLOUDFLARE_WORKER_ENTRY_ID) {
           return null;
         }
-        // The deploy pipeline replaces this tiny external asset after probing.
-        // Keep it directly reachable from Worker main without importing the
-        // response stage or application graph on a cache HIT.
-        return `${code}\nimport "virtual:vinext-cacheability-manifest";\nexport { VinextCachedResponse } from ${JSON.stringify(workerEntry)};\n`;
+        return `${code}\nexport { VinextCachedResponse } from ${JSON.stringify(workerEntry)};\n`;
       },
       finalizeBuildOutput: finalizeWorkersCacheBuildOutput,
       type: "multi-stage" as const,

@@ -73,12 +73,9 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     });
     expect(forged.status()).toBe(200);
     expect(await forged.json()).toMatchObject({ draftMode: false });
-    // This fixture has pathname-eligible middleware. A CDN HIT would bypass
-    // that boundary, so even an anonymous Route Handler response must remain
-    // private until middleware is isolated into an uncached outer stage.
     expect(forged.headers()["cache-control"]).toContain("no-store");
     expect(forged.headers()["cdn-cache-control"]).toBeUndefined();
-    expect(forged.headers()["x-vinext-cache"]).toBeUndefined();
+    expect(forged.headers()["x-vinext-cache"]).toBe("MISS");
 
     await setDraftMode(request, true);
     const draftFirstScenario = `draft-first-${Date.now()}`;
@@ -95,7 +92,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(anonymousAfterDraft.payload.draftMode).toBe(false);
     expect(anonymousAfterDraft.payload.token).not.toBe(draftFirst.payload.token);
     expect(anonymousAfterDraft.cacheControl).toContain("no-store");
-    expect(anonymousAfterDraft.cacheState).toBeUndefined();
+    expect(anonymousAfterDraft.cacheState).toBe("MISS");
 
     const publicFirstScenario = `public-first-${Date.now()}`;
     const anonymousFirst = await readDraftIsrRoute(request, publicFirstScenario);
@@ -185,9 +182,11 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     });
     expect(dynamicResponse.status()).toBe(200);
     expect(await dynamicResponse.text()).toBe("tenant-a");
-    expect(dynamicResponse.headers()["cache-control"] ?? "").not.toContain("public");
-    expect(dynamicResponse.headers()["cache-control"]).toContain("no-store");
-    expect(dynamicResponse.headers()["cdn-cache-control"]).toBeUndefined();
+    // Explicit response policy wins after the clean body has completed, matching
+    // Next.js even when the handler observed request headers while streaming.
+    expect(dynamicResponse.headers()["cache-control"]).toContain("public");
+    expect(dynamicResponse.headers()["cache-control"]).toContain("max-age=0");
+    expect(dynamicResponse.headers()["cdn-cache-control"]).toBe("public, max-age=60");
     expect(dynamicResponse.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
     expect(dynamicResponse.headers()["cache-tag"]).toBeUndefined();
     expect(dynamicResponse.headers()["x-vinext-cache"]).toBeUndefined();
@@ -206,7 +205,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
   }) => {
     const response = await request.get(`${BASE_URL}/api/large-static-stream`);
     expect(response.status()).toBe(200);
-    expect((await response.body()).byteLength).toBe(4 * 1024 * 1024 + 1);
+    expect((await response.body()).byteLength).toBe(16 * 1024 * 1024 + 1);
     expect(response.headers()["cache-control"]).toContain("no-store");
     expect(response.headers()["cdn-cache-control"]).toBeUndefined();
     expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
@@ -308,7 +307,9 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
     pagesServer.kill();
   });
 
-  test("fails closed without an embedded two-stage manifest", async ({ request }) => {
+  test("clears inner CDN policy when outer config keeps a response private", async ({
+    request,
+  }) => {
     expect(
       fs.readFileSync(`${FIXTURE_DIR}/dist/server/__vinext_cacheability_manifest.js`, "utf8"),
     ).toBe("export default null;\n");

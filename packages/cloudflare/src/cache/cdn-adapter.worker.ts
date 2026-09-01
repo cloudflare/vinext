@@ -34,6 +34,7 @@ type CloudflareResponseStageInvocation = {
 type CachePurgeOptions = { tags: string[] };
 
 const RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
+const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 
 function withWorkerHostRuntime(
   context: CloudflareStageContext | undefined,
@@ -104,12 +105,48 @@ async function createCacheFacingRequest(
   request: Request,
   serializedInvocation: string,
 ): Promise<Request> {
-  const bytes = new TextEncoder().encode(`${request.url}\0${serializedInvocation}`);
+  let serializedRequestCf: string | null = null;
+  const requestCf = Reflect.get(request, "cf");
+  if (requestCf !== undefined) {
+    try {
+      const json = JSON.stringify(requestCf);
+      if (json !== undefined) serializedRequestCf = encodeURIComponent(json);
+    } catch {
+      // A non-serializable platform extension cannot safely cross the stage.
+    }
+  }
+  const bytes = new TextEncoder().encode(
+    `${request.url}\0${serializedInvocation}\0${serializedRequestCf ?? ""}`,
+  );
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const key = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   const url = new URL(request.url);
   url.searchParams.set("__vinext_cache_key", key);
-  return new Request(url, request);
+  const headers = new Headers(request.headers);
+  headers.delete(REQUEST_CF_TRANSPORT_HEADER);
+  if (serializedRequestCf !== null) {
+    headers.set(REQUEST_CF_TRANSPORT_HEADER, serializedRequestCf);
+  }
+  return new Request(new Request(url, request), { headers });
+}
+
+function restoreResponseStageRequest(request: Request, requestUrl: string): Request {
+  const headers = new Headers(request.headers);
+  const serializedRequestCf = headers.get(REQUEST_CF_TRANSPORT_HEADER);
+  headers.delete(REQUEST_CF_TRANSPORT_HEADER);
+  const restored = new Request(new Request(requestUrl, request), { headers });
+  if (serializedRequestCf !== null) {
+    try {
+      Object.defineProperty(restored, "cf", {
+        configurable: true,
+        enumerable: true,
+        value: JSON.parse(decodeURIComponent(serializedRequestCf)),
+      });
+    } catch {
+      // Malformed internal metadata is stripped rather than exposed to userland.
+    }
+  }
+  return restored;
 }
 
 function withResponseStagePurge(context: CloudflareStageContext): CloudflareStageContext {
@@ -184,7 +221,7 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
       return new Response("Invalid vinext response-stage invocation", { status: 400 });
     }
     return invokeResponseStage(
-      new Request(invocation.requestUrl, request),
+      restoreResponseStageRequest(request, invocation.requestUrl),
       this.env,
       context,
       invocation,

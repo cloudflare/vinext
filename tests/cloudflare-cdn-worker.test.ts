@@ -176,6 +176,61 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(renderedRequest.url).toBe("https://tenant.example/original?view=one");
   });
 
+  it("partitions by request.cf without letting it replace the cache-facing URL", async () => {
+    let cacheFacingRequest: Request | undefined;
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      async fetch(request: Request) {
+        cacheFacingRequest = request;
+        return createEntrypoint(props).fetch(request);
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-route-handler" }, { cache: "shared" }),
+    );
+    stages.response.mockResolvedValue(new Response("rendered"));
+    const source = new Request("https://example.com/geo", {
+      headers: { "x-vinext-internal-request-cf": "forged" },
+    });
+    const requestCf = { cacheKey: "attacker-controlled", colo: "LHR", country: "GB" };
+    Object.defineProperty(source, "cf", { enumerable: true, value: requestCf });
+
+    await worker.fetch(source, {}, { exports: { VinextCachedResponse: binding } });
+
+    expect(cacheFacingRequest?.url).toMatch(
+      /^https:\/\/example\.com\/geo\?__vinext_cache_key=[0-9a-f]{64}$/,
+    );
+    expect(Reflect.get(cacheFacingRequest!, "cf")).toBeUndefined();
+    expect(cacheFacingRequest?.headers.get("x-vinext-internal-request-cf")).not.toBe("forged");
+    const renderedRequest = stages.response.mock.calls[0]![0] as Request;
+    expect(renderedRequest.url).toBe(source.url);
+    expect(Reflect.get(renderedRequest, "cf")).toEqual(requestCf);
+    expect(renderedRequest.headers.has("x-vinext-internal-request-cf")).toBe(false);
+  });
+
+  it("strips forged request.cf transport metadata when no platform metadata exists", async () => {
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch(request: Request) {
+        return createEntrypoint(props).fetch(request);
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-route-handler" }, { cache: "shared" }),
+    );
+    stages.response.mockResolvedValue(new Response("rendered"));
+
+    await worker.fetch(
+      new Request("https://example.com/geo", {
+        headers: { "x-vinext-internal-request-cf": encodeURIComponent('{"country":"forged"}') },
+      }),
+      {},
+      { exports: { VinextCachedResponse: binding } },
+    );
+
+    const renderedRequest = stages.response.mock.calls[0]![0] as Request;
+    expect(Reflect.get(renderedRequest, "cf")).toBeUndefined();
+    expect(renderedRequest.headers.has("x-vinext-internal-request-cf")).toBe(false);
+  });
+
   it("uses distinct cache-facing URLs for Pages HTML, data, and rewrite identities", async () => {
     const seen: string[] = [];
     const binding = vi.fn(() => ({
