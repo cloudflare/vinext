@@ -298,6 +298,60 @@ describe("generic HTTP multi-stage transport", () => {
     expect(renderToken(secondBody)).toBe(renderToken(firstBody));
   });
 
+  it("keeps rewritten source identities distinct while reusing each one", async () => {
+    const slug = `rewrite-${Date.now()}`;
+    const rewritten = await fetch(`${requestServer.origin}/alias-${slug}`, {
+      headers: { "x-test-visitor": "alias" },
+    });
+    const rewrittenBody = await rewritten.text();
+    const direct = await fetch(`${requestServer.origin}/${slug}`, {
+      headers: { "x-test-visitor": "direct" },
+    });
+    const directBody = await direct.text();
+
+    expect(rewritten.status, rewrittenBody).toBe(200);
+    expect(rewritten.headers.get("x-http-stage-cache")).toBe("MISS");
+    expect(rewritten.headers.get("x-http-stage-visitor")).toBe("alias");
+    expect(direct.status, directBody).toBe(200);
+    expect(direct.headers.get("x-http-stage-cache")).toBe("MISS");
+    expect(direct.headers.get("x-http-stage-visitor")).toBe("direct");
+    expect(renderToken(directBody)).not.toBe(renderToken(rewrittenBody));
+
+    const rewrittenHit = await fetch(`${requestServer.origin}/alias-${slug}`);
+    const directHit = await fetch(`${requestServer.origin}/${slug}`);
+    expect(rewrittenHit.headers.get("x-http-stage-cache")).toBe("HIT");
+    expect(directHit.headers.get("x-http-stage-cache")).toBe("HIT");
+    expect(renderToken(await rewrittenHit.text())).toBe(renderToken(rewrittenBody));
+    expect(renderToken(await directHit.text())).toBe(renderToken(directBody));
+  });
+
+  it("routes res.revalidate() back through the remote request stage", async () => {
+    const path = `/revalidate-${Date.now()}`;
+    const first = await fetch(`${requestServer.origin}${path}`);
+    const firstBody = await first.text();
+    const cached = await fetch(`${requestServer.origin}${path}`);
+    const cachedBody = await cached.text();
+
+    expect(first.headers.get("x-http-stage-cache")).toBe("MISS");
+    expect(cached.headers.get("x-http-stage-cache")).toBe("HIT");
+    expect(renderToken(cachedBody)).toBe(renderToken(firstBody));
+
+    const revalidated = await fetch(
+      `${requestServer.origin}/api/revalidate?path=${encodeURIComponent(path)}`,
+    );
+    expect(revalidated.status, await revalidated.clone().text()).toBe(200);
+    expect(revalidated.headers.get("x-http-stage-cache")).toBe("BYPASS");
+    expect(await revalidated.json()).toEqual({ revalidated: true });
+
+    const refreshed = await fetch(`${requestServer.origin}${path}`, {
+      headers: { "cache-control": "no-cache" },
+    });
+    const refreshedBody = await refreshed.text();
+    expect(refreshed.status, refreshedBody).toBe(200);
+    expect(refreshed.headers.get("x-http-stage-cache")).toBe("BYPASS");
+    expect(renderToken(refreshedBody)).not.toBe(renderToken(firstBody));
+  });
+
   it("shares the Pages HTML variant between HEAD and GET", async () => {
     const url = `${requestServer.origin}/head-${Date.now()}`;
     const head = await fetch(url, { method: "HEAD" });

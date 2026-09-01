@@ -1,7 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 export function middleware(request: NextRequest) {
-  const response = NextResponse.next();
+  const aliasMatch = request.nextUrl.pathname.match(/^\/alias-(.+)$/);
+  const response = aliasMatch
+    ? NextResponse.rewrite(new URL(`/${aliasMatch[1]}`, request.url))
+    : NextResponse.next();
   if (request.nextUrl.pathname === "/stage-asset.txt") {
     response.headers.set("content-encoding", "gzip");
     response.headers.set("content-length", "999");

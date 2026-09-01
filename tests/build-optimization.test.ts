@@ -4057,6 +4057,18 @@ describe("createMultiStageChunkFileNames", () => {
           "vinext-response-stage": entries.response,
         },
       });
+      const booleanSsrResult = (outputPlugin as any).configEnvironment("client", {
+        build: {
+          rolldownOptions: { input: "virtual:main" },
+          ssr: true,
+        },
+      });
+      expect(booleanSsrResult.build.rolldownOptions.input).toEqual({
+        index: "virtual:main",
+        "vinext-request-stage": entries.request,
+        "vinext-response-stage": entries.response,
+      });
+      expect(booleanSsrResult.build.ssr).toBe(true);
       expect((outputPlugin as any).configEnvironment("client", {})).toBeNull();
     } finally {
       await fsp.rm(root, { recursive: true, force: true });

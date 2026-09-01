@@ -4593,7 +4593,8 @@ export const loadServerActionClient = ${
         // `client`. Distinguish that server build from the real browser
         // environment so generic hosts can emit independent stage entries
         // without having to opt into Vite's multi-environment builder.
-        const isStandaloneSsrEnvironment = typeof config.build?.ssr === "string";
+        const isStandaloneSsrEnvironment =
+          config.build?.ssr === true || typeof config.build?.ssr === "string";
         // App Router's `ssr` environment is the client-component renderer and
         // must not receive host deployment entries. In a Pages-only build,
         // however, `ssr` is the actual server environment, so independent
