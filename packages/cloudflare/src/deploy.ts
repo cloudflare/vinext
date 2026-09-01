@@ -1599,8 +1599,9 @@ async function deployWithCacheabilityProbe(
         .filter((target) => target.kind === "rsc-full")
         .map((target) => target.sourcePathname),
     };
-    // A concurrent deployment invalidates the probe. Check both before and
-    // after the final upload; uploading a version does not itself change traffic.
+    // A concurrent deployment invalidates the probe. Avoid creating an orphan
+    // final version when the probe is already stale. The final deployment path
+    // checks this state again immediately before it stages the uploaded version.
     assertDeploymentStateUnchanged(
       root,
       options,
@@ -1615,12 +1616,6 @@ async function deployWithCacheabilityProbe(
       preview: options.preview,
       verbose: options.verbose,
     });
-    assertDeploymentStateUnchanged(
-      root,
-      options,
-      stagedProbeDeployment,
-      "Two-stage CDN warming stopped because Worker deployment traffic or deployment identity changed before the final version could be staged. No final version was promoted.",
-    );
     prepared = {
       optionalWarmTargetKeys: new Set(probe.speculativeTargets.map(cdnWarmTargetKey)),
       prerenderSecret,

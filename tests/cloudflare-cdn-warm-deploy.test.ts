@@ -189,7 +189,7 @@ function mockTwoStageWrangler(
     if (args.includes("status")) {
       state.statusCount++;
       const replaceFinalStage =
-        state.finalStaged && state.statusCount >= 7 && options.replaceFinalStageBeforeHandoff;
+        state.finalStaged && state.statusCount >= 6 && options.replaceFinalStageBeforeHandoff;
       return JSON.stringify({
         id:
           state.statusCount === 1
@@ -591,7 +591,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
     expect(deployedUrl).toBe("https://my-worker.example.workers.dev");
     expect(uploadCount).toBe(2);
-    expect(statusCount).toBe(7);
+    expect(statusCount).toBe(6);
     expect(Array.from(cacheRequestCounts.entries())).toEqual([
       ["/about?_rsc", 1],
       ["/dynamic?_rsc", 1],
@@ -615,9 +615,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status-3",
       "upload-final",
       "status-4",
-      "status-5",
       "stage-final",
-      "status-6",
+      "status-5",
       "triggers",
       "readiness",
       "warm:/about?_rsc",
@@ -626,7 +625,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "warm:/api/data",
       "warm:/about",
       "warm:/pages-about",
-      "status-7",
+      "status-6",
       "promote-final",
     ]);
     expect(finalConfig).toEqual({ main: "index.js", name: "my-worker", workers_dev: true });
@@ -1094,9 +1093,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         const versions =
           statusCount === 1
             ? [{ version_id: OLD_VERSION, percentage: 100 }]
-            : statusCount === 7
+            : statusCount === 6
               ? [{ version_id: "44444444-4444-4444-8444-444444444444", percentage: 100 }]
-              : statusCount === 6
+              : statusCount === 5
                 ? [
                     { version_id: OLD_VERSION, percentage: 100 },
                     { version_id: FINAL_VERSION, percentage: 0 },
@@ -1154,7 +1153,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).rejects.toThrow(
       "deployment traffic or deployment identity changed before the final version could be promoted",
     );
-    expect(statusCount).toBe(7);
+    expect(statusCount).toBe(6);
     expect(
       (execFileSyncMock.mock.calls as Array<[string, string[]]>).some(([, args]) =>
         args.includes(`${FINAL_VERSION}@100%`),
