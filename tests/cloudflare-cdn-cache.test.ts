@@ -24,7 +24,10 @@ import {
   finalizeAppPageRscCacheResponse,
 } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
-import { applyCdnResponseIdentityHeaders } from "../packages/vinext/src/server/cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  applyCdnResponseIdentityHeaders,
+} from "../packages/vinext/src/server/cache-control.js";
 import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
 import {
   CACHEABILITY_REQUEST_STATE,
@@ -285,9 +288,20 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(headers["Cache-Tag"]?.split(",")).toHaveLength(128);
   });
 
-  it("does not re-encode tags recovered during completed-response admission", () => {
+  it("does not alias a raw tag that resembles an encoded platform tag", () => {
     const encoded = encodeCloudflareCacheTag("posts");
-    expect(encodeCloudflareCacheTag(encoded)).toBe(encoded);
+    expect(encodeCloudflareCacheTag(encoded)).not.toBe(encoded);
+  });
+
+  it("purges digest-shaped raw tags independently from their source tags", async () => {
+    const encoded = encodeCloudflareCacheTag("posts");
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      await adapter.revalidateTag(["posts", encoded]);
+    });
+    expect(purge).toHaveBeenCalledWith({
+      tags: [encoded, encodeCloudflareCacheTag(encoded)],
+    });
   });
 
   it("keeps admitted response tags aligned with later purge tags", async () => {
@@ -309,14 +323,12 @@ describe("CloudflareCdnCacheAdapter", () => {
         const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
         state.route = { kind: "pages-page", pattern: "/posts" };
         const headers = new Headers();
-        for (const [name, value] of Object.entries(
-          adapter.buildResponseHeaders({
+        await runWithExecutionContext(context, () =>
+          applyCdnResponseHeaders(headers, {
             cacheControl: "s-maxage=60",
             tags: ["posts"],
           }),
-        )) {
-          if (value !== null && value !== undefined) headers.set(name, value);
-        }
+        );
         return new Response("posts", {
           headers,
         });

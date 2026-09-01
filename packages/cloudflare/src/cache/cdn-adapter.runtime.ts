@@ -171,14 +171,9 @@ function toEdgeCacheControl(cacheControl: string): string {
  */
 const MAX_CACHE_TAG_BYTES = 16 * 1024;
 const CACHE_TAG_PREFIX = "vinext-";
-const ENCODED_CACHE_TAG_RE = /^vinext-[0-9a-f]{32}$/;
 
 /** Encode a case-sensitive Next.js tag into a fixed Workers Cache tag. */
 export function encodeCloudflareCacheTag(tag: string): string {
-  // Completed-response admission may feed the adapter tags recovered from its
-  // own provisional Cache-Tag header. Preserve that representation so the
-  // admitted header and a later purge use the same platform tag.
-  if (ENCODED_CACHE_TAG_RE.test(tag)) return tag;
   // Two domain-separated 64-bit rounds keep accidental collisions negligible
   // while staying synchronous for the response-header interface.
   return `${CACHE_TAG_PREFIX}${fnv1a64(`0:${tag}`)}${fnv1a64(`1:${tag}`)}`;
