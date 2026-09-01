@@ -195,6 +195,30 @@ function readState(ctx: ExecutionContextLike): RouteCacheabilityState | null {
   );
 }
 
+/** Apply request-stage-vetted positive config policy inside the admission boundary. */
+export function applyResponseStageCachePolicy(
+  response: Response,
+  ctx: ExecutionContextLike,
+  policyHeaders: ReadonlyArray<readonly [string, string]> | null | undefined,
+): Response {
+  if (!policyHeaders?.length) return response;
+  const state = readState(ctx);
+  if (state) state.explicitConfigCachePolicy = true;
+
+  try {
+    for (const [name, value] of policyHeaders) response.headers.set(name, value);
+    return response;
+  } catch {
+    const headers = new Headers(response.headers);
+    for (const [name, value] of policyHeaders) headers.set(name, value);
+    return new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+}
+
 function probeResponse(
   state: RouteCacheabilityState,
   routeState: CacheabilityProbeRouteState,

@@ -43,6 +43,11 @@ async function getPagesDataKind(filePath: string): Promise<"static" | "server" |
   return "none";
 }
 
+type GeneratePagesServerEntryOptions = {
+  includeMiddlewareRuntime?: boolean;
+  prerenderSecret?: string;
+};
+
 /**
  * Generate the request-only Pages Worker entry used by a multi-stage output.
  * It intentionally contains no page/API module imports or render runtime.
@@ -144,6 +149,7 @@ ${instrumentationInitCode}
 
 export const authorizeOnDemandRevalidate = __isOnDemandRevalidateRequest;
 export const buildId = ${JSON.stringify(nextConfig?.buildId ?? null)};
+export const prerenderSecret = ${JSON.stringify(prerenderSecret ?? null)};
 const i18nConfig = ${i18nConfigJson};
 export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 export const vinextConfig = ${vinextConfigJson};
@@ -212,6 +218,7 @@ export function generatePagesResponseEntry(
   fileMatcher: ReturnType<typeof createValidFileMatcher>,
   middlewarePath: string | null,
   instrumentationPath: string | null,
+  prerenderSecret?: string,
 ): Promise<string> {
   return generateServerEntry(
     pagesDir,
@@ -222,6 +229,7 @@ export function generatePagesResponseEntry(
     [],
     {
       includeMiddlewareRuntime: false,
+      prerenderSecret,
     },
   );
 }
@@ -233,9 +241,10 @@ export async function generateServerEntry(
   middlewarePath: string | null,
   instrumentationPath: string | null,
   publicFiles: string[] = [],
-  options: { includeMiddlewareRuntime?: boolean } = {},
+  options: GeneratePagesServerEntryOptions = {},
 ): Promise<string> {
   const includeMiddlewareRuntime = options.includeMiddlewareRuntime !== false;
+  const prerenderSecret = options.prerenderSecret;
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 

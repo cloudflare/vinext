@@ -1612,7 +1612,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
-      prerenderSecret,
+      { prerenderSecret },
     );
   }
 
@@ -1628,6 +1628,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
+      prerenderSecret,
     );
   }
 
@@ -1638,6 +1639,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       fileMatcher,
       middlewarePath,
       instrumentationPath,
+      prerenderSecret,
     );
   }
 

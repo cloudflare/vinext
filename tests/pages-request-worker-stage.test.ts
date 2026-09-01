@@ -7,6 +7,7 @@ import type { MiddlewareResult } from "../packages/vinext/src/server/pages-reque
 
 const mocks = vi.hoisted(() => ({
   authorizeOnDemandRevalidate: vi.fn<(value: string | null) => boolean>(() => false),
+  configHeaders: [] as Array<Record<string, unknown>>,
   matchApiRoute: vi.fn((url: string) =>
     url === "/api/hello"
       ? { route: { dataKind: "dynamic", isDynamic: false, pattern: "/api/hello" } }
@@ -41,9 +42,10 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
     route: { dataKind: "static", isDynamic: false, pattern: "/page" },
   })),
   normalizeDataRequest: mocks.normalizeDataRequest,
+  prerenderSecret: "prerender-secret",
   publicFiles: new Set(),
   runMiddleware: mocks.runMiddleware,
-  vinextConfig: {},
+  vinextConfig: { headers: mocks.configHeaders },
 }));
 
 vi.mock("../packages/vinext/src/server/pages-response-stage-entry.js", () => ({
@@ -55,6 +57,7 @@ describe("Pages Worker request stage", () => {
     mocks.authorizeOnDemandRevalidate.mockReset();
     mocks.authorizeOnDemandRevalidate.mockReturnValue(false);
     mocks.matchApiRoute.mockReset();
+    mocks.configHeaders.length = 0;
     mocks.matchApiRoute.mockImplementation((url: string) =>
       url === "/api/hello"
         ? { route: { dataKind: "dynamic", isDynamic: false, pattern: "/api/hello" } }
@@ -89,6 +92,7 @@ describe("Pages Worker request stage", () => {
       expect.any(Request),
       {
         buildId: "request-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/page" },
         kind: "pages-page",
         protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
         requestHost: "example.com",
@@ -114,6 +118,7 @@ describe("Pages Worker request stage", () => {
       expect.any(Request),
       {
         buildId: "request-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/page" },
         kind: "pages-page",
         protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
         requestHost: "example.com",
@@ -124,6 +129,60 @@ describe("Pages Worker request stage", () => {
       { cache: "bypass" },
     );
     expect(mocks.renderResponse).not.toHaveBeenCalled();
+  });
+
+  it("authenticates probes before filtering and bypasses the shared transport", async () => {
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("probe"));
+    const response = await handleRequestStage(
+      new Request("https://example.com/page?__vinext_cacheability_probe=retry", {
+        headers: {
+          "X-Vinext-Cacheability-Probe": "1",
+          "X-Vinext-Prerender-Secret": "prerender-secret",
+        },
+      }),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    await expect(response.text()).resolves.toBe("probe");
+    expect(dispatch).toHaveBeenCalledOnce();
+    const [request, props, options] = dispatch.mock.calls[0]!;
+    expect(new URL(request.url).searchParams.has("__vinext_cacheability_probe")).toBe(false);
+    expect(request.headers.has("X-Vinext-Cacheability-Probe")).toBe(false);
+    expect(request.headers.has("X-Vinext-Prerender-Secret")).toBe(false);
+    expect(props.cacheability).toMatchObject({
+      policyHeaders: null,
+      probeMode: "probe",
+      resolvedRoutePathname: "/page",
+    });
+    expect(options).toEqual({ cache: "bypass" });
+  });
+
+  it("transports only request-key-safe positive config cache policy", async () => {
+    mocks.configHeaders.push(
+      {
+        source: "/page",
+        headers: [{ key: "Cache-Control", value: "public, s-maxage=60" }],
+      },
+      {
+        source: "/page",
+        has: [{ type: "cookie", key: "preview", value: "1" }],
+        headers: [{ key: "CDN-Cache-Control", value: "public, s-maxage=120" }],
+      },
+    );
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("page"));
+
+    await handleRequestStage(
+      new Request("https://example.com/page", { headers: { Cookie: "preview=1" } }),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(dispatch.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
+      ["Cache-Control", "public, s-maxage=60"],
+    ]);
   });
 
   it("dispatches authenticated revalidation through the uncached response stage", async () => {
@@ -216,6 +275,11 @@ describe("Pages Worker request stage", () => {
       {
         apiUrl: "/api/hello",
         buildId: "request-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/api/hello",
+        },
         kind: "pages-api",
         protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
         requestHost: "example.com",
@@ -240,6 +304,11 @@ describe("Pages Worker request stage", () => {
       {
         apiUrl: "/api/hello",
         buildId: "request-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/api/hello",
+        },
         kind: "pages-api",
         protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
         requestHost: "example.com",

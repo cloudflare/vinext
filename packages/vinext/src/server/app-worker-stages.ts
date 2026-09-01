@@ -1,5 +1,8 @@
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
-import type { VinextResponseStageTransport } from "./multi-stage.js";
+import type {
+  VinextResponseStageCacheability,
+  VinextResponseStageTransport,
+} from "./multi-stage.js";
 
 export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 4;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
@@ -10,6 +13,7 @@ type AppPageParams = Record<string, string | string[]>;
 
 type AppWorkerResponseStageEnvelope = {
   buildId: string | null;
+  cacheability: VinextResponseStageCacheability;
   draftModeCookie: string | null;
   middlewareCookieOverlay: string | null;
   protocolVersion: typeof APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION;
@@ -18,6 +22,7 @@ type AppWorkerResponseStageEnvelope = {
 
 type AppFullRequestWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   kind: "app-full-request";
+  prerenderDiscovery: boolean;
   staticFileSignalToken: string;
 };
 
@@ -107,6 +112,7 @@ export function isAppWorkerResponseStageProps(
   if (
     props.protocolVersion !== APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION ||
     (props.buildId !== null && typeof props.buildId !== "string") ||
+    !isResponseStageCacheability(props.cacheability) ||
     (props.draftModeCookie !== null && typeof props.draftModeCookie !== "string") ||
     (props.middlewareCookieOverlay !== null && typeof props.middlewareCookieOverlay !== "string") ||
     (props.scriptNonce !== null && typeof props.scriptNonce !== "string")
@@ -115,6 +121,7 @@ export function isAppWorkerResponseStageProps(
   }
   if (props.kind === "app-full-request") {
     return (
+      typeof props.prerenderDiscovery === "boolean" &&
       typeof props.staticFileSignalToken === "string" &&
       STATIC_FILE_SIGNAL_TOKEN_RE.test(props.staticFileSignalToken)
     );
@@ -186,5 +193,26 @@ export function isAppWorkerResponseStageProps(
       props.renderMode === "prefetch-empty" ||
       props.renderMode === "prefetch-dynamic-shell" ||
       props.renderMode === "prefetch-loading-shell")
+  );
+}
+
+function isResponseStageCacheability(value: unknown): value is VinextResponseStageCacheability {
+  if (!value || typeof value !== "object") return false;
+  const cacheability = value as Partial<VinextResponseStageCacheability>;
+  return (
+    (cacheability.probeMode === null ||
+      cacheability.probeMode === "probe" ||
+      cacheability.probeMode === "identity") &&
+    (cacheability.policyHeaders === null ||
+      (Array.isArray(cacheability.policyHeaders) &&
+        cacheability.policyHeaders.every(
+          (entry) =>
+            Array.isArray(entry) &&
+            entry.length === 2 &&
+            typeof entry[0] === "string" &&
+            typeof entry[1] === "string",
+        ))) &&
+    typeof cacheability.resolvedRoutePathname === "string" &&
+    cacheability.resolvedRoutePathname.startsWith("/")
   );
 }

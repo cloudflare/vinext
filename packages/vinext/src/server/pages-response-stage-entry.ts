@@ -1,12 +1,13 @@
 /** Cacheable Pages render/API stage. This is the only Pages Worker stage that imports user pages. */
 
-import type { ExecutionContextLike } from "vinext/shims/request-context";
+import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import { isPagesResponseStageProps, type WorkerResponseStageProps } from "./worker-stages.js";
 import type {
   VinextRequestStageTransport,
   VinextResponseStageDispatchOptions,
 } from "./multi-stage.js";
+import { withResponseStageCacheability } from "./response-stage-cacheability.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -16,6 +17,8 @@ import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters"
 // user middleware module or request-stage routing runtime.
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import * as pagesEntry from "virtual:vinext-pages-response-entry";
+// @ts-expect-error -- virtual module resolved by vinext at build time
+import __cacheabilityManifest from "virtual:vinext-cacheability-manifest";
 
 type PagesWorkerEnv = Record<string, unknown>;
 
@@ -30,6 +33,7 @@ export async function renderPagesResponse(
   props: WorkerResponseStageProps,
   stagedHeaders?: Headers,
   dispatchRequestStage?: VinextRequestStageTransport,
+  dispatchOptions: VinextResponseStageDispatchOptions = { cache: "bypass" },
 ): Promise<Response> {
   if (!isPagesResponseStageProps(props)) {
     return new Response("Invalid vinext Pages response stage", { status: 400 });
@@ -41,10 +45,9 @@ export async function renderPagesResponse(
     return new Response("Invalid vinext Pages response stage", { status: 400 });
   }
 
-  registerConfiguredCacheAdapters(env);
   registerConfiguredImageOptimizer(env);
   const renderHeaders = stagedHeaders ?? new Headers(props.stagedHeaders ?? []);
-  const ctx = createWorkerRevalidationContext(
+  let ctx = createWorkerRevalidationContext(
     platformCtx,
     (internalRequest) => {
       if (!dispatchRequestStage) {
@@ -54,7 +57,22 @@ export async function renderPagesResponse(
     },
     "node",
   );
-  const handle = async (): Promise<Response> => {
+  if (props.kind === "pages-prerender-discovery") {
+    ctx = { ...ctx, isPrerenderPathDiscovery: true };
+  }
+  const handle = async (cacheabilityContext: ExecutionContextLike): Promise<Response> => {
+    if (props.kind === "pages-prerender-discovery") {
+      const { handleAppPrerenderEndpoint } = await import("./app-prerender-endpoints.js");
+      const response = await runWithExecutionContext(cacheabilityContext, () =>
+        handleAppPrerenderEndpoint(request, {
+          isPrerenderEnabled: () => true,
+          loadPagesRoutes: async () => pagesEntry.pageRoutes,
+          pathname: new URL(request.url).pathname,
+          staticParamsMap: {},
+        }),
+      );
+      return response ?? new Response("This page could not be found", { status: 404 });
+    }
     if (props.kind === "pages-api") {
       if (typeof pagesEntry.handleApiRoute !== "function") {
         return new Response("This page could not be found", { status: 404 });
@@ -62,9 +80,9 @@ export async function renderPagesResponse(
       return pagesEntry.handleApiRoute(
         request,
         props.apiUrl,
-        ctx,
+        cacheabilityContext,
         new URL(request.url).origin,
-        ctx.hostRuntime ?? "node",
+        cacheabilityContext.hostRuntime ?? "node",
       );
     }
     if (typeof pagesEntry.renderPage !== "function") {
@@ -74,12 +92,25 @@ export async function renderPagesResponse(
       request,
       props.resolvedUrl,
       null,
-      ctx,
+      cacheabilityContext,
       renderHeaders,
       props.renderOptions ?? undefined,
     );
   };
-  return handle();
+  return withResponseStageCacheability(
+    {
+      buildId: pagesEntry.buildId,
+      cache: props.kind === "pages-prerender-discovery" ? "bypass" : dispatchOptions.cache,
+      context: ctx,
+      policyHeaders: props.cacheability.policyHeaders,
+      probeMode: props.cacheability.probeMode,
+      rawManifest: __cacheabilityManifest,
+      registerCacheAdapters: () => registerConfiguredCacheAdapters(env),
+      request,
+      resolvedRoutePathname: props.cacheability.resolvedRoutePathname,
+    },
+    handle,
+  );
 }
 
 export function handleResponseStage(
@@ -88,7 +119,7 @@ export function handleResponseStage(
   ctx: PagesWorkerExecutionContext | undefined,
   props: WorkerResponseStageProps,
   dispatchRequestStage: VinextRequestStageTransport,
-  _options: VinextResponseStageDispatchOptions,
+  options: VinextResponseStageDispatchOptions,
 ): Promise<Response> {
-  return renderPagesResponse(request, env, ctx, props, undefined, dispatchRequestStage);
+  return renderPagesResponse(request, env, ctx, props, undefined, dispatchRequestStage, options);
 }

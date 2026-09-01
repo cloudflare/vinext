@@ -8,6 +8,7 @@ export type ResponseStageCacheabilityOptions = {
   cache: VinextResponseStageDispatchOptions["cache"];
   context: ExecutionContextLike;
   probeMode?: WorkerCacheabilityProbeMode | null;
+  policyHeaders?: ReadonlyArray<readonly [string, string]> | null;
   rawManifest: string | null | undefined;
   /** The trusted route target after request-stage rewrites. */
   resolvedRoutePathname?: string;
@@ -37,7 +38,11 @@ export async function withResponseStageCacheability(
       options.probeMode,
       adapter.responseVary,
     );
-    const response = await render(context);
+    const response = cacheability.applyResponseStageCachePolicy(
+      await render(context),
+      context,
+      options.policyHeaders,
+    );
     return cacheability.finalizeWorkerCacheabilityResponse(response, context);
   }
 
@@ -55,7 +60,11 @@ export async function withResponseStageCacheability(
       adapter.responseVary,
       options.resolvedRoutePathname,
     );
-    const response = await render(context);
+    const response = cacheability.applyResponseStageCachePolicy(
+      await render(context),
+      context,
+      options.policyHeaders,
+    );
     return cacheability.finalizeWorkerCacheabilityResponse(response, context);
   }
 

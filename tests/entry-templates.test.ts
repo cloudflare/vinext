@@ -1146,7 +1146,9 @@ describe("App Router entry templates", () => {
     expect(code).toContain('dispatchPagesResponseStage(stageRequest, "api")');
     expect(code).toContain('dispatchPagesResponseStage(stageRequest, "page")');
     expect(code).toContain("buildId: process.env.__VINEXT_BUILD_ID ?? null");
-    expect(code).toContain("return __requestHandler(request, ctx, false, dispatchResponseStage)");
+    expect(code).toContain(
+      "return __requestHandler(request, ctx, false, dispatchResponseStage, probeMode)",
+    );
     expect(code).toContain("App request stage requires a response-stage dispatcher");
     expect(code).toContain('kind: "app-full-request"');
     expect(code).toContain("const staticFileSignalToken = crypto.randomUUID()");

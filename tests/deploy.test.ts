@@ -1872,7 +1872,6 @@ describe("readPagesRouterEntrySource", () => {
     // now called inside runPagesRequest. The worker delegates to the pipeline.
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
-    expect(content).toContain("return finalize(");
     expect(content).toContain(
       "finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
     );

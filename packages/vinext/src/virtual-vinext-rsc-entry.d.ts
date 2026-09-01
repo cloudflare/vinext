@@ -33,11 +33,14 @@ declare module "virtual:vinext-app-request-entry" {
     request: Request,
     ctx: unknown,
     dispatchResponseStage: DispatchAppWorkerResponseStage,
+    probeMode?: import("./server/multi-stage.js").VinextCacheabilityProbeMode | null,
+    prerenderDiscovery?: boolean,
   ) => Promise<Response>;
   export default requestHandler;
   export const __assetPrefix: string;
   export const __basePath: string;
   export const __imageAllowedWidths: number[];
+  export const __prerenderSecret: string;
   export const __imageConfig: {
     qualities?: number[];
     dangerouslyAllowSVG?: boolean;
@@ -59,5 +62,6 @@ declare module "virtual:vinext-app-response-entry" {
       options?: VinextResponseStageDispatchOptions,
     ): Promise<Response>;
   };
+  export const __cacheabilityManifest: string | null;
   export default handler;
 }

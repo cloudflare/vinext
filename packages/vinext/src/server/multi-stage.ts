@@ -10,6 +10,18 @@ export type VinextResponseStageDispatchOptions = {
   cache: "shared" | "bypass";
 };
 
+export type VinextCacheabilityProbeMode = "probe" | "identity";
+
+/** Trusted route/admission metadata transported independently of user headers. */
+export type VinextResponseStageCacheability = {
+  /** Safe positive next.config policy needed for CDN-level Next.js parity. */
+  policyHeaders: Array<[string, string]> | null;
+  /** Present only after the request stage authenticates an internal probe. */
+  probeMode: VinextCacheabilityProbeMode | null;
+  /** Resolved route pathname used for manifest authorization after outer rewrites. */
+  resolvedRoutePathname: string;
+};
+
 /**
  * Adapter-owned transport from the request stage to the response stage.
  *

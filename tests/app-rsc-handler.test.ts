@@ -219,6 +219,78 @@ describe("createAppRscHandler", () => {
     expect(await response.text()).toBe("response-stage");
   });
 
+  it("bypasses the shared response stage for valid draft mode requests", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("draft")),
+    );
+    const handler = createHandler({ configHeaders: [] });
+
+    await handler(
+      new Request("https://example.test/docs/about", {
+        headers: { Cookie: "__prerender_bypass=test-draft-secret" },
+      }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+  });
+
+  it("transports authenticated probe intent outside the shared cache", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("probe")),
+    );
+    const handler = createHandler({ configHeaders: [] });
+
+    await handler(
+      new Request("https://example.test/docs/about"),
+      null,
+      false,
+      dispatchResponseStage,
+      "probe",
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability).toMatchObject({
+      policyHeaders: null,
+      probeMode: "probe",
+      resolvedRoutePathname: "/about",
+    });
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+  });
+
+  it("transports only request-key-safe positive config cache policy", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("stage")),
+    );
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [{ key: "Cache-Control", value: "public, s-maxage=60" }],
+        },
+        {
+          source: "/about",
+          has: [{ type: "cookie", key: "preview", value: "1" }],
+          headers: [{ key: "CDN-Cache-Control", value: "public, s-maxage=120" }],
+        },
+      ],
+    });
+
+    await handler(
+      new Request("https://example.test/docs/about", {
+        headers: { Cookie: "preview=1" },
+      }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
+      ["Cache-Control", "public, s-maxage=60"],
+    ]);
+  });
+
   it("bypasses the staged cache for an unverified interception context", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
@@ -585,6 +657,7 @@ describe("createAppRscHandler", () => {
     const props: AppWorkerResponseStageProps = {
       kind: "app-page" as const,
       buildId: "stale-build",
+      cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/about" },
       bypassInterceptionContextCache: false,
       canonicalPathname: "/about",
       cleanPathname: "/about",
@@ -629,6 +702,7 @@ describe("createAppRscHandler", () => {
       {
         kind: "app-page",
         buildId: "build-id",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/about" },
         bypassInterceptionContextCache: false,
         canonicalPathname: "/about",
         cleanPathname: "/about",

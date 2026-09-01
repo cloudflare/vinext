@@ -1,5 +1,6 @@
 import type { PagesRenderOptions } from "./pages-request-pipeline.js";
 import type {
+  VinextResponseStageCacheability,
   VinextResponseStageDispatchOptions,
   VinextResponseStageTransport,
 } from "./multi-stage.js";
@@ -8,6 +9,7 @@ export const PAGES_RESPONSE_STAGE_PROTOCOL_VERSION = 3;
 
 type PagesResponseStageEnvelope = {
   buildId: string | null;
+  cacheability: VinextResponseStageCacheability;
   protocolVersion: typeof PAGES_RESPONSE_STAGE_PROTOCOL_VERSION;
   /** Host is explicit because multi-tenant/domain-i18n renders vary by it. */
   requestHost: string;
@@ -28,8 +30,16 @@ type PagesApiResponseStageProps = PagesResponseStageEnvelope & {
   kind: "pages-api";
 };
 
+/** Authenticated staged-worker path discovery delegated outside the shared cache. */
+type PagesPrerenderDiscoveryStageProps = PagesResponseStageEnvelope & {
+  kind: "pages-prerender-discovery";
+};
+
 /** Serializable description of work delegated to a cacheable Worker stage. */
-export type WorkerResponseStageProps = PagesApiResponseStageProps | PagesPageResponseStageProps;
+export type WorkerResponseStageProps =
+  | PagesApiResponseStageProps
+  | PagesPageResponseStageProps
+  | PagesPrerenderDiscoveryStageProps;
 
 /**
  * Host-owned transport for invoking a response stage.
@@ -63,12 +73,34 @@ function isSerializedHeaders(value: unknown): value is Array<[string, string]> {
   );
 }
 
+function isResponseStageCacheability(value: unknown): value is VinextResponseStageCacheability {
+  if (!value || typeof value !== "object") return false;
+  const cacheability = value as Partial<VinextResponseStageCacheability>;
+  return (
+    (cacheability.probeMode === null ||
+      cacheability.probeMode === "probe" ||
+      cacheability.probeMode === "identity") &&
+    (cacheability.policyHeaders === null ||
+      (Array.isArray(cacheability.policyHeaders) &&
+        cacheability.policyHeaders.every(
+          (entry) =>
+            Array.isArray(entry) &&
+            entry.length === 2 &&
+            typeof entry[0] === "string" &&
+            typeof entry[1] === "string",
+        ))) &&
+    typeof cacheability.resolvedRoutePathname === "string" &&
+    cacheability.resolvedRoutePathname.startsWith("/")
+  );
+}
+
 export function isPagesResponseStageProps(value: unknown): value is WorkerResponseStageProps {
   if (!value || typeof value !== "object") return false;
   const props = value as Partial<WorkerResponseStageProps>;
   if (
     props.protocolVersion !== PAGES_RESPONSE_STAGE_PROTOCOL_VERSION ||
     (props.buildId !== null && typeof props.buildId !== "string") ||
+    !isResponseStageCacheability(props.cacheability) ||
     typeof props.requestHost !== "string" ||
     props.requestHost.length === 0 ||
     (props.stagedHeaders !== null && !isSerializedHeaders(props.stagedHeaders))
@@ -76,6 +108,7 @@ export function isPagesResponseStageProps(value: unknown): value is WorkerRespon
     return false;
   }
   if (props.kind === "pages-api") return typeof props.apiUrl === "string";
+  if (props.kind === "pages-prerender-discovery") return true;
   if (props.kind !== "pages-page" || typeof props.resolvedUrl !== "string") return false;
   if (props.renderOptions === null) return true;
   if (!props.renderOptions || typeof props.renderOptions !== "object") return false;

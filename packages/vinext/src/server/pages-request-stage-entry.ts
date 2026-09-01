@@ -29,9 +29,16 @@ import { finalizeMissingStaticAssetResponse } from "./worker-utils.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
-import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
+import {
+  VINEXT_CACHEABILITY_PROBE_HEADER,
+  VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
+} from "./headers.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
+import { requestContextFromRequest } from "../config/request-context.js";
+import { resolveResponseStageCachePolicy } from "./config-headers.js";
 import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
 import {
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
@@ -42,9 +49,15 @@ import {
 import { getPagesResponseStageCacheDisposition } from "./pages-response-stage.js";
 import type {
   VinextAssetFetcher,
+  VinextCacheabilityProbeMode,
   VinextRequestStageContext,
   VinextResponseStageDispatchOptions,
 } from "./multi-stage.js";
+import {
+  createWorkerPrerenderDiscoveryContext,
+  createWorkerPrerenderReadinessResponse,
+  isWorkerPrerenderDiscoveryPath,
+} from "./worker-prerender-discovery.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -164,7 +177,7 @@ async function handleRequest(
   defaultHostRuntime: "node" | "worker",
   assets: VinextAssetFetcher | undefined,
 ): Promise<Response> {
-  const ctx = createWorkerRevalidationContext(
+  let ctx = createWorkerRevalidationContext(
     platformCtx,
     (internalRequest, internalCtx) =>
       handleRequest(
@@ -185,11 +198,49 @@ async function handleRequest(
   registerConfiguredImageOptimizer(env);
 
   try {
+    ctx = createWorkerPrerenderDiscoveryContext(ctx, request, pagesEntry.prerenderSecret);
+    const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
+    if (readinessResponse) {
+      return (await validateCdnRequest(request)) ?? readinessResponse;
+    }
+
+    let probeMode: VinextCacheabilityProbeMode | null = null;
+    if (request.headers.has(VINEXT_CACHEABILITY_PROBE_HEADER)) {
+      const { readWorkerCacheabilityProbeMode } = await import("./cacheability-request.js");
+      probeMode = readWorkerCacheabilityProbeMode(request, pagesEntry.prerenderSecret);
+      if (probeMode) {
+        const probeUrl = new URL(request.url);
+        probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
+        request = new Request(probeUrl, request);
+      }
+    }
+
     const cdnValidationResponse = await validateCdnRequest(request);
     if (cdnValidationResponse) return cdnValidationResponse;
 
     const url = new URL(request.url);
     let pathname = url.pathname;
+
+    if (ctx.isPrerenderPathDiscovery && isWorkerPrerenderDiscoveryPath(pathname)) {
+      return dispatchResponseStage(
+        request,
+        {
+          buildId: pagesEntry.buildId,
+          cacheability: {
+            policyHeaders: null,
+            probeMode: null,
+            resolvedRoutePathname: pathname,
+          },
+          kind: "pages-prerender-discovery",
+          protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+          requestHost: url.host,
+          stagedHeaders: null,
+        },
+        { cache: "bypass" },
+        env,
+        ctx,
+      );
+    }
 
     // Block protocol-relative URL open redirects in all shapes:
     //   literal  //evil.com, /\\evil.com
@@ -216,6 +267,7 @@ async function handleRequest(
     const filteredHeaders = ctx.isInternalPagesRevalidation
       ? new Headers(request.headers)
       : filterInternalHeaders(request.headers);
+    filteredHeaders.delete(VINEXT_PRERENDER_SECRET_HEADER);
     filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
     request = cloneRequestWithHeaders(request, filteredHeaders);
 
@@ -242,6 +294,12 @@ async function handleRequest(
       request = dataNorm.request;
       pathname = dataNorm.normalizedPathname;
     }
+    const responseStagePolicyHeaders = resolveResponseStageCachePolicy({
+      basePathState: { basePath, hadBasePath },
+      configHeaders,
+      pathname,
+      requestContext: requestContextFromRequest(request),
+    });
 
     const deps: PagesPipelineDeps = {
       basePath,
@@ -269,6 +327,11 @@ async function handleRequest(
       renderPage: (req, resolvedUrl, options, stagedHeaders) => {
         const responseStageProps = (cache: "shared" | "bypass"): WorkerResponseStageProps => ({
           buildId: pagesEntry.buildId,
+          cacheability: {
+            policyHeaders: responseStagePolicyHeaders,
+            probeMode,
+            resolvedRoutePathname: new URL(resolvedUrl, req.url).pathname,
+          },
           kind: "pages-page" as const,
           protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
           requestHost: new URL(req.url).host,
@@ -276,16 +339,17 @@ async function handleRequest(
           resolvedUrl,
           stagedHeaders: cache === "bypass" ? [...(stagedHeaders ?? new Headers())] : null,
         });
-        const cache = forceCacheBypass
-          ? "bypass"
-          : getPagesResponseStageCacheDisposition({
-              authorizeOnDemandRevalidate:
-                typeof authorizeOnDemandRevalidate === "function"
-                  ? authorizeOnDemandRevalidate
-                  : undefined,
-              request: req,
-              stagedHeaders,
-            });
+        const cache =
+          forceCacheBypass || probeMode
+            ? "bypass"
+            : getPagesResponseStageCacheDisposition({
+                authorizeOnDemandRevalidate:
+                  typeof authorizeOnDemandRevalidate === "function"
+                    ? authorizeOnDemandRevalidate
+                    : undefined,
+                request: req,
+                stagedHeaders,
+              });
         const renderRequest = prepareResponseStageDispatch(req, cache);
         const isHeadRequest = req.method.toUpperCase() === "HEAD";
         const dispatched = dispatchResponseStage(
@@ -309,21 +373,27 @@ async function handleRequest(
         const responseStageProps = (cache: "shared" | "bypass"): WorkerResponseStageProps => ({
           apiUrl,
           buildId: pagesEntry.buildId,
+          cacheability: {
+            policyHeaders: responseStagePolicyHeaders,
+            probeMode,
+            resolvedRoutePathname: new URL(apiUrl, req.url).pathname,
+          },
           kind: "pages-api" as const,
           protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
           requestHost: new URL(req.url).host,
           stagedHeaders: cache === "bypass" ? [...stagedHeaders] : null,
         });
-        const cache = forceCacheBypass
-          ? "bypass"
-          : getPagesResponseStageCacheDisposition({
-              authorizeOnDemandRevalidate:
-                typeof authorizeOnDemandRevalidate === "function"
-                  ? authorizeOnDemandRevalidate
-                  : undefined,
-              request: req,
-              stagedHeaders,
-            });
+        const cache =
+          forceCacheBypass || probeMode
+            ? "bypass"
+            : getPagesResponseStageCacheDisposition({
+                authorizeOnDemandRevalidate:
+                  typeof authorizeOnDemandRevalidate === "function"
+                    ? authorizeOnDemandRevalidate
+                    : undefined,
+                request: req,
+                stagedHeaders,
+              });
         return dispatchResponseStage(req, responseStageProps(cache), { cache }, env, ctx);
       },
       serveFilesystemRoute: async (requestPathname, _stagedHeaders, phase, resolvedUrl) => {

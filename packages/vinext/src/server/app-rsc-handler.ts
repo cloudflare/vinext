@@ -132,6 +132,7 @@ import {
   type DispatchAppWorkerResponseStage,
   type RenderAppWorkerResponseStageLocally,
 } from "./app-worker-stages.js";
+import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -694,6 +695,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   dispatchInternalRequest: (request: Request) => Promise<Response>,
   allowInternalRscDocumentFallback: boolean,
   dispatchResponseStage?: DispatchAppWorkerResponseStage,
+  responseStageProbeMode: VinextCacheabilityProbeMode | null = null,
   setInterceptionResponseUncacheable: (uncacheable: boolean) => void = () => {},
 ): Promise<Response> {
   const handlerStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
@@ -1025,6 +1027,23 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     : null;
   const draftModeCookie =
     dispatchResponseStage || options.renderResponseStageLocally ? getDraftModeCookieHeader() : null;
+  const responseStageCacheability = (resolvedRouteUrl: string) => ({
+    policyHeaders: null,
+    probeMode: responseStageProbeMode,
+    resolvedRoutePathname: pathnameForResolvedUrl(resolvedRouteUrl),
+  });
+  let responseStagePolicyPromise: Promise<Array<[string, string]> | null> | undefined;
+  const loadResponseStagePolicy = () =>
+    (responseStagePolicyPromise ??= options.configHeaders.length
+      ? import("./config-headers.js").then(({ resolveResponseStageCachePolicy }) =>
+          resolveResponseStageCachePolicy({
+            basePathState,
+            configHeaders: options.configHeaders,
+            pathname: matchPathname(requestCleanPathname),
+            requestContext: preMiddlewareRequestContext,
+          }),
+        )
+      : Promise.resolve(null));
   const canUseSharedWorkerResponseStage =
     !hasMiddlewareCookieOverlay &&
     !requestOptsOutOfWorkerResponseStage(
@@ -1040,6 +1059,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     dispatchResponseStage
       ? async (stageRequest, props) => {
           const cache =
+            responseStageProbeMode ||
             isOnDemandRevalidate ||
             ((props.kind === "app-page" || props.kind === "app-route-handler") &&
               props.bypassInterceptionContextCache)
@@ -1049,7 +1069,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
                 : "bypass";
           const response = await dispatchResponseStage(
             prepareResponseStageDispatch(stageRequest, cache),
-            props,
+            {
+              ...props,
+              cacheability: {
+                ...props.cacheability,
+                policyHeaders: await loadResponseStagePolicy(),
+              },
+            },
             { cache },
           );
           if (props.kind !== "app-page" || !props.isRscRequest) {
@@ -1098,6 +1124,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       const response = await metadataResponseStage(responseStageRequest(), {
         kind: "app-metadata",
         buildId: options.buildId,
+        cacheability: responseStageCacheability(resolvedUrl),
         canonicalPathname,
         cleanPathname,
         draftModeCookie,
@@ -1665,6 +1692,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               {
                 kind: "hybrid-pages",
                 buildId: options.buildId,
+                cacheability: responseStageCacheability(resolvedUrl),
                 allowRscDocumentFallback:
                   didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
                 appRouteMatch: match
@@ -1912,6 +1940,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       const response = await notFoundResponseStage(responseStageRequest(), {
         kind: "app-not-found",
         buildId: options.buildId,
+        cacheability: responseStageCacheability(resolvedUrl),
         canonicalPathname,
         cleanPathname,
         draftModeCookie,
@@ -2020,6 +2049,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       const response = await matchedResponseStage(responseStageRequest(), {
         kind: "app-route-handler",
         buildId: options.buildId,
+        cacheability: responseStageCacheability(resolvedUrl),
         bypassInterceptionContextCache,
         canonicalPathname,
         cleanPathname,
@@ -2062,6 +2092,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     ? await matchedResponseStage(responseStageRequest(), {
         kind: "app-page",
         buildId: options.buildId,
+        cacheability: responseStageCacheability(resolvedUrl),
         bypassInterceptionContextCache,
         canonicalPathname,
         cleanPathname,
@@ -2183,6 +2214,7 @@ export type AppRscRequestHandler = (
   ctx: unknown,
   allowInternalRscDocumentFallback?: boolean,
   dispatchResponseStage?: DispatchAppWorkerResponseStage,
+  responseStageProbeMode?: VinextCacheabilityProbeMode | null,
 ) => Promise<Response>;
 
 /** Build the request-only handler without retaining the response renderer graph. */
@@ -2194,6 +2226,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     ctx: unknown,
     allowInternalRscDocumentFallback = false,
     dispatchResponseStage?: DispatchAppWorkerResponseStage,
+    responseStageProbeMode: VinextCacheabilityProbeMode | null = null,
   ): Promise<Response> {
     // Register config-driven cache adapters before anything touches the cache.
     // On the Cloudflare worker the entry already registered them with `env` (this
@@ -2320,9 +2353,17 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
               isPagesDataRequest,
               isPagesDataRequest,
               pagesDataRequest,
-              (internalRequest) => appRscHandler(internalRequest, ctx, true, dispatchResponseStage),
+              (internalRequest) =>
+                appRscHandler(
+                  internalRequest,
+                  ctx,
+                  true,
+                  dispatchResponseStage,
+                  responseStageProbeMode,
+                ),
               allowInternalRscDocumentFallback,
               dispatchResponseStage,
+              responseStageProbeMode,
               (uncacheable) => {
                 interceptionResponseUncacheable = uncacheable;
               },

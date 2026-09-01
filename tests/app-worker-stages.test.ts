@@ -21,11 +21,13 @@ vi.mock("virtual:vinext-image-adapters", () => ({
 }));
 
 vi.mock("virtual:vinext-app-response-entry", () => ({
+  __cacheabilityManifest: null,
   default: { handleResponseStage: stages.renderResponse },
 }));
 
 const notFoundStage = {
   buildId: null,
+  cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/missing" },
   canonicalPathname: "/missing",
   cleanPathname: "/missing",
   draftModeCookie: null,
@@ -94,9 +96,11 @@ describe("App Worker response stage", () => {
   it("requires a transport proof on full-request stage payloads", () => {
     const fullStage = {
       buildId: null,
+      cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/" },
       draftModeCookie: null,
       kind: "app-full-request" as const,
       middlewareCookieOverlay: null,
+      prerenderDiscovery: false,
       protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
       scriptNonce: null,
       staticFileSignalToken: "00000000-0000-4000-8000-000000000000",

@@ -32,6 +32,8 @@ vi.mock("virtual:vinext-pages-response-entry", () => ({
   vinextConfig: {},
 }));
 
+vi.mock("virtual:vinext-cacheability-manifest", () => ({ default: null }));
+
 describe("Pages Worker response stage", () => {
   beforeEach(() => {
     stages.api.mockReset();
@@ -69,6 +71,11 @@ describe("Pages Worker response stage", () => {
         undefined,
         {
           buildId: "test-build",
+          cacheability: {
+            policyHeaders: null,
+            probeMode: null,
+            resolvedRoutePathname: "/rewritten",
+          },
           kind: "pages-page",
           protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
           requestHost: "example.com",
@@ -108,6 +115,7 @@ describe("Pages Worker response stage", () => {
         undefined,
         {
           buildId: "test-build",
+          cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/page" },
           kind: "pages-page",
           protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
           requestHost: "example.com",
@@ -142,6 +150,11 @@ describe("Pages Worker response stage", () => {
         {
           apiUrl: "/api/rewritten?slug=one",
           buildId: "test-build",
+          cacheability: {
+            policyHeaders: null,
+            probeMode: null,
+            resolvedRoutePathname: "/api/rewritten",
+          },
           kind: "pages-api",
           protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
           requestHost: "example.com",
@@ -173,6 +186,11 @@ describe("Pages Worker response stage", () => {
       {
         apiUrl: "/api/worker",
         buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/api/worker",
+        },
         kind: "pages-api",
         protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
         requestHost: "example.com",
@@ -192,6 +210,7 @@ describe("Pages Worker response stage", () => {
       undefined,
       {
         buildId: "older-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/page" },
         kind: "pages-page",
         protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
         requestHost: "example.com",
@@ -215,6 +234,7 @@ describe("Pages Worker response stage", () => {
       undefined,
       {
         buildId: "test-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/page" },
         kind: "pages-page",
         protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
         renderOptions: null,
@@ -244,6 +264,7 @@ describe("Pages Worker response stage", () => {
       undefined,
       {
         buildId: "test-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/page" },
         kind: "pages-page",
         protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
         requestHost: "example.com",

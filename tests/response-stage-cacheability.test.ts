@@ -166,4 +166,58 @@ describe("response-stage cacheability", () => {
     expect(response.headers.get("Cache-Control")).toBe("s-maxage=60");
     await expect(response.text()).resolves.toBe("static");
   });
+
+  it("applies safe config policy before final admission without overriding late vetoes", async () => {
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "shared",
+        context: baseContext(),
+        policyHeaders: [["Cache-Control", "public, s-maxage=60"]],
+        rawManifest: null,
+        registerCacheAdapters: registerAdapter,
+        request: new Request("https://example.com/dynamic", {
+          headers: { Accept: "text/html" },
+        }),
+        resolvedRoutePathname: "/dynamic",
+      },
+      async (context) => {
+        const state = contextState(context)!;
+        state.route = { kind: "app-page", pattern: "/dynamic" };
+        state.outcome = { cacheable: false };
+        return new Response("draft", {
+          headers: { "Set-Cookie": "__prerender_bypass=secret; Path=/" },
+        });
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("Set-Cookie")).toContain("__prerender_bypass");
+  });
+
+  it("allows safe config policy to publish an otherwise dynamic response", async () => {
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "shared",
+        context: baseContext(),
+        policyHeaders: [["CDN-Cache-Control", "public, s-maxage=90"]],
+        rawManifest: null,
+        registerCacheAdapters: registerAdapter,
+        request: new Request("https://example.com/dynamic", {
+          headers: { Accept: "text/html" },
+        }),
+        resolvedRoutePathname: "/dynamic",
+      },
+      async (context) => {
+        const state = contextState(context)!;
+        state.route = { kind: "app-page", pattern: "/dynamic" };
+        state.outcome = { cacheable: false };
+        return new Response("dynamic");
+      },
+    );
+
+    expect(response.headers.get("CDN-Cache-Control")).toBe("public, s-maxage=90");
+    await expect(response.text()).resolves.toBe("dynamic");
+  });
 });

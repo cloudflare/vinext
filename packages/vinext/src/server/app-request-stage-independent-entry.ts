@@ -6,6 +6,7 @@ import requestRscHandler, {
   __basePath,
   __imageAllowedWidths,
   __imageConfig,
+  __prerenderSecret,
 } from "virtual:vinext-app-request-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 // @ts-expect-error -- virtual module resolved by vinext
@@ -29,7 +30,13 @@ import {
   filterInternalHeaders,
   isOpenRedirectShaped,
 } from "./request-pipeline.js";
-import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
+import {
+  VINEXT_CACHEABILITY_PROBE_HEADER,
+  VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
+} from "./headers.js";
 import {
   readTrustedPrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
@@ -37,7 +44,15 @@ import {
 import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
-import type { VinextAssetFetcher, VinextRequestStageContext } from "./multi-stage.js";
+import {
+  createWorkerPrerenderDiscoveryContext,
+  createWorkerPrerenderReadinessResponse,
+} from "./worker-prerender-discovery.js";
+import type {
+  VinextAssetFetcher,
+  VinextCacheabilityProbeMode,
+  VinextRequestStageContext,
+} from "./multi-stage.js";
 
 export type AppRequestStageEnv = Record<string, unknown>;
 type AppRequestStageContext = ExecutionContextLike & VinextRequestStageContext;
@@ -66,7 +81,7 @@ async function handleRequest(
   dispatchResponseStage: DispatchAppWorkerResponseStage,
   assets: VinextAssetFetcher | undefined,
 ): Promise<Response> {
-  const ctx = platformCtx?.trustedRevalidateOrigin
+  let ctx = platformCtx?.trustedRevalidateOrigin
     ? platformCtx
     : createWorkerRevalidationContext(
         platformCtx,
@@ -77,6 +92,23 @@ async function handleRequest(
 
   registerConfiguredCacheAdapters(env);
   registerConfiguredImageOptimizer(env);
+
+  ctx = createWorkerPrerenderDiscoveryContext(ctx, request, __prerenderSecret);
+  const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
+  if (readinessResponse) {
+    return (await validateCdnRequest(request)) ?? readinessResponse;
+  }
+
+  let probeMode: VinextCacheabilityProbeMode | null = null;
+  if (request.headers.has(VINEXT_CACHEABILITY_PROBE_HEADER)) {
+    const { readWorkerCacheabilityProbeMode } = await import("./cacheability-request.js");
+    probeMode = readWorkerCacheabilityProbeMode(request, __prerenderSecret);
+    if (probeMode) {
+      const probeUrl = new URL(request.url);
+      probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
+      request = new Request(probeUrl, request);
+    }
+  }
 
   const cdnValidationResponse = await validateCdnRequest(request);
   if (cdnValidationResponse) return cdnValidationResponse;
@@ -103,6 +135,7 @@ async function handleRequest(
   const filteredHeaders = ctx.isInternalPagesRevalidation
     ? new Headers(request.headers)
     : filterInternalHeaders(request.headers);
+  filteredHeaders.delete(VINEXT_PRERENDER_SECRET_HEADER);
   filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
   const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
     trustedPrerenderRouteParams,
@@ -112,7 +145,14 @@ async function handleRequest(
   }
   request = cloneRequestWithHeaders(request, filteredHeaders);
 
-  const handle = () => requestRscHandler(request, ctx, dispatchResponseStage);
+  const handle = () =>
+    requestRscHandler(
+      request,
+      ctx,
+      dispatchResponseStage,
+      probeMode,
+      ctx.isPrerenderPathDiscovery === true,
+    );
   const result = await runWithExecutionContext(ctx, handle);
   let response = result;
   if (assets) {

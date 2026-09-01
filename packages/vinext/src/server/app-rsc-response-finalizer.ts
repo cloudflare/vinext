@@ -84,14 +84,13 @@ export async function applyAppRscConfigHeaders(
     pathname: matchPathname,
     requestContext: options.requestContext,
     basePathState: { basePath: options.basePath, hadBasePath },
-    overwriteExisting: options.overwriteExisting,
     appendToPostConfigLink: hasPostConfigLinkHeaders(headers),
     middlewareHeaders: options.middlewareHeaders,
     // Next.js next.config headers override its renderer-owned Cache-Control,
     // including for force-dynamic App Pages. Other response headers retain
     // the existing merge precedence.
     // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
-    overwriteExisting: CONFIG_CACHE_POLICY_HEADERS,
+    overwriteExisting: options.overwriteExisting ?? CONFIG_CACHE_POLICY_HEADERS,
   });
 }
 

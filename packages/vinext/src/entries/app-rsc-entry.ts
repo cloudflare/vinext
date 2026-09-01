@@ -356,6 +356,7 @@ import { applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareCont
 const __basePath = ${JSON.stringify(bp)};
 const __trailingSlash = ${JSON.stringify(ts)};
 const __draftModeSecret = ${JSON.stringify(config?.draftModeSecret ?? "")};
+export const __prerenderSecret = ${JSON.stringify(config?.prerenderSecret ?? "")};
 export const __assetPrefix = ${JSON.stringify(config?.assetPrefix ?? "")};
 export { __basePath };
 export const __imageAllowedWidths = ${JSON.stringify([
@@ -519,7 +520,13 @@ const __requestHandler = createAppRscRequestHandler({
   validateDevRequestOrigin: __validateDevRequestOrigin,
 });
 
-export default async function handleAppRequestStage(request, ctx, dispatchResponseStage) {
+export default async function handleAppRequestStage(
+  request,
+  ctx,
+  dispatchResponseStage,
+  probeMode = null,
+  prerenderDiscovery = false,
+) {
   if (!dispatchResponseStage) {
     throw new Error("App request stage requires a response-stage dispatcher");
   }
@@ -528,15 +535,21 @@ export default async function handleAppRequestStage(request, ctx, dispatchRespon
     const response = await dispatchResponseStage(request, {
       kind: "app-full-request",
       buildId: process.env.__VINEXT_BUILD_ID ?? null,
+      cacheability: {
+        policyHeaders: null,
+        probeMode,
+        resolvedRoutePathname: new URL(request.url).pathname,
+      },
       draftModeCookie: null,
       middlewareCookieOverlay: null,
+      prerenderDiscovery,
       protocolVersion: ${APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION},
       scriptNonce: null,
       staticFileSignalToken,
     }, { cache: "bypass" });
     return __restoreStaticFileSignalFromTransport(response, staticFileSignalToken);
   }
-  return __requestHandler(request, ctx, false, dispatchResponseStage);
+  return __requestHandler(request, ctx, false, dispatchResponseStage, probeMode);
 }
 `;
 }

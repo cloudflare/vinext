@@ -16,6 +16,46 @@ import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 const ADDITIVE_CONFIG_HEADER_NAMES = new Set(["set-cookie", "vary"]);
 const CACHEABILITY_POLICY_HEADER_NAMES = new Set<string>(CACHEABILITY_POLICY_HEADERS);
 
+function ruleUsesUnkeyedRequestCondition(rule: NextHeader): boolean {
+  return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
+    (condition) =>
+      condition.type === "header" || condition.type === "cookie" || condition.type === "host",
+  );
+}
+
+export type ResponseStageCachePolicyOptions = {
+  basePathState?: BasePathMatchState;
+  configHeaders: NextHeader[];
+  pathname: string;
+  requestContext: RequestContext;
+};
+
+/**
+ * Resolve positive config cache policy that may safely accompany an inner artifact.
+ * Header/cookie/host conditions stay in the uncached composition stage; query
+ * conditions are safe because the public Workers Cache key already includes them.
+ */
+export function resolveResponseStageCachePolicy({
+  basePathState,
+  configHeaders,
+  pathname,
+  requestContext,
+}: ResponseStageCachePolicyOptions): Array<[string, string]> | null {
+  const safeRules = configHeaders.filter((rule) => !ruleUsesUnkeyedRequestCondition(rule));
+  const matched = retainLastSingularConfigValues(
+    matchHeaders(pathname, safeRules, requestContext, basePathState),
+  );
+  const policy = matched
+    .filter((header) => {
+      const name = header.key.toLowerCase();
+      return (
+        CACHEABILITY_POLICY_HEADER_NAMES.has(name) && !isNonCacheableCacheControl(header.value)
+      );
+    })
+    .map((header) => [header.key, header.value] as [string, string]);
+  return policy.length > 0 ? policy : null;
+}
+
 function markConditionalConfigHeaderCacheability(rule: NextHeader): void {
   if (
     [...(rule.has ?? []), ...(rule.missing ?? [])].some(

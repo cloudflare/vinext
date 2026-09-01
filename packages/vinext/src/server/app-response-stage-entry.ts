@@ -1,6 +1,6 @@
 /** Cacheable App response stage. This is the only multi-stage App entry that imports user routes. */
 
-import rscHandler from "virtual:vinext-app-response-entry";
+import rscHandler, { __cacheabilityManifest } from "virtual:vinext-app-response-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 // @ts-expect-error -- virtual module resolved by vinext
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -16,6 +16,7 @@ import type {
   VinextRequestStageTransport,
   VinextResponseStageDispatchOptions,
 } from "./multi-stage.js";
+import { withResponseStageCacheability } from "./response-stage-cacheability.js";
 
 type AppResponseStageEnv = Record<string, unknown>;
 
@@ -30,25 +31,43 @@ export async function handleResponseStage(
   if (!isAppWorkerResponseStageProps(props)) {
     return new Response("Invalid vinext App response stage", { status: 400 });
   }
-  registerConfiguredCacheAdapters(env);
   registerConfiguredImageOptimizer(env);
-  const ctx = createWorkerRevalidationContext(
+  let ctx = createWorkerRevalidationContext(
     platformCtx,
     (internalRequest) => dispatchRequestStage(internalRequest),
     "node",
   );
-  if (props.kind === "app-full-request") {
-    const currentBuildId = process.env.__VINEXT_BUILD_ID ?? null;
-    if (props.buildId !== currentBuildId) {
-      return new Response("Incompatible vinext App response stage", { status: 409 });
-    }
-    const fullEntry = await import("virtual:vinext-rsc-entry");
-    const render = () => fullEntry.default(request, ctx);
-    return serializeStaticFileSignalForTransport(
-      await runWithExecutionContext(ctx, render),
-      props.staticFileSignalToken,
-    );
+  if (props.kind === "app-full-request" && props.prerenderDiscovery) {
+    ctx = { ...ctx, isPrerenderPathDiscovery: true };
   }
-  const render = () => rscHandler.handleResponseStage(request, ctx, props, options);
-  return runWithExecutionContext(ctx, render);
+  return withResponseStageCacheability(
+    {
+      buildId: process.env.__VINEXT_BUILD_ID,
+      cache: options.cache,
+      context: ctx,
+      policyHeaders: props.cacheability.policyHeaders,
+      probeMode: props.cacheability.probeMode,
+      rawManifest: __cacheabilityManifest,
+      registerCacheAdapters: () => registerConfiguredCacheAdapters(env),
+      request,
+      resolvedRoutePathname: props.cacheability.resolvedRoutePathname,
+    },
+    async (cacheabilityContext) => {
+      if (props.kind === "app-full-request") {
+        const currentBuildId = process.env.__VINEXT_BUILD_ID ?? null;
+        if (props.buildId !== currentBuildId) {
+          return new Response("Incompatible vinext App response stage", { status: 409 });
+        }
+        const fullEntry = await import("virtual:vinext-rsc-entry");
+        const render = () => fullEntry.default(request, cacheabilityContext);
+        return serializeStaticFileSignalForTransport(
+          await runWithExecutionContext(cacheabilityContext, render),
+          props.staticFileSignalToken,
+        );
+      }
+      const render = () =>
+        rscHandler.handleResponseStage(request, cacheabilityContext, props, options);
+      return runWithExecutionContext(cacheabilityContext, render);
+    },
+  );
 }
