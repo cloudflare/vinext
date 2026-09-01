@@ -382,10 +382,9 @@ export function createTrackedAppRouteRequest(
         : requestWithOverrides instanceof NextRequest && sourceCfDescriptor?.configurable !== false
           ? requestWithOverrides
           : new NextRequest(requestWithOverrides, { nextConfig: nextConfig ?? undefined });
-    const rawCfMetadata =
-      sourceCfAccessor
-        ? undefined
-        : sourceCfMetadata === undefined
+    const rawCfMetadata = sourceCfAccessor
+      ? undefined
+      : sourceCfMetadata === undefined
         ? Reflect.get(nextRequest, "cf", nextRequest)
         : sourceCfMetadata;
     const hasCfMetadata = sourceCfAccessor !== undefined || rawCfMetadata !== undefined;

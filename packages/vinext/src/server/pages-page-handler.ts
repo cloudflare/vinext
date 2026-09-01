@@ -117,10 +117,7 @@ function withPagesCacheState(
         revalidatedPathname.length > 1 && revalidatedPathname.endsWith("/")
           ? revalidatedPathname.slice(0, -1)
           : revalidatedPathname;
-      headers.set(
-        VINEXT_REVALIDATED_CACHE_TAG_HEADER,
-        encodeCacheTag(`_N_T_${stem || "/"}`),
-      );
+      headers.set(VINEXT_REVALIDATED_CACHE_TAG_HEADER, encodeCacheTag(`_N_T_${stem || "/"}`));
     }
   } else {
     setCacheStateHeaders(headers, state);
