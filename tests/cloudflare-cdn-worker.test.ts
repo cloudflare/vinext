@@ -48,8 +48,12 @@ function createEntrypoint(props: unknown, env: unknown = { binding: "value" }) {
   }) as VinextCachedResponse;
 }
 
-function responseStageInvocation(props: unknown, requestUrl = "https://example.com/page") {
-  return { options: { cache: "shared" }, props, requestUrl };
+function responseStageInvocation(
+  props: unknown,
+  requestUrl = "https://example.com/page",
+  requestMethod = "GET",
+) {
+  return { options: { cache: "shared" }, props, requestMethod, requestUrl };
 }
 
 function pagesPageProps(
@@ -148,6 +152,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       props: {
         options: { cache: "shared" },
         props: { params: { slug: "page" }, route: "/page" },
+        requestMethod: "GET",
         requestUrl: "https://example.com/render",
       },
     });
@@ -279,6 +284,31 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
 
     expect(seen).toHaveLength(4);
     expect(new Set(seen)).toHaveProperty("size", 4);
+  });
+
+  it("partitions and restores HEAD when Workers Cache invokes the entrypoint as GET", async () => {
+    const cacheFacingUrls: string[] = [];
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch(request: Request) {
+        cacheFacingUrls.push(request.url);
+        // Workers Cache shares GET/HEAD entries and a cold HEAD reaches the
+        // Worker as GET. Configurable-entrypoint props retain the caller's
+        // logical method across that platform conversion.
+        return createEntrypoint(props).fetch(new Request(request, { method: "GET" }));
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-route-handler" }, { cache: "shared" }),
+    );
+    stages.response.mockImplementation((request) => new Response(request.method));
+
+    const context = { exports: { VinextCachedResponse: binding } };
+    await worker.fetch(new Request("https://example.com/route"), {}, context);
+    await worker.fetch(new Request("https://example.com/route", { method: "HEAD" }), {}, context);
+
+    expect(cacheFacingUrls).toHaveLength(2);
+    expect(cacheFacingUrls[0]).not.toBe(cacheFacingUrls[1]);
+    expect(stages.response.mock.calls.map(([request]) => request.method)).toEqual(["GET", "HEAD"]);
   });
 
   it("renders bypass work without consulting the cached entrypoint", async () => {

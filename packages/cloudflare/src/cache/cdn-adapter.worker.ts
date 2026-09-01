@@ -28,6 +28,7 @@ type CloudflareStageContext = {
 type CloudflareResponseStageInvocation = {
   options: VinextResponseStageDispatchOptions;
   props: unknown;
+  requestMethod: string;
   requestUrl: string;
 };
 
@@ -141,21 +142,37 @@ async function createCacheFacingRequest(
   return new Request(new Request(url, request), init);
 }
 
-function restoreResponseStageRequest(request: Request, requestUrl: string): Request {
+function restoreResponseStageRequest(
+  request: Request,
+  requestUrl: string,
+  requestMethod: string,
+): Request {
   const headers = new Headers(request.headers);
   const serializedRequestCf = headers.get(REQUEST_CF_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
-  const restored = new Request(new Request(requestUrl, request), { headers });
+  let requestCf: unknown;
   if (serializedRequestCf !== null) {
     try {
-      Object.defineProperty(restored, "cf", {
-        configurable: true,
-        enumerable: true,
-        value: JSON.parse(decodeURIComponent(serializedRequestCf)),
-      });
+      requestCf = JSON.parse(decodeURIComponent(serializedRequestCf));
     } catch {
       // Malformed internal metadata is stripped rather than exposed to userland.
     }
+  }
+  const init = {
+    headers,
+    method: requestMethod,
+    ...(requestCf === undefined ? {} : { cf: requestCf }),
+  } satisfies RequestInit & { cf?: unknown };
+  const restored = new Request(new Request(requestUrl, request), init);
+  // Node's Request ignores the Workers-only RequestInit.cf member. Preserve a
+  // shadow there for tests and non-Workers hosts; workerd already exposes the
+  // value installed through RequestInit.cf.
+  if (requestCf !== undefined && Reflect.get(restored, "cf") === undefined) {
+    Object.defineProperty(restored, "cf", {
+      configurable: true,
+      enumerable: true,
+      value: requestCf,
+    });
   }
   return restored;
 }
@@ -184,6 +201,8 @@ function getResponseStageInvocation(value: unknown): CloudflareResponseStageInvo
   if (cache !== "shared" && cache !== "bypass") return null;
   const requestUrl = Reflect.get(value, "requestUrl");
   if (typeof requestUrl !== "string") return null;
+  const requestMethod = Reflect.get(value, "requestMethod");
+  if (typeof requestMethod !== "string" || requestMethod.length === 0) return null;
   try {
     new URL(requestUrl);
   } catch {
@@ -192,6 +211,7 @@ function getResponseStageInvocation(value: unknown): CloudflareResponseStageInvo
   return {
     options: options as VinextResponseStageDispatchOptions,
     props: Reflect.get(value, "props"),
+    requestMethod,
     requestUrl,
   };
 }
@@ -206,6 +226,7 @@ async function invokeResponseStage(
     invokeResponseStage(stageRequest, env, context, {
       options,
       props,
+      requestMethod: stageRequest.method,
       requestUrl: stageRequest.url,
     });
   const dispatchRequestStage: VinextRequestStageTransport = async (stageRequest) => {
@@ -232,7 +253,7 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
       return new Response("Invalid vinext response-stage invocation", { status: 400 });
     }
     return invokeResponseStage(
-      restoreResponseStageRequest(request, invocation.requestUrl),
+      restoreResponseStageRequest(request, invocation.requestUrl, invocation.requestMethod),
       this.env,
       context,
       invocation,
@@ -259,7 +280,12 @@ export default {
       props,
       options,
     ) => {
-      const invocation = { options, props, requestUrl: stageRequest.url };
+      const invocation = {
+        options,
+        props,
+        requestMethod: stageRequest.method,
+        requestUrl: stageRequest.url,
+      };
       if (options.cache === "bypass") {
         return invokeResponseStage(stageRequest, env, stageContext, invocation);
       }
