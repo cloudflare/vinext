@@ -190,6 +190,9 @@ describe("createPagesPageHandler — after() lifecycle", () => {
 
 describe("createPagesPageHandler — pre-render response headers", () => {
   it("lets getServerSideProps override config cache policy", async () => {
+    // Ported from Next.js:
+    // test/e2e/middleware-custom-matchers/app/pages/index.js
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers/app/pages/index.js
     const handler = createPagesPageHandler(
       makeOpts({
         pageRoutes: [
@@ -199,8 +202,13 @@ describe("createPagesPageHandler — pre-render response headers", () => {
               getServerSideProps: async ({
                 res,
               }: {
-                res: { setHeader(name: string, value: string): void };
+                res: {
+                  getHeader(name: string): string | string[] | number | undefined;
+                  setHeader(name: string, value: string): void;
+                };
               }) => {
+                expect(res.getHeader("x-config-variant")).toBe("preview");
+                expect(res.getHeader("x-from-middleware")).toBe("present");
                 res.setHeader("Cache-Control", "private, no-store");
                 return { props: {} };
               },
@@ -213,11 +221,15 @@ describe("createPagesPageHandler — pre-render response headers", () => {
     const initialHeaders = new Headers({
       "Cache-Control": "public, s-maxage=60",
       Vary: "x-visitor",
+      "x-config-variant": "preview",
+      "x-from-middleware": "present",
     });
     const response = await handler(makeRequest(), "/", null, null, null, initialHeaders);
 
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
     expect(response.headers.get("Vary")).toBe("x-visitor");
+    expect(response.headers.get("x-config-variant")).toBe("preview");
+    expect(response.headers.get("x-from-middleware")).toBe("present");
   });
 });
 

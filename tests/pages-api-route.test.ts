@@ -37,8 +37,12 @@ describe("pages api route", () => {
       initialResponseHeaders: new Headers({
         "Cache-Control": "public, s-maxage=60",
         Vary: "x-visitor",
+        "x-config-variant": "preview",
+        "x-from-middleware": "present",
       }),
       match: createMatch((_req, res) => {
+        expect(res.getHeader("x-config-variant")).toBe("preview");
+        expect(res.getHeader("x-from-middleware")).toBe("present");
         res.setHeader("Cache-Control", "private, no-store");
         res.json({ ok: true });
       }),
@@ -48,6 +52,8 @@ describe("pages api route", () => {
 
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
     expect(response.headers.get("Vary")).toBe("x-visitor");
+    expect(response.headers.get("x-config-variant")).toBe("preview");
+    expect(response.headers.get("x-from-middleware")).toBe("present");
   });
 
   it("does not expose process environment variables on the request", async () => {
