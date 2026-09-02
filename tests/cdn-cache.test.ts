@@ -68,11 +68,14 @@ describe("data cache handler aliases", () => {
   it("creates a declarative handler once while keeping failed factories retryable", () => {
     const handlerKey = Symbol.for("vinext.cacheHandler");
     const configuredKey = Symbol.for("vinext.configuredCacheHandler");
+    const explicitKey = Symbol.for("vinext.explicitCacheHandler");
     const globals = globalThis as unknown as Record<PropertyKey, unknown>;
     const previousHandler = globals[handlerKey];
     const previousConfigured = globals[configuredKey];
+    const previousExplicit = globals[explicitKey];
     delete globals[handlerKey];
     delete globals[configuredKey];
+    delete globals[explicitKey];
 
     try {
       const failedFactory = vi.fn((): CacheHandler => {
@@ -96,6 +99,48 @@ describe("data cache handler aliases", () => {
       else globals[handlerKey] = previousHandler;
       if (previousConfigured === undefined) delete globals[configuredKey];
       else globals[configuredKey] = previousConfigured;
+      if (previousExplicit === undefined) delete globals[explicitKey];
+      else globals[explicitKey] = previousExplicit;
+    }
+  });
+
+  it("does not evaluate a declarative factory after an imperative registration", () => {
+    const explicit = new MemoryCacheHandler();
+    const factory = vi.fn(() => new MemoryCacheHandler());
+    setDataCacheHandler(explicit);
+
+    registerDataCacheHandler(factory);
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(getDataCacheHandler()).toBe(explicit);
+  });
+
+  it("preserves an imperative handler installed by a declarative factory", () => {
+    const handlerKey = Symbol.for("vinext.cacheHandler");
+    const configuredKey = Symbol.for("vinext.configuredCacheHandler");
+    const explicitKey = Symbol.for("vinext.explicitCacheHandler");
+    const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+    const previousHandler = globals[handlerKey];
+    const previousConfigured = globals[configuredKey];
+    const previousExplicit = globals[explicitKey];
+    delete globals[handlerKey];
+    delete globals[configuredKey];
+    delete globals[explicitKey];
+
+    try {
+      const explicit = new MemoryCacheHandler();
+      registerDataCacheHandler(() => {
+        setDataCacheHandler(explicit);
+        return new MemoryCacheHandler();
+      });
+      expect(getDataCacheHandler()).toBe(explicit);
+    } finally {
+      if (previousHandler === undefined) delete globals[handlerKey];
+      else globals[handlerKey] = previousHandler;
+      if (previousConfigured === undefined) delete globals[configuredKey];
+      else globals[configuredKey] = previousConfigured;
+      if (previousExplicit === undefined) delete globals[explicitKey];
+      else globals[explicitKey] = previousExplicit;
     }
   });
 });

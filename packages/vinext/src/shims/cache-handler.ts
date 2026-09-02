@@ -374,6 +374,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
 const HANDLER_KEY = Symbol.for("vinext.cacheHandler");
 const CONFIGURED_HANDLER_KEY = Symbol.for("vinext.configuredCacheHandler");
+const EXPLICIT_HANDLER_KEY = Symbol.for("vinext.explicitCacheHandler");
 const globalHandlers = globalThis as unknown as Record<PropertyKey, CacheHandler>;
 
 function getActiveHandler(): CacheHandler {
@@ -388,6 +389,7 @@ export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions)
 
 export function setDataCacheHandler(handler: CacheHandler): void {
   globalHandlers[HANDLER_KEY] = handler;
+  globalHandlers[EXPLICIT_HANDLER_KEY] = handler;
 }
 
 /**
@@ -395,9 +397,19 @@ export function setDataCacheHandler(handler: CacheHandler): void {
  * duplicated stage modules. Imperative setters remain able to replace it.
  */
 export function registerDataCacheHandler(factory: () => CacheHandler): void {
-  if (globalHandlers[CONFIGURED_HANDLER_KEY] !== undefined) return;
+  if (
+    globalHandlers[EXPLICIT_HANDLER_KEY] !== undefined ||
+    globalHandlers[CONFIGURED_HANDLER_KEY] !== undefined
+  ) {
+    return;
+  }
   const handler = factory();
-  if (globalHandlers[CONFIGURED_HANDLER_KEY] !== undefined) return;
+  if (
+    globalHandlers[EXPLICIT_HANDLER_KEY] !== undefined ||
+    globalHandlers[CONFIGURED_HANDLER_KEY] !== undefined
+  ) {
+    return;
+  }
   globalHandlers[HANDLER_KEY] = handler;
   globalHandlers[CONFIGURED_HANDLER_KEY] = handler;
 }
