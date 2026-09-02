@@ -19,8 +19,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   });
   expect(browserFetch.status()).toBe(200);
   expect(await browserFetch.text()).toContain("static page");
-  expect(browserFetch.headers()["cdn-cache-control"]).toContain("public");
-  expect(browserFetch.headers()["cache-control"]).not.toContain("no-store");
+  expectGatewayCachePolicy(browserFetch);
 
   const certifiedFullRsc = await request.get("/cacheability/static?_rsc", {
     headers: { Accept: "text/x-component", RSC: "1" },
