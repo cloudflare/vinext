@@ -5,6 +5,9 @@ declare global {
   var __VINEXT_PREGENERATED_CONCRETE_PATHS: unknown;
 }
 
+/** Stable post-build module populated after prerendering completes. */
+export const PREGENERATED_CONCRETE_PATHS_MODULE = "__vinext_pregenerated_concrete_paths.js";
+
 export function normalizePregeneratedPathname(pathname: string): string {
   return normalizePath(normalizePathnameForRouteMatch(pathname));
 }
