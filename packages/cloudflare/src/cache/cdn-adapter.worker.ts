@@ -272,16 +272,20 @@ function preventRequestCfResponseCaching(response: Response): Response {
  */
 function finalizeGatewayResponse(response: Response, usedSharedResponseStage: boolean): Response {
   const cacheControl = response.headers.get("Cache-Control");
-  if (
-    !response.headers.has(CLOUDFLARE_EDGE_POLICY_HEADER) &&
-    (!usedSharedResponseStage || (cacheControl && isNonCacheableCacheControl(cacheControl)))
-  ) {
+  const hasSharedResponseMetadata =
+    usedSharedResponseStage &&
+    (response.headers.has("CDN-Cache-Control") ||
+      response.headers.has("Cache-Tag") ||
+      !cacheControl ||
+      !isNonCacheableCacheControl(cacheControl));
+  if (!response.headers.has(CLOUDFLARE_EDGE_POLICY_HEADER) && !hasSharedResponseMetadata) {
     return response;
   }
   const headers = new Headers(response.headers);
   headers.delete(CLOUDFLARE_EDGE_POLICY_HEADER);
   if (usedSharedResponseStage) {
     headers.delete("CDN-Cache-Control");
+    headers.delete("Cache-Tag");
     if (!cacheControl || !isNonCacheableCacheControl(cacheControl)) {
       headers.set("Cache-Control", "private, max-age=0, must-revalidate");
     }

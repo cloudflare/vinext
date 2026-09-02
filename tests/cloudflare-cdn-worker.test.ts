@@ -586,13 +586,26 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
   });
 
   it("falls back to an uncached render when loopback exports are unavailable", async () => {
-    stages.response.mockResolvedValue(new Response("rendered"));
+    stages.response.mockResolvedValue(
+      new Response("rendered", {
+        headers: {
+          "Cache-Control": "public, max-age=300",
+          "CDN-Cache-Control": "public, s-maxage=300",
+          "Cloudflare-CDN-Cache-Control": "public, s-maxage=300",
+          "Cache-Tag": "private-fallback",
+        },
+      }),
+    );
     stages.request.mockImplementation((_request, _env, _ctx, dispatch) =>
       dispatch(new Request("https://example.com/render"), {}, { cache: "shared" }),
     );
 
     const response = await worker.fetch(new Request("https://example.com/page"), {}, {});
     expect(await response.text()).toBe("rendered");
+    expect(response.headers.get("Cache-Control")).toBe("private, max-age=0, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBeNull();
     expect(stages.response).toHaveBeenCalledOnce();
   });
 
