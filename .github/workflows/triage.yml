@@ -1,0 +1,96 @@
+# AI issue triage bot. Ported from Astro's setup:
+# https://blog.cloudflare.com/astro-issue-triage/
+# https://github.com/withastro/triagebot-action
+#
+# On every new bug report the bot reproduces the bug, diagnoses the root
+# cause, verifies it against Next.js behavior, and attempts a fix. If a fix
+# lands it is pushed to `triagebot/fix-<issue>` and published as a pkg.pr.new
+# preview; when the reporter confirms the preview, a PR is opened.
+#
+# One-time setup (see AGENTS.md "Issue triage bot" for details):
+#   - secrets: TRIAGE_BOT_TOKEN, TRIAGE_CF_API_TOKEN, TRIAGE_CF_ACCOUNT_ID
+#   - repo labels: the ten `triage: *` labels, `- P*` priorities, `pkg: *`
+# Until the secrets exist this workflow starts and immediately no-ops.
+name: Issue Triage
+
+on:
+  issues:
+    types: [opened, reopened, closed]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: triage-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    # Forks never see issue events from this workflow file on main, but the
+    # owner check also keeps preview deploys of this branch quiet.
+    if: github.repository_owner == 'cloudflare'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write # pkg.pr.new authenticates with the Actions OIDC token
+    steps:
+      - name: Check bot credentials
+        id: creds
+        env:
+          WRITE_TOKEN: ${{ secrets.TRIAGE_BOT_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.TRIAGE_CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.TRIAGE_CF_ACCOUNT_ID }}
+        run: |
+          if [ -n "$WRITE_TOKEN" ] && [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ACCOUNT_ID" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Triage bot secrets not configured (TRIAGE_BOT_TOKEN, TRIAGE_CF_API_TOKEN, TRIAGE_CF_ACCOUNT_ID); skipping triage."
+          fi
+
+      - name: Checkout repository
+        if: steps.creds.outputs.configured == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The agent diffs against main, reads git blame, and can consult
+          # Next.js tests when the .nextjs-ref clone exists.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+        if: steps.creds.outputs.configured == 'true'
+
+      # triagebot-action publishes preview releases with `pnpm dlx pkg-pr-new`,
+      # but pnpm is not preinstalled on GitHub runners. Match the repo's
+      # packageManager major (pnpm@11.1.1) so workspace packing agrees with vp.
+      - name: Install pnpm
+        if: steps.creds.outputs.configured == 'true'
+        run: npm install -g pnpm@11
+
+      # Runners have no default git identity and the action commits the fix
+      # branch itself.
+      - name: Configure git identity
+        if: steps.creds.outputs.configured == 'true'
+        run: |
+          git config user.name "vinext-triage-bot"
+          git config user.email "triage-bot@users.noreply.github.com"
+
+      # Once the write token's account is known (GitHub App bot login or a
+      # dedicated user), add it to `bot-logins` so the bot's own comments do
+      # not trigger verify-fix runs.
+      - name: Run triage bot
+        if: steps.creds.outputs.configured == 'true'
+        uses: withastro/triagebot-action@0e37f3db18d8f5b3e8b310c52cdcc9cf2b5d22b1 # v0.4.0
+        with:
+          read-token: ${{ secrets.GITHUB_TOKEN }}
+          write-token: ${{ secrets.TRIAGE_BOT_TOKEN }}
+          cloudflare-api-key: ${{ secrets.TRIAGE_CF_API_TOKEN }}
+          cloudflare-account-id: ${{ secrets.TRIAGE_CF_ACCOUNT_ID }}
+          # Astro's production models (blog.cloudflare.com/astro-issue-triage).
+          # To switch provider: set anthropic-api-key instead of the Cloudflare
+          # pair and use anthropic/* model ids.
+          triage-model: cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code
+          verification-model: cloudflare-workers-ai/@cf/moonshotai/kimi-k2.6
+          triage-skill: .agents/skills/triage

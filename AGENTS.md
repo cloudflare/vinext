@@ -394,6 +394,46 @@ When modifying CI workflows, keep these rules in mind:
 - `deploy-examples.yml` must skip entirely for fork PRs. Don't remove the job-level `if` guard.
 - The `/deploy-preview` slash command gates secret usage behind the `author_association` check.
 
+
+## Issue Triage Bot
+
+Every new issue is triaged by an AI agent (`.github/workflows/triage.yml`, using [withastro/triagebot-action](https://github.com/withastro/triagebot-action) — the same setup Astro describes in ["How we built a software factory"](https://blog.cloudflare.com/astro-issue-triage/)). The bot reproduces the bug, diagnoses the root cause, verifies the behavior against Next.js, and attempts a fix. If it finds one, it pushes a `triagebot/fix-<issue>` branch and publishes a [pkg.pr.new](https://pkg.pr.new) preview; when the reporter confirms the preview fixes their case, a PR is opened automatically.
+
+- **State machine**: the bot is driven entirely by `triage: *` labels on the issue (`needs triage`, `not actionable`, `needs reproduction`, `skipped`, `unable to reproduce`, `unable to fix`, `failed`, `fix pending`, `fix rejected`, `fix verified`). One label at a time; comments on re-triageable issues re-run the pipeline when they add new information. The bot retries at most 3 failed attempts per issue.
+- **Skills**: the bot's brain is `.agents/skills/triage/` — `SKILL.md` orchestrates four isolated subagent steps (reproduce → diagnose → verify → fix), each with its own file. Editing those files changes how the bot behaves; no deploy needed.
+- **Improving the bot**: when the bot gets a fix wrong, treat it as a signal of an opaque abstraction, missing comment, or missing test — fix the underlying gap in `packages/` or the skill, and the next run gets it right. This is the Astro team's core loop and it is where most of the value comes from.
+- **Reproduction projects**: repros live in `triage/<dir>` (gitignored, part of the pnpm workspace). The skill's `--no-frozen-lockfile` install is confined to the ephemeral CI sandbox and the lockfile is reverted before the fix branch is committed — the "never unfreeze the lockfile" rule still applies to every real checkout.
+- **Security note**: the triage job runs untrusted code (reporter repro repos) alongside an OIDC token used by pkg.pr.new. Astro's hardened variant (publish from a separate secret-less job, report via check runs — see their `factory-preview.yml`) is the upgrade path if this ever needs to tighten.
+
+One-time setup (requires repo admin):
+
+1. Secrets: `TRIAGE_BOT_TOKEN` (GitHub PAT or App token with `issues: write` and `contents: write`), `TRIAGE_CF_API_TOKEN` (Workers AI), `TRIAGE_CF_ACCOUNT_ID`. Until they exist the workflow no-ops.
+2. Labels — the action cannot create them:
+
+```bash
+# Triage state labels
+for l in "needs triage|fbca04" "not actionable|d4c5f0" "needs reproduction|fef2c0" \
+         "skipped|c2e0c6" "unable to reproduce|d876e3" "unable to fix|e99695" \
+         "failed|b60205" "fix pending|0e8a16" "fix rejected|f9d0c4" "fix verified|1d76db"; do
+  name="${l%%|*}"; color="${l##*|}"
+  gh label create --repo cloudflare/vinext --color "$color" --force -- "triage: $name"
+done
+# PR label for confirmed fixes
+gh label create --repo cloudflare/vinext --color 1d76db --force -- "fix verified"
+# Priority labels (must match ^- P\d — same scheme Astro uses)
+for l in "- P1: chore|fee4be" "- P2: has workaround|fdd6a8" "- P2: nice to have|fdc593" \
+         "- P3: minor bug|fba16c" "- P4: important|f77d4c" "- P5: urgent|f25c33"; do
+  name="${l%%|*}"; color="${l##*|}"
+  gh label create --repo cloudflare/vinext --color "$color" --force -- "$name"
+done
+# Package labels (must start with "pkg: ")
+for p in vinext cloudflare types create-vinext-app; do
+  gh label create --repo cloudflare/vinext --color c5def5 --force -- "pkg: $p"
+done
+```
+
+3. Once the write token's bot account is known, add its login to `bot-logins` in `.github/workflows/triage.yml` so the bot's own comments don't trigger verification runs.
+
 ---
 
 ## Architecture & Gotchas

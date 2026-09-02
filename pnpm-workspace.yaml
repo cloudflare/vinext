@@ -9,6 +9,7 @@ packages:
   - apps/*
   - packages/*
   - examples/*
+  - triage/*
   - tests/fixtures/*
   - "!tests/fixtures/global-not-found-not-present"
   - tests/fixtures/ecosystem/*

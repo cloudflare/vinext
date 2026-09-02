@@ -24,6 +24,9 @@ playwright-report/
 out-e2e
 *.tgz
 
+# AI triage bot reproduction projects (see .agents/skills/triage/)
+/triage/
+
 # Environment + secrets
 .env
 .env.*
