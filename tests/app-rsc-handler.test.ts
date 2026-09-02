@@ -401,7 +401,10 @@ describe("createAppRscHandler", () => {
         {
           source: "/pages",
           has: [{ type: "cookie", key: "preview", value: "1" }],
-          headers: [{ key: "CDN-Cache-Control", value: "public, s-maxage=120" }],
+          headers: [
+            { key: "CDN-Cache-Control", value: "public, s-maxage=120" },
+            { key: "x-config-variant", value: "preview" },
+          ],
         },
       ],
       matchRequestRoute: () => null,
@@ -429,6 +432,12 @@ describe("createAppRscHandler", () => {
           ["Vary", "x-visitor"],
         ],
       },
+      preHandlerHeaders: [
+        ["cache-control", "public, s-maxage=36"],
+        ["cdn-cache-control", "public, s-maxage=120"],
+        ["vary", "x-visitor"],
+        ["x-config-variant", "preview"],
+      ],
     });
   });
 
@@ -956,6 +965,55 @@ describe("createAppRscHandler", () => {
     expect(renderResponseStageLocally).not.toHaveBeenCalled();
     expect(dispatchMatchedPage).toHaveBeenCalledOnce();
     expect(await response.text()).toBe("nonce-render");
+  });
+
+  it("restores hybrid Pages pre-handler headers inside the response stage", async () => {
+    // Next.js exposes middleware response headers through `res.getHeader()` in
+    // getServerSideProps. Keep the same response snapshot across the App to
+    // Pages stage boundary.
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers/app/pages/index.js
+    const renderPagesFallback = vi.fn(async (options) => {
+      expect(options.initialResponseHeaders?.get("x-config-variant")).toBe("preview");
+      expect(options.initialResponseHeaders?.get("x-from-middleware")).toBe("present");
+      return new Response("pages");
+    });
+    const handler = createHandler({
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback,
+    });
+
+    const response = await handler.handleResponseStage(
+      new Request("https://example.test/docs/pages"),
+      null,
+      {
+        allowRscDocumentFallback: false,
+        appRouteMatch: null,
+        buildId: "build-id",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/pages" },
+        canonicalPathname: "/pages",
+        cleanPathname: "/pages",
+        draftModeCookie: null,
+        isDataRequest: false,
+        isRscRequest: false,
+        kind: "hybrid-pages",
+        matchKind: "static",
+        middlewareCookieOverlay: null,
+        preHandlerHeaders: [
+          ["x-config-variant", "preview"],
+          ["x-from-middleware", "present"],
+        ],
+        protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestUrl: "https://example.test/docs/pages",
+        resolvedUrl: "/pages",
+        resourceKind: "page",
+        scriptNonce: null,
+      },
+      { cache: "shared" },
+    );
+
+    expect(response.status).toBe(200);
+    expect(renderPagesFallback).toHaveBeenCalledOnce();
   });
 
   it("rejects stale and rematched App response-stage envelopes", async () => {

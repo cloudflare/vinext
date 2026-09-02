@@ -129,7 +129,7 @@ describe("Pages Worker request stage", () => {
         requestHost: "example.com",
         renderOptions: null,
         resolvedUrl: "/page",
-        stagedHeaders: null,
+        stagedHeaders: [],
       },
       { cache: "shared" },
     );
@@ -257,7 +257,10 @@ describe("Pages Worker request stage", () => {
       {
         source: "/en/page",
         has: [{ type: "cookie", key: "preview", value: "1" }],
-        headers: [{ key: "CDN-Cache-Control", value: "public, s-maxage=120" }],
+        headers: [
+          { key: "CDN-Cache-Control", value: "public, s-maxage=120" },
+          { key: "x-config-variant", value: "preview" },
+        ],
       },
     );
     const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("page"));
@@ -280,6 +283,14 @@ describe("Pages Worker request stage", () => {
       ["CDN-Cache-Control", "public, s-maxage=120"],
       ["Vary", "x-visitor"],
     ]);
+    expect(new Headers(dispatch.mock.calls[0]?.[1].stagedHeaders ?? [])).toEqual(
+      new Headers({
+        "Cache-Control": "public, s-maxage=60",
+        "CDN-Cache-Control": "public, s-maxage=120",
+        Vary: "x-visitor",
+        "x-config-variant": "preview",
+      }),
+    );
     expect(state.forcedDynamicReason).toBeUndefined();
   });
 
@@ -471,7 +482,7 @@ describe("Pages Worker request stage", () => {
         kind: "pages-api",
         protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
         requestHost: "example.com",
-        stagedHeaders: null,
+        stagedHeaders: [],
       },
       { cache: "shared" },
     );

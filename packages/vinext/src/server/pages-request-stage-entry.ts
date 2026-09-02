@@ -359,7 +359,7 @@ async function handleRequest(
           responseStagePolicyHeaders,
           stagedHeaders?.get("Vary"),
         );
-        const responseStageProps = (cache: "shared" | "bypass"): WorkerResponseStageProps => ({
+        const responseStageProps = (): WorkerResponseStageProps => ({
           buildId: pagesEntry.buildId,
           cacheability: {
             policyHeaders: transportedPolicyHeaders,
@@ -371,7 +371,7 @@ async function handleRequest(
           requestHost: new URL(req.url).host,
           renderOptions: options ?? null,
           resolvedUrl,
-          stagedHeaders: cache === "bypass" ? [...(stagedHeaders ?? new Headers())] : null,
+          stagedHeaders: [...(stagedHeaders ?? new Headers())],
         });
         const cache =
           forceCacheBypass || probeMode
@@ -386,13 +386,7 @@ async function handleRequest(
                 stagedHeaders,
               });
         const isHeadRequest = req.method.toUpperCase() === "HEAD";
-        const dispatched = dispatchResponseStage(
-          req,
-          responseStageProps(cache),
-          { cache },
-          env,
-          ctx,
-        );
+        const dispatched = dispatchResponseStage(req, responseStageProps(), { cache }, env, ctx);
         const responsePromise =
           cache === "shared"
             ? dispatched.then((response) => {
@@ -418,7 +412,7 @@ async function handleRequest(
           responseStagePolicyHeaders,
           stagedHeaders.get("Vary"),
         );
-        const responseStageProps = (cache: "shared" | "bypass"): WorkerResponseStageProps => ({
+        const responseStageProps = (): WorkerResponseStageProps => ({
           apiUrl,
           buildId: pagesEntry.buildId,
           cacheability: {
@@ -429,7 +423,7 @@ async function handleRequest(
           kind: "pages-api" as const,
           protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
           requestHost: new URL(req.url).host,
-          stagedHeaders: cache === "bypass" ? [...stagedHeaders] : null,
+          stagedHeaders: [...stagedHeaders],
         });
         const cache =
           forceCacheBypass || probeMode
@@ -443,13 +437,7 @@ async function handleRequest(
                 requestHeadersChanged: !haveSameHeaders(filteredHeaders, req.headers),
                 stagedHeaders,
               });
-        const dispatched = dispatchResponseStage(
-          req,
-          responseStageProps(cache),
-          { cache },
-          env,
-          ctx,
-        );
+        const dispatched = dispatchResponseStage(req, responseStageProps(), { cache }, env, ctx);
         return cache === "shared"
           ? dispatched.then((response) => {
               sharedResponseHeaders = new Headers(response.headers);

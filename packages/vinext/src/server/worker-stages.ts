@@ -5,7 +5,7 @@ import type {
   VinextResponseStageTransport,
 } from "./multi-stage.js";
 
-export const PAGES_RESPONSE_STAGE_PROTOCOL_VERSION = 3;
+export const PAGES_RESPONSE_STAGE_PROTOCOL_VERSION = 4;
 
 type PagesResponseStageEnvelope = {
   buildId: string | null;
@@ -13,7 +13,7 @@ type PagesResponseStageEnvelope = {
   protocolVersion: typeof PAGES_RESPONSE_STAGE_PROTOCOL_VERSION;
   /** Host is explicit because multi-tenant/domain-i18n renders vary by it. */
   requestHost: string;
-  /** Outer request-stage headers needed only by non-shared renders. */
+  /** Complete response-header snapshot installed before Pages user code runs. */
   stagedHeaders: Array<[string, string]> | null;
 };
 
@@ -44,9 +44,10 @@ export type WorkerResponseStageProps =
 /**
  * Host-owned transport for invoking a response stage.
  *
- * Core request pipelines decide what may be shared and provide only body
- * identity here. Response-only middleware/config state remains in the caller
- * and is composed after this promise resolves.
+ * Core request pipelines decide what may be shared and provide the complete
+ * serialized render identity here. Response-only middleware/config state is
+ * carried in the props so Pages user code observes the same pre-handler
+ * response as Next.js.
  */
 export type DispatchWorkerResponseStage = VinextResponseStageTransport<WorkerResponseStageProps>;
 

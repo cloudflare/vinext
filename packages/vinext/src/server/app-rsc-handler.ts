@@ -412,6 +412,7 @@ type RenderPagesFallbackOptions = {
   ) => Promise<Response>;
   isDataRequest?: boolean;
   isRscRequest: boolean;
+  initialResponseHeaders?: Headers;
   matchKind?: "dynamic" | "static";
   middlewareContext: AppRscMiddlewareContext;
   pathname?: string;
@@ -1195,9 +1196,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }),
     );
   };
-  let outerResponsePolicyPromise: Promise<Headers> | undefined;
-  const loadOuterResponsePolicy = () =>
-    (outerResponsePolicyPromise ??= (async () => {
+  let preHandlerResponseHeadersPromise: Promise<Headers> | undefined;
+  const loadPreHandlerResponseHeaders = () =>
+    (preHandlerResponseHeadersPromise ??= (async () => {
       const headers = new Headers();
       await applyAppRscConfigHeaders(headers, request, {
         basePath: options.basePath,
@@ -1208,8 +1209,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         requestContext: preMiddlewareRequestContext,
       });
       mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
-      return captureCdnResponsePolicyHeaders(headers);
+      return headers;
     })());
+  let outerResponsePolicyPromise: Promise<Headers> | undefined;
+  const loadOuterResponsePolicy = () =>
+    (outerResponsePolicyPromise ??= loadPreHandlerResponseHeaders().then((headers) =>
+      captureCdnResponsePolicyHeaders(new Headers(headers)),
+    ));
   const composeResponseStageResponse = async (response: Response): Promise<Response> => {
     response = await applyConfigHeadersToResponseStage(response);
     response = applyMiddlewareContextToResponse(response, middlewareContext);
@@ -1759,6 +1765,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               isRscRequest,
               matchKind,
               middlewareCookieOverlay,
+              preHandlerHeaders: [...(await loadPreHandlerResponseHeaders())],
               protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
               resourceKind,
               requestUrl: request.url,

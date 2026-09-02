@@ -4,7 +4,7 @@ import type {
   VinextResponseStageTransport,
 } from "./multi-stage.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 4;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 5;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -75,6 +75,8 @@ type HybridPagesWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   isDataRequest: boolean;
   isRscRequest: boolean;
   matchKind: "dynamic" | "static";
+  /** Complete response-header snapshot installed before Pages user code runs. */
+  preHandlerHeaders: Array<[string, string]>;
   resourceKind: "api" | "page";
   requestUrl: string;
   resolvedUrl: string;
@@ -143,6 +145,7 @@ export function isAppWorkerResponseStageProps(
       typeof hybrid.isDataRequest === "boolean" &&
       typeof hybrid.isRscRequest === "boolean" &&
       (hybrid.matchKind === "dynamic" || hybrid.matchKind === "static") &&
+      isSerializedHeaders(hybrid.preHandlerHeaders) &&
       (hybrid.resourceKind === "api" || hybrid.resourceKind === "page") &&
       typeof hybrid.requestUrl === "string" &&
       typeof hybrid.resolvedUrl === "string" &&
@@ -193,6 +196,19 @@ export function isAppWorkerResponseStageProps(
       props.renderMode === "prefetch-empty" ||
       props.renderMode === "prefetch-dynamic-shell" ||
       props.renderMode === "prefetch-loading-shell")
+  );
+}
+
+function isSerializedHeaders(value: unknown): value is Array<[string, string]> {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        Array.isArray(entry) &&
+        entry.length === 2 &&
+        typeof entry[0] === "string" &&
+        typeof entry[1] === "string",
+    )
   );
 }
 

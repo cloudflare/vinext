@@ -184,6 +184,78 @@ describe("Pages Worker response stage", () => {
     expect(stages.renderPage).not.toHaveBeenCalled();
   });
 
+  it("installs complete request-stage headers before Pages API user code", async () => {
+    stages.api.mockImplementation(async (...args: unknown[]) => {
+      const initialHeaders = args[5] as Headers;
+      expect(initialHeaders.get("x-config-variant")).toBe("preview");
+      expect(initialHeaders.get("x-from-middleware")).toBe("present");
+      return new Response("api");
+    });
+
+    await handleResponseStage(
+      new Request("https://example.com/api/headers"),
+      undefined,
+      undefined,
+      {
+        apiUrl: "/api/headers",
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: [["Cache-Control", "public, s-maxage=60"]],
+          probeMode: null,
+          resolvedRoutePathname: "/api/headers",
+        },
+        kind: "pages-api",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        stagedHeaders: [
+          ["cache-control", "public, s-maxage=60"],
+          ["x-config-variant", "preview"],
+          ["x-from-middleware", "present"],
+        ],
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+  });
+
+  it("installs middleware and config headers before a staged GSSP render", async () => {
+    // Ported from Next.js:
+    // test/e2e/middleware-custom-matchers/app/pages/index.js
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers/app/pages/index.js
+    stages.renderPage.mockImplementation(async (...args: unknown[]) => {
+      const initialHeaders = args[6] as Headers;
+      expect(initialHeaders.get("x-config-variant")).toBe("preview");
+      expect(initialHeaders.get("x-from-middleware")).toBe("present");
+      return new Response("page");
+    });
+
+    await handleResponseStage(
+      new Request("https://example.com/gssp"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: [["Cache-Control", "public, s-maxage=60"]],
+          probeMode: null,
+          resolvedRoutePathname: "/gssp",
+        },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: null,
+        resolvedUrl: "/gssp",
+        stagedHeaders: [
+          ["cache-control", "public, s-maxage=60"],
+          ["x-config-variant", "preview"],
+          ["x-from-middleware", "present"],
+        ],
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+  });
+
   it("admits an explicitly public Pages API response", async () => {
     const adapter: CdnCacheAdapter = {
       buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),

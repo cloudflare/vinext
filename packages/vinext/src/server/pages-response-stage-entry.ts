@@ -49,9 +49,14 @@ export async function renderPagesResponse(
 
   registerConfiguredImageOptimizer(env);
   const renderHeaders = new Headers(stagedHeaders ?? props.stagedHeaders ?? []);
-  const initialResponseHeaders = new Headers();
-  applyResponseStagePolicyHeaders(initialResponseHeaders, props.cacheability.policyHeaders);
-  applyResponseStagePolicyHeaders(renderHeaders, props.cacheability.policyHeaders);
+  const initialResponseHeaders = new Headers(renderHeaders);
+  // Legacy/local callers may supply policy metadata without a staged snapshot.
+  // Keep that fallback while treating policy as admission provenance rather
+  // than the transport for the response state visible to Pages user code.
+  if (props.stagedHeaders === null && stagedHeaders === undefined) {
+    applyResponseStagePolicyHeaders(initialResponseHeaders, props.cacheability.policyHeaders);
+    applyResponseStagePolicyHeaders(renderHeaders, props.cacheability.policyHeaders);
+  }
   let ctx = createWorkerRevalidationContext(
     platformCtx,
     (internalRequest) => {
