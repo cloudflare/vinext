@@ -571,7 +571,7 @@ function completedRouteOutcome(
     if (response.headers.has("set-cookie")) {
       return { cacheable: false, reason: "response sets a cookie" };
     }
-    return inferPagesPageCacheability(response);
+    return inferPagesPageCacheability(response, state);
   }
   if (state.route?.kind === "app-page") {
     return inferFinalAppPageCacheability(response, state) ?? rendererOutcome;
@@ -589,7 +589,7 @@ function completedRouteOutcome(
   // Ported from Next.js:
   // test/e2e/getserversideprops/test/index.test.ts
   // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
-  const responseOutcome = inferPagesPageCacheability(response);
+  const responseOutcome = inferPagesPageCacheability(response, state);
   return responseOutcome.cacheable ? responseOutcome : (rendererOutcome ?? responseOutcome);
 }
 
