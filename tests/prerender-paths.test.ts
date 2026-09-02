@@ -703,6 +703,52 @@ describe("prerender path manifest", () => {
     expect(manifest?.routePatterns?.["/safe"]?.cacheabilityProbe?.routeMayResolve).toBeUndefined();
   });
 
+  it("still excludes external rewrite sources when routing runs in an uncached stage", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/external/page.tsx",
+      "export const revalidate = 60; export default function Page() {}\n",
+    );
+    writeFile(
+      "app/safe/page.tsx",
+      "export const revalidate = 60; export default function Page() {}\n",
+    );
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        rewrites: () => ({
+          beforeFiles: [
+            {
+              source: "/external",
+              destination: "https://upstream.example/:path*",
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        }),
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      requestRouting: "uncached-stage",
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual(["/safe"]);
+    expect(manifest?.excludedWarmPaths).toEqual(["/external"]);
+    expect(manifest?.routePatterns?.["/external"]).toBeUndefined();
+  });
+
   it("allows the uncached middleware stage to resolve warm routes", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");

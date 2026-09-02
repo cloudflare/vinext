@@ -34,7 +34,7 @@ import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
-import { matchHeaders, matchesRewriteSource } from "../config/config-matchers.js";
+import { isExternalUrl, matchHeaders, matchesRewriteSource } from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
@@ -1344,6 +1344,12 @@ export async function emitPrerenderPathManifest(
     ...config.rewrites.afterFiles,
     ...config.rewrites.fallback,
   ];
+  const internalRewrites = configuredRewrites.filter(
+    (rewrite) => !isExternalUrl(rewrite.destination),
+  );
+  const externalRewrites = configuredRewrites.filter((rewrite) =>
+    isExternalUrl(rewrite.destination),
+  );
   const middlewareMayResolveWarmPaths =
     options.requestRouting === "uncached-stage" &&
     hasMiddlewareConventionFile(root, appDir, pagesDir, config.pageExtensions);
@@ -1352,7 +1358,7 @@ export async function emitPrerenderPathManifest(
       ? [...paths, ...discoveredRouteHandlerPaths].filter(
           (pathname) =>
             middlewareMayResolveWarmPaths ||
-            configuredRulesAffectWarmPath(pathname, configuredRewrites, config),
+            configuredRulesAffectWarmPath(pathname, internalRewrites, config),
         )
       : [],
   );
@@ -1361,8 +1367,9 @@ export async function emitPrerenderPathManifest(
       ? [...paths, ...discoveredRouteHandlerPaths].filter(
           (pathname) =>
             configuredRulesAffectWarmPath(pathname, config.redirects, config) ||
+            configuredRulesAffectWarmPath(pathname, externalRewrites, config) ||
             (options.requestRouting !== "uncached-stage" &&
-              configuredRulesAffectWarmPath(pathname, configuredRewrites, config)),
+              configuredRulesAffectWarmPath(pathname, internalRewrites, config)),
         )
       : [],
   );
