@@ -105,6 +105,10 @@ export function finalizePagesPreviewResponse(
 ): Response {
   if (preview.data === false && !preview.shouldClear) return response;
   const headers = new Headers(response.headers);
+  // Next.js expires stale preview cookies but only applies this policy while
+  // draft mode remains active. Keep the cleanup response private as a stricter
+  // edge-cache safeguard: otherwise a shared cache can replay Set-Cookie and
+  // the ordinary ISR body selected after the invalid cookie was rejected.
   if (preview.data !== false || preview.shouldClear) {
     applyCdnResponseHeaders(headers, { cacheControl: PAGES_PREVIEW_CACHE_CONTROL });
   }
