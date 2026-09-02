@@ -6,9 +6,12 @@ import {
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
 } from "../packages/vinext/src/server/worker-stages.js";
 import {
+  VINEXT_CACHEABILITY_PROBE_HEADER,
+  VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "../packages/vinext/src/server/headers.js";
+import { serializeWorkerCacheabilityProbeRoute } from "../packages/vinext/src/server/cacheability-request.js";
 import type { DispatchWorkerResponseStage } from "../packages/vinext/src/server/worker-stages.js";
 import type { MiddlewareResult } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import {
@@ -201,6 +204,42 @@ describe("Pages Worker request stage", () => {
 
     expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
     expect(state.forcedDynamicReason).toBeUndefined();
+  });
+
+  it("classifies a terminal middleware probe without dispatching the response stage", async () => {
+    mocks.runMiddleware.mockResolvedValue({
+      continue: false,
+      pathnameEligible: true,
+      redirectStatus: 307,
+      redirectUrl: "https://example.com/login",
+    });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("unused"));
+    const response = await handleRequestStage(
+      new Request("https://example.com/page?__vinext_cacheability_probe=one", {
+        headers: {
+          [VINEXT_CACHEABILITY_PROBE_HEADER]: "1",
+          [VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER]: serializeWorkerCacheabilityProbeRoute({
+            kind: "pages-page",
+            pattern: "/page",
+          }),
+          [VINEXT_PRERENDER_SECRET_HEADER]: "prerender-secret",
+        },
+      }),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "pages-page",
+      pattern: "/page",
+      scope: "identity",
+      state: "dynamic",
+      status: 307,
+      version: 1,
+    });
   });
 
   it.each(["/page", "/api/hello"])(

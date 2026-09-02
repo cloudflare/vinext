@@ -68,6 +68,7 @@ import {
   consumePagesResponseStagePolicyOwner,
   withResponseStageVary,
 } from "./response-stage-policy.js";
+import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -248,15 +249,30 @@ async function handleRequest(
     }
 
     let probeMode: VinextCacheabilityProbeMode | null = null;
+    let probeRoute: WorkerCacheabilityProbeRoute | null = null;
     if (request.headers.has(VINEXT_CACHEABILITY_PROBE_HEADER)) {
-      const { readWorkerCacheabilityProbeMode } = await import("./cacheability-request.js");
+      const { readWorkerCacheabilityProbeMode, readWorkerCacheabilityProbeRoute } =
+        await import("./cacheability-request.js");
       probeMode = readWorkerCacheabilityProbeMode(request, pagesEntry.prerenderSecret);
       if (probeMode) {
+        probeRoute = readWorkerCacheabilityProbeRoute(request);
         const probeUrl = new URL(request.url);
         probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
         request = new Request(probeUrl, request);
       }
     }
+
+    let responseStageDispatched = false;
+    const trackedDispatchResponseStage: PagesStageRuntimeDispatch = (
+      stageRequest,
+      props,
+      options,
+      stageEnv,
+      stageCtx,
+    ) => {
+      responseStageDispatched = true;
+      return dispatchResponseStage(stageRequest, props, options, stageEnv, stageCtx);
+    };
 
     if (!didValidateCdnRequest) {
       const cdnValidationResponse = await validateCdnRequest(request);
@@ -285,7 +301,7 @@ async function handleRequest(
     let pathname = url.pathname;
 
     if (ctx.isPrerenderPathDiscovery && isWorkerPrerenderDiscoveryPath(pathname)) {
-      return dispatchResponseStage(
+      return trackedDispatchResponseStage(
         request,
         {
           buildId: pagesEntry.buildId,
@@ -425,7 +441,7 @@ async function handleRequest(
                 stagedHeaders,
               });
         const isHeadRequest = req.method.toUpperCase() === "HEAD";
-        const dispatched = dispatchResponseStage(
+        const dispatched = trackedDispatchResponseStage(
           req,
           responseStageProps(cache),
           { cache },
@@ -488,7 +504,13 @@ async function handleRequest(
                 requestHeadersChanged: !haveSameHeaders(filteredHeaders, req.headers),
                 stagedHeaders,
               });
-        const dispatched = dispatchResponseStage(req, responseStageProps(), { cache }, env, ctx);
+        const dispatched = trackedDispatchResponseStage(
+          req,
+          responseStageProps(),
+          { cache },
+          env,
+          ctx,
+        );
         return cache === "shared"
           ? dispatched.then((response) => {
               sharedResponseHeaders = new Headers(response.headers);
@@ -529,9 +551,17 @@ async function handleRequest(
 
     const result = await runPagesRequest(request, deps);
     if (result.type === "response") {
-      const response = finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
+      let response = finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
       if (sharedResponseHeaders && sharedOuterPolicyHeaders) {
         reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedOuterPolicyHeaders);
+      }
+      if (probeMode && probeRoute && !responseStageDispatched) {
+        const { finalizeRequestStageCacheabilityProbe } = await import("./cacheability-request.js");
+        response = finalizeRequestStageCacheabilityProbe(response, {
+          mode: probeMode,
+          responseStageDispatched,
+          route: probeRoute,
+        });
       }
       return response;
     }

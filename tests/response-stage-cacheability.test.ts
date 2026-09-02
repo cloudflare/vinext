@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
+  finalizeRequestStageCacheabilityProbe,
+  readWorkerCacheabilityProbeRoute,
   readWorkerCacheabilityProbeMode,
+  serializeWorkerCacheabilityProbeRoute,
   type WorkerCacheabilityProbeMode,
 } from "../packages/vinext/src/server/cacheability-request.js";
+import { VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER } from "../packages/vinext/src/server/headers.js";
 import { cacheabilityManifestRouteKey } from "../packages/vinext/src/server/cacheability-manifest.js";
 import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
 import {
@@ -57,6 +61,37 @@ describe("response-stage cacheability", () => {
 
     expect(readWorkerCacheabilityProbeMode(request, "secret")).toBe("identity");
     expect(readWorkerCacheabilityProbeMode(request, "different-secret")).toBeNull();
+  });
+
+  it("returns a terminal request-stage result without waiting for body cancellation", async () => {
+    let cancelCalled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelCalled = true;
+        return new Promise<void>(() => {});
+      },
+    });
+    const route = { kind: "app-page" as const, pattern: "/page" };
+    const request = new Request("https://example.com/page", {
+      headers: {
+        [VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER]: serializeWorkerCacheabilityProbeRoute(route),
+      },
+    });
+
+    const response = finalizeRequestStageCacheabilityProbe(new Response(body, { status: 307 }), {
+      mode: "probe",
+      responseStageDispatched: false,
+      route: readWorkerCacheabilityProbeRoute(request),
+    });
+
+    expect(cancelCalled).toBe(true);
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "app-page",
+      pattern: "/page",
+      scope: "identity",
+      state: "dynamic",
+      status: 307,
+    });
   });
 
   it("skips ordinary admission for bypassed renders", async () => {

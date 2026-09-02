@@ -15,6 +15,7 @@ import {
 } from "./cache-control.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
+  VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "./headers.js";
@@ -32,6 +33,7 @@ import {
   parseCacheabilityManifest,
   type CacheabilityManifest,
   type CacheabilityManifestRoute,
+  type CacheabilityRouteKind,
   type CacheabilityRepresentation,
 } from "./cacheability-manifest.js";
 import { applyResponseStagePolicyHeaders } from "./response-stage-policy.js";
@@ -75,6 +77,39 @@ function cacheabilityVaryRejectionReason(
 }
 
 export type WorkerCacheabilityProbeMode = "identity" | "probe";
+
+export type WorkerCacheabilityProbeRoute = {
+  kind: CacheabilityRouteKind;
+  pattern: string;
+};
+
+/** Encode the trusted route identity carried by a staged probe request. */
+export function serializeWorkerCacheabilityProbeRoute(route: WorkerCacheabilityProbeRoute): string {
+  return JSON.stringify([route.kind, route.pattern]);
+}
+
+/** Read route identity only after the surrounding probe request is authenticated. */
+export function readWorkerCacheabilityProbeRoute(
+  request: Request,
+): WorkerCacheabilityProbeRoute | null {
+  const raw = request.headers.get(VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER);
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!Array.isArray(value) || value.length !== 2) return null;
+    const [kind, pattern] = value;
+    if (
+      (kind !== "app-page" && kind !== "app-route" && kind !== "pages-page") ||
+      typeof pattern !== "string" ||
+      !pattern.startsWith("/")
+    ) {
+      return null;
+    }
+    return { kind, pattern };
+  } catch {
+    return null;
+  }
+}
 
 /** Authenticate and read the cacheability probe mode before internal headers are filtered. */
 export function readWorkerCacheabilityProbeMode(
@@ -256,6 +291,37 @@ function probeResponse(
       : {}),
     state: routeState,
     status,
+    version: 1,
+  };
+  return applyCdnResponseBuildIdentityHeaders(
+    Response.json(body, {
+      headers: { "Cache-Control": NO_STORE_CACHE_CONTROL },
+    }),
+  );
+}
+
+/**
+ * Convert an authenticated probe that terminated in request routing into a
+ * valid identity-scoped dynamic result. Middleware redirects, custom responses,
+ * and external rewrites never reach the reusable response stage.
+ */
+export function finalizeRequestStageCacheabilityProbe(
+  response: Response,
+  options: {
+    mode: WorkerCacheabilityProbeMode | null;
+    responseStageDispatched: boolean;
+    route: WorkerCacheabilityProbeRoute | null;
+  },
+): Response {
+  if (!options.mode || options.responseStageDispatched || !options.route) return response;
+  void response.body?.cancel().catch(() => {});
+  const body: CacheabilityProbeResult = {
+    kind: options.route.kind,
+    pattern: options.route.pattern,
+    reason: "request routing completed without response-stage rendering",
+    scope: "identity",
+    state: "dynamic",
+    status: response.status,
     version: 1,
   };
   return applyCdnResponseBuildIdentityHeaders(

@@ -40,6 +40,9 @@ export const VINEXT_EXPECTED_WORKER_VERSION_HEADER = "X-Vinext-Expected-Worker-V
 /** Authenticated staged-Worker request asking for a completed App Page classification. */
 export const VINEXT_CACHEABILITY_PROBE_HEADER = "X-Vinext-Cacheability-Probe";
 
+/** Trusted route expected by an authenticated staged cacheability probe. */
+export const VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER = "X-Vinext-Cacheability-Probe-Route";
+
 /**
  * Per-attempt cache buster used while a newly staged Worker version propagates.
  * Authenticated probe requests remove it before middleware or route code runs.
@@ -287,6 +290,7 @@ export const INTERNAL_HEADERS = [
 /** Vinext-only internal headers stripped alongside Next.js protocol internals. */
 export const VINEXT_INTERNAL_HEADERS = [
   VINEXT_CACHEABILITY_PROBE_HEADER.toLowerCase(),
+  VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER.toLowerCase(),
   VINEXT_EXPECTED_WORKER_VERSION_HEADER.toLowerCase(),
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,

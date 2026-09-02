@@ -54,6 +54,7 @@ import type {
   VinextCacheabilityProbeMode,
   VinextRequestStageContext,
 } from "./multi-stage.js";
+import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
 
 export type AppRequestStageEnv = Record<string, unknown>;
 type AppRequestStageContext = ExecutionContextLike & VinextRequestStageContext;
@@ -108,10 +109,13 @@ async function handleRequest(
   }
 
   let probeMode: VinextCacheabilityProbeMode | null = null;
+  let probeRoute: WorkerCacheabilityProbeRoute | null = null;
   if (request.headers.has(VINEXT_CACHEABILITY_PROBE_HEADER)) {
-    const { readWorkerCacheabilityProbeMode } = await import("./cacheability-request.js");
+    const { readWorkerCacheabilityProbeMode, readWorkerCacheabilityProbeRoute } =
+      await import("./cacheability-request.js");
     probeMode = readWorkerCacheabilityProbeMode(request, __prerenderSecret);
     if (probeMode) {
+      probeRoute = readWorkerCacheabilityProbeRoute(request);
       const probeUrl = new URL(request.url);
       probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
       request = new Request(probeUrl, request);
@@ -164,11 +168,21 @@ async function handleRequest(
   }
   request = cloneRequestWithHeaders(request, filteredHeaders);
 
+  let responseStageDispatched = false;
+  const trackedDispatchResponseStage: DispatchAppWorkerResponseStage = (
+    stageRequest,
+    props,
+    options,
+  ) => {
+    responseStageDispatched = true;
+    return dispatchResponseStage(stageRequest, props, options);
+  };
+
   const handle = () =>
     requestRscHandler(
       request,
       ctx,
-      dispatchResponseStage,
+      trackedDispatchResponseStage,
       probeMode,
       ctx.isPrerenderPathDiscovery === true,
     );
@@ -180,5 +194,14 @@ async function handleRequest(
     });
     if (assetResponse) response = assetResponse;
   }
-  return finalizeMissingStaticAssetResponse(response, missingBuildAsset);
+  response = finalizeMissingStaticAssetResponse(response, missingBuildAsset);
+  if (probeMode && probeRoute && !responseStageDispatched) {
+    const { finalizeRequestStageCacheabilityProbe } = await import("./cacheability-request.js");
+    response = finalizeRequestStageCacheabilityProbe(response, {
+      mode: probeMode,
+      responseStageDispatched,
+      route: probeRoute,
+    });
+  }
+  return response;
 }

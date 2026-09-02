@@ -8,6 +8,12 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import {
+  VINEXT_CACHEABILITY_PROBE_HEADER,
+  VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import { serializeWorkerCacheabilityProbeRoute } from "../packages/vinext/src/server/cacheability-request.js";
 
 const CAPTURE_RSC_REQUEST = "__vinextCaptureWorkerRscRequest";
 const REGISTER_CDN_ADAPTER = "__vinextRegisterWorkerCdnAdapter";
@@ -40,6 +46,10 @@ export default async function rscHandler(request, _ctx, dispatchResponseStage) {
   if (new URL(request.url).pathname === "/__vinext/prerender/readiness") {
     return dispatchResponseStage(request, { kind: "readiness-test" }, { cache: "bypass" });
   }
+  if (new URL(request.url).pathname === "/middleware-terminal") {
+    globalThis.${CAPTURE_RSC_REQUEST}(request);
+    return Response.redirect("https://example.com/login", 307);
+  }
   globalThis.${CAPTURE_RSC_REQUEST}(request);
   return new Response("ok");
 }
@@ -66,6 +76,74 @@ export default async function rscHandler(request, _ctx, dispatchResponseStage) {
 }
 
 describe("App Router Production server worker entry compatibility", () => {
+  it("classifies a terminal middleware probe without dispatching the response stage", async () => {
+    const capturedRequests: Request[] = [];
+    Reflect.set(globalThis, CAPTURE_RSC_REQUEST, (request: Request) => {
+      capturedRequests.push(request);
+    });
+    const dispatch = vi.fn(async () => new Response("unused"));
+
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [workerEntryVirtualModules()],
+        resolve: {
+          alias: {
+            "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+          },
+        },
+        server: { middlewareMode: true },
+      });
+      const entry = (await server.ssrLoadModule(
+        path.resolve(
+          import.meta.dirname,
+          "../packages/vinext/src/server/app-request-stage-independent-entry.ts",
+        ),
+      )) as {
+        handleRequestStage(
+          request: Request,
+          env: unknown,
+          ctx: undefined,
+          dispatchResponseStage: typeof dispatch,
+        ): Promise<Response>;
+      };
+      const response = await entry.handleRequestStage(
+        new Request("https://example.com/middleware-terminal?__vinext_cacheability_probe=one", {
+          headers: {
+            [VINEXT_CACHEABILITY_PROBE_HEADER]: "1",
+            [VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER]: serializeWorkerCacheabilityProbeRoute({
+              kind: "app-page",
+              pattern: "/middleware-terminal",
+            }),
+            [VINEXT_PRERENDER_SECRET_HEADER]: "worker-prerender-secret",
+          },
+        }),
+        undefined,
+        undefined,
+        dispatch,
+      );
+
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        kind: "app-page",
+        pattern: "/middleware-terminal",
+        scope: "identity",
+        state: "dynamic",
+        status: 307,
+        version: 1,
+      });
+      expect(capturedRequests).toHaveLength(1);
+      expect(capturedRequests[0]?.headers.get(VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER)).toBeNull();
+    } finally {
+      await server?.close();
+      Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
+    }
+  });
+
   it("validates CDN routing and stamps build identity at the request-stage boundary", async () => {
     // No Next.js test port applies: CDN adapter validation and staged Worker
     // boundaries are vinext deployment contracts.
