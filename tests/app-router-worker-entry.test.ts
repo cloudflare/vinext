@@ -63,6 +63,10 @@ export default async function rscHandler(request, _ctx, dispatchResponseStage, _
   globalThis.${REGISTER_CDN_ADAPTER}?.(env);
 }`,
     ],
+    [
+      "virtual:vinext-cdn-cache-adapter",
+      `export { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";`,
+    ],
     ["virtual:vinext-image-adapters", "export function registerConfiguredImageOptimizer() {}"],
   ]);
 

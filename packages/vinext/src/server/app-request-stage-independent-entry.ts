@@ -10,7 +10,7 @@ import requestRscHandler, {
 } from "virtual:vinext-app-request-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 // @ts-expect-error -- virtual module resolved by vinext
-import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
+import { registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
 import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
 // @ts-expect-error -- virtual module resolved by vinext
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";

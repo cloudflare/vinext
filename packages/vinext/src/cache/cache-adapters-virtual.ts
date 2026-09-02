@@ -109,6 +109,8 @@ export type VinextCacheConfig = {
 
 /** Public virtual module id imported by the server entries. */
 export const VIRTUAL_CACHE_ADAPTERS = "virtual:vinext-cache-adapters";
+/** Request-stage module that cannot retain the data-cache adapter graph. */
+export const VIRTUAL_CDN_CACHE_ADAPTER = "virtual:vinext-cdn-cache-adapter";
 
 // Custom metadata key attached to vinext's config plugin so deploy commands can
 // inspect the normalized cache descriptors after loading the user's Vite config.
@@ -244,4 +246,9 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   lines.push("}", "");
 
   return lines.join("\n");
+}
+
+/** Generate request-stage registration without importing a configured data adapter. */
+export function generateCdnCacheAdapterModule(cache?: VinextCacheConfig): string {
+  return generateCacheAdaptersModule(cache?.cdn ? { cdn: cache.cdn } : undefined);
 }

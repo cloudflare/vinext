@@ -59,7 +59,9 @@ import {
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import { resolveRuntimeEntryModule } from "./entries/runtime-entry-module.js";
 import {
+  VIRTUAL_CDN_CACHE_ADAPTER,
   VIRTUAL_CACHE_ADAPTERS,
+  generateCdnCacheAdapterModule,
   generateCacheAdaptersModule,
   hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
@@ -1141,6 +1143,8 @@ const PAGES_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("pages-request-stage
 const PAGES_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("pages-response-stage-entry");
 /** Virtual module that registers config-driven cache adapters (see VinextOptions.cache). */
 const RESOLVED_CACHE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_CACHE_ADAPTERS;
+/** CDN-only registrar kept out of the data-cache response graph. */
+const RESOLVED_CDN_CACHE_ADAPTER = VIRTUAL_PREFIX + VIRTUAL_CDN_CACHE_ADAPTER;
 /** Virtual module that registers the config-driven image optimizer (see VinextOptions.images). */
 const RESOLVED_IMAGE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_IMAGE_ADAPTERS;
 /** Virtual module for composed instrumentation-client bootstrap. */
@@ -4072,6 +4076,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return RESOLVED_CACHE_ADAPTERS;
           }
           if (
+            cleanId === VIRTUAL_CDN_CACHE_ADAPTER ||
+            cleanId.endsWith("/" + VIRTUAL_CDN_CACHE_ADAPTER)
+          ) {
+            return RESOLVED_CDN_CACHE_ADAPTER;
+          }
+          if (
             cleanId === VIRTUAL_IMAGE_ADAPTERS ||
             cleanId.endsWith("/" + VIRTUAL_IMAGE_ADAPTERS)
           ) {
@@ -4298,6 +4308,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (id === RESOLVED_CACHE_ADAPTERS) {
             return generateCacheAdaptersModule(options.cache);
+          }
+          if (id === RESOLVED_CDN_CACHE_ADAPTER) {
+            return generateCdnCacheAdapterModule(options.cache);
           }
           if (id === RESOLVED_IMAGE_ADAPTERS) {
             return generateImageAdaptersModule(options.images);
