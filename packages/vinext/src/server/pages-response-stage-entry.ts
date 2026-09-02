@@ -114,7 +114,7 @@ export async function renderPagesResponse(
   if (props.kind === "pages-prerender-discovery") {
     ctx = { ...ctx, isPrerenderPathDiscovery: true };
   }
-  const handle = async (cacheabilityContext: ExecutionContextLike): Promise<Response> => {
+  const render = async (cacheabilityContext: ExecutionContextLike): Promise<Response> => {
     if (props.kind === "pages-prerender-discovery") {
       const readinessResponse = createWorkerPrerenderReadinessResponse(
         cacheabilityContext,
@@ -165,7 +165,9 @@ export async function renderPagesResponse(
       ),
     );
   };
-  let response = await withResponseStageCacheability(
+  const handle = async (cacheabilityContext: ExecutionContextLike): Promise<Response> =>
+    stripInheritedResponseStageCookies(await render(cacheabilityContext), renderHeaders);
+  const response = await withResponseStageCacheability(
     {
       buildId: pagesEntry.buildId,
       cache: props.kind === "pages-prerender-discovery" ? "bypass" : dispatchOptions.cache,
@@ -181,7 +183,6 @@ export async function renderPagesResponse(
     },
     handle,
   );
-  response = stripInheritedResponseStageCookies(response, renderHeaders);
   if (props.kind !== "pages-page") return response;
 
   const runtimeDataKind = pagesEntry.getRuntimePageDataKind(props.resolvedUrl, request);

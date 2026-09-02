@@ -450,6 +450,34 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(body).toHaveProperty("pageProps");
   });
 
+  it("preserves staged Set-Cookie values separately on Pages data responses", async () => {
+    const stagedHeaders = new Headers();
+    stagedHeaders.append("Set-Cookie", "middleware=one; Path=/");
+    stagedHeaders.append("Set-Cookie", "config=two; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/");
+    const route = makeRoute(
+      "/about",
+      makePageModule({
+        getServerSideProps: async ({ res }: { res: { getHeader(name: string): unknown } }) => {
+          expect(res.getHeader("Set-Cookie")).toEqual(stagedHeaders.getSetCookie());
+          return { props: {} };
+        },
+      }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const dataUrl = "/_next/data/test-build-id/about.json";
+
+    const response = await handler(
+      makeRequest(dataUrl),
+      dataUrl,
+      null,
+      stagedHeaders,
+      null,
+      stagedHeaders,
+    );
+
+    expect(response.headers.getSetCookie()).toEqual(stagedHeaders.getSetCookie());
+  });
+
   it("returns 404 JSON for _next/data with wrong buildId", async () => {
     const handler = createPagesPageHandler(makeOpts());
     const badUrl = "/_next/data/wrong-build-id/about.json";
