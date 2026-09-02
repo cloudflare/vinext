@@ -20,6 +20,7 @@ import {
   type CdnCacheableHeaderInput,
   type CdnResponseHeaders,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import { registerCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache-state.js";
 import {
   MemoryCacheHandler,
   setDataCacheHandler,
@@ -67,6 +68,27 @@ describe("data cache handler aliases", () => {
 // ─── DefaultCdnCacheAdapter ──────────────────────────────────────────────
 
 describe("DefaultCdnCacheAdapter", () => {
+  it("keeps the first declarative registration while allowing an explicit override", () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+    const previous = globals[adapterKey];
+    delete globals[adapterKey];
+
+    try {
+      const first = new DefaultCdnCacheAdapter();
+      const duplicate = new DefaultCdnCacheAdapter();
+      registerCdnCacheAdapter(first);
+      registerCdnCacheAdapter(duplicate);
+      expect(getCdnCacheAdapter()).toBe(first);
+
+      setCdnCacheAdapter(duplicate);
+      expect(getCdnCacheAdapter()).toBe(duplicate);
+    } finally {
+      if (previous === undefined) delete globals[adapterKey];
+      else globals[adapterKey] = previous;
+    }
+  });
+
   it("owns background revalidation (origin-managed ISR)", () => {
     expect(new DefaultCdnCacheAdapter().ownsBackgroundRevalidation).toBe(true);
   });

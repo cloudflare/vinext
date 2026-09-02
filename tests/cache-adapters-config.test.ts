@@ -50,7 +50,7 @@ describe("generateCacheAdaptersModule", () => {
       expect(code).toContain("export function registerConfiguredCacheAdapters() {}");
       expect(code).not.toContain("import");
       expect(code).not.toContain("setDataCacheHandler");
-      expect(code).not.toContain("setCdnCacheAdapter");
+      expect(code).not.toContain("registerCdnCacheAdapter");
     }
   });
 
@@ -62,15 +62,17 @@ describe("generateCacheAdaptersModule", () => {
       "setDataCacheHandler(__vinextDataAdapterFactory({ env, options: undefined }));",
     );
     expect(code).not.toContain("__vinextCdnAdapterFactory");
-    expect(code).not.toContain("setCdnCacheAdapter");
+    expect(code).not.toContain("registerCdnCacheAdapter");
   });
 
   it("wires only the cdn adapter when only cdn is configured", () => {
     const code = generateCacheAdaptersModule({ cdn: { adapter: "my-cdn-adapter" } });
     expect(code).toContain(`import __vinextCdnAdapterFactory from "my-cdn-adapter";`);
-    expect(code).toContain(`import { setCdnCacheAdapter } from "vinext/shims/cdn-cache-state";`);
     expect(code).toContain(
-      "setCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: undefined }));",
+      `import { registerCdnCacheAdapter } from "vinext/shims/cdn-cache-state";`,
+    );
+    expect(code).toContain(
+      "registerCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: undefined }));",
     );
     expect(code).not.toContain("__vinextDataAdapterFactory");
     expect(code).not.toContain("setDataCacheHandler");
@@ -93,7 +95,7 @@ describe("generateCacheAdaptersModule", () => {
     expect(code).toContain(`from "@vinext/cloudflare/cache/cdn-adapter";`);
     expect(code).toContain(`from "@vinext/cloudflare/cache/kv-data-adapter";`);
     expect(code).toContain("setDataCacheHandler(__vinextDataAdapterFactory(");
-    expect(code).toContain("setCdnCacheAdapter(__vinextCdnAdapterFactory(");
+    expect(code).toContain("registerCdnCacheAdapter(__vinextCdnAdapterFactory(");
     expect(code).toContain(
       "if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
     );

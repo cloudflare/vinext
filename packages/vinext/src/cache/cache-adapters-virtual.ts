@@ -192,7 +192,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   }
   if (cdn?.adapter) {
     lines.push(`import __vinextCdnAdapterFactory from ${JSON.stringify(cdn.adapter)};`);
-    lines.push(`import { setCdnCacheAdapter } from "vinext/shims/cdn-cache-state";`);
+    lines.push(`import { registerCdnCacheAdapter } from "vinext/shims/cdn-cache-state";`);
   }
 
   lines.push(
@@ -231,7 +231,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   if (cdn?.adapter) {
     lines.push(
       "  try {",
-      `    setCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: ${inlineOptions(
+      `    registerCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: ${inlineOptions(
         cdn.adapter,
         cdn.options,
       )} }));`,
