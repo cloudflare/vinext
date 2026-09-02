@@ -4,6 +4,7 @@ import {
   BROWSER_REVALIDATE_CACHE_CONTROL,
   buildCachedRevalidateCacheControl,
   buildRevalidateCacheControl,
+  captureCdnResponsePolicyOverrides,
   hasExplicitNonCacheableResponsePolicy,
   reconcileCdnResponseHeadersAfterOuterPolicy,
   shouldUseNextDeployCacheControl,
@@ -131,6 +132,33 @@ describe("applyCdnResponseHeaders", () => {
     expect(headers.get("Cache-Control")).toBe("no-store");
     expect(headers.get("X-Example-Edge-Policy")).toBe("s-maxage=60");
     expect(headers.get("X-Example-Cache-Tag")).toBe("a,b");
+  });
+
+  it("captures only request-stage policy values that differ from the inner response", () => {
+    const edge: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      responsePolicyHeaderNames: ["CDN-Cache-Control"],
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders() {
+        return {};
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edge);
+
+    const overrides = captureCdnResponsePolicyOverrides(
+      new Headers({
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "CDN-Cache-Control": "private, no-store",
+        "X-Unrelated": "ignored",
+      }),
+      new Headers({ "Cache-Control": "public, max-age=0, must-revalidate" }),
+    );
+
+    expect([...overrides]).toEqual([["cdn-cache-control", "private, no-store"]]);
   });
 
   it("applies adapter-owned header removals without knowing their names", () => {
