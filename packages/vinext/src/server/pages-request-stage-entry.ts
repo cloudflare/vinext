@@ -359,7 +359,7 @@ async function handleRequest(
           responseStagePolicyHeaders,
           stagedHeaders?.get("Vary"),
         );
-        const responseStageProps = (): WorkerResponseStageProps => ({
+        const responseStageProps = (cache: "shared" | "bypass"): WorkerResponseStageProps => ({
           buildId: pagesEntry.buildId,
           cacheability: {
             policyHeaders: transportedPolicyHeaders,
@@ -371,7 +371,15 @@ async function handleRequest(
           requestHost: new URL(req.url).host,
           renderOptions: options ?? null,
           resolvedUrl,
-          stagedHeaders: [...(stagedHeaders ?? new Headers())],
+          // Static/ISR pages cannot observe Node's response object. Keep their
+          // request-specific middleware headers outside the shared artifact so
+          // one safe render can still serve every outer composition. Pages
+          // request-time handlers may read res.getHeader(), so their complete
+          // pre-handler snapshot is part of the shared-stage identity.
+          stagedHeaders:
+            cache === "shared" && matchedPage?.route.dataKind === "static"
+              ? null
+              : [...(stagedHeaders ?? new Headers())],
         });
         const cache =
           forceCacheBypass || probeMode
@@ -386,7 +394,13 @@ async function handleRequest(
                 stagedHeaders,
               });
         const isHeadRequest = req.method.toUpperCase() === "HEAD";
-        const dispatched = dispatchResponseStage(req, responseStageProps(), { cache }, env, ctx);
+        const dispatched = dispatchResponseStage(
+          req,
+          responseStageProps(cache),
+          { cache },
+          env,
+          ctx,
+        );
         const responsePromise =
           cache === "shared"
             ? dispatched.then((response) => {

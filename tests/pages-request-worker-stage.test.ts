@@ -129,7 +129,7 @@ describe("Pages Worker request stage", () => {
         requestHost: "example.com",
         renderOptions: null,
         resolvedUrl: "/page",
-        stagedHeaders: [],
+        stagedHeaders: null,
       },
       { cache: "shared" },
     );
@@ -248,14 +248,14 @@ describe("Pages Worker request stage", () => {
     });
     mocks.configHeaders.push(
       {
-        source: "/en/page",
+        source: "/en/gssp",
         headers: [
           { key: "Cache-Control", value: "public, s-maxage=60" },
           { key: "Vary", value: "x-visitor" },
         ],
       },
       {
-        source: "/en/page",
+        source: "/en/gssp",
         has: [{ type: "cookie", key: "preview", value: "1" }],
         headers: [
           { key: "CDN-Cache-Control", value: "public, s-maxage=120" },
@@ -271,7 +271,7 @@ describe("Pages Worker request stage", () => {
     };
     await runWithExecutionContext(cacheabilityContext(state), () =>
       handleRequestStage(
-        new Request("https://example.com/page", { headers: { Cookie: "preview=1" } }),
+        new Request("https://example.com/gssp", { headers: { Cookie: "preview=1" } }),
         undefined,
         undefined,
         dispatch,

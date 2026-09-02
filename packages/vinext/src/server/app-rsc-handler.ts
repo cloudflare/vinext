@@ -1765,7 +1765,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               isRscRequest,
               matchKind,
               middlewareCookieOverlay,
-              preHandlerHeaders: [...(await loadPreHandlerResponseHeaders())],
+              preHandlerHeaders:
+                cache === "shared" && resourceKind === "page" && dataKind === "static"
+                  ? null
+                  : [...(await loadPreHandlerResponseHeaders())],
               protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
               resourceKind,
               requestUrl: request.url,

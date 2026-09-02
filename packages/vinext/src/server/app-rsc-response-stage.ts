@@ -300,7 +300,8 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
             isRscRequest: props.isRscRequest,
             matchKind: props.matchKind,
             middlewareContext,
-            initialResponseHeaders: new Headers(props.preHandlerHeaders),
+            initialResponseHeaders:
+              props.preHandlerHeaders === null ? undefined : new Headers(props.preHandlerHeaders),
             pathname: props.resolvedUrl,
             pagesDataRequest: props.isDataRequest ? request : null,
             request: pageRequest,

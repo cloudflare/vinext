@@ -75,8 +75,8 @@ type HybridPagesWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   isDataRequest: boolean;
   isRscRequest: boolean;
   matchKind: "dynamic" | "static";
-  /** Complete response-header snapshot installed before Pages user code runs. */
-  preHandlerHeaders: Array<[string, string]>;
+  /** Complete response-header snapshot installed before request-time Pages user code runs. */
+  preHandlerHeaders: Array<[string, string]> | null;
   resourceKind: "api" | "page";
   requestUrl: string;
   resolvedUrl: string;
@@ -145,7 +145,7 @@ export function isAppWorkerResponseStageProps(
       typeof hybrid.isDataRequest === "boolean" &&
       typeof hybrid.isRscRequest === "boolean" &&
       (hybrid.matchKind === "dynamic" || hybrid.matchKind === "static") &&
-      isSerializedHeaders(hybrid.preHandlerHeaders) &&
+      (hybrid.preHandlerHeaders === null || isSerializedHeaders(hybrid.preHandlerHeaders)) &&
       (hybrid.resourceKind === "api" || hybrid.resourceKind === "page") &&
       typeof hybrid.requestUrl === "string" &&
       typeof hybrid.resolvedUrl === "string" &&
