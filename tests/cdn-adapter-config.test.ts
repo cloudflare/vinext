@@ -63,10 +63,17 @@ describe("Cloudflare CDN adapter generated config", () => {
       bindingIsExplicit: false,
     });
 
-    expect(JSON.parse(fs.readFileSync(generatedPath, "utf8")).version_metadata).toEqual({
+    const generatedConfig = JSON.parse(fs.readFileSync(generatedPath, "utf8"));
+    expect(generatedConfig.version_metadata).toEqual({
       binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
     });
-    expect(JSON.parse(fs.readFileSync(auxiliaryPath, "utf8")).version_metadata).toBeUndefined();
+    expect(generatedConfig.exports).toMatchObject({
+      default: { type: "worker", cache: { enabled: false } },
+      VinextCachedResponse: { type: "worker", cache: { enabled: true } },
+    });
+    const auxiliaryConfig = JSON.parse(fs.readFileSync(auxiliaryPath, "utf8"));
+    expect(auxiliaryConfig.version_metadata).toBeUndefined();
+    expect(auxiliaryConfig.exports).toBeUndefined();
     expect(fs.readFileSync(sourcePath, "utf8")).toBe('{"name":"source-worker"}');
   });
 
@@ -158,10 +165,16 @@ describe("Cloudflare CDN adapter generated config", () => {
     ).rejects.toThrow(`Could not read the generated Wrangler config at ${generatedPath}`);
   });
 
-  it("leaves an already matching generated config byte-for-byte unchanged", async () => {
+  it("is byte-for-byte idempotent after applying the complete adapter config", async () => {
     const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
       name: "test-worker",
       version_metadata: { binding: DEFAULT_CDN_VERSION_METADATA_BINDING },
+    });
+    await finalizeCdnAdapterBuildOutput({
+      outDir: path.dirname(generatedPath),
+      isPrimaryServerOutput: true,
+      binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
+      bindingIsExplicit: false,
     });
     const before = fs.readFileSync(generatedPath, "utf8");
 

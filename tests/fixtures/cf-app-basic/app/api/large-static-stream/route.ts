@@ -1,6 +1,6 @@
 export const revalidate = 60;
 
-const BODY_SIZE = 4 * 1024 * 1024 + 1;
+const BODY_SIZE = 16 * 1024 * 1024 + 1;
 
 export function GET() {
   return new Response(

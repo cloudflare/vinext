@@ -11,14 +11,14 @@
  *   traffic and revalidates in the background (the `UPDATING` cache status).
  * - `set` is a no-op: the platform caches the *response* based on its
  *   cache headers, so there is nothing to persist at the origin.
- * - `buildResponseHeaders` emits the SWR policy as `CDN-Cache-Control`
+ * - `buildResponseHeaders` emits the SWR policy as `Cloudflare-CDN-Cache-Control`
  *   (`public, max-age=…, stale-while-revalidate=…`) so the edge caches and
  *   revalidates, while the browser-facing `Cache-Control` is
  *   `public, max-age=0, must-revalidate` so a browser never serves a stored copy
  *   without revalidating against the edge. A `Cache-Tag` header lets entries be
  *   purged by tag. Note the edge directive uses `max-age` (not `s-maxage`):
  *   the framework computes the policy with `s-maxage` for shared caches, but
- *   `CDN-Cache-Control` is already CDN-scoped so `max-age` is the correct knob
+ *   `Cloudflare-CDN-Cache-Control` is already CDN-scoped so `max-age` is the correct knob
  *   for the edge to honor max-age + stale-while-revalidate.
  * - `revalidateTag` purges the edge via the request context's `cache.purge({ tags })`.
  *
@@ -42,7 +42,7 @@ import {
 } from "vinext/shims/cdn-cache";
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
+import { getVinextCdnBuildIdentity, VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../version-headers.js";
 
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
@@ -72,7 +72,7 @@ const CACHEABLE_EDGE_DIRECTIVE_RE = /(?:^|,)\s*(?:s-maxage|max-age)\s*=/i;
 const EDGE_POLICY_HEADERS = ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"] as const;
 
 function getBuildIdentityResponseHeader(): CdnResponseHeaders {
-  const buildId = process.env.__VINEXT_RSC_BUILD_IDENTITY ?? process.env.__VINEXT_BUILD_ID;
+  const buildId = getVinextCdnBuildIdentity();
   return buildId ? { [VINEXT_CDN_BUILD_ID_HEADER]: buildId } : {};
 }
 
@@ -142,7 +142,7 @@ const UNBOUNDED_SWR_SECONDS = 31_536_000; // 1 year
 /**
  * Convert the framework's shared-cache policy into a CDN-scoped one:
  * `s-maxage=…` → `max-age=…` (the edge honors `max-age` inside
- * `CDN-Cache-Control`), give a value-less `stale-while-revalidate` an explicit
+ * `Cloudflare-CDN-Cache-Control`), give a value-less `stale-while-revalidate` an explicit
  * seconds value (Cloudflare ignores the bare directive), and ensure a leading
  * `public`.
  */
@@ -264,13 +264,16 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
       return clearCloudflareCdnResponseHeaders(input.cacheControl);
     }
 
-    // SWR policy on CDN-Cache-Control (edge caches + revalidates); the browser
-    // is told to revalidate every reuse so it never serves a stale stored copy.
+    // Use Cloudflare's consumed edge-only header rather than CDN-Cache-Control.
+    // The latter is forwarded to downstream CDNs, where the private inner
+    // cache key and request-stage personalization are no longer available.
+    // The browser is told to revalidate every reuse so it never serves a stale
+    // stored copy.
     const headers: CdnResponseHeaders = {
       ...getBuildIdentityResponseHeader(),
       "Cache-Control": BROWSER_REVALIDATE,
-      "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
-      "Cloudflare-CDN-Cache-Control": null,
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
       "Cache-Tag": input.tags ? formatCacheTag(input.tags) : null,
     };
 

@@ -15,6 +15,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 import vinext from "../packages/vinext/src/index.js";
 
 const tmpDirs: string[] = [];
@@ -29,6 +30,9 @@ const cfPluginPath = path.resolve(
 type CloudflarePluginFactory = (opts?: {
   viteEnvironment?: { name: string; childEnvironments?: string[] };
 }) => import("vite").Plugin;
+
+const LOCAL_ADAPTER_MARKER = "__VINEXT_LOCAL_DATA_ADAPTER_MARKER__";
+const RESPONSE_STAGE_MARKER = "__VINEXT_RESPONSE_STAGE_USER_CODE_MARKER__";
 
 function writeFixtureFile(root: string, filePath: string, content: string) {
   const absPath = path.join(root, filePath);
@@ -47,6 +51,59 @@ function readTextFilesRecursive(root: string): string {
     if (!entry.name.endsWith(".js")) continue;
     output += fs.readFileSync(entryPath, "utf-8");
   }
+  return output;
+}
+
+function readStaticEntryClosure(root: string, entryKey: string): string {
+  const serverDir = path.join(root, "dist/server");
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(serverDir, ".vite/manifest.json"), "utf-8"),
+  ) as Record<string, { file?: unknown; imports?: unknown }>;
+  const resolvedEntryKey = Object.keys(manifest).find(
+    (key) => key === entryKey || key.endsWith(entryKey),
+  );
+  if (!resolvedEntryKey) {
+    throw new Error(`Missing emitted manifest entry ${JSON.stringify(entryKey)}`);
+  }
+  const pending = [resolvedEntryKey];
+  const visited = new Set<string>();
+  let output = "";
+
+  while (pending.length > 0) {
+    const key = pending.pop()!;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    const entry = manifest[key];
+    if (!entry || typeof entry.file !== "string") {
+      throw new Error(`Missing emitted manifest entry ${JSON.stringify(key)}`);
+    }
+    output += fs.readFileSync(path.join(serverDir, entry.file), "utf-8");
+    if (Array.isArray(entry.imports)) {
+      pending.push(...entry.imports.filter((value): value is string => typeof value === "string"));
+    }
+  }
+
+  return output;
+}
+
+function readStaticJavaScriptClosure(entryPath: string): string {
+  const visited = new Set<string>();
+  let output = "";
+  const visit = (filePath: string) => {
+    if (visited.has(filePath)) return;
+    visited.add(filePath);
+    const source = fs.readFileSync(filePath, "utf8");
+    output += source;
+    for (const match of source.matchAll(
+      /(?:import|export)\s*(?:[^"']*?\bfrom\s*)?["']([^"']+)["']/g,
+    )) {
+      const specifier = match[1];
+      if (!specifier?.startsWith(".")) continue;
+      const dependency = path.resolve(path.dirname(filePath), specifier);
+      if (fs.existsSync(dependency) && fs.statSync(dependency).isFile()) visit(dependency);
+    }
+  };
+  visit(entryPath);
   return output;
 }
 
@@ -109,7 +166,7 @@ function writeCloudflareAppFixture(root: string, name: string) {
     root,
     "app/page.tsx",
     `export default function HomePage() {
-  return <main>home</main>;
+  return <main>home ${RESPONSE_STAGE_MARKER}</main>;
 }
 `,
   );
@@ -127,8 +184,6 @@ function writeCloudflareAppFixture(root: string, name: string) {
     `import handler from ${JSON.stringify(workerEntryPath)};\n\nexport default handler;\n`,
   );
 }
-
-const LOCAL_ADAPTER_MARKER = "__VINEXT_LOCAL_DATA_ADAPTER_MARKER__";
 
 describe("config-driven cache adapter — local file by absolute path", () => {
   afterEach(() => {
@@ -211,5 +266,205 @@ export default createAdapter;
     expect(assetsIgnore.split("\n").map((l) => l.trim())).toContain(".vite");
     // The manifest exists on disk (the build reads it) but is now excluded.
     expect(fs.existsSync(path.join(root, "dist/client/.vite/manifest.json"))).toBe(true);
+    expect(
+      fs.readFileSync(
+        path.join(root, "dist/server/__vinext_pregenerated_concrete_paths.js"),
+        "utf-8",
+      ),
+    ).toContain("__VINEXT_PREGENERATED_CONCRETE_PATHS");
+  }, 60_000);
+
+  it("preserves the CDN response entrypoint through Cloudflare's virtual host entry", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-entrypoint-build-"));
+    tmpDirs.push(root);
+    writeCloudflareAppFixture(root, "vinext-cdn-entrypoint-build");
+    fs.rmSync(path.join(root, "node_modules"));
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "fixtures/cf-app-basic/node_modules"),
+      path.join(root, "node_modules"),
+      "junction",
+    );
+    writeFixtureFile(
+      root,
+      "worker/index.ts",
+      'import handler from "vinext/server/fetch-handler";\n\nexport default handler;\n',
+    );
+
+    const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as {
+      cloudflare: CloudflarePluginFactory;
+    };
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: root, cache: { cdn: cdnAdapter() } }),
+        cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+      ],
+      logLevel: "silent",
+    });
+
+    await builder.buildApp();
+
+    const workerPath = path.join(root, "dist/server/index.js");
+    const worker = fs.readFileSync(workerPath, "utf8");
+    expect(worker).toMatch(/export\s*\{[^}]*\b(?:[A-Za-z_$][\w$]*\s+as\s+)?VinextCachedResponse\b/);
+    expect(worker).not.toMatch(/import\s*["']\.\/__vinext_cacheability_manifest\.js["']/);
+    expect(readTextFilesRecursive(path.join(root, "dist/server"))).toContain(RESPONSE_STAGE_MARKER);
+    expect(readStaticJavaScriptClosure(workerPath)).not.toContain(RESPONSE_STAGE_MARKER);
+    expect(readStaticJavaScriptClosure(workerPath)).not.toContain(
+      "__vinext_cacheability_manifest.js",
+    );
+    const viteManifest = JSON.parse(
+      fs.readFileSync(path.join(root, "dist/server/.vite/manifest.json"), "utf8"),
+    );
+    const responseStageEntry = Object.entries(viteManifest).find(
+      ([key, entry]) =>
+        key.endsWith("virtual:vinext-response-stage") ||
+        (entry as { src?: string }).src?.endsWith("virtual:vinext-response-stage"),
+    )?.[1] as { file: string } | undefined;
+    expect(responseStageEntry).toBeDefined();
+    const responseStagePath = path.join(root, "dist/server", responseStageEntry!.file);
+    expect(readStaticJavaScriptClosure(responseStagePath)).toContain(
+      "__vinext_cacheability_manifest.js",
+    );
+    const wrangler = JSON.parse(
+      fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"),
+    );
+    expect(wrangler.exports).toMatchObject({
+      default: { type: "worker", cache: { enabled: false } },
+      VinextCachedResponse: { type: "worker", cache: { enabled: true } },
+    });
+    expect(wrangler.cache).toBeUndefined();
+  }, 60_000);
+
+  it("keeps the adapter-owned response entrypoint when a custom Worker uses its reserved export", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-entrypoint-collision-"));
+    tmpDirs.push(root);
+    writeCloudflareAppFixture(root, "vinext-cdn-entrypoint-collision");
+    fs.rmSync(path.join(root, "node_modules"));
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "fixtures/cf-app-basic/node_modules"),
+      path.join(root, "node_modules"),
+      "junction",
+    );
+    writeFixtureFile(
+      root,
+      "worker/index.ts",
+      [
+        'import handler from "vinext/server/fetch-handler";',
+        'export class VinextCachedResponse { marker = "CUSTOM_RESERVED_EXPORT_MARKER"; }',
+        "export default handler;",
+        "",
+      ].join("\n"),
+    );
+
+    const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as {
+      cloudflare: CloudflarePluginFactory;
+    };
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: root, cache: { cdn: cdnAdapter() } }),
+        cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+      ],
+      logLevel: "silent",
+    });
+
+    await builder.buildApp();
+
+    const buildOutput = readTextFilesRecursive(path.join(root, "dist/server"));
+    expect(buildOutput).toContain("Invalid vinext response-stage invocation");
+    expect(buildOutput).not.toContain("CUSTOM_RESERVED_EXPORT_MARKER");
+  }, 60_000);
+
+  it("keeps the data adapter out of the emitted request-stage graph", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cache-adapter-stages-"));
+    tmpDirs.push(root);
+    writeCloudflareAppFixture(root, "vinext-cache-adapter-stages");
+    writeFixtureFile(
+      root,
+      "cache/my-data-adapter.ts",
+      `export default function createAdapter() {
+  return {
+    adapterMarker: "${LOCAL_ADAPTER_MARKER}",
+    async get() { return null; },
+    async set() {},
+    async revalidateTag() {},
+  };
+}
+`,
+    );
+    writeFixtureFile(
+      root,
+      "worker/index.ts",
+      `import handler from ${JSON.stringify(
+        path
+          .resolve(import.meta.dirname, "../packages/vinext/src/server/fetch-handler.ts")
+          .replace(/\\/g, "/"),
+      )};\n\nexport default handler;\n`,
+    );
+    writeFixtureFile(
+      root,
+      "cache/my-cdn-adapter.ts",
+      `export default function createAdapter() {
+  return {
+    ownsBackgroundRevalidation: false,
+    async get() { return null; },
+    async set() {},
+    buildResponseHeaders() { return {}; },
+    async revalidateTag() {},
+  };
+}
+`,
+    );
+    writeFixtureFile(
+      root,
+      "cache/stage-entry.ts",
+      `export const loadRequestStage = () => import("virtual:vinext-request-stage");
+export const loadResponseStage = () => import("virtual:vinext-response-stage");
+export default {
+  async fetch(request) {
+    const stage = request.url.includes("response")
+      ? await loadResponseStage()
+      : await loadRequestStage();
+    return new Response(Object.keys(stage).join(","));
+  },
+};
+`,
+    );
+    const adapterAbsPath = path.join(root, "cache/my-data-adapter.ts").replace(/\\/g, "/");
+    const cdnAdapterAbsPath = path.join(root, "cache/my-cdn-adapter.ts").replace(/\\/g, "/");
+    const stageEntryAbsPath = path.join(root, "cache/stage-entry.ts").replace(/\\/g, "/");
+    const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as {
+      cloudflare: CloudflarePluginFactory;
+    };
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      plugins: [
+        vinext({
+          appDir: root,
+          cache: {
+            cdn: {
+              adapter: cdnAdapterAbsPath,
+              output: { entry: stageEntryAbsPath, type: "multi-stage" },
+            },
+            data: { adapter: adapterAbsPath },
+          },
+        }),
+        cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+      ],
+      logLevel: "silent",
+    });
+
+    await builder.buildApp();
+
+    expect(readStaticEntryClosure(root, "virtual:vinext-request-stage")).not.toContain(
+      LOCAL_ADAPTER_MARKER,
+    );
+    expect(readStaticEntryClosure(root, "virtual:vinext-response-stage")).toContain(
+      LOCAL_ADAPTER_MARKER,
+    );
   }, 60_000);
 });
