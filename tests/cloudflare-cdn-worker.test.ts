@@ -118,6 +118,20 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(options).toEqual({ cache: "shared" });
   });
 
+  it("retains Cloudflare's private policy on the cache-bearing entrypoint", async () => {
+    stages.response.mockResolvedValue(
+      new Response("rendered", {
+        headers: { "Cloudflare-CDN-Cache-Control": "public, max-age=300" },
+      }),
+    );
+
+    const response = await createEntrypoint(responseStageInvocation({ kind: "app-page" })).fetch(
+      new Request("https://example.com/page"),
+    );
+
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe("public, max-age=300");
+  });
+
   it("rejects malformed configurable entrypoint props", async () => {
     const response = await createEntrypoint({
       options: { cache: "invalid" },
@@ -164,6 +178,39 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       /^https:\/\/example\.com\/render\?__vinext_cache_key=[0-9a-f]{64}$/,
     );
     expect(stages.response).not.toHaveBeenCalled();
+  });
+
+  it("does not expose the inner Cloudflare cache policy after gateway personalization", async () => {
+    const binding = vi.fn(() => ({
+      fetch: vi.fn().mockResolvedValue(
+        new Response("shared", {
+          headers: {
+            "Cache-Control": "public, max-age=0, must-revalidate",
+            "Cloudflare-CDN-Cache-Control": "public, max-age=300",
+          },
+        }),
+      ),
+    }));
+    stages.request.mockImplementation(async (request, _env, _ctx, dispatch) => {
+      const response = await dispatch(request, { kind: "app-page" }, { cache: "shared" });
+      const headers = new Headers(response.headers);
+      headers.set("x-user-variant", request.headers.get("x-user-variant") ?? "missing");
+      return new Response(response.body, { headers, status: response.status });
+    });
+
+    const response = await worker.fetch(
+      new Request("https://example.com/page", {
+        headers: { "x-user-variant": "alice" },
+      }),
+      {},
+      { exports: { VinextCachedResponse: binding } },
+    );
+
+    expect(response.headers.get("x-user-variant")).toBe("alice");
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    await expect(response.text()).resolves.toBe("shared");
   });
 
   it("keeps Authorization off Workers Cache while restoring and partitioning cold renders", async () => {

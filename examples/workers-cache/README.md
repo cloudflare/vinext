@@ -55,9 +55,7 @@ Cache Rules.
 
    ```jsonc
    {
-     "kv_namespaces": [
-       { "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }
-     ]
+     "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }],
    }
    ```
 
@@ -69,7 +67,7 @@ Cache Rules.
 
    ```jsonc
    {
-     "main": "vinext/server/fetch-handler"
+     "main": "vinext/server/fetch-handler",
    }
    ```
 
@@ -81,8 +79,8 @@ Cache Rules.
    The handler also passes the Worker's `env` so `kvDataAdapter()` can resolve
    its KV binding. No manual registration.
 
-4. **ISR responses** carry `CDN-Cache-Control: public, max-age=N,
-   stale-while-revalidate=M` (for the edge) plus a browser-facing
+4. **ISR responses** carry `Cloudflare-CDN-Cache-Control: public, max-age=N,
+stale-while-revalidate=M` (for the edge) plus a browser-facing
    `Cache-Control: public, max-age=0, must-revalidate`, and a `Cache-Tag`
    header listing both the bare path (`/cached/intro`) and Next.js's internal
    `_N_T_<path>` form. The Workers Cache reads these to cache and tag-purge.
@@ -102,7 +100,7 @@ Then open http://localhost:5173 and click into any of the demo routes.
 > **Note:** dev runs on `@cloudflare/vite-plugin` (miniflare), so the
 > `VINEXT_KV_CACHE` namespace is emulated locally and `kvDataAdapter()`
 > works. The edge CDN layer (`cf-cache-status`, background revalidation)
-> only runs on Cloudflare's edge — locally the `CDN-Cache-Control` /
+> only runs on Cloudflare's edge — locally the `Cloudflare-CDN-Cache-Control` /
 > `Cache-Tag` headers `cdnAdapter()` emits are what drive it once deployed.
 
 ## Deploying

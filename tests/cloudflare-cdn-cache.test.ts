@@ -219,15 +219,15 @@ describe("CloudflareCdnCacheAdapter", () => {
     await expect(adapter.set("k", null)).resolves.toBeUndefined();
   });
 
-  it("carries SWR on CDN-Cache-Control (public + max-age) and revalidates the browser", () => {
+  it("carries SWR on Cloudflare's consumed edge policy and revalidates the browser", () => {
     // A value-less `stale-while-revalidate` is normalized to an explicit window
     // (Cloudflare ignores the bare directive — RFC 5861 requires a value).
     expect(
       adapter.buildResponseHeaders({ cacheControl: "s-maxage=60, stale-while-revalidate" }),
     ).toEqual({
       "Cache-Control": "public, max-age=0, must-revalidate",
-      "CDN-Cache-Control": "public, max-age=60, stale-while-revalidate=31536000",
-      "Cloudflare-CDN-Cache-Control": null,
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": "public, max-age=60, stale-while-revalidate=31536000",
       "Cache-Tag": null,
     });
   });
@@ -252,7 +252,8 @@ describe("CloudflareCdnCacheAdapter", () => {
     });
     expect(headers["Cache-Tag"]).toBe("/blog,_N_T_/blog,posts");
     expect(headers["Cache-Control"]).toBe("public, max-age=0, must-revalidate");
-    expect(headers["CDN-Cache-Control"]).toBe("public, max-age=60");
+    expect(headers["CDN-Cache-Control"]).toBeNull();
+    expect(headers["Cloudflare-CDN-Cache-Control"]).toBe("public, max-age=60");
   });
 
   it("skips tags containing the comma separator or that are too long", () => {

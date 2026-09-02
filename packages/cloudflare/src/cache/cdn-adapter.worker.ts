@@ -42,6 +42,7 @@ type RestoredResponseStageRequest = {
 const RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
 const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
+const CLOUDFLARE_EDGE_POLICY_HEADER = "Cloudflare-CDN-Cache-Control";
 
 function withWorkerHostRuntime(
   context: CloudflareStageContext | undefined,
@@ -225,6 +226,23 @@ function preventRequestCfResponseCaching(response: Response): Response {
   });
 }
 
+/**
+ * Cloudflare consumes its private cache policy before returning a cached
+ * entrypoint response. Strip it here as well for uncached/local fallbacks so
+ * the outer gateway never forwards an inner shared-cache policy after adding
+ * request-specific middleware or routing headers.
+ */
+function finalizeGatewayResponse(response: Response): Response {
+  if (!response.headers.has(CLOUDFLARE_EDGE_POLICY_HEADER)) return response;
+  const headers = new Headers(response.headers);
+  headers.delete(CLOUDFLARE_EDGE_POLICY_HEADER);
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
 function withResponseStagePurge(context: CloudflareStageContext): CloudflareStageContext {
   const factory = context.exports?.[RESPONSE_STAGE_EXPORT];
   if (typeof factory !== "function") return context;
@@ -345,6 +363,8 @@ export default {
         : invokeResponseStage(stageRequest, env, stageContext, invocation);
     };
     const { handleRequestStage } = await loadVinextRequestStage<unknown, CloudflareStageContext>();
-    return handleRequestStage(request, env, stageContext, dispatchResponseStage);
+    return finalizeGatewayResponse(
+      await handleRequestStage(request, env, stageContext, dispatchResponseStage),
+    );
   },
 };
