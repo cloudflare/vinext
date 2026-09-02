@@ -68,6 +68,10 @@
       "types": "./dist/server/fetch-handler.d.ts",
       "import": "./dist/server/fetch-handler.js"
     },
+    "./server/multi-stage": {
+      "types": "./dist/server/multi-stage.d.ts",
+      "import": "./dist/server/multi-stage.js"
+    },
     "./server/app-router-entry": {
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"
