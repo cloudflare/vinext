@@ -23,13 +23,13 @@ vinext({
 });
 ```
 
-The Workers Cache only exposes `ctx.cache` when `cache.enabled: true` is set
-in `wrangler.jsonc`, and the KV adapter needs a matching `VINEXT_KV_CACHE`
-namespace binding — both are configured there.
+`cdnAdapter()` generates the per-entrypoint Workers Cache configuration during
+the Cloudflare build. The KV adapter still needs a matching
+`VINEXT_KV_CACHE` namespace binding in `wrangler.jsonc`.
 
-The incoming Cloudflare cache key must retain the full query string. A Cache
-Rule that ignores or normalizes query parameters can collapse distinct
-manifest identities before the Worker runs.
+The adapter adds a transport-only URL digest so distinct response-stage
+identities cannot collide. Workers Cache owns this key independently of zone
+Cache Rules.
 
 ## What's in the box
 
@@ -47,18 +47,15 @@ manifest identities before the Worker runs.
 ## How vinext wires it up
 
 1. **`vite.config.ts`** declares the adapters via `vinext({ cache })` (see
-   above). The descriptors are plain serializable values — they don't touch
-   the Workers runtime at build/dev time; the adapters instantiate lazily on
-   the first request.
+   above). The declarations do not touch the Workers runtime during config
+   evaluation. The Cloudflare build hook emits the staged Worker configuration,
+   and runtime adapters instantiate lazily on the first request.
 
-2. **`wrangler.jsonc`** enables the platform cache and binds the KV namespace:
+2. **`wrangler.jsonc`** binds the KV namespace:
 
    ```jsonc
    {
-     "cache": { "enabled": true },
-     "kv_namespaces": [
-       { "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }
-     ]
+     "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-kv-namespace-id>" }],
    }
    ```
 
@@ -70,20 +67,29 @@ manifest identities before the Worker runs.
 
    ```jsonc
    {
-     "main": "vinext/server/fetch-handler"
+     "main": "vinext/server/fetch-handler",
    }
    ```
 
-   The handler registers the configured adapters on the first request —
-   passing the Worker's `env` so `kvDataAdapter()` can resolve its KV binding —
-   then threads the request's `ExecutionContext` through ALS so `cdnAdapter()`
-   can reach `ctx.cache` at revalidation time. No manual registration.
+   When `cdnAdapter()` is configured, vinext asks the Cloudflare build for two
+   Worker entrypoints. The default entrypoint runs routing and middleware with
+   caching disabled; `VinextCachedResponse` lazily loads the render stage with
+   Workers Cache enabled. The generated `dist/server/wrangler.json` contains
+   those settings, so existing applications do not need a source-config edit.
+   The handler also passes the Worker's `env` so `kvDataAdapter()` can resolve
+   its KV binding. No manual registration.
 
-4. **ISR responses** carry `CDN-Cache-Control: public, max-age=N,
+4. **ISR responses** carry `Cloudflare-CDN-Cache-Control: public, max-age=N,
    stale-while-revalidate=M` (for the edge) plus a browser-facing
    `Cache-Control: public, max-age=0, must-revalidate`, and a `Cache-Tag`
-   header listing both the bare path (`/cached/intro`) and Next.js's internal
-   `_N_T_<path>` form. The Workers Cache reads these to cache and tag-purge.
+   header containing Cloudflare-safe fixed-size digests of both the bare path
+   (`/cached/intro`) and Next.js's internal `_N_T_<path>` form. The Workers
+   Cache reads these to cache and tag-purge without losing Next.js's
+   case-sensitive tag semantics. Because Workers Cache requires every `Vary`
+   variant of a URL to use the same cache tags, vinext conservatively leaves a
+   tagged response uncached when it declares an application-defined `Vary`
+   field; use a separate URL or response-stage identity when those variants
+   need both caching and tag invalidation.
 
 5. **`revalidateTag` / `revalidatePath`** in your route handlers fan out to
    both the KV data cache and `ctx.cache.purge(...)` on the platform layer.
@@ -100,7 +106,7 @@ Then open http://localhost:5173 and click into any of the demo routes.
 > **Note:** dev runs on `@cloudflare/vite-plugin` (miniflare), so the
 > `VINEXT_KV_CACHE` namespace is emulated locally and `kvDataAdapter()`
 > works. The edge CDN layer (`cf-cache-status`, background revalidation)
-> only runs on Cloudflare's edge — locally the `CDN-Cache-Control` /
+> only runs on Cloudflare's edge — locally the `Cloudflare-CDN-Cache-Control` /
 > `Cache-Tag` headers `cdnAdapter()` emits are what drive it once deployed.
 
 ## Deploying
