@@ -4070,6 +4070,37 @@ describe("createMultiStageChunkFileNames", () => {
       });
       expect(booleanSsrResult.build.ssr).toBe(true);
       expect((outputPlugin as any).configEnvironment("client", {})).toBeNull();
+
+      const singleEntryPlugins = vinext({
+        cache: {
+          cdn: {
+            adapter: "/adapter/cache.js",
+            output: {
+              entry: "/adapter/gateway.js",
+              matchesBuild: ({ plugins }) =>
+                plugins.some(({ name }) => name === "independent-http-host"),
+              type: "multi-stage",
+            },
+          },
+        },
+      });
+      const singleEntryConfigPlugin = singleEntryPlugins.find(
+        (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+      );
+      const singleEntryOutputPlugin = singleEntryPlugins.find(
+        (plugin: any) =>
+          plugin.name === "vinext:multi-stage-server-output" &&
+          typeof plugin.configEnvironment === "function",
+      );
+      await (singleEntryConfigPlugin as any).config(
+        { build: {}, plugins: [{ name: "independent-http-host" }], root },
+        { command: "build", mode: "production" },
+      );
+      const singleEntryResult = (singleEntryOutputPlugin as any).configEnvironment("client", {
+        build: { ssr: "virtual:custom-server" },
+      });
+      expect(singleEntryResult.build.ssr).toBeUndefined();
+      expect(singleEntryResult.build.rolldownOptions.input).toBeUndefined();
     } finally {
       await fsp.rm(root, { recursive: true, force: true });
     }

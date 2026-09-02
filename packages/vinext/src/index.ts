@@ -4637,7 +4637,7 @@ export const loadServerActionClient = ${
             // after environment hooks run. We already preserved that string in
             // the merged input map above, so switch to boolean SSR mode to let
             // the bundler honor every adapter-supplied entry.
-            ...(isStandaloneSsrEnvironment ? { ssr: true } : {}),
+            ...(isStandaloneSsrEnvironment && input ? { ssr: true } : {}),
             ...withBuildBundlerOptions({
               ...(input ? { input } : {}),
               output: {
