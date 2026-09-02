@@ -119,6 +119,39 @@ function createNextFlightCleanupScript(): string {
   return 'self.addEventListener("DOMContentLoaded",()=>{if(self.__next_f?.push===Array.prototype.push)self.__next_f.length=0},{once:true})';
 }
 
+const EMPTY_BYTES = new Uint8Array();
+
+function getIncompleteUtf8Tail(previousTail: Uint8Array, chunk: Uint8Array): Uint8Array {
+  const previousTailLength = previousTail.byteLength;
+  const totalLength = previousTailLength + chunk.byteLength;
+  if (totalLength === 0) return EMPTY_BYTES;
+
+  const byteAt = (index: number): number =>
+    index < previousTailLength ? previousTail[index] : chunk[index - previousTailLength];
+
+  // A UTF-8 sequence has at most three continuation bytes, so only the
+  // combined suffix can still be buffered by the streaming decoder.
+  let leadIndex = totalLength - 1;
+  for (let continuationBytes = 0; continuationBytes < 3 && leadIndex >= 0; continuationBytes++) {
+    const byte = byteAt(leadIndex);
+    if (byte < 0x80 || byte > 0xbf) break;
+    leadIndex--;
+  }
+
+  if (leadIndex < 0) return EMPTY_BYTES;
+
+  const leadByte = byteAt(leadIndex);
+  const expectedLength = leadByte >= 0xf0 ? 4 : leadByte >= 0xe0 ? 3 : leadByte >= 0xc2 ? 2 : 1;
+  const availableLength = totalLength - leadIndex;
+  if (availableLength >= expectedLength) return EMPTY_BYTES;
+
+  const tail = new Uint8Array(availableLength);
+  for (let index = 0; index < availableLength; index++) {
+    tail[index] = byteAt(leadIndex + index);
+  }
+  return tail;
+}
+
 /**
  * Create a helper that progressively embeds RSC chunks as inline <script> tags.
  * The browser entry turns the embedded chunks back into Uint8Array data.
@@ -132,8 +165,37 @@ export function createRscEmbedTransform(
   const reader = embedStream.getReader();
   let pendingChunks: RscEmbeddedChunk[] = [];
   const rawChunks: Uint8Array[] = [];
+  // `ignoreBOM: true` preserves BOM bytes as decoded text so valid UTF-8
+  // round-trips losslessly through the embedded text transport.
+  let textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  // TextDecoder buffers incomplete UTF-8 tails internally. Keep the same raw
+  // bytes here so a later fatal decode or EOF can still fall back losslessly.
+  let undecodedBytes: Uint8Array = EMPTY_BYTES;
   let reading = false;
   let mirroredNextFlightBootstrap = false;
+
+  function commitDecodedText(text: string): void {
+    if (text.length === 0) return;
+    pendingChunks.push(text);
+  }
+
+  function commitUndecodedBytes(bytes: Uint8Array): void {
+    if (bytes.byteLength === 0) {
+      const isBuildTimePrerender =
+        typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1";
+      if (process.env.NODE_ENV !== "production" || isBuildTimePrerender) {
+        throw new Error("[vinext] UTF-8 decoder rejected input without buffered bytes");
+      }
+      // The raw capture is preserved separately. Reset the unaccounted inline
+      // decoder state and let the already-streaming document finish.
+      undecodedBytes = EMPTY_BYTES;
+      textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+      return;
+    }
+    pendingChunks.push([RSC_EMBEDDED_BINARY_CHUNK, bytesToBase64(bytes)]);
+    undecodedBytes = EMPTY_BYTES;
+    textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  }
 
   async function pumpReader(): Promise<void> {
     if (reading) return;
@@ -143,17 +205,32 @@ export function createRscEmbedTransform(
         const result = await reader.read();
         if (result.done) break;
         rawChunks.push(result.value);
+        let decodedText: string;
         try {
-          const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-          const text = decoder.decode(result.value);
-          pendingChunks.push(text);
+          decodedText = textDecoder.decode(result.value, { stream: true });
         } catch {
-          pendingChunks.push([RSC_EMBEDDED_BINARY_CHUNK, bytesToBase64(result.value)]);
+          commitUndecodedBytes(
+            undecodedBytes.byteLength === 0
+              ? result.value
+              : concatUint8Arrays([undecodedBytes, result.value]),
+          );
+          continue;
         }
+        commitDecodedText(decodedText);
+        undecodedBytes = getIncompleteUtf8Tail(undecodedBytes, result.value);
       }
+      let decodedText: string;
+      try {
+        decodedText = textDecoder.decode();
+      } catch {
+        commitUndecodedBytes(undecodedBytes);
+        return;
+      }
+      commitDecodedText(decodedText);
+      undecodedBytes = EMPTY_BYTES;
     } catch (error) {
       if (process.env.NODE_ENV !== "production") {
-        console.warn("[vinext] RSC embed stream read error:", error);
+        console.warn("[vinext] RSC embed stream processing error:", error);
       }
       throw error;
     } finally {
