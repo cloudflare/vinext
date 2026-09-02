@@ -17,7 +17,7 @@ import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
-  VINEXT_RSC_VARY_HEADER,
+  isVinextRscVaryField,
 } from "./headers.js";
 import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
 import {
@@ -61,10 +61,6 @@ type CacheabilityProbeResult = {
   version: 1;
 };
 
-const FRAMEWORK_CACHEABILITY_VARY_FIELDS = new Set(
-  VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
-);
-
 function cacheabilityVaryRejectionReason(
   headers: Headers,
   state: RouteCacheabilityState,
@@ -75,7 +71,7 @@ function cacheabilityVaryRejectionReason(
     .filter(Boolean);
   if (fields.includes("*")) return "response uses Vary: *";
   if (state.responseVary === "verbatim") return null;
-  return fields.some((name) => !FRAMEWORK_CACHEABILITY_VARY_FIELDS.has(name))
+  return fields.some((name) => !isVinextRscVaryField(name))
     ? "response cache does not support custom Vary fields"
     : null;
 }
