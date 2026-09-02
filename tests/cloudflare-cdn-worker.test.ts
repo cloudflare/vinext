@@ -571,6 +571,31 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     });
   });
 
+  it("promotes framework Vary selectors into the primary cache identity", async () => {
+    const cacheFacingRequests: Request[] = [];
+    const binding = vi.fn(() => ({
+      fetch(request: Request) {
+        cacheFacingRequests.push(request);
+        return new Response("cached");
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-page" }, { cache: "shared" }),
+    );
+
+    for (const nextUrl of ["/tenant-a", "/tenant-b", "/tenant-a"]) {
+      await worker.fetch(
+        new Request("https://example.com/page", { headers: { "Next-Url": nextUrl } }),
+        {},
+        { exports: { VinextCachedResponse: binding } },
+      );
+    }
+
+    expect(cacheFacingRequests).toHaveLength(3);
+    expect(cacheFacingRequests[0]?.url).not.toBe(cacheFacingRequests[1]?.url);
+    expect(cacheFacingRequests[2]?.url).toBe(cacheFacingRequests[0]?.url);
+  });
+
   it("does not expose the inner Cloudflare cache policy after gateway personalization", async () => {
     const binding = vi.fn(() => ({
       fetch: vi.fn().mockResolvedValue(
