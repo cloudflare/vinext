@@ -1,5 +1,8 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { VINEXT_PRERENDER_READINESS_PATH } from "vinext/internal/server/headers";
+import {
+  VINEXT_PRERENDER_READINESS_PATH,
+  VINEXT_RSC_VARY_HEADER,
+} from "vinext/internal/server/headers";
 import type {
   VinextAssetFetcher,
   VinextRequestStageTransport,
@@ -55,6 +58,9 @@ const RESPONSE_STAGE_WIRE_CACHE = {
 
 type ResponseStageWireCache =
   (typeof RESPONSE_STAGE_WIRE_CACHE)[keyof typeof RESPONSE_STAGE_WIRE_CACHE];
+const FRAMEWORK_RESPONSE_VARY_FIELDS = new Set(
+  VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
+);
 
 function isResponseStageReadinessRequest(request: Request): boolean {
   return (
@@ -216,9 +222,16 @@ async function createCacheFacingRequest(
   // https://developers.cloudflare.com/workers/cache/#what-gets-cached
   const authorizationIdentity =
     authorization === null ? "absent" : `present:${authorization.length}:${authorization}`;
+  // Workers Cache keeps Vary variants under one URL, and requires every
+  // variant of that URL to carry identical Cache-Tag values. App RSC variants
+  // can collect different tags, so promote the complete framework selector
+  // tuple into the opaque primary key instead of relying on Vary alone.
+  const frameworkVaryIdentity = JSON.stringify(
+    [...FRAMEWORK_RESPONSE_VARY_FIELDS].map((name) => [name, request.headers.get(name)]),
+  );
   const responseStageBuildIdentity = getVinextCdnBuildIdentity() ?? "";
   const bytes = new TextEncoder().encode(
-    `${request.url}\0${serializedInvocation}\0${authorizationIdentity}\0${responseStageBuildIdentity}`,
+    `${request.url}\0${serializedInvocation}\0${authorizationIdentity}\0${frameworkVaryIdentity}\0${responseStageBuildIdentity}`,
   );
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const key = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
