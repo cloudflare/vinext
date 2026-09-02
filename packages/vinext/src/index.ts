@@ -4574,7 +4574,7 @@ export const loadServerActionClient = ${
       outputOptions(output) {
         const environment = this.environment;
         if (
-          !selectedMultiStageOutput?.entries ||
+          !selectedMultiStageOutput ||
           !environment ||
           !isMultiStageServerEnvironment(environment)
         ) {
@@ -4661,7 +4661,12 @@ export const loadServerActionClient = ${
         ) {
           return;
         }
-        if (output.format === "iife" || output.format === "umd") {
+        if (
+          output.format !== undefined &&
+          output.format !== "es" &&
+          output.format !== "esm" &&
+          output.format !== "module"
+        ) {
           throw new Error(
             `[vinext] Multi-stage output requires an ES module format; ${JSON.stringify(output.format)} cannot represent independently deployable request and response entries.`,
           );
@@ -7137,7 +7142,7 @@ export const loadServerActionClient = ${
           // router's executable graph elsewhere, so retain an adjacent copy
           // and also publish the canonical copy.
           const canonicalServerDir = path.join(root, "dist", "server");
-          if (selectedMultiStageOutput?.entries) {
+          if (selectedMultiStageOutput) {
             if (readPrerenderSecret(canonicalServerDir) === prerenderSecret) {
               for (const runtimeOutputDir of readServerRuntimeOutputDirs(
                 canonicalServerDir,

@@ -4060,50 +4060,53 @@ describe("createMultiStageChunkFileNames", () => {
     }
   }, 30_000);
 
-  it("rejects single-file output formats before emitting independent stages", async () => {
-    const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-http-stage-format-"));
-    try {
-      await fsp.mkdir(path.join(root, "src"), { recursive: true });
-      const hostEntry = path.join(root, "src/worker.ts");
-      const entries = {
-        request: path.join(root, "src/request-stage.ts"),
-        response: path.join(root, "src/response-stage.ts"),
-      };
-      await Promise.all([
-        fsp.writeFile(hostEntry, 'export const host = "main";\n'),
-        fsp.writeFile(entries.request, "export default {};\n"),
-        fsp.writeFile(entries.response, "export default {};\n"),
-      ]);
-      const builder = await createBuilder({
-        root,
-        configFile: false,
-        plugins: [
-          vinext({
-            disableAppRouter: true,
-            cache: {
-              cdn: {
-                adapter: "/adapter/cache.js",
-                output: { entries, entry: entries.request, type: "multi-stage" },
+  it.each(["cjs", "iife", "umd"] as const)(
+    "rejects %s output before emitting independent stages",
+    async (format) => {
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-http-stage-format-"));
+      try {
+        await fsp.mkdir(path.join(root, "src"), { recursive: true });
+        const hostEntry = path.join(root, "src/worker.ts");
+        const entries = {
+          request: path.join(root, "src/request-stage.ts"),
+          response: path.join(root, "src/response-stage.ts"),
+        };
+        await Promise.all([
+          fsp.writeFile(hostEntry, 'export const host = "main";\n'),
+          fsp.writeFile(entries.request, "export default {};\n"),
+          fsp.writeFile(entries.response, "export default {};\n"),
+        ]);
+        const builder = await createBuilder({
+          root,
+          configFile: false,
+          plugins: [
+            vinext({
+              disableAppRouter: true,
+              cache: {
+                cdn: {
+                  adapter: "/adapter/cache.js",
+                  output: { entries, entry: entries.request, type: "multi-stage" },
+                },
               },
-            },
-          }),
-        ],
-        build: {
-          outDir: "dist",
-          rolldownOptions: { input: hostEntry, output: { format: "iife" } },
-          ssr: true,
-        },
-        logLevel: "silent",
-      });
+            }),
+          ],
+          build: {
+            outDir: "dist",
+            rolldownOptions: { input: hostEntry, output: { format } },
+            ssr: true,
+          },
+          logLevel: "silent",
+        });
 
-      await expect(builder.buildApp()).rejects.toThrow(
-        '[vinext] Multi-stage output requires an ES module format; "iife" cannot represent independently deployable request and response entries.',
-      );
-    } finally {
-      await fsp.rm(root, { recursive: true, force: true });
-    }
-  });
+        await expect(builder.buildApp()).rejects.toThrow(
+          `[vinext] Multi-stage output requires an ES module format; ${JSON.stringify(format)} cannot represent independently deployable request and response entries.`,
+        );
+      } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("keeps every App response-stage output self-contained across output arrays", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
@@ -4195,6 +4198,125 @@ describe("createMultiStageChunkFileNames", () => {
           `${pathToFileURL(path.join(outputDir, responseStageFile!)).href}?output=${index}`
         )) as { load(): Promise<unknown> };
         await expect(responseStage.load()).resolves.toBeDefined();
+      }
+
+      const canonicalServerDir = path.join(root, "dist/server");
+      await fsp.writeFile(
+        path.join(canonicalServerDir, "vinext-prerender.json"),
+        JSON.stringify({
+          buildId: "test",
+          pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-a"]]],
+        }),
+      );
+      injectPregeneratedConcretePaths(
+        root,
+        path.join(outputDirs[0], "index.js"),
+        canonicalServerDir,
+        [outputDirs[0]],
+      );
+      for (const outputDir of outputDirs) {
+        await expect(
+          fsp.readFile(path.join(outputDir, "__vinext_pregenerated_concrete_paths.js"), "utf8"),
+        ).resolves.toContain("/blog/post-a");
+      }
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("keeps transform-only response-stage outputs self-contained across output arrays", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-host-output-array-"));
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(root, "node_modules"),
+        "junction",
+      );
+      await Promise.all([
+        fsp.mkdir(path.join(root, "app"), { recursive: true }),
+        fsp.mkdir(path.join(root, "stage"), { recursive: true }),
+      ]);
+      const hostEntry = path.join(root, "stage/host.ts");
+      await Promise.all([
+        fsp.writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" })),
+        fsp.writeFile(
+          path.join(root, "app/layout.tsx"),
+          "export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n",
+        ),
+        fsp.writeFile(
+          path.join(root, "app/page.tsx"),
+          "export default function Page() { return <main>page</main>; }\n",
+        ),
+        fsp.writeFile(
+          path.join(root, "stage/adapter.ts"),
+          "export default function createAdapter() { return { ownsBackgroundRevalidation: false, async get() { return null; }, async set() {}, buildResponseHeaders() { return {}; }, async revalidateTag() {} }; }\n",
+        ),
+        fsp.writeFile(
+          hostEntry,
+          'export const loadResponse = () => import("virtual:vinext-response-stage"); export default {};\n',
+        ),
+      ]);
+
+      const outputDirs = ["common", "esm", "second"].map((name) => path.join(root, "dist", name));
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        plugins: [
+          vinext({
+            appDir: root,
+            rscOutDir: outputDirs[0],
+            cache: {
+              cdn: {
+                adapter: path.join(root, "stage/adapter.ts"),
+                output: {
+                  entry: hostEntry,
+                  transformHostEntry({ code, id }) {
+                    return id === hostEntry ? code : null;
+                  },
+                  type: "multi-stage",
+                },
+              },
+            },
+          }),
+        ],
+        environments: {
+          rsc: {
+            build: {
+              manifest: true,
+              rolldownOptions: {
+                output: [
+                  { dir: outputDirs[1], format: "es" },
+                  { dir: outputDirs[2], format: "es" },
+                ],
+              },
+            },
+          },
+        },
+        logLevel: "silent",
+      });
+
+      await builder.buildApp();
+
+      for (const [index, outputDir] of outputDirs.entries()) {
+        await expect(
+          fsp.readFile(path.join(outputDir, "vinext-client-assets.js"), "utf8"),
+        ).resolves.toContain("export default");
+        const outputFiles = (await fsp.readdir(outputDir, { recursive: true })).filter((file) =>
+          file.endsWith(".js"),
+        );
+        const responseStageFile = (
+          await Promise.all(
+            outputFiles.map(async (file) => [
+              file,
+              await fsp.readFile(path.join(outputDir, file), "utf8"),
+            ]),
+          )
+        ).find(([, source]) => source.includes("vinext-client-assets.js"))?.[0];
+        expect(responseStageFile).toBeDefined();
+        await expect(
+          import(`${pathToFileURL(path.join(outputDir, responseStageFile!)).href}?output=${index}`),
+        ).resolves.toBeDefined();
       }
 
       const canonicalServerDir = path.join(root, "dist/server");
