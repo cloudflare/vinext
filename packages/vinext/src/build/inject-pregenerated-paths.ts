@@ -15,10 +15,13 @@ const VINEXT_PREGEN_RE = new RegExp(
   "g",
 );
 
-export function injectPregeneratedConcretePaths(root: string): void {
-  const serverDir = path.resolve(root, "dist", "server");
-  const workerEntry = path.join(serverDir, "index.js");
-  const manifest = readPrerenderManifest(path.join(serverDir, "vinext-prerender.json"));
+export function injectPregeneratedConcretePaths(
+  root: string,
+  workerEntry = path.resolve(root, "dist", "server", "index.js"),
+): void {
+  const manifestDir = path.resolve(root, "dist", "server");
+  const runtimeDir = path.dirname(workerEntry);
+  const manifest = readPrerenderManifest(path.join(manifestDir, "vinext-prerender.json"));
   const table = manifest?.pregeneratedConcretePaths ?? [];
 
   // Response-stage entries can be deployed independently of index.js. Keep the
@@ -27,8 +30,8 @@ export function injectPregeneratedConcretePaths(root: string): void {
   // The file is emitted during the server build; writing it after prerendering
   // updates the artifact without rebuilding or coupling core to a host
   // transport.
-  const runtimeModule = path.join(serverDir, PREGENERATED_CONCRETE_PATHS_MODULE);
-  fs.mkdirSync(serverDir, { recursive: true });
+  const runtimeModule = path.join(runtimeDir, PREGENERATED_CONCRETE_PATHS_MODULE);
+  fs.mkdirSync(runtimeDir, { recursive: true });
   fs.writeFileSync(
     runtimeModule,
     table.length > 0
