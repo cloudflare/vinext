@@ -182,6 +182,9 @@ describe("Pages Worker request stage", () => {
       },
       { cache: "bypass" },
     );
+    const stageRequest = dispatch.mock.calls[0]?.[0];
+    expect(stageRequest?.headers.get(VINEXT_EXPECTED_WORKER_VERSION_HEADER)).toBe("version-a");
+    expect(stageRequest?.headers.get(VINEXT_PRERENDER_SECRET_HEADER)).toBeNull();
   });
 
   it("keeps pathname-eligible middleware outside shared-stage classification", async () => {

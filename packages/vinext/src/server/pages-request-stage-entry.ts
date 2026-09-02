@@ -32,6 +32,7 @@ import { createWorkerRevalidationContext } from "./worker-revalidation-context.j
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
+  VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "./headers.js";
@@ -262,6 +263,24 @@ async function handleRequest(
       if (cdnValidationResponse) return cdnValidationResponse;
     }
 
+    // Strip internal headers from inbound requests so callers cannot forge
+    // framework state. Request.headers is immutable in Workers.
+    const filteredHeaders = ctx.isInternalPagesRevalidation
+      ? new Headers(request.headers)
+      : filterInternalHeaders(request.headers);
+    filteredHeaders.delete(VINEXT_PRERENDER_SECRET_HEADER);
+    filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
+    if (readinessResponse?.status === 204) {
+      const expectedWorkerVersion = request.headers.get(VINEXT_EXPECTED_WORKER_VERSION_HEADER);
+      if (expectedWorkerVersion) {
+        // The request stage already authenticated the build capability. Preserve
+        // only the version assertion needed by the independently hosted response
+        // stage; the prerender secret remains confined to this gateway.
+        filteredHeaders.set(VINEXT_EXPECTED_WORKER_VERSION_HEADER, expectedWorkerVersion);
+      }
+    }
+    request = cloneRequestWithHeaders(request, filteredHeaders);
+
     const url = new URL(request.url);
     let pathname = url.pathname;
 
@@ -305,15 +324,6 @@ async function handleRequest(
     // is invoked. Missing asset-shaped requests still need to reach middleware
     // so it can rewrite/respond; a final 404 is converted back below.
     const missingBuildAsset = isNextStaticPath(pathname, basePath, assetPathPrefix);
-
-    // Strip internal headers from inbound requests so callers cannot forge
-    // framework state. Request.headers is immutable in Workers.
-    const filteredHeaders = ctx.isInternalPagesRevalidation
-      ? new Headers(request.headers)
-      : filterInternalHeaders(request.headers);
-    filteredHeaders.delete(VINEXT_PRERENDER_SECRET_HEADER);
-    filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
-    request = cloneRequestWithHeaders(request, filteredHeaders);
 
     // Track basePath presence on the original request so matcher gating can
     // distinguish requests inside basePath from requests outside it.
