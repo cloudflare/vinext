@@ -576,7 +576,9 @@ describe("Pages Worker response stage", () => {
     );
 
     const response = await handleResponseStage(
-      new Request("https://example.com/api/public"),
+      new Request("https://example.com/api/public", {
+        headers: { Accept: "text/html" },
+      }),
       undefined,
       undefined,
       {
