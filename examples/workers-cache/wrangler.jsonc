@@ -25,8 +25,5 @@
       "enabled": true,
     },
   },
-  "cache": {
-    "enabled": true,
-  },
   "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "b38f84f642aa4bd4ba17a37bb516f0b5" }],
 }
