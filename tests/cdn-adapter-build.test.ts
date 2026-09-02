@@ -117,9 +117,9 @@ describe("Cloudflare CDN adapter build output", () => {
     expect(responseStageEntry).toBeDefined();
 
     const sidecarImport = /import\s*["']\.\/__vinext_pregenerated_concrete_paths\.js["']/;
-    expect((await readStaticClosure(workerEntry!)).some((source) => sidecarImport.test(source))).toBe(
-      false,
-    );
+    expect(
+      (await readStaticClosure(workerEntry!)).some((source) => sidecarImport.test(source)),
+    ).toBe(false);
     expect(
       (await readStaticClosure(responseStageEntry!)).some((source) => sidecarImport.test(source)),
     ).toBe(true);
