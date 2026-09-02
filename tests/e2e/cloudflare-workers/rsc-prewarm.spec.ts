@@ -252,6 +252,8 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   expect(browserFetchMiss.ok(), JSON.stringify(browserFetchMissHeaders)).toBe(true);
   expect(browserFetchMissHeaders["content-type"]).toContain("text/html");
   expect(browserFetchMissHeaders["cf-cache-status"]).toBe("MISS");
+  expect(browserFetchMissHeaders["x-vinext-cache"]).toBe("MISS");
+  expect(browserFetchMissHeaders["x-nextjs-cache"]).toBe("MISS");
   expect(browserFetchMissHeaders["cache-control"]).toBe("private, max-age=0, must-revalidate");
   expect(browserFetchMissHeaders["cdn-cache-control"]).toBeUndefined();
   expect(browserFetchMissHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
@@ -260,7 +262,10 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   const browserFetchHit = await request.get(browserFetchUrl.href, {
     headers: { accept: "*/*" },
   });
-  expect(browserFetchHit.headers()["cf-cache-status"]).toBe("HIT");
+  const browserFetchHitHeaders = browserFetchHit.headers();
+  expect(browserFetchHitHeaders["cf-cache-status"]).toBe("HIT");
+  expect(browserFetchHitHeaders["x-vinext-cache"]).toBe("HIT");
+  expect(browserFetchHitHeaders["x-nextjs-cache"]).toBe("HIT");
   expect(await browserFetchHit.text()).toBe(browserFetchBody);
 
   const downstreamOnlyOverride = await request.get(`${baseURL}/api/prewarm-version?downstream=1`, {
