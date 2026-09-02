@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import { request as sendHttpRequest } from "node:http";
 import { createServer } from "node:net";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -105,6 +106,44 @@ function reservePort(): Promise<number> {
       }
       server.close((error) => (error ? reject(error) : resolve(address.port)));
     });
+  });
+}
+
+function fetchWithAuthority(url: string, authority: string): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const request = sendHttpRequest(
+      {
+        headers: { Host: authority },
+        hostname: target.hostname,
+        path: target.pathname + target.search,
+        port: target.port,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.once("error", reject);
+        response.once("end", () => {
+          const headers = new Headers();
+          for (const [name, value] of Object.entries(response.headers)) {
+            if (Array.isArray(value)) {
+              for (const item of value) headers.append(name, item);
+            } else if (value !== undefined) {
+              headers.set(name, value);
+            }
+          }
+          resolve(
+            new Response(Buffer.concat(chunks), {
+              headers,
+              status: response.statusCode,
+              statusText: response.statusMessage,
+            }),
+          );
+        });
+      },
+    );
+    request.once("error", reject);
+    request.end();
   });
 }
 
@@ -353,6 +392,24 @@ describe("generic HTTP multi-stage transport", () => {
     const refreshedHit = await fetch(`${requestServer.origin}${path}`);
     expect(refreshedHit.headers.get("x-http-stage-cache")).toBe("HIT");
     expect(renderToken(await refreshedHit.text())).toBe(renderToken(refreshedBody));
+  });
+
+  it("partitions the host cache by the public request authority", async () => {
+    const path = `/tenant-${Date.now()}`;
+    const fetchTenant = (host: string) =>
+      fetchWithAuthority(`${requestServer.origin}${path}`, host);
+
+    const tenantA = await fetchTenant("tenant-a.example");
+    const tenantB = await fetchTenant("tenant-b.example");
+    const tenantAHit = await fetchTenant("tenant-a.example");
+    const tenantBHit = await fetchTenant("tenant-b.example");
+
+    expect(tenantA.status).toBe(200);
+    expect(tenantB.status).toBe(200);
+    expect(tenantA.headers.get("x-http-stage-cache")).toBe("MISS");
+    expect(tenantB.headers.get("x-http-stage-cache")).toBe("MISS");
+    expect(tenantAHit.headers.get("x-http-stage-cache")).toBe("HIT");
+    expect(tenantBHit.headers.get("x-http-stage-cache")).toBe("HIT");
   });
 
   it("preserves Pages HEAD rendering without poisoning the GET representation", async () => {
