@@ -85,7 +85,11 @@ stale-while-revalidate=M` (for the edge) plus a browser-facing
    header containing Cloudflare-safe fixed-size digests of both the bare path
    (`/cached/intro`) and Next.js's internal `_N_T_<path>` form. The Workers
    Cache reads these to cache and tag-purge without losing Next.js's
-   case-sensitive tag semantics.
+   case-sensitive tag semantics. Because Workers Cache requires every `Vary`
+   variant of a URL to use the same cache tags, vinext conservatively leaves a
+   tagged response uncached when it declares an application-defined `Vary`
+   field; use a separate URL or response-stage identity when those variants
+   need both caching and tag invalidation.
 
 5. **`revalidateTag` / `revalidatePath`** in your route handlers fan out to
    both the KV data cache and `ctx.cache.purge(...)` on the platform layer.
