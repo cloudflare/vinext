@@ -10,7 +10,10 @@ import {
   markRouteHandlerCacheMiss,
 } from "../packages/vinext/src/server/app-route-handler-response.js";
 import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
-import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
+  CloudflareCdnCacheAdapter,
+  encodeCloudflareCacheTag,
+} from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import { hasPostConfigLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 
 function buildCachedRouteValue(
@@ -428,7 +431,9 @@ describe("route handler responses route through the CDN cache adapter", () => {
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe(
       "public, max-age=60, stale-while-revalidate=540",
     );
-    expect(response.headers.get("Cache-Tag")).toBe("_N_T_/api/feed,posts");
+    expect(response.headers.get("Cache-Tag")).toBe(
+      ["_N_T_/api/feed", "posts"].map(encodeCloudflareCacheTag).join(","),
+    );
   });
 
   it("does not promote a revalidate=0 (non-cacheable) response to the edge", () => {

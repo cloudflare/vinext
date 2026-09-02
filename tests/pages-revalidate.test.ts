@@ -5,7 +5,15 @@ import {
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
-import { VINEXT_REVALIDATE_HOST_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_REVALIDATED_CACHE_TAG_HEADER,
+  VINEXT_REVALIDATE_HOST_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { encodeCacheTag } from "../packages/vinext/src/utils/encode-cache-tag.js";
 
 function stubFetch() {
   const fetchMock = vi.fn(
@@ -57,6 +65,7 @@ function fetchHeadersAt(
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  setCdnCacheAdapter(new DefaultCdnCacheAdapter());
 });
 
 describe("performOnDemandRevalidate", () => {
@@ -99,6 +108,27 @@ describe("performOnDemandRevalidate", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     const url = firstFetchUrl(fetchMock);
     expect(url.href).toBe("http://app.local:3000/fixed-page");
+  });
+
+  it.each([
+    ["a rewritten source", "/alias?view=one", "_N_T_/source"],
+    ["a base-path-stripped source", "/docs/fixed-page", "_N_T_/fixed-page"],
+  ])("purges the actual regenerated tag for %s", async (_name, requestedPath, regeneratedTag) => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(null, {
+          headers: { [VINEXT_REVALIDATED_CACHE_TAG_HEADER]: regeneratedTag },
+          status: 200,
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = new DefaultCdnCacheAdapter();
+    const revalidateTag = vi.spyOn(adapter, "revalidateTag");
+    setCdnCacheAdapter(adapter);
+
+    await performOnDemandRevalidate(new Headers({ host: "app.local:3000" }), requestedPath);
+
+    expect(revalidateTag).toHaveBeenCalledExactlyOnceWith(encodeCacheTag(regeneratedTag));
   });
 
   it("preserves unstable_onlyGenerated on the pinned request", async () => {
@@ -196,6 +226,9 @@ describe("performOnDemandRevalidate", () => {
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
+    const adapter = new DefaultCdnCacheAdapter();
+    const revalidateTag = vi.spyOn(adapter, "revalidateTag");
+    setCdnCacheAdapter(adapter);
     const headers = new Headers({ host: "app.local:3000" });
 
     await expect(performOnDemandRevalidate(headers, "/fixed-page")).rejects.toThrow(
@@ -204,6 +237,7 @@ describe("performOnDemandRevalidate", () => {
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(fetchUrlAt(fetchMock, 0).href).toBe("http://app.local:3000/fixed-page");
+    expect(revalidateTag).not.toHaveBeenCalled();
   });
 
   it("accepts a terminal external GSP redirect marked REVALIDATED without following it", async () => {
