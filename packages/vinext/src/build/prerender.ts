@@ -1125,6 +1125,7 @@ export async function prerenderApp({
             port: 0,
             host: "127.0.0.1",
             outDir: path.dirname(serverDir),
+            rscEntryPath: rscBundlePath,
             noCompression: true,
             purpose: "prerender",
           });
