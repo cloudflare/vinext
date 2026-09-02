@@ -500,7 +500,8 @@ test("deploy-prewarmed App, Pages, and RSC variants are reused", async ({
   const coldHeaders = coldAfterPurge!.headers();
   expect(coldAfterPurge!.ok(), JSON.stringify(coldHeaders)).toBe(true);
   expect(coldHeaders["cf-cache-status"]).toBe("MISS");
-  expect(coldHeaders["cdn-cache-control"]).toContain("public");
+  expect(coldHeaders["cdn-cache-control"]).toBeUndefined();
+  expect(coldHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
   expect(await coldAfterPurge!.text()).toContain("Prewarm target");
 
   const reuseDeadline = Date.now() + 30_000;

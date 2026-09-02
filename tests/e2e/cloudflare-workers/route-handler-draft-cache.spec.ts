@@ -186,7 +186,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     // Next.js even when the handler observed request headers while streaming.
     expect(dynamicResponse.headers()["cache-control"]).toContain("public");
     expect(dynamicResponse.headers()["cache-control"]).toContain("max-age=0");
-    expect(dynamicResponse.headers()["cdn-cache-control"]).toBe("public, max-age=60");
+    expect(dynamicResponse.headers()["cdn-cache-control"]).toBeUndefined();
     expect(dynamicResponse.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
     expect(dynamicResponse.headers()["cache-tag"]).toBeUndefined();
     expect(dynamicResponse.headers()["x-vinext-cache"]).toBeUndefined();
