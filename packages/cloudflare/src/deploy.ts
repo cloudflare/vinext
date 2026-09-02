@@ -35,7 +35,9 @@ import {
   findVinextPrerenderConfigInPlugins,
   findVinextRouteRootConfigInPlugins,
   formatVinextPrerenderLabel,
+  getConfiguredCdnResponsePolicyHeaderNames,
   hasBuildIdentityResponseHeader,
+  hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   requiresRouteCacheabilityProbeManifest,
   resolveVinextPrerenderDecision,
@@ -833,6 +835,23 @@ function cdnWarmTargetKey(target: Pick<CdnWarmTarget, "kind" | "sourcePathname">
   return `${target.kind}\0${target.sourcePathname}`;
 }
 
+function requiredCdnWarmTargetKeys(
+  plan: CdnWarmRequestPlan,
+  optionalTargetKeys: ReadonlySet<string> | undefined,
+): ReadonlySet<string> {
+  const keys = new Set([
+    ...plan.paths.map((pathname) => `html\0${pathname}`),
+    ...plan.pagesDataPaths.map((pathname) => `pages-data\0${pathname}`),
+    ...(plan.routeHandlerPaths ?? []).map((pathname) => `app-route\0${pathname}`),
+    ...plan.rscPaths.map((pathname) => `rsc-full\0${pathname}`),
+    ...plan.loadingShellPaths.map((pathname) => `rsc-loading-shell\0${pathname}`),
+  ]);
+  if (optionalTargetKeys) {
+    for (const key of optionalTargetKeys) keys.delete(key);
+  }
+  return keys;
+}
+
 export async function deployWithCdnWarmup(
   root: string,
   paths: readonly string[],
@@ -1001,6 +1020,10 @@ async function deployUploadedVersionWithCdnWarmup(
       concurrency: options.warmCdnConcurrency,
       timeoutMs: options.warmCdnTimeout,
       retries: options.warmCdnRetries,
+      retrySkippedTargetKeys:
+        propagatingTarget && hasPreparedWarmPlan
+          ? requiredCdnWarmTargetKeys(plan, options.optionalWarmTargetKeys)
+          : undefined,
       requireCacheHit,
       strict: requireCacheHit || !allowUnverifiedPromotion,
     });
@@ -1930,6 +1953,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     nextOutput: nextConfig.output,
   });
   const hasStrictResponseVary = hasVerbatimResponseVary(viteConfigMetadata.cacheConfig);
+  const hasStagedRequestRouting = hasUncachedRequestRouting(viteConfigMetadata.cacheConfig);
   const hasBuildIdentityHeader = hasBuildIdentityResponseHeader(viteConfigMetadata.cacheConfig);
   const needsCacheabilityProbeManifest = projectRequiresRouteCacheabilityProbeManifest(
     info,
@@ -1972,7 +1996,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
       root: info.root,
       nextConfig,
       buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
+      requestRouting: hasStagedRequestRouting ? "uncached-stage" : undefined,
       responseVary: hasStrictResponseVary ? "verbatim" : undefined,
+      responsePolicyHeaderNames: getConfiguredCdnResponsePolicyHeaderNames(
+        viteConfigMetadata.cacheConfig,
+      ),
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
   }
@@ -2044,7 +2072,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
           root: info.root,
           nextConfig,
           buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
+          requestRouting: hasStagedRequestRouting ? "uncached-stage" : undefined,
           responseVary: hasStrictResponseVary ? "verbatim" : undefined,
+          responsePolicyHeaderNames: getConfiguredCdnResponsePolicyHeaderNames(
+            viteConfigMetadata.cacheConfig,
+          ),
           routeRootConfig: viteConfigMetadata.routeRootConfig,
           pathDiscoveryTarget: {
             baseUrl: targetUrl,
