@@ -99,4 +99,32 @@ describe("runPrerender concurrency", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("starts the prerender server with the generated App entry from the build manifest", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-entry-"));
+    fs.mkdirSync(path.join(root, "app"));
+    fs.mkdirSync(path.join(root, "dist", "server", ".vite"), { recursive: true });
+    fs.writeFileSync(path.join(root, "dist", "server", "index.js"), 'import "host:runtime";\n');
+    fs.writeFileSync(path.join(root, "dist", "server", "application-entry.js"), "export {};\n");
+    fs.writeFileSync(
+      path.join(root, "dist", "server", ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-rsc-entry": { file: "application-entry.js", isDynamicEntry: true },
+      }),
+    );
+
+    try {
+      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+
+      await runPrerender({ root });
+
+      expect(prerenderAppMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rscBundlePath: path.join(root, "dist", "server", "application-entry.js"),
+        }),
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
