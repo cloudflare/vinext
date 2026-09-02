@@ -1,7 +1,19 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+const RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
+const CTX_EXPORTS_DEFAULT_DATE = "2025-11-17";
+
+type WranglerWorkerExport = {
+  cache?: { enabled: boolean };
+  type?: string;
+  [key: string]: unknown;
+};
+
 type WranglerOutputConfig = {
+  compatibility_date?: string;
+  compatibility_flags?: string[];
+  exports?: Record<string, WranglerWorkerExport>;
   version_metadata?: unknown;
   [key: string]: unknown;
 };
@@ -20,10 +32,7 @@ export function configureCdnVersionMetadata(
   options: VersionMetadataOptions,
 ): WranglerOutputConfig {
   if (!Object.hasOwn(config, "version_metadata")) {
-    return {
-      ...config,
-      version_metadata: { binding: options.binding },
-    };
+    return { ...config, version_metadata: { binding: options.binding } };
   }
 
   if (!isRecord(config.version_metadata)) {
@@ -46,16 +55,106 @@ export function configureCdnVersionMetadata(
     );
   }
 
+  return { ...config, version_metadata: { binding: options.binding } };
+}
+
+/** Add the per-entrypoint Workers Cache policy to an emitted Wrangler config. */
+export function configureWorkersCacheEntrypoints(
+  config: WranglerOutputConfig,
+): WranglerOutputConfig {
+  const configuredExports = config.exports ?? {};
+  const compatibilityFlags = config.compatibility_flags ?? [];
+  if (compatibilityFlags.includes("disable_ctx_exports")) {
+    throw new Error(
+      "[vinext] cdnAdapter() requires ctx.exports, but the generated Wrangler config explicitly disables it with disable_ctx_exports.",
+    );
+  }
+
+  const requiresCtxExportsFlag =
+    config.compatibility_date === undefined || config.compatibility_date < CTX_EXPORTS_DEFAULT_DATE;
+  const configuredCompatibilityFlags = requiresCtxExportsFlag
+    ? compatibilityFlags.includes("enable_ctx_exports")
+      ? compatibilityFlags
+      : [...compatibilityFlags, "enable_ctx_exports"]
+    : compatibilityFlags.filter((flag) => flag !== "enable_ctx_exports");
+
+  for (const name of ["default", RESPONSE_STAGE_EXPORT]) {
+    const existing = configuredExports[name];
+    if (existing?.type !== undefined && existing.type !== "worker") {
+      throw new Error(
+        `[vinext] cdnAdapter() cannot configure the reserved Worker export ${JSON.stringify(name)} because it is already declared as ${JSON.stringify(existing.type)}.`,
+      );
+    }
+  }
+
   return {
     ...config,
-    version_metadata: { binding: options.binding },
+    compatibility_flags: configuredCompatibilityFlags,
+    exports: {
+      ...configuredExports,
+      default: {
+        ...configuredExports.default,
+        type: "worker",
+        cache: { enabled: false },
+      },
+      [RESPONSE_STAGE_EXPORT]: {
+        ...configuredExports[RESPONSE_STAGE_EXPORT],
+        type: "worker",
+        cache: { enabled: true },
+      },
+    },
   };
 }
 
-/**
- * Add the CDN adapter's version metadata binding to the Cloudflare Vite
- * plugin's primary generated deployment config.
- */
+async function readGeneratedConfig(
+  generatedConfigPath: string,
+  allowMissing: boolean,
+): Promise<WranglerOutputConfig | null> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(generatedConfigPath, "utf8")) as unknown;
+    if (!isRecord(parsed)) throw new TypeError("the root value must be an object");
+    return parsed;
+  } catch (cause) {
+    if (
+      allowMissing &&
+      cause !== null &&
+      typeof cause === "object" &&
+      "code" in cause &&
+      cause.code === "ENOENT"
+    ) {
+      return null;
+    }
+    throw new Error(
+      `[vinext] Could not read the generated Wrangler config at ${generatedConfigPath}.`,
+      { cause },
+    );
+  }
+}
+
+async function writeGeneratedConfig(
+  generatedConfigPath: string,
+  config: WranglerOutputConfig,
+): Promise<void> {
+  await fs.writeFile(generatedConfigPath, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+/** Apply only the Workers Cache entrypoint policy to a generated config. */
+export async function finalizeWorkersCacheBuildOutput({
+  outDir,
+}: {
+  outDir: string;
+  root: string;
+}): Promise<void> {
+  const generatedConfigPath = path.resolve(outDir, "wrangler.json");
+  const generatedConfig = await readGeneratedConfig(generatedConfigPath, true);
+  if (!generatedConfig) return;
+  await writeGeneratedConfig(
+    generatedConfigPath,
+    configureWorkersCacheEntrypoints(generatedConfig),
+  );
+}
+
+/** Apply the complete CDN adapter policy to the primary generated config. */
 export async function finalizeCdnAdapterBuildOutput({
   outDir,
   isPrimaryServerOutput,
@@ -67,36 +166,17 @@ export async function finalizeCdnAdapterBuildOutput({
   binding: string;
   bindingIsExplicit: boolean;
 }): Promise<void> {
-  // Cloudflare builds may contain additional server-consumed environments.
-  // Only the bundle containing vinext's actual server entry owns the CDN
-  // adapter and its version metadata binding.
   if (!isPrimaryServerOutput) return;
 
-  await configureGeneratedCdnVersionMetadata(path.resolve(outDir, "wrangler.json"), {
+  const generatedConfigPath = path.resolve(outDir, "wrangler.json");
+  const generatedConfig = await readGeneratedConfig(generatedConfigPath, false);
+  if (!generatedConfig) return;
+  const withVersionMetadata = configureCdnVersionMetadata(generatedConfig, {
     binding,
     bindingIsExplicit,
   });
-}
-
-async function configureGeneratedCdnVersionMetadata(
-  generatedConfigPath: string,
-  options: VersionMetadataOptions,
-): Promise<void> {
-  let generatedConfig: WranglerOutputConfig;
-  try {
-    const parsed = JSON.parse(await fs.readFile(generatedConfigPath, "utf8")) as unknown;
-    if (!isRecord(parsed)) {
-      throw new TypeError("the root value must be an object");
-    }
-    generatedConfig = parsed;
-  } catch (cause) {
-    throw new Error(
-      `[vinext] Could not read the generated Wrangler config at ${generatedConfigPath}.`,
-      { cause },
-    );
-  }
-
-  const configured = configureCdnVersionMetadata(generatedConfig, options);
-  if (configured === generatedConfig) return;
-  await fs.writeFile(generatedConfigPath, `${JSON.stringify(configured, null, 2)}\n`);
+  await writeGeneratedConfig(
+    generatedConfigPath,
+    configureWorkersCacheEntrypoints(withVersionMetadata),
+  );
 }

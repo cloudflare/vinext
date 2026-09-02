@@ -2,7 +2,9 @@
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "paths": {
+      "vinext": ["../vinext/src/index.ts"],
       "vinext/internal/*": ["../vinext/src/*"],
+      "vinext/server/*": ["../vinext/src/server/*"],
       "vinext/shims/*": ["../vinext/src/shims/*"],
       "@vinext/cloudflare/cache/*": ["./src/cache/*"],
       "@vinext/cloudflare/images/*": ["./src/images/*"]
