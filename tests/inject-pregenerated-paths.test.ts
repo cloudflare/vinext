@@ -204,6 +204,12 @@ describe("injectPregeneratedConcretePaths", () => {
     expect(
       fs.existsSync(path.join(path.dirname(entryPath), PREGENERATED_CONCRETE_PATHS_MODULE)),
     ).toBe(true);
+    expect(
+      fs.readFileSync(
+        path.join(tmpDir, "dist/server", PREGENERATED_CONCRETE_PATHS_MODULE),
+        "utf-8",
+      ),
+    ).toContain("/blog/post-a");
     const applicationEntry: unknown = await import(
       `${pathToFileURL(entryPath).href}?t=${Date.now()}`
     );

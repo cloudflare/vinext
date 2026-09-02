@@ -18,10 +18,10 @@ const VINEXT_PREGEN_RE = new RegExp(
 export function injectPregeneratedConcretePaths(
   root: string,
   workerEntry = path.resolve(root, "dist", "server", "index.js"),
+  serverOutputDir = path.resolve(root, "dist", "server"),
 ): void {
-  const manifestDir = path.resolve(root, "dist", "server");
   const runtimeDir = path.dirname(workerEntry);
-  const manifest = readPrerenderManifest(path.join(manifestDir, "vinext-prerender.json"));
+  const manifest = readPrerenderManifest(path.join(serverOutputDir, "vinext-prerender.json"));
   const table = manifest?.pregeneratedConcretePaths ?? [];
 
   // Response-stage entries can be deployed independently of index.js. Keep the
@@ -30,14 +30,14 @@ export function injectPregeneratedConcretePaths(
   // The file is emitted during the server build; writing it after prerendering
   // updates the artifact without rebuilding or coupling core to a host
   // transport.
-  const runtimeModule = path.join(runtimeDir, PREGENERATED_CONCRETE_PATHS_MODULE);
-  fs.mkdirSync(runtimeDir, { recursive: true });
-  fs.writeFileSync(
-    runtimeModule,
+  const runtimeModuleCode =
     table.length > 0
       ? `globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = ${JSON.stringify(table)};\n`
-      : "delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;\n",
-  );
+      : "delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;\n";
+  for (const outputDir of new Set([serverOutputDir, runtimeDir])) {
+    fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(path.join(outputDir, PREGENERATED_CONCRETE_PATHS_MODULE), runtimeModuleCode);
+  }
 
   if (!fs.existsSync(workerEntry)) {
     if (table.length > 0) globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = table;
