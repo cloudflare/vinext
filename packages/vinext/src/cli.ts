@@ -736,6 +736,7 @@ async function buildApp() {
       root,
       concurrency: parsed.prerenderConcurrency,
       nextConfig: resolvedNextConfig,
+      routeRootConfig: buildConfigMetadata.routeRootConfig,
     });
     await emitPrerenderPathManifest({
       root,

@@ -141,4 +141,44 @@ describe("runPrerender concurrency", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("resolves App artifacts from the configured RSC output root", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-custom-rsc-"));
+    const serverDir = path.join(root, "build", "application");
+    const applicationEntry = path.join(serverDir, "entries", "application-entry.js");
+    fs.mkdirSync(path.join(root, "app"));
+    fs.mkdirSync(path.join(serverDir, ".vite"), { recursive: true });
+    fs.mkdirSync(path.dirname(applicationEntry), { recursive: true });
+    fs.writeFileSync(path.join(serverDir, "BUILD_ID"), "custom-build\n");
+    fs.writeFileSync(applicationEntry, "export {};\n");
+    fs.writeFileSync(
+      path.join(serverDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-rsc-entry": {
+          file: "entries/application-entry.js",
+          isDynamicEntry: true,
+        },
+      }),
+    );
+
+    try {
+      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+
+      await runPrerender({
+        root,
+        routeRootConfig: { rscOutDir: "build/application" },
+      });
+
+      expect(prerenderAppMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rscBundlePath: applicationEntry,
+          serverDir,
+          outDir: path.join(serverDir, "prerendered-routes"),
+          config: expect.objectContaining({ buildId: "custom-build" }),
+        }),
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

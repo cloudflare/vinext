@@ -38,6 +38,7 @@ import { rememberCurrentServerEntryImportMtime, startProdServer } from "../serve
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { resolveBuiltRscEntryPath } from "./server-entry.js";
+import type { VinextRouteRootConfig } from "../config/prerender.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -107,6 +108,8 @@ type RunPrerenderOptions = {
    * Intended for tests that build to a custom outDir.
    */
   rscBundlePath?: string;
+  /** Build output roots captured from the vinext Vite plugin. */
+  routeRootConfig?: VinextRouteRootConfig | null;
   /**
    * Maximum number of routes rendered in parallel.
    * Defaults to prerenderApp/prerenderPages internal defaults when omitted.
@@ -167,7 +170,10 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // The manifest lands in dist/server/ alongside the server bundle so it's
   // cleaned with the rest of vinext's build output on rebuild and co-located
   // with server artifacts.
-  const manifestDir = path.join(root, "dist", "server");
+  const manifestDir = path.resolve(
+    root,
+    options.routeRootConfig?.rscOutDir ?? path.join("dist", "server"),
+  );
   const rscBundlePath = options.rscBundlePath ?? resolveBuiltRscEntryPath(manifestDir);
   // The emitted entry may live below dist/server (for example entries/app.js).
   // Build metadata and prerender artifacts remain rooted at dist/server.
@@ -221,7 +227,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   const outDir =
     mode === "export"
       ? path.join(root, "dist", "client")
-      : path.join(root, "dist", "server", "prerendered-routes");
+      : path.join(manifestDir, "prerendered-routes");
 
   // For hybrid builds (both app/ and pages/ present), start a single shared
   // prod server and pass it to both phases. This avoids spinning up two servers
@@ -311,8 +317,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         ...(sharedProdServer
           ? { _prodServer: sharedProdServer, _prerenderSecret: sharedPrerenderSecret }
           : {
-              pagesBundlePath:
-                options.pagesBundlePath ?? path.join(root, "dist", "server", "entry.js"),
+              pagesBundlePath: options.pagesBundlePath ?? path.join(manifestDir, "entry.js"),
             }),
         onProgress: ({ total, route }) => {
           if (pagesTotal === 0) {
@@ -383,7 +388,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     );
   }
 
-  injectPregeneratedConcretePaths(root, rscBundlePath);
+  injectPregeneratedConcretePaths(root, rscBundlePath, manifestDir);
   if (fs.existsSync(rscBundlePath)) {
     rememberCurrentServerEntryImportMtime(rscBundlePath);
   }
