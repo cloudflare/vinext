@@ -102,7 +102,7 @@ describe("Cloudflare CDN adapter build output", () => {
         sources.push(await fs.readFile(path.join(serverDir, chunk.file), "utf8"));
         for (const imported of chunk.imports ?? []) {
           const importedChunk = manifest[imported];
-          expect(importedChunk, `missing manifest chunk ${imported}`).toBeDefined();
+          if (!importedChunk) throw new Error(`missing manifest chunk ${imported}`);
           pending.push(importedChunk);
         }
       }
