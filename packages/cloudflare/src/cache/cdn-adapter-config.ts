@@ -52,48 +52,36 @@ export function configureCdnVersionMetadata(
   };
 }
 
-type DeployRedirect = {
-  configPath?: unknown;
-};
-
 /**
  * Add the CDN adapter's version metadata binding to the Cloudflare Vite
  * plugin's primary generated deployment config.
  */
 export async function finalizeCdnAdapterBuildOutput({
-  root,
   outDir,
+  isPrimaryServerOutput,
   binding,
   bindingIsExplicit,
 }: {
-  root: string;
   outDir: string;
+  isPrimaryServerOutput: boolean;
   binding: string;
   bindingIsExplicit: boolean;
 }): Promise<void> {
-  const redirectPath = path.join(root, ".wrangler", "deploy", "config.json");
-  let redirectSource: string;
-  try {
-    redirectSource = await fs.readFile(redirectPath, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
+  // Cloudflare builds may contain additional server-consumed environments.
+  // Only the bundle containing vinext's actual server entry owns the CDN
+  // adapter and its version metadata binding.
+  if (!isPrimaryServerOutput) return;
 
-  let redirect: DeployRedirect;
-  try {
-    redirect = JSON.parse(redirectSource) as DeployRedirect;
-  } catch (cause) {
-    throw new Error(`[vinext] Could not parse ${redirectPath}.`, { cause });
-  }
-  if (typeof redirect.configPath !== "string" || redirect.configPath.length === 0) {
-    throw new Error(`[vinext] ${redirectPath} does not identify a generated Wrangler config.`);
-  }
+  await configureGeneratedCdnVersionMetadata(path.resolve(outDir, "wrangler.json"), {
+    binding,
+    bindingIsExplicit,
+  });
+}
 
-  const generatedConfigPath = path.resolve(path.dirname(redirectPath), redirect.configPath);
-  const currentOutputConfigPath = path.resolve(outDir, "wrangler.json");
-  if (generatedConfigPath !== currentOutputConfigPath) return;
-
+async function configureGeneratedCdnVersionMetadata(
+  generatedConfigPath: string,
+  options: VersionMetadataOptions,
+): Promise<void> {
   let generatedConfig: WranglerOutputConfig;
   try {
     const parsed = JSON.parse(await fs.readFile(generatedConfigPath, "utf8")) as unknown;
@@ -108,10 +96,7 @@ export async function finalizeCdnAdapterBuildOutput({
     );
   }
 
-  const configured = configureCdnVersionMetadata(generatedConfig, {
-    binding,
-    bindingIsExplicit,
-  });
+  const configured = configureCdnVersionMetadata(generatedConfig, options);
   if (configured === generatedConfig) return;
   await fs.writeFile(generatedConfigPath, `${JSON.stringify(configured, null, 2)}\n`);
 }

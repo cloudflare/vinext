@@ -51,14 +51,14 @@ describe("Cloudflare CDN adapter generated config", () => {
     });
 
     await finalizeCdnAdapterBuildOutput({
-      root,
       outDir: path.dirname(auxiliaryPath),
+      isPrimaryServerOutput: false,
       binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
       bindingIsExplicit: false,
     });
     await finalizeCdnAdapterBuildOutput({
-      root,
       outDir: path.dirname(generatedPath),
+      isPrimaryServerOutput: true,
       binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
       bindingIsExplicit: false,
     });
@@ -70,6 +70,94 @@ describe("Cloudflare CDN adapter generated config", () => {
     expect(fs.readFileSync(sourcePath, "utf8")).toBe('{"name":"source-worker"}');
   });
 
+  it("uses the primary vinext server output when the deploy redirect is absent", async () => {
+    const generatedPath = writeJson("dist/server/wrangler.json", {
+      name: "test-worker",
+      main: "index.js",
+    });
+
+    await finalizeCdnAdapterBuildOutput({
+      outDir: path.dirname(generatedPath),
+      isPrimaryServerOutput: true,
+      binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
+      bindingIsExplicit: false,
+    });
+
+    expect(JSON.parse(fs.readFileSync(generatedPath, "utf8")).version_metadata).toEqual({
+      binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
+    });
+  });
+
+  it("does not treat an auxiliary output as the deploy target when the redirect is absent", async () => {
+    const auxiliaryPath = writeJson("dist/auxiliary/wrangler.json", {
+      name: "auxiliary-worker",
+      main: "index.js",
+    });
+    const before = fs.readFileSync(auxiliaryPath, "utf8");
+
+    await finalizeCdnAdapterBuildOutput({
+      outDir: path.dirname(auxiliaryPath),
+      isPrimaryServerOutput: false,
+      binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
+      bindingIsExplicit: false,
+    });
+
+    expect(fs.readFileSync(auxiliaryPath, "utf8")).toBe(before);
+  });
+
+  it("uses the primary output directly when the deploy redirect is stale", async () => {
+    const auxiliaryPath = writeGeneratedConfig("dist/auxiliary/wrangler.json", {
+      name: "auxiliary-worker",
+      main: "index.js",
+    });
+    const primaryPath = writeJson("dist/server/wrangler.json", {
+      name: "primary-worker",
+      main: "index.js",
+    });
+
+    await finalizeCdnAdapterBuildOutput({
+      outDir: path.dirname(primaryPath),
+      isPrimaryServerOutput: true,
+      binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
+      bindingIsExplicit: false,
+    });
+
+    expect(JSON.parse(fs.readFileSync(primaryPath, "utf8")).version_metadata).toEqual({
+      binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
+    });
+    expect(JSON.parse(fs.readFileSync(auxiliaryPath, "utf8")).version_metadata).toBeUndefined();
+  });
+
+  it("fails when the primary vinext output has no generated Wrangler config", async () => {
+    const outDir = path.join(root, "dist/server");
+
+    await expect(
+      finalizeCdnAdapterBuildOutput({
+        outDir,
+        isPrimaryServerOutput: true,
+        binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
+        bindingIsExplicit: false,
+      }),
+    ).rejects.toThrow(
+      `Could not read the generated Wrangler config at ${path.join(outDir, "wrangler.json")}`,
+    );
+  });
+
+  it("rejects a malformed generated config in the primary output", async () => {
+    const generatedPath = path.join(root, "dist/server/wrangler.json");
+    fs.mkdirSync(path.dirname(generatedPath), { recursive: true });
+    fs.writeFileSync(generatedPath, "not json");
+
+    await expect(
+      finalizeCdnAdapterBuildOutput({
+        outDir: path.dirname(generatedPath),
+        isPrimaryServerOutput: true,
+        binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
+        bindingIsExplicit: false,
+      }),
+    ).rejects.toThrow(`Could not read the generated Wrangler config at ${generatedPath}`);
+  });
+
   it("leaves an already matching generated config byte-for-byte unchanged", async () => {
     const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
       name: "test-worker",
@@ -78,8 +166,8 @@ describe("Cloudflare CDN adapter generated config", () => {
     const before = fs.readFileSync(generatedPath, "utf8");
 
     await finalizeCdnAdapterBuildOutput({
-      root,
       outDir: path.dirname(generatedPath),
+      isPrimaryServerOutput: true,
       binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
       bindingIsExplicit: false,
     });
@@ -95,8 +183,8 @@ describe("Cloudflare CDN adapter generated config", () => {
 
     await expect(
       finalizeCdnAdapterBuildOutput({
-        root,
         outDir: path.dirname(generatedPath),
+        isPrimaryServerOutput: true,
         binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
         bindingIsExplicit: false,
       }),
@@ -137,7 +225,7 @@ describe("Cloudflare CDN adapter generated config", () => {
 });
 
 describe("vinext cache adapter output hook", () => {
-  it("runs matching adapter finalizers with the emitted output directory", async () => {
+  it("does not infer primary ownership from a wrapped bundle facade", async () => {
     const finalizeBuildOutput = vi.fn();
     const plugins = vinext({
       disableAppRouter: true,
@@ -166,23 +254,32 @@ describe("vinext cache adapter output hook", () => {
     const hook =
       typeof plugin.writeBundle === "function" ? plugin.writeBundle : plugin.writeBundle?.handler;
     expect(hook).toBeTypeOf("function");
+    const context = {
+      environment: {
+        name: "rsc",
+        config: {
+          root: "/project",
+          plugins: [{ name: "test-platform" }],
+        },
+      },
+    } as never;
     await hook?.call(
+      context,
+      { dir: "dist/server" } as never,
       {
-        environment: {
-          config: {
-            root: "/project",
-            plugins: [{ name: "test-platform" }],
-          },
+        "index.js": {
+          type: "chunk",
+          isEntry: true,
+          facadeModuleId: "\0virtual:cloudflare/worker-entry",
         },
       } as never,
-      { dir: "dist/server" } as never,
-      {},
     );
 
     expect(finalizeBuildOutput).toHaveBeenCalledOnce();
     expect(finalizeBuildOutput).toHaveBeenCalledWith({
       root: "/project",
       outDir: path.resolve("/project/dist/server"),
+      isPrimaryServerOutput: false,
     });
   });
 });

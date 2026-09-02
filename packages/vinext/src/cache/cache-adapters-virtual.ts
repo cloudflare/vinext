@@ -53,7 +53,11 @@ export type CacheAdapterBuildOutput = {
   /** Whether this adapter owns output for the resolved build platform. */
   matchesBuild?: (build: { plugins: readonly { name?: string }[] }) => boolean;
   /** Finalize an emitted directory after other platform output hooks. */
-  finalizeBuildOutput?: (output: { root: string; outDir: string }) => Promise<void> | void;
+  finalizeBuildOutput?: (output: {
+    root: string;
+    outDir: string;
+    isPrimaryServerOutput: boolean;
+  }) => Promise<void> | void;
 };
 
 export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {

@@ -59,10 +59,16 @@ export function cdnAdapter(options?: CdnAdapterOptions) {
             name === "vite-plugin-cloudflare" || name?.startsWith("vite-plugin-cloudflare:"),
         );
       },
-      finalizeBuildOutput({ root, outDir }: { root: string; outDir: string }) {
+      finalizeBuildOutput({
+        outDir,
+        isPrimaryServerOutput,
+      }: {
+        outDir: string;
+        isPrimaryServerOutput: boolean;
+      }) {
         return finalizeCdnAdapterBuildOutput({
-          root,
           outDir,
+          isPrimaryServerOutput,
           binding: versionMetadataBinding,
           bindingIsExplicit,
         });
