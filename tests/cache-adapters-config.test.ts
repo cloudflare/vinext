@@ -283,11 +283,18 @@ describe("registration is wired into every router/runtime entry", () => {
 
   it("Pages Router worker entry registers with env", () => {
     const code = readPagesRouterEntrySource();
+    const eagerCdnRegistration = "configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);";
+    const validateCdnRequest = "await validateCdnRequest(request)";
+    const lazyDataRegistration = code.match(
+      /registerLazyDataCacheHandler\(async \(\) => \{[\s\S]*?\n\s*\}\);/,
+    )?.[0];
+
     expect(code).toContain('from "virtual:vinext-cdn-cache-adapter"');
-    expect(code).toContain("registerConfiguredCacheAdapters(env)");
-    expect(code).toContain('await import("virtual:vinext-cache-adapters")');
-    expect(code).toContain("registerLazyDataCacheHandler");
-    expect(code).toContain("await validateCdnRequest(request)");
+    expect(code).not.toContain('from "virtual:vinext-cache-adapters"');
+    expect(code).toContain(eagerCdnRegistration);
+    expect(code.indexOf(eagerCdnRegistration)).toBeLessThan(code.indexOf(validateCdnRequest));
+    expect(lazyDataRegistration).toContain('await import("virtual:vinext-cache-adapters")');
+    expect(lazyDataRegistration).toContain("adapters.registerConfiguredCacheAdapters(env);");
   });
 
   it("App Router worker entry validates CDN routing after registering with env", () => {
