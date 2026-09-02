@@ -34,9 +34,9 @@ export type CdnAdapterOptions = {
  * Wrangler does not inherit `version_metadata` into named environments. Repeat
  * the binding in every `env.<name>` used for CDN warmup.
  *
- * Cache Rules must preserve the full query string in the incoming cache key.
- * Two-stage admission certifies exact pathname + search identities, while an
- * edge HIT is served before the Worker can reject a differently keyed request.
+ * The adapter adds a transport-only URL digest so distinct response-stage
+ * identities cannot collide. Workers Cache owns this key independently of
+ * zone Cache Rules.
  */
 export function cdnAdapter(options?: CdnAdapterOptions) {
   if (

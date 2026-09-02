@@ -27,9 +27,9 @@ vinext({
 the Cloudflare build. The KV adapter still needs a matching
 `VINEXT_KV_CACHE` namespace binding in `wrangler.jsonc`.
 
-The incoming Cloudflare cache key must retain the full query string. A Cache
-Rule that ignores or normalizes query parameters can collapse distinct
-manifest identities before the Worker runs.
+The adapter adds a transport-only URL digest so distinct response-stage
+identities cannot collide. Workers Cache owns this key independently of zone
+Cache Rules.
 
 ## What's in the box
 
