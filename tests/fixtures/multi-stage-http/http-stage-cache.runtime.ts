@@ -4,7 +4,7 @@ const NO_STORE = "no-store";
 const KNOWN_ROUTE_FALLBACK_KEY_SUFFIX = ":/en/ppr/[id]:html";
 export const KNOWN_ROUTE_FALLBACK_MARKER = "HTTP_STAGE_WRONG_FALLBACK_SHELL";
 
-const createHttpStageCacheAdapter = (): CdnCacheAdapter => ({
+export const createHttpStageCacheAdapter = (): CdnCacheAdapter => ({
   ownsBackgroundRevalidation: false,
   async get(key) {
     if (
@@ -29,7 +29,11 @@ const createHttpStageCacheAdapter = (): CdnCacheAdapter => ({
   async set() {},
   buildResponseHeaders({ cacheControl, tags }) {
     if (!cacheControl || /\b(?:private|no-cache|no-store)\b/i.test(cacheControl)) {
-      return { "Cache-Control": NO_STORE };
+      return {
+        "Cache-Control": NO_STORE,
+        "Cache-Tag": null,
+        "CDN-Cache-Control": null,
+      };
     }
     return {
       "Cache-Control": "public, max-age=0, must-revalidate",
