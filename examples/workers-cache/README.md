@@ -41,8 +41,8 @@ Cache Rules.
 - A client-side **probe** that issues a no-store fetch against a route and
   prints the headers Cloudflare's edge attaches —
   [`cf-cache-status`](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/#cloudflare-cache-responses)
-  (the outer Workers Cache verdict), `Age`, plus the `Cache-Control` /
-  `Cache-Tag` headers vinext emits to drive it.
+  (the cache-enabled response entrypoint's verdict), `Age`, and the public
+  browser `Cache-Control` policy.
 
 ## How vinext wires it up
 
@@ -79,17 +79,18 @@ Cache Rules.
    The handler also passes the Worker's `env` so `kvDataAdapter()` can resolve
    its KV binding. No manual registration.
 
-4. **ISR responses** carry `Cloudflare-CDN-Cache-Control: public, max-age=N,
-   stale-while-revalidate=M` (for the edge) plus a browser-facing
-   `Cache-Control: public, max-age=0, must-revalidate`, and a `Cache-Tag`
-   header containing Cloudflare-safe fixed-size digests of both the bare path
-   (`/cached/intro`) and Next.js's internal `_N_T_<path>` form. The Workers
-   Cache reads these to cache and tag-purge without losing Next.js's
-   case-sensitive tag semantics. Because Workers Cache requires every `Vary`
-   variant of a URL to use the same cache tags, vinext conservatively leaves a
-   tagged response uncached when it declares an application-defined `Vary`
-   field; use a separate URL or response-stage identity when those variants
-   need both caching and tag invalidation.
+4. **The inner cached response** carries `Cloudflare-CDN-Cache-Control: public,
+   max-age=N, stale-while-revalidate=M` plus a `Cache-Tag` containing
+   Cloudflare-safe fixed-size digests of both the bare path (`/cached/intro`)
+   and Next.js's internal `_N_T_<path>` form. Workers Cache consumes those
+   private headers for admission and tag purging. The uncached gateway removes
+   them before public egress and returns the browser-facing `Cache-Control:
+   public, max-age=0, must-revalidate` policy. Because Workers Cache requires
+   every `Vary` variant of a URL to use the same cache tags, vinext
+   conservatively leaves a tagged response uncached when the rendered response
+   declares an application-defined `Vary` field; use a separate URL or
+   response-stage identity when those variants need both caching and tag
+   invalidation.
 
 5. **`revalidateTag` / `revalidatePath`** in your route handlers fan out to
    both the KV data cache and `ctx.cache.purge(...)` on the platform layer.
@@ -106,8 +107,9 @@ Then open http://localhost:5173 and click into any of the demo routes.
 > **Note:** dev runs on `@cloudflare/vite-plugin` (miniflare), so the
 > `VINEXT_KV_CACHE` namespace is emulated locally and `kvDataAdapter()`
 > works. The edge CDN layer (`cf-cache-status`, background revalidation)
-> only runs on Cloudflare's edge — locally the `Cloudflare-CDN-Cache-Control` /
-> `Cache-Tag` headers `cdnAdapter()` emits are what drive it once deployed.
+> only runs on Cloudflare's edge. Local development may expose the inner
+> `Cloudflare-CDN-Cache-Control` / `Cache-Tag` policy directly because it does
+> not pass through the deployed multi-entrypoint gateway.
 
 ## Deploying
 

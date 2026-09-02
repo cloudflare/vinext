@@ -7,8 +7,6 @@ type ProbeState = {
   cfCacheStatus: string | null;
   age: string | null;
   cacheControl: string | null;
-  cdnCacheControl: string | null;
-  cacheTag: string | null;
   cfRay: string | null;
   fetchedAt: string;
   /** UUID embedded in the response body at SSR time, when present. */
@@ -140,7 +138,7 @@ export function CacheStatusProbe({ path }: { path: string }) {
       // talk to the edge — making the probe useless for observing outer
       // cache behaviour. Workers Cache itself is unaffected: confirmed
       // empirically that both probe and navigation responses still report
-      // `cf-cache-status: HIT` from the same edge entry.
+      // `cf-cache-status: HIT` from the cache-enabled response entrypoint.
       const res = await fetch(path, { method: "GET", cache: "no-store" });
       const markers = await extractRenderMarkers(res);
       setState({
@@ -148,8 +146,6 @@ export function CacheStatusProbe({ path }: { path: string }) {
         cfCacheStatus: res.headers.get("cf-cache-status"),
         age: res.headers.get("age"),
         cacheControl: res.headers.get("cache-control"),
-        cdnCacheControl: res.headers.get("cdn-cache-control"),
-        cacheTag: res.headers.get("cache-tag"),
         cfRay: res.headers.get("cf-ray"),
         fetchedAt: new Date().toLocaleTimeString(),
         renderId: markers.renderId,
@@ -183,8 +179,9 @@ export function CacheStatusProbe({ path }: { path: string }) {
         Issues a no-store <code>fetch</code> against the route. The route embeds a fresh{" "}
         <code>render-id</code> into every server-rendered response — comparing it across probes is
         the most reliable way to tell whether SSR actually happened or a cache served the same
-        bytes again. <code>cf-cache-status</code> is shown alongside as the outer Workers Cache
-        verdict.
+        bytes again. <code>cf-cache-status</code> is shown alongside as the cached response
+        entrypoint verdict. Cache admission and tag headers are private to that entrypoint and are
+        consumed before this public response.
       </p>
 
       {verdict ? <SsrBadge verdict={verdict} /> : null}
@@ -219,10 +216,6 @@ export function CacheStatusProbe({ path }: { path: string }) {
         <dd>{state?.age ?? "—"}</dd>
         <dt>Cache-Control</dt>
         <dd>{state?.cacheControl ?? "—"}</dd>
-        <dt>CDN-Cache-Control</dt>
-        <dd>{state?.cdnCacheControl ?? "—"}</dd>
-        <dt>Cache-Tag</dt>
-        <dd>{state?.cacheTag ?? "—"}</dd>
         <dt>cf-ray</dt>
         <dd>{state?.cfRay ?? "—"}</dd>
         <dt>Probed at</dt>
