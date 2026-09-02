@@ -151,12 +151,14 @@ function extractRouteIndexByPattern(chunkSource: string): Map<string, number> {
 }
 
 type BuiltFixtureRaw = {
+  classificationChunks: Array<{ fileName: string; source: string }>;
   chunkSource: string;
 };
 
 async function buildMinimalFixtureRaw({
   debug = false,
-}: { debug?: boolean } = {}): Promise<BuiltFixtureRaw> {
+  includeResponseStage = false,
+}: { debug?: boolean; includeResponseStage?: boolean } = {}): Promise<BuiltFixtureRaw> {
   const workspaceRoot = path.resolve(import.meta.dirname, "..");
   const workspaceNodeModules = path.join(workspaceRoot, "node_modules");
 
@@ -237,7 +239,29 @@ export default function ForceStaticLayout({ children }) {
   const builder = await createBuilder({
     root: tmpDir,
     configFile: false,
-    plugins: [vinext({ appDir: tmpDir, rscOutDir, ssrOutDir, clientOutDir })],
+    plugins: [
+      vinext({ appDir: tmpDir, rscOutDir, ssrOutDir, clientOutDir }),
+      ...(includeResponseStage
+        ? [
+            {
+              name: "test:multi-entry-rsc-build",
+              configEnvironment(name: string) {
+                if (name !== "rsc") return null;
+                return {
+                  build: {
+                    rolldownOptions: {
+                      input: {
+                        index: "virtual:vinext-rsc-entry",
+                        response: "virtual:vinext-response-stage",
+                      },
+                    },
+                  },
+                };
+              },
+            },
+          ]
+        : []),
+    ],
     logLevel: "silent",
   });
 
@@ -274,7 +298,16 @@ export default function ForceStaticLayout({ children }) {
   }
   const chunkSource = await fsp.readFile(path.join(chunkDir, chunkFile), "utf8");
 
-  return { chunkSource };
+  const classificationChunks: BuiltFixtureRaw["classificationChunks"] = [];
+  for (const entry of entries) {
+    if (!/\.m?js$/.test(entry)) continue;
+    const source = await fsp.readFile(path.join(chunkDir, entry), "utf8");
+    if (source.includes("__buildTimeClassifications")) {
+      classificationChunks.push({ fileName: entry, source });
+    }
+  }
+
+  return { chunkSource, classificationChunks };
 }
 
 async function buildMinimalFixture({
@@ -361,6 +394,24 @@ describe("build-time classification integration", () => {
     const map = built.dispatch(routeIdx!);
     expect(map).toBeInstanceOf(Map);
     expect(map!.get(0)).toBe("static");
+  });
+});
+
+describe("build-time classification integration (multi-entry RSC)", () => {
+  let classificationChunks: BuiltFixtureRaw["classificationChunks"];
+
+  beforeAll(async () => {
+    ({ classificationChunks } = await buildMinimalFixtureRaw({ includeResponseStage: true }));
+  }, 120_000);
+
+  it("patches both the ordinary and response-stage RSC graphs", () => {
+    expect(classificationChunks).toHaveLength(2);
+    for (const { fileName, source } of classificationChunks) {
+      const dispatch = extractDispatch(source);
+      const routeIndex = extractRouteIndexByPattern(source).get("/");
+      expect(routeIndex, fileName).toBeDefined();
+      expect(dispatch(routeIndex!)?.get(0), fileName).toBe("static");
+    }
   });
 });
 
