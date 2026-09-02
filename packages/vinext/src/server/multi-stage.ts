@@ -1,5 +1,27 @@
 import type { CacheabilityRepresentation } from "./cacheability-manifest.js";
 
+const FRAMEWORK_RESPONSE_STAGE_VARY_FIELDS = new Set([
+  "rsc",
+  "next-router-state-tree",
+  "next-router-prefetch",
+  "next-router-segment-prefetch",
+  "next-url",
+  "x-vinext-interception-context",
+  "x-vinext-interception-id",
+  "x-vinext-mounted-slots",
+  "x-vinext-rsc-render-mode",
+  "x-vinext-rsc-state-fingerprint",
+]);
+
+/** Whether a header-blind response-stage cache must reject this response. */
+export function hasUnsupportedResponseStageVary(headers: Headers): boolean {
+  return (headers.get("Vary") ?? "")
+    .split(",")
+    .map((name) => name.trim().toLowerCase())
+    .filter(Boolean)
+    .some((name) => name === "*" || !FRAMEWORK_RESPONSE_STAGE_VARY_FIELDS.has(name));
+}
+
 /**
  * Transport-neutral cache intent passed from the request stage to an
  * adapter-owned response-stage transport.

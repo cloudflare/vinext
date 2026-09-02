@@ -1,4 +1,7 @@
-import type { VinextRequestStageTransport } from "vinext/server/multi-stage";
+import {
+  hasUnsupportedResponseStageVary,
+  type VinextRequestStageTransport,
+} from "vinext/server/multi-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import {
   deserializeRequest,
@@ -122,6 +125,19 @@ function isSharedCacheable(response: Response): boolean {
   );
 }
 
+function withPrivateHostPolicy(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", "no-store");
+  headers.delete("Cache-Tag");
+  headers.delete("CDN-Cache-Control");
+  headers.delete("Cloudflare-CDN-Cache-Control");
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
 function responseCacheTags(response: Response): string[] {
   return (response.headers.get("cache-tag") ?? "")
     .split(",")
@@ -164,6 +180,9 @@ const responseStageFetch = async (transportRequest: Request): Promise<Response> 
   );
   if (envelope.options.cache === "bypass" || !isSharedCacheable(rendered)) {
     return withHostHeaders(rendered, "BYPASS");
+  }
+  if (hasUnsupportedResponseStageVary(rendered.headers)) {
+    return withHostHeaders(withPrivateHostPolicy(rendered), "BYPASS");
   }
 
   if (!rendered.body) {
