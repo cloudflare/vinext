@@ -414,6 +414,7 @@ type RenderPagesFallbackOptions = {
     request: Request,
     resourceKind: "api" | "page",
     dataKind?: PagesRouteDataKind,
+    hasRequestAwareDocument?: boolean,
   ) => Promise<Response>;
   isDataRequest?: boolean;
   isRscRequest: boolean;
@@ -1755,12 +1756,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           stageRequest: Request,
           resourceKind: "api" | "page",
           dataKind?: PagesRouteDataKind,
+          hasRequestAwareDocument?: boolean,
         ) => {
           const pagesOnDemandRevalidate =
             resourceKind === "page" &&
             isOnDemandRevalidateRequest(stageRequest.headers.get(PRERENDER_REVALIDATE_HEADER));
           const cache =
-            responseStageProbeMode || pagesOnDemandRevalidate
+            responseStageProbeMode ||
+            pagesOnDemandRevalidate ||
+            (resourceKind === "page" && dataKind === "static" && hasRequestAwareDocument)
               ? "bypass"
               : canUseSharedWorkerResponseStage
                 ? "shared"

@@ -1146,7 +1146,9 @@ describe("App Router entry templates", () => {
     expect(code).toContain('from "virtual:vinext-cdn-cache-adapter"');
     expect(code).not.toContain('from "virtual:vinext-cache-adapters"');
     expect(code).toContain('dispatchPagesResponseStage(stageRequest, "api")');
-    expect(code).toContain('dispatchPagesResponseStage(stageRequest, "page", dataKind)');
+    expect(code).toContain(
+      'dispatchPagesResponseStage(stageRequest, "page", dataKind, __pagesRequestEntry.hasRequestAwareDocument)',
+    );
     expect(code).toContain("buildId: process.env.__VINEXT_BUILD_ID ?? null");
     expect(code).toContain("return __dispatchAppRequestStage(request, ctx, dispatchResponseStage");
     expect(code).toContain("handleRequest: __requestHandler");

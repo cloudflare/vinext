@@ -473,6 +473,36 @@ describe("createAppRscHandler", () => {
     });
   });
 
+  it("keeps hybrid static Pages renders with request-aware Documents outside the shared stage", async () => {
+    // Next.js supplies req/res to custom _document.getInitialProps for GSP/ISR
+    // pages, so their HTML can remain request-specific despite static data.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("pages-stage")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async (options) =>
+        options.dispatchPagesResponseStage?.(options.request, "page", "static", true) ?? null,
+    });
+
+    await handler(
+      new Request("https://example.test/docs/pages"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage).toHaveBeenCalledOnce();
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
+      kind: "hybrid-pages",
+      preHandlerHeaders: [],
+    });
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+  });
+
   it("clears shared Pages stage metadata when outer config makes the response private", async () => {
     const adapter: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,

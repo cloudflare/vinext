@@ -482,7 +482,7 @@ const __requestHandler = createAppRscRequestHandler({
             handleApiRoute(stageRequest) { return dispatchPagesResponseStage(stageRequest, "api"); },
             renderPage(stageRequest, pagesUrl) {
               const dataKind = __pagesRequestEntry.matchPageRoute?.(pagesUrl, stageRequest)?.route.dataKind;
-              return dispatchPagesResponseStage(stageRequest, "page", dataKind);
+              return dispatchPagesResponseStage(stageRequest, "page", dataKind, __pagesRequestEntry.hasRequestAwareDocument);
             },
           };
         },
@@ -1786,7 +1786,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
               ? {
                   renderPage(stageRequest, pagesUrl) {
                     const dataKind = __pagesEntry.matchPageRoute?.(pagesUrl, stageRequest)?.route.dataKind;
-                    return dispatchPagesResponseStage(stageRequest, "page", dataKind);
+                    return dispatchPagesResponseStage(stageRequest, "page", dataKind, __pagesEntry.hasRequestAwareDocument);
                   },
                 }
               : {}),
