@@ -30,13 +30,23 @@ export async function middleware(request: NextRequest) {
     (await draftMode()).enable();
   }
   const headers = new Headers(request.headers);
-  headers.set("x-from-middleware", "hello-from-middleware");
-  const response = NextResponse.next({ request: { headers } });
+  const testsMiddlewareRequestHeaders =
+    request.nextUrl.pathname.startsWith("/api/dump-headers") ||
+    request.nextUrl.pathname.startsWith("/api/cdn-stage-middleware-header/");
+  if (request.nextUrl.pathname.startsWith("/api/cdn-stage-middleware-header/")) {
+    headers.set("x-from-middleware", visitorId);
+  } else {
+    headers.set("x-from-middleware", "hello-from-middleware");
+  }
+  const response = testsMiddlewareRequestHeaders
+    ? NextResponse.next({ request: { headers } })
+    : NextResponse.next();
   if (
     request.nextUrl.pathname.startsWith("/cdn-stage-app/") ||
     request.nextUrl.pathname.startsWith("/cdn-stage-cookie/") ||
     request.nextUrl.pathname.startsWith("/cdn-stage-late/") ||
     request.nextUrl.pathname.startsWith("/api/cdn-stage-late-route/") ||
+    request.nextUrl.pathname.startsWith("/api/cdn-stage-middleware-header/") ||
     request.nextUrl.pathname.startsWith("/cdn-stage-pages/")
   ) {
     response.headers.set("x-cdn-stage-visitor", visitorId);

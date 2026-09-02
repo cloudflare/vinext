@@ -267,6 +267,19 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(second.body).toContain("middleware-cookie:visitor-b");
   });
 
+  test("bypasses the shared response stage for middleware request-header overrides", async ({
+    request,
+  }) => {
+    const slug = `request-header-${Date.now()}`;
+    for (const visitorId of ["visitor-a", "visitor-b"]) {
+      const response = await request.get(`${BASE_URL}/api/cdn-stage-middleware-header/${slug}`, {
+        headers: { "x-test-visitor-id": visitorId },
+      });
+      expect(response.status()).toBe(200);
+      expect(await response.text()).toBe(visitorId);
+    }
+  });
+
   test("does not cache late request-dependent App responses", async ({ request }) => {
     for (const route of ["cdn-stage-late", "api/cdn-stage-late-route"]) {
       const slug = `${route.replaceAll("/", "-")}-${Date.now()}`;
@@ -287,7 +300,7 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
   test.beforeAll(async () => {
     test.setTimeout(90_000);
     pagesServer = spawn(
-      "../../../node_modules/.bin/vp build --config vite.pages-cdn-cache.config.ts && npx wrangler dev --config dist/server/wrangler.json --port 4196",
+      "../../../node_modules/.bin/vp build --config vite.pages-cdn-cache.config.ts && npx wrangler dev --config dist/cf_app_basic/wrangler.json --port 4196",
       { cwd: FIXTURE_DIR, shell: true, stdio: "inherit" },
     );
     for (let attempt = 0; attempt < 240; attempt++) {
@@ -311,7 +324,10 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
     request,
   }) => {
     expect(
-      fs.readFileSync(`${FIXTURE_DIR}/dist/server/__vinext_cacheability_manifest.js`, "utf8"),
+      fs.readFileSync(
+        `${FIXTURE_DIR}/dist/cf_app_basic/__vinext_cacheability_manifest.js`,
+        "utf8",
+      ),
     ).toBe("export default null;\n");
 
     const response = await request.get(`${pagesBaseUrl}/pages-about`, {
@@ -334,5 +350,27 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
       expect(response.headers()["cache-control"], accept ?? "missing Accept").toContain("no-store");
       expect(response.headers()["cdn-cache-control"], accept ?? "missing Accept").toBeUndefined();
     }
+  });
+
+  test("admits explicitly public Pages API responses", async ({ request }) => {
+    const response = await request.get(`${pagesBaseUrl}/api/cdn-public`);
+
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({ public: true });
+    expect(response.headers()["cache-control"]).toBe("public, max-age=0, must-revalidate");
+    expect(response.headers()["cdn-cache-control"]).toBe("public, max-age=60");
+  });
+
+  test("keeps public Pages Edge API responses private after request.cf access", async ({
+    request,
+  }) => {
+    const response = await request.get(`${pagesBaseUrl}/api/cdn-request-cf`);
+
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({ hasCf: true });
+    expect(response.headers()["cache-control"]).toContain("no-store");
+    expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+    expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+    expect(response.headers()["cache-tag"]).toBeUndefined();
   });
 });
