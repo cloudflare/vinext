@@ -92,8 +92,10 @@ function headersFromRecord(record: HeaderRecord): Headers {
   return headers;
 }
 
+export type PagesRouteDataKind = "initial" | "none" | "server" | "static";
+
 type PageRouteMatch = {
-  route: { isDynamic: boolean; pattern?: string; dataKind?: "static" | "server" | "none" };
+  route: { isDynamic: boolean; pattern?: string; dataKind?: PagesRouteDataKind };
 };
 
 export async function fetchWorkerFilesystemRoute(

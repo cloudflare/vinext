@@ -82,6 +82,7 @@ import {
   PRERENDER_REVALIDATE_HEADER,
 } from "./revalidation-request.js";
 import { prepareSharedAppPageDispatch } from "./worker-stages.js";
+import type { PagesRouteDataKind } from "./pages-request-pipeline.js";
 import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
@@ -408,7 +409,7 @@ type RenderPagesFallbackOptions = {
   dispatchPagesResponseStage?: (
     request: Request,
     resourceKind: "api" | "page",
-    dataKind?: "none" | "server" | "static",
+    dataKind?: PagesRouteDataKind,
   ) => Promise<Response>;
   isDataRequest?: boolean;
   isRscRequest: boolean;
@@ -1732,7 +1733,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       ? async (
           stageRequest: Request,
           resourceKind: "api" | "page",
-          dataKind?: "none" | "server" | "static",
+          dataKind?: PagesRouteDataKind,
         ) => {
           const pagesOnDemandRevalidate =
             resourceKind === "page" &&
@@ -1779,10 +1780,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             { cache },
           );
           sharedOuterPolicyNeedsReconciliation =
-            cache === "shared" && resourceKind === "page" && dataKind !== "server";
+            cache === "shared" &&
+            resourceKind === "page" &&
+            dataKind !== "server" &&
+            dataKind !== "initial";
           return applyConfigHeadersToResponseStage(
             response,
-            resourceKind === "api" || dataKind === "server",
+            resourceKind === "api" || dataKind === "server" || dataKind === "initial",
           );
         }
       : undefined;

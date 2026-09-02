@@ -1788,6 +1788,10 @@ describe("Pages Router entry template", () => {
         path.join(pagesDir, "plain.tsx"),
         "export default function Page() { return null; }",
       );
+      fs.writeFileSync(
+        path.join(pagesDir, "initial.tsx"),
+        "function Page() { return null; } Page.getInitialProps = () => ({}); export default Page;",
+      );
 
       const code = await generateServerEntry(
         pagesDir,
@@ -1803,7 +1807,42 @@ describe("Pages Router entry template", () => {
       expect(code).toContain('dataKind: "server"');
       expect(code).toContain('pattern: "/plain",');
       expect(code).toContain('dataKind: "none"');
+      expect(code).toMatch(/pattern: "\/initial",[^\n]+dataKind: "initial"/);
       expect(code).not.toContain("typeof page_");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies custom _app getInitialProps without overriding getStaticProps", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-gip-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "_app.tsx"),
+        "function App({ Component, pageProps }) { return <Component {...pageProps} />; } App.getInitialProps = () => ({ pageProps: {} }); export default App;",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "ssg.tsx"),
+        "export function getStaticProps() { return { props: {} }; } export default function Page() { return null; }",
+      );
+
+      const code = await generatePagesRequestEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        null,
+      );
+
+      expect(code).toMatch(/pattern: "\/",[^\n]+dataKind: "initial"/);
+      expect(code).toMatch(/pattern: "\/ssg",[^\n]+dataKind: "static"/);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

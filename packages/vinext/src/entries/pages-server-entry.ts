@@ -14,7 +14,7 @@ import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
-import { hasExportedName } from "../build/report.js";
+import { hasDefaultExportedStaticProperty, hasExportedName } from "../build/report.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
@@ -36,10 +36,23 @@ const _instrumentationRuntimePath = resolveEntryPath(
   import.meta.url,
 );
 
-async function getPagesDataKind(filePath: string): Promise<"static" | "server" | "none"> {
+type PagesDataKind = "initial" | "none" | "server" | "static";
+
+async function hasCustomGetInitialProps(filePath: string | null): Promise<boolean> {
+  if (!filePath) return false;
+  return hasDefaultExportedStaticProperty(await readFile(filePath, "utf8"), "getInitialProps");
+}
+
+async function getPagesDataKind(
+  filePath: string,
+  hasAppGetInitialProps: boolean,
+): Promise<PagesDataKind> {
   const source = await readFile(filePath, "utf8");
   if (hasExportedName(source, "getStaticProps")) return "static";
   if (hasExportedName(source, "getServerSideProps")) return "server";
+  if (hasAppGetInitialProps || hasDefaultExportedStaticProperty(source, "getInitialProps")) {
+    return "initial";
+  }
   return "none";
 }
 
@@ -63,9 +76,11 @@ export async function generatePagesRequestEntry(
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+  const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+  const hasAppGetInitialProps = await hasCustomGetInitialProps(appFilePath);
   const pageRouteEntries = await Promise.all(
     pageRoutes.map(async (route: Route) => {
-      const dataKind = await getPagesDataKind(route.filePath);
+      const dataKind = await getPagesDataKind(route.filePath, hasAppGetInitialProps);
       return `  { pattern: ${JSON.stringify(route.pattern)}, patternParts: ${JSON.stringify(route.patternParts)}, isDynamic: ${route.isDynamic}, params: ${JSON.stringify(route.params)}, dataKind: ${JSON.stringify(dataKind)} }`;
     }),
   );
@@ -247,6 +262,8 @@ export async function generateServerEntry(
   const prerenderSecret = options.prerenderSecret;
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+  const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+  const hasAppGetInitialProps = await hasCustomGetInitialProps(appFilePath);
 
   // Generate import statements using absolute paths since virtual
   // modules don't have a real file location for relative resolution.
@@ -261,7 +278,7 @@ export async function generateServerEntry(
   // Build the route table — include filePath for SSR manifest lookup
   const pageRouteEntries = await Promise.all(
     pageRoutes.map(async (r: Route, i: number) => {
-      const dataKind = await getPagesDataKind(r.filePath);
+      const dataKind = await getPagesDataKind(r.filePath, hasAppGetInitialProps);
       return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(r.filePath)}, dataKind: ${JSON.stringify(dataKind)} }`;
     }),
   );
@@ -272,7 +289,6 @@ export async function generateServerEntry(
   );
 
   // Check for _app, _document, and _error.
-  const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
   const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
   // Embed the resolved _app path (or null) so the runtime can look it up

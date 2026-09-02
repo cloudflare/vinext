@@ -50,6 +50,7 @@ type AppRouteRenderEntry = Pick<AppRoute, "pagePath" | "routePath" | "parallelSl
 type ArrowFunctionExpression = ESTree.ArrowFunctionExpression;
 type BindingPattern = ESTree.BindingPattern;
 type BlockStatement = ESTree.BlockStatement;
+type ClassLike = ESTree.Class;
 type Expression = ESTree.Expression;
 type FunctionBody = ESTree.FunctionBody;
 type FunctionLike = ESTree.Function | ArrowFunctionExpression;
@@ -157,6 +158,77 @@ export function hasExportedName(code: string, name: string): boolean {
     for (const specifier of node.specifiers) {
       if (specifier.exportKind === "type") continue;
       if (moduleExportNameValue(specifier.local) === name) return true;
+    }
+  }
+  return false;
+}
+
+function classHasStaticProperty(node: ClassLike, name: string): boolean {
+  return node.body.body.some(
+    (element) =>
+      "static" in element &&
+      element.static === true &&
+      "key" in element &&
+      element.computed === false &&
+      propertyKeyName(element.key) === name,
+  );
+}
+
+/**
+ * Returns true when a Pages module's local default export defines a static
+ * property such as `getInitialProps`. This intentionally recognizes the two
+ * forms supported by Next.js examples: a static class member and an assignment
+ * to the exported component identifier.
+ */
+export function hasDefaultExportedStaticProperty(code: string, name: string): boolean {
+  const program = parseRouteModule(code);
+  if (!program) return false;
+
+  let defaultBinding: string | null = null;
+  for (const node of program.body) {
+    if (node.type === "ExportDefaultDeclaration") {
+      if (node.declaration.type === "Identifier") {
+        defaultBinding = node.declaration.name;
+      } else if (
+        node.declaration.type === "ClassDeclaration" ||
+        node.declaration.type === "ClassExpression"
+      ) {
+        return classHasStaticProperty(node.declaration, name);
+      }
+      continue;
+    }
+    if (node.type !== "ExportNamedDeclaration" || node.source) continue;
+    for (const specifier of node.specifiers) {
+      if (
+        specifier.exportKind !== "type" &&
+        moduleExportNameValue(specifier.exported ?? specifier.local) === "default"
+      ) {
+        defaultBinding = moduleExportNameValue(specifier.local);
+      }
+    }
+  }
+  if (!defaultBinding) return false;
+
+  for (const node of program.body) {
+    if (
+      node.type === "ClassDeclaration" &&
+      node.id?.name === defaultBinding &&
+      classHasStaticProperty(node, name)
+    ) {
+      return true;
+    }
+    if (node.type !== "ExpressionStatement" || node.expression.type !== "AssignmentExpression") {
+      continue;
+    }
+    const target = node.expression.left;
+    if (
+      target.type === "MemberExpression" &&
+      target.object.type === "Identifier" &&
+      target.object.name === defaultBinding &&
+      !target.computed &&
+      propertyKeyName(target.property) === name
+    ) {
+      return true;
     }
   }
   return false;

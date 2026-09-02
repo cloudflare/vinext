@@ -531,6 +531,46 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=30");
   });
 
+  it.each([
+    ["private, no-store", "public, s-maxage=30"],
+    ["public, s-maxage=60", "private, no-store"],
+  ])(
+    "lets hybrid getInitialProps replace config policy %s with %s",
+    async (configPolicy, renderedPolicy) => {
+      // Ported from Next.js routing order: custom-route headers run before
+      // Pages rendering and getInitialProps can replace them on the response.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-server.ts
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+        Promise.resolve(
+          new Response("pages-stage", {
+            headers: { "Cache-Control": renderedPolicy },
+          }),
+        ),
+      );
+      const handler = createHandler({
+        configHeaders: [
+          {
+            source: "/pages",
+            headers: [{ key: "Cache-Control", value: configPolicy }],
+          },
+        ],
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+        renderPagesFallback: async (options) =>
+          options.dispatchPagesResponseStage?.(options.request, "page", "initial") ?? null,
+      });
+
+      const response = await handler(
+        new Request("https://example.test/docs/pages"),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      expect(response.headers.get("Cache-Control")).toBe(renderedPolicy);
+    },
+  );
+
   it("bypasses the staged cache for an unverified interception context", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(

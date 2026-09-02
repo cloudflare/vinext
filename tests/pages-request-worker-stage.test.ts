@@ -384,6 +384,42 @@ describe("Pages Worker request stage", () => {
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=30");
   });
 
+  it.each([
+    ["private, no-store", "public, s-maxage=30"],
+    ["public, s-maxage=60", "private, no-store"],
+  ])(
+    "lets getInitialProps replace config policy %s with %s",
+    async (configPolicy, renderedPolicy) => {
+      // Next.js applies custom-route headers before Pages rendering, so page
+      // and _app getInitialProps response writes remain authoritative.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-server.ts
+      mocks.matchPageRoute.mockReturnValue({
+        route: { dataKind: "initial", isDynamic: false, pattern: "/gip" },
+      });
+      mocks.configHeaders.push({
+        source: "/en/gip",
+        headers: [{ key: "Cache-Control", value: configPolicy }],
+      });
+      const dispatch = vi.fn<DispatchWorkerResponseStage>(async () =>
+        Promise.resolve(
+          new Response("gip", {
+            headers: { "Cache-Control": renderedPolicy },
+          }),
+        ),
+      );
+
+      const response = await handleRequestStage(
+        new Request("https://example.com/gip"),
+        undefined,
+        undefined,
+        dispatch,
+      );
+
+      expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+      expect(response.headers.get("Cache-Control")).toBe(renderedPolicy);
+    },
+  );
+
   it("dispatches authenticated revalidation through the uncached response stage", async () => {
     mocks.authorizeOnDemandRevalidate.mockImplementation((value) => value === "build-secret");
     const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response(null));

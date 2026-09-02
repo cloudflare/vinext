@@ -79,6 +79,7 @@ import {
 import {
   extractMiddlewareMatcherConfig,
   extractMiddlewareMatcherConfigValue,
+  hasDefaultExportedStaticProperty,
   hasExportedName,
 } from "./build/report.js";
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
@@ -6022,21 +6023,39 @@ export const loadServerActionClient = ${
                   hasAppDir && appDir
                     ? appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
                     : Promise.resolve([]));
-              const devPageRouteDataKinds = new Map<string, "static" | "server" | "none">();
+              const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+              let hasAppGetInitialProps = false;
+              if (appFilePath) {
+                try {
+                  hasAppGetInitialProps = hasDefaultExportedStaticProperty(
+                    fs.readFileSync(appFilePath, "utf8"),
+                    "getInitialProps",
+                  );
+                } catch {
+                  // Dev can race with an editor deleting/renaming _app.
+                }
+              }
+              const devPageRouteDataKinds = new Map<
+                string,
+                "initial" | "none" | "server" | "static"
+              >();
               const classifyDevPageRoute = (
                 route: (typeof devPageRoutes)[number],
-              ): "static" | "server" | "none" => {
+              ): "initial" | "none" | "server" | "static" => {
                 const cached = devPageRouteDataKinds.get(route.filePath);
                 if (cached) return cached;
 
-                let dataKind: "static" | "server" | "none" = "none";
+                let dataKind: "initial" | "none" | "server" | "static" = "none";
                 try {
                   const source = fs.readFileSync(route.filePath, "utf8");
                   dataKind = hasExportedName(source, "getStaticProps")
                     ? "static"
                     : hasExportedName(source, "getServerSideProps")
                       ? "server"
-                      : "none";
+                      : hasAppGetInitialProps ||
+                          hasDefaultExportedStaticProperty(source, "getInitialProps")
+                        ? "initial"
+                        : "none";
                 } catch {
                   // Dev can race with an editor deleting/renaming a page file.
                 }

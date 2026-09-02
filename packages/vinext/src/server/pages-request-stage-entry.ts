@@ -354,7 +354,8 @@ async function handleRequest(
       renderPage: (req, resolvedUrl, options, stagedHeaders) => {
         const matchedPage =
           typeof matchPageRoute === "function" ? matchPageRoute(resolvedUrl, req) : null;
-        const outerPolicyMustOverrideRenderer = matchedPage?.route.dataKind !== "server";
+        const outerPolicyMustOverrideRenderer =
+          matchedPage?.route.dataKind !== "server" && matchedPage?.route.dataKind !== "initial";
         const transportedPolicyHeaders = withResponseStageVary(
           responseStagePolicyHeaders,
           stagedHeaders?.get("Vary"),
