@@ -25,11 +25,9 @@
  * pre-split implementation.
  */
 
-import {
-  getDataCacheHandler,
-  type CacheHandlerValue,
-  type IncrementalCacheValue,
-} from "./cache-handler.js";
+import type { CacheHandlerValue, IncrementalCacheValue } from "./cache-handler.js";
+import { getExplicitCdnCacheAdapter } from "./cdn-cache-state.js";
+export { setCdnCacheAdapter } from "./cdn-cache-state.js";
 
 /** A map of response header name -> value the adapter wants applied or removed. */
 export type CdnResponseHeaders = Record<string, string | null>;
@@ -105,6 +103,9 @@ export type CdnCacheAdapter = {
    * named by `Vary`, comparing values verbatim.
    */
   readonly responseVary?: "verbatim";
+
+  /** Provider-specific response headers whose values control shared caching. */
+  readonly responsePolicyHeaderNames?: readonly string[];
 
   /**
    * Fresh App Page responses must reach clean EOF before this adapter may emit
@@ -203,6 +204,7 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = true;
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    const { getDataCacheHandler } = await import("./cache-handler.js");
     return getDataCacheHandler().get(key, ctx);
   }
 
@@ -211,6 +213,7 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void> {
+    const { getDataCacheHandler } = await import("./cache-handler.js");
     await getDataCacheHandler().set(key, data, ctx);
   }
 
@@ -241,9 +244,6 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
 //   2. Otherwise, the origin-managed DefaultCdnCacheAdapter.
 // ---------------------------------------------------------------------------
 
-const _CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
-const _gCdn = globalThis as unknown as Record<PropertyKey, unknown>;
-
 let _defaultAdapter: DefaultCdnCacheAdapter | null = null;
 
 /**
@@ -265,20 +265,15 @@ let _defaultAdapter: DefaultCdnCacheAdapter | null = null;
  * ```
  *
  * The plugin registers the adapter across every runtime/router entry, so you
- * don't have to call this from a worker entry. This setter remains as the
- * internal registration target and for backwards compatibility, but is not the
- * recommended consumer API.
+ * don't have to call this from a worker entry. This setter remains for
+ * backwards compatibility, but is not the recommended consumer API.
  */
-export function setCdnCacheAdapter(adapter: CdnCacheAdapter): void {
-  _gCdn[_CDN_KEY] = adapter;
-}
-
 /**
  * Get the active CDN cache adapter. An explicitly configured adapter wins;
  * otherwise the origin-managed {@link DefaultCdnCacheAdapter} is used.
  */
 export function getCdnCacheAdapter(): CdnCacheAdapter {
-  const active = _gCdn[_CDN_KEY] as CdnCacheAdapter | undefined;
+  const active = getExplicitCdnCacheAdapter();
   if (active) return active;
 
   return (_defaultAdapter ??= new DefaultCdnCacheAdapter());

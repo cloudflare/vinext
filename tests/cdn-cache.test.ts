@@ -20,8 +20,10 @@ import {
   type CdnCacheableHeaderInput,
   type CdnResponseHeaders,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import { registerCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache-state.js";
 import {
   MemoryCacheHandler,
+  registerDataCacheHandler,
   setDataCacheHandler,
   setCacheHandler,
   getDataCacheHandler,
@@ -62,11 +64,146 @@ describe("data cache handler aliases", () => {
     setDataCacheHandler(handler);
     expect(getCacheHandler()).toBe(handler);
   });
+
+  it("creates a declarative handler once while keeping failed factories retryable", () => {
+    const handlerKey = Symbol.for("vinext.cacheHandler");
+    const configuredKey = Symbol.for("vinext.configuredCacheHandler");
+    const explicitKey = Symbol.for("vinext.explicitCacheHandler");
+    const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+    const previousHandler = globals[handlerKey];
+    const previousConfigured = globals[configuredKey];
+    const previousExplicit = globals[explicitKey];
+    delete globals[handlerKey];
+    delete globals[configuredKey];
+    delete globals[explicitKey];
+
+    try {
+      const failedFactory = vi.fn((): CacheHandler => {
+        throw new Error("missing binding");
+      });
+      expect(() => registerDataCacheHandler(failedFactory)).toThrow("missing binding");
+
+      const first = new MemoryCacheHandler();
+      const duplicateFactory = vi.fn(() => new MemoryCacheHandler());
+      registerDataCacheHandler(() => first);
+      registerDataCacheHandler(duplicateFactory);
+      expect(getDataCacheHandler()).toBe(first);
+      expect(duplicateFactory).not.toHaveBeenCalled();
+
+      const explicit = new MemoryCacheHandler();
+      setDataCacheHandler(explicit);
+      expect(getDataCacheHandler()).toBe(explicit);
+      expect(failedFactory).toHaveBeenCalledOnce();
+    } finally {
+      if (previousHandler === undefined) delete globals[handlerKey];
+      else globals[handlerKey] = previousHandler;
+      if (previousConfigured === undefined) delete globals[configuredKey];
+      else globals[configuredKey] = previousConfigured;
+      if (previousExplicit === undefined) delete globals[explicitKey];
+      else globals[explicitKey] = previousExplicit;
+    }
+  });
+
+  it("does not evaluate a declarative factory after an imperative registration", () => {
+    const explicit = new MemoryCacheHandler();
+    const factory = vi.fn(() => new MemoryCacheHandler());
+    setDataCacheHandler(explicit);
+
+    registerDataCacheHandler(factory);
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(getDataCacheHandler()).toBe(explicit);
+  });
+
+  it("preserves an imperative handler installed by a declarative factory", () => {
+    const handlerKey = Symbol.for("vinext.cacheHandler");
+    const configuredKey = Symbol.for("vinext.configuredCacheHandler");
+    const explicitKey = Symbol.for("vinext.explicitCacheHandler");
+    const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+    const previousHandler = globals[handlerKey];
+    const previousConfigured = globals[configuredKey];
+    const previousExplicit = globals[explicitKey];
+    delete globals[handlerKey];
+    delete globals[configuredKey];
+    delete globals[explicitKey];
+
+    try {
+      const explicit = new MemoryCacheHandler();
+      registerDataCacheHandler(() => {
+        setDataCacheHandler(explicit);
+        return new MemoryCacheHandler();
+      });
+      expect(getDataCacheHandler()).toBe(explicit);
+    } finally {
+      if (previousHandler === undefined) delete globals[handlerKey];
+      else globals[handlerKey] = previousHandler;
+      if (previousConfigured === undefined) delete globals[configuredKey];
+      else globals[configuredKey] = previousConfigured;
+      if (previousExplicit === undefined) delete globals[explicitKey];
+      else globals[explicitKey] = previousExplicit;
+    }
+  });
 });
 
 // ─── DefaultCdnCacheAdapter ──────────────────────────────────────────────
 
 describe("DefaultCdnCacheAdapter", () => {
+  it("keeps the first declarative registration while allowing an explicit override", () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+    const previous = globals[adapterKey];
+    delete globals[adapterKey];
+
+    try {
+      const first = new DefaultCdnCacheAdapter();
+      const duplicate = new DefaultCdnCacheAdapter();
+      const duplicateFactory = vi.fn(() => duplicate);
+      registerCdnCacheAdapter(() => first);
+      registerCdnCacheAdapter(duplicateFactory);
+      expect(getCdnCacheAdapter()).toBe(first);
+      expect(duplicateFactory).not.toHaveBeenCalled();
+
+      setCdnCacheAdapter(duplicate);
+      expect(getCdnCacheAdapter()).toBe(duplicate);
+    } finally {
+      if (previous === undefined) delete globals[adapterKey];
+      else globals[adapterKey] = previous;
+    }
+  });
+
+  it("does not evaluate declarative factories after an imperative registration", () => {
+    const explicit = new DefaultCdnCacheAdapter();
+    const factory = vi.fn(() => new DefaultCdnCacheAdapter());
+    setCdnCacheAdapter(explicit);
+
+    registerCdnCacheAdapter(factory);
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(getCdnCacheAdapter()).toBe(explicit);
+  });
+
+  it("retries declarative registration after a factory failure", () => {
+    const adapterKey = Symbol.for("vinext.cdnCacheAdapter");
+    const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+    const previous = globals[adapterKey];
+    delete globals[adapterKey];
+
+    try {
+      expect(() =>
+        registerCdnCacheAdapter(() => {
+          throw new Error("missing binding");
+        }),
+      ).toThrow("missing binding");
+
+      const retry = new DefaultCdnCacheAdapter();
+      registerCdnCacheAdapter(() => retry);
+      expect(getCdnCacheAdapter()).toBe(retry);
+    } finally {
+      if (previous === undefined) delete globals[adapterKey];
+      else globals[adapterKey] = previous;
+    }
+  });
+
   it("owns background revalidation (origin-managed ISR)", () => {
     expect(new DefaultCdnCacheAdapter().ownsBackgroundRevalidation).toBe(true);
   });
