@@ -943,6 +943,7 @@ describe("single-request cacheability admission", () => {
     finalHeaders: Record<string, string>;
     initialPolicy: NonNullable<RouteCacheabilityState["frameworkResponseCachePolicy"]>;
     name: string;
+    responsePolicyHeaderNames?: readonly string[];
   }> = [
     {
       finalHeaders: { "Set-Cookie": "session=private; Path=/; HttpOnly" },
@@ -955,14 +956,10 @@ describe("single-request cacheability admission", () => {
       name: "Cache-Control",
     },
     {
-      finalHeaders: { "CDN-Cache-Control": "private, no-store" },
-      initialPolicy: { "cdn-cache-control": "public, s-maxage=60" },
-      name: "CDN-Cache-Control",
-    },
-    {
-      finalHeaders: { "Cloudflare-CDN-Cache-Control": "private, no-store" },
-      initialPolicy: { "cloudflare-cdn-cache-control": "public, s-maxage=60" },
-      name: "Cloudflare-CDN-Cache-Control",
+      finalHeaders: { "X-Example-Edge-Policy": "private, no-store" },
+      initialPolicy: { "x-example-edge-policy": "public, s-maxage=60" },
+      name: "adapter-declared policy",
+      responsePolicyHeaderNames: ["cache-control", "x-example-edge-policy"],
     },
   ];
 
@@ -979,6 +976,9 @@ describe("single-request cacheability admission", () => {
       const state = cacheabilityState(context);
       state.route = { kind: "app-page", pattern: "/page" };
       state.frameworkResponseCachePolicy = testCase.initialPolicy;
+      if (testCase.responsePolicyHeaderNames) {
+        state.responsePolicyHeaderNames = testCase.responsePolicyHeaderNames;
+      }
       state.outcome = {
         cacheable: true,
         cacheControl: "s-maxage=60, stale-while-revalidate=540",

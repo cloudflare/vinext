@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   readWorkerCacheabilityProbeMode,
   type WorkerCacheabilityProbeMode,
@@ -10,15 +10,19 @@ import {
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
 import {
+  DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+
+afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 function admissionAdapter(): CdnCacheAdapter {
   return {
     buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
     ownsBackgroundRevalidation: false,
     requiresCompletedResponseAdmission: true,
+    responsePolicyHeaderNames: ["CDN-Cache-Control"],
     responseVary: "verbatim",
     async get() {
       return null;
@@ -222,6 +226,44 @@ describe("response-stage cacheability", () => {
 
     expect(response.headers.get("CDN-Cache-Control")).toBe("public, s-maxage=90");
     expect(response.headers.get("Vary")).toBe("RSC, x-visitor");
+    await expect(response.text()).resolves.toBe("dynamic");
+  });
+
+  it("admits policy declared by a provider-neutral CDN adapter", async () => {
+    const adapter = admissionAdapter();
+    setCdnCacheAdapter({
+      ...adapter,
+      buildResponseHeaders: ({ cacheControl }) => ({
+        "Cache-Control": "max-age=0, must-revalidate",
+        "X-Example-Edge-Policy": cacheControl,
+      }),
+      responsePolicyHeaderNames: ["X-Example-Edge-Policy"],
+    });
+
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "shared",
+        context: baseContext(),
+        policyHeaders: [["X-Example-Edge-Policy", "public, s-maxage=90"]],
+        rawManifest: null,
+        registerCacheAdapters() {},
+        request: new Request("https://example.com/dynamic", {
+          headers: { Accept: "text/html" },
+        }),
+        resolvedRoutePathname: "/dynamic",
+      },
+      async (context) => {
+        const state = contextState(context)!;
+        expect(state.responsePolicyHeaderNames).toEqual(["cache-control", "x-example-edge-policy"]);
+        state.route = { kind: "app-page", pattern: "/dynamic" };
+        state.outcome = { cacheable: false };
+        return new Response("dynamic");
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("max-age=0, must-revalidate");
+    expect(response.headers.get("X-Example-Edge-Policy")).toBe("public, s-maxage=90");
     await expect(response.text()).resolves.toBe("dynamic");
   });
 

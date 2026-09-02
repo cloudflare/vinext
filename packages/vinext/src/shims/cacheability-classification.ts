@@ -2,13 +2,8 @@ import { getRequestExecutionContext } from "./request-context.js";
 
 export const CACHEABILITY_REQUEST_STATE = Symbol.for("vinext.cacheabilityRequestState");
 
-export const CACHEABILITY_POLICY_HEADERS = [
-  "cache-control",
-  "cdn-cache-control",
-  "cloudflare-cdn-cache-control",
-] as const;
-
-type CacheabilityPolicyHeader = (typeof CACHEABILITY_POLICY_HEADERS)[number];
+/** Cache-policy response headers owned by core itself. */
+export const CACHEABILITY_POLICY_HEADERS = ["cache-control"] as const;
 
 export type RouteCacheabilityOutcome = {
   cacheControl?: string;
@@ -39,12 +34,14 @@ export type RouteCacheabilityState = {
   forcedDynamicReason?: string;
   /** A route-config decision that applies to every concrete identity for this pattern. */
   patternDynamicReason?: string;
-  frameworkResponseCachePolicy?: Partial<Record<CacheabilityPolicyHeader, string>>;
+  frameworkResponseCachePolicy?: Partial<Record<string, string>>;
   mode: "admit" | "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
   preserveResponseCachePolicy?: boolean;
   /** Cache-key behavior declared by the active CDN adapter. */
   responseVary?: "verbatim";
+  /** Lowercase cache-policy names owned by core and the active CDN adapter. */
+  responsePolicyHeaderNames?: readonly string[];
   probeBailout?: {
     kind: "private-cache";
     outcome: RouteCacheabilityOutcome;
@@ -150,8 +147,8 @@ export function captureRouteCacheabilityResponsePolicy(headers: Headers): void {
   const state = readRouteCacheabilityState();
   if (!state || state.mode !== "admit") return;
 
-  const policy: Partial<Record<CacheabilityPolicyHeader, string>> = {};
-  for (const name of CACHEABILITY_POLICY_HEADERS) {
+  const policy: Partial<Record<string, string>> = {};
+  for (const name of state.responsePolicyHeaderNames ?? CACHEABILITY_POLICY_HEADERS) {
     const value = headers.get(name);
     if (value !== null) policy[name] = value;
   }

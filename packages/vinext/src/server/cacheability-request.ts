@@ -8,6 +8,7 @@ import {
 import {
   applyCdnResponseBuildIdentityHeaders,
   applyCdnResponseHeaders,
+  getCdnResponsePolicyHeaderNames,
   hasExplicitNonCacheableResponsePolicy,
   isNonCacheableCacheControl,
   NO_STORE_CACHE_CONTROL,
@@ -104,6 +105,7 @@ export function createWorkerCacheabilityProbeContext(
   const state: RouteCacheabilityState = {
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
     mode,
+    responsePolicyHeaderNames: [...getCdnResponsePolicyHeaderNames()],
     responseVary,
   };
   return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
@@ -162,6 +164,7 @@ export function createWorkerCacheabilityAdmissionContext(
         : { policy: "deny" },
       captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
       mode: "admit",
+      responsePolicyHeaderNames: [...getCdnResponsePolicyHeaderNames()],
       responseVary,
     };
     return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
@@ -183,6 +186,7 @@ export function createWorkerCacheabilityAdmissionContext(
         : { policy: "deny" },
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
     mode: "admit",
+    responsePolicyHeaderNames: [...getCdnResponsePolicyHeaderNames()],
     responseVary,
   };
   return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
@@ -517,54 +521,39 @@ function inferFinalAppPageCacheability(
   // Config headers run after the framework snapshots its provisional policy.
   // Match Next.js by honoring a later explicit public policy instead of
   // replacing it with the renderer-derived default during admission.
-  const changedPolicy = (
-    ["cloudflare-cdn-cache-control", "cdn-cache-control", "cache-control"] as const
-  ).find((name) => {
-    const value = response.headers.get(name);
-    return (
-      value !== null &&
-      (state.explicitConfigCachePolicy || value !== state.frameworkResponseCachePolicy?.[name])
-    );
-  });
+  const changedPolicy = [...(state.responsePolicyHeaderNames ?? CACHEABILITY_POLICY_HEADERS)]
+    .reverse()
+    .find((name) => {
+      const value = response.headers.get(name);
+      return (
+        value !== null &&
+        (state.explicitConfigCachePolicy || value !== state.frameworkResponseCachePolicy?.[name])
+      );
+    });
   if (!changedPolicy) return null;
 
   const cacheControl = response.headers.get(changedPolicy)!;
   if (isNonCacheableCacheControl(cacheControl)) return { cacheable: false };
-  const cacheTag = response.headers.get("Cache-Tag");
   return {
     cacheable: true,
     cacheControl,
-    ...(cacheTag
-      ? {
-          tags: cacheTag
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean),
-        }
-      : {}),
   };
 }
 
-function inferPagesPageCacheability(response: Response): RouteCacheabilityOutcome {
-  const cacheControl =
-    response.headers.get("Cloudflare-CDN-Cache-Control") ??
-    response.headers.get("CDN-Cache-Control") ??
-    response.headers.get("Cache-Control");
+function inferPagesPageCacheability(
+  response: Response,
+  state: RouteCacheabilityState,
+): RouteCacheabilityOutcome {
+  const cacheControl = [...(state.responsePolicyHeaderNames ?? CACHEABILITY_POLICY_HEADERS)]
+    .reverse()
+    .map((name) => response.headers.get(name))
+    .find((value) => value !== null);
   if (!cacheControl || isNonCacheableCacheControl(cacheControl)) {
     return { cacheable: false };
   }
-  const cacheTag = response.headers.get("Cache-Tag");
   return {
     cacheable: true,
     cacheControl,
-    ...(cacheTag
-      ? {
-          tags: cacheTag
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean),
-        }
-      : {}),
   };
 }
 
@@ -625,7 +614,7 @@ function cacheabilityEvaluationFailureResponse(pattern: string): Response {
 function hasStrictFinalResponseVeto(response: Response, state: RouteCacheabilityState): boolean {
   if (state.finalResponseVetoReason || response.headers.has("set-cookie")) return true;
 
-  for (const name of CACHEABILITY_POLICY_HEADERS) {
+  for (const name of state.responsePolicyHeaderNames ?? CACHEABILITY_POLICY_HEADERS) {
     const value = response.headers.get(name);
     if (
       value !== null &&

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   consumeDynamicUsage,
   cookies,
@@ -34,6 +34,11 @@ import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 
 // The fetch-cache shim captures `originalFetch` from globalThis at import
 // time, so stub fetch BEFORE importing it (same pattern as
@@ -47,6 +52,8 @@ const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestIn
 vi.stubGlobal("fetch", fetchMock);
 const { withFetchCache } = await import("../packages/vinext/src/shims/fetch-cache.js");
 const { revalidateTag } = await import("../packages/vinext/src/shims/cache.js");
+
+afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 function createDynamicUsageState(): {
   consumeDynamicUsage: () => boolean;
@@ -306,6 +313,20 @@ describe("app route handler execution helpers", () => {
   it.each(["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"])(
     "preserves handler-owned %s instead of applying framework revalidation",
     async (policyHeader) => {
+      const adapter: CdnCacheAdapter = {
+        buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+        async get() {
+          return null;
+        },
+        hasExplicitNonCacheableResponsePolicy(headers) {
+          return headers.get(policyHeader)?.includes("no-store") === true;
+        },
+        ownsBackgroundRevalidation: false,
+        async revalidateTag() {},
+        responsePolicyHeaderNames: [policyHeader],
+        async set() {},
+      };
+      setCdnCacheAdapter(adapter);
       const dynamicUsage = createDynamicUsageState();
       const isrSet = vi.fn();
       const response = await executeAppRouteHandler({
