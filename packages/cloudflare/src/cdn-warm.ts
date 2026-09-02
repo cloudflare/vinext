@@ -205,7 +205,9 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
                     (typeof route.cacheabilityProbe.concretePathname === "string" &&
                       route.cacheabilityProbe.concretePathname.startsWith("/"))) &&
                   (route.cacheabilityProbe.routeMayResolve === undefined ||
-                    typeof route.cacheabilityProbe.routeMayResolve === "boolean"))),
+                    typeof route.cacheabilityProbe.routeMayResolve === "boolean") &&
+                  (route.cacheabilityProbe.requestStageMayTerminate === undefined ||
+                    typeof route.cacheabilityProbe.requestStageMayTerminate === "boolean"))),
           ))) ||
       (manifest.loadingShellPaths !== undefined &&
         (!Array.isArray(manifest.loadingShellPaths) ||

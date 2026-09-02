@@ -219,6 +219,31 @@ describe("Cloudflare CDN warmup", () => {
     );
   });
 
+  it("rejects non-boolean request-stage termination metadata", () => {
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/conditional"],
+        routePatterns: {
+          "/conditional": {
+            cacheabilityProbe: {
+              canPrunePattern: true,
+              requestStageMayTerminate: "true",
+            },
+            kind: "app-page",
+            pattern: "/conditional",
+          },
+        },
+      }),
+    );
+
+    expect(() => readPrerenderWarmPlan(tmpDir, { strict: true })).toThrow(
+      "prerender path manifest not found",
+    );
+  });
+
   it("warms canonical RSC, HTML, and Pages data with browser-identical requests", async () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
