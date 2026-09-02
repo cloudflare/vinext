@@ -118,6 +118,12 @@ describe("hasDefaultExportedStaticProperty", () => {
         "getInitialProps",
       ),
     ).toBe(true);
+    expect(
+      hasDefaultExportedStaticProperty(
+        "export default function Page() {} Page.getInitialProps = async () => ({});",
+        "getInitialProps",
+      ),
+    ).toBe(true);
   });
 
   it("detects static class methods and fields", () => {

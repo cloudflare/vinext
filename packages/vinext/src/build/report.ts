@@ -193,7 +193,13 @@ export function hasDefaultExportedStaticProperty(code: string, name: string): bo
         node.declaration.type === "ClassDeclaration" ||
         node.declaration.type === "ClassExpression"
       ) {
-        return classHasStaticProperty(node.declaration, name);
+        if (classHasStaticProperty(node.declaration, name)) return true;
+        defaultBinding = node.declaration.id?.name ?? null;
+      } else if (
+        node.declaration.type === "FunctionDeclaration" ||
+        node.declaration.type === "FunctionExpression"
+      ) {
+        defaultBinding = node.declaration.id?.name ?? null;
       }
       continue;
     }
