@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "pathslash";
 import { readPrerenderManifest } from "../server/prerender-manifest.js";
 import { PREGENERATED_CONCRETE_PATHS_MODULE } from "../server/pregenerated-concrete-paths.js";
+import { readServerRuntimeOutputDirs } from "./server-manifest.js";
 
 declare global {
   var __VINEXT_PREGENERATED_CONCRETE_PATHS: unknown;
@@ -30,6 +31,7 @@ export function injectPregeneratedConcretePaths(
     serverOutputDir,
     path.dirname(applicationEntry),
     ...additionalRuntimeDirs,
+    ...readServerRuntimeOutputDirs(serverOutputDir, root),
   ])) {
     fs.mkdirSync(outputDir, { recursive: true });
     fs.writeFileSync(path.join(outputDir, PREGENERATED_CONCRETE_PATHS_MODULE), runtimeModuleCode);

@@ -1,5 +1,20 @@
 import type { CacheabilityRepresentation } from "./cacheability-manifest.js";
 
+/** Whether a response-stage cache must reject a field it did not key itself by. */
+export function hasUnsupportedResponseStageVary(
+  headers: Headers,
+  keyedRequestHeaders: Iterable<string> = [],
+): boolean {
+  const keyedFields = new Set(
+    [...keyedRequestHeaders].map((name) => name.trim().toLowerCase()).filter(Boolean),
+  );
+  return (headers.get("Vary") ?? "")
+    .split(",")
+    .map((name) => name.trim().toLowerCase())
+    .filter(Boolean)
+    .some((name) => name === "*" || !keyedFields.has(name));
+}
+
 /**
  * Transport-neutral cache intent passed from the request stage to an
  * adapter-owned response-stage transport.
@@ -11,9 +26,12 @@ export type VinextResponseStageDispatchOptions = {
    * A shared transport must partition its baseline lookup by the request
    * method, complete request URL (including scheme, authority, exact path, and
    * query), plus the complete serialized stage props; each can affect handler
-   * selection or response bytes. It must additionally honor every response
-   * `Vary` field when storing and reusing a response, using the corresponding
-   * request-header values as variant identity. `Vary: *` must not be stored.
+   * selection or response bytes. Framework-managed selectors are already
+   * represented by that URL and the
+   * serialized props. A verbatim-capable transport must partition stored
+   * variants by every named `Vary` request header and never store `Vary: *`.
+   * Other transports must reject application-defined variance themselves or
+   * opt into completed-response admission and honor core's `no-store` policy.
    */
   cache: "shared" | "bypass";
 };
@@ -42,7 +60,16 @@ export type VinextResponseStageCacheability = {
  * query), plus the complete serialized props. An adapter that advertises
  * `responseVary: "verbatim"` must also partition stored variants by every
  * request header named in the returned `Vary` fields and reject `Vary: *` from
- * storage. Adapters without that capability must not share varying responses.
+ * storage. Adapters without that capability must reject application-defined
+ * variance themselves, or opt into completed-response admission and honor
+ * core's resulting `no-store` policy.
+ *
+ * The transport is also the trust boundary for this metadata. It must
+ * authenticate both directions and integrity-protect the serialized props,
+ * dispatch options, and response so public callers cannot forge trusted route
+ * or cache-admission state. Platform bindings can provide that boundary
+ * directly; HTTP transports need equivalent authenticated, confidential
+ * transport for both request-stage and response-stage endpoints.
  */
 export type VinextResponseStageTransport<Props = unknown> = (
   request: Request,
@@ -54,6 +81,11 @@ export type VinextResponseStageTransport<Props = unknown> = (
 export type VinextMultiStageOutput = {
   /** Adapter-owned module that becomes the deployment entry when selected. */
   entry: string;
+  /** Complete adapter-owned host entries for independently deployable stages. */
+  entries?: {
+    request: string;
+    response: string;
+  };
   type: "multi-stage";
   /** Decide whether the current build host supports this adapter's transport. */
   matchesBuild?: (build: { plugins: readonly { name?: string }[] }) => boolean;
