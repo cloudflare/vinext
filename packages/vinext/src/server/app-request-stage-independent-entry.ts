@@ -10,7 +10,11 @@ import requestRscHandler, {
 } from "virtual:vinext-app-request-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 // @ts-expect-error -- virtual module resolved by vinext
-import { registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
+import {
+  hasConfiguredDataCache,
+  registerConfiguredCacheAdapters,
+} from "virtual:vinext-cdn-cache-adapter";
+import { registerLazyDataCacheHandler } from "vinext/shims/cache-handler";
 import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
 // @ts-expect-error -- virtual module resolved by vinext
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
@@ -89,6 +93,13 @@ async function handleRequest(
       );
 
   registerConfiguredCacheAdapters(env);
+  if (hasConfiguredDataCache) {
+    registerLazyDataCacheHandler(async () => {
+      // @ts-expect-error -- virtual module resolved by vinext
+      const adapters = await import("virtual:vinext-cache-adapters");
+      adapters.registerConfiguredCacheAdapters(env);
+    });
+  }
   registerConfiguredImageOptimizer(env);
 
   ctx = createWorkerPrerenderDiscoveryContext(ctx, request, __prerenderSecret);
