@@ -195,7 +195,6 @@ async function probeTarget(options: {
 }): Promise<ProbePayload> {
   const headers = new Headers(options.headers);
   for (const [name, value] of new Headers(options.target.headers)) headers.set(name, value);
-  headers.set("Cache-Control", "no-cache");
   headers.set(VINEXT_CACHEABILITY_PROBE_HEADER, "1");
   headers.set(VINEXT_PRERENDER_SECRET_HEADER, options.secret);
 

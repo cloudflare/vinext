@@ -163,7 +163,8 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       },
     );
 
-    expect(result).toBe(cachedResponse);
+    await expect(result.text()).resolves.toBe("cached");
+    expect(result.headers.get("Cache-Control")).toBe("private, max-age=0, must-revalidate");
     expect(binding).toHaveBeenCalledWith({
       props: {
         options: { cache: "shared" },
@@ -207,7 +208,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     );
 
     expect(response.headers.get("x-user-variant")).toBe("alice");
-    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    expect(response.headers.get("Cache-Control")).toBe("private, max-age=0, must-revalidate");
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     await expect(response.text()).resolves.toBe("shared");
@@ -353,7 +354,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(response.headers.get("Cache-Tag")).toBeNull();
   });
 
-  it("retains public policy when transported request.cf remains unread", async () => {
+  it("keeps the gateway private when transported request.cf remains unread", async () => {
     const binding = vi.fn(({ props }: { props: unknown }) => ({
       fetch(request: Request) {
         return createEntrypoint(props).fetch(request);
@@ -374,7 +375,8 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
 
     const response = await worker.fetch(source, {}, { exports: { VinextCachedResponse: binding } });
 
-    expect(response.headers.get("CDN-Cache-Control")).toBe("public, s-maxage=300");
+    expect(response.headers.get("Cache-Control")).toBe("private, max-age=0, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     await expect(response.text()).resolves.toBe("public");
   });
 

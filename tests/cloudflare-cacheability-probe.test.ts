@@ -79,6 +79,7 @@ describe("staged Worker cacheability probes", () => {
       const headers = new Headers(init?.headers);
       expect(headers.get(VINEXT_CACHEABILITY_PROBE_HEADER)).toBe("1");
       expect(headers.get(VINEXT_PRERENDER_SECRET_HEADER)).toBe("probe-secret");
+      expect(headers.get("Cache-Control")).toBeNull();
 
       if (urls.length <= 2) {
         return new Response(

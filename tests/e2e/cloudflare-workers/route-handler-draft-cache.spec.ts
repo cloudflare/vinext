@@ -182,9 +182,9 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     });
     expect(dynamicResponse.status()).toBe(200);
     expect(await dynamicResponse.text()).toBe("tenant-a");
-    // Explicit response policy wins after the clean body has completed, matching
-    // Next.js even when the handler observed request headers while streaming.
-    expect(dynamicResponse.headers()["cache-control"]).toContain("public");
+    // The explicit response policy admits the completed body in the named
+    // entrypoint; the uncached gateway remains private for outer composition.
+    expect(dynamicResponse.headers()["cache-control"]).toContain("private");
     expect(dynamicResponse.headers()["cache-control"]).toContain("max-age=0");
     expect(dynamicResponse.headers()["cdn-cache-control"]).toBeUndefined();
     expect(dynamicResponse.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
@@ -354,7 +354,7 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
 
     expect(response.status()).toBe(200);
     expect(await response.json()).toEqual({ public: true });
-    expect(response.headers()["cache-control"]).toBe("public, max-age=0, must-revalidate");
+    expect(response.headers()["cache-control"]).toBe("private, max-age=0, must-revalidate");
     expect(response.headers()["cdn-cache-control"]).toBeUndefined();
     expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
   });

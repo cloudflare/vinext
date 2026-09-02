@@ -7,6 +7,7 @@ import type {
 } from "vinext/server/multi-stage";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
+import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 
 type StageBinding = {
   fetch(request: Request): Promise<Response> | Response;
@@ -254,10 +255,22 @@ function preventRequestCfResponseCaching(response: Response): Response {
  * the outer gateway never forwards an inner shared-cache policy after adding
  * request-specific middleware or routing headers.
  */
-function finalizeGatewayResponse(response: Response): Response {
-  if (!response.headers.has(CLOUDFLARE_EDGE_POLICY_HEADER)) return response;
+function finalizeGatewayResponse(response: Response, usedSharedResponseStage: boolean): Response {
+  const cacheControl = response.headers.get("Cache-Control");
+  if (
+    !response.headers.has(CLOUDFLARE_EDGE_POLICY_HEADER) &&
+    (!usedSharedResponseStage || (cacheControl && isNonCacheableCacheControl(cacheControl)))
+  ) {
+    return response;
+  }
   const headers = new Headers(response.headers);
   headers.delete(CLOUDFLARE_EDGE_POLICY_HEADER);
+  if (usedSharedResponseStage) {
+    headers.delete("CDN-Cache-Control");
+    if (!cacheControl || !isNonCacheableCacheControl(cacheControl)) {
+      headers.set("Cache-Control", "private, max-age=0, must-revalidate");
+    }
+  }
   return new Response(response.body, {
     headers,
     status: response.status,
@@ -365,6 +378,7 @@ export default {
   ): Promise<Response> {
     request = stripUntrustedTransportHeaders(request);
     const stageContext = withResponseStagePurge(withWorkerHostRuntime(context, env));
+    let usedSharedResponseStage = false;
     const dispatchResponseStage: VinextResponseStageTransport = async (
       stageRequest,
       props,
@@ -379,6 +393,7 @@ export default {
       if (options.cache === "bypass") {
         return invokeResponseStage(stageRequest, env, stageContext, invocation);
       }
+      usedSharedResponseStage = true;
       const serializedInvocation = JSON.stringify(invocation);
       const binding = getResponseStageBinding(stageContext, serializedInvocation);
       return binding
@@ -388,6 +403,7 @@ export default {
     const { handleRequestStage } = await loadVinextRequestStage<unknown, CloudflareStageContext>();
     return finalizeGatewayResponse(
       await handleRequestStage(request, env, stageContext, dispatchResponseStage),
+      usedSharedResponseStage,
     );
   },
 };
