@@ -24,6 +24,34 @@ import type { VinextMultiStageOutput } from "../server/multi-stage.js";
  * by hand. `options` must be JSON-serializable: it is inlined into the generated
  * registration module and forwarded to the adapter factory at runtime.
  */
+type MultiStageBuildInput = string | string[] | Record<string, string> | undefined;
+
+export function mergeMultiStageBuildInputs(
+  input: MultiStageBuildInput,
+  entries: NonNullable<VinextMultiStageOutput["entries"]>,
+): Exclude<MultiStageBuildInput, undefined> {
+  const stageInputs = {
+    "vinext-request-stage": entries.request,
+    "vinext-response-stage": entries.response,
+  };
+  if (input === undefined) return stageInputs;
+  if (typeof input === "string") return { index: input, ...stageInputs };
+  if (Array.isArray(input)) {
+    return {
+      ...Object.fromEntries(input.map((entry, index) => [`entry-${index}`, entry])),
+      ...stageInputs,
+    };
+  }
+  for (const name of Object.keys(stageInputs)) {
+    if (Object.hasOwn(input, name)) {
+      throw new Error(
+        `[vinext] multi-stage output cannot add the reserved build input "${name}" because the host already defines it.`,
+      );
+    }
+  }
+  return { ...input, ...stageInputs };
+}
+
 export type CdnCacheAdapterCapabilities = {
   /**
    * Page responses include the current application build identity in the

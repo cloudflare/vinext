@@ -64,6 +64,7 @@ import {
   VIRTUAL_CACHE_ADAPTERS,
   generateCdnCacheAdapterModule,
   generateCacheAdaptersModule,
+  mergeMultiStageBuildInputs,
   hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   type VinextCacheConfig,
@@ -4612,9 +4613,26 @@ export const loadServerActionClient = ${
       name: "vinext:multi-stage-server-output",
       apply: "build",
 
-      // Vite calls this hook once for every output member, including an
-      // array-shaped host config. Apply stage isolation per resolved output
-      // without replacing its entry names or host-owned groups.
+      // Vite resolves build.ssr=true for every server environment. The App
+      // Router's named `ssr` environment is still only its HTML renderer; it
+      // must never receive deployable request/response stage entries.
+      // Standalone `vite build --ssr` uses the sole `client` environment.
+      // Pages and adapter-owned server environments retain their own names.
+      buildStart() {
+        const entries = selectedMultiStageOutput?.entries;
+        const environment = this.environment;
+        if (!entries || !environment || !isMultiStageServerEnvironment(environment)) {
+          return;
+        }
+
+        for (const [name, id] of [
+          ["vinext-request-stage", entries.request],
+          ["vinext-response-stage", entries.response],
+        ] as const) {
+          this.emitFile({ id, name, preserveSignature: "strict", type: "chunk" });
+        }
+      },
+
       outputOptions(output) {
         const environment = this.environment;
         if (
