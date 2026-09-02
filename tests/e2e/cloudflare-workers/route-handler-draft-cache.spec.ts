@@ -324,10 +324,7 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
     request,
   }) => {
     expect(
-      fs.readFileSync(
-        `${FIXTURE_DIR}/dist/cf_app_basic/__vinext_cacheability_manifest.js`,
-        "utf8",
-      ),
+      fs.readFileSync(`${FIXTURE_DIR}/dist/cf_app_basic/__vinext_cacheability_manifest.js`, "utf8"),
     ).toBe("export default null;\n");
 
     const response = await request.get(`${pagesBaseUrl}/pages-about`, {
