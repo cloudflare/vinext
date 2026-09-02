@@ -1836,7 +1836,7 @@ describe("Pages Router entry template", () => {
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
       fs.writeFileSync(
         documentPath,
-        "export default class Document { static async getInitialProps() { return { html: '' }; } }",
+        "const Document = Object.assign(() => null, { getInitialProps: async () => ({ html: '' }) }); export default Document;",
       );
       fs.writeFileSync(middlewarePath, "export function middleware() {};");
       fs.writeFileSync(instrumentationPath, "export function register() {};");

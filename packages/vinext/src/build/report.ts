@@ -218,8 +218,9 @@ function memberExpressionMatches(value: unknown, objectName: string, memberName:
  * Pages `_document` uses this to keep a custom `getInitialProps` implementation
  * out of request-independent response caches. Direct class members, assignments,
  * `Object.assign`, and `Object.defineProperty` are recognized. Imported or
- * re-exported defaults are treated conservatively because their implementation
- * is outside the source file being classified.
+ * re-exported defaults and wrapped variable initializers are treated
+ * conservatively because their implementation is outside the source form being
+ * classified.
  */
 export function defaultExportMayHaveRuntimeMember(code: string, memberName: string): boolean {
   const program = parseRouteModule(code);
@@ -292,6 +293,14 @@ export function defaultExportMayHaveRuntimeMember(code: string, memberName: stri
         if (
           classDefinesStaticMember(variable.init, memberName) ||
           classHasSuperclass(variable.init)
+        ) {
+          return true;
+        }
+        const initializerType = astNodeField(variable.init, "type");
+        if (
+          initializerType !== "ArrowFunctionExpression" &&
+          initializerType !== "FunctionExpression" &&
+          initializerType !== "ClassExpression"
         ) {
           return true;
         }
