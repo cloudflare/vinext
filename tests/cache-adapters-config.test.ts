@@ -14,6 +14,7 @@ import path from "node:path";
 import { describe, it, expect } from "vite-plus/test";
 import {
   findVinextCacheConfigInPlugins,
+  generateCdnCacheAdapterModule,
   loadVinextCacheConfigFromViteConfig,
   generateCacheAdaptersModule,
   hasBuildIdentityResponseHeader,
@@ -99,6 +100,17 @@ describe("generateCacheAdaptersModule", () => {
     );
     expect(code).toContain("if (__vinextCacheAdaptersRegistered) return;");
     expect(code).toContain("__vinextCacheAdaptersRegistered = true;");
+  });
+
+  it("advertises data-cache availability without importing it into the request stage", () => {
+    const code = generateCdnCacheAdapterModule({
+      cdn: { adapter: "my-cdn-adapter" },
+      data: { adapter: "my-data-adapter" },
+    });
+
+    expect(code).toContain("export const hasConfiguredDataCache = true;");
+    expect(code).toContain('from "my-cdn-adapter"');
+    expect(code).not.toContain("my-data-adapter");
   });
 
   it("logs registration failures without printing raw Error stack traces", () => {
