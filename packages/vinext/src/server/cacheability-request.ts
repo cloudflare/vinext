@@ -54,6 +54,8 @@ type CacheabilityProbeResult = {
   scope?: "identity" | "pattern";
   state: CacheabilityProbeRouteState;
   status: number;
+  /** Routing completed without invoking the reusable response stage. */
+  terminal?: true;
   version: 1;
 };
 
@@ -322,6 +324,7 @@ export function finalizeRequestStageCacheabilityProbe(
     scope: "identity",
     state: "dynamic",
     status: response.status,
+    terminal: true,
     version: 1,
   };
   return applyCdnResponseBuildIdentityHeaders(

@@ -711,7 +711,7 @@ describe("prerender path manifest", () => {
     expect(manifest?.routePatterns?.["/safe"]?.cacheabilityProbe?.routeMayResolve).toBeUndefined();
   });
 
-  it("still excludes external rewrite sources when routing runs in an uncached stage", async () => {
+  it("retains external rewrite sources only when routing runs in an uncached stage", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
@@ -736,6 +736,7 @@ describe("prerender path manifest", () => {
             {
               source: "/external",
               destination: "https://upstream.example/:path*",
+              has: [{ type: "header", key: "x-use-external", value: "1" }],
             },
           ],
           afterFiles: [],
@@ -745,16 +746,28 @@ describe("prerender path manifest", () => {
       tmpDir,
     );
 
-    const manifest = await emitPrerenderPathManifest({
+    const singleStageManifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(singleStageManifest?.paths).toEqual(["/safe"]);
+    expect(singleStageManifest?.excludedWarmPaths).toEqual(["/external"]);
+    expect(singleStageManifest?.routePatterns?.["/external"]).toBeUndefined();
+
+    const stagedManifest = await emitPrerenderPathManifest({
       nextConfig,
       requestRouting: "uncached-stage",
       responseVary: "verbatim",
       root: tmpDir,
     });
 
-    expect(manifest?.paths).toEqual(["/safe"]);
-    expect(manifest?.excludedWarmPaths).toEqual(["/external"]);
-    expect(manifest?.routePatterns?.["/external"]).toBeUndefined();
+    expect(stagedManifest?.paths).toEqual(["/external", "/safe"]);
+    expect(stagedManifest?.excludedWarmPaths).toBeUndefined();
+    expect(stagedManifest?.routePatterns?.["/external"]?.cacheabilityProbe).toMatchObject({
+      requestStageMayTerminate: true,
+    });
   });
 
   it.each(["afterFiles", "fallback"] as const)(
@@ -868,10 +881,14 @@ describe("prerender path manifest", () => {
       root: tmpDir,
     });
 
-    expect(manifest?.paths).toHaveLength(2);
-    expect(manifest?.paths).toEqual(expect.arrayContaining(["/cached/featured", "/target"]));
-    expect(manifest?.excludedWarmPaths).toEqual(["/cached/intro"]);
-    expect(manifest?.routePatterns?.["/cached/intro"]).toBeUndefined();
+    expect(manifest?.paths).toHaveLength(3);
+    expect(manifest?.paths).toEqual(
+      expect.arrayContaining(["/cached/featured", "/cached/intro", "/target"]),
+    );
+    expect(manifest?.excludedWarmPaths).toBeUndefined();
+    expect(
+      manifest?.routePatterns?.["/cached/intro"]?.cacheabilityProbe?.requestStageMayTerminate,
+    ).toBe(true);
     expect(manifest?.routePatterns?.["/cached/featured"]?.cacheabilityProbe?.routeMayResolve).toBe(
       true,
     );
@@ -913,15 +930,13 @@ describe("prerender path manifest", () => {
   it.each([
     {
       destination: "https://upstream.example/first",
-      excludedPaths: ["/first"],
-      expectedPaths: ["/second"],
+      expectedTerminal: true,
       phase: "afterFiles" as const,
       source: "/first",
     },
     {
       destination: "https://upstream.example/:path*",
-      excludedPaths: undefined,
-      expectedPaths: ["/first", "/second"],
+      expectedTerminal: false,
       phase: "fallback" as const,
       source: "/:path*",
     },
@@ -970,9 +985,12 @@ describe("prerender path manifest", () => {
       root: tmpDir,
     });
 
-    expect(manifest?.paths).toEqual(testCase.expectedPaths);
-    expect(manifest?.pagesPaths).toEqual(testCase.expectedPaths);
-    expect(manifest?.excludedWarmPaths).toEqual(testCase.excludedPaths);
+    expect(manifest?.paths).toEqual(["/first", "/second"]);
+    expect(manifest?.pagesPaths).toEqual(["/first", "/second"]);
+    expect(manifest?.excludedWarmPaths).toBeUndefined();
+    expect(
+      manifest?.routePatterns?.["/first"]?.cacheabilityProbe?.requestStageMayTerminate === true,
+    ).toBe(testCase.expectedTerminal);
   });
 
   it("allows the uncached middleware stage to resolve warm routes", async () => {
@@ -999,11 +1017,12 @@ describe("prerender path manifest", () => {
 
     expect(manifest?.routePatterns?.["/middleware-source"]?.cacheabilityProbe).toMatchObject({
       canPrunePattern: true,
+      requestStageMayTerminate: true,
       routeMayResolve: true,
     });
   });
 
-  it("excludes warm paths shadowed by configured redirects", async () => {
+  it("retains redirect sources only when routing runs in an uncached stage", async () => {
     // Next.js applies config redirects before rendering the filesystem route:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
     writeFile("package.json", JSON.stringify({ type: "module" }));
@@ -1025,21 +1044,41 @@ describe("prerender path manifest", () => {
     ]);
     const nextConfig = await resolveNextConfig(
       {
-        redirects: () => [{ source: "/redirect-me", destination: "/safe", permanent: false }],
+        redirects: () => [
+          {
+            source: "/redirect-me",
+            destination: "/safe",
+            has: [{ type: "header", key: "x-redirect", value: "1" }],
+            permanent: false,
+          },
+        ],
       },
       tmpDir,
     );
 
-    const manifest = await emitPrerenderPathManifest({
+    const singleStageManifest = await emitPrerenderPathManifest({
+      nextConfig,
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(singleStageManifest?.paths).toEqual(["/safe"]);
+    expect(singleStageManifest?.excludedWarmPaths).toEqual(["/redirect-me"]);
+    expect(singleStageManifest?.rscPaths).toEqual(["/safe"]);
+
+    const stagedManifest = await emitPrerenderPathManifest({
       nextConfig,
       requestRouting: "uncached-stage",
       responseVary: "verbatim",
       root: tmpDir,
     });
 
-    expect(manifest?.paths).toEqual(["/safe"]);
-    expect(manifest?.excludedWarmPaths).toEqual(["/redirect-me"]);
-    expect(manifest?.rscPaths).toEqual(["/safe"]);
+    expect(stagedManifest?.paths).toEqual(["/redirect-me", "/safe"]);
+    expect(stagedManifest?.excludedWarmPaths).toBeUndefined();
+    expect(stagedManifest?.rscPaths).toEqual(["/redirect-me", "/safe"]);
+    expect(stagedManifest?.routePatterns?.["/redirect-me"]?.cacheabilityProbe).toMatchObject({
+      requestStageMayTerminate: true,
+    });
   });
 
   it("discovers a static child route from parent-layout generateStaticParams", async () => {

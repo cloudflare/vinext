@@ -93,6 +93,7 @@ describe("response-stage cacheability", () => {
       scope: "identity",
       state: "dynamic",
       status: 307,
+      terminal: true,
     });
   });
 
