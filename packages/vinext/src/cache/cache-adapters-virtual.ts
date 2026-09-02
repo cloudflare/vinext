@@ -14,7 +14,6 @@
  * never touches the Workers runtime — instantiation is deferred to the first
  * request.
  */
-import path from "pathslash";
 import type { VinextMultiStageOutput } from "../server/multi-stage.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import type { VinextMultiStageOutput } from "../server/multi-stage.js";
@@ -26,48 +25,6 @@ import type { VinextMultiStageOutput } from "../server/multi-stage.js";
  * by hand. `options` must be JSON-serializable: it is inlined into the generated
  * registration module and forwarded to the adapter factory at runtime.
  */
-type MultiStageBuildInput = string | string[] | Record<string, string> | undefined;
-
-function arrayInputName(id: string): string {
-  const base = path.basename(id);
-  return base.slice(0, Math.max(0, base.length - path.extname(id).length));
-}
-
-export function mergeMultiStageBuildInputs(
-  input: MultiStageBuildInput,
-  entries: NonNullable<VinextMultiStageOutput["entries"]>,
-): Exclude<MultiStageBuildInput, undefined> {
-  const stageInputs = {
-    "vinext-request-stage": entries.request,
-    "vinext-response-stage": entries.response,
-  };
-  if (input === undefined) return stageInputs;
-  if (typeof input === "string") return { index: input, ...stageInputs };
-  if (Array.isArray(input)) {
-    const hostInputs: Record<string, string> = {};
-    for (const entry of input) {
-      // Match Rollup's array-input aliasing so enabling stages does not rename
-      // the host's emitted entry chunks.
-      const name = arrayInputName(entry);
-      if (Object.hasOwn(hostInputs, name) || Object.hasOwn(stageInputs, name)) {
-        throw new Error(
-          `[vinext] multi-stage output cannot preserve array build input ${JSON.stringify(entry)} because its derived name ${JSON.stringify(name)} conflicts with another entry. Use named object inputs to resolve the collision.`,
-        );
-      }
-      hostInputs[name] = entry;
-    }
-    return { ...hostInputs, ...stageInputs };
-  }
-  for (const name of Object.keys(stageInputs)) {
-    if (Object.hasOwn(input, name)) {
-      throw new Error(
-        `[vinext] multi-stage output cannot add the reserved build input "${name}" because the host already defines it.`,
-      );
-    }
-  }
-  return { ...input, ...stageInputs };
-}
-
 export type CdnCacheAdapterCapabilities = {
   /**
    * Page responses include the current application build identity in the
