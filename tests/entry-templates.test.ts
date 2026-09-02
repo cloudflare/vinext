@@ -1200,6 +1200,7 @@ describe("App Router entry templates", () => {
     expect(() => parseAst(code)).not.toThrow();
     expect(code).not.toContain("/tmp/test/middleware.ts");
     expect(code).not.toContain("createAppRscHandler");
+    expect(code).toContain('import "virtual:vinext-pregenerated-concrete-paths";');
     expect(code).toContain("renderAppWorkerResponseStage as __renderAppWorkerResponseStage");
     expect(code).toContain("const __responseStageOptions = {");
     expect(code).toContain("__renderAppWorkerResponseStage(__responseStageOptions");

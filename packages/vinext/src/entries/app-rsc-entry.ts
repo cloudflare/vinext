@@ -782,6 +782,7 @@ import {
   getRenderedConcreteUrlPathsForRoute as __getRenderedConcreteUrlPathsForRoute,
   initPregeneratedPathsFromGlobals as __initPregeneratedPathsFromGlobals,
 } from ${JSON.stringify(pregeneratedConcretePathsPath)};
+import "virtual:vinext-pregenerated-concrete-paths";
 
 const __draftModeSecret = ${JSON.stringify(draftModeSecret)};
 

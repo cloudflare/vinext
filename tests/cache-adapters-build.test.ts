@@ -243,6 +243,12 @@ export default createAdapter;
     expect(assetsIgnore.split("\n").map((l) => l.trim())).toContain(".vite");
     // The manifest exists on disk (the build reads it) but is now excluded.
     expect(fs.existsSync(path.join(root, "dist/client/.vite/manifest.json"))).toBe(true);
+    expect(
+      fs.readFileSync(
+        path.join(root, "dist/server/__vinext_pregenerated_concrete_paths.js"),
+        "utf-8",
+      ),
+    ).toContain("__VINEXT_PREGENERATED_CONCRETE_PATHS");
   }, 60_000);
 
   it("keeps the data adapter out of the emitted request-stage graph", async () => {
