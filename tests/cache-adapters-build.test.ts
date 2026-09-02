@@ -289,6 +289,11 @@ export default createAdapter;
       "worker/index.ts",
       'import handler from "vinext/server/fetch-handler";\n\nexport default handler;\n',
     );
+    writeFixtureFile(
+      root,
+      "pages/legacy.tsx",
+      `export default function LegacyPage() { return <main>legacy ${RESPONSE_STAGE_MARKER}</main>; }`,
+    );
 
     const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as {
       cloudflare: CloudflarePluginFactory;
@@ -334,6 +339,63 @@ export default createAdapter;
       default: { type: "worker", cache: { enabled: false } },
       VinextCachedResponse: { type: "worker", cache: { enabled: true } },
     });
+    expect(wrangler.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
+    expect(wrangler.cache).toBeUndefined();
+  }, 60_000);
+
+  it("preserves the complete CDN config in a Pages Router build", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cdn-pages-entrypoint-build-"));
+    tmpDirs.push(root);
+    writeCloudflareAppFixture(root, "vinext-cdn-pages-entrypoint-build");
+    fs.rmSync(path.join(root, "app"), { recursive: true });
+    fs.rmSync(path.join(root, "node_modules"));
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "fixtures/cf-app-basic/node_modules"),
+      path.join(root, "node_modules"),
+      "junction",
+    );
+    writeFixtureFile(
+      root,
+      "pages/index.tsx",
+      `export default function HomePage() { return <main>pages ${RESPONSE_STAGE_MARKER}</main>; }`,
+    );
+    writeFixtureFile(
+      root,
+      "worker/index.ts",
+      'import handler from "vinext/server/fetch-handler";\n\nexport default handler;\n',
+    );
+
+    const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as {
+      cloudflare: CloudflarePluginFactory;
+    };
+    const builder = await createBuilder({
+      root,
+      configFile: false,
+      plugins: [
+        vinext({ disableAppRouter: true, cache: { cdn: cdnAdapter() } }),
+        cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+      ],
+      logLevel: "silent",
+    });
+
+    await builder.buildApp();
+
+    const deployRedirectPath = path.join(root, ".wrangler/deploy/config.json");
+    const deployRedirect = JSON.parse(fs.readFileSync(deployRedirectPath, "utf8"));
+    const wranglerPath = path.resolve(path.dirname(deployRedirectPath), deployRedirect.configPath);
+    const serverDir = path.dirname(wranglerPath);
+    const wrangler = JSON.parse(fs.readFileSync(wranglerPath, "utf8"));
+    const workerPath = path.resolve(serverDir, wrangler.main);
+    expect(fs.readFileSync(workerPath, "utf8")).toMatch(
+      /export\s*\{[^}]*\b(?:[A-Za-z_$][\w$]*\s+as\s+)?VinextCachedResponse\b/,
+    );
+    expect(readTextFilesRecursive(serverDir)).toContain(RESPONSE_STAGE_MARKER);
+    expect(readStaticJavaScriptClosure(workerPath)).not.toContain(RESPONSE_STAGE_MARKER);
+    expect(wrangler.exports).toMatchObject({
+      default: { type: "worker", cache: { enabled: false } },
+      VinextCachedResponse: { type: "worker", cache: { enabled: true } },
+    });
+    expect(wrangler.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
     expect(wrangler.cache).toBeUndefined();
   }, 60_000);
 
