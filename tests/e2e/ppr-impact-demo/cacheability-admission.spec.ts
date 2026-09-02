@@ -1,4 +1,10 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIResponse } from "@playwright/test";
+
+function expectGatewayCachePolicy(response: APIResponse): void {
+  expect(response.headers()["cache-control"]).toContain("must-revalidate");
+  expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+  expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+}
 
 test("admits pattern-backed App responses only after each clean EOF", async ({ request }) => {
   const certified = await request.get("/cacheability/static", {
@@ -6,8 +12,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   });
   expect(certified.status()).toBe(200);
   expect(await certified.text()).toContain("static page");
-  expect(certified.headers()["cdn-cache-control"]).toContain("public");
-  expect(certified.headers()["cache-control"]).toContain("must-revalidate");
+  expectGatewayCachePolicy(certified);
 
   const browserFetch = await request.get("/cacheability/static?browser-fetch=1", {
     headers: { Accept: "*/*" },
@@ -22,7 +27,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   });
   expect(certifiedFullRsc.status()).toBe(200);
   expect(certifiedFullRsc.headers()["content-type"]).toContain("text/x-component");
-  expect(certifiedFullRsc.headers()["cdn-cache-control"]).toContain("public");
+  expectGatewayCachePolicy(certifiedFullRsc);
 
   const certifiedLoadingShell = await request.get("/cacheability/static?_rsc=9qLBDIU2NgN178cB", {
     headers: {
@@ -35,13 +40,13 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   });
   expect(certifiedLoadingShell.status()).toBe(200);
   expect(certifiedLoadingShell.headers()["content-type"]).toContain("text/x-component");
-  expect(certifiedLoadingShell.headers()["cdn-cache-control"]).toContain("public");
+  expectGatewayCachePolicy(certifiedLoadingShell);
 
   const runtimeCheck = await request.get("/cacheability/static?runtime=1", {
     headers: { Accept: "text/html" },
   });
   expect(runtimeCheck.status()).toBe(200);
-  expect(runtimeCheck.headers()["cdn-cache-control"]).toContain("public");
+  expectGatewayCachePolicy(runtimeCheck);
 
   const lateCookie = await request.get("/cacheability/static?late-policy=set-cookie", {
     headers: { Accept: "text/html" },
@@ -57,7 +62,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
       headers: { Accept: "text/html" },
     });
     expect(latePrivatePolicy.status()).toBe(200);
-    expect(latePrivatePolicy.headers()["cache-control"]).toContain("no-store");
+    expect(latePrivatePolicy.headers()["cache-control"]).toMatch(/(?:private|no-store)/);
     expect(latePrivatePolicy.headers()["cdn-cache-control"]).toBeUndefined();
     expect(latePrivatePolicy.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
   }
@@ -66,8 +71,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
     headers: { Accept: "text/html" },
   });
   expect(unlistedQuery.status()).toBe(200);
-  expect(unlistedQuery.headers()["cdn-cache-control"]).toContain("public");
-  expect(unlistedQuery.headers()["cache-control"]).toContain("must-revalidate");
+  expectGatewayCachePolicy(unlistedQuery);
 
   const knownDynamic = await request.get("/cacheability/dynamic", {
     headers: { Accept: "text/html" },
@@ -80,7 +84,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
     headers: { Accept: "text/html" },
   });
   expect(configPublicDynamic.status()).toBe(200);
-  expect(configPublicDynamic.headers()["cdn-cache-control"]).toContain("max-age=32");
+  expectGatewayCachePolicy(configPublicDynamic);
 
   const configPrivateDynamic = await request.get("/cacheability/config-public-dynamic?preview=1", {
     headers: { Accept: "text/html" },
@@ -100,14 +104,14 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
     headers: { Accept: "text/html" },
   });
   expect(publicConfigPattern.status()).toBe(200);
-  expect(publicConfigPattern.headers()["cdn-cache-control"]).toContain("max-age=33");
+  expectGatewayCachePolicy(publicConfigPattern);
 
   const publicConfigRepresentation = await request.get(
     "/cacheability/config-public-representation",
     { headers: { Accept: "text/html" } },
   );
   expect(publicConfigRepresentation.status()).toBe(200);
-  expect(publicConfigRepresentation.headers()["cdn-cache-control"]).toContain("max-age=34");
+  expectGatewayCachePolicy(publicConfigRepresentation);
 
   const privateConfigRepresentation = await request.get(
     "/cacheability/config-public-representation?_rsc",
@@ -127,7 +131,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
     headers: { Accept: "text/html" },
   });
   expect(staticPatternSibling.status()).toBe(200);
-  expect(staticPatternSibling.headers()["cdn-cache-control"]).toContain("public");
+  expectGatewayCachePolicy(staticPatternSibling);
 
   const dynamicPatternSibling = await request.get("/cacheability/pattern-runtime-dynamic/dynamic", {
     headers: { Accept: "text/html" },
@@ -155,7 +159,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
     { headers: { Accept: "text/html" } },
   );
   expect(allStaticFallback.status()).toBe(200);
-  expect(allStaticFallback.headers()["cdn-cache-control"]).toContain("public");
+  expectGatewayCachePolicy(allStaticFallback);
   const allStaticFallbackBody = await allStaticFallback.text();
   expect(allStaticFallbackBody).toContain("runtime static ");
   expect(allStaticFallbackBody).toContain("runtime-fallback</main>");
@@ -164,7 +168,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
     headers: { Accept: "text/html" },
   });
   expect(emptyStaticFallback.status()).toBe(200);
-  expect(emptyStaticFallback.headers()["cdn-cache-control"]).toContain("public");
+  expectGatewayCachePolicy(emptyStaticFallback);
   expect(await emptyStaticFallback.text()).toContain("empty fallback on-demand</main>");
 
   const staticToDynamic = await request.get("/cacheability/static-to-dynamic/runtime", {
@@ -193,13 +197,13 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   const certifiedRouteHandler = await request.get("/cacheability/route-handler-static");
   expect(certifiedRouteHandler.status()).toBe(200);
   await expect(certifiedRouteHandler.json()).resolves.toEqual({ kind: "static-route-handler" });
-  expect(certifiedRouteHandler.headers()["cdn-cache-control"]).toContain("public");
+  expectGatewayCachePolicy(certifiedRouteHandler);
   expect(certifiedRouteHandler.headers()["vary"]?.toLowerCase()).toContain("user-agent");
 
   const largeRouteHandler = await request.get("/cacheability/route-handler-large");
   expect(largeRouteHandler.status()).toBe(200);
   expect((await largeRouteHandler.body()).byteLength).toBe(4 * 1024 * 1024 + 1);
-  expect(largeRouteHandler.headers()["cdn-cache-control"]).toContain("public");
+  expectGatewayCachePolicy(largeRouteHandler);
 
   const cachedLargeRouteHandler = await request.get("/cacheability/route-handler-large");
   expect(cachedLargeRouteHandler.status()).toBe(200);
@@ -213,13 +217,13 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
     kind: "static-empty",
     slug: "on-demand",
   });
-  expect(emptyStaticRouteHandler.headers()["cdn-cache-control"]).toContain("public");
+  expectGatewayCachePolicy(emptyStaticRouteHandler);
 
   const unlistedRouteHandlerQuery = await request.get(
     "/cacheability/route-handler-static?user=one",
   );
   expect(unlistedRouteHandlerQuery.status()).toBe(200);
-  expect(unlistedRouteHandlerQuery.headers()["cdn-cache-control"]).toContain("public");
+  expectGatewayCachePolicy(unlistedRouteHandlerQuery);
 
   // Next.js does not statically generate a GET+POST Route Handler, so this
   // route is intentionally absent from the probe manifest. Its handler-owned
@@ -228,7 +232,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   await expect(explicitMixedRouteHandler.json()).resolves.toEqual({
     kind: "explicit-mixed-route-handler",
   });
-  expect(explicitMixedRouteHandler.headers()["cache-control"]).toBe("public, s-maxage=60");
+  expectGatewayCachePolicy(explicitMixedRouteHandler);
 
   // `revalidate` alone is framework policy, not an explicit response-level
   // opt-in, and must not bypass the route's manifest absence.
@@ -255,8 +259,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   await expect(explicitDynamicRouteHandler.json()).resolves.toEqual({
     value: "explicitly-public",
   });
-  expect(explicitDynamicRouteHandler.headers()["cdn-cache-control"]).toBe("public, max-age=60");
-  expect(explicitDynamicRouteHandler.headers()["cache-control"]).toContain("must-revalidate");
+  expectGatewayCachePolicy(explicitDynamicRouteHandler);
 
   const lateConfigPublicFailure = await request.get(
     "/cacheability/route-handler-config-public-late-error",

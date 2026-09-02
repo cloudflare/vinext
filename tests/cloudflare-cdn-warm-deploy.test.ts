@@ -115,7 +115,18 @@ function writeTwoStageWorkerArtifact(): void {
     "dist/server/wrangler.json",
     JSON.stringify({ main: "index.js", name: "my-worker", workers_dev: true }),
   );
-  writeFile("dist/server/index.js", `import "./${CACHEABILITY_MANIFEST_MODULE}";\n`);
+  writeFile("dist/server/index.js", 'void import("./response-stage.js");\n');
+  writeFile("dist/server/response-stage.js", `import "./${CACHEABILITY_MANIFEST_MODULE}";\n`);
+  writeFile(
+    "dist/server/.vite/manifest.json",
+    JSON.stringify({
+      "virtual:cloudflare/worker-entry": {
+        dynamicImports: ["virtual:vinext-response-stage"],
+        file: "index.js",
+      },
+      "virtual:vinext-response-stage": { file: "response-stage.js" },
+    }),
+  );
   writeFile(`dist/server/${CACHEABILITY_MANIFEST_MODULE}`, "export default null;\n");
   writeFile(
     "dist/server/vinext-server.json",
@@ -304,6 +315,13 @@ describe("Cloudflare CDN warmup deploy flow", () => {
   it("rejects a generated artifact whose Worker main cannot reach the manifest module", () => {
     writeTwoStageWorkerArtifact();
     writeFile("dist/server/index.js", "export default { fetch() {} };\n");
+    writeFile(
+      "dist/server/.vite/manifest.json",
+      JSON.stringify({
+        "virtual:cloudflare/worker-entry": { file: "index.js" },
+        "virtual:vinext-response-stage": { file: "response-stage.js" },
+      }),
+    );
 
     expect(() =>
       writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
@@ -311,7 +329,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         routes: {},
         version: 1,
       }),
-    ).toThrow(`Worker main module to import ${CACHEABILITY_MANIFEST_MODULE}`);
+    ).toThrow(`Worker graph to statically import ${CACHEABILITY_MANIFEST_MODULE}`);
   });
 
   it.each([
@@ -335,7 +353,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ],
   ])("rejects a manifest filename mentioned only by a %s", (_label, mainSource) => {
     writeTwoStageWorkerArtifact();
-    writeFile("dist/server/index.js", mainSource);
+    writeFile("dist/server/response-stage.js", mainSource);
 
     expect(() =>
       writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
@@ -343,7 +361,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         routes: {},
         version: 1,
       }),
-    ).toThrow(`Worker main module to import ${CACHEABILITY_MANIFEST_MODULE}`);
+    ).toThrow(`Worker graph to statically import ${CACHEABILITY_MANIFEST_MODULE}`);
   });
 
   it.each([
@@ -357,7 +375,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ],
   ])("accepts a manifest reached by a %s", (_label, mainSource) => {
     writeTwoStageWorkerArtifact();
-    writeFile("dist/server/index.js", mainSource);
+    writeFile("dist/server/response-stage.js", mainSource);
 
     expect(
       writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
