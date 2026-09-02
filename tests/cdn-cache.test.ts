@@ -24,6 +24,7 @@ import { registerCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache-
 import {
   MemoryCacheHandler,
   registerDataCacheHandler,
+  registerLazyDataCacheHandler,
   setDataCacheHandler,
   setCacheHandler,
   getDataCacheHandler,
@@ -113,6 +114,37 @@ describe("data cache handler aliases", () => {
 
     expect(factory).not.toHaveBeenCalled();
     expect(getDataCacheHandler()).toBe(explicit);
+  });
+
+  it("loads a request-stage data adapter only on first cache use", async () => {
+    const handlerKey = Symbol.for("vinext.cacheHandler");
+    const configuredKey = Symbol.for("vinext.configuredCacheHandler");
+    const explicitKey = Symbol.for("vinext.explicitCacheHandler");
+    const lazyKey = Symbol.for("vinext.lazyCacheHandler");
+    const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+    const previous = new Map(
+      [handlerKey, configuredKey, explicitKey, lazyKey].map((key) => [key, globals[key]]),
+    );
+    for (const key of previous.keys()) delete globals[key];
+
+    try {
+      const configured = new MemoryCacheHandler();
+      const load = vi.fn(async () => registerDataCacheHandler(() => configured));
+      registerLazyDataCacheHandler(load);
+      registerLazyDataCacheHandler(vi.fn());
+
+      expect(load).not.toHaveBeenCalled();
+      const proxy = getDataCacheHandler();
+      await Promise.all([proxy.get("a"), proxy.get("b")]);
+
+      expect(load).toHaveBeenCalledOnce();
+      expect(getDataCacheHandler()).toBe(configured);
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete globals[key];
+        else globals[key] = value;
+      }
+    }
   });
 
   it("preserves an imperative handler installed by a declarative factory", () => {
