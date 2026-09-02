@@ -29,6 +29,7 @@ type CloudflareStageContext = {
 };
 
 type CloudflareResponseStageInvocation = {
+  expectedResponseStageBuildIdentity?: string;
   options: VinextResponseStageDispatchOptions;
   props: unknown;
   requestMethod: string;
@@ -352,6 +353,16 @@ function withResponseStagePurge(context: CloudflareStageContext): CloudflareStag
 
 function getResponseStageInvocation(value: unknown): CloudflareResponseStageInvocation | null {
   if (!value || typeof value !== "object") return null;
+  const expectedResponseStageBuildIdentity = Reflect.get(
+    value,
+    "expectedResponseStageBuildIdentity",
+  );
+  if (
+    expectedResponseStageBuildIdentity !== undefined &&
+    typeof expectedResponseStageBuildIdentity !== "string"
+  ) {
+    return null;
+  }
   const options = Reflect.get(value, "options");
   if (!options || typeof options !== "object") return null;
   const cache = Reflect.get(options, "cache");
@@ -366,6 +377,9 @@ function getResponseStageInvocation(value: unknown): CloudflareResponseStageInvo
     return null;
   }
   return {
+    ...(typeof expectedResponseStageBuildIdentity === "string"
+      ? { expectedResponseStageBuildIdentity }
+      : {}),
     options: options as VinextResponseStageDispatchOptions,
     props: Reflect.get(value, "props"),
     requestMethod,
@@ -411,6 +425,12 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
         new Response("Invalid vinext response-stage invocation", { status: 400 }),
       );
     }
+    if (
+      invocation.expectedResponseStageBuildIdentity !== undefined &&
+      invocation.expectedResponseStageBuildIdentity !== getVinextCdnBuildIdentity()
+    ) {
+      return stampResponseStageBuildIdentity(responseStageUnavailable());
+    }
     const restored = restoreResponseStageRequest(
       request,
       invocation.requestUrl,
@@ -444,7 +464,11 @@ export default {
       props,
       options,
     ) => {
+      const expectedResponseStageBuildIdentity = getVinextCdnBuildIdentity();
       const invocation = {
+        ...(expectedResponseStageBuildIdentity === null
+          ? {}
+          : { expectedResponseStageBuildIdentity }),
         options,
         props,
         requestMethod: stageRequest.method,
