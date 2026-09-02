@@ -183,6 +183,7 @@ function formatCacheTag(tags: readonly string[]): string | null {
 
 export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   readonly requiresCompletedResponseAdmission = true;
+  readonly responsePolicyHeaderNames = EDGE_POLICY_HEADERS;
   readonly responseVary = "verbatim" as const;
 
   constructor(

@@ -39,6 +39,33 @@ export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean
   return Boolean(cacheControl && isNonCacheableCacheControl(cacheControl));
 }
 
+/** Lowercase response-policy names owned by core and the active adapter. */
+export function getCdnResponsePolicyHeaderNames(): ReadonlySet<string> {
+  return new Set([
+    "cache-control",
+    ...(getCdnCacheAdapter().responsePolicyHeaderNames ?? []).map((name) => name.toLowerCase()),
+  ]);
+}
+
+/** Capture only cache-policy provenance from an outer composition stage. */
+function captureCdnResponsePolicyHeaders(headers: Headers): Headers {
+  const policy = new Headers();
+  for (const name of getCdnResponsePolicyHeaderNames()) {
+    const value = headers.get(name);
+    if (value !== null) policy.set(name, value);
+  }
+  return policy;
+}
+
+/** Capture policy values that were added above an already-transported baseline. */
+export function captureCdnResponsePolicyOverrides(headers: Headers, baseline: Headers): Headers {
+  const overrides = captureCdnResponsePolicyHeaders(headers);
+  for (const [name, value] of overrides) {
+    if (baseline.get(name) === value) overrides.delete(name);
+  }
+  return overrides;
+}
+
 /** Delegate provider-specific request routing validation to the CDN adapter. */
 export async function validateCdnRequest(request: Request): Promise<Response | null> {
   return (await getCdnCacheAdapter().validateRequest?.(request)) ?? null;
@@ -77,6 +104,50 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
   }
   if (useNextDeployPolicy) {
     headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
+  }
+}
+
+/**
+ * Reconcile request-stage policy composed above a reusable response artifact.
+ * A newly applied private policy must clear any cacheable provider headers that
+ * belonged to the inner artifact before the final response leaves the gateway.
+ * `outerPolicyHeaders` contains only policy set by the uncached request stage,
+ * so an identical inner value cannot hide explicit outer provenance.
+ */
+export function reconcileCdnResponseHeadersAfterOuterPolicy(
+  headers: Headers,
+  outerPolicyHeaders: Headers,
+): void {
+  // Set-Cookie is additive and therefore is not part of the policy-only
+  // provenance snapshot. It can still be introduced by the uncached request
+  // stage after a shared artifact returns, and the completed response must not
+  // retain that artifact's shared-cache policy.
+  if (headers.has("set-cookie")) {
+    applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+    return;
+  }
+  const cacheControl = outerPolicyHeaders.get("cache-control");
+  if (cacheControl !== null) {
+    applyCdnResponseHeaders(headers, { cacheControl });
+    // Preserve any explicit provider-specific policy authored alongside the
+    // generic middleware policy after the adapter has derived its defaults.
+    for (const name of getCdnResponsePolicyHeaderNames()) {
+      if (name === "cache-control") continue;
+      const value = outerPolicyHeaders.get(name);
+      if (value !== null) headers.set(name, value);
+    }
+    return;
+  }
+  for (const name of getCdnResponsePolicyHeaderNames()) {
+    const value = outerPolicyHeaders.get(name);
+    if (value !== null && isNonCacheableCacheControl(value)) {
+      headers.set(name, value);
+      applyCdnResponseHeaders(headers, { cacheControl: value });
+      return;
+    }
+  }
+  if (hasExplicitNonCacheableResponsePolicy(outerPolicyHeaders)) {
+    applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
   }
 }
 
