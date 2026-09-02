@@ -79,6 +79,83 @@ function pagesPageProps(
   };
 }
 
+type PreFixResponseStageInvocation = {
+  options: { cache: "shared" | "bypass" };
+  props: unknown;
+  requestMethod: string;
+  requestUrl: string;
+};
+
+/** Snapshot of the response-stage parser immediately before the wire-version fix. */
+function getPreFixResponseStageInvocation(value: unknown): PreFixResponseStageInvocation | null {
+  if (!value || typeof value !== "object") return null;
+  const options = Reflect.get(value, "options");
+  if (!options || typeof options !== "object") return null;
+  const cache = Reflect.get(options, "cache");
+  if (cache !== "shared" && cache !== "bypass") return null;
+  const requestUrl = Reflect.get(value, "requestUrl");
+  if (typeof requestUrl !== "string") return null;
+  const requestMethod = Reflect.get(value, "requestMethod");
+  if (typeof requestMethod !== "string" || requestMethod.length === 0) return null;
+  try {
+    new URL(requestUrl);
+  } catch {
+    return null;
+  }
+  return {
+    options: options as PreFixResponseStageInvocation["options"],
+    props: Reflect.get(value, "props"),
+    requestMethod,
+    requestUrl,
+  };
+}
+
+/** Local pre-fix entrypoint used to exercise a real rolling-deploy boundary. */
+class PreFixVinextCachedResponse {
+  constructor(
+    private readonly props: unknown,
+    private readonly buildIdentity: string,
+  ) {}
+
+  async fetch(request: Request): Promise<Response> {
+    const invocation = getPreFixResponseStageInvocation(this.props);
+    if (!invocation) {
+      return this.stamp(new Response("Invalid vinext response-stage invocation", { status: 400 }));
+    }
+    const restored = new Request(new Request(invocation.requestUrl, request), {
+      method: invocation.requestMethod,
+    });
+    const response = await stages.response(
+      restored,
+      {},
+      { hostRuntime: "worker" },
+      invocation.props,
+      async () => new Response(null, { status: 501 }),
+      invocation.options,
+    );
+    return this.stamp(response);
+  }
+
+  private stamp(response: Response): Response {
+    const headers = new Headers(response.headers);
+    headers.set(VINEXT_CDN_BUILD_ID_HEADER, this.buildIdentity);
+    return new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+}
+
+function isWorkersCacheAdmissible(response: Response): boolean {
+  // This deliberately models only the RFC admission decision needed by this
+  // regression, not every feature of Workers Cache.
+  return (
+    response.status === 200 &&
+    response.headers.get("Cloudflare-CDN-Cache-Control")?.includes("public") === true
+  );
+}
+
 describe("Cloudflare CDN multi-stage Worker facade", () => {
   beforeEach(() => {
     stages.request.mockReset();
@@ -131,9 +208,11 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
         }),
       );
 
-      const response = await createEntrypoint(responseStageInvocation({ kind: "app-page" })).fetch(
-        new Request("https://example.com/page"),
-      );
+      const response = await createEntrypoint({
+        ...responseStageInvocation({ kind: "app-page" }),
+        expectedResponseStageBuildIdentity: "current-stage",
+        options: { cache: "vinext-cloudflare-v1:shared" },
+      }).fetch(new Request("https://example.com/page"));
 
       expect(response.status).toBe(status);
       expect(response.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("current-stage");
@@ -208,12 +287,16 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
   });
 
-  it("rejects a stale named stage before Workers Cache can admit its response", async () => {
+  it("makes a pre-fix named stage fail before render or Workers Cache admission", async () => {
     // No Next.js test port applies: propagation between named Worker
     // entrypoints and Workers Cache admission is Cloudflare-specific.
     vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
     const cachedResponses = new Map<string, Response>();
-    const coldResponseMetadata: { cacheControl: string | null; identity: string | null }[] = [];
+    const coldResponseMetadata: {
+      edgeCacheControl: string | null;
+      identity: string | null;
+      status: number;
+    }[] = [];
     const renderedBy: string[] = [];
     let coldDispatch = 0;
     const binding = vi.fn(({ props }: { props: unknown }) => ({
@@ -223,19 +306,16 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
         const cached = cachedResponses.get(request.url);
         if (cached) return cached.clone();
 
-        const responseStageIdentity = coldDispatch++ === 0 ? "previous-stage" : "current-stage";
-        process.env.__VINEXT_RSC_BUILD_IDENTITY = responseStageIdentity;
-        let response: Response;
-        try {
-          response = await createEntrypoint(props).fetch(request);
-        } finally {
-          process.env.__VINEXT_RSC_BUILD_IDENTITY = "current-stage";
-        }
+        const response =
+          coldDispatch++ === 0
+            ? await new PreFixVinextCachedResponse(props, "previous-stage").fetch(request)
+            : await createEntrypoint(props).fetch(request);
         coldResponseMetadata.push({
-          cacheControl: response.headers.get("Cache-Control"),
+          edgeCacheControl: response.headers.get("Cloudflare-CDN-Cache-Control"),
           identity: response.headers.get(VINEXT_CDN_BUILD_ID_HEADER),
+          status: response.status,
         });
-        if (!response.headers.get("Cache-Control")?.includes("no-store")) {
+        if (isWorkersCacheAdmissible(response)) {
           cachedResponses.set(request.url, response.clone());
         }
         return response;
@@ -245,9 +325,8 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       dispatch(request, { kind: "app-page" }, { cache: "shared" }),
     );
     stages.response.mockImplementation(() => {
-      const responseStageIdentity = process.env.__VINEXT_RSC_BUILD_IDENTITY!;
-      renderedBy.push(responseStageIdentity);
-      return new Response(`rendered by ${responseStageIdentity}`, {
+      renderedBy.push("current-stage");
+      return new Response("rendered by current-stage", {
         headers: { "Cloudflare-CDN-Cache-Control": "public, max-age=300" },
       });
     });
@@ -258,8 +337,9 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(first.headers.get("Cache-Control")).toBe("no-store");
     expect(cachedResponses).toHaveProperty("size", 0);
     expect(coldResponseMetadata).toEqual([
-      { cacheControl: "no-store", identity: "previous-stage" },
+      { edgeCacheControl: null, identity: "previous-stage", status: 400 },
     ]);
+    expect(renderedBy).toEqual([]);
 
     const retry = await worker.fetch(new Request("https://example.com/page"), {}, context);
     expect(retry.status).toBe(200);
@@ -267,8 +347,12 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(renderedBy).toEqual(["current-stage"]);
     expect(cachedResponses).toHaveProperty("size", 1);
     expect(coldResponseMetadata).toEqual([
-      { cacheControl: "no-store", identity: "previous-stage" },
-      { cacheControl: null, identity: "current-stage" },
+      { edgeCacheControl: null, identity: "previous-stage", status: 400 },
+      {
+        edgeCacheControl: "public, max-age=300",
+        identity: "current-stage",
+        status: 200,
+      },
     ]);
 
     const hit = await worker.fetch(new Request("https://example.com/page"), {}, context);
@@ -322,6 +406,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     const response = await createEntrypoint({
       ...responseStageInvocation({ kind: "app-page" }),
       expectedResponseStageBuildIdentity: "current-stage",
+      options: { cache: "vinext-cloudflare-v1:shared" },
     }).fetch(new Request("https://example.com/page"));
 
     expect(response.status).toBe(503);
@@ -339,6 +424,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       }).fetch(new Request("https://example.com/page"));
 
       expect(response.status).toBe(400);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
       expect(stages.response).not.toHaveBeenCalled();
     },
   );
@@ -350,7 +436,70 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       requestUrl: "https://example.com/page",
     }).fetch(new Request("https://example.com/page"));
     expect(response.status).toBe(400);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(stages.response).not.toHaveBeenCalled();
+  });
+
+  it("rejects unversioned cache intent when an expected identity is present", async () => {
+    vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
+    const response = await createEntrypoint({
+      ...responseStageInvocation({ kind: "app-page" }),
+      expectedResponseStageBuildIdentity: "current-stage",
+    }).fetch(new Request("https://example.com/page"));
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(stages.response).not.toHaveBeenCalled();
+  });
+
+  it("rejects versioned wire cache intent without an expected identity", async () => {
+    const response = await createEntrypoint({
+      ...responseStageInvocation({ kind: "app-page" }),
+      options: { cache: "vinext-cloudflare-v1:shared" },
+    }).fetch(new Request("https://example.com/page"));
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(stages.response).not.toHaveBeenCalled();
+  });
+
+  it("makes a built stage reject pre-fix gateway props before render or cache admission", async () => {
+    vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
+
+    // This is the exact configurable-entrypoint shape serialized by the
+    // immediately preceding gateway implementation.
+    const response = await createEntrypoint(responseStageInvocation({ kind: "app-page" })).fetch(
+      new Request("https://example.com/page"),
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(isWorkersCacheAdmissible(response)).toBe(false);
+    expect(stages.response).not.toHaveBeenCalled();
+  });
+
+  it("normalizes wire cache intent before nested response-stage dispatch", async () => {
+    vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
+    stages.response
+      .mockImplementationOnce((_request, _env, _context, _props, dispatchRequestStage) =>
+        dispatchRequestStage(new Request("https://example.com/nested")),
+      )
+      .mockResolvedValueOnce(new Response("nested response"));
+    stages.request.mockImplementation((request, _env, _context, dispatchResponseStage) =>
+      dispatchResponseStage(request, { kind: "app-page" }, { cache: "shared" }),
+    );
+
+    const response = await createEntrypoint({
+      ...responseStageInvocation({ kind: "app-page" }),
+      expectedResponseStageBuildIdentity: "current-stage",
+      options: { cache: "vinext-cloudflare-v1:shared" },
+    }).fetch(new Request("https://example.com/page"));
+
+    await expect(response.text()).resolves.toBe("nested response");
+    expect(stages.response.mock.calls.map((call) => call[5])).toEqual([
+      { cache: "shared" },
+      { cache: "shared" },
+    ]);
   });
 
   it("dispatches shared work through ctx.exports", async () => {
@@ -776,7 +925,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(binding).toHaveBeenCalledWith({
       props: {
         expectedResponseStageBuildIdentity: "current-stage",
-        options: { cache: "bypass" },
+        options: { cache: "vinext-cloudflare-v1:bypass" },
         props: { kind: "pages-prerender-discovery" },
         requestMethod: "GET",
         requestUrl: request.url,
@@ -784,6 +933,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     });
     expect(stages.response).toHaveBeenCalledOnce();
     expect((stages.response.mock.calls[0]![0] as Request).url).toBe(request.url);
+    expect(stages.response.mock.calls[0]![5]).toEqual({ cache: "bypass" });
   });
 
   it("fails readiness closed when the named response entrypoint is unavailable", async () => {

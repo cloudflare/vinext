@@ -47,6 +47,13 @@ const RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
 const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 const CLOUDFLARE_EDGE_POLICY_HEADER = "Cloudflare-CDN-Cache-Control";
+const RESPONSE_STAGE_WIRE_CACHE = {
+  bypass: "vinext-cloudflare-v1:bypass",
+  shared: "vinext-cloudflare-v1:shared",
+} as const;
+
+type ResponseStageWireCache =
+  (typeof RESPONSE_STAGE_WIRE_CACHE)[keyof typeof RESPONSE_STAGE_WIRE_CACHE];
 
 function isResponseStageReadinessRequest(request: Request): boolean {
   return (
@@ -365,8 +372,30 @@ function getResponseStageInvocation(value: unknown): CloudflareResponseStageInvo
   }
   const options = Reflect.get(value, "options");
   if (!options || typeof options !== "object") return null;
-  const cache = Reflect.get(options, "cache");
-  if (cache !== "shared" && cache !== "bypass") return null;
+  const wireCache = Reflect.get(options, "cache");
+  let cache: VinextResponseStageDispatchOptions["cache"];
+  if (
+    expectedResponseStageBuildIdentity !== undefined &&
+    wireCache === RESPONSE_STAGE_WIRE_CACHE.shared
+  ) {
+    cache = "shared";
+  } else if (
+    expectedResponseStageBuildIdentity !== undefined &&
+    wireCache === RESPONSE_STAGE_WIRE_CACHE.bypass
+  ) {
+    cache = "bypass";
+  } else if (
+    expectedResponseStageBuildIdentity === undefined &&
+    getVinextCdnBuildIdentity() === null &&
+    (wireCache === "shared" || wireCache === "bypass")
+  ) {
+    // Preserve direct source consumers and unit tests. Every built stage must
+    // use the versioned discriminator so either side of a rolling deployment
+    // rejects a pre-protocol peer before render or cache admission.
+    cache = wireCache;
+  } else {
+    return null;
+  }
   const requestUrl = Reflect.get(value, "requestUrl");
   if (typeof requestUrl !== "string") return null;
   const requestMethod = Reflect.get(value, "requestMethod");
@@ -380,7 +409,7 @@ function getResponseStageInvocation(value: unknown): CloudflareResponseStageInvo
     ...(typeof expectedResponseStageBuildIdentity === "string"
       ? { expectedResponseStageBuildIdentity }
       : {}),
-    options: options as VinextResponseStageDispatchOptions,
+    options: { ...options, cache } as VinextResponseStageDispatchOptions,
     props: Reflect.get(value, "props"),
     requestMethod,
     requestUrl,
@@ -422,7 +451,10 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
     const invocation = getResponseStageInvocation(context.props);
     if (!invocation) {
       return stampResponseStageBuildIdentity(
-        new Response("Invalid vinext response-stage invocation", { status: 400 }),
+        new Response("Invalid vinext response-stage invocation", {
+          status: 400,
+          headers: { "Cache-Control": "no-store" },
+        }),
       );
     }
     if (
@@ -480,7 +512,16 @@ export default {
       }
       if (!requiresEntrypoint) usedSharedResponseStage = true;
       try {
-        const serializedInvocation = JSON.stringify(invocation);
+        const serializedInvocation = JSON.stringify({
+          ...invocation,
+          options:
+            expectedResponseStageBuildIdentity === null
+              ? options
+              : {
+                  ...options,
+                  cache: RESPONSE_STAGE_WIRE_CACHE[options.cache] satisfies ResponseStageWireCache,
+                },
+        });
         const binding = getResponseStageBinding(stageContext, serializedInvocation);
         if (!binding) {
           return requiresEntrypoint
