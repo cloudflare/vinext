@@ -174,6 +174,21 @@ function readState(ctx: ExecutionContextLike): RouteCacheabilityState | null {
   );
 }
 
+function resolveCacheabilityRepresentation(
+  representation: CacheabilityRepresentation,
+  routeKind: "app-page" | "app-route" | "pages-page",
+): CacheabilityRepresentation {
+  // Accept describes the representation a caller would prefer; it does not
+  // determine whether the resolved pathname belongs to an App Page or a Route
+  // Handler. Browser fetch() uses Accept: */* by default, while Route Handlers
+  // may legitimately be requested with Accept: text/html. Once routing has
+  // resolved the owner, make that result authoritative for non-RSC requests.
+  if (representation !== "html" && representation !== "app-route") {
+    return representation;
+  }
+  return routeKind === "app-route" ? "app-route" : "html";
+}
+
 function probeResponse(
   state: RouteCacheabilityState,
   routeState: CacheabilityProbeRouteState,
@@ -604,14 +619,15 @@ async function finalizeWorkerCacheabilityAdmission(
   // completed response.
   if (state.route?.kind === "app-route") {
     let manifestRoute: CacheabilityManifestRoute | null = null;
+    const representation = admission?.representation
+      ? resolveCacheabilityRepresentation(
+          admission.representation as CacheabilityRepresentation,
+          state.route.kind,
+        )
+      : null;
     const hasExplicitRuntimePolicy =
       state.explicitResponseCachePolicy === true || state.explicitConfigCachePolicy === true;
-    if (
-      !admission ||
-      admission.policy === "deny" ||
-      !admission.representation ||
-      !admission.requestKey
-    ) {
+    if (!admission || admission.policy === "deny" || !representation || !admission.requestKey) {
       return responseWithCachePolicy(response, response.body, null);
     }
     if (admission.policy === "manifest") {
@@ -625,11 +641,8 @@ async function finalizeWorkerCacheabilityAdmission(
     const isManifestAuthorized =
       manifestRoute !== null &&
       admission.routePathname !== undefined &&
-      cacheabilityManifestRouteState(
-        manifestRoute,
-        admission.routePathname,
-        admission.representation as CacheabilityRepresentation,
-      ) !== null;
+      cacheabilityManifestRouteState(manifestRoute, admission.routePathname, representation) !==
+        null;
     const canUseBoundedRuntimeAdmission =
       hasExplicitRuntimePolicy &&
       (admission.policy === "runtime" ||
@@ -677,12 +690,16 @@ async function finalizeWorkerCacheabilityAdmission(
   ) {
     return responseWithCachePolicy(response, response.body, null);
   }
+  const representation = resolveCacheabilityRepresentation(
+    admission.representation as CacheabilityRepresentation,
+    state.route.kind,
+  );
   const representationMatchesRoute =
     state.route.kind === "app-page"
-      ? admission.representation === "html" ||
-        admission.representation === "rsc-full" ||
-        admission.representation === "rsc-loading-shell"
-      : admission.representation === "html" || admission.representation === "pages-data";
+      ? representation === "html" ||
+        representation === "rsc-full" ||
+        representation === "rsc-loading-shell"
+      : representation === "html" || representation === "pages-data";
   if (!representationMatchesRoute) {
     return responseWithCachePolicy(response, response.body, null);
   }
@@ -694,11 +711,7 @@ async function finalizeWorkerCacheabilityAdmission(
     manifestRoute = findCacheabilityManifestRoute(manifest, state.route.kind, state.route.pattern);
     manifestRouteState =
       manifestRoute && admission.routePathname
-        ? cacheabilityManifestRouteState(
-            manifestRoute,
-            admission.routePathname,
-            admission.representation as CacheabilityRepresentation,
-          )
+        ? cacheabilityManifestRouteState(manifestRoute, admission.routePathname, representation)
         : null;
     if (!manifestRoute || !manifestRouteState) {
       return responseWithCachePolicy(response, response.body, null);

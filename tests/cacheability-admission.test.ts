@@ -391,6 +391,36 @@ describe("single-request cacheability admission", () => {
     },
   );
 
+  it.each([undefined, "*/*", "application/json"])(
+    "uses the resolved App Page kind for a non-RSC request with Accept: %s",
+    async (accept) => {
+      const { raw } = staticManifestRoute();
+      const headers = new Headers();
+      if (accept !== undefined) headers.set("Accept", accept);
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        new Request("https://example.com/page", { headers }),
+        raw,
+        "build-a",
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind: "app-page", pattern: "/page" };
+      state.outcome = {
+        cacheable: true,
+        cacheControl: "s-maxage=60, stale-while-revalidate=540",
+      };
+      state.frameworkResponseCachePolicy = { "cache-control": "no-store" };
+
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response("static", { headers: { "Cache-Control": "no-store" } }),
+        context,
+      );
+
+      expect(response.headers.get("Cache-Control")).toBe("s-maxage=60, stale-while-revalidate=540");
+      await expect(response.text()).resolves.toBe("static");
+    },
+  );
+
   it("applies a pre-dispatch veto to an otherwise public Route Handler response", async () => {
     const context = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },

@@ -8,6 +8,7 @@ import {
   type Response,
 } from "@playwright/test";
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../../../packages/cloudflare/src/version-headers.js";
 
 const TARGET_PATH = "/prewarm-target";
@@ -198,6 +199,29 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   // no-store version endpoint. This proves the promoted build is stable
   // without touching either canonical cache entry before its HIT assertion.
   await waitForStablePromotion({ baseURL, buildId, playwright, rscBuildId });
+
+  // A browser fetch() uses Accept: */* by default. The resolved App Page kind,
+  // rather than that header, must authorize a fresh HTML cache identity. This
+  // query is unique so the first response necessarily exercises Worker
+  // admission instead of the canonical entry populated during deployment.
+  const browserFetchUrl = new URL("/cached/intro", baseURL);
+  browserFetchUrl.searchParams.set("browser-fetch", randomUUID());
+  const browserFetchMiss = await request.get(browserFetchUrl.href, {
+    headers: { accept: "*/*" },
+  });
+  const browserFetchMissHeaders = browserFetchMiss.headers();
+  expect(browserFetchMiss.ok(), JSON.stringify(browserFetchMissHeaders)).toBe(true);
+  expect(browserFetchMissHeaders["content-type"]).toContain("text/html");
+  expect(browserFetchMissHeaders["cf-cache-status"]).toBe("MISS");
+  expect(browserFetchMissHeaders["cdn-cache-control"]).toContain("public");
+  expect(browserFetchMissHeaders["cache-control"]).not.toContain("no-store");
+  const browserFetchBody = await browserFetchMiss.text();
+
+  const browserFetchHit = await request.get(browserFetchUrl.href, {
+    headers: { accept: "*/*" },
+  });
+  expect(browserFetchHit.headers()["cf-cache-status"]).toBe("HIT");
+  expect(await browserFetchHit.text()).toBe(browserFetchBody);
 
   const workerName = new URL(baseURL).hostname.split(".")[0];
   const downstreamOnlyOverride = await request.get(`${baseURL}/api/prewarm-version?downstream=1`, {
