@@ -1037,42 +1037,34 @@ export function createPagesPageHandler(
         // and expects the full props envelope (pageProps plus any app-level
         // props like __N_SSP, __N_SSG) as JSON instead of the full HTML page.
         if (isDataReq) {
-          const init: ResponseInit & { headers: Record<string, string> } = { headers: {} };
+          const headers = new Headers();
           if (gsspRes && typeof gsspRes.getHeaders === "function") {
             const gsspHeaders = gsspRes.getHeaders();
             for (const k of Object.keys(gsspHeaders)) {
               const v = gsspHeaders[k];
               if (v === undefined || v === null) continue;
-              init.headers[k] = Array.isArray(v) ? v.join(", ") : String(v);
+              if (k.toLowerCase() === "set-cookie" && Array.isArray(v)) {
+                for (const cookie of v) headers.append(k, String(cookie));
+              } else {
+                headers.set(k, Array.isArray(v) ? v.join(", ") : String(v));
+              }
             }
           }
           if (gsspRes) {
             // Default Cache-Control for gSSP-driven _next/data responses —
             // skip when gSSP already set one via res.setHeader. Fixes #1461.
-            let hasUserCacheControl = false;
-            for (const headerKey of Object.keys(init.headers)) {
-              if (headerKey.toLowerCase() === "cache-control") {
-                hasUserCacheControl = true;
-                break;
-              }
-            }
-            if (!hasUserCacheControl) {
-              init.headers["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
-            }
+            if (!headers.has("Cache-Control"))
+              headers.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
           } else if (isStaticPropsRoute) {
             if (isrRevalidateSeconds !== null) {
-              const headers = new Headers(init.headers);
               applyCdnResponseHeaders(headers, {
                 cacheControl: buildMissIsrCacheControl(
                   isrRevalidateSeconds,
                   vinextConfig.expireTime,
                 ),
               });
-              for (const [key, value] of headers) {
-                init.headers[key] = value;
-              }
             } else if (shouldUseNextDeployCacheControl()) {
-              init.headers["Cache-Control"] = BROWSER_REVALIDATE_CACHE_CONTROL;
+              headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
             }
           }
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
@@ -1084,11 +1076,11 @@ export function createPagesPageHandler(
             const deploymentId =
               process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
             if (deploymentId) {
-              init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+              headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);
             }
           }
           return finalizePagesPreviewResponse(
-            buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, init),
+            buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, { headers }),
             preview,
           );
         }

@@ -327,11 +327,12 @@ describe("Pages Worker response stage", () => {
     stages.registerCacheAdapters.mockImplementation(() => setCdnCacheAdapter(adapter));
     stages.renderPage.mockImplementation(async (...args: unknown[]) => {
       const context = args[3] as Record<PropertyKey, unknown>;
+      const initialHeaders = args[6] as Headers;
       const state = context[CACHEABILITY_REQUEST_STATE] as RouteCacheabilityState;
       expect(state.admission?.representation).toBe("pages-data");
       state.route = { kind: "pages-page", pattern: "/page" };
       state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
-      return new Response('{"pageProps":{"cached":true}}');
+      return new Response('{"pageProps":{"cached":true}}', { headers: initialHeaders });
     });
 
     const response = await handleResponseStage(
@@ -351,13 +352,17 @@ describe("Pages Worker response stage", () => {
         requestHost: "example.com",
         renderOptions: { isDataReq: true },
         resolvedUrl: "/page",
-        stagedHeaders: null,
+        stagedHeaders: [
+          ["set-cookie", "middleware=one; Path=/"],
+          ["set-cookie", "config=two; Path=/"],
+        ],
       },
       dispatchRequestStage,
       { cache: "shared" },
     );
 
     expect(response.headers.get("Cache-Control")).toBe("s-maxage=60");
+    expect(response.headers.getSetCookie()).toEqual([]);
     await expect(response.json()).resolves.toEqual({ pageProps: { cached: true } });
   });
 
