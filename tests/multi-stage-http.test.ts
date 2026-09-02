@@ -4,6 +4,7 @@ import { request as sendHttpRequest } from "node:http";
 import { createServer } from "node:net";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { KNOWN_ROUTE_FALLBACK_MARKER } from "./fixtures/multi-stage-http/http-stage-cache.runtime";
 
 const ROOT = process.cwd();
 const FIXTURE_ROOT = path.join(ROOT, "tests/fixtures/multi-stage-http");
@@ -237,6 +238,7 @@ beforeAll(async () => {
     }),
     startStageServer(path.join(FIXTURE_ROOT, "dist/server", responseEntry.file), responsePort, {
       VINEXT_REQUEST_STAGE_ORIGIN: `http://127.0.0.1:${requestPort}`,
+      VINEXT_HTTP_STAGE_FALLBACK_SHELL: "1",
       VINEXT_STAGE_TOKEN: STAGE_TOKEN,
     }),
   ]);
@@ -335,6 +337,29 @@ describe("generic HTTP multi-stage transport", () => {
     expect(second.headers.get("x-http-stage-cache")).toBe("HIT");
     expect(second.headers.get("x-http-stage-visitor")).toBe("visitor-b");
     expect(renderToken(secondBody)).toBe(renderToken(firstBody));
+  });
+
+  it("preserves pregenerated-path guards in an independent response process", async () => {
+    const prerenderManifest = JSON.parse(
+      fs.readFileSync(path.join(FIXTURE_ROOT, "dist/server/vinext-prerender.json"), "utf8"),
+    ) as { pregeneratedConcretePaths: Array<[string, string[]]> };
+    expect(prerenderManifest.pregeneratedConcretePaths).toContainEqual([
+      "/:slug/ppr/:id",
+      ["/en/ppr/known"],
+    ]);
+
+    const fallbackResponse = await fetch(`${requestServer.origin}/en/ppr/unknown`);
+    const fallbackBody = await fallbackResponse.text();
+    expect(fallbackResponse.status, fallbackBody).toBe(200);
+    expect(fallbackBody).toContain(KNOWN_ROUTE_FALLBACK_MARKER);
+
+    const response = await fetch(`${requestServer.origin}/en/ppr/known`);
+    const body = await response.text();
+
+    expect(response.status, body).toBe(200);
+    expect(response.headers.get("x-http-stage-cache")).toBe("MISS");
+    expect(body).toContain("fresh pregenerated route:en:known");
+    expect(body).not.toContain(KNOWN_ROUTE_FALLBACK_MARKER);
   });
 
   it("keeps rewritten source identities distinct while reusing each one", async () => {

@@ -1,10 +1,29 @@
 import type { CdnCacheAdapter } from "vinext/shims/cdn-cache";
 
 const NO_STORE = "no-store";
+const KNOWN_ROUTE_FALLBACK_KEY_SUFFIX = ":/en/ppr/[id]:html";
+export const KNOWN_ROUTE_FALLBACK_MARKER = "HTTP_STAGE_WRONG_FALLBACK_SHELL";
 
 const createHttpStageCacheAdapter = (): CdnCacheAdapter => ({
   ownsBackgroundRevalidation: false,
-  async get() {
+  async get(key) {
+    if (
+      process.env.VINEXT_HTTP_STAGE_FALLBACK_SHELL === "1" &&
+      key.endsWith(KNOWN_ROUTE_FALLBACK_KEY_SUFFIX)
+    ) {
+      return {
+        cacheControl: { revalidate: 60 },
+        lastModified: Date.now(),
+        value: {
+          headers: undefined,
+          html: `<html><body>${KNOWN_ROUTE_FALLBACK_MARKER}</body></html>`,
+          kind: "APP_PAGE",
+          postponed: undefined,
+          rscData: undefined,
+          status: undefined,
+        },
+      };
+    }
     return null;
   },
   async set() {},
