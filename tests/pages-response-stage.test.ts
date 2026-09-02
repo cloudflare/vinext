@@ -42,6 +42,17 @@ describe("Pages response-stage dispatch", () => {
     expect(shouldDispatch({ method })).toBe(false);
   });
 
+  it("keeps WebSocket upgrades out of the shared response stage", () => {
+    expect(shouldDispatch({ headers: { Upgrade: "websocket" } })).toBe(false);
+    expect(
+      getPagesResponseStageCacheDisposition({
+        request: new Request("https://example.com/socket", {
+          headers: { Upgrade: "WebSocket" },
+        }),
+      }),
+    ).toBe("bypass");
+  });
+
   it.each(["__prerender_bypass", "__next_preview_data"])(
     "keeps requests carrying the %s preview cookie local",
     (name) => {
