@@ -1350,6 +1350,53 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     },
   );
 
+  it("retries a required prepared fill while entrypoint cache config propagates", async () => {
+    writeTwoStageWorkerArtifact();
+    const wrangler = mockTwoStageWrangler();
+    let fillCalls = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
+        return appPageProbeResponse();
+      }
+      if (isReadinessFetch(input)) return readinessResponse();
+      fillCalls++;
+      if (fillCalls === 1) {
+        return new Response("cache config still propagating", {
+          headers: {
+            "cache-control": "no-store",
+            "cf-cache-status": "BYPASS",
+            "content-type": "text/html",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a",
+          },
+        });
+      }
+      return cacheableHtml();
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        cacheabilityProbe: true,
+        config: "dist/server/wrangler.json",
+        discoverWarmPlan: async () => ({
+          appPaths: ["/about"],
+          buildId: "app-build-a",
+          buildIdentity: "app-build-a",
+          loadingShellPaths: [],
+          paths: ["/about"],
+          routePatterns: appPageRoutePatterns(["/about"]),
+          rscPaths: [],
+        }),
+        warmCdnConcurrency: 1,
+        warmCdnPromotionDelay: 0,
+        warmCdnReadinessProbes: 1,
+        warmCdnRetries: 1,
+      }),
+    ).resolves.toBe("https://my-worker.example.workers.dev");
+    expect(fillCalls).toBe(2);
+    expect(wrangler.promoted).toBe(true);
+  });
+
   it("lets prepared cache fills exceed the readiness window while requests keep completing", async () => {
     writeTwoStageWorkerArtifact();
     let now = 0;

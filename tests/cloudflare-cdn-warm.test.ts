@@ -219,6 +219,31 @@ describe("Cloudflare CDN warmup", () => {
     );
   });
 
+  it("rejects non-boolean request-stage termination metadata", () => {
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile(
+      "dist/server/vinext-prerender-paths.json",
+      JSON.stringify({
+        buildId: "build-a",
+        paths: ["/conditional"],
+        routePatterns: {
+          "/conditional": {
+            cacheabilityProbe: {
+              canPrunePattern: true,
+              requestStageMayTerminate: "true",
+            },
+            kind: "app-page",
+            pattern: "/conditional",
+          },
+        },
+      }),
+    );
+
+    expect(() => readPrerenderWarmPlan(tmpDir, { strict: true })).toThrow(
+      "prerender path manifest not found",
+    );
+  });
+
   it("warms canonical RSC, HTML, and Pages data with browser-identical requests", async () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
@@ -357,6 +382,47 @@ describe("Cloudflare CDN warmup", () => {
       retryPlan: { loadingShellPaths: [], pagesDataPaths: [], paths: [], rscPaths: [] },
     });
     expect(result.skippedTargets).toHaveLength(2);
+  });
+
+  it("retries required staged BYPASS responses without delaying optional representations", async () => {
+    const attempts = new Map<string, number>();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(requestHref(input)!).pathname;
+      const attempt = (attempts.get(pathname) ?? 0) + 1;
+      attempts.set(pathname, attempt);
+      if (pathname === "/required" && attempt > 1) return cacheableHtml("required");
+      return new Response("private", {
+        headers: {
+          "cache-control": "no-store",
+          "cf-cache-status": "BYPASS",
+          "content-type": "text/html",
+          [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+        },
+      });
+    });
+
+    const result = await warmCdnCache({
+      expectedBuildId: "build-a",
+      fetchImpl: fetchImpl as typeof fetch,
+      paths: ["/required", "/optional"],
+      propagatingTarget: true,
+      retries: 2,
+      retryDelayMs: 0,
+      retrySkippedTargetKeys: new Set(["html\0/required"]),
+      strict: true,
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(result).toMatchObject({ failed: 0, skipped: 1, warmed: 1 });
+    expect(attempts).toEqual(
+      new Map([
+        ["/required", 2],
+        ["/optional", 1],
+      ]),
+    );
+    expect(result.skippedTargets.map(({ sourcePathname }) => sourcePathname)).toEqual([
+      "/optional",
+    ]);
   });
 
   it("rejects a Pages data response with a non-JSON representation", async () => {
