@@ -320,6 +320,24 @@ describe("createAppRscHandler", () => {
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
   });
 
+  it("does not treat a forged App bypass cookie as valid draft mode", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("app")),
+    );
+    const handler = createHandler({ configHeaders: [] });
+
+    await handler(
+      new Request("https://example.test/docs/about", {
+        headers: { Cookie: "__prerender_bypass=forged" },
+      }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+  });
+
   it("bypasses the shared response stage for middleware draft transitions", async () => {
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
       Promise.resolve(new Response("draft")),
@@ -502,6 +520,33 @@ describe("createAppRscHandler", () => {
     });
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
   });
+
+  it.each(["__prerender_bypass", "__next_preview_data"])(
+    "keeps hybrid Pages requests carrying the %s preview cookie outside the shared stage",
+    async (cookieName) => {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+        Promise.resolve(new Response("pages-stage")),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+        renderPagesFallback: async (options) =>
+          options.dispatchPagesResponseStage?.(options.request, "page", "static") ?? null,
+      });
+
+      await handler(
+        new Request("https://example.test/docs/pages", {
+          headers: { Cookie: `${cookieName}=stale-or-invalid` },
+        }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+    },
+  );
 
   it("clears shared Pages stage metadata when outer config makes the response private", async () => {
     const adapter: CdnCacheAdapter = {

@@ -83,6 +83,7 @@ import {
 } from "./revalidation-request.js";
 import { prepareSharedAppPageDispatch } from "./worker-stages.js";
 import type { PagesRouteDataKind } from "./pages-request-pipeline.js";
+import { hasPagesPreviewCookie } from "./pages-response-stage.js";
 import { isInterceptionMatchedUrlPath, normalizePath } from "./normalize-path.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
@@ -1764,6 +1765,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           const cache =
             responseStageProbeMode ||
             pagesOnDemandRevalidate ||
+            hasPagesPreviewCookie(stageRequest.headers.get("cookie")) ||
             (resourceKind === "page" && dataKind === "static" && hasRequestAwareDocument)
               ? "bypass"
               : canUseSharedWorkerResponseStage

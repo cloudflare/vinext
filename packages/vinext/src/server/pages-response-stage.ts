@@ -7,7 +7,7 @@ import type { PagesRouteDataKind } from "./pages-request-pipeline.js";
 const PREVIEW_COOKIE_NAMES = new Set(["__prerender_bypass", "__next_preview_data"]);
 const BYPASS_CACHE_CONTROL_DIRECTIVES = new Set(["no-cache", "no-store"]);
 
-function hasPreviewCookie(cookieHeader: string | null): boolean {
+export function hasPagesPreviewCookie(cookieHeader: string | null): boolean {
   if (!cookieHeader) return false;
   for (const pair of cookieHeader.split(";")) {
     const separator = pair.indexOf("=");
@@ -80,7 +80,7 @@ export function shouldDispatchPagesResponseStage({
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
   if (hasRequestAwareDocument && routeDataKind === "static") return false;
 
-  if (hasPreviewCookie(request.headers.get("cookie"))) return false;
+  if (hasPagesPreviewCookie(request.headers.get("cookie"))) return false;
   if (hasCacheBypassDirective(request.headers.get("cache-control"))) return false;
   if (requestHeadersChanged) return false;
   if (hasStagedCacheBypass(stagedHeaders)) return false;
