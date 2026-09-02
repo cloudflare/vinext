@@ -42,7 +42,7 @@ type CacheabilityProbeRouteState =
 
 type CacheabilityProbeResult = {
   cacheControl?: string;
-  kind?: "app-page" | "app-route" | "pages-page";
+  kind?: "app-page" | "app-route" | "pages-api" | "pages-page";
   pattern?: string;
   reason?: string;
   /** The renderer itself completed with a reusable static policy. */
@@ -639,18 +639,18 @@ async function finalizeWorkerCacheabilityAdmission(
 
   const admission = state.admission;
 
-  // Route Handlers normally prove body completion inside their execution
-  // boundary, so the outer Worker does not buffer them a second time. Config
-  // headers run later, however, and can make an otherwise dynamic response
-  // public. Capture only that unproven final-public case before it can escape.
-  // A manifest-bearing deployment normally authorizes the route pattern. An
-  // unlisted Route Handler can still opt in with an explicit application or
-  // config cache policy, but only after this finalizer has checked the fully
-  // completed response.
-  if (state.route?.kind === "app-route") {
+  // App Route Handlers normally prove body completion inside their execution
+  // boundary, while Pages APIs arrive here with their stream still live.
+  // Config or application headers can explicitly publish either response.
+  // Require a clean completed body before an unlisted endpoint can enter the
+  // shared cache.
+  if (state.route?.kind === "app-route" || state.route?.kind === "pages-api") {
     let manifestRoute: CacheabilityManifestRoute | null = null;
+    const responseOutcome = inferPagesPageCacheability(response, state);
     const hasExplicitRuntimePolicy =
-      state.explicitResponseCachePolicy === true || state.explicitConfigCachePolicy === true;
+      state.explicitResponseCachePolicy === true ||
+      state.explicitConfigCachePolicy === true ||
+      (state.route.kind === "pages-api" && responseOutcome.cacheable);
     if (
       !admission ||
       admission.policy === "deny" ||
@@ -659,7 +659,7 @@ async function finalizeWorkerCacheabilityAdmission(
     ) {
       return responseWithCachePolicy(response, response.body, null);
     }
-    if (admission.policy === "manifest") {
+    if (admission.policy === "manifest" && state.route.kind === "app-route") {
       const manifest = admission.manifest as CacheabilityManifest;
       manifestRoute = findCacheabilityManifestRoute(
         manifest,
@@ -689,7 +689,7 @@ async function finalizeWorkerCacheabilityAdmission(
       return responseWithCachePolicy(response, response.body, null);
     }
 
-    const outcome = inferPagesPageCacheability(response);
+    const outcome = responseOutcome;
     if (!outcome.cacheable || !outcome.cacheControl) {
       return responseWithCachePolicy(response, response.body, null);
     }

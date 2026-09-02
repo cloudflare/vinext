@@ -8,6 +8,7 @@ import type {
   VinextResponseStageDispatchOptions,
 } from "./multi-stage.js";
 import { withResponseStageCacheability } from "./response-stage-cacheability.js";
+import { beginRouteCacheability } from "vinext/shims/cacheability-classification";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -77,13 +78,16 @@ export async function renderPagesResponse(
       if (typeof pagesEntry.handleApiRoute !== "function") {
         return new Response("This page could not be found", { status: 404 });
       }
-      return pagesEntry.handleApiRoute(
-        request,
-        props.apiUrl,
-        cacheabilityContext,
-        new URL(request.url).origin,
-        cacheabilityContext.hostRuntime ?? "node",
-      );
+      return runWithExecutionContext(cacheabilityContext, () => {
+        beginRouteCacheability("pages-api", props.cacheability.resolvedRoutePathname);
+        return pagesEntry.handleApiRoute(
+          request,
+          props.apiUrl,
+          cacheabilityContext,
+          new URL(request.url).origin,
+          cacheabilityContext.hostRuntime ?? "node",
+        );
+      });
     }
     if (typeof pagesEntry.renderPage !== "function") {
       return new Response("This page could not be found", { status: 404 });

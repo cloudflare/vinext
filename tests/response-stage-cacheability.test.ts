@@ -258,4 +258,52 @@ describe("response-stage cacheability", () => {
     expect(response.headers.get("CDN-Cache-Control")).toBe("public, s-maxage=60");
     await expect(response.text()).resolves.toBe("complete");
   });
+
+  it("admits an explicitly public Pages API response after clean body completion", async () => {
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "shared",
+        context: baseContext(),
+        rawManifest: null,
+        registerCacheAdapters: registerAdapter,
+        request: new Request("https://example.com/api/public", {
+          headers: { Accept: "application/json" },
+        }),
+        resolvedRoutePathname: "/api/public",
+      },
+      async (context) => {
+        contextState(context)!.route = { kind: "pages-api", pattern: "/api/public" };
+        return new Response('{"public":true}', {
+          headers: { "Cache-Control": "public, s-maxage=60" },
+        });
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+    await expect(response.json()).resolves.toEqual({ public: true });
+  });
+
+  it("keeps a Pages API private without an explicit public policy", async () => {
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "shared",
+        context: baseContext(),
+        rawManifest: null,
+        registerCacheAdapters: registerAdapter,
+        request: new Request("https://example.com/api/private", {
+          headers: { Accept: "application/json" },
+        }),
+        resolvedRoutePathname: "/api/private",
+      },
+      async (context) => {
+        contextState(context)!.route = { kind: "pages-api", pattern: "/api/private" };
+        return new Response('{"private":true}');
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    await expect(response.json()).resolves.toEqual({ private: true });
+  });
 });

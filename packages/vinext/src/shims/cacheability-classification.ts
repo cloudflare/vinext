@@ -50,7 +50,7 @@ export type RouteCacheabilityState = {
     outcome: RouteCacheabilityOutcome;
   };
   route?: {
-    kind: "app-page" | "app-route" | "pages-page";
+    kind: "app-page" | "app-route" | "pages-api" | "pages-page";
     pattern: string;
   };
 };
@@ -72,7 +72,7 @@ export function readRouteCacheabilityState(): RouteCacheabilityState | null {
 }
 
 export function beginRouteCacheability(
-  kind: "app-page" | "app-route" | "pages-page",
+  kind: "app-page" | "app-route" | "pages-api" | "pages-page",
   pattern: string,
 ): boolean {
   const state = readRouteCacheabilityState();

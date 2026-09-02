@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { handleResponseStage } from "../packages/vinext/src/server/pages-response-stage-entry.js";
 import { PAGES_RESPONSE_STAGE_PROTOCOL_VERSION } from "../packages/vinext/src/server/worker-stages.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 
 const stages = vi.hoisted(() => ({
   api: vi.fn(),
@@ -36,6 +41,7 @@ vi.mock("virtual:vinext-cacheability-manifest", () => ({ default: null }));
 
 describe("Pages Worker response stage", () => {
   beforeEach(() => {
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     stages.api.mockReset();
     stages.registerCacheAdapters.mockReset();
     stages.registerImageOptimizer.mockReset();
@@ -173,6 +179,48 @@ describe("Pages Worker response stage", () => {
       "node",
     );
     expect(stages.renderPage).not.toHaveBeenCalled();
+  });
+
+  it("admits an explicitly public Pages API response", async () => {
+    const adapter: CdnCacheAdapter = {
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      requiresCompletedResponseAdmission: true,
+      responseVary: "verbatim",
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    };
+    stages.registerCacheAdapters.mockImplementation(() => setCdnCacheAdapter(adapter));
+    stages.api.mockResolvedValue(
+      new Response("public api", { headers: { "Cache-Control": "public, s-maxage=60" } }),
+    );
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/api/public"),
+      undefined,
+      undefined,
+      {
+        apiUrl: "/api/public",
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/api/public",
+        },
+        kind: "pages-api",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+    await expect(response.text()).resolves.toBe("public api");
   });
 
   it("preserves an adapter-supplied Worker runtime for Pages API responses", async () => {
