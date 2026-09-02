@@ -75,7 +75,10 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(await forged.json()).toMatchObject({ draftMode: false });
     expect(forged.headers()["cache-control"]).toContain("no-store");
     expect(forged.headers()["cdn-cache-control"]).toBeUndefined();
-    expect(forged.headers()["x-vinext-cache"]).toBe("MISS");
+    // Local workerd does not expose a Workers Cache status. Do not preserve
+    // the inner ISR state as though it were a CF-Cache-Status mirror.
+    expect(forged.headers()["x-vinext-cache"]).toBeUndefined();
+    expect(forged.headers()["x-nextjs-cache"]).toBeUndefined();
 
     await setDraftMode(request, true);
     const draftFirstScenario = `draft-first-${Date.now()}`;
@@ -92,7 +95,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(anonymousAfterDraft.payload.draftMode).toBe(false);
     expect(anonymousAfterDraft.payload.token).not.toBe(draftFirst.payload.token);
     expect(anonymousAfterDraft.cacheControl).toContain("no-store");
-    expect(anonymousAfterDraft.cacheState).toBe("MISS");
+    expect(anonymousAfterDraft.cacheState).toBeUndefined();
 
     const publicFirstScenario = `public-first-${Date.now()}`;
     const anonymousFirst = await readDraftIsrRoute(request, publicFirstScenario);
