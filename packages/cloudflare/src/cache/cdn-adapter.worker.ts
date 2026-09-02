@@ -34,6 +34,11 @@ type CloudflareResponseStageInvocation = {
 
 type CachePurgeOptions = { tags: string[] };
 
+type RestoredResponseStageRequest = {
+  didAccessRequestCf(): boolean;
+  request: Request;
+};
+
 const RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 
@@ -146,7 +151,7 @@ function restoreResponseStageRequest(
   request: Request,
   requestUrl: string,
   requestMethod: string,
-): Request {
+): RestoredResponseStageRequest {
   const headers = new Headers(request.headers);
   const serializedRequestCf = headers.get(REQUEST_CF_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
@@ -158,23 +163,41 @@ function restoreResponseStageRequest(
       // Malformed internal metadata is stripped rather than exposed to userland.
     }
   }
-  const init = {
+  const restored = new Request(new Request(requestUrl, request), {
     headers,
     method: requestMethod,
-    ...(requestCf === undefined ? {} : { cf: requestCf }),
-  } satisfies RequestInit & { cf?: unknown };
-  const restored = new Request(new Request(requestUrl, request), init);
-  // Node's Request ignores the Workers-only RequestInit.cf member. Preserve a
-  // shadow there for tests and non-Workers hosts; workerd already exposes the
-  // value installed through RequestInit.cf.
-  if (requestCf !== undefined && Reflect.get(restored, "cf") === undefined) {
+  });
+  let didAccessRequestCf = false;
+  if (requestCf !== undefined) {
+    // Keep provider metadata available to user code without making it part of
+    // the shared cache identity. Core request reconstruction preserves this
+    // accessor lazily, so only an application read flips the admission veto.
     Object.defineProperty(restored, "cf", {
       configurable: true,
       enumerable: true,
-      value: requestCf,
+      get() {
+        didAccessRequestCf = true;
+        return requestCf;
+      },
     });
   }
-  return restored;
+  return {
+    didAccessRequestCf: () => didAccessRequestCf,
+    request: restored,
+  };
+}
+
+function preventRequestCfResponseCaching(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", "no-store");
+  headers.delete("CDN-Cache-Control");
+  headers.delete("Cloudflare-CDN-Cache-Control");
+  headers.delete("Cache-Tag");
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
 }
 
 function withResponseStagePurge(context: CloudflareStageContext): CloudflareStageContext {
@@ -252,12 +275,13 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
     if (!invocation) {
       return new Response("Invalid vinext response-stage invocation", { status: 400 });
     }
-    return invokeResponseStage(
-      restoreResponseStageRequest(request, invocation.requestUrl, invocation.requestMethod),
-      this.env,
-      context,
-      invocation,
+    const restored = restoreResponseStageRequest(
+      request,
+      invocation.requestUrl,
+      invocation.requestMethod,
     );
+    const response = await invokeResponseStage(restored.request, this.env, context, invocation);
+    return restored.didAccessRequestCf() ? preventRequestCfResponseCaching(response) : response;
   }
 
   async purge(options: CachePurgeOptions): Promise<unknown> {

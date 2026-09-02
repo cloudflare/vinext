@@ -13,6 +13,8 @@ import {
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
   type WorkerResponseStageProps,
 } from "../packages/vinext/src/server/worker-stages.js";
+import { cloneRequestWithUrl } from "../packages/vinext/src/server/request-pipeline.js";
+import { NextRequest } from "../packages/vinext/src/shims/server.js";
 
 type PagesPageResponseStageProps = Extract<WorkerResponseStageProps, { kind: "pages-page" }>;
 
@@ -217,6 +219,74 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       expect(Reflect.get(renderedRequest, "cf")).toEqual(requestCf);
       expect(renderedRequest.headers.has("x-vinext-internal-request-cf")).toBe(false);
     }
+  });
+
+  it("forces a shared response private when application code reads request.cf", async () => {
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch(request: Request) {
+        return createEntrypoint(props).fetch(request);
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-route-handler" }, { cache: "shared" }),
+    );
+    stages.response.mockImplementation((request) => {
+      // Match the framework reconstruction used by Pages Edge APIs and App
+      // Route Handlers before user code reads the platform extension.
+      const rebuilt = cloneRequestWithUrl(request, `${request.url}?resolved=1`);
+      const nextRequest = new NextRequest(rebuilt);
+      const country = Reflect.get(nextRequest, "cf")?.country;
+      return Response.json(
+        { country },
+        {
+          headers: {
+            "Cache-Control": "max-age=0, must-revalidate",
+            "CDN-Cache-Control": "public, s-maxage=300",
+            "Cloudflare-CDN-Cache-Control": "public, s-maxage=300",
+            "Cache-Tag": "geo-response",
+          },
+        },
+      );
+    });
+    const source = new Request("https://example.com/geo");
+    Object.defineProperty(source, "cf", {
+      configurable: true,
+      enumerable: true,
+      value: { country: "GB" },
+    });
+
+    const response = await worker.fetch(source, {}, { exports: { VinextCachedResponse: binding } });
+
+    await expect(response.json()).resolves.toEqual({ country: "GB" });
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+  });
+
+  it("retains public policy when transported request.cf remains unread", async () => {
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch(request: Request) {
+        return createEntrypoint(props).fetch(request);
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-route-handler" }, { cache: "shared" }),
+    );
+    stages.response.mockResolvedValue(
+      new Response("public", { headers: { "CDN-Cache-Control": "public, s-maxage=300" } }),
+    );
+    const source = new Request("https://example.com/public");
+    Object.defineProperty(source, "cf", {
+      configurable: true,
+      enumerable: true,
+      value: { country: "GB" },
+    });
+
+    const response = await worker.fetch(source, {}, { exports: { VinextCachedResponse: binding } });
+
+    expect(response.headers.get("CDN-Cache-Control")).toBe("public, s-maxage=300");
+    await expect(response.text()).resolves.toBe("public");
   });
 
   it("strips forged request.cf transport metadata when no platform metadata exists", async () => {
