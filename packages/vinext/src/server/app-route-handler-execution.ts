@@ -11,6 +11,7 @@ import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import { runWithRootParamsUsage } from "vinext/shims/root-params";
 import {
   applyCdnResponseHeaders,
+  getCdnResponsePolicyHeaderNames,
   hasExplicitNonCacheableResponsePolicy,
   NEVER_CACHE_CONTROL,
 } from "./cache-control.js";
@@ -44,7 +45,6 @@ import {
 import {
   getRouteCacheabilityCaptureOptions,
   getRouteCacheabilityDynamicReason,
-  CACHEABILITY_POLICY_HEADERS,
   isRouteCacheabilityEvaluation,
   markRouteCacheabilityExplicitResponsePolicy,
   markRouteCacheabilityResponseBodyComplete,
@@ -119,7 +119,7 @@ type CompletedAppRouteHandlerResponse = {
 function hasExplicitCacheableResponsePolicy(headers: Headers): boolean {
   return (
     !hasExplicitNonCacheableResponsePolicy(headers) &&
-    CACHEABILITY_POLICY_HEADERS.some((name) => headers.has(name))
+    [...getCdnResponsePolicyHeaderNames()].some((name) => headers.has(name))
   );
 }
 
@@ -323,7 +323,7 @@ export async function executeAppRouteHandler(
     }
     let { dynamicUsedInHandler, response } = handlerResult;
     assertSupportedAppRouteHandlerResponse(response);
-    const handlerSetCachePolicy = CACHEABILITY_POLICY_HEADERS.some((name) =>
+    const handlerSetCachePolicy = [...getCdnResponsePolicyHeaderNames()].some((name) =>
       response.headers.has(name),
     );
     const hasExplicitCacheablePolicy = hasExplicitCacheableResponsePolicy(response.headers);
