@@ -1230,7 +1230,9 @@ describe("App Router entry templates", () => {
   it("generateRscEntry delegates App Router request handling to the typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain('import { createAppRscHandler } from "vinext/server/app-rsc-handler";');
+    expect(code).toContain(
+      'import { createAppRscHandler } from "vinext/server/app-rsc-combined-handler";',
+    );
     expect(code).toContain("const __appRscHandler = createAppRscHandler({");
     expect(code).toContain("export default __appRscHandler;");
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");

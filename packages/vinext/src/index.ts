@@ -1159,12 +1159,14 @@ const _appBrowserServerActionClientPath = resolveShimModulePath(
   _serverDir,
   "app-browser-server-action-client",
 );
+const _appRscCombinedHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-combined-handler");
 const _appRscHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-handler");
 const _pagesClientAssetsPath = resolveShimModulePath(_serverDir, "pages-client-assets");
 // Source checkouts resolve to TypeScript and must stay in Vite's graph so tests
 // do not execute a stale dist build. Published packages resolve to emitted JS,
 // which Node can load natively outside the RSC transform graph.
-const _canExternalizeAppRscHandler = _appRscHandlerPath.endsWith(".js");
+const _canExternalizeAppRscHandler =
+  _appRscHandlerPath.endsWith(".js") && _appRscCombinedHandlerPath.endsWith(".js");
 
 function isValidExportIdentifier(name: string): boolean {
   return /^[$A-Z_a-z][$\w]*$/.test(name);
@@ -3398,7 +3400,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                               "@resvg/resvg-js",
                               "yoga-wasm-web",
                               ...(env?.command === "serve" && _canExternalizeAppRscHandler
-                                ? ["vinext/server/app-rsc-handler"]
+                                ? [
+                                    "vinext/server/app-rsc-combined-handler",
+                                    "vinext/server/app-rsc-handler",
+                                  ]
                                 : []),
                               ...userSsrExternal,
                             ],
@@ -3955,7 +3960,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // direct @vercel/og imports in metadata routes, and \0-prefixed
         // re-imports from @vitejs/plugin-rsc.
         filter: {
-          id: /(?:next\/|vinext\/(?:shims\/|server\/app-rsc-handler)|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
+          id: /(?:next\/|vinext\/(?:shims\/|server\/app-rsc-(?:combined-)?handler)|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
         },
         handler(id, importer) {
           // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
@@ -3969,6 +3974,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // joins the importer dir with a native `\`) arrives as
           // `E:\proj\virtual:vinext-rsc-entry`. toSlash is a no-op on POSIX.
           const cleanId = toSlash(id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id);
+
+          if (cleanId === "vinext/server/app-rsc-combined-handler") {
+            if (
+              _canExternalizeAppRscHandler &&
+              this.environment?.name === "rsc" &&
+              this.environment.config?.command === "serve"
+            ) {
+              return { id: _appRscCombinedHandlerPath, external: true };
+            }
+            return _appRscCombinedHandlerPath;
+          }
 
           if (cleanId === "vinext/server/app-rsc-handler") {
             if (
