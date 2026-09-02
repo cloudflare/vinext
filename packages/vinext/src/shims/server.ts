@@ -138,13 +138,18 @@ export class NextRequest extends Request {
       // the source request to stay readable must branch it themselves and
       // cancel the branch they do not consume.
       super(input, requestInit);
-      const cf = Reflect.get(input, "cf");
-      if (cf !== undefined) {
-        Object.defineProperty(this, "cf", {
-          value: cf,
-          enumerable: true,
-          configurable: true,
-        });
+      const cfDescriptor = Reflect.getOwnPropertyDescriptor(input, "cf");
+      if (cfDescriptor) {
+        Object.defineProperty(this, "cf", cfDescriptor);
+      } else {
+        const cf = Reflect.get(input, "cf");
+        if (cf !== undefined) {
+          Object.defineProperty(this, "cf", {
+            value: cf,
+            enumerable: true,
+            configurable: true,
+          });
+        }
       }
     } else {
       super(input, requestInit);
