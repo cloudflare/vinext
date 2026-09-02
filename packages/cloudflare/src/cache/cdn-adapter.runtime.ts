@@ -42,7 +42,7 @@ import {
 } from "vinext/shims/cdn-cache";
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
+import { getVinextCdnBuildIdentity, VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../version-headers.js";
 
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
@@ -72,7 +72,7 @@ const CACHEABLE_EDGE_DIRECTIVE_RE = /(?:^|,)\s*(?:s-maxage|max-age)\s*=/i;
 const EDGE_POLICY_HEADERS = ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"] as const;
 
 function getBuildIdentityResponseHeader(): CdnResponseHeaders {
-  const buildId = process.env.__VINEXT_RSC_BUILD_IDENTITY ?? process.env.__VINEXT_BUILD_ID;
+  const buildId = getVinextCdnBuildIdentity();
   return buildId ? { [VINEXT_CDN_BUILD_ID_HEADER]: buildId } : {};
 }
 

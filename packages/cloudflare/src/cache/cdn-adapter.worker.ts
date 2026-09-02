@@ -9,6 +9,7 @@ import type {
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
+import { getVinextCdnBuildIdentity, VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
 
 type StageBinding = {
   fetch(request: Request): Promise<Response> | Response;
@@ -58,6 +59,41 @@ function responseStageUnavailable(): Response {
     status: 503,
     headers: { "Cache-Control": "no-store" },
   });
+}
+
+/** Stamp the entrypoint that actually produced a response, before Workers Cache stores it. */
+function stampResponseStageBuildIdentity(response: Response): Response {
+  const buildIdentity = getVinextCdnBuildIdentity();
+  // Direct source consumers and unit tests do not pass through vinext's build
+  // defines. Production multi-stage output always has this opaque identity.
+  if (!buildIdentity) return response;
+  try {
+    response.headers.set(VINEXT_CDN_BUILD_ID_HEADER, buildIdentity);
+    return response;
+  } catch {
+    const headers = new Headers(response.headers);
+    headers.set(VINEXT_CDN_BUILD_ID_HEADER, buildIdentity);
+    return new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  }
+}
+
+/** Reject a response routed to an entrypoint from another propagating build. */
+function validateResponseStageBuildIdentity(response: Response): Response {
+  const expectedBuildIdentity = getVinextCdnBuildIdentity();
+  if (
+    !expectedBuildIdentity ||
+    response.headers.get(VINEXT_CDN_BUILD_ID_HEADER) === expectedBuildIdentity
+  ) {
+    return response;
+  }
+  // The stale response must not continue producing bytes after the gateway has
+  // replaced it. Cancellation is best-effort and must not delay the 503.
+  void response.body?.cancel().catch(() => {});
+  return responseStageUnavailable();
 }
 
 function stripUntrustedTransportHeaders(request: Request): Request {
@@ -171,8 +207,9 @@ async function createCacheFacingRequest(
   // https://developers.cloudflare.com/workers/cache/#what-gets-cached
   const authorizationIdentity =
     authorization === null ? "absent" : `present:${authorization.length}:${authorization}`;
+  const responseStageBuildIdentity = getVinextCdnBuildIdentity() ?? "";
   const bytes = new TextEncoder().encode(
-    `${request.url}\0${serializedInvocation}\0${authorizationIdentity}`,
+    `${request.url}\0${serializedInvocation}\0${authorizationIdentity}\0${responseStageBuildIdentity}`,
   );
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const key = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -370,7 +407,9 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
     const context = withWorkerHostRuntime(this.ctx, this.env);
     const invocation = getResponseStageInvocation(context.props);
     if (!invocation) {
-      return new Response("Invalid vinext response-stage invocation", { status: 400 });
+      return stampResponseStageBuildIdentity(
+        new Response("Invalid vinext response-stage invocation", { status: 400 }),
+      );
     }
     const restored = restoreResponseStageRequest(
       request,
@@ -378,7 +417,9 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
       invocation.requestMethod,
     );
     const response = await invokeResponseStage(restored.request, this.env, context, invocation);
-    return restored.didAccessRequestCf() ? preventRequestCfResponseCaching(response) : response;
+    return stampResponseStageBuildIdentity(
+      restored.didAccessRequestCf() ? preventRequestCfResponseCaching(response) : response,
+    );
   }
 
   async purge(options: CachePurgeOptions): Promise<unknown> {
@@ -425,7 +466,7 @@ export default {
         const entrypointRequest = requiresEntrypoint
           ? stageRequest
           : await createCacheFacingRequest(stageRequest, serializedInvocation);
-        return await binding.fetch(entrypointRequest);
+        return validateResponseStageBuildIdentity(await binding.fetch(entrypointRequest));
       } catch (error) {
         if (requiresEntrypoint) return responseStageUnavailable();
         throw error;

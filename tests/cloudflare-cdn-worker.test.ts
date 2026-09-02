@@ -9,6 +9,7 @@ import {
 import worker, {
   VinextCachedResponse,
 } from "../packages/cloudflare/src/cache/cdn-adapter.worker.js";
+import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import {
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
   type WorkerResponseStageProps,
@@ -86,6 +87,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it("exports the cached stage as a named WorkerEntrypoint class", () => {
@@ -116,6 +118,120 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(renderedProps).toEqual(props);
     expect(reverseTransport).toEqual(expect.any(Function));
     expect(options).toEqual({ cache: "shared" });
+  });
+
+  it.each([200, 204, 404, 503])(
+    "stamps named-stage identity on every %s response before cache admission",
+    async (status) => {
+      vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
+      stages.response.mockResolvedValue(
+        new Response(status === 204 ? null : "rendered", {
+          status,
+          headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "forged-stage" },
+        }),
+      );
+
+      const response = await createEntrypoint(responseStageInvocation({ kind: "app-page" })).fetch(
+        new Request("https://example.com/page"),
+      );
+
+      expect(response.status).toBe(status);
+      expect(response.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("current-stage");
+    },
+  );
+
+  it.each([
+    ["missing", null, 503],
+    ["different", "previous-stage", 503],
+    ["matching", "current-stage", 200],
+  ] as const)(
+    "%s named-stage identity is validated before the request stage stamps its own identity",
+    async (_label, responseStageIdentity, expectedStatus) => {
+      vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
+      const binding = vi.fn(() => ({
+        fetch() {
+          return new Response("response-stage body", {
+            headers:
+              responseStageIdentity === null
+                ? undefined
+                : { [VINEXT_CDN_BUILD_ID_HEADER]: responseStageIdentity },
+          });
+        },
+      }));
+      stages.request.mockImplementation(async (request, _env, _ctx, dispatch) => {
+        const response = await dispatch(request, { kind: "app-page" }, { cache: "shared" });
+        const headers = new Headers(response.headers);
+        // App and Pages request stages apply this public identity after the
+        // response transport returns. It must not hide an inner mismatch.
+        headers.set(VINEXT_CDN_BUILD_ID_HEADER, "current-stage");
+        return new Response(response.body, { headers, status: response.status });
+      });
+
+      const response = await worker.fetch(
+        new Request("https://example.com/page", { headers: { Accept: "text/html" } }),
+        {},
+        { exports: { VinextCachedResponse: binding } },
+      );
+
+      expect(response.status).toBe(expectedStatus);
+      expect(response.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("current-stage");
+      expect(response.headers.get("Cache-Control")).toBe(
+        expectedStatus === 503 ? "no-store" : "private, max-age=0, must-revalidate",
+      );
+      await expect(response.text()).resolves.toBe(
+        expectedStatus === 503 ? "" : "response-stage body",
+      );
+    },
+  );
+
+  it("cancels a response from a mismatched named stage", async () => {
+    vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
+    const cancel = vi.fn();
+    const binding = vi.fn(() => ({
+      fetch() {
+        return new Response(new ReadableStream({ cancel }), {
+          headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "previous-stage" },
+        });
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-page" }, { cache: "shared" }),
+    );
+
+    const response = await worker.fetch(
+      new Request("https://example.com/page"),
+      {},
+      { exports: { VinextCachedResponse: binding } },
+    );
+
+    expect(response.status).toBe(503);
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+  });
+
+  it("partitions cache-facing keys by the opaque response-stage build identity", async () => {
+    const cacheFacingUrls: string[] = [];
+    const binding = vi.fn(() => ({
+      fetch(request: Request) {
+        cacheFacingUrls.push(request.url);
+        return new Response("cached", {
+          headers: {
+            [VINEXT_CDN_BUILD_ID_HEADER]: process.env.__VINEXT_RSC_BUILD_IDENTITY!,
+          },
+        });
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-page", buildId: "pinned-build" }, { cache: "shared" }),
+    );
+
+    const context = { exports: { VinextCachedResponse: binding } };
+    vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "stage-a");
+    await worker.fetch(new Request("https://example.com/page"), {}, context);
+    vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "stage-b");
+    await worker.fetch(new Request("https://example.com/page"), {}, context);
+
+    expect(cacheFacingUrls).toHaveLength(2);
+    expect(cacheFacingUrls[0]).not.toBe(cacheFacingUrls[1]);
   });
 
   it("retains Cloudflare's private policy on the cache-bearing entrypoint", async () => {
