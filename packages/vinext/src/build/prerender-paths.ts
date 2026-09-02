@@ -51,6 +51,8 @@ export type PrerenderRoutePattern = {
     canPrunePattern: boolean;
     /** HTML pathname shared by alternate representations of this route. */
     concretePathname?: string;
+    /** The uncached request stage may resolve this public path to another route. */
+    routeMayResolve?: boolean;
   };
 };
 export type PrerenderPathManifest = {
@@ -1079,6 +1081,7 @@ function routePatternCouldIntersectCachePolicyRule(
 function annotateCacheabilityProbeSafety(
   routePatterns: Record<string, PrerenderRoutePattern>,
   config: Pick<ResolvedNextConfig, "basePath" | "headers" | "i18n" | "trailingSlash">,
+  routeMayResolve: ReadonlySet<string>,
 ): Record<string, PrerenderRoutePattern> {
   const cachePolicyRules = config.headers.filter((rule) =>
     rule.headers.some((header) => CACHEABILITY_POLICY_HEADER_NAMES.has(header.key.toLowerCase())),
@@ -1125,7 +1128,10 @@ function annotateCacheabilityProbeSafety(
         pathname,
         {
           ...route,
-          cacheabilityProbe: { canPrunePattern },
+          cacheabilityProbe: {
+            canPrunePattern,
+            ...(routeMayResolve.has(pathname) ? { routeMayResolve: true } : {}),
+          },
         },
       ];
     }),
@@ -1322,6 +1328,13 @@ export async function emitPrerenderPathManifest(
     ...config.rewrites.afterFiles,
     ...config.rewrites.fallback,
   ];
+  const routeMayResolveWarmPathSet = new Set(
+    options.requestRouting === "uncached-stage"
+      ? [...paths, ...discoveredRouteHandlerPaths].filter((pathname) =>
+          configuredRulesAffectWarmPath(pathname, configuredRewrites, config),
+        )
+      : [],
+  );
   const excludedWarmPathSet = new Set(
     options.responseVary
       ? [...paths, ...discoveredRouteHandlerPaths].filter(
@@ -1386,7 +1399,11 @@ export async function emitPrerenderPathManifest(
       "",
     ),
   );
-  const routePatterns = annotateCacheabilityProbeSafety(appOwnedWarmPaths.routePatterns, config);
+  const routePatterns = annotateCacheabilityProbeSafety(
+    appOwnedWarmPaths.routePatterns,
+    config,
+    routeMayResolveWarmPathSet,
+  );
   for (let index = 0; index < resolvedPagesDataWarmPaths.length; index++) {
     const route = routePatterns[resolvedPagesDataWarmPaths[index]];
     if (route) {

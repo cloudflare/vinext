@@ -697,6 +697,10 @@ describe("prerender path manifest", () => {
     expect(manifest?.excludedWarmPaths).toBeUndefined();
     expect(manifest?.rscPaths).toEqual(["/rewrite-me", "/safe"]);
     expect(manifest?.loadingShellPaths).toEqual(["/rewrite-me", "/safe"]);
+    expect(manifest?.routePatterns?.["/rewrite-me"]?.cacheabilityProbe).toMatchObject({
+      routeMayResolve: true,
+    });
+    expect(manifest?.routePatterns?.["/safe"]?.cacheabilityProbe?.routeMayResolve).toBeUndefined();
   });
 
   it("excludes warm paths shadowed by configured redirects", async () => {
