@@ -8,10 +8,12 @@ export type VinextResponseStageDispatchOptions = {
   /**
    * Whether the adapter may use its shared response transport. Bypassed work
    * still uses the same response stage, but must not pass through a host cache.
-   * A shared transport must partition entries by the request method, complete
-   * request URL (including scheme, authority, exact path, and query), plus the
-   * complete serialized stage props; each can affect handler selection or
-   * response bytes.
+   * A shared transport must partition its baseline lookup by the request
+   * method, complete request URL (including scheme, authority, exact path, and
+   * query), plus the complete serialized stage props; each can affect handler
+   * selection or response bytes. It must additionally honor every response
+   * `Vary` field when storing and reusing a response, using the corresponding
+   * request-header values as variant identity. `Vary: *` must not be stored.
    */
   cache: "shared" | "bypass";
 };
@@ -35,9 +37,12 @@ export type VinextResponseStageCacheability = {
  *
  * The props and options are serializable stage metadata. An adapter may carry
  * them over in-process dispatch, platform RPC, a service binding, or HTTP. If
- * it caches shared dispatches, its identity must include the request method,
- * complete request URL (including scheme, authority, exact path, and query),
- * plus the complete serialized props.
+ * it caches shared dispatches, its baseline identity must include the request
+ * method, complete request URL (including scheme, authority, exact path, and
+ * query), plus the complete serialized props. An adapter that advertises
+ * `responseVary: "verbatim"` must also partition stored variants by every
+ * request header named in the returned `Vary` fields and reject `Vary: *` from
+ * storage. Adapters without that capability must not share varying responses.
  */
 export type VinextResponseStageTransport<Props = unknown> = (
   request: Request,
