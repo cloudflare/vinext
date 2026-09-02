@@ -269,6 +269,11 @@ type PrerenderAppOptions = {
    * Absolute path to the pre-built RSC handler bundle (e.g. `dist/server/index.js`).
    */
   rscBundlePath: string;
+  /**
+   * Root directory for build metadata and sibling server artifacts. Defaults
+   * to the RSC entry's directory for compatibility with standalone callers.
+   */
+  serverDir?: string;
 } & PrerenderOptions;
 
 // ─── Internal option extensions ───────────────────────────────────────────────
@@ -1069,6 +1074,7 @@ export async function prerenderApp({
   config,
   mode,
   rscBundlePath,
+  serverDir = path.dirname(rscBundlePath),
   ...options
 }: PrerenderAppOptionsInternal): Promise<PrerenderResult> {
   const manifestDir = options.manifestDir ?? outDir;
@@ -1087,8 +1093,6 @@ export async function prerenderApp({
   // The scope is nest-safe because run-prerender.ts also enters it around a
   // shared hybrid server.
   const restorePrerenderPhase = enterPrerenderPhase();
-
-  const serverDir = path.dirname(rscBundlePath);
 
   let rscHandler: (request: Request) => Promise<Response>;
   let staticParamsMap: StaticParamsMap = {};
