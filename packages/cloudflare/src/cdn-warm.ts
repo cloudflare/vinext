@@ -58,6 +58,8 @@ export type CdnWarmOptions = {
   phaseTimeoutMs?: number;
   /** Retry a newly staged version or preview alias until its routing has propagated. */
   propagatingTarget?: boolean;
+  /** @internal Matching skipped targets that may be transient while a staged version propagates. */
+  retrySkippedTargetKeys?: ReadonlySet<string>;
   /** Require the response to come from a reusable cache entry, not merely an eligible MISS. */
   requireCacheHit?: boolean;
   strict?: boolean;
@@ -204,7 +206,11 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
                   typeof route.cacheabilityProbe.canPrunePattern === "boolean" &&
                   (route.cacheabilityProbe.concretePathname === undefined ||
                     (typeof route.cacheabilityProbe.concretePathname === "string" &&
-                      route.cacheabilityProbe.concretePathname.startsWith("/"))))),
+                      route.cacheabilityProbe.concretePathname.startsWith("/"))) &&
+                  (route.cacheabilityProbe.routeMayResolve === undefined ||
+                    typeof route.cacheabilityProbe.routeMayResolve === "boolean") &&
+                  (route.cacheabilityProbe.requestStageMayTerminate === undefined ||
+                    typeof route.cacheabilityProbe.requestStageMayTerminate === "boolean"))),
           ))) ||
       (manifest.loadingShellPaths !== undefined &&
         (!Array.isArray(manifest.loadingShellPaths) ||
@@ -576,6 +582,10 @@ function printCdnWarmRouteReport(
       `    ... ${formatCount(omitted.length, "additional route pattern")} omitted (${formatCount(omittedEntries, "cache entry", "cache entries")})`,
     );
   }
+}
+
+function cdnWarmTargetKey(target: Pick<CdnWarmTarget, "kind" | "sourcePathname">): string {
+  return `${target.kind}\0${target.sourcePathname}`;
 }
 
 export async function createCdnWarmTargets(
@@ -1188,6 +1198,7 @@ async function warmOnePath(
     retryPropagationFailures: boolean;
     retryDelayMs: number;
     retryNotFound: boolean;
+    retrySkipped: boolean;
     phaseTimeoutMs?: number;
     requireCacheHit: boolean;
   },
@@ -1199,6 +1210,7 @@ async function warmOnePath(
   const url = buildWarmupUrl(options.targetUrl, target.pathname);
   let lastError = "request failed before the first attempt";
   let lastRetryable = true;
+  let lastSkippedReason: string | null = null;
 
   const phaseDeadlineError = () =>
     `CDN warmup exceeded its ${options.phaseTimeoutMs}ms phase deadline`;
@@ -1268,8 +1280,18 @@ async function warmOnePath(
           return { path: target.label, ok: true, skipped: false };
         }
         if (validation.outcome === "skipped") {
-          return { path: target.label, ok: true, skipped: true, reason: validation.reason };
+          if (!options.retrySkipped) {
+            return { path: target.label, ok: true, skipped: true, reason: validation.reason };
+          }
+          lastSkippedReason = validation.reason;
+          lastRetryable = true;
+          if (!canRetry(attempt)) break;
+          if (!(await waitBeforeRetry())) {
+            return { path: target.label, ok: false, error: phaseDeadlineError(), retryable: false };
+          }
+          continue;
         }
+        lastSkippedReason = null;
         lastError = validation.error;
         const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
         lastRetryable =
@@ -1297,8 +1319,18 @@ async function warmOnePath(
         return { path: target.label, ok: true, skipped: false };
       }
       if (validation.outcome === "skipped") {
-        return { path: target.label, ok: true, skipped: true, reason: validation.reason };
+        if (!options.retrySkipped) {
+          return { path: target.label, ok: true, skipped: true, reason: validation.reason };
+        }
+        lastSkippedReason = validation.reason;
+        lastRetryable = true;
+        if (!canRetry(attempt)) break;
+        if (!(await waitBeforeRetry())) {
+          return { path: target.label, ok: false, error: phaseDeadlineError(), retryable: false };
+        }
+        continue;
       }
+      lastSkippedReason = null;
       lastError = validation.error;
       const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
       lastRetryable =
@@ -1308,6 +1340,7 @@ async function warmOnePath(
         shouldRetryValidationFailure(response, target, options);
       if (!lastRetryable) break;
     } catch (error) {
+      lastSkippedReason = null;
       lastRetryable = true;
       if (error instanceof DOMException && error.name === "AbortError") {
         lastError =
@@ -1324,7 +1357,9 @@ async function warmOnePath(
     }
   }
 
-  return { path: target.label, ok: false, error: lastError, retryable: lastRetryable };
+  return lastSkippedReason === null
+    ? { path: target.label, ok: false, error: lastError, retryable: lastRetryable }
+    : { path: target.label, ok: true, skipped: true, reason: lastSkippedReason };
 }
 
 async function runWithConcurrency<T, R>(
@@ -1356,9 +1391,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_CDN_WARM_TIMEOUT_MS);
   const hasVersionOverride = new Headers(options.headers).has(WORKER_VERSION_OVERRIDE_HEADER);
   const propagatingTarget = options.propagatingTarget ?? hasVersionOverride;
-  // A propagating target gives every key one initial attempt, then retries only
-  // failed keys after the queue completes. Build identity validation prevents
-  // an old Worker response from being mistaken for a successful fill.
+  // A propagating target gives every key one initial attempt, then retries
+  // unresolved keys after the queue completes. Build identity validation
+  // prevents an old Worker response from being mistaken for a successful fill.
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CDN_WARM_CONCURRENCY);
   const normalRetries = Math.max(0, options.retries ?? 1);
   const propagationRetries = Math.max(0, options.retries ?? 60);
@@ -1414,6 +1449,9 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       retryNotFound: isPropagationRequest,
       phaseTimeoutMs,
       requireCacheHit: options.requireCacheHit === true,
+      retrySkipped:
+        isPropagationRequest &&
+        options.retrySkippedTargetKeys?.has(cdnWarmTargetKey(target)) === true,
     });
   };
 
@@ -1433,43 +1471,33 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     const results = await runWithConcurrency(targets, concurrency, (target) =>
       warmRequest(target, "propagation-pass"),
     );
-    const failed = targets
+    const retryable = targets
       .map((target, index) => ({ index, result: results[index], target }))
-      .filter(
-        (
-          entry,
-        ): entry is {
-          index: number;
-          result: { path: string; ok: false; error: string; retryable: boolean };
-          target: CdnWarmTarget;
-        } => !entry.result.ok,
+      .filter(({ result, target }) =>
+        result.ok
+          ? result.skipped && options.retrySkippedTargetKeys?.has(cdnWarmTargetKey(target)) === true
+          : result.retryable,
       );
-    const retryableFailed = failed.filter(({ result }) => result.retryable);
-    if (retryableFailed.length === 0 || propagationRetries === 0) return results;
+    if (retryable.length === 0 || propagationRetries === 0) return results;
 
     progress.finish();
     console.log(
-      `  CDN warmup: retrying ${retryableFailed.length} failed request(s) after completing the initial pass...`,
+      `  CDN warmup: retrying ${retryable.length} unresolved request(s) after completing the initial pass...`,
     );
     let completedRetries = 0;
-    progress.update(0, retryableFailed.length, "starting retry pass", "Retrying CDN cache");
+    progress.update(0, retryable.length, "starting retry pass", "Retrying CDN cache");
     const retried = await runWithConcurrency(
-      retryableFailed.map(({ target }) => target),
+      retryable.map(({ target }) => target),
       concurrency,
       async (target) => {
         const result = await warmTarget(target, "propagation-retry");
         completedRetries++;
-        progress.update(
-          completedRetries,
-          retryableFailed.length,
-          target.label,
-          "Retrying CDN cache",
-        );
+        progress.update(completedRetries, retryable.length, target.label, "Retrying CDN cache");
         return result;
       },
     );
     progress.finish();
-    for (const [retryIndex, { index }] of retryableFailed.entries()) {
+    for (const [retryIndex, { index }] of retryable.entries()) {
       results[index] = retried[retryIndex];
     }
     return results;
