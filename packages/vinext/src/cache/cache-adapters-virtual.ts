@@ -188,7 +188,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
 
   if (data?.adapter) {
     lines.push(`import __vinextDataAdapterFactory from ${JSON.stringify(data.adapter)};`);
-    lines.push(`import { setDataCacheHandler } from "vinext/shims/cache-handler";`);
+    lines.push(`import { registerDataCacheHandler } from "vinext/shims/cache-handler";`);
   }
   if (cdn?.adapter) {
     lines.push(`import __vinextCdnAdapterFactory from ${JSON.stringify(cdn.adapter)};`);
@@ -218,7 +218,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   if (data?.adapter) {
     lines.push(
       "  try {",
-      `    setDataCacheHandler(__vinextDataAdapterFactory({ env, options: ${inlineOptions(
+      `    registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: ${inlineOptions(
         data.adapter,
         data.options,
       )} }));`,
@@ -231,7 +231,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   if (cdn?.adapter) {
     lines.push(
       "  try {",
-      `    registerCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: ${inlineOptions(
+      `    registerCdnCacheAdapter(() => __vinextCdnAdapterFactory({ env, options: ${inlineOptions(
         cdn.adapter,
         cdn.options,
       )} }));`,

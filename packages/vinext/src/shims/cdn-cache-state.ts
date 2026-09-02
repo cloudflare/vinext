@@ -8,10 +8,18 @@ export function setCdnCacheAdapter(adapter: CdnCacheAdapter): void {
   globals[CDN_CACHE_ADAPTER_KEY] = adapter;
 }
 
-/** Keep the first declaratively configured adapter shared across duplicated stage modules. */
-export function registerCdnCacheAdapter(adapter: CdnCacheAdapter): void {
+/**
+ * Lazily keep the first declaratively configured adapter shared across
+ * duplicated stage modules. Failed factories remain retryable so a later
+ * entrypoint with the required runtime bindings can register successfully.
+ */
+export function registerCdnCacheAdapter(factory: () => CdnCacheAdapter): void {
   if (globals[CDN_CACHE_ADAPTER_KEY] !== undefined) return;
-  globals[CDN_CACHE_ADAPTER_KEY] = adapter;
+  const adapter = factory();
+  // Preserve an imperative adapter installed re-entrantly by the factory.
+  if (globals[CDN_CACHE_ADAPTER_KEY] === undefined) {
+    globals[CDN_CACHE_ADAPTER_KEY] = adapter;
+  }
 }
 
 /** Read only an explicitly registered adapter; defaults belong to cdn-cache. */

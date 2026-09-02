@@ -265,9 +265,8 @@ let _defaultAdapter: DefaultCdnCacheAdapter | null = null;
  * ```
  *
  * The plugin registers the adapter across every runtime/router entry, so you
- * don't have to call this from a worker entry. This setter remains as the
- * internal registration target and for backwards compatibility, but is not the
- * recommended consumer API.
+ * don't have to call this from a worker entry. This setter remains for
+ * backwards compatibility, but is not the recommended consumer API.
  */
 /**
  * Get the active CDN cache adapter. An explicitly configured adapter wins;
