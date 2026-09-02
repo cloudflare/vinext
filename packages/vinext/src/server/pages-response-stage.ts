@@ -41,6 +41,8 @@ function hasStagedCacheBypass(stagedHeaders: Headers | undefined): boolean {
 export type PagesResponseStageDispatchOptions = {
   authorizeOnDemandRevalidate?: (headerValue: string | null) => boolean;
   request: Request;
+  /** Middleware changed the request headers visible to the response stage. */
+  requestHeadersChanged?: boolean;
   stagedHeaders?: Headers;
 };
 
@@ -60,6 +62,7 @@ export type PagesResponseStageCacheDisposition = VinextResponseStageDispatchOpti
 export function shouldDispatchPagesResponseStage({
   authorizeOnDemandRevalidate,
   request,
+  requestHeadersChanged,
   stagedHeaders,
 }: PagesResponseStageDispatchOptions): boolean {
   const method = request.method.toUpperCase();
@@ -67,6 +70,7 @@ export function shouldDispatchPagesResponseStage({
 
   if (hasPreviewCookie(request.headers.get("cookie"))) return false;
   if (hasCacheBypassDirective(request.headers.get("cache-control"))) return false;
+  if (requestHeadersChanged) return false;
   if (hasStagedCacheBypass(stagedHeaders)) return false;
 
   const revalidateHeader = request.headers.get(PRERENDER_REVALIDATE_HEADER);

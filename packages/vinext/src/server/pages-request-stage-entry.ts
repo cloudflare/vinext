@@ -1,5 +1,5 @@
 /**
- * Request-stage Cloudflare Worker entry point for vinext Pages Router.
+ * Request-stage entry point for vinext Pages Router.
  *
  * The public pages-router-entry delegates here. Multi-stage hosts import the
  * named request handler directly and provide their response-stage dispatcher.
@@ -93,6 +93,18 @@ type PagesStageRuntimeDispatch = (
   env: PagesWorkerEnv | undefined,
   ctx: ExecutionContextLike,
 ) => Promise<Response>;
+
+function haveSameHeaders(first: Headers, second: Headers): boolean {
+  const firstEntries = [...first];
+  const secondEntries = [...second];
+  return (
+    firstEntries.length === secondEntries.length &&
+    firstEntries.every(
+      ([name, value], index) =>
+        name === secondEntries[index]?.[0] && value === secondEntries[index]?.[1],
+    )
+  );
+}
 
 export type PagesLocalResponseStage = (
   request: Request,
@@ -360,6 +372,7 @@ async function handleRequest(
                     ? authorizeOnDemandRevalidate
                     : undefined,
                 request: req,
+                requestHeadersChanged: !haveSameHeaders(filteredHeaders, req.headers),
                 stagedHeaders,
               });
         const isHeadRequest = req.method.toUpperCase() === "HEAD";
@@ -410,6 +423,7 @@ async function handleRequest(
                     ? authorizeOnDemandRevalidate
                     : undefined,
                 request: req,
+                requestHeadersChanged: !haveSameHeaders(filteredHeaders, req.headers),
                 stagedHeaders,
               });
         const dispatched = dispatchResponseStage(

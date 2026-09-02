@@ -140,6 +140,35 @@ describe("Pages Worker request stage", () => {
     expect(state.forcedDynamicReason).toBeUndefined();
   });
 
+  it.each(["/page", "/api/hello"])(
+    "bypasses shared %s rendering when middleware changes downstream request headers",
+    async (pathname) => {
+      // Ported from Next.js:
+      // test/e2e/middleware-request-header-overrides/test/index.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-request-header-overrides/test/index.test.ts
+      mocks.runMiddleware.mockResolvedValue({
+        continue: true,
+        responseHeaders: new Headers({
+          "x-middleware-override-headers": "x-visitor",
+          "x-middleware-request-x-visitor": "visitor-a",
+        }),
+      });
+      const dispatch = vi.fn<DispatchWorkerResponseStage>(async (request) =>
+        Response.json({ visitor: request.headers.get("x-visitor") }),
+      );
+
+      const response = await handleRequestStage(
+        new Request(`https://example.com${pathname}`),
+        undefined,
+        undefined,
+        dispatch,
+      );
+
+      expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+      await expect(response.json()).resolves.toEqual({ visitor: "visitor-a" });
+    },
+  );
+
   it("dispatches a preview request through the non-shared response stage", async () => {
     const request = new Request("https://example.com/page", {
       headers: { Cookie: "__prerender_bypass=preview" },

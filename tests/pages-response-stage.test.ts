@@ -147,4 +147,13 @@ describe("Pages response-stage dispatch", () => {
       ),
     ).toBe(false);
   });
+
+  it("keeps middleware request-header overrides out of the shared stage", () => {
+    expect(
+      shouldDispatchPagesResponseStage({
+        request: new Request("https://example.com/page"),
+        requestHeadersChanged: true,
+      }),
+    ).toBe(false);
+  });
 });

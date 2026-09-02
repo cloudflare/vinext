@@ -53,6 +53,7 @@ import {
 import { flattenErrorCauses } from "../utils/error-cause.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
+import { hasMiddlewareRequestHeaderOverrides } from "../utils/middleware-request-headers.js";
 import type { AppMiddlewareContext, ApplyAppMiddlewareResult } from "./app-middleware.js";
 import { mergeMiddlewareResponseHeaders } from "./app-page-response.js";
 import type {
@@ -1054,6 +1055,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       : Promise.resolve(null));
   const canUseSharedWorkerResponseStage =
     !hasMiddlewareCookieOverlay &&
+    !hasMiddlewareRequestHeaderOverrides(
+      middlewareContext.requestHeaders ?? middlewareContext.headers,
+    ) &&
     !requestOptsOutOfWorkerResponseStage(
       request,
       options,

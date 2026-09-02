@@ -766,6 +766,45 @@ describe("createAppRscHandler", () => {
     expect(await response.text()).toBe("shared-stage");
   });
 
+  it("bypasses shared App rendering when middleware changes downstream request headers", async () => {
+    // Ported from Next.js:
+    // test/e2e/middleware-request-header-overrides/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-request-header-overrides/test/index.test.ts
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async (request) =>
+      Response.json({ visitor: request.headers.get("x-visitor") }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      middlewareModule: {
+        default(request: NextRequest) {
+          const headers = new Headers(request.headers);
+          headers.set("x-visitor", request.headers.get("x-original-visitor") ?? "anonymous");
+          return new Response(null, {
+            headers: {
+              "x-middleware-next": "1",
+              "x-middleware-override-headers": [...headers.keys()].join(","),
+              ...Object.fromEntries(
+                [...headers].map(([name, value]) => [`x-middleware-request-${name}`, value]),
+              ),
+            },
+          });
+        },
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        headers: { "x-original-visitor": "visitor-a" },
+      }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+    await expect(response.json()).resolves.toEqual({ visitor: "visitor-a" });
+  });
+
   it("dispatches middleware cookie overlays with cache bypass and preserves raw headers", async () => {
     const dispatchMatchedPage = vi.fn(async () => {
       expect((await requestCookies()).get("session")?.value).toBe("middleware-value");
