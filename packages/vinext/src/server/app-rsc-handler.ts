@@ -1223,9 +1223,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     ));
   const composeResponseStageResponse = async (response: Response): Promise<Response> => {
     // Positive config cache policy was already transported into the response
-    // stage before admission. Preserve its completed policy here so a late
-    // render failure cannot be made public again by outer header composition.
-    response = await applyConfigHeadersToResponseStage(response, true);
+    // stage before admission. Preserve its completed policy so a late render
+    // failure cannot be made public again and the uncached gateway does not
+    // expose a shared-cache directive. Single-stage rendering still applies
+    // config and middleware policy with ordinary Next.js precedence.
+    response = await applyConfigHeadersToResponseStage(
+      response,
+      Boolean(dispatchResponseStage || options.renderResponseStageLocally),
+    );
     response = applyMiddlewareContextToResponse(response, middlewareContext);
     reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, await loadOuterResponsePolicy());
     return markAppRscResponseConfigHeadersApplied(response);

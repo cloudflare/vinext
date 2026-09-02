@@ -368,7 +368,11 @@ describe("createAppRscHandler", () => {
   it("transports matched positive config cache policy in stage identity", async () => {
     useSplitPolicyAdapter();
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
-      Promise.resolve(new Response("stage")),
+      Promise.resolve(
+        new Response("stage", {
+          headers: { "Cache-Control": "public, max-age=0, must-revalidate" },
+        }),
+      ),
     );
     const handler = createHandler({
       configHeaders: [
@@ -391,7 +395,7 @@ describe("createAppRscHandler", () => {
       captureDeadlineAt: Date.now() + 1_000,
       mode: "admit",
     };
-    await runWithExecutionContext(cacheabilityContext(state), () =>
+    const response = await runWithExecutionContext(cacheabilityContext(state), () =>
       handler(
         new Request("https://example.test/docs/about", {
           headers: { Cookie: "preview=1" },
@@ -407,6 +411,7 @@ describe("createAppRscHandler", () => {
       ["CDN-Cache-Control", "public, s-maxage=120"],
       ["Vary", "x-visitor"],
     ]);
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
     expect(state.forcedDynamicReason).toBeUndefined();
   });
 
