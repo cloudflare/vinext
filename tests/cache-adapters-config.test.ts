@@ -16,7 +16,6 @@ import {
   findVinextCacheConfigInPlugins,
   generateCdnCacheAdapterModule,
   loadVinextCacheConfigFromViteConfig,
-  mergeMultiStageBuildInputs,
   generateCacheAdaptersModule,
   getConfiguredCdnResponsePolicyHeaderNames,
   hasBuildIdentityResponseHeader,
@@ -156,59 +155,6 @@ describe("generateCacheAdaptersModule", () => {
     const code = generateCacheAdaptersModule({ data: { adapter: weird } });
     expect(code).toContain(`import __vinextDataAdapterFactory from ${JSON.stringify(weird)};`);
   });
-});
-
-describe("multi-stage build inputs", () => {
-  const entries = {
-    request: "/adapter/request-entry.js",
-    response: "/adapter/response-entry.js",
-  };
-
-  it("adds independently deployable request and response entries", () => {
-    expect(mergeMultiStageBuildInputs({ index: "virtual:main" }, entries)).toEqual({
-      index: "virtual:main",
-      "vinext-request-stage": entries.request,
-      "vinext-response-stage": entries.response,
-    });
-  });
-
-  it("preserves string inputs and basename-derived array entry filenames", () => {
-    expect(mergeMultiStageBuildInputs("virtual:main", entries)).toMatchObject({
-      index: "virtual:main",
-    });
-    const merged = mergeMultiStageBuildInputs(
-      ["/host/worker.ts", "/host/queues/consumer.mjs"],
-      entries,
-    );
-    expect(merged).toMatchObject({
-      worker: "/host/worker.ts",
-      consumer: "/host/queues/consumer.mjs",
-    });
-    expect(Object.keys(merged).map((name) => `${name}.js`)).toEqual([
-      "worker.js",
-      "consumer.js",
-      "vinext-request-stage.js",
-      "vinext-response-stage.js",
-    ]);
-  });
-
-  it("rejects ambiguous array input names instead of silently renaming host entries", () => {
-    expect(() =>
-      mergeMultiStageBuildInputs(["/host/first/worker.ts", "/host/second/worker.js"], entries),
-    ).toThrow('derived name "worker" conflicts with another entry');
-    expect(() => mergeMultiStageBuildInputs(["/host/vinext-request-stage.ts"], entries)).toThrow(
-      'derived name "vinext-request-stage" conflicts with another entry',
-    );
-  });
-
-  it.each(["vinext-request-stage", "vinext-response-stage"])(
-    "rejects a host input that already uses the reserved %s name",
-    (name) => {
-      expect(() => mergeMultiStageBuildInputs({ [name]: "virtual:host" }, entries)).toThrow(
-        `reserved build input "${name}"`,
-      );
-    },
-  );
 });
 
 describe("findVinextCacheConfigInPlugins", () => {

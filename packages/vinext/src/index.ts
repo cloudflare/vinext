@@ -64,7 +64,6 @@ import {
   VIRTUAL_CACHE_ADAPTERS,
   generateCdnCacheAdapterModule,
   generateCacheAdaptersModule,
-  mergeMultiStageBuildInputs,
   hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   type VinextCacheConfig,
