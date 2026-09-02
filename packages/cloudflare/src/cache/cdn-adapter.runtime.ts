@@ -280,22 +280,18 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     // cache key and request-stage personalization are no longer available.
     // The browser is told to revalidate every reuse so it never serves a stale
     // stored copy.
-    const headers: CdnResponseHeaders = {
+    const cacheTag = input.tags?.length ? formatCacheTag(input.tags) : null;
+    if (input.tags?.length && !cacheTag) {
+      return clearCloudflareCdnResponseHeaders(NO_STORE);
+    }
+
+    return {
       ...getBuildIdentityResponseHeader(),
       "Cache-Control": BROWSER_REVALIDATE,
       "CDN-Cache-Control": null,
       "Cloudflare-CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
-      "Cache-Tag": input.tags ? formatCacheTag(input.tags) : null,
+      "Cache-Tag": cacheTag,
     };
-
-    if (input.tags && input.tags.length > 0) {
-      const cacheTag = formatCacheTag(input.tags);
-      if (!cacheTag) {
-        return clearCloudflareCdnResponseHeaders(NO_STORE);
-      }
-      headers["Cache-Tag"] = cacheTag;
-    }
-    return headers;
   }
 
   hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean {
