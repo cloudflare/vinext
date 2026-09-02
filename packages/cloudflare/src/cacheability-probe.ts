@@ -41,6 +41,7 @@ type ProbePayload = {
   version?: number;
   phaseTimedOut?: boolean;
   scope?: "identity" | "pattern";
+  terminal?: true;
 };
 
 export type CacheabilityProbeProgress = {
@@ -359,7 +360,7 @@ export async function probeStagedWorkerCacheability(options: {
     canPrune: boolean;
     groups: ConcretePathGroup[];
     key: string;
-    pathnames: Set<string>;
+    resultKeys: Set<string>;
     pruned: boolean;
     results: Map<
       string,
@@ -370,10 +371,12 @@ export async function probeStagedWorkerCacheability(options: {
       }
     >;
     route: NonNullable<CdnWarmTarget["route"]>;
+    splitRepresentations: boolean;
   };
   type ConcretePathGroup = {
     pattern: PatternClassification;
     primary: CdnWarmTarget;
+    resultKey: string;
     routePathname: string;
     targets: CdnWarmTarget[];
   };
@@ -382,7 +385,7 @@ export async function probeStagedWorkerCacheability(options: {
     return target.kind === "html" ? 0 : target.kind === "rsc-full" ? 1 : 2;
   };
   const patterns = new Map<string, PatternClassification>();
-  const targetsByConcretePath = new Map<string, CdnWarmTarget[]>();
+  const routableTargets: CdnWarmTarget[] = [];
   let missingRouteMetadata = 0;
   for (const target of options.targets) {
     if (!target.route) {
@@ -394,46 +397,65 @@ export async function probeStagedWorkerCacheability(options: {
       canPrune: true,
       groups: [],
       key,
-      pathnames: new Set<string>(),
+      resultKeys: new Set<string>(),
       pruned: false,
       results: new Map(),
       route: target.route,
+      splitRepresentations: false,
     };
+    pattern.splitRepresentations ||=
+      target.route.cacheabilityProbe?.requestStageMayTerminate === true;
     pattern.canPrune &&=
       target.route.cacheabilityProbe?.canPrunePattern === true &&
-      target.route.cacheabilityProbe.routeMayResolve !== true;
+      target.route.cacheabilityProbe.routeMayResolve !== true &&
+      target.route.cacheabilityProbe.requestStageMayTerminate !== true;
     patterns.set(key, pattern);
-
-    const routePathname =
-      target.route.cacheabilityProbe?.concretePathname ??
-      cacheabilityRoutePathname(target.pathname, target.kind);
-    pattern.pathnames.add(routePathname);
-    const concreteKey = `${key}\0${routePathname}`;
-    const groupTargets = targetsByConcretePath.get(concreteKey) ?? [];
-    groupTargets.push(target);
-    targetsByConcretePath.set(concreteKey, groupTargets);
+    routableTargets.push(target);
   }
   if (missingRouteMetadata > 0) {
     failures.push(
       `${missingRouteMetadata} warm target${missingRouteMetadata === 1 ? " is" : "s are"} missing route-pattern metadata`,
     );
   }
-  const groups: ConcretePathGroup[] = Array.from(
-    targetsByConcretePath,
-    ([concreteKey, groupTargets]) => {
-      const route = groupTargets[0].route!;
-      const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
-      const pattern = patterns.get(key)!;
-      const routePathname = concreteKey.slice(key.length + 1);
-      groupTargets.sort((first, second) => {
-        const preference = targetPreference(first) - targetPreference(second);
-        return preference || first.sourcePathname.localeCompare(second.sourcePathname);
-      });
-      const group = { pattern, primary: groupTargets[0], routePathname, targets: groupTargets };
-      pattern.groups.push(group);
-      return group;
-    },
-  );
+  const targetGroups = new Map<
+    string,
+    {
+      pattern: PatternClassification;
+      resultKey: string;
+      routePathname: string;
+      targets: CdnWarmTarget[];
+    }
+  >();
+  for (const target of routableTargets) {
+    const route = target.route!;
+    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
+    const pattern = patterns.get(key)!;
+    const routePathname =
+      route.cacheabilityProbe?.concretePathname ??
+      cacheabilityRoutePathname(target.pathname, target.kind);
+    const resultKey = pattern.splitRepresentations
+      ? `${target.kind}\0${routePathname}`
+      : routePathname;
+    pattern.resultKeys.add(resultKey);
+    const concreteKey = `${key}\0${resultKey}`;
+    const group = targetGroups.get(concreteKey) ?? {
+      pattern,
+      resultKey,
+      routePathname,
+      targets: [],
+    };
+    group.targets.push(target);
+    targetGroups.set(concreteKey, group);
+  }
+  const groups: ConcretePathGroup[] = Array.from(targetGroups.values(), (targetGroup) => {
+    targetGroup.targets.sort((first, second) => {
+      const preference = targetPreference(first) - targetPreference(second);
+      return preference || first.sourcePathname.localeCompare(second.sourcePathname);
+    });
+    const group = { ...targetGroup, primary: targetGroup.targets[0] };
+    targetGroup.pattern.groups.push(group);
+    return group;
+  });
 
   const reportProgress = (): void => {
     options.onProgress?.({
@@ -481,14 +503,16 @@ export async function probeStagedWorkerCacheability(options: {
         canPrune: false,
         groups: [],
         key,
-        pathnames: new Set<string>(),
+        resultKeys: new Set<string>(),
         pruned: false,
         results: new Map(),
         route,
+        splitRepresentations: previousPattern.splitRepresentations,
       };
       patterns.set(key, pattern);
     }
     pattern.canPrune = false;
+    pattern.splitRepresentations ||= previousPattern.splitRepresentations;
     // A direct destination probe may have provisionally pruned this pattern
     // before the routed source completed. Its retained concrete observation is
     // authoritative once another public path joins the resolved route.
@@ -497,13 +521,11 @@ export async function probeStagedWorkerCacheability(options: {
 
     const previousGroupIndex = previousPattern.groups.indexOf(group);
     if (previousGroupIndex !== -1) previousPattern.groups.splice(previousGroupIndex, 1);
-    if (
-      !previousPattern.groups.some((candidate) => candidate.routePathname === group.routePathname)
-    ) {
-      previousPattern.pathnames.delete(group.routePathname);
+    if (!previousPattern.groups.some((candidate) => candidate.resultKey === group.resultKey)) {
+      previousPattern.resultKeys.delete(group.resultKey);
     }
     pattern.groups.push(group);
-    pattern.pathnames.add(group.routePathname);
+    pattern.resultKeys.add(group.resultKey);
     group.pattern = pattern;
     return pattern;
   };
@@ -555,6 +577,11 @@ export async function probeStagedWorkerCacheability(options: {
       !isProbeRouteState(result.state) ||
       (result.scope !== undefined && result.scope !== "identity" && result.scope !== "pattern") ||
       (result.scope === "pattern" && result.state !== "dynamic") ||
+      (result.terminal !== undefined && result.terminal !== true) ||
+      (result.terminal === true &&
+        (result.state !== "dynamic" ||
+          result.scope !== "identity" ||
+          !group.pattern.splitRepresentations)) ||
       (result.rendererStatic !== undefined && typeof result.rendererStatic !== "boolean") ||
       !Number.isInteger(result.status) ||
       result.status! < 100 ||
@@ -589,11 +616,6 @@ export async function probeStagedWorkerCacheability(options: {
       moveGroupToResolvedRoute(group, { kind: result.kind, pattern: result.pattern });
     }
 
-    group.pattern.results.set(group.routePathname, {
-      rendererStatic: result.rendererStatic === true,
-      representation: target.kind,
-      state: result.state,
-    });
     const patternIsDefinitelyDynamic =
       result.state === "dynamic" && result.scope === "pattern" && group.pattern.canPrune;
     if (patternIsDefinitelyDynamic) {
@@ -604,6 +626,11 @@ export async function probeStagedWorkerCacheability(options: {
       return;
     }
 
+    group.pattern.results.set(group.resultKey, {
+      rendererStatic: result.rendererStatic === true,
+      representation: target.kind,
+      state: result.state,
+    });
     if (result.state === "static-candidate") {
       staticPathCount += 1;
     } else {
@@ -698,15 +725,16 @@ export async function probeStagedWorkerCacheability(options: {
       dynamic += 1;
     }
 
-    const staticPaths: CacheabilityManifestRoute["staticPaths"] = {};
+    const rendererStaticTargets = new Map<string, CdnWarmTarget>();
     const runtimePathSet = new Set<string>();
     for (const group of pattern.groups) {
-      const result = pattern.results.get(group.routePathname);
+      const result = pattern.results.get(group.resultKey);
       if (result?.state === "static-candidate") {
         if (result.rendererStatic) {
-          const paths = staticPaths[result.representation] ?? [];
-          paths.push(group.routePathname);
-          staticPaths[result.representation] = paths;
+          const previous = rendererStaticTargets.get(group.routePathname);
+          if (!previous || targetPreference(group.primary) < targetPreference(previous)) {
+            rendererStaticTargets.set(group.routePathname, group.primary);
+          }
         } else {
           runtimePathSet.add(group.routePathname);
         }
@@ -725,9 +753,17 @@ export async function probeStagedWorkerCacheability(options: {
         speculativeTargets.push(...pairedTargets);
       }
     }
+    const staticPaths: CacheabilityManifestRoute["staticPaths"] = {};
+    for (const [routePathname, staticTarget] of rendererStaticTargets) {
+      runtimePathSet.delete(routePathname);
+      const paths = staticPaths[staticTarget.kind] ?? [];
+      paths.push(routePathname);
+      staticPaths[staticTarget.kind] = paths;
+    }
     for (const paths of Object.values(staticPaths)) paths?.sort();
     const allObservedPathsStatic =
-      pattern.results.size === pattern.pathnames.size && runtimePathSet.size === 0;
+      pattern.results.size === pattern.resultKeys.size &&
+      Array.from(pattern.results.values()).every((result) => result.state === "static-candidate");
     const allObservedPathsStaticallyGenerated =
       allObservedPathsStatic &&
       Array.from(pattern.results.values()).every((result) => result.rendererStatic);
@@ -739,7 +775,7 @@ export async function probeStagedWorkerCacheability(options: {
       normalizeCacheabilityRoutePathname(pattern.route.pattern) === soleGroup.routePathname;
     let route: CacheabilityManifestRoute;
     if (literalPatternNamesSolePath) {
-      const result = pattern.results.get(soleGroup.routePathname);
+      const result = pattern.results.get(soleGroup.resultKey);
       route =
         result?.state === "static-candidate"
           ? pattern.route.kind === "app-route"

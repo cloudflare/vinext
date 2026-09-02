@@ -287,6 +287,175 @@ describe("staged Worker cacheability probes", () => {
     ]);
   });
 
+  it("probes App representations independently when the request stage may terminate", async () => {
+    const root = createProbeRoot();
+    const route = {
+      cacheabilityProbe: { canPrunePattern: true, requestStageMayTerminate: true },
+      kind: "app-page" as const,
+      pattern: "/conditional",
+    };
+    const html = { ...target("/conditional"), route };
+    const rsc = {
+      headers: { Accept: "text/x-component", RSC: "1" },
+      kind: "rsc-full" as const,
+      label: "/conditional (RSC full)",
+      pathname: "/conditional?_rsc",
+      route,
+      sourcePathname: "/conditional",
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      const isRsc = new Headers(init?.headers).get("RSC") === "1";
+      return Response.json({
+        kind: "app-page",
+        pattern: route.pattern,
+        ...(isRsc
+          ? { rendererStatic: true, state: "static-candidate" }
+          : { scope: "identity", state: "dynamic", terminal: true }),
+        status: isRsc ? 200 : 307,
+        version: 1,
+      });
+    });
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [rsc, html],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 2, skipped: 0 });
+    expect(result.failures).toEqual([]);
+    expect(result.cacheableTargets).toEqual([rsc]);
+    expect(result.speculativeTargets).toEqual([]);
+    const manifestRoute = Object.values(result.manifest.routes)[0];
+    expect(cacheabilityManifestRouteState(manifestRoute, "/conditional", "rsc-full")).toBe(
+      "static-candidate",
+    );
+  });
+
+  it("probes Pages HTML and data independently when the request stage may terminate", async () => {
+    const root = createProbeRoot();
+    const route = {
+      cacheabilityProbe: { canPrunePattern: true, requestStageMayTerminate: true },
+      kind: "pages-page" as const,
+      pattern: "/posts/:slug",
+    };
+    const html = {
+      headers: { Accept: "text/html" },
+      kind: "html" as const,
+      label: "/posts/one",
+      pathname: "/posts/one",
+      route,
+      sourcePathname: "/posts/one",
+    };
+    const data = {
+      headers: { Accept: "application/json" },
+      kind: "pages-data" as const,
+      label: "/_next/data/build/posts/one.json (Pages data)",
+      pathname: "/_next/data/build/posts/one.json",
+      route: {
+        ...route,
+        cacheabilityProbe: { ...route.cacheabilityProbe, concretePathname: "/posts/one" },
+      },
+      sourcePathname: "/_next/data/build/posts/one.json",
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      const isData = new Headers(init?.headers).get("Accept") === "application/json";
+      return Response.json({
+        kind: "pages-page",
+        pattern: route.pattern,
+        ...(isData
+          ? { rendererStatic: true, state: "static-candidate" }
+          : { scope: "identity", state: "dynamic", terminal: true }),
+        status: isData ? 200 : 307,
+        version: 1,
+      });
+    });
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [data, html],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result.cacheableTargets).toEqual([data]);
+    expect(result.speculativeTargets).toEqual([]);
+  });
+
+  it("does not prune a terminal-capable pattern from one representation", async () => {
+    const root = createProbeRoot();
+    const route = {
+      cacheabilityProbe: { canPrunePattern: true, requestStageMayTerminate: true },
+      kind: "app-page" as const,
+      pattern: "/posts/:slug",
+    };
+    const first = { ...target("/posts/one"), route };
+    const second = { ...target("/posts/two"), route };
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      return Response.json({
+        kind: "app-page",
+        pattern: route.pattern,
+        rendererStatic: pathname.endsWith("/two"),
+        scope: pathname.endsWith("/one") ? "pattern" : undefined,
+        state: pathname.endsWith("/one") ? "dynamic" : "static-candidate",
+        status: 200,
+        version: 1,
+      });
+    });
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      concurrency: 1,
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [first, second],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ dynamic: 1, probed: 2, skipped: 0 });
+    expect(result.cacheableTargets).toEqual([second]);
+  });
+
+  it.each([
+    ["false", { scope: "identity", state: "dynamic", terminal: false }],
+    ["non-dynamic", { rendererStatic: true, state: "static-candidate", terminal: true }],
+  ])("rejects an invalid %s terminal probe signal", async (_label, probeResult) => {
+    const root = createProbeRoot();
+    const route = {
+      cacheabilityProbe: { canPrunePattern: true, requestStageMayTerminate: true },
+      kind: "app-page" as const,
+      pattern: "/conditional",
+    };
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl: async () =>
+        Response.json({
+          kind: "app-page",
+          pattern: route.pattern,
+          ...probeResult,
+          status: 200,
+          version: 1,
+        }),
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [{ ...target("/conditional"), route }],
+    });
+
+    expect(result.failures).toEqual(["/conditional: probe returned an invalid envelope"]);
+    expect(result.cacheableTargets).toEqual([]);
+  });
+
   it("leaves representation-specific statuses to the final completed render", async () => {
     const root = createProbeRoot();
     const route = { kind: "app-page" as const, pattern: "/missing" };
