@@ -79,10 +79,9 @@ describe("staged Worker cacheability probes", () => {
       urls.push(url);
       const headers = new Headers(init?.headers);
       expect(headers.get(VINEXT_CACHEABILITY_PROBE_HEADER)).toBe("1");
-      expect(JSON.parse(headers.get(VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER)!)).toEqual([
-        "app-page",
-        "/cached/:slug",
-      ]);
+      expect(
+        JSON.parse(decodeURIComponent(headers.get(VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER)!)),
+      ).toEqual(["app-page", "/cached/:slug"]);
       expect(headers.get(VINEXT_PRERENDER_SECRET_HEADER)).toBe("probe-secret");
       expect(headers.get("Cache-Control")).toBeNull();
 
@@ -535,6 +534,52 @@ describe("staged Worker cacheability probes", () => {
       staticPaths: { html: ["/rewrite-me", "/safe"] },
       unknownState: "static-candidate",
     });
+  });
+
+  it("encodes Unicode route patterns into ByteString probe headers", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-probe-unicode-"));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, "dist", "server"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "dist", "server", "vinext-server.json"),
+      JSON.stringify({ prerenderSecret: "probe-secret" }),
+    );
+
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      const encodedRoute = new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER);
+      expect(encodedRoute).toContain("%E4%BD%A0%E5%A5%BD");
+      expect(JSON.parse(decodeURIComponent(encodedRoute!))).toEqual(["app-page", "/你好"]);
+      return Response.json({
+        kind: "app-page",
+        pattern: "/你好",
+        scope: "identity",
+        state: "dynamic",
+        status: 200,
+        version: 1,
+      });
+    });
+    const route = optimizableRoute("/你好");
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [
+        {
+          headers: { Accept: "text/html" },
+          kind: "html",
+          label: "/你好",
+          pathname: "/你好",
+          route,
+          sourcePathname: "/你好",
+        },
+      ],
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.dynamic).toBe(1);
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it("rejects an unexpected resolved route without rewrite metadata", async () => {

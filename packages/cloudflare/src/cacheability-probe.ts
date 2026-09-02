@@ -200,7 +200,7 @@ async function probeTarget(options: {
   if (options.target.route) {
     headers.set(
       VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
-      JSON.stringify([options.target.route.kind, options.target.route.pattern]),
+      encodeURIComponent(JSON.stringify([options.target.route.kind, options.target.route.pattern])),
     );
   }
   headers.set(VINEXT_PRERENDER_SECRET_HEADER, options.secret);
