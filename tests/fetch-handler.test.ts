@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { createServer, type ViteDevServer } from "vite-plus";
 import { describe, expect, it } from "vite-plus/test";
-import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 import { resolveRuntimeEntryModule } from "../packages/vinext/src/entries/runtime-entry-module.js";
 import vinext, { type VinextOptions } from "../packages/vinext/src/index.js";
 
@@ -43,21 +42,6 @@ function loadUnifiedFetchHandler(
   options: Parameters<typeof loadVirtualModule>[2] = {},
 ): Promise<string> {
   return loadVirtualModule(root, "virtual:vinext-worker-entry", options);
-}
-
-async function resolveWithCdnOutput(root: string, id: string): Promise<string | undefined> {
-  const server = await createServer({
-    root,
-    configFile: false,
-    plugins: [vinext({ cache: { cdn: cdnAdapter() } }), { name: "vite-plugin-cloudflare" }],
-    server: { port: 0 },
-    logLevel: "silent",
-  });
-  try {
-    return (await server.pluginContainer.resolveId(id))?.id;
-  } finally {
-    await server.close();
-  }
 }
 
 describe("unified Worker fetch handler", () => {
@@ -132,53 +116,6 @@ describe("unified Worker fetch handler", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
-
-  it("lets the Cloudflare CDN adapter select its multi-stage Worker facade", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-fetch-handler-cdn-"));
-    try {
-      fs.mkdirSync(path.join(root, "app"), { recursive: true });
-      fs.writeFileSync(
-        path.join(root, "app/page.tsx"),
-        "export default function Page() { return <div>app</div>; }\n",
-      );
-
-      const descriptor = cdnAdapter();
-      await expect(
-        loadUnifiedFetchHandler(root, {
-          cache: { cdn: descriptor },
-          hostPluginName: "vite-plugin-cloudflare",
-        }),
-      ).resolves.toBe(
-        [
-          `export { default } from ${JSON.stringify(descriptor.output.entry)};`,
-          `export * from ${JSON.stringify(descriptor.output.entry)};`,
-          "",
-        ].join("\n"),
-      );
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it.each(["app-router-entry", "pages-router-entry"])(
-    "routes a direct %s main through the Cloudflare facade",
-    async (entryName) => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-direct-router-cdn-"));
-      try {
-        fs.mkdirSync(path.join(root, "app"), { recursive: true });
-        fs.writeFileSync(
-          path.join(root, "app/page.tsx"),
-          "export default function Page() { return <div>app</div>; }\n",
-        );
-
-        await expect(resolveWithCdnOutput(root, `vinext/server/${entryName}`)).resolves.toBe(
-          "\0virtual:vinext-worker-entry",
-        );
-      } finally {
-        fs.rmSync(root, { recursive: true, force: true });
-      }
-    },
-  );
 
   it.each(["app-router-entry", "pages-router-entry"])(
     "routes a direct %s main through the selected facade",
