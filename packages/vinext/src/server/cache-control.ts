@@ -57,6 +57,15 @@ export function captureCdnResponsePolicyHeaders(headers: Headers): Headers {
   return policy;
 }
 
+/** Capture policy values that were added above an already-transported baseline. */
+export function captureCdnResponsePolicyOverrides(headers: Headers, baseline: Headers): Headers {
+  const overrides = captureCdnResponsePolicyHeaders(headers);
+  for (const [name, value] of overrides) {
+    if (baseline.get(name) === value) overrides.delete(name);
+  }
+  return overrides;
+}
+
 /** Delegate provider-specific request routing validation to the CDN adapter. */
 export async function validateCdnRequest(request: Request): Promise<Response | null> {
   return (await getCdnCacheAdapter().validateRequest?.(request)) ?? null;
@@ -115,6 +124,18 @@ export function reconcileCdnResponseHeadersAfterOuterPolicy(
   // retain that artifact's shared-cache policy.
   if (headers.has("set-cookie")) {
     applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+    return;
+  }
+  const cacheControl = outerPolicyHeaders.get("cache-control");
+  if (cacheControl !== null) {
+    applyCdnResponseHeaders(headers, { cacheControl });
+    // Preserve any explicit provider-specific policy authored alongside the
+    // generic middleware policy after the adapter has derived its defaults.
+    for (const name of getCdnResponsePolicyHeaderNames()) {
+      if (name === "cache-control") continue;
+      const value = outerPolicyHeaders.get(name);
+      if (value !== null) headers.set(name, value);
+    }
     return;
   }
   for (const name of getCdnResponsePolicyHeaderNames()) {

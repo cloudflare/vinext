@@ -360,6 +360,34 @@ describe("Pages Worker request stage", () => {
     await expect(response.text()).resolves.toBe("cached page");
   });
 
+  // Next.js applies middleware/config response headers before rendering, and
+  // its Pages sender only generates Cache-Control when one is not already set.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/send-payload.ts
+  it("preserves a positive middleware cache policy outside a shared static artifact", async () => {
+    mocks.runMiddleware.mockResolvedValue({
+      continue: true,
+      responseHeaders: new Headers({ "Cache-Control": "public, s-maxage=45" }),
+    });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () =>
+      Promise.resolve(
+        new Response("cached page", {
+          headers: { "Cache-Control": "public, max-age=0, must-revalidate" },
+        }),
+      ),
+    );
+
+    const response = await handleRequestStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(dispatch.mock.calls[0]?.[1].stagedHeaders).toBeNull();
+    expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=45");
+  });
+
   // Next.js installs custom-route headers before invoking Pages handlers, so
   // getServerSideProps remains authoritative when it writes the same header.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-server.ts

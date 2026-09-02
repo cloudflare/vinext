@@ -42,7 +42,7 @@ import { requestContextFromRequest } from "../config/request-context.js";
 import { resolveResponseStageCachePolicy } from "./config-headers.js";
 import {
   applyCdnResponseIdentityHeaders,
-  captureCdnResponsePolicyHeaders,
+  captureCdnResponsePolicyOverrides,
   reconcileCdnResponseHeadersAfterOuterPolicy,
   validateCdnRequest,
 } from "./cache-control.js";
@@ -108,6 +108,16 @@ function haveSameHeaders(first: Headers, second: Headers): boolean {
       ([name, value], index) =>
         name === secondEntries[index]?.[0] && value === secondEntries[index]?.[1],
     )
+  );
+}
+
+function captureOuterResponsePolicyHeaders(
+  stagedHeaders: Headers,
+  transportedPolicyHeaders: Array<[string, string]> | null,
+): Headers {
+  return captureCdnResponsePolicyOverrides(
+    stagedHeaders,
+    new Headers(transportedPolicyHeaders ?? []),
   );
 }
 
@@ -412,7 +422,10 @@ async function handleRequest(
               consumed.owner === "request-time" ||
               (consumed.owner === null && matchedPage?.route.dataKind === "server");
             sharedOuterPolicyHeaders = !requestTimePolicyOwner
-              ? captureCdnResponsePolicyHeaders(new Headers(stagedHeaders))
+              ? captureOuterResponsePolicyHeaders(
+                  stagedHeaders ?? new Headers(),
+                  transportedPolicyHeaders,
+                )
               : null;
           }
           return consumed.response;

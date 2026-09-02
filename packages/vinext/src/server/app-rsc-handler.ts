@@ -102,7 +102,7 @@ import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import {
   applyCdnResponseHeaders,
-  captureCdnResponsePolicyHeaders,
+  captureCdnResponsePolicyOverrides,
   getCdnResponsePolicyHeaderNames,
   NEVER_CACHE_CONTROL,
   reconcileCdnResponseHeadersAfterOuterPolicy,
@@ -1060,7 +1060,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           ),
         )
       : Promise.resolve(withResponseStageVary(null, middlewareContext.headers?.get("Vary"))));
-  const canUseSharedWorkerResponseStage =
+  let canUseSharedWorkerResponseStage =
     draftModeCookie === null &&
     !hasMiddlewareCookieOverlay &&
     !hasMiddlewareRequestHeaderOverrides(
@@ -1218,8 +1218,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     })());
   let outerResponsePolicyPromise: Promise<Headers> | undefined;
   const loadOuterResponsePolicy = () =>
-    (outerResponsePolicyPromise ??= loadPreHandlerResponseHeaders().then((headers) =>
-      captureCdnResponsePolicyHeaders(new Headers(headers)),
+    (outerResponsePolicyPromise ??= Promise.all([
+      loadPreHandlerResponseHeaders(),
+      loadResponseStagePolicy(),
+    ]).then(([headers, responseStagePolicy]) =>
+      captureCdnResponsePolicyOverrides(headers, new Headers(responseStagePolicy ?? [])),
     ));
   const composeResponseStageResponse = async (response: Response): Promise<Response> => {
     // Positive config cache policy was already transported into the response
@@ -1592,6 +1595,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
     if (addedSourceHeader) {
       targetHeadersContext.readonlyHeaders = undefined;
+      // Source-route middleware runs after the initial response-stage
+      // eligibility decision. A header added here is observable by the
+      // intercepted render, so its representation is request-specific.
+      canUseSharedWorkerResponseStage = false;
     }
     if (sourceMiddlewareResult.rewritten) {
       // Rewrites such as locale insertion are valid only when they resolve to

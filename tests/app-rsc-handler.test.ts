@@ -3205,6 +3205,12 @@ describe("createAppRscHandler", () => {
       const currentHeaders = await requestHeaders();
       return new Response(currentHeaders.get("x-source") ?? "missing");
     });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+      async (_request, _props, options) => {
+        expect(options).toEqual({ cache: "bypass" });
+        return dispatchMatchedPage();
+      },
+    );
     const handler = createHandler({
       configHeaders: [],
       dispatchMatchedPage,
@@ -3224,10 +3230,16 @@ describe("createAppRscHandler", () => {
 
     const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
     const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
-    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+    const response = await handler(
+      new Request(`https://example.test${rscUrl}`, { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
 
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe("added");
+    expect(dispatchResponseStage).toHaveBeenCalledOnce();
   });
 
   it("preserves the Server Action body after authorizing an interception source", async () => {
