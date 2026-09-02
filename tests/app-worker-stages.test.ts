@@ -14,6 +14,7 @@ import {
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_READINESS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
+import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 
 const stages = vi.hoisted(() => ({
   renderFullRequest: vi.fn(),
@@ -142,6 +143,27 @@ describe("App Worker response stage", () => {
       notFoundStage,
       { cache: "shared" },
     );
+  });
+
+  it("serializes renderer Link provenance across the response-stage boundary", async () => {
+    stages.renderResponse.mockImplementationOnce(async () => {
+      const response = new Response("rendered", {
+        headers: { Link: '</framework.woff2>; rel="preload"; as="font"' },
+      });
+      markFrameworkLinkHeaders(response.headers, response.headers.get("link"));
+      return response;
+    });
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/missing"),
+      undefined,
+      undefined,
+      notFoundStage,
+      async () => new Response("request-stage"),
+      { cache: "shared" },
+    );
+
+    expect(response.headers.get("x-vinext-app-stage-post-config-link")).toBe("1");
   });
 
   it("rejects matched-stage payloads missing interception cache-safety fields", () => {

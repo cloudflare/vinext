@@ -145,8 +145,12 @@ import {
 import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
 import {
   consumePagesResponseStagePolicyOwner,
-  withResponseStageVary,
+  withoutResponseStageVary,
 } from "./response-stage-policy.js";
+import {
+  consumeResponseStageLinkProvenance,
+  copyLinkHeaderProvenance,
+} from "./app-response-header-provenance.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -275,13 +279,19 @@ type AppRscRouteMatch<TRoute> = {
 function applyMiddlewareContextToResponse(
   response: Response,
   middlewareContext: AppRscMiddlewareContext,
+  appendToPostConfigLink = false,
 ): Response {
   if (!middlewareContext.headers && middlewareContext.status == null) {
     return response;
   }
 
   const headers = new Headers(response.headers);
+  const responseLink = appendToPostConfigLink ? headers.get("link") : null;
   mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+  const middlewareLink = middlewareContext.headers?.get("link");
+  if (responseLink && middlewareLink) {
+    headers.set("link", `${middlewareLink}, ${responseLink}`);
+  }
 
   return preserveFullyBufferedBodyMetadata(
     response,
@@ -1052,17 +1062,16 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const loadResponseStagePolicy = () =>
     (responseStagePolicyPromise ??= options.configHeaders.length
       ? import("./config-headers.js").then(({ resolveResponseStageCachePolicy }) =>
-          withResponseStageVary(
+          withoutResponseStageVary(
             resolveResponseStageCachePolicy({
               basePathState,
               configHeaders: options.configHeaders,
               pathname: matchPathname(requestCleanPathname),
               requestContext: preMiddlewareRequestContext,
             }),
-            middlewareContext.headers?.get("Vary"),
           ),
         )
-      : Promise.resolve(withResponseStageVary(null, middlewareContext.headers?.get("Vary"))));
+      : Promise.resolve(null));
   let canUseSharedWorkerResponseStage =
     draftModeCookie === null &&
     !hasMiddlewareCookieOverlay &&
@@ -1186,10 +1195,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // Compose config headers on a mutable copy while retaining stream/cache
     // metadata carried by the response-stage result.
     const headers = new Headers(response.headers);
+    copyLinkHeaderProvenance(response.headers, headers);
     await applyAppRscConfigHeaders(headers, request, {
       basePath: options.basePath,
       configHeaders: options.configHeaders,
       i18nConfig: options.i18nConfig,
+      middlewareHeaders: middlewareContext.headers,
       overwriteExisting: preserveExistingPolicy
         ? new Set<string>()
         : getCdnResponsePolicyHeaderNames(),
@@ -1234,11 +1245,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // failure cannot be made public again and the uncached gateway does not
     // expose a shared-cache directive. Single-stage rendering still applies
     // config and middleware policy with ordinary Next.js precedence.
+    const transportedLink = consumeResponseStageLinkProvenance(response);
+    response = transportedLink.response;
     response = await applyConfigHeadersToResponseStage(
       response,
       Boolean(dispatchResponseStage || options.renderResponseStageLocally),
     );
-    response = applyMiddlewareContextToResponse(response, middlewareContext);
+    response = applyMiddlewareContextToResponse(
+      response,
+      middlewareContext,
+      transportedLink.appendToPostConfigLink,
+    );
     reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, await loadOuterResponsePolicy());
     return markAppRscResponseConfigHeadersApplied(response);
   };

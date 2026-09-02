@@ -19,6 +19,7 @@ import type {
   VinextResponseStageDispatchOptions,
 } from "./multi-stage.js";
 import { withResponseStageCacheability } from "./response-stage-cacheability.js";
+import { serializeResponseStageLinkProvenance } from "./app-response-header-provenance.js";
 
 type AppResponseStageEnv = Record<string, unknown>;
 
@@ -90,7 +91,9 @@ export async function handleResponseStage(
       }
       const render = () =>
         rscHandler.handleResponseStage(request, cacheabilityContext, props, options);
-      return runWithExecutionContext(cacheabilityContext, render);
+      return serializeResponseStageLinkProvenance(
+        await runWithExecutionContext(cacheabilityContext, render),
+      );
     },
   );
 }
