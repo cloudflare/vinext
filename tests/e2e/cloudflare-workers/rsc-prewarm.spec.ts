@@ -88,6 +88,22 @@ async function getReusableResponseAfterPromotion(
   return reused;
 }
 
+async function waitForEdgeCacheState(
+  request: APIRequestContext,
+  url: string,
+  expected: "HIT" | "MISS",
+  failureMessage: string,
+): Promise<APIResponse> {
+  const deadline = Date.now() + 30_000;
+  do {
+    const response = await getResponseAfterPromotion(request, url, { accept: "text/html" });
+    if (response.headers()["cf-cache-status"] === expected) return response;
+    await response.dispose();
+    await new Promise((resolve) => setTimeout(resolve, PROMOTION_PROBE_INTERVAL_MS));
+  } while (Date.now() < deadline);
+  throw new Error(failureMessage);
+}
+
 async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<ObservedRsc> {
   const responsePromise = page.waitForResponse(
     (response) => {
@@ -683,41 +699,64 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   // A purge removes the warmed response body, not the manifest embedded in the
   // promoted Worker. The first completed render must therefore be admitted as
   // a CDN MISS, and subsequent requests must eventually reuse that exact entry.
-  const purgeDeadline = Date.now() + 30_000;
-  let coldAfterPurge: APIResponse | undefined;
-  do {
-    const candidate = await getResponseAfterPromotion(request, `${baseURL}${TARGET_PATH}`, {
-      accept: "text/html",
-    });
-    if (candidate.headers()["cf-cache-status"] !== "HIT") {
-      coldAfterPurge = candidate;
-      break;
-    }
-    await candidate.dispose();
-    await new Promise((resolve) => setTimeout(resolve, PROMOTION_PROBE_INTERVAL_MS));
-  } while (Date.now() < purgeDeadline);
-  expect(coldAfterPurge, "purged App HTML entry remained a CDN HIT").toBeDefined();
-  const coldHeaders = coldAfterPurge!.headers();
-  expect(coldAfterPurge!.ok(), JSON.stringify(coldHeaders)).toBe(true);
+  const coldAfterPurge = await waitForEdgeCacheState(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    "MISS",
+    "purged App HTML entry did not become a CDN MISS",
+  );
+  const coldHeaders = coldAfterPurge.headers();
+  expect(coldAfterPurge.ok(), JSON.stringify(coldHeaders)).toBe(true);
   expect(coldHeaders["cf-cache-status"]).toBe("MISS");
   expect(coldHeaders["cdn-cache-control"]).toBeUndefined();
   expect(coldHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
-  expect(await coldAfterPurge!.text()).toContain("Prewarm target");
+  expect(await coldAfterPurge.text()).toContain("Prewarm target");
 
-  const reuseDeadline = Date.now() + 30_000;
-  let hitAfterPurge: APIResponse | undefined;
-  do {
-    const candidate = await getResponseAfterPromotion(request, `${baseURL}${TARGET_PATH}`, {
-      accept: "text/html",
-    });
-    if (candidate.headers()["cf-cache-status"] === "HIT") {
-      hitAfterPurge = candidate;
-      break;
-    }
-    await candidate.dispose();
-    await new Promise((resolve) => setTimeout(resolve, PROMOTION_PROBE_INTERVAL_MS));
-  } while (Date.now() < reuseDeadline);
-  expect(hitAfterPurge, "cold App HTML cache fill did not become reusable").toBeDefined();
-  expect(hitAfterPurge!.ok(), JSON.stringify(hitAfterPurge!.headers())).toBe(true);
-  expect(await hitAfterPurge!.text()).toContain("Prewarm target");
+  const hitAfterPurge = await waitForEdgeCacheState(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    "HIT",
+    "cold App HTML cache fill did not become reusable",
+  );
+  expect(hitAfterPurge.ok(), JSON.stringify(hitAfterPurge.headers())).toBe(true);
+  expect(await hitAfterPurge.text()).toContain("Prewarm target");
+
+  const taggedUrl = `${baseURL}/cached/featured`;
+  const taggedHit = await waitForEdgeCacheState(
+    request,
+    taggedUrl,
+    "HIT",
+    "prewarmed tagged App HTML entry did not become reusable",
+  );
+  const taggedBody = await taggedHit.text();
+  const taggedRenderId = /data-render-id="([^"]+)"/.exec(taggedBody)?.[1];
+  expect(taggedRenderId).toBeTruthy();
+
+  const tagPurge = await request.post(`${baseURL}/api/revalidate-tag`, {
+    data: { tag: "post:featured" },
+  });
+  const tagPurgeBody = await tagPurge.json();
+  expect(tagPurge.ok(), JSON.stringify(tagPurgeBody)).toBe(true);
+  expect(tagPurgeBody).toEqual({ revalidated: true, target: "post:featured" });
+
+  const taggedMiss = await waitForEdgeCacheState(
+    request,
+    taggedUrl,
+    "MISS",
+    "tag-invalidated App HTML entry did not become a CDN MISS",
+  );
+  const refreshedTaggedBody = await taggedMiss.text();
+  const refreshedTaggedRenderId = /data-render-id="([^"]+)"/.exec(refreshedTaggedBody)?.[1];
+  expect(refreshedTaggedRenderId).toBeTruthy();
+  expect(refreshedTaggedRenderId).not.toBe(taggedRenderId);
+
+  const taggedReuse = await waitForEdgeCacheState(
+    request,
+    taggedUrl,
+    "HIT",
+    "tag-refreshed App HTML entry did not become reusable",
+  );
+  expect(/data-render-id="([^"]+)"/.exec(await taggedReuse.text())?.[1]).toBe(
+    refreshedTaggedRenderId,
+  );
 });
