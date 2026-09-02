@@ -84,12 +84,12 @@ describe("Cloudflare CDN adapter build output", () => {
   });
 
   it("emits the pregenerated-paths sidecar imported by the Worker entry", async () => {
-    expect(
-      await fs.readFile(
-        path.join(root, "dist/server/__vinext_pregenerated_concrete_paths.js"),
-        "utf8",
-      ),
-    ).toBe("delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;\n");
+    const sidecarName = "__vinext_pregenerated_concrete_paths.js";
+    const workerEntry = await fs.readFile(path.join(root, "dist/server/index.js"), "utf8");
+    expect(workerEntry).toMatch(new RegExp(`import\\s*["']\\./${sidecarName}["']`));
+    expect(await fs.readFile(path.join(root, "dist/server", sidecarName), "utf8")).toBe(
+      "delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;\n",
+    );
   });
 
   it("is the effective config selected by Wrangler's deploy redirect", async () => {
