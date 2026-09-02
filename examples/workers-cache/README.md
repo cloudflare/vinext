@@ -47,9 +47,9 @@ Cache Rules.
 ## How vinext wires it up
 
 1. **`vite.config.ts`** declares the adapters via `vinext({ cache })` (see
-   above). The descriptors are plain serializable values — they don't touch
-   the Workers runtime at build/dev time; the adapters instantiate lazily on
-   the first request.
+   above). The declarations do not touch the Workers runtime during config
+   evaluation. The Cloudflare build hook emits the staged Worker configuration,
+   and runtime adapters instantiate lazily on the first request.
 
 2. **`wrangler.jsonc`** binds the KV namespace:
 

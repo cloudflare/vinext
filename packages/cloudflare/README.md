@@ -9,8 +9,8 @@ This package provides Cloudflare-specific cache and image backends for vinext:
   data cache (`fetch`, `"use cache"`, `unstable_cache`) with a Workers KV
   namespace.
 - **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — delegates
-  page-level ISR serving and revalidation to Cloudflare Workers Cache. This is
-  opt-in and requires Workers Cache to be enabled in Wrangler config.
+  page-level ISR serving and revalidation to Cloudflare Workers Cache through
+  an automatically generated cache-enabled response entrypoint.
 - **`imagesOptimizer()`** (`@vinext/cloudflare/images/images-optimizer`) — backs
   `next/image` transformations with a Cloudflare Images binding.
 
@@ -37,14 +37,17 @@ export default defineConfig({
 
 ### Workers Cache
 
-`cdnAdapter()` is optional. Only configure it when Workers Cache is enabled in
-`wrangler.jsonc`:
+`cdnAdapter()` is optional. Configuring it asks the Cloudflare build for two
+Worker entrypoints: the default entrypoint runs middleware and request-time
+routing with caching disabled, while `VinextCachedResponse` lazily loads the
+render stage with Workers Cache enabled. These settings are written to the
+generated `dist/server/wrangler.json`; do not enable Workers Cache on the
+default entrypoint in your source config.
+
+Version metadata is still required for staged warmup:
 
 ```jsonc
 {
-  "cache": {
-    "enabled": true,
-  },
   "version_metadata": {
     "binding": "CF_VERSION_METADATA",
   },
@@ -67,9 +70,9 @@ makes one final fill request per admitted identity. Add `--warm-cdn-certify`
 only when you want an opt-in second, header-only request that must prove every
 planned entry reusable before promotion.
 
-Do not configure a Cache Rule that ignores or normalizes query strings for
-these responses. The two-stage cacheability manifest authorizes the full
-pathname + query identity, but an edge HIT happens before Worker admission.
+The response entrypoint hashes the complete transport identity into its
+Workers Cache URL, independently of zone Cache Rules, so distinct query and
+representation variants cannot collide.
 
 ## Deploy
 
