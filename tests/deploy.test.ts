@@ -48,7 +48,11 @@ import {
   generateAppRouterViteConfig,
   generatePagesRouterViteConfig,
 } from "../packages/vinext/src/init-cloudflare.js";
-import { readPagesRouterEntrySource } from "./worker-entry-source.js";
+import {
+  readPagesResponseStageEntrySource,
+  readPagesRouterEntrySource,
+  readPagesSingleEntrySource,
+} from "./worker-entry-source.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
@@ -1479,8 +1483,8 @@ describe("scanPublicFileRoutes", () => {
 
 describe("readPagesRouterEntrySource", () => {
   it("renders without request-level development asset URLs", () => {
-    const content = readPagesRouterEntrySource();
-    expect(content).toContain("renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)");
+    const content = readPagesResponseStageEntrySource();
+    expect(content).toContain("pagesEntry.renderPage(");
     expect(content).not.toContain("clientEntryUrl");
     expect(content).not.toContain("clientPreambleUrl");
   });
@@ -1501,9 +1505,9 @@ describe("readPagesRouterEntrySource", () => {
   });
 
   it("generates valid TypeScript", () => {
-    const content = readPagesRouterEntrySource();
+    const content = readPagesSingleEntrySource();
     expect(content).toContain("export default");
-    expect(content).toContain("async fetch(");
+    expect(content).toContain("fetch(");
     expect(content).toContain("env?: PagesWorkerEnv");
     expect(content).toContain("ctx?: PagesWorkerExecutionContext");
     expect(content).toContain("Promise<Response>");
@@ -1625,14 +1629,13 @@ describe("readPagesRouterEntrySource", () => {
 
   it("routes /api/ to handleApiRoute using resolved URL and forwards ctx", () => {
     const content = readPagesRouterEntrySource();
+    const responseContent = readPagesResponseStageEntrySource();
     // API routing (including locale prefix stripping) is now inside runPagesRequest.
     // Worker supplies handleApi dep that wraps handleApiRoute with ctx.
     // Locale stripping, /api/ prefix check, and ctx forwarding are all inside the owner.
     expect(content).toContain("handleApi:");
-    expect(content).toContain('typeof handleApiRoute === "function"');
-    expect(content).toContain(
-      'handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin, "worker")',
-    );
+    expect(responseContent).toContain('typeof pagesEntry.handleApiRoute !== "function"');
+    expect(responseContent).toContain("pagesEntry.handleApiRoute(");
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -1671,7 +1674,7 @@ describe("readPagesRouterEntrySource", () => {
   it("delegates image transforms to the configured adapter", () => {
     const content = readPagesRouterEntrySource();
     expect(content).toContain("handleConfiguredImageOptimization(");
-    expect(content).toContain("env.ASSETS!.fetch");
+    expect(content).toContain("assets.fetch(");
     expect(content).not.toContain("env.IMAGES");
   });
 
@@ -1679,7 +1682,7 @@ describe("readPagesRouterEntrySource", () => {
     const content = readPagesRouterEntrySource();
     expect(content).toContain("serveFilesystemRoute: async");
     expect(content).toContain("fetchWorkerFilesystemRoute(");
-    expect(content).toContain("env.ASSETS!.fetch(assetRequest)");
+    expect(content).toContain("assets.fetch(assetRequest)");
     expect(content).toContain("publicFiles");
   });
 
@@ -1689,6 +1692,8 @@ describe("readPagesRouterEntrySource", () => {
     expect(hasPackageExport(exportsMap, "./server/fetch-handler")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/app-router-entry")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/pages-router-entry")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./server/request-stage")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./server/response-stage")).toBe(true);
   });
 
   it("exports internal deploy dependencies consumed by @vinext/cloudflare", () => {
@@ -1867,7 +1872,6 @@ describe("readPagesRouterEntrySource", () => {
     // now called inside runPagesRequest. The worker delegates to the pipeline.
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
-    expect(content).toContain("return finalize(");
     expect(content).toContain(
       "finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
     );
@@ -2031,9 +2035,8 @@ describe("readPagesRouterEntrySource", () => {
   });
 
   it("guards renderPage with typeof check", () => {
-    const content = readPagesRouterEntrySource();
-    // The typeof guard is now in the adapter deps wiring.
-    expect(content).toContain('typeof renderPage === "function"');
+    const content = readPagesResponseStageEntrySource();
+    expect(content).toContain('typeof pagesEntry.renderPage !== "function"');
   });
 
   it("does not defer error page rendering for data requests", () => {

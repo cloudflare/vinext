@@ -10,6 +10,7 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
 import {
+  defaultExportMayHaveRuntimeMember,
   hasExportedName,
   hasNamedExport,
   extractExportConstString,
@@ -106,6 +107,34 @@ describe("hasNamedExport", () => {
 export function getServerSideProps() {}
 */`;
     expect(hasNamedExport(code, "getServerSideProps")).toBe(false);
+  });
+});
+
+describe("defaultExportMayHaveRuntimeMember", () => {
+  it.each([
+    `export default class Document { static async getInitialProps() {} }`,
+    `class Document { static getInitialProps = async () => {}; } export default Document;`,
+    `function Document() {} Document.getInitialProps = async () => {}; export default Document;`,
+    `const Document = Object.assign(() => null, { getInitialProps() {} }); export default Document;`,
+    `const Document = () => null; Object.assign(Document, { getInitialProps() {} }); export default Document;`,
+    `const Document = () => null; Object.defineProperty(Document, "getInitialProps", { value() {} }); export default Document;`,
+    `class Document { static getInitialProps() {} } export { Document as default };`,
+    `import NextDocument from "next/document"; class Document extends NextDocument {} export default Document;`,
+    `import { default as BaseDocument } from "next/document"; export default class extends BaseDocument {}`,
+    `export { default } from "./document-implementation";`,
+  ])("detects request-aware default exports", (code) => {
+    expect(defaultExportMayHaveRuntimeMember(code, "getInitialProps")).toBe(true);
+  });
+
+  it.each([
+    `export default function Document() { return null; }`,
+    `const Document = () => null; export default Document;`,
+    `const Document = function () { return null; }; export default Document;`,
+    `const Document = class {}; export default Document;`,
+    `class Helper { static getInitialProps() {} } export default function Document() { return null; }`,
+    `// getInitialProps is intentionally absent\nexport default function Document() { return null; }`,
+  ])("does not classify request-independent default exports", (code) => {
+    expect(defaultExportMayHaveRuntimeMember(code, "getInitialProps")).toBe(false);
   });
 });
 
