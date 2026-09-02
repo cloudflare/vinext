@@ -355,7 +355,8 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
     expect(response.status()).toBe(200);
     expect(await response.json()).toEqual({ public: true });
     expect(response.headers()["cache-control"]).toBe("public, max-age=0, must-revalidate");
-    expect(response.headers()["cdn-cache-control"]).toBe("public, max-age=60");
+    expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+    expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
   });
 
   test("keeps public Pages Edge API responses private after request.cf access", async ({
