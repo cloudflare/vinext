@@ -48,6 +48,7 @@ import {
 } from "../packages/vinext/src/server/isr-cache.js";
 import {
   cookies as requestCookies,
+  draftMode,
   getHeadersContext,
   headers as requestHeaders,
 } from "../packages/vinext/src/shims/headers.js";
@@ -310,6 +311,30 @@ describe("createAppRscHandler", () => {
       new Request("https://example.test/docs/about", {
         headers: { Cookie: "__prerender_bypass=test-draft-secret" },
       }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+  });
+
+  it("bypasses the shared response stage for middleware draft transitions", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("draft")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      middlewareModule: {
+        async default() {
+          (await draftMode()).enable();
+          return new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    await handler(
+      new Request("https://example.test/docs/about"),
       null,
       false,
       dispatchResponseStage,

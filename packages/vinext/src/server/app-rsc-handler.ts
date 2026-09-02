@@ -1061,6 +1061,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         )
       : Promise.resolve(withResponseStageVary(null, middlewareContext.headers?.get("Vary"))));
   const canUseSharedWorkerResponseStage =
+    draftModeCookie === null &&
     !hasMiddlewareCookieOverlay &&
     !hasMiddlewareRequestHeaderOverrides(
       middlewareContext.requestHeaders ?? middlewareContext.headers,
