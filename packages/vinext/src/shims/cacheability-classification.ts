@@ -28,6 +28,8 @@ export type RouteCacheabilityState = {
   complete?: (outcome: RouteCacheabilityOutcome) => void;
   completion?: Promise<RouteCacheabilityOutcome>;
   completedResponseBody?: boolean;
+  /** Whether admission must translate a completed response through the active adapter. */
+  applyCompletedResponsePolicy?: boolean;
   explicitConfigCachePolicy?: boolean;
   explicitResponseCachePolicy?: boolean;
   finalResponseVetoReason?: string;

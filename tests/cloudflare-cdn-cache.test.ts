@@ -87,6 +87,13 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(adapter.ownsBackgroundRevalidation).toBe(false);
   });
 
+  it("declares the Cloudflare response-policy headers it owns", () => {
+    expect(adapter.responsePolicyHeaderNames).toEqual([
+      "CDN-Cache-Control",
+      "Cloudflare-CDN-Cache-Control",
+    ]);
+  });
+
   it("accepts a staged warmup only in its expected Worker version", async () => {
     const routedAdapter = createCloudflareCdnCacheAdapter({
       env: { CF_VERSION_METADATA: { id: "version-b", tag: "", timestamp: "" } },

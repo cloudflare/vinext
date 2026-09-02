@@ -145,6 +145,7 @@ export function createWorkerCacheabilityAdmissionContext(
   responseVary?: "verbatim",
   resolvedRoutePathname?: string,
   trustedRepresentation?: CacheabilityRepresentation,
+  options?: { applyCompletedResponsePolicy?: boolean },
 ): ExecutionContextLike {
   const identity = cacheabilityRequestIdentity(request, trustedRepresentation);
   const routePathname = identity
@@ -165,6 +166,7 @@ export function createWorkerCacheabilityAdmissionContext(
         : { policy: "deny" },
       captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
       mode: "admit",
+      applyCompletedResponsePolicy: options?.applyCompletedResponsePolicy,
       responsePolicyHeaderNames: [...getCdnResponsePolicyHeaderNames()],
       responseVary,
     };
@@ -187,6 +189,7 @@ export function createWorkerCacheabilityAdmissionContext(
         : { policy: "deny" },
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
     mode: "admit",
+    applyCompletedResponsePolicy: options?.applyCompletedResponsePolicy,
     responsePolicyHeaderNames: [...getCdnResponsePolicyHeaderNames()],
     responseVary,
   };
@@ -535,9 +538,18 @@ function inferFinalAppPageCacheability(
 
   const cacheControl = response.headers.get(changedPolicy)!;
   if (isNonCacheableCacheControl(cacheControl)) return { cacheable: false };
+  const cacheTag = response.headers.get("Cache-Tag");
   return {
     cacheable: true,
     cacheControl,
+    ...(cacheTag
+      ? {
+          tags: cacheTag
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean),
+        }
+      : {}),
   };
 }
 
@@ -552,9 +564,18 @@ function inferPagesPageCacheability(
   if (!cacheControl || isNonCacheableCacheControl(cacheControl)) {
     return { cacheable: false };
   }
+  const cacheTag = response.headers.get("Cache-Tag");
   return {
     cacheable: true,
     cacheControl,
+    ...(cacheTag
+      ? {
+          tags: cacheTag
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean),
+        }
+      : {}),
   };
 }
 
@@ -695,6 +716,7 @@ async function finalizeWorkerCacheabilityAdmission(
       return responseWithCachePolicy(response, response.body, null);
     }
     if (state.completedResponseBody) {
+      if (!state.applyCompletedResponsePolicy) return response;
       return responseWithCachePolicy(response, response.body, outcome);
     }
 
