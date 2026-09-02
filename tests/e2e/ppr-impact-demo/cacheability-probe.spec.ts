@@ -213,7 +213,10 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     version: 1,
   });
 
-  // Next.js keeps middleware in front of page serving on every request:
+  // Next.js keeps middleware in front of page serving on every request. The
+  // staged probe classifies only the reusable render below that boundary, so
+  // this route remains dynamic for its own missing cache policy, not merely
+  // because middleware matched:
   // test/e2e/middleware-static-files/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-static-files/index.test.ts
   const middlewareProbe = await request.get("/cacheability/middleware", { headers });
@@ -221,7 +224,7 @@ test("classifies completed App Page renders inside workerd", async ({ request })
   await expect(middlewareProbe.json()).resolves.toMatchObject({
     kind: "app-page",
     pattern: "/cacheability/middleware",
-    reason: "middleware matched this request",
+    reason: "render did not produce a cache policy",
     state: "dynamic",
     status: 200,
     version: 1,
@@ -231,8 +234,8 @@ test("classifies completed App Page renders inside workerd", async ({ request })
   // request-specific `has`/`missing` conditions:
   // packages/next/src/shared/lib/router/utils/middleware-route-matcher.ts
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/middleware-route-matcher.ts
-  // A condition-free staged probe must therefore not certify a pathname that
-  // a later cookie- or header-bearing request can send through middleware.
+  // The uncached request stage evaluates those request-specific conditions on
+  // every request, while the probe certifies the reusable render beneath it.
   for (const { conditionHeaders, pathname } of [
     {
       conditionHeaders: { Cookie: "cacheability-middleware=1" },
@@ -253,8 +256,7 @@ test("classifies completed App Page renders inside workerd", async ({ request })
     await expect(conditionalMiddlewareProbe.json()).resolves.toMatchObject({
       kind: "app-page",
       pattern: pathname,
-      reason: "middleware is eligible for this pathname",
-      state: "dynamic",
+      state: "static-candidate",
       status: 200,
       version: 1,
     });
