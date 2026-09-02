@@ -13,10 +13,13 @@
  *   cache headers, so there is nothing to persist at the origin.
  * - `buildResponseHeaders` emits the SWR policy as `Cloudflare-CDN-Cache-Control`
  *   (`public, max-age=…, stale-while-revalidate=…`) so the edge caches and
- *   revalidates, while the browser-facing `Cache-Control` is
+ *   revalidates. The inner response's `Cache-Control` is
  *   `public, max-age=0, must-revalidate` so a browser never serves a stored copy
- *   without revalidating against the edge. A `Cache-Tag` header lets entries be
- *   purged by tag. Note the edge directive uses `max-age` (not `s-maxage`):
+ *   without revalidating against the edge; the uncached gateway changes that to
+ *   `private, max-age=0, must-revalidate` before public egress so personalized
+ *   request-stage headers cannot enter another shared cache. A `Cache-Tag`
+ *   header lets entries be purged by tag. Note the edge directive uses `max-age`
+ *   (not `s-maxage`):
  *   the framework computes the policy with `s-maxage` for shared caches, but
  *   `Cloudflare-CDN-Cache-Control` is already CDN-scoped so `max-age` is the correct knob
  *   for the edge to honor max-age + stale-while-revalidate.
