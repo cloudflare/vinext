@@ -1,6 +1,8 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import {
+  NEXTJS_CACHE_HEADER,
   VINEXT_PRERENDER_READINESS_PATH,
+  VINEXT_CACHE_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "vinext/internal/server/headers";
 import type {
@@ -329,9 +331,19 @@ function preventRequestCfResponseCaching(response: Response): Response {
  * the outer gateway never forwards an inner shared-cache policy after adding
  * request-specific middleware or routing headers.
  */
-function markSharedResponseStage(response: Response): Response {
+function markSharedResponseStage(
+  response: Response,
+  exposeEntrypointCacheStatus = false,
+): Response {
   const headers = new Headers(response.headers);
   headers.set(SHARED_RESPONSE_STAGE_HEADER, "1");
+  if (exposeEntrypointCacheStatus) {
+    const cacheStatus = headers.get("CF-Cache-Status");
+    if (cacheStatus) {
+      headers.set(VINEXT_CACHE_HEADER, cacheStatus);
+      headers.set(NEXTJS_CACHE_HEADER, cacheStatus);
+    }
+  }
   return new Response(response.body, {
     headers,
     status: response.status,
@@ -552,7 +564,7 @@ export default {
           ? stageRequest
           : await createCacheFacingRequest(stageRequest, serializedInvocation);
         const response = validateResponseStageBuildIdentity(await binding.fetch(entrypointRequest));
-        return requiresEntrypoint ? response : markSharedResponseStage(response);
+        return requiresEntrypoint ? response : markSharedResponseStage(response, true);
       } catch (error) {
         if (requiresEntrypoint) return responseStageUnavailable();
         throw error;

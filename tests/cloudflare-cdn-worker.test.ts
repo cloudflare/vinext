@@ -535,6 +535,32 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(stages.response).not.toHaveBeenCalled();
   });
 
+  it.each(["HIT", "MISS", "UPDATING"])(
+    "exposes the response-entrypoint %s status through vinext cache headers",
+    async (cacheStatus) => {
+      const binding = vi.fn(() => ({
+        fetch: vi
+          .fn()
+          .mockResolvedValue(
+            new Response("cached", { headers: { "CF-Cache-Status": cacheStatus } }),
+          ),
+      }));
+      stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+        dispatch(request, { kind: "app-page" }, { cache: "shared" }),
+      );
+
+      const response = await worker.fetch(
+        new Request("https://example.com/page"),
+        {},
+        { exports: { VinextCachedResponse: binding } },
+      );
+
+      expect(response.headers.get("CF-Cache-Status")).toBe(cacheStatus);
+      expect(response.headers.get("X-Vinext-Cache")).toBe(cacheStatus);
+      expect(response.headers.get("X-Nextjs-Cache")).toBe(cacheStatus);
+    },
+  );
+
   it("partitions shared dispatches by public request authority", async () => {
     const cacheFacingRequests: Request[] = [];
     const binding = vi.fn(({ props }: { props: unknown }) => ({
@@ -1067,6 +1093,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
           "CDN-Cache-Control": "public, s-maxage=300",
           "Cloudflare-CDN-Cache-Control": "public, s-maxage=300",
           "Cache-Tag": "private-fallback",
+          "CF-Cache-Status": "HIT",
         },
       }),
     );
@@ -1080,6 +1107,8 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Cache-Tag")).toBeNull();
+    expect(response.headers.get("X-Vinext-Cache")).toBeNull();
+    expect(response.headers.get("X-Nextjs-Cache")).toBeNull();
     expect(stages.response).toHaveBeenCalledOnce();
   });
 
