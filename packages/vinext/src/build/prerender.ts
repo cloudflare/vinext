@@ -97,9 +97,11 @@ function getErrorMessageWithStack(err: Error): string {
 async function startOptionalPrerenderServerPool(
   outDir: string,
   poolSize: number,
+  rscEntryPath?: string,
+  serverDir?: string,
 ): Promise<PrerenderServerPool | null> {
   try {
-    return await startPrerenderServerPool(outDir, poolSize);
+    return await startPrerenderServerPool(outDir, poolSize, { rscEntryPath, serverDir });
   } catch (e) {
     // The pool is a performance optimization layered over the already-running
     // in-process prerender server. Startup failure is still before any route has
@@ -268,6 +270,16 @@ type PrerenderAppOptions = {
    * Absolute path to the pre-built RSC handler bundle (e.g. `dist/server/index.js`).
    */
   rscBundlePath: string;
+  /**
+   * Root directory for build metadata and sibling server artifacts. Defaults
+   * to the RSC entry's directory for compatibility with standalone callers.
+   */
+  serverDir?: string;
+  /**
+   * Root of the complete production build passed to the local prerender
+   * server. Defaults to the parent of `serverDir` for standalone callers.
+   */
+  buildOutDir?: string;
 } & PrerenderOptions;
 
 // ─── Internal option extensions ───────────────────────────────────────────────
@@ -1068,6 +1080,8 @@ export async function prerenderApp({
   config,
   mode,
   rscBundlePath,
+  serverDir = path.dirname(rscBundlePath),
+  buildOutDir = path.dirname(serverDir),
   ...options
 }: PrerenderAppOptionsInternal): Promise<PrerenderResult> {
   const manifestDir = options.manifestDir ?? outDir;
@@ -1086,8 +1100,6 @@ export async function prerenderApp({
   // The scope is nest-safe because run-prerender.ts also enters it around a
   // shared hybrid server.
   const restorePrerenderPhase = enterPrerenderPhase();
-
-  const serverDir = path.dirname(rscBundlePath);
 
   let rscHandler: (request: Request) => Promise<Response>;
   let staticParamsMap: StaticParamsMap = {};
@@ -1124,7 +1136,9 @@ export async function prerenderApp({
           const srv = await startProdServer({
             port: 0,
             host: "127.0.0.1",
-            outDir: path.dirname(serverDir),
+            outDir: buildOutDir,
+            rscEntryPath: rscBundlePath,
+            serverDir,
             noCompression: true,
             purpose: "prerender",
           });
@@ -1797,7 +1811,12 @@ export async function prerenderApp({
     if (!options._prodServer && prerenderPoolAvailable()) {
       const poolSize = resolvePrerenderPoolSize(urlsToRender.length, concurrency);
       if (poolSize > 1) {
-        renderPool = await startOptionalPrerenderServerPool(path.dirname(serverDir), poolSize);
+        renderPool = await startOptionalPrerenderServerPool(
+          buildOutDir,
+          poolSize,
+          rscBundlePath,
+          serverDir,
+        );
         if (renderPool) renderPorts = renderPool.ports;
       }
     }

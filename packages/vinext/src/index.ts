@@ -7094,16 +7094,14 @@ export const loadServerActionClient = ${
           const source = JSON.stringify(manifest);
           fs.writeFileSync(path.join(outDir, "vinext-server.json"), source);
 
-          // Staged discovery and cacheability probing deliberately read build
-          // metadata from the platform-independent server directory. A Pages
-          // Worker bundle may live in a platform-named output directory, so
-          // retain the adjacent copy above and also publish the canonical copy.
-          if (!hasAppDir) {
-            const canonicalServerDir = path.join(root, "dist", "server");
-            if (path.resolve(outDir) !== canonicalServerDir) {
-              fs.mkdirSync(canonicalServerDir, { recursive: true });
-              fs.writeFileSync(path.join(canonicalServerDir, "vinext-server.json"), source);
-            }
+          // Post-build discovery deliberately reads metadata from the
+          // platform-independent server directory. An adapter may emit either
+          // router's executable graph elsewhere, so retain the adjacent copy
+          // above and also publish the canonical copy.
+          const canonicalServerDir = path.join(root, "dist", "server");
+          if (path.resolve(outDir) !== canonicalServerDir) {
+            fs.mkdirSync(canonicalServerDir, { recursive: true });
+            fs.writeFileSync(path.join(canonicalServerDir, "vinext-server.json"), source);
           }
         },
       },
