@@ -83,10 +83,46 @@ describe("Cloudflare CDN adapter build output", () => {
     expect(generated.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
   });
 
-  it("emits the pregenerated-paths sidecar imported by the Worker entry", async () => {
+  it("emits the pregenerated-paths sidecar only in the response-stage closure", async () => {
     const sidecarName = "__vinext_pregenerated_concrete_paths.js";
-    const workerEntry = await fs.readFile(path.join(root, "dist/server/index.js"), "utf8");
-    expect(workerEntry).toMatch(/import\s*["']\.\/__vinext_pregenerated_concrete_paths\.js["']/);
+    const serverDir = path.join(root, "dist/server");
+    type ManifestChunk = { file: string; imports?: string[]; src?: string };
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(serverDir, ".vite/manifest.json"), "utf8"),
+    ) as Record<string, ManifestChunk>;
+
+    const readStaticClosure = async (entry: ManifestChunk): Promise<string[]> => {
+      const pending = [entry];
+      const seen = new Set<string>();
+      const sources: string[] = [];
+      while (pending.length > 0) {
+        const chunk = pending.pop()!;
+        if (seen.has(chunk.file)) continue;
+        seen.add(chunk.file);
+        sources.push(await fs.readFile(path.join(serverDir, chunk.file), "utf8"));
+        for (const imported of chunk.imports ?? []) {
+          const importedChunk = manifest[imported];
+          if (!importedChunk) throw new Error(`missing manifest chunk ${imported}`);
+          pending.push(importedChunk);
+        }
+      }
+      return sources;
+    };
+
+    const workerEntry = Object.values(manifest).find((chunk) => chunk.file === "index.js");
+    const responseStageEntry = Object.values(manifest).find((chunk) =>
+      chunk.src?.endsWith("virtual:vinext-response-stage"),
+    );
+    expect(workerEntry).toBeDefined();
+    expect(responseStageEntry).toBeDefined();
+
+    const sidecarImport = /import\s*["']\.\/__vinext_pregenerated_concrete_paths\.js["']/;
+    expect(
+      (await readStaticClosure(workerEntry!)).some((source) => sidecarImport.test(source)),
+    ).toBe(false);
+    expect(
+      (await readStaticClosure(responseStageEntry!)).some((source) => sidecarImport.test(source)),
+    ).toBe(true);
     expect(await fs.readFile(path.join(root, "dist/server", sidecarName), "utf8")).toBe(
       "delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;\n",
     );

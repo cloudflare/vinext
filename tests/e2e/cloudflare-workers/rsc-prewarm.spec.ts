@@ -70,11 +70,14 @@ async function getReusableResponseAfterPromotion(
 
   // Workers Cache is tiered. A deploy fill and this verification request can
   // traverse different lower/upper tiers, so the first request from this
-  // client may still be a MISS. MISS means Cloudflare admitted the completed
-  // response; require the same client to reuse that exact entry immediately.
+  // client may still be a MISS. The named response entrypoint admits the
+  // completed response, while the uncached gateway strips its inner CDN policy
+  // before composing request-specific headers. Require the same client to
+  // reuse that exact entry immediately.
   const trace = `${label} first response headers: ${JSON.stringify(responseHeaders)}`;
-  expect(responseHeaders["cdn-cache-control"], trace).toContain("public");
-  expect(responseHeaders["cache-control"], trace).not.toContain("no-store");
+  expect(responseHeaders["cache-control"], trace).toBe("private, max-age=0, must-revalidate");
+  expect(responseHeaders["cdn-cache-control"], trace).toBeUndefined();
+  expect(responseHeaders["cloudflare-cdn-cache-control"], trace).toBeUndefined();
   await response.body();
 
   const reused = await getResponseAfterPromotion(request, url, headers);
@@ -131,8 +134,9 @@ function expectCanonical(observed: ObservedRsc, rscBuildId: string): void {
     // Chromium negotiates zstd while the Node-based deploy warmer negotiates
     // br. A browser may therefore fill a separate encoded edge object even
     // though the canonical representation was already warmed and verified.
-    expect(responseHeaders["cdn-cache-control"], trace).toContain("public");
-    expect(responseHeaders["cache-control"], trace).not.toContain("no-store");
+    expect(responseHeaders["cache-control"], trace).toBe("private, max-age=0, must-revalidate");
+    expect(responseHeaders["cdn-cache-control"], trace).toBeUndefined();
+    expect(responseHeaders["cloudflare-cdn-cache-control"], trace).toBeUndefined();
   }
 }
 
@@ -248,8 +252,9 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   expect(browserFetchMiss.ok(), JSON.stringify(browserFetchMissHeaders)).toBe(true);
   expect(browserFetchMissHeaders["content-type"]).toContain("text/html");
   expect(browserFetchMissHeaders["cf-cache-status"]).toBe("MISS");
-  expect(browserFetchMissHeaders["cdn-cache-control"]).toContain("public");
-  expect(browserFetchMissHeaders["cache-control"]).not.toContain("no-store");
+  expect(browserFetchMissHeaders["cache-control"]).toBe("private, max-age=0, must-revalidate");
+  expect(browserFetchMissHeaders["cdn-cache-control"]).toBeUndefined();
+  expect(browserFetchMissHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
   const browserFetchBody = await browserFetchMiss.text();
 
   const browserFetchHit = await request.get(browserFetchUrl.href, {
@@ -301,7 +306,9 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   expect(pagesResponse.ok(), JSON.stringify(pagesResponseHeaders)).toBe(true);
   expect(pagesResponseHeaders["content-type"]).toContain("text/html");
   expect(pagesResponseHeaders["x-vinext-build-id"]).toBe(rscBuildId);
-  expect(pagesResponseHeaders["cache-control"]).toContain("public");
+  expect(pagesResponseHeaders["cache-control"]).toBe("private, max-age=0, must-revalidate");
+  expect(pagesResponseHeaders["cdn-cache-control"]).toBeUndefined();
+  expect(pagesResponseHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
   expect(
     pagesResponseHeaders["cf-cache-status"],
     `Pages response headers: ${JSON.stringify(pagesResponseHeaders)}`,
@@ -535,7 +542,8 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   const coldHeaders = coldAfterPurge!.headers();
   expect(coldAfterPurge!.ok(), JSON.stringify(coldHeaders)).toBe(true);
   expect(coldHeaders["cf-cache-status"]).toBe("MISS");
-  expect(coldHeaders["cdn-cache-control"]).toContain("public");
+  expect(coldHeaders["cdn-cache-control"]).toBeUndefined();
+  expect(coldHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
   expect(await coldAfterPurge!.text()).toContain("Prewarm target");
 
   const reuseDeadline = Date.now() + 30_000;
