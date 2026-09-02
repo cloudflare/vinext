@@ -1550,10 +1550,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // one process never preprocess `composes` deps with another build's config.
   const sassComposesLoader = createSassAwareFileSystemLoader();
 
-  // Build-time layout classification manifest, captured in the RSC virtual
-  // module's load hook and consumed in renderChunk to patch the generated
-  // `__VINEXT_CLASS` stub with a real dispatch table.
-  let rscClassificationManifest: RouteClassificationManifest | null = null;
+  // Build-time layout classification manifests, captured for each generated
+  // RSC virtual module and consumed in renderChunk to patch that module's
+  // `__VINEXT_CLASS` stub with a real dispatch table. Multi-stage outputs emit
+  // both the ordinary RSC graph and a response-only graph in the same build,
+  // so one mutable manifest would be consumed by whichever chunk rendered
+  // first and leave the other graph's classifier as the null stub.
+  const rscClassificationManifests = new Map<string, RouteClassificationManifest>();
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
 
@@ -4214,12 +4217,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // Collect Layer 1 (segment config) classifications for all layouts.
             // Layer 2 (module graph) runs later in renderChunk once Rollup's
             // module info is available.
-            // Invariant: rscClassificationManifest must be built from the same
-            // `routes` value passed to generateRscEntry below so that layout
-            // indices in the manifest correspond 1:1 to the route.layouts arrays
-            // used during codegen. renderChunk clears this after patching.
+            // Invariant: each manifest must be built from the same `routes`
+            // value passed to its generator below so that layout indices in the
+            // manifest correspond 1:1 to the route.layouts arrays used during
+            // codegen. renderChunk consumes the manifest for that virtual module.
             if (id !== RESOLVED_APP_REQUEST_ENTRY) {
-              rscClassificationManifest = collectRouteClassificationManifest(routes);
+              rscClassificationManifests.set(id, collectRouteClassificationManifest(routes));
               rscActionOwnerRoutes =
                 this.environment.config.command === "build" && hasServerActions ? routes : null;
               rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
@@ -4383,11 +4386,21 @@ export const loadServerActionClient = ${
           // pulling ModuleInfo from the wrong graph would give nonsense
           // results.
           if (this.environment?.name !== "rsc") return null;
-          if (!rscClassificationManifest) return null;
           // Cheap pre-filter: skip chunks that don't mention the stub at all
           // (e.g. the scan-phase chunk and every non-entry chunk).
           const hasClassificationStub = code.includes("__VINEXT_CLASS");
           if (!hasClassificationStub) return null;
+
+          // Both generated App RSC graphs can be present in one multi-entry
+          // build. Associate the chunk with the virtual module that generated
+          // its route table so each graph receives (and consumes) its own
+          // manifest regardless of render order.
+          const rscEntryId = [RESOLVED_RSC_ENTRY, RESOLVED_APP_RESPONSE_ENTRY].find((id) =>
+            chunk.moduleIds.includes(id),
+          );
+          if (!rscEntryId) return null;
+          const rscClassificationManifest = rscClassificationManifests.get(rscEntryId);
+          if (!rscClassificationManifest) return null;
 
           // Patching per-chunk (rather than scanning the whole bundle in
           // generateBundle) assumes the stub body and its per-route call sites
@@ -4435,11 +4448,11 @@ export const loadServerActionClient = ${
           const nextCode = patchPlan.kind === "skip" ? code : patchPlan.code;
           if (patchPlan.kind === "skip") return null;
 
-          // Consume the manifest exactly once per RSC entry. Clearing here
-          // prevents a stale manifest from leaking into a subsequent build pass
-          // if the load hook is not re-triggered (e.g., in non-standard rebuild
-          // paths).
-          rscClassificationManifest = null;
+          // Consume the manifest exactly once for this generated RSC module.
+          // Keeping the sibling entry's manifest intact lets a multi-entry
+          // build patch both graphs while still preventing stale state from
+          // leaking into a later non-standard rebuild path.
+          rscClassificationManifests.delete(rscEntryId);
 
           // The patched body is longer than the stub, so any existing source
           // map would be stale. RSC entry source maps are not served or
