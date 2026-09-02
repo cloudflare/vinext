@@ -661,7 +661,7 @@ describe("staged Worker cacheability probes", () => {
     ]);
   });
 
-  it("records a rewrite source under the route resolved by the request stage", async () => {
+  it("records a rewrite source under the concrete route resolved by the request stage", async () => {
     const root = createProbeRoot();
     const source = {
       ...target("/rewrite-me"),
@@ -682,6 +682,7 @@ describe("staged Worker cacheability probes", () => {
           kind: "app-page",
           pattern: "/safe",
           rendererStatic: true,
+          routePathname: "/safe",
           state: "static-candidate",
           status: 200,
           version: 1,
@@ -700,8 +701,98 @@ describe("staged Worker cacheability probes", () => {
       kind: "app-page",
       pattern: "/safe",
       state: "runtime-check",
-      staticPaths: { html: ["/rewrite-me", "/safe"] },
+      staticPaths: { html: ["/safe"] },
       unknownState: "static-candidate",
+    });
+  });
+
+  it("records a rewritten App runtime path without a direct destination target", async () => {
+    const root = createProbeRoot();
+    const source = {
+      ...target("/latest"),
+      route: {
+        cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true },
+        kind: "app-page" as const,
+        pattern: "/latest",
+      },
+    };
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl: async () =>
+        Response.json({
+          kind: "app-page",
+          pattern: "/posts/:slug",
+          rendererStatic: false,
+          routePathname: "/posts/one",
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        }),
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [source],
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.cacheableTargets).toEqual([source]);
+    expect(
+      result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/posts/:slug")],
+    ).toEqual({
+      kind: "app-page",
+      pattern: "/posts/:slug",
+      runtimePaths: ["/posts/one"],
+      state: "runtime-check",
+    });
+  });
+
+  it("records rewritten Pages HTML and data under the resolved GSSP path", async () => {
+    const root = createProbeRoot();
+    const route = {
+      cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true },
+      kind: "pages-page" as const,
+      pattern: "/latest",
+    };
+    const html = { ...target("/latest"), route };
+    const data = {
+      headers: { Accept: "application/json" },
+      kind: "pages-data" as const,
+      label: "/_next/data/build/latest.json (Pages data)",
+      pathname: "/_next/data/build/latest.json",
+      route: {
+        ...route,
+        cacheabilityProbe: { ...route.cacheabilityProbe, concretePathname: "/latest" },
+      },
+      sourcePathname: "/_next/data/build/latest.json",
+    };
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl: async () =>
+        Response.json({
+          kind: "pages-page",
+          pattern: "/posts/:slug",
+          rendererStatic: false,
+          routePathname: "/posts/one",
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        }),
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [data, html],
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.cacheableTargets).toEqual([html, data]);
+    expect(result.speculativeTargets).toEqual([data]);
+    expect(
+      result.manifest.routes[cacheabilityManifestRouteKey("pages-page", "/posts/:slug")],
+    ).toEqual({
+      kind: "pages-page",
+      pattern: "/posts/:slug",
+      runtimePaths: ["/posts/one"],
+      state: "runtime-check",
     });
   });
 
@@ -798,6 +889,7 @@ describe("staged Worker cacheability probes", () => {
             kind: "app-page",
             pattern: "/safe",
             rendererStatic: pathname === "/rewrite-me",
+            routePathname: "/safe",
             ...(pathname === "/safe" ? { scope: "pattern" } : {}),
             state: pathname === "/safe" ? "dynamic" : "static-candidate",
             status: 200,
@@ -817,7 +909,6 @@ describe("staged Worker cacheability probes", () => {
         pattern: "/safe",
         runtimePaths: ["/safe"],
         state: "runtime-check",
-        staticPaths: { html: ["/rewrite-me"] },
       });
     }
   });

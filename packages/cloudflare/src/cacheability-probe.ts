@@ -36,6 +36,7 @@ type ProbePayload = {
   pattern?: string;
   reason?: string;
   rendererStatic?: boolean;
+  routePathname?: string;
   state?: string;
   status?: number;
   version?: number;
@@ -356,26 +357,26 @@ export async function probeStagedWorkerCacheability(options: {
   let staticPathCount = 0;
   let dynamicPathCount = 0;
 
+  type ConcretePathResult = {
+    rendererStatic: boolean;
+    representation: CdnWarmTarget["kind"];
+    state: Exclude<ProbeRouteState, "probe-failed">;
+    terminal: boolean;
+  };
   type PatternClassification = {
     canPrune: boolean;
     groups: ConcretePathGroup[];
     key: string;
     resultKeys: Set<string>;
     pruned: boolean;
-    results: Map<
-      string,
-      {
-        rendererStatic: boolean;
-        representation: CdnWarmTarget["kind"];
-        state: Exclude<ProbeRouteState, "probe-failed">;
-      }
-    >;
+    results: Map<string, ConcretePathResult>;
     route: NonNullable<CdnWarmTarget["route"]>;
     splitRepresentations: boolean;
   };
   type ConcretePathGroup = {
     pattern: PatternClassification;
     primary: CdnWarmTarget;
+    result?: ConcretePathResult;
     resultKey: string;
     routePathname: string;
     targets: CdnWarmTarget[];
@@ -530,6 +531,21 @@ export async function probeStagedWorkerCacheability(options: {
     return pattern;
   };
 
+  const updateGroupRoutePathname = (group: ConcretePathGroup, routePathname: string): void => {
+    const normalized = normalizeCacheabilityRoutePathname(routePathname);
+    if (normalized === group.routePathname) return;
+    const pattern = group.pattern;
+    const previousResultKey = group.resultKey;
+    group.routePathname = normalized;
+    group.resultKey = pattern.splitRepresentations
+      ? `${group.primary.kind}\0${normalized}`
+      : normalized;
+    if (!pattern.groups.some((candidate) => candidate.resultKey === previousResultKey)) {
+      pattern.resultKeys.delete(previousResultKey);
+    }
+    pattern.resultKeys.add(group.resultKey);
+  };
+
   const classifyConcretePath = async (group: ConcretePathGroup): Promise<void> => {
     if (group.pattern.pruned) {
       skippedPathCount += 1;
@@ -577,6 +593,11 @@ export async function probeStagedWorkerCacheability(options: {
       !isProbeRouteState(result.state) ||
       (result.scope !== undefined && result.scope !== "identity" && result.scope !== "pattern") ||
       (result.scope === "pattern" && result.state !== "dynamic") ||
+      (result.routePathname !== undefined &&
+        (typeof result.routePathname !== "string" ||
+          !result.routePathname.startsWith("/") ||
+          result.routePathname.includes("?") ||
+          result.routePathname.includes("#"))) ||
       (result.terminal !== undefined && result.terminal !== true) ||
       (result.terminal === true &&
         (result.state !== "dynamic" ||
@@ -613,9 +634,35 @@ export async function probeStagedWorkerCacheability(options: {
         reportProgress();
         return;
       }
+      if (result.routePathname === undefined) {
+        failures.push(`${target.label}: probe resolved without a concrete route pathname`);
+        completedPathCount += 1;
+        reportProgress();
+        return;
+      }
       moveGroupToResolvedRoute(group, { kind: result.kind, pattern: result.pattern });
     }
+    if (result.routePathname !== undefined) {
+      updateGroupRoutePathname(group, result.routePathname);
+    }
 
+    const classification: ConcretePathResult = {
+      rendererStatic: result.rendererStatic === true,
+      representation: target.kind,
+      state: result.state,
+      terminal: result.terminal === true,
+    };
+    group.result = classification;
+    const previousClassification = group.pattern.results.get(group.resultKey);
+    if (
+      !previousClassification ||
+      (previousClassification.state === "static-candidate" && classification.state === "dynamic") ||
+      (previousClassification.state === classification.state &&
+        previousClassification.rendererStatic &&
+        !classification.rendererStatic)
+    ) {
+      group.pattern.results.set(group.resultKey, classification);
+    }
     const patternIsDefinitelyDynamic =
       result.state === "dynamic" && result.scope === "pattern" && group.pattern.canPrune;
     if (patternIsDefinitelyDynamic) {
@@ -625,12 +672,6 @@ export async function probeStagedWorkerCacheability(options: {
       reportProgress();
       return;
     }
-
-    group.pattern.results.set(group.resultKey, {
-      rendererStatic: result.rendererStatic === true,
-      representation: target.kind,
-      state: result.state,
-    });
     if (result.state === "static-candidate") {
       staticPathCount += 1;
     } else {
@@ -728,7 +769,7 @@ export async function probeStagedWorkerCacheability(options: {
     const rendererStaticTargets = new Map<string, CdnWarmTarget>();
     const runtimePathSet = new Set<string>();
     for (const group of pattern.groups) {
-      const result = pattern.results.get(group.resultKey);
+      const result = group.result;
       if (result?.state === "static-candidate") {
         if (result.rendererStatic) {
           const previous = rendererStaticTargets.get(group.routePathname);
@@ -743,7 +784,7 @@ export async function probeStagedWorkerCacheability(options: {
         continue;
       }
 
-      runtimePathSet.add(group.routePathname);
+      if (result?.terminal !== true) runtimePathSet.add(group.routePathname);
       // A representation-specific response policy can make an RSC/data
       // sibling reusable even when the representative HTML render is private.
       // The final completed render decides admission without another probe.
@@ -755,7 +796,9 @@ export async function probeStagedWorkerCacheability(options: {
     }
     const staticPaths: CacheabilityManifestRoute["staticPaths"] = {};
     for (const [routePathname, staticTarget] of rendererStaticTargets) {
-      runtimePathSet.delete(routePathname);
+      // Conflicting observations for one resolved route identity must retain
+      // runtime admission rather than certifying the static observation.
+      if (runtimePathSet.has(routePathname)) continue;
       const paths = staticPaths[staticTarget.kind] ?? [];
       paths.push(routePathname);
       staticPaths[staticTarget.kind] = paths;
