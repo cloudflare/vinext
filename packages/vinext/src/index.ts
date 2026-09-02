@@ -7424,6 +7424,7 @@ export const loadServerActionClient = ${
           const loadedEntries = serverEntryKindsByEnvironment.get(this.environment?.name ?? "");
           const isPrimaryServerOutput = Boolean(
             loadedEntries?.has(RESOLVED_RSC_ENTRY) ||
+            loadedEntries?.has(RESOLVED_PAGES_REQUEST_ENTRY) ||
             (loadedEntries?.has(RESOLVED_SERVER_ENTRY) &&
               !loadedEntries.has(RESOLVED_APP_SSR_ENTRY)),
           );
