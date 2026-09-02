@@ -4021,6 +4021,18 @@ describe("createMultiStageChunkFileNames", () => {
         }),
       ).toBeUndefined();
 
+      const customClientContext = {
+        environment: {
+          config: { build: { ssr: true }, consumer: "client" },
+          name: "browser-extension",
+        },
+      };
+      expect(
+        await (outputPlugin as any).outputOptions.call(customClientContext, {
+          chunkFileNames: "browser/[name].js",
+        }),
+      ).toBeUndefined();
+
       const rscContext = {
         environment: { config: { build: { ssr: true } }, name: "rsc" },
       };

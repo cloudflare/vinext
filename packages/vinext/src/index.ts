@@ -1522,11 +1522,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
   const isMultiStageServerEnvironment = (environment: {
-    config: { build: { ssr?: unknown } };
+    config: { build: { ssr?: unknown }; consumer?: string };
     name: string;
   }): boolean => {
     if (environment.name === "client") return Boolean(environment.config.build.ssr);
-    return !hasAppDir || environment.name !== "ssr";
+    return isServerEnvironment(environment) && (!hasAppDir || environment.name !== "ssr");
   };
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
