@@ -1,9 +1,46 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   encodePrerenderRouteParams,
+  isTrustedPrerenderState,
   matchPrerenderRouteParamsPayload,
+  readTrustedPrerenderStateFromHeaders,
   type PrerenderRouteParamsPayload,
 } from "../packages/vinext/src/server/prerender-route-params.js";
+
+describe("trusted prerender stage state", () => {
+  it("authenticates route params and speculative mode once at the request boundary", () => {
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    try {
+      const headers = new Headers({
+        "x-vinext-prerender-route-params": encodeURIComponent(
+          JSON.stringify({ routePattern: "/post/:slug", params: { slug: "hello" } }),
+        ),
+        "x-vinext-prerender-secret": "expected-secret",
+        "x-vinext-prerender-speculative": "1",
+      });
+
+      expect(readTrustedPrerenderStateFromHeaders(headers, "expected-secret")).toEqual({
+        routeParams: { routePattern: "/post/:slug", params: { slug: "hello" } },
+        speculative: true,
+      });
+      expect(readTrustedPrerenderStateFromHeaders(headers, "wrong-secret")).toBeNull();
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
+  it("validates the complete serialized stage shape", () => {
+    const state = {
+      routeParams: { routePattern: "/post/:slug", params: { slug: "hello" } },
+      speculative: true,
+    };
+    expect(isTrustedPrerenderState(state)).toBe(true);
+    expect(isTrustedPrerenderState({ ...state, secret: "must-not-cross" })).toBe(false);
+    expect(isTrustedPrerenderState({ ...state, speculative: "1" })).toBe(false);
+  });
+});
 
 function matchesExactRoute(
   payload: PrerenderRouteParamsPayload | null,

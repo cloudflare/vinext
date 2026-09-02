@@ -237,7 +237,10 @@ const CONTEXTUAL_RSC_HEADERS = [
   VINEXT_RSC_STATE_FINGERPRINT_HEADER,
 ] as const;
 
-export function cacheabilityRequestIdentity(request: Request): {
+export function cacheabilityRequestIdentity(
+  request: Request,
+  trustedRepresentation?: CacheabilityRepresentation,
+): {
   representation: CacheabilityRepresentation;
   requestKey: string;
 } | null {
@@ -247,6 +250,7 @@ export function cacheabilityRequestIdentity(request: Request): {
 
   const url = new URL(request.url);
   const requestKey = `${url.pathname}${url.search}`;
+  if (trustedRepresentation) return { representation: trustedRepresentation, requestKey };
   if (/(?:^|\/)_next\/data\/[^/]+\/.+\.json$/.test(url.pathname)) {
     return { representation: "pages-data", requestKey };
   }
