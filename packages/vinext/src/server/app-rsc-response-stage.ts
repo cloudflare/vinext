@@ -36,6 +36,7 @@ import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
+import { stripInheritedResponseStageCookies } from "./response-stage-policy.js";
 import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
@@ -286,7 +287,12 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           const pageRequest = props.isDataRequest
             ? cloneRequestWithUrl(request, new URL(props.resolvedUrl, request.url).toString())
             : request;
-          const pagesResponse = await options.renderPagesFallback({
+          const preHandlerHeaders =
+            props.preHandlerHeaders === null ? undefined : new Headers(props.preHandlerHeaders);
+          // A transported length belongs to neither the Pages render nor API
+          // body. User code remains free to author the final Content-Length.
+          preHandlerHeaders?.delete("Content-Length");
+          let pagesResponse = await options.renderPagesFallback({
             allowRscDocumentFallback: props.allowRscDocumentFallback,
             appRouteMatch: props.appRouteMatch
               ? {
@@ -300,8 +306,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
             isRscRequest: props.isRscRequest,
             matchKind: props.matchKind,
             middlewareContext,
-            initialResponseHeaders:
-              props.preHandlerHeaders === null ? undefined : new Headers(props.preHandlerHeaders),
+            initialResponseHeaders: preHandlerHeaders,
             pathname: props.resolvedUrl,
             pagesDataRequest: props.isDataRequest ? request : null,
             request: pageRequest,
@@ -309,6 +314,9 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           });
           if (!pagesResponse) {
             return new Response("Invalid vinext App response stage", { status: 404 });
+          }
+          if (preHandlerHeaders) {
+            pagesResponse = stripInheritedResponseStageCookies(pagesResponse, preHandlerHeaders);
           }
           return pagesResponse;
         }
