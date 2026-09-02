@@ -6,6 +6,7 @@ function deriveExecutionContext(
   base: PlatformExecutionContext | undefined,
   dispatchPagesRevalidate: (request: Request) => Promise<Response>,
   isInternalPagesRevalidation: boolean,
+  defaultHostRuntime: "node" | "worker",
 ): ExecutionContextLike {
   return {
     waitUntil(promise) {
@@ -22,7 +23,7 @@ function deriveExecutionContext(
           },
         }
       : {}),
-    hostRuntime: "worker",
+    hostRuntime: base?.hostRuntime ?? defaultHostRuntime,
     ...(base?.cache === undefined ? {} : { cache: base.cache }),
     ...(base?.trustedRevalidateOrigin === undefined
       ? {}
@@ -41,13 +42,17 @@ function deriveExecutionContext(
 export function createWorkerRevalidationContext(
   base: PlatformExecutionContext | undefined,
   handleInternalRequest: (request: Request, ctx: ExecutionContextLike) => Promise<Response>,
+  defaultHostRuntime: "node" | "worker" = "worker",
 ): ExecutionContextLike {
   if (typeof base?.dispatchPagesRevalidate === "function") {
     return base as ExecutionContextLike;
   }
 
   const dispatchPagesRevalidate = (request: Request): Promise<Response> =>
-    handleInternalRequest(request, deriveExecutionContext(base, dispatchPagesRevalidate, true));
+    handleInternalRequest(
+      request,
+      deriveExecutionContext(base, dispatchPagesRevalidate, true, defaultHostRuntime),
+    );
 
-  return deriveExecutionContext(base, dispatchPagesRevalidate, false);
+  return deriveExecutionContext(base, dispatchPagesRevalidate, false, defaultHostRuntime);
 }

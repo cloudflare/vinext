@@ -24,6 +24,7 @@ import {
 } from "../packages/vinext/src/server/config-headers.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
+  VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -31,7 +32,11 @@ import {
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
-import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
+import {
+  readStaticFileSignal,
+  restoreStaticFileSignalFromTransport,
+  serializeStaticFileSignalForTransport,
+} from "../packages/vinext/src/server/static-file-signal.js";
 
 // Ported from the URL boundary used by Next.js request handling: WHATWG URL
 // pathname parsing canonicalizes recognized dot segments before routing.
@@ -379,6 +384,44 @@ describe("resolvePublicFileRoute", () => {
     expect(readStaticFileSignal(response)).toBe("%2Frobots.txt");
     expect(response.headers.get("x-vinext-static-file")).toBeNull();
     expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("authenticates static file signals across standards-only transports", async () => {
+    const token = "request-stage-token";
+    const serialized = serializeStaticFileSignalForTransport(
+      createStaticFileSignal("/stage asset.txt", {
+        headers: new Headers({
+          "content-encoding": "gzip",
+          "content-length": "999",
+          "content-type": "application/wrong",
+          "transfer-encoding": "chunked",
+          "x-from-middleware": "1",
+        }),
+        status: 203,
+      }),
+      token,
+    );
+    expect(serialized.headers.get("content-encoding")).toBeNull();
+    expect(serialized.headers.get("content-length")).toBeNull();
+    expect(serialized.headers.get("content-type")).toBeNull();
+    expect(serialized.headers.get("transfer-encoding")).toBeNull();
+    const transported = new Response(serialized.body, serialized);
+    const restored = restoreStaticFileSignalFromTransport(transported, token);
+
+    expect(restored.status).toBe(203);
+    expect(restored.headers.get("x-from-middleware")).toBe("1");
+    expect(restored.headers.get("x-vinext-stage-static-file")).toBeNull();
+    expect(readStaticFileSignal(restored)).toBe("%2Fstage%20asset.txt");
+
+    const forged = restoreStaticFileSignalFromTransport(
+      new Response("route handler", {
+        headers: { "x-vinext-stage-static-file": `${token}:subverted` },
+      }),
+      "different-token",
+    );
+    expect(forged.headers.get("x-vinext-stage-static-file")).toBeNull();
+    expect(readStaticFileSignal(forged)).toBeNull();
+    await expect(forged.text()).resolves.toBe("route handler");
   });
 });
 
@@ -873,6 +916,7 @@ describe("filterInternalHeaders", () => {
     const headers = new Headers({
       "cloudflare-workers-version-overrides": 'downstream="version-id"',
       [VINEXT_CACHEABILITY_PROBE_HEADER]: "forged",
+      [VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER]: "forged",
       [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "expected-version",
       [VINEXT_PRERENDER_CACHE_LIFE_HEADER]: "forged",
       [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
@@ -888,6 +932,7 @@ describe("filterInternalHeaders", () => {
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
     expect(VINEXT_INTERNAL_HEADERS).toEqual([
       VINEXT_CACHEABILITY_PROBE_HEADER.toLowerCase(),
+      VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER.toLowerCase(),
       VINEXT_EXPECTED_WORKER_VERSION_HEADER.toLowerCase(),
       VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
       VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -899,6 +944,7 @@ describe("filterInternalHeaders", () => {
     }
     expect(result.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)).toBe(false);
     expect(result.has(VINEXT_CACHEABILITY_PROBE_HEADER)).toBe(false);
+    expect(result.has(VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER)).toBe(false);
     expect(result.has(VINEXT_EXPECTED_WORKER_VERSION_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_SPECULATIVE_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
@@ -1168,6 +1214,25 @@ describe("cloneRequestWithHeaders", () => {
     expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
   });
 
+  it("preserves a lazy cf accessor without reading it while cloning headers", () => {
+    const original = new Request("http://localhost");
+    let reads = 0;
+    Object.defineProperty(original, "cf", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        reads += 1;
+        return { country: "US" };
+      },
+    });
+
+    const cloned = cloneRequestWithHeaders(original, new Headers());
+
+    expect(reads).toBe(0);
+    expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
+    expect(reads).toBe(1);
+  });
+
   it("replaces headers while preserving all other metadata", () => {
     const controller = new AbortController();
     const original = new Request("http://localhost/path?x=1", {
@@ -1231,6 +1296,25 @@ describe("cloneRequestWithUrl", () => {
     });
     const cloned = cloneRequestWithUrl(original, "http://localhost/path");
     expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
+  });
+
+  it("preserves a lazy cf accessor without reading it while cloning URLs", () => {
+    const original = new Request("http://localhost/path?_rsc=abc");
+    let reads = 0;
+    Object.defineProperty(original, "cf", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        reads += 1;
+        return { country: "US" };
+      },
+    });
+
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path");
+
+    expect(reads).toBe(0);
+    expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
+    expect(reads).toBe(1);
   });
 
   it("preserves body readability for streaming requests", async () => {

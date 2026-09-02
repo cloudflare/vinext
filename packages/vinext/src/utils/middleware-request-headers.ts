@@ -69,6 +69,17 @@ export function getUnconsumedMiddlewareRequestHeaders(
   return unconsumedHeaders;
 }
 
+/** Whether middleware changed the headers seen by downstream application code. */
+export function hasMiddlewareRequestHeaderOverrides(
+  source: MiddlewareHeaderSource | null,
+): boolean {
+  if (!source) return false;
+  return (
+    Boolean(getMiddlewareHeaderValue(source, MIDDLEWARE_OVERRIDE_HEADERS)) ||
+    getUnconsumedMiddlewareRequestHeaders(source).size > 0
+  );
+}
+
 export function encodeMiddlewareRequestHeaders(
   targetHeaders: Headers,
   requestHeaders: Headers,
