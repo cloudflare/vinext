@@ -1089,6 +1089,7 @@ async function deployUploadedVersionWithCdnWarmup(
           pagesDataPaths: remainingWarmPlan.pagesDataPaths,
           paths: remainingWarmPlan.paths,
           routeHandlerPaths: remainingWarmPlan.routeHandlerPaths,
+          routePatterns: remainingWarmPlan.routePatterns,
           rscPaths: remainingWarmPlan.rscPaths,
         };
         const stagedWarmRequests =

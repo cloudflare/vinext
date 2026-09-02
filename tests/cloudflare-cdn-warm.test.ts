@@ -321,6 +321,108 @@ describe("Cloudflare CDN warmup", () => {
     expect(requestHref(fetchImpl.mock.calls[0]?.[0])).toBe("https://app.example.com/api/data");
   });
 
+  it("reports planned and completed cache entries by route pattern", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const paths = ["/products/warmed", "/products/private", "/products/failed"];
+    const routePatterns = Object.fromEntries(
+      paths.map((pathname) => [
+        pathname,
+        {
+          cacheabilityProbe: { canPrunePattern: true },
+          kind: "app-page" as const,
+          pattern: "/products/:slug",
+        },
+      ]),
+    );
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(requestHref(input)!).pathname;
+      if (pathname === "/products/private") {
+        return new Response("private", {
+          headers: {
+            "cache-control": "no-store",
+            "cf-cache-status": "BYPASS",
+            "content-type": "text/html",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          },
+        });
+      }
+      if (pathname === "/products/failed") {
+        return new Response("failed", {
+          status: 500,
+          headers: {
+            "content-type": "text/html",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          },
+        });
+      }
+      return cacheableHtml();
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths,
+        retries: 0,
+        routePatterns,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ failed: 1, skipped: 1, warmed: 1 });
+
+    expect(log).toHaveBeenCalledWith("\n  Warming 3 CDN cache entries...");
+    expect(log).toHaveBeenCalledWith("  CDN warmup plan by route:");
+    expect(log).toHaveBeenCalledWith("    App page /products/:slug: 3 paths, 3 cache entries");
+    expect(log).toHaveBeenCalledWith("  CDN warmup result by route:");
+    expect(log).toHaveBeenCalledWith(
+      "    App page /products/:slug: 1/3 warmed, 1 skipped entry, 1 failed entry",
+    );
+    expect(log).toHaveBeenCalledWith("  CDN warmup: 1 warmed, 1 skipped, 1 failed.");
+  });
+
+  it("caps route reports without listing concrete paths for large apps", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const paths: string[] = [];
+    const routePatterns: Record<
+      string,
+      {
+        cacheabilityProbe: { canPrunePattern: boolean };
+        kind: "app-page";
+        pattern: string;
+      }
+    > = {};
+    for (let routeIndex = 0; routeIndex < 12; routeIndex++) {
+      const pattern = `/catalog-${String(routeIndex).padStart(2, "0")}/:slug`;
+      for (const slug of ["first", "second"]) {
+        const pathname = pattern.replace(":slug", slug);
+        paths.push(pathname);
+        routePatterns[pathname] = {
+          cacheabilityProbe: { canPrunePattern: true },
+          kind: "app-page",
+          pattern,
+        };
+      }
+    }
+
+    await warmCdnCache({
+      expectedBuildId: "build-a",
+      fetchImpl: (async () => cacheableHtml()) as typeof fetch,
+      paths,
+      retries: 0,
+      routePatterns,
+      targetUrl: "https://app.example.com",
+    });
+
+    const output = log.mock.calls.map(([message]) => String(message)).join("\n");
+    expect(output).toContain("    App page /catalog-00/:slug: 2 paths, 2 cache entries");
+    expect(output).toContain("    App page /catalog-00/:slug: 2/2 warmed");
+    expect(output.match(/2 additional route patterns omitted \(4 cache entries\)/g)).toHaveLength(
+      2,
+    );
+    expect(output).not.toContain("/catalog-00/first");
+    expect(output).not.toContain("/catalog-11/:slug");
+  });
+
   it("counts coherent no-store/BYPASS responses as skipped, including in strict mode", async () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const isRsc = new Headers(init?.headers).get("rsc") === "1";

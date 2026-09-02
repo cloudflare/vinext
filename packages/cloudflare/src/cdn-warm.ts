@@ -29,6 +29,7 @@ import {
   VINEXT_PRERENDER_READINESS_PATH,
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "vinext/internal/server/headers";
+import { cacheabilityRoutePathname } from "vinext/internal/server/cacheability-manifest";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "./cache/cdn-build-id.js";
 
 export type CdnWarmOptions = {
@@ -441,6 +442,98 @@ export type CdnWarmTarget = {
   sourcePathname: string;
   route?: PrerenderRoutePattern;
 };
+
+const MAX_CDN_WARM_REPORT_ROUTES = 10;
+
+type CdnWarmReportOutcome = "failed" | "skipped" | "warmed";
+
+type CdnWarmRouteReport = {
+  failed: number;
+  key: string;
+  label: string;
+  paths: Set<string>;
+  skipped: number;
+  total: number;
+  warmed: number;
+};
+
+const CDN_WARM_ROUTE_KIND_LABELS = {
+  "app-page": "App page",
+  "app-route": "Route Handler",
+  "pages-page": "Pages page",
+} as const;
+
+function formatCount(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count.toLocaleString("en-US")} ${count === 1 ? singular : plural}`;
+}
+
+function createCdnWarmRouteReport(
+  targets: readonly CdnWarmTarget[],
+  outcomes?: readonly CdnWarmReportOutcome[],
+): CdnWarmRouteReport[] {
+  const routes = new Map<string, CdnWarmRouteReport>();
+  for (const [index, target] of targets.entries()) {
+    const key = target.route ? `${target.route.kind}\0${target.route.pattern}` : "unmatched";
+    const route =
+      routes.get(key) ??
+      ({
+        failed: 0,
+        key,
+        label: target.route
+          ? `${CDN_WARM_ROUTE_KIND_LABELS[target.route.kind]} ${target.route.pattern}`
+          : "Other discovered requests",
+        paths: new Set<string>(),
+        skipped: 0,
+        total: 0,
+        warmed: 0,
+      } satisfies CdnWarmRouteReport);
+    route.paths.add(
+      target.route?.cacheabilityProbe?.concretePathname ??
+        cacheabilityRoutePathname(target.pathname, target.kind),
+    );
+    route.total++;
+    const outcome = outcomes?.[index];
+    if (outcome) route[outcome]++;
+    routes.set(key, route);
+  }
+  return [...routes.values()].sort(
+    (left, right) => right.total - left.total || left.key.localeCompare(right.key),
+  );
+}
+
+function printCdnWarmRouteReport(
+  targets: readonly CdnWarmTarget[],
+  outcomes?: readonly CdnWarmReportOutcome[],
+): void {
+  if (!targets.some((target) => target.route)) return;
+  const routes = createCdnWarmRouteReport(targets, outcomes);
+  if (routes.length === 0) return;
+
+  console.log(`  CDN warmup ${outcomes ? "result" : "plan"} by route:`);
+  for (const route of routes.slice(0, MAX_CDN_WARM_REPORT_ROUTES)) {
+    if (outcomes) {
+      const exceptions = [
+        route.skipped > 0 ? formatCount(route.skipped, "skipped entry", "skipped entries") : null,
+        route.failed > 0 ? formatCount(route.failed, "failed entry", "failed entries") : null,
+      ].filter(Boolean);
+      console.log(
+        `    ${route.label}: ${route.warmed.toLocaleString("en-US")}/${route.total.toLocaleString("en-US")} warmed${exceptions.length > 0 ? `, ${exceptions.join(", ")}` : ""}`,
+      );
+    } else {
+      console.log(
+        `    ${route.label}: ${formatCount(route.paths.size, "path")}, ${formatCount(route.total, "cache entry", "cache entries")}`,
+      );
+    }
+  }
+
+  const omitted = routes.slice(MAX_CDN_WARM_REPORT_ROUTES);
+  if (omitted.length > 0) {
+    const omittedEntries = omitted.reduce((total, route) => total + route.total, 0);
+    console.log(
+      `    ... ${formatCount(omitted.length, "additional route pattern")} omitted (${formatCount(omittedEntries, "cache entry", "cache entries")})`,
+    );
+  }
+}
 
 export async function createCdnWarmTargets(
   options: Pick<
@@ -1246,7 +1339,10 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     };
   }
 
-  console.log(`\n  Warming CDN cache with ${requests.length} discovered request(s)...`);
+  console.log(
+    `\n  Warming ${formatCount(requests.length, "CDN cache entry", "CDN cache entries")}...`,
+  );
+  printCdnWarmRouteReport(requests);
 
   const progress = new CdnOperationProgress();
   let completedRequests = 0;
@@ -1373,6 +1469,10 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
     .filter(({ target }) => target.kind === "app-route")
     .map(({ target }) => target.sourcePathname);
 
+  printCdnWarmRouteReport(
+    requests,
+    results.map((result) => (!result.ok ? "failed" : result.skipped ? "skipped" : "warmed")),
+  );
   console.log(
     `  CDN warmup: ${warmed} warmed, ${skippedResults.length} skipped, ${failures.length} failed.`,
   );
