@@ -4060,7 +4060,7 @@ describe("createMultiStageChunkFileNames", () => {
     }
   }, 30_000);
 
-  it.each(["cjs", "iife", "umd"] as const)(
+  it.each(["cjs", "commonjs", "iife", "umd"] as const)(
     "rejects %s output before emitting independent stages",
     async (format) => {
       const vinext = (await import("../packages/vinext/src/index.js")).default;
