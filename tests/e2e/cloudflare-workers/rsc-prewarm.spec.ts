@@ -347,6 +347,40 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   expect(secondPagesResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
   expect(await secondPagesResponse.text()).toBe(pagesBody);
 
+  const pagesDataUrl = `${baseURL}/_next/data/${buildId}/pages-prewarm.json`;
+  const pagesDataResponse = await getReusableResponseAfterPromotion(
+    request,
+    pagesDataUrl,
+    {
+      accept: "application/json",
+      "x-nextjs-data": "1",
+      "x-test-config-visitor": "config-a",
+      "x-test-visitor-id": "visitor-a",
+    },
+    "Pages data",
+  );
+  const pagesDataHeaders = pagesDataResponse.headers();
+  expect(pagesDataResponse.ok(), JSON.stringify(pagesDataHeaders)).toBe(true);
+  expect(pagesDataHeaders["content-type"]).toContain("application/json");
+  expect(pagesDataHeaders["cf-cache-status"]).toBe("HIT");
+  expect(pagesDataHeaders["x-workers-config-visitor"]).toBe("config-a");
+  expect(pagesDataHeaders["x-workers-cache-visitor"]).toBe("visitor-a");
+  const pagesDataBody = await pagesDataResponse.text();
+  expect(JSON.parse(pagesDataBody)).toMatchObject({ pageProps: { draftMode: false } });
+
+  const secondPagesDataResponse = await getResponseAfterPromotion(request, pagesDataUrl, {
+    accept: "application/json",
+    "x-nextjs-data": "1",
+    "x-test-config-visitor": "config-b",
+    "x-test-visitor-id": "visitor-b",
+  });
+  const secondPagesDataHeaders = secondPagesDataResponse.headers();
+  expect(secondPagesDataResponse.ok(), JSON.stringify(secondPagesDataHeaders)).toBe(true);
+  expect(secondPagesDataHeaders["cf-cache-status"]).toBe("HIT");
+  expect(secondPagesDataHeaders["x-workers-config-visitor"]).toBe("config-b");
+  expect(secondPagesDataHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
+  expect(await secondPagesDataResponse.text()).toBe(pagesDataBody);
+
   const appHtmlResponse = await getReusableResponseAfterPromotion(
     request,
     `${baseURL}${TARGET_PATH}`,
