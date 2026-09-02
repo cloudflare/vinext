@@ -69,7 +69,7 @@ function stripStreamedHtmlContentLength(response: Response): Response {
   }
 }
 
-async function renderPagesResponse(
+export async function renderPagesResponse(
   request: Request,
   env: PagesWorkerEnv | undefined,
   platformCtx: PagesWorkerExecutionContext | undefined,

@@ -468,22 +468,39 @@ describe("Pages Worker request stage", () => {
     expect(state.forcedDynamicReason).toBeUndefined();
   });
 
-  it("transports middleware Vary into the shared stage cache identity", async () => {
+  it("keeps static-page Vary and Link composition outside the shared artifact", async () => {
     mocks.runMiddleware.mockResolvedValue({
       continue: true,
-      responseHeaders: new Headers({ Vary: "x-visitor" }),
+      responseHeaders: new Headers({
+        Link: '</middleware.css>; rel="preload"; as="style"',
+        Vary: "x-visitor",
+      }),
     });
-    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("page"));
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () =>
+      Promise.resolve(
+        new Response("page", {
+          headers: {
+            Link: '</framework.woff2>; rel="preload"; as="font"',
+            Vary: "RSC, Next-Router-State-Tree",
+          },
+        }),
+      ),
+    );
 
-    await handleRequestStage(
+    const response = await handleRequestStage(
       new Request("https://example.com/page", { headers: { "x-visitor": "one" } }),
       undefined,
       undefined,
       dispatch,
     );
 
-    expect(dispatch.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([["Vary", "x-visitor"]]);
+    expect(dispatch.mock.calls[0]?.[1].cacheability.policyHeaders).toBeNull();
+    expect(dispatch.mock.calls[0]?.[1].stagedHeaders).toBeNull();
     expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+    expect(response.headers.get("Vary")).toBe("x-visitor, RSC, Next-Router-State-Tree");
+    expect(response.headers.get("Link")).toBe(
+      '</middleware.css>; rel="preload"; as="style", </framework.woff2>; rel="preload"; as="font"',
+    );
   });
 
   it("lets an outer private config policy override a shared Pages artifact", async () => {
@@ -736,6 +753,30 @@ describe("Pages Worker request stage", () => {
       },
       { cache: "shared" },
     );
+  });
+
+  it("bypasses shared dispatch without reconstructing WebSocket responses", async () => {
+    const webSocket = {};
+    const sharedDispatch = vi.fn();
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async (_request, _props, options) => {
+      if (options.cache === "shared") sharedDispatch();
+      const response = new Response(null) as Response & { webSocket?: object };
+      response.webSocket = webSocket;
+      return response;
+    });
+
+    const response = (await handleRequestStage(
+      new Request("https://example.com/api/hello", {
+        headers: { Upgrade: "websocket" },
+      }),
+      undefined,
+      undefined,
+      dispatch,
+    )) as Response & { webSocket?: object };
+
+    expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+    expect(sharedDispatch).not.toHaveBeenCalled();
+    expect(response.webSocket).toBe(webSocket);
   });
 
   it("dispatches non-idempotent APIs with cache bypass", async () => {

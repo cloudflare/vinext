@@ -67,6 +67,8 @@ import {
 } from "./worker-prerender-discovery.js";
 import {
   consumePagesResponseStagePolicyOwner,
+  prependResponseStageAdditiveHeaders,
+  withoutResponseStageVary,
   withResponseStageVary,
 } from "./response-stage-policy.js";
 import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
@@ -424,11 +426,25 @@ async function handleRequest(
             : req;
         const matchedPage =
           typeof matchPageRoute === "function" ? matchPageRoute(resolvedUrl, req) : null;
-        const transportedPolicyHeaders = withResponseStageVary(
-          responseStagePolicyHeaders,
-          stagedHeaders?.get("Vary"),
-        );
-        const responseStageProps = (cache: "shared" | "bypass"): WorkerResponseStageProps => ({
+        const cache =
+          forceCacheBypass || probeMode
+            ? "bypass"
+            : getPagesResponseStageCacheDisposition({
+                authorizeOnDemandRevalidate:
+                  typeof authorizeOnDemandRevalidate === "function"
+                    ? authorizeOnDemandRevalidate
+                    : undefined,
+                hasRequestAwareDocument: hasRequestAwareDocument === true,
+                request: req,
+                requestHeadersChanged: !haveSameHeaders(filteredHeaders, req.headers),
+                routeDataKind: matchedPage?.route.dataKind,
+                stagedHeaders,
+              });
+        const isSharedStaticPage = cache === "shared" && matchedPage?.route.dataKind === "static";
+        const transportedPolicyHeaders = isSharedStaticPage
+          ? withoutResponseStageVary(responseStagePolicyHeaders)
+          : withResponseStageVary(responseStagePolicyHeaders, stagedHeaders?.get("Vary"));
+        const responseStageProps = (): WorkerResponseStageProps => ({
           buildId: pagesEntry.buildId,
           cacheability: {
             policyHeaders: transportedPolicyHeaders,
@@ -446,29 +462,12 @@ async function handleRequest(
           // one safe render can still serve every outer composition. Pages
           // request-time handlers may read res.getHeader(), so their complete
           // pre-handler snapshot is part of the shared-stage identity.
-          stagedHeaders:
-            cache === "shared" && matchedPage?.route.dataKind === "static"
-              ? null
-              : [...(stagedHeaders ?? new Headers())],
+          stagedHeaders: isSharedStaticPage ? null : [...(stagedHeaders ?? new Headers())],
         });
-        const cache =
-          forceCacheBypass || probeMode
-            ? "bypass"
-            : getPagesResponseStageCacheDisposition({
-                authorizeOnDemandRevalidate:
-                  typeof authorizeOnDemandRevalidate === "function"
-                    ? authorizeOnDemandRevalidate
-                    : undefined,
-                hasRequestAwareDocument: hasRequestAwareDocument === true,
-                request: req,
-                requestHeadersChanged: !haveSameHeaders(filteredHeaders, req.headers),
-                routeDataKind: matchedPage?.route.dataKind,
-                stagedHeaders,
-              });
         const isHeadRequest = req.method.toUpperCase() === "HEAD";
         const dispatched = trackedDispatchResponseStage(
           stageRequest,
-          responseStageProps(cache),
+          responseStageProps(),
           { cache },
           env,
           ctx,
@@ -476,6 +475,9 @@ async function handleRequest(
         const responsePromise = dispatched.then((response) => {
           const consumed = consumePagesResponseStagePolicyOwner(response);
           if (cache === "shared") {
+            if (isSharedStaticPage && stagedHeaders) {
+              prependResponseStageAdditiveHeaders(consumed.response.headers, stagedHeaders);
+            }
             sharedResponseHeaders = new Headers(consumed.response.headers);
             const requestTimePolicyOwner =
               consumed.owner === "request-time" ||
