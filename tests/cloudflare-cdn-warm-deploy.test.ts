@@ -631,9 +631,9 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "promote-final",
     ]);
     expect(log).toHaveBeenCalledWith("  CDN warmup plan by route:");
-    expect(log).toHaveBeenCalledWith("    App page /:slug: 2 paths, 3 cache entries");
-    expect(log).toHaveBeenCalledWith("    Pages page /pages-about: 2/2 warmed");
-    expect(log).toHaveBeenCalledWith("    Route Handler /api/data: 1/1 warmed");
+    expect(log).toHaveBeenCalledWith("    /:slug         App page           2        3");
+    expect(log).toHaveBeenCalledWith("    /pages-about   Pages page        2/2        0       0");
+    expect(log).toHaveBeenCalledWith("    /api/data      Route Handler     1/1        0       0");
     log.mockRestore();
     expect(finalConfig).toEqual({ main: "index.js", name: "my-worker", workers_dev: true });
     const manifestJson = JSON.parse(

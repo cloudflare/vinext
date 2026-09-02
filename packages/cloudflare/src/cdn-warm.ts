@@ -444,13 +444,15 @@ export type CdnWarmTarget = {
 };
 
 const MAX_CDN_WARM_REPORT_ROUTES = 10;
+const MAX_CDN_WARM_REPORT_PATTERN_WIDTH = 48;
 
 type CdnWarmReportOutcome = "failed" | "skipped" | "warmed";
 
 type CdnWarmRouteReport = {
   failed: number;
+  kind: string;
   key: string;
-  label: string;
+  pattern: string;
   paths: Set<string>;
   skipped: number;
   total: number;
@@ -467,6 +469,36 @@ function formatCount(count: number, singular: string, plural = `${singular}s`): 
   return `${count.toLocaleString("en-US")} ${count === 1 ? singular : plural}`;
 }
 
+function formatNumber(count: number): string {
+  return count.toLocaleString("en-US");
+}
+
+function truncateMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const remaining = maxLength - 1;
+  const startLength = Math.ceil(remaining / 2);
+  return `${value.slice(0, startLength)}…${value.slice(-(remaining - startLength))}`;
+}
+
+function printCdnWarmTable(
+  headings: readonly string[],
+  rows: readonly (readonly string[])[],
+  rightAlignedFrom: number,
+): void {
+  const widths = headings.map((heading, index) =>
+    Math.max(heading.length, ...rows.map((row) => row[index]?.length ?? 0)),
+  );
+  for (const row of [headings, ...rows]) {
+    console.log(
+      `    ${row
+        .map((value, index) =>
+          index >= rightAlignedFrom ? value.padStart(widths[index]) : value.padEnd(widths[index]),
+        )
+        .join("  ")}`,
+    );
+  }
+}
+
 function createCdnWarmRouteReport(
   targets: readonly CdnWarmTarget[],
   outcomes?: readonly CdnWarmReportOutcome[],
@@ -478,10 +510,9 @@ function createCdnWarmRouteReport(
       routes.get(key) ??
       ({
         failed: 0,
+        kind: target.route ? CDN_WARM_ROUTE_KIND_LABELS[target.route.kind] : "Other",
         key,
-        label: target.route
-          ? `${CDN_WARM_ROUTE_KIND_LABELS[target.route.kind]} ${target.route.pattern}`
-          : "Other discovered requests",
+        pattern: target.route?.pattern ?? "Other discovered requests",
         paths: new Set<string>(),
         skipped: 0,
         total: 0,
@@ -510,20 +541,32 @@ function printCdnWarmRouteReport(
   if (routes.length === 0) return;
 
   console.log(`  CDN warmup ${outcomes ? "result" : "plan"} by route:`);
-  for (const route of routes.slice(0, MAX_CDN_WARM_REPORT_ROUTES)) {
-    if (outcomes) {
-      const exceptions = [
-        route.skipped > 0 ? formatCount(route.skipped, "skipped entry", "skipped entries") : null,
-        route.failed > 0 ? formatCount(route.failed, "failed entry", "failed entries") : null,
-      ].filter(Boolean);
-      console.log(
-        `    ${route.label}: ${route.warmed.toLocaleString("en-US")}/${route.total.toLocaleString("en-US")} warmed${exceptions.length > 0 ? `, ${exceptions.join(", ")}` : ""}`,
-      );
-    } else {
-      console.log(
-        `    ${route.label}: ${formatCount(route.paths.size, "path")}, ${formatCount(route.total, "cache entry", "cache entries")}`,
-      );
-    }
+  const visible = routes.slice(0, MAX_CDN_WARM_REPORT_ROUTES);
+  const routeColumns = (route: CdnWarmRouteReport) => [
+    truncateMiddle(route.pattern, MAX_CDN_WARM_REPORT_PATTERN_WIDTH),
+    route.kind,
+  ];
+  if (outcomes) {
+    printCdnWarmTable(
+      ["Route pattern", "Kind", "Warmed", "Skipped", "Failed"],
+      visible.map((route) => [
+        ...routeColumns(route),
+        `${formatNumber(route.warmed)}/${formatNumber(route.total)}`,
+        formatNumber(route.skipped),
+        formatNumber(route.failed),
+      ]),
+      2,
+    );
+  } else {
+    printCdnWarmTable(
+      ["Route pattern", "Kind", "Paths", "Entries"],
+      visible.map((route) => [
+        ...routeColumns(route),
+        formatNumber(route.paths.size),
+        formatNumber(route.total),
+      ]),
+      2,
+    );
   }
 
   const omitted = routes.slice(MAX_CDN_WARM_REPORT_ROUTES);

@@ -372,11 +372,11 @@ describe("Cloudflare CDN warmup", () => {
 
     expect(log).toHaveBeenCalledWith("\n  Warming 3 CDN cache entries...");
     expect(log).toHaveBeenCalledWith("  CDN warmup plan by route:");
-    expect(log).toHaveBeenCalledWith("    App page /products/:slug: 3 paths, 3 cache entries");
+    expect(log).toHaveBeenCalledWith("    Route pattern    Kind      Paths  Entries");
+    expect(log).toHaveBeenCalledWith("    /products/:slug  App page      3        3");
     expect(log).toHaveBeenCalledWith("  CDN warmup result by route:");
-    expect(log).toHaveBeenCalledWith(
-      "    App page /products/:slug: 1/3 warmed, 1 skipped entry, 1 failed entry",
-    );
+    expect(log).toHaveBeenCalledWith("    Route pattern    Kind      Warmed  Skipped  Failed");
+    expect(log).toHaveBeenCalledWith("    /products/:slug  App page     1/3        1       1");
     expect(log).toHaveBeenCalledWith("  CDN warmup: 1 warmed, 1 skipped, 1 failed.");
   });
 
@@ -414,8 +414,8 @@ describe("Cloudflare CDN warmup", () => {
     });
 
     const output = log.mock.calls.map(([message]) => String(message)).join("\n");
-    expect(output).toContain("    App page /catalog-00/:slug: 2 paths, 2 cache entries");
-    expect(output).toContain("    App page /catalog-00/:slug: 2/2 warmed");
+    expect(output).toMatch(/\/catalog-00\/:slug\s+App page\s+2\s+2/);
+    expect(output).toMatch(/\/catalog-00\/:slug\s+App page\s+2\/2\s+0\s+0/);
     expect(output.match(/2 additional route patterns omitted \(4 cache entries\)/g)).toHaveLength(
       2,
     );
