@@ -63,7 +63,11 @@ export type VinextMultiStageOutput = {
    * Let the adapter finalize host-owned deployment output after it is written.
    * Core supplies paths only; the adapter owns every platform-specific detail.
    */
-  finalizeBuildOutput?: (output: { outDir: string; root: string }) => Promise<void> | void;
+  finalizeBuildOutput?: (output: {
+    outDir: string;
+    root: string;
+    isPrimaryServerOutput: boolean;
+  }) => Promise<void> | void;
 };
 
 /** Platform-neutral request-stage handler exposed to deployment adapters. */
