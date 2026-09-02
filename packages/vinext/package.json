@@ -144,6 +144,10 @@
       "types": "./dist/server/app-rsc-handler.d.ts",
       "import": "./dist/server/app-rsc-handler.js"
     },
+    "./server/app-rsc-combined-handler": {
+      "types": "./dist/server/app-rsc-combined-handler.d.ts",
+      "import": "./dist/server/app-rsc-combined-handler.js"
+    },
     "./config/config-matchers": {
       "types": "./dist/config/config-matchers.d.ts",
       "import": "./dist/config/config-matchers.js"
