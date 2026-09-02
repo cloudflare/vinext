@@ -83,6 +83,15 @@ describe("Cloudflare CDN adapter build output", () => {
     expect(generated.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
   });
 
+  it("emits the pregenerated-paths sidecar imported by the Worker entry", async () => {
+    expect(
+      await fs.readFile(
+        path.join(root, "dist/server/__vinext_pregenerated_concrete_paths.js"),
+        "utf8",
+      ),
+    ).toBe("delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;\n");
+  });
+
   it("is the effective config selected by Wrangler's deploy redirect", async () => {
     const wranglerPath = createRequire(path.join(root, "package.json")).resolve("wrangler");
     const wrangler = (await import(pathToFileURL(wranglerPath).href)) as {
