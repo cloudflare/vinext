@@ -6,6 +6,9 @@ import type {
 } from "./multi-stage.js";
 
 export const PAGES_RESPONSE_STAGE_PROTOCOL_VERSION = 4;
+export const PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER =
+  "x-vinext-pages-response-stage-policy-owner";
+export type PagesResponseStagePolicyOwner = "request-time" | "static";
 
 type PagesResponseStageEnvelope = {
   buildId: string | null;

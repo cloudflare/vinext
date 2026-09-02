@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { handleRequestStage } from "../packages/vinext/src/server/pages-request-stage-entry.js";
 import worker from "../packages/vinext/src/server/pages-router-entry.js";
-import { PAGES_RESPONSE_STAGE_PROTOCOL_VERSION } from "../packages/vinext/src/server/worker-stages.js";
+import {
+  PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER,
+  PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+} from "../packages/vinext/src/server/worker-stages.js";
 import type { DispatchWorkerResponseStage } from "../packages/vinext/src/server/worker-stages.js";
 import type { MiddlewareResult } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import {
@@ -394,7 +397,7 @@ describe("Pages Worker request stage", () => {
       // and _app getInitialProps response writes remain authoritative.
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-server.ts
       mocks.matchPageRoute.mockReturnValue({
-        route: { dataKind: "initial", isDynamic: false, pattern: "/gip" },
+        route: { dataKind: "none", isDynamic: false, pattern: "/gip" },
       });
       mocks.configHeaders.push({
         source: "/en/gip",
@@ -403,7 +406,10 @@ describe("Pages Worker request stage", () => {
       const dispatch = vi.fn<DispatchWorkerResponseStage>(async () =>
         Promise.resolve(
           new Response("gip", {
-            headers: { "Cache-Control": renderedPolicy },
+            headers: {
+              "Cache-Control": renderedPolicy,
+              [PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER]: "request-time",
+            },
           }),
         ),
       );
@@ -417,14 +423,21 @@ describe("Pages Worker request stage", () => {
 
       expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
       expect(response.headers.get("Cache-Control")).toBe(renderedPolicy);
+      expect(response.headers.has(PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER)).toBe(false);
     },
   );
 
   it("dispatches authenticated revalidation through the uncached response stage", async () => {
     mocks.authorizeOnDemandRevalidate.mockImplementation((value) => value === "build-secret");
-    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response(null));
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () =>
+      Promise.resolve(
+        new Response(null, {
+          headers: { [PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER]: "static" },
+        }),
+      ),
+    );
 
-    await handleRequestStage(
+    const response = await handleRequestStage(
       new Request("https://example.com/page", {
         headers: {
           "x-prerender-revalidate": "build-secret",
@@ -442,6 +455,7 @@ describe("Pages Worker request stage", () => {
     expect(dispatch.mock.calls[0]?.[0].headers.get("x-prerender-revalidate-if-generated")).toBe(
       "1",
     );
+    expect(response.headers.has(PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER)).toBe(false);
     expect(dispatch.mock.calls[0]?.[1]).toMatchObject({
       kind: "pages-page",
       stagedHeaders: [],

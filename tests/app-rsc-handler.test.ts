@@ -14,6 +14,7 @@ import {
   type AppWorkerResponseStageProps,
   type DispatchAppWorkerResponseStage,
 } from "../packages/vinext/src/server/app-worker-stages.js";
+import { PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER } from "../packages/vinext/src/server/worker-stages.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
@@ -543,7 +544,10 @@ describe("createAppRscHandler", () => {
       const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
         Promise.resolve(
           new Response("pages-stage", {
-            headers: { "Cache-Control": renderedPolicy },
+            headers: {
+              "Cache-Control": renderedPolicy,
+              [PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER]: "request-time",
+            },
           }),
         ),
       );
@@ -557,7 +561,7 @@ describe("createAppRscHandler", () => {
         matchRequestRoute: () => null,
         matchRoute: () => null,
         renderPagesFallback: async (options) =>
-          options.dispatchPagesResponseStage?.(options.request, "page", "initial") ?? null,
+          options.dispatchPagesResponseStage?.(options.request, "page", "none") ?? null,
       });
 
       const response = await handler(
@@ -568,6 +572,7 @@ describe("createAppRscHandler", () => {
       );
 
       expect(response.headers.get("Cache-Control")).toBe(renderedPolicy);
+      expect(response.headers.has(PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER)).toBe(false);
     },
   );
 

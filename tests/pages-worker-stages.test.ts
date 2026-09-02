@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { handleResponseStage } from "../packages/vinext/src/server/pages-response-stage-entry.js";
-import { PAGES_RESPONSE_STAGE_PROTOCOL_VERSION } from "../packages/vinext/src/server/worker-stages.js";
+import {
+  PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER,
+  PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+} from "../packages/vinext/src/server/worker-stages.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -13,6 +16,7 @@ import {
 
 const stages = vi.hoisted(() => ({
   api: vi.fn(),
+  getRuntimePageDataKind: vi.fn(() => "none"),
   registerCacheAdapters: vi.fn(),
   registerImageOptimizer: vi.fn(),
   renderPage: vi.fn(),
@@ -31,6 +35,7 @@ vi.mock("virtual:vinext-image-adapters", () => ({
 vi.mock("virtual:vinext-pages-response-entry", () => ({
   authorizeOnDemandRevalidate: vi.fn(() => false),
   buildId: "test-build",
+  getRuntimePageDataKind: stages.getRuntimePageDataKind,
   handleApiRoute: stages.api,
   hasMiddleware: false,
   matchPageRoute: null,
@@ -47,9 +52,40 @@ describe("Pages Worker response stage", () => {
   beforeEach(() => {
     setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     stages.api.mockReset();
+    stages.getRuntimePageDataKind.mockReset();
+    stages.getRuntimePageDataKind.mockReturnValue("none");
     stages.registerCacheAdapters.mockReset();
     stages.registerImageOptimizer.mockReset();
     stages.renderPage.mockReset();
+  });
+
+  it("stamps trusted request-time policy ownership from loaded Pages modules", async () => {
+    stages.getRuntimePageDataKind.mockReturnValue("initial");
+    stages.renderPage.mockResolvedValue(new Response("gip"));
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/page",
+        },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: null,
+        resolvedUrl: "/page",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(response.headers.get(PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER)).toBe("request-time");
   });
 
   it("rejects malformed stage descriptions before dispatch", async () => {
@@ -74,29 +110,30 @@ describe("Pages Worker response stage", () => {
     const response = new Response("page");
     stages.renderPage.mockResolvedValue(response);
 
-    await expect(
-      handleResponseStage(
-        request,
-        { binding: "value" },
-        undefined,
-        {
-          buildId: "test-build",
-          cacheability: {
-            policyHeaders: null,
-            probeMode: null,
-            resolvedRoutePathname: "/rewritten",
-          },
-          kind: "pages-page",
-          protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
-          requestHost: "example.com",
-          renderOptions: { isDataReq: true },
-          resolvedUrl: "/rewritten?slug=one",
-          stagedHeaders: null,
+    const rendered = await handleResponseStage(
+      request,
+      { binding: "value" },
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/rewritten",
         },
-        dispatchRequestStage,
-        { cache: "shared" },
-      ),
-    ).resolves.toBe(response);
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: { isDataReq: true },
+        resolvedUrl: "/rewritten?slug=one",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    await expect(rendered.text()).resolves.toBe("page");
+    expect(rendered.headers.get(PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER)).toBe("static");
 
     expect(stages.registerCacheAdapters).toHaveBeenCalledWith({ binding: "value" });
     expect(stages.registerImageOptimizer).toHaveBeenCalledWith({ binding: "value" });

@@ -2,7 +2,11 @@
 
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
-import { isPagesResponseStageProps, type WorkerResponseStageProps } from "./worker-stages.js";
+import {
+  isPagesResponseStageProps,
+  PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER,
+  type WorkerResponseStageProps,
+} from "./worker-stages.js";
 import type {
   VinextRequestStageTransport,
   VinextResponseStageDispatchOptions,
@@ -10,6 +14,7 @@ import type {
 import { withResponseStageCacheability } from "./response-stage-cacheability.js";
 import { applyResponseStagePolicyHeaders } from "./response-stage-policy.js";
 import { beginRouteCacheability } from "vinext/shims/cacheability-classification";
+import { preserveFullyBufferedBodyMetadata } from "vinext/shims/unified-request-context";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -112,7 +117,7 @@ export async function renderPagesResponse(
       initialResponseHeaders,
     );
   };
-  return withResponseStageCacheability(
+  const response = await withResponseStageCacheability(
     {
       buildId: pagesEntry.buildId,
       cache: props.kind === "pages-prerender-discovery" ? "bypass" : dispatchOptions.cache,
@@ -127,6 +132,22 @@ export async function renderPagesResponse(
       resolvedRoutePathname: props.cacheability.resolvedRoutePathname,
     },
     handle,
+  );
+  if (props.kind !== "pages-page") return response;
+
+  const runtimeDataKind = pagesEntry.getRuntimePageDataKind(props.resolvedUrl, request);
+  const headers = new Headers(response.headers);
+  headers.set(
+    PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER,
+    runtimeDataKind === "server" || runtimeDataKind === "initial" ? "request-time" : "static",
+  );
+  return preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
   );
 }
 

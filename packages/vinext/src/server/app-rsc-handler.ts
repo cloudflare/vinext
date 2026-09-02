@@ -141,7 +141,10 @@ import {
   type RenderAppWorkerResponseStageLocally,
 } from "./app-worker-stages.js";
 import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
-import { withResponseStageVary } from "./response-stage-policy.js";
+import {
+  consumePagesResponseStagePolicyOwner,
+  withResponseStageVary,
+} from "./response-stage-policy.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -1745,7 +1748,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
                 ? "shared"
                 : "bypass";
           const renderRequest = responseStageRequest(stageRequest);
-          const response = await dispatchResponseStage(
+          let response = await dispatchResponseStage(
             renderRequest,
             {
               kind: "hybrid-pages",
@@ -1779,14 +1782,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             },
             { cache },
           );
+          const policyOwner =
+            resourceKind === "page"
+              ? consumePagesResponseStagePolicyOwner(response)
+              : { owner: null, response };
+          response = policyOwner.response;
+          const requestTimePolicyOwner =
+            policyOwner.owner === "request-time" ||
+            (policyOwner.owner === null && dataKind === "server");
           sharedOuterPolicyNeedsReconciliation =
-            cache === "shared" &&
-            resourceKind === "page" &&
-            dataKind !== "server" &&
-            dataKind !== "initial";
+            cache === "shared" && resourceKind === "page" && !requestTimePolicyOwner;
           return applyConfigHeadersToResponseStage(
             response,
-            resourceKind === "api" || dataKind === "server" || dataKind === "initial",
+            resourceKind === "api" || requestTimePolicyOwner,
           );
         }
       : undefined;

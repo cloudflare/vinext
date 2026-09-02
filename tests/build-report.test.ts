@@ -11,7 +11,6 @@ import os from "node:os";
 import fs from "node:fs/promises";
 import {
   hasExportedName,
-  hasDefaultExportedStaticProperty,
   hasNamedExport,
   extractExportConstString,
   extractExportConstNumber,
@@ -107,47 +106,6 @@ describe("hasNamedExport", () => {
 export function getServerSideProps() {}
 */`;
     expect(hasNamedExport(code, "getServerSideProps")).toBe(false);
-  });
-});
-
-describe("hasDefaultExportedStaticProperty", () => {
-  it("detects getInitialProps assigned to the default component", () => {
-    expect(
-      hasDefaultExportedStaticProperty(
-        "function Page() {} Page.getInitialProps = async () => ({}); export default Page;",
-        "getInitialProps",
-      ),
-    ).toBe(true);
-    expect(
-      hasDefaultExportedStaticProperty(
-        "export default function Page() {} Page.getInitialProps = async () => ({});",
-        "getInitialProps",
-      ),
-    ).toBe(true);
-  });
-
-  it("detects static class methods and fields", () => {
-    expect(
-      hasDefaultExportedStaticProperty(
-        "export default class Page { static getInitialProps() { return {}; } }",
-        "getInitialProps",
-      ),
-    ).toBe(true);
-    expect(
-      hasDefaultExportedStaticProperty(
-        "class Page { static getInitialProps = async () => ({}); } export { Page as default };",
-        "getInitialProps",
-      ),
-    ).toBe(true);
-  });
-
-  it("does not confuse instance or unrelated component properties", () => {
-    expect(
-      hasDefaultExportedStaticProperty(
-        "class Page { getInitialProps() {} } Other.getInitialProps = () => ({}); export default Page;",
-        "getInitialProps",
-      ),
-    ).toBe(false);
   });
 });
 

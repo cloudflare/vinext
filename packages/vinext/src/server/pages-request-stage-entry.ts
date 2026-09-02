@@ -63,7 +63,10 @@ import {
   createWorkerPrerenderReadinessResponse,
   isWorkerPrerenderDiscoveryPath,
 } from "./worker-prerender-discovery.js";
-import { withResponseStageVary } from "./response-stage-policy.js";
+import {
+  consumePagesResponseStagePolicyOwner,
+  withResponseStageVary,
+} from "./response-stage-policy.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -354,8 +357,6 @@ async function handleRequest(
       renderPage: (req, resolvedUrl, options, stagedHeaders) => {
         const matchedPage =
           typeof matchPageRoute === "function" ? matchPageRoute(resolvedUrl, req) : null;
-        const outerPolicyMustOverrideRenderer =
-          matchedPage?.route.dataKind !== "server" && matchedPage?.route.dataKind !== "initial";
         const transportedPolicyHeaders = withResponseStageVary(
           responseStagePolicyHeaders,
           stagedHeaders?.get("Vary"),
@@ -403,16 +404,19 @@ async function handleRequest(
           env,
           ctx,
         );
-        const responsePromise =
-          cache === "shared"
-            ? dispatched.then((response) => {
-                sharedResponseHeaders = new Headers(response.headers);
-                sharedOuterPolicyHeaders = outerPolicyMustOverrideRenderer
-                  ? captureCdnResponsePolicyHeaders(new Headers(stagedHeaders))
-                  : null;
-                return response;
-              })
-            : dispatched;
+        const responsePromise = dispatched.then((response) => {
+          const consumed = consumePagesResponseStagePolicyOwner(response);
+          if (cache === "shared") {
+            sharedResponseHeaders = new Headers(consumed.response.headers);
+            const requestTimePolicyOwner =
+              consumed.owner === "request-time" ||
+              (consumed.owner === null && matchedPage?.route.dataKind === "server");
+            sharedOuterPolicyHeaders = !requestTimePolicyOwner
+              ? captureCdnResponsePolicyHeaders(new Headers(stagedHeaders))
+              : null;
+          }
+          return consumed.response;
+        });
         if (!isHeadRequest) return responsePromise;
         return responsePromise.then(async (response) => {
           await response.body?.cancel();
