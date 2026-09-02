@@ -190,7 +190,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // output aligned with the bundle it was generated from. (Spreading
   // `loadedConfig` above is required so this assignment does not mutate the
   // shared loaded config.)
-  const builtBuildId = readBuiltBuildId(serverDir);
+  const builtBuildId = readBuiltBuildId(manifestDir) ?? readBuiltBuildId(serverDir);
   if (builtBuildId) {
     config.buildId = builtBuildId;
   }
@@ -243,6 +243,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         host: "127.0.0.1",
         outDir: path.dirname(serverDir),
         rscEntryPath: rscBundlePath,
+        serverDir,
         noCompression: true,
         purpose: "prerender",
       });

@@ -1843,12 +1843,12 @@ describe("prerender path manifest", () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/index.js", 'import "cloudflare:workers";\n');
-    writeFile("dist/server/application-entry.js", "export default {};\n");
+    writeFile("dist/server/entries/application-entry.js", "export default {};\n");
     writeFile(
       "dist/server/.vite/manifest.json",
       JSON.stringify({
         "virtual:vinext-rsc-entry": {
-          file: "application-entry.js",
+          file: "entries/application-entry.js",
           isDynamicEntry: true,
         },
       }),
@@ -1869,7 +1869,8 @@ describe("prerender path manifest", () => {
 
     expect(startProdServerMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        rscEntryPath: toSlash(path.join(tmpDir, "dist/server/application-entry.js")),
+        rscEntryPath: toSlash(path.join(tmpDir, "dist/server/entries/application-entry.js")),
+        serverDir: toSlash(path.join(tmpDir, "dist/server")),
       }),
     );
   });

@@ -1231,6 +1231,7 @@ async function startPathDiscoveryServer(options: {
       ? path.dirname(path.dirname(options.pagesBundlePath))
       : path.dirname(options.serverDir),
     rscEntryPath: options.rscBundlePath,
+    serverDir: options.serverDir,
     serverEntryPath: options.pagesBundlePath,
     noCompression: true,
     purpose: "prerender",
@@ -1247,14 +1248,19 @@ export async function emitPrerenderPathManifest(
 
   if (!appDir && !pagesDir) return null;
 
-  const rscServerDir = options.routeRootConfig?.rscOutDir
+  const configuredRscServerDir = options.routeRootConfig?.rscOutDir
     ? path.resolve(root, options.routeRootConfig.rscOutDir)
     : path.join(root, "dist", "server");
-  const defaultRscBundlePath = resolveBuiltRscEntryPath(rscServerDir);
+  const defaultRscBundlePath = resolveBuiltRscEntryPath(configuredRscServerDir);
   const rscBundlePath = options.rscBundlePath ?? defaultRscBundlePath;
+  const relativeRscEntryPath = path.relative(configuredRscServerDir, rscBundlePath);
+  const rscServerDir =
+    !relativeRscEntryPath.startsWith("../") && !path.isAbsolute(relativeRscEntryPath)
+      ? configuredRscServerDir
+      : path.dirname(rscBundlePath);
   const pagesBundlePath = options.pagesBundlePath ?? path.join(root, "dist", "server", "entry.js");
   const bundleServerDir = fs.existsSync(rscBundlePath)
-    ? path.dirname(rscBundlePath)
+    ? rscServerDir
     : path.dirname(pagesBundlePath);
   const manifestDir = path.join(root, "dist", "server");
   const config = options.nextConfig

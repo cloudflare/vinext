@@ -48,6 +48,7 @@ describe("App prerender entry", () => {
       expect.objectContaining({
         outDir: path.join(root, "dist"),
         rscEntryPath: rscBundlePath,
+        serverDir,
       }),
     );
   });
