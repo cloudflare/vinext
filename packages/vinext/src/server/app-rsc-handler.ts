@@ -1817,10 +1817,16 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             (policyOwner.owner === null && dataKind === "server");
           sharedOuterPolicyNeedsReconciliation =
             cache === "shared" && resourceKind === "page" && !requestTimePolicyOwner;
-          return applyConfigHeadersToResponseStage(
+          const responseStageHasContentLength = response.headers.has("Content-Length");
+          response = await applyConfigHeadersToResponseStage(
             response,
             resourceKind === "api" || requestTimePolicyOwner,
           );
+          // A next.config Content-Length describes neither the transported
+          // Pages body nor its final framing. Preserve only a length authored
+          // by the response-stage handler itself.
+          if (!responseStageHasContentLength) response.headers.delete("Content-Length");
+          return response;
         }
       : undefined;
     const response =
