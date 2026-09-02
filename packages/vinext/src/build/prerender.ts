@@ -97,9 +97,10 @@ function getErrorMessageWithStack(err: Error): string {
 async function startOptionalPrerenderServerPool(
   outDir: string,
   poolSize: number,
+  rscEntryPath?: string,
 ): Promise<PrerenderServerPool | null> {
   try {
-    return await startPrerenderServerPool(outDir, poolSize);
+    return await startPrerenderServerPool(outDir, poolSize, { rscEntryPath });
   } catch (e) {
     // The pool is a performance optimization layered over the already-running
     // in-process prerender server. Startup failure is still before any route has
@@ -1798,7 +1799,11 @@ export async function prerenderApp({
     if (!options._prodServer && prerenderPoolAvailable()) {
       const poolSize = resolvePrerenderPoolSize(urlsToRender.length, concurrency);
       if (poolSize > 1) {
-        renderPool = await startOptionalPrerenderServerPool(path.dirname(serverDir), poolSize);
+        renderPool = await startOptionalPrerenderServerPool(
+          path.dirname(serverDir),
+          poolSize,
+          rscBundlePath,
+        );
         if (renderPool) renderPorts = renderPool.ports;
       }
     }

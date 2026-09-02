@@ -176,6 +176,40 @@ describe("injectPregeneratedConcretePaths", () => {
     expect(responseEntry).toMatchObject({ renderedPaths: ["/blog/post-a"] });
   });
 
+  it("writes the runtime table beside a custom application entry", async () => {
+    const registryModuleUrl = pathToFileURL(
+      path.resolve("packages/vinext/src/server/pregenerated-concrete-paths.ts"),
+    ).href;
+    const entryPath = path.join(tmpDir, "dist/custom-rsc/application-entry.js");
+    writeFile(
+      "dist/custom-rsc/application-entry.js",
+      [
+        `import "./${PREGENERATED_CONCRETE_PATHS_MODULE}";`,
+        `import { getRenderedConcreteUrlPathsForRoute, initPregeneratedPathsFromGlobals } from ${JSON.stringify(registryModuleUrl)};`,
+        "initPregeneratedPathsFromGlobals();",
+        'export const renderedPaths = [...(getRenderedConcreteUrlPathsForRoute("/blog/:slug") ?? [])];',
+        "",
+      ].join("\n"),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "test",
+        pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-a"]]],
+      }),
+    );
+
+    injectPregeneratedConcretePaths(tmpDir, entryPath);
+
+    expect(
+      fs.existsSync(path.join(path.dirname(entryPath), PREGENERATED_CONCRETE_PATHS_MODULE)),
+    ).toBe(true);
+    const applicationEntry: unknown = await import(
+      `${pathToFileURL(entryPath).href}?t=${Date.now()}`
+    );
+    expect(applicationEntry).toMatchObject({ renderedPaths: ["/blog/post-a"] });
+  });
+
   it("strips an earlier injection when the manifest is corrupt", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     writeFile(

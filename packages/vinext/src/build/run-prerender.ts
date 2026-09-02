@@ -376,7 +376,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     );
   }
 
-  injectPregeneratedConcretePaths(root);
+  injectPregeneratedConcretePaths(root, rscBundlePath);
   if (fs.existsSync(rscBundlePath)) {
     rememberCurrentServerEntryImportMtime(rscBundlePath);
   }
