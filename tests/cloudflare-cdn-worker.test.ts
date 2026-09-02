@@ -166,6 +166,48 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(stages.response).not.toHaveBeenCalled();
   });
 
+  it("keeps Authorization off Workers Cache while restoring and partitioning cold renders", async () => {
+    const cacheFacingRequests: Request[] = [];
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch(request: Request) {
+        cacheFacingRequests.push(request);
+        return createEntrypoint(props).fetch(request);
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-route-handler" }, { cache: "shared" }),
+    );
+    stages.response.mockImplementation((request) =>
+      Response.json({ authorization: request.headers.get("Authorization") }),
+    );
+
+    for (const authorization of ["Bearer first", "Bearer second"]) {
+      await worker.fetch(
+        new Request("https://example.com/authenticated", {
+          headers: {
+            Authorization: authorization,
+            "x-vinext-internal-authorization": "forged",
+          },
+        }),
+        {},
+        { exports: { VinextCachedResponse: binding } },
+      );
+    }
+
+    expect(cacheFacingRequests).toHaveLength(2);
+    expect(cacheFacingRequests[0]?.headers.get("Authorization")).toBeNull();
+    expect(cacheFacingRequests[1]?.headers.get("Authorization")).toBeNull();
+    expect(cacheFacingRequests[0]?.url).not.toBe(cacheFacingRequests[1]?.url);
+    expect(
+      stages.response.mock.calls.map(([request]) =>
+        (request as Request).headers.get("Authorization"),
+      ),
+    ).toEqual(["Bearer first", "Bearer second"]);
+    for (const [request] of stages.response.mock.calls) {
+      expect((request as Request).headers.has("x-vinext-internal-authorization")).toBe(false);
+    }
+  });
+
   it("keys cached dispatches by route metadata and restores the user-facing URL", async () => {
     const cachedEntrypoint = createEntrypoint(
       responseStageInvocation(

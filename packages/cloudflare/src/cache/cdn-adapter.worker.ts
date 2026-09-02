@@ -40,6 +40,7 @@ type RestoredResponseStageRequest = {
 };
 
 const RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
+const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 
 function withWorkerHostRuntime(
@@ -111,6 +112,7 @@ async function createCacheFacingRequest(
   request: Request,
   serializedInvocation: string,
 ): Promise<Request> {
+  const authorization = request.headers.get("Authorization");
   let serializedRequestCf: string | null = null;
   const requestCf = Reflect.get(request, "cf");
   if (requestCf !== undefined) {
@@ -124,13 +126,26 @@ async function createCacheFacingRequest(
   // Incoming `request.cf` describes the caller/connection, not the public
   // representation. Keep it available to a cold response-stage render without
   // fragmenting warmed cache entries by colo, geography, TCP RTT, or bot data.
-  const bytes = new TextEncoder().encode(`${request.url}\0${serializedInvocation}`);
+  // Workers Cache automatically bypasses requests carrying Authorization, so
+  // transport that value under a private header and partition the opaque URL
+  // key by its digest instead.
+  // https://developers.cloudflare.com/workers/cache/#what-gets-cached
+  const authorizationIdentity =
+    authorization === null ? "absent" : `present:${authorization.length}:${authorization}`;
+  const bytes = new TextEncoder().encode(
+    `${request.url}\0${serializedInvocation}\0${authorizationIdentity}`,
+  );
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const key = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   const url = new URL(request.url);
   url.searchParams.set("__vinext_cache_key", key);
   const headers = new Headers(request.headers);
+  headers.delete("Authorization");
+  headers.delete(AUTHORIZATION_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
+  if (authorization !== null) {
+    headers.set(AUTHORIZATION_TRANSPORT_HEADER, encodeURIComponent(authorization));
+  }
   if (serializedRequestCf !== null) {
     headers.set(REQUEST_CF_TRANSPORT_HEADER, serializedRequestCf);
   }
@@ -153,8 +168,18 @@ function restoreResponseStageRequest(
   requestMethod: string,
 ): RestoredResponseStageRequest {
   const headers = new Headers(request.headers);
+  const serializedAuthorization = headers.get(AUTHORIZATION_TRANSPORT_HEADER);
   const serializedRequestCf = headers.get(REQUEST_CF_TRANSPORT_HEADER);
+  headers.delete("Authorization");
+  headers.delete(AUTHORIZATION_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
+  if (serializedAuthorization !== null) {
+    try {
+      headers.set("Authorization", decodeURIComponent(serializedAuthorization));
+    } catch {
+      // Malformed internal metadata is stripped rather than exposed to userland.
+    }
+  }
   let requestCf: unknown;
   if (serializedRequestCf !== null) {
     try {
