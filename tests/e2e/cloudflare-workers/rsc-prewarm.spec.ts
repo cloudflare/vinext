@@ -162,7 +162,7 @@ async function waitForStablePromotion({
   );
 }
 
-test("deploy-prewarmed App, Pages, and RSC variants are reused", async ({
+test("deploy-prewarmed variants are reused and late-dynamic HTML stays private", async ({
   baseURL,
   browser,
   playwright,
@@ -176,6 +176,9 @@ test("deploy-prewarmed App, Pages, and RSC variants are reused", async ({
   const rscBuildId = fs
     .readFileSync("examples/workers-cache/dist/server/RSC_BUILD_ID", "utf-8")
     .trim();
+  const { prerenderSecret } = JSON.parse(
+    fs.readFileSync("examples/workers-cache/dist/server/vinext-server.json", "utf-8"),
+  ) as { prerenderSecret: string };
 
   // Match a browser navigation and the HTML request emitted by cdn-warm.ts.
   // Playwright's APIRequestContext otherwise sends `Accept: */*`, which is a
@@ -377,6 +380,57 @@ test("deploy-prewarmed App, Pages, and RSC variants are reused", async ({
     expect(dynamic.headers()["cache-control"]).toContain("no-store");
     expect(dynamic.headers()["cf-cache-status"]).toBe("BYPASS");
   });
+
+  // The App Page starts streaming before its Suspense child reads cookies(), so
+  // the first response must remain private all the way through clean EOF. A
+  // public header here would let Workers Cache replay Alice's authenticated
+  // HTML to Bob at this exact URL.
+  const disclosureUrl = `${baseURL}/dynamic?cache-case=${Date.now()}`;
+  const classification = await getResponseAfterPromotion(request, disclosureUrl, {
+    accept: "text/html",
+    "x-vinext-cacheability-probe": "1",
+    "x-vinext-prerender-secret": prerenderSecret,
+  });
+  await expect(classification.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/dynamic",
+    reason: "dynamic API used during render",
+    state: "dynamic",
+  });
+  expect(classification.headers()["cache-control"]).toContain("no-store");
+  expect(classification.headers()["cdn-cache-control"]).toBeUndefined();
+
+  const alice = await getResponseAfterPromotion(request, disclosureUrl, {
+    accept: "text/html",
+    cookie: "session=alice",
+  });
+  const aliceHtml = await alice.text();
+  expect(alice.ok(), JSON.stringify(alice.headers())).toBe(true);
+  expect(alice.headers()["cf-cache-status"]).toBe("BYPASS");
+  expect(alice.headers()["cache-control"]).toContain("no-store");
+  expect(alice.headers()["cdn-cache-control"]).toBeUndefined();
+  expect(alice.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+  expect((alice.headers().vary ?? "").toLowerCase().split(/,\s*/)).not.toContain("cookie");
+  expect(aliceHtml).toContain('data-late-dynamic-viewer="alice"');
+  const aliceRenderId = /data-late-dynamic-render-id="([^"]+)"/.exec(aliceHtml)?.[1];
+  expect(aliceRenderId).toBeTruthy();
+
+  const bob = await getResponseAfterPromotion(request, disclosureUrl, {
+    accept: "text/html",
+    cookie: "session=bob",
+  });
+  const bobHtml = await bob.text();
+  expect(bob.ok(), JSON.stringify(bob.headers())).toBe(true);
+  expect(bob.headers()["cf-cache-status"]).toBe("BYPASS");
+  expect(bob.headers()["cache-control"]).toContain("no-store");
+  expect(bob.headers()["cdn-cache-control"]).toBeUndefined();
+  expect(bob.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+  expect((bob.headers().vary ?? "").toLowerCase().split(/,\s*/)).not.toContain("cookie");
+  expect(bobHtml).toContain('data-late-dynamic-viewer="bob"');
+  expect(bobHtml).not.toContain('data-late-dynamic-viewer="alice"');
+  const bobRenderId = /data-late-dynamic-render-id="([^"]+)"/.exec(bobHtml)?.[1];
+  expect(bobRenderId).toBeTruthy();
+  expect(bobRenderId).not.toBe(aliceRenderId);
 
   const purgeResponse = await request.post(`${baseURL}/api/revalidate-path`, {
     data: { path: TARGET_PATH },

@@ -35,7 +35,7 @@ manifest identities before the Worker runs.
 
 - ISR-cached App Router page at `/cached/[slug]` (`revalidate = 60`).
 - Cached App Route handler at `/api/now` (`revalidate = 30`).
-- Force-dynamic comparison page at `/dynamic`.
+- Late-dynamic personalized comparison page at `/dynamic`.
 - Revalidation API at `/api/revalidate-tag` and `/api/revalidate-path` that
   drives the UI's "Invalidate this page" controls.
 - A client-side **probe** that issues a no-store fetch against a route and

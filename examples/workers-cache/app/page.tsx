@@ -63,8 +63,8 @@ export default function HomePage() {
             <span className="badge">Dynamic</span> Always-fresh
           </h3>
           <p>
-            <code>force-dynamic</code> for comparison. The Worker runs on every request and the
-            outer cache is bypassed.
+            A delayed <code>cookies()</code> read for comparison. The Worker completes the
+            personalized stream privately on every request and the outer cache is bypassed.
           </p>
           <Link prefetch={false} href="/dynamic">Open /dynamic &rarr;</Link>
         </div>
