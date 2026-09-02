@@ -30,9 +30,25 @@ function isAuthorizedStageRequest(request: Request): boolean {
 }
 
 const STREAM_DELAY_MS = 250;
+// Keep the cache-hit entrypoint self-contained: importing framework runtime
+// constants here would pull a shared response-stage chunk into its startup
+// closure. These are the raw RSC selectors this example transport keys.
+const KEYED_RESPONSE_VARY_FIELDS = [
+  "RSC",
+  "Next-Router-State-Tree",
+  "Next-Router-Prefetch",
+  "Next-Router-Segment-Prefetch",
+  "Next-Url",
+  "X-Vinext-Interception-Context",
+  "X-Vinext-Interception-Id",
+  "X-Vinext-Mounted-Slots",
+  "X-Vinext-Rsc-Render-Mode",
+  "X-Vinext-Rsc-State-Fingerprint",
+] as const;
 
 function responseCacheKey(request: Request, props: unknown): string {
-  return JSON.stringify([request.method, request.url, props]);
+  const varyIdentity = KEYED_RESPONSE_VARY_FIELDS.map((name) => [name, request.headers.get(name)]);
+  return JSON.stringify([request.method, request.url, props, varyIdentity]);
 }
 
 async function snapshotResponse(response: Response): Promise<ResponseSnapshot> {
@@ -182,7 +198,7 @@ const responseStageFetch = async (transportRequest: Request): Promise<Response> 
   // framework policy behind the miss path so the host entry remains a lazy
   // proxy until it actually renders a response.
   const { hasUnsupportedResponseStageVary } = await import("vinext/server/multi-stage");
-  if (hasUnsupportedResponseStageVary(rendered.headers)) {
+  if (hasUnsupportedResponseStageVary(rendered.headers, KEYED_RESPONSE_VARY_FIELDS)) {
     return withHostHeaders(withPrivateHostPolicy(rendered), "BYPASS");
   }
 

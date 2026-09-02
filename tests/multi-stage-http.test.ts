@@ -439,6 +439,32 @@ describe("generic HTTP multi-stage transport", () => {
     expect(renderToken(secondBody)).not.toBe(renderToken(firstBody));
   });
 
+  it("keys every framework-shaped Vary field by its raw request value", async () => {
+    const url = `${requestServer.origin}/api/framework-vary`;
+    const responses = [];
+    for (const nextUrl of ["/tenant-a", "/tenant-b", "/tenant-a"]) {
+      const response = await fetch(url, { headers: { "Next-Url": nextUrl } });
+      responses.push({
+        body: (await response.json()) as { "data-render-token": string; nextUrl: string },
+        headers: response.headers,
+      });
+    }
+
+    expect(
+      responses.map(({ headers }) => headers.get("x-http-stage-cache")),
+      JSON.stringify(responses.map(({ headers }) => Object.fromEntries(headers))),
+    ).toEqual(["MISS", "MISS", "HIT"]);
+    expect(responses.map(({ body }) => body.nextUrl)).toEqual([
+      "/tenant-a",
+      "/tenant-b",
+      "/tenant-a",
+    ]);
+    expect(responses[0]?.body["data-render-token"]).not.toBe(
+      responses[1]?.body["data-render-token"],
+    );
+    expect(responses[2]?.body["data-render-token"]).toBe(responses[0]?.body["data-render-token"]);
+  });
+
   it("preserves pregenerated-path guards in an independent response process", async () => {
     const prerenderManifest = JSON.parse(
       fs.readFileSync(path.join(FIXTURE_ROOT, "dist/server/vinext-prerender.json"), "utf8"),
