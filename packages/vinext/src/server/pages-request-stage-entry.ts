@@ -197,6 +197,7 @@ async function handleRequest(
   assets: VinextAssetFetcher | undefined,
 ): Promise<Response> {
   let sharedResponseHeaders: Headers | null = null;
+  let sharedOuterPolicyHeaders: Headers | null = null;
   let ctx = createWorkerRevalidationContext(
     platformCtx,
     (internalRequest, internalCtx) =>
@@ -387,6 +388,7 @@ async function handleRequest(
           cache === "shared"
             ? dispatched.then((response) => {
                 sharedResponseHeaders = new Headers(response.headers);
+                sharedOuterPolicyHeaders = new Headers(stagedHeaders);
                 return response;
               })
             : dispatched;
@@ -436,6 +438,7 @@ async function handleRequest(
         return cache === "shared"
           ? dispatched.then((response) => {
               sharedResponseHeaders = new Headers(response.headers);
+              sharedOuterPolicyHeaders = new Headers(stagedHeaders);
               return response;
             })
           : dispatched;
@@ -472,7 +475,11 @@ async function handleRequest(
     if (result.type === "response") {
       const response = finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
       if (sharedResponseHeaders) {
-        reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedResponseHeaders);
+        reconcileCdnResponseHeadersAfterOuterPolicy(
+          response.headers,
+          sharedResponseHeaders,
+          sharedOuterPolicyHeaders ?? response.headers,
+        );
       }
       return response;
     }

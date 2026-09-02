@@ -90,14 +90,18 @@ const CDN_POLICY_HEADERS = [
  * Reconcile request-stage policy composed above a reusable response artifact.
  * A newly applied private policy must clear any cacheable provider headers that
  * belonged to the inner artifact before the final response leaves the gateway.
+ * Pass `outerHeaders` when normal response merging gives the artifact precedence
+ * but the request stage still owns the final cache policy.
  */
 export function reconcileCdnResponseHeadersAfterOuterPolicy(
   headers: Headers,
   innerHeaders: Headers,
+  outerHeaders: Headers = headers,
 ): void {
   for (const name of CDN_POLICY_HEADERS) {
-    const value = headers.get(name);
+    const value = outerHeaders.get(name);
     if (value !== null && value !== innerHeaders.get(name) && isNonCacheableCacheControl(value)) {
+      headers.set(name, value);
       applyCdnResponseHeaders(headers, { cacheControl: value });
       return;
     }

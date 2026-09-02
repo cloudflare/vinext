@@ -12,6 +12,11 @@ import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 
 const mocks = vi.hoisted(() => ({
   authorizeOnDemandRevalidate: vi.fn<(value: string | null) => boolean>(() => false),
@@ -73,6 +78,7 @@ vi.mock("../packages/vinext/src/server/pages-response-stage-entry.js", () => ({
 
 describe("Pages Worker request stage", () => {
   beforeEach(() => {
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     mocks.authorizeOnDemandRevalidate.mockReset();
     mocks.authorizeOnDemandRevalidate.mockReturnValue(false);
     mocks.matchApiRoute.mockReset();
@@ -254,6 +260,50 @@ describe("Pages Worker request stage", () => {
       ["Cache-Control", "public, s-maxage=60"],
     ]);
     expect(state.forcedDynamicReason).toBeUndefined();
+  });
+
+  it("lets an outer private config policy override a shared Pages artifact", async () => {
+    const adapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      buildResponseHeaders({ cacheControl }) {
+        return {
+          "Cache-Control": cacheControl,
+          "CDN-Cache-Control": null,
+        };
+      },
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    };
+    setCdnCacheAdapter(adapter);
+    mocks.configHeaders.push({
+      source: "/en/page",
+      headers: [{ key: "Cache-Control", value: "private, no-store" }],
+    });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () =>
+      Promise.resolve(
+        new Response("cached page", {
+          headers: {
+            "Cache-Control": "public, max-age=0, must-revalidate",
+            "CDN-Cache-Control": "public, max-age=60",
+          },
+        }),
+      ),
+    );
+
+    const response = await handleRequestStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    await expect(response.text()).resolves.toBe("cached page");
   });
 
   it("dispatches authenticated revalidation through the uncached response stage", async () => {
