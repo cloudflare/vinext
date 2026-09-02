@@ -15,7 +15,6 @@
  * request.
  */
 import { flattenPluginOptions } from "../utils/plugin-options.js";
-import type { VinextMultiStageOutput } from "../server/multi-stage.js";
 
 /**
  * A serializable pointer to a cache adapter module — the shape of each `cache`
@@ -52,8 +51,6 @@ export type CdnCacheAdapterCapabilities = {
 };
 
 export type CacheAdapterBuildOutput = {
-  /** Omitted for finalizer-only outputs; staged outputs use `multi-stage`. */
-  type?: undefined;
   /** Whether this adapter owns output for the resolved build platform. */
   matchesBuild?: (build: { plugins: readonly { name?: string }[] }) => boolean;
   /** Finalize an emitted directory after other platform output hooks. */
@@ -72,8 +69,8 @@ export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<st
   adapter: string;
   /** JSON-serializable options forwarded to the factory at runtime. */
   options?: O;
-  /** Optional adapter-owned platform finalization or generic staged output. */
-  output?: CacheAdapterBuildOutput | VinextMultiStageOutput;
+  /** Optional adapter-owned finalization for platform-generated build output. */
+  output?: CacheAdapterBuildOutput;
   /** Build-time cache semantics used by shared request protocol code. */
   capabilities?: CdnCacheAdapterCapabilities;
 };

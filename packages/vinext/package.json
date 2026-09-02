@@ -72,14 +72,6 @@
       "types": "./dist/server/multi-stage.d.ts",
       "import": "./dist/server/multi-stage.js"
     },
-    "./server/request-stage": {
-      "types": "./dist/server/request-stage.d.ts",
-      "import": "./dist/server/request-stage.js"
-    },
-    "./server/response-stage": {
-      "types": "./dist/server/response-stage.d.ts",
-      "import": "./dist/server/response-stage.js"
-    },
     "./server/app-router-entry": {
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"
