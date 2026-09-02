@@ -299,7 +299,11 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   const pagesResponse = await getReusableResponseAfterPromotion(
     request,
     `${baseURL}${PAGES_TARGET_PATH}`,
-    { ...htmlHeaders, "x-test-visitor-id": "visitor-a" },
+    {
+      ...htmlHeaders,
+      "x-test-config-visitor": "config-a",
+      "x-test-visitor-id": "visitor-a",
+    },
     "Pages HTML",
   );
   const pagesResponseHeaders = pagesResponse.headers();
@@ -313,6 +317,7 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
     pagesResponseHeaders["cf-cache-status"],
     `Pages response headers: ${JSON.stringify(pagesResponseHeaders)}`,
   ).toBe("HIT");
+  expect(pagesResponseHeaders["x-workers-config-visitor"]).toBe("config-a");
   expect(pagesResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-a");
   const pagesBody = await pagesResponse.text();
   expect(pagesBody).toContain("Pages prewarm target");
@@ -320,7 +325,11 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   const secondPagesResponse = await getResponseAfterPromotion(
     request,
     `${baseURL}${PAGES_TARGET_PATH}`,
-    { ...htmlHeaders, "x-test-visitor-id": "visitor-b" },
+    {
+      ...htmlHeaders,
+      "x-test-config-visitor": "config-b",
+      "x-test-visitor-id": "visitor-b",
+    },
   );
   const secondPagesResponseHeaders = secondPagesResponse.headers();
   expect(secondPagesResponse.ok(), JSON.stringify(secondPagesResponseHeaders)).toBe(true);
@@ -329,13 +338,18 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
     secondPagesResponseHeaders["cf-cache-status"],
     `Second Pages response headers: ${JSON.stringify(secondPagesResponseHeaders)}`,
   ).toBe("HIT");
+  expect(secondPagesResponseHeaders["x-workers-config-visitor"]).toBe("config-b");
   expect(secondPagesResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
   expect(await secondPagesResponse.text()).toBe(pagesBody);
 
   const appHtmlResponse = await getReusableResponseAfterPromotion(
     request,
     `${baseURL}${TARGET_PATH}`,
-    { ...htmlHeaders, "x-test-visitor-id": "visitor-a" },
+    {
+      ...htmlHeaders,
+      "x-test-config-visitor": "config-a",
+      "x-test-visitor-id": "visitor-a",
+    },
     "App HTML",
   );
   const appHtmlResponseHeaders = appHtmlResponse.headers();
@@ -346,6 +360,7 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
     appHtmlResponseHeaders["cf-cache-status"],
     `App HTML response headers: ${JSON.stringify(appHtmlResponseHeaders)}`,
   ).toBe("HIT");
+  expect(appHtmlResponseHeaders["x-workers-config-visitor"]).toBe("config-a");
   expect(appHtmlResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-a");
   const appHtmlBody = await appHtmlResponse.text();
   expect(appHtmlBody).toContain("Prewarm target");
@@ -353,7 +368,11 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   const secondAppHtmlResponse = await getResponseAfterPromotion(
     request,
     `${baseURL}${TARGET_PATH}`,
-    { ...htmlHeaders, "x-test-visitor-id": "visitor-b" },
+    {
+      ...htmlHeaders,
+      "x-test-config-visitor": "config-b",
+      "x-test-visitor-id": "visitor-b",
+    },
   );
   const secondAppHtmlResponseHeaders = secondAppHtmlResponse.headers();
   expect(secondAppHtmlResponse.ok(), JSON.stringify(secondAppHtmlResponseHeaders)).toBe(true);
@@ -362,6 +381,7 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
     secondAppHtmlResponseHeaders["cf-cache-status"],
     `Second App HTML response headers: ${JSON.stringify(secondAppHtmlResponseHeaders)}`,
   ).toBe("HIT");
+  expect(secondAppHtmlResponseHeaders["x-workers-config-visitor"]).toBe("config-b");
   expect(secondAppHtmlResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
   expect(await secondAppHtmlResponse.text()).toBe(appHtmlBody);
 
