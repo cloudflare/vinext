@@ -109,6 +109,14 @@ export function reconcileCdnResponseHeadersAfterOuterPolicy(
   headers: Headers,
   outerPolicyHeaders: Headers,
 ): void {
+  // Set-Cookie is additive and therefore is not part of the policy-only
+  // provenance snapshot. It can still be introduced by the uncached request
+  // stage after a shared artifact returns, and the completed response must not
+  // retain that artifact's shared-cache policy.
+  if (headers.has("set-cookie")) {
+    applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+    return;
+  }
   for (const name of getCdnResponsePolicyHeaderNames()) {
     const value = outerPolicyHeaders.get(name);
     if (value !== null && isNonCacheableCacheControl(value)) {

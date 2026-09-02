@@ -199,6 +199,39 @@ describe("applyCdnResponseHeaders", () => {
     expect(headers.get("X-Example-Cache-Tag")).toBeNull();
   });
 
+  it("clears an inner artifact's provider policy when outer composition sets a cookie", () => {
+    const edge: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      responsePolicyHeaderNames: ["X-Example-Edge-Policy"],
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders(input) {
+        return {
+          "Cache-Control": input.cacheControl,
+          "X-Example-Edge-Policy": null,
+          "X-Example-Cache-Tag": null,
+        };
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edge);
+    const headers = new Headers({
+      "Cache-Control": "public, max-age=0, must-revalidate",
+      "Set-Cookie": "session=private; Path=/; HttpOnly",
+      "X-Example-Cache-Tag": "inner",
+      "X-Example-Edge-Policy": "public, max-age=60",
+    });
+
+    reconcileCdnResponseHeadersAfterOuterPolicy(headers, new Headers());
+
+    expect(headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(headers.get("Set-Cookie")).toContain("session=private");
+    expect(headers.get("X-Example-Edge-Policy")).toBeNull();
+    expect(headers.get("X-Example-Cache-Tag")).toBeNull();
+  });
+
   it("default adapter restores baseline after the edge adapter is cleared", () => {
     setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     const headers = new Headers();
