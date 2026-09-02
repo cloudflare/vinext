@@ -561,6 +561,66 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     },
   );
 
+  it("restamps the entrypoint cache status after outer response composition", async () => {
+    const binding = vi.fn(() => ({
+      fetch: vi
+        .fn()
+        .mockResolvedValue(new Response("cached", { headers: { "CF-Cache-Status": "HIT" } })),
+    }));
+    stages.request.mockImplementation(async (request, _env, _ctx, dispatch) => {
+      const response = await dispatch(request, { kind: "app-page" }, { cache: "shared" });
+      const headers = new Headers(response.headers);
+      headers.set("X-Vinext-Cache", "middleware");
+      headers.set("X-Nextjs-Cache", "middleware");
+      return new Response(response.body, { headers, status: response.status });
+    });
+
+    const response = await worker.fetch(
+      new Request("https://example.com/page"),
+      {},
+      { exports: { VinextCachedResponse: binding } },
+    );
+
+    expect(response.headers.get("X-Vinext-Cache")).toBe("HIT");
+    expect(response.headers.get("X-Nextjs-Cache")).toBe("HIT");
+  });
+
+  it("fails closed when outer response composition collides with shared provenance", async () => {
+    const binding = vi.fn(() => ({
+      fetch: vi.fn().mockResolvedValue(
+        new Response("cached", {
+          headers: {
+            "Cache-Control": "public, max-age=300",
+            "Cache-Tag": "shared-page",
+            "CDN-Cache-Control": "public, s-maxage=300",
+            "CF-Cache-Status": "HIT",
+          },
+        }),
+      ),
+    }));
+    stages.request.mockImplementation(async (request, _env, _ctx, dispatch) => {
+      const response = await dispatch(request, { kind: "app-page" }, { cache: "shared" });
+      const headers = new Headers(response.headers);
+      headers.set("x-vinext-cloudflare-shared-response-stage", "middleware");
+      headers.set("X-Vinext-Cache", "middleware");
+      headers.set("X-Nextjs-Cache", "middleware");
+      return new Response(response.body, { headers, status: response.status });
+    });
+
+    const response = await worker.fetch(
+      new Request("https://example.com/page"),
+      {},
+      { exports: { VinextCachedResponse: binding } },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("private, max-age=0, must-revalidate");
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("X-Vinext-Cache")).toBeNull();
+    expect(response.headers.get("X-Nextjs-Cache")).toBeNull();
+    expect(response.headers.has("x-vinext-cloudflare-shared-response-stage")).toBe(false);
+  });
+
   it("partitions shared dispatches by public request authority", async () => {
     const cacheFacingRequests: Request[] = [];
     const binding = vi.fn(({ props }: { props: unknown }) => ({
