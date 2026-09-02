@@ -181,6 +181,7 @@ jobs:
           --config ${{ matrix.example.wrangler_config }}
           --name rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}
           --experimental-warm-cdn-cache
+          --warm-cdn-certify
 
       - name: Verify deploy-prewarmed RSC browser reuse
         id: verify-rsc-prewarm
@@ -217,6 +218,7 @@ jobs:
           --config ${{ matrix.example.wrangler_config }}
           --name rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}-retry
           --experimental-warm-cdn-cache
+          --warm-cdn-certify
 
       - name: Retry deploy-prewarmed RSC browser reuse with fresh Worker
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache' && steps.verify-rsc-prewarm.outcome == 'failure'

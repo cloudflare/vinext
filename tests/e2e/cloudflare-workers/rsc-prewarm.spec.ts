@@ -223,7 +223,6 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   expect(browserFetchHit.headers()["cf-cache-status"]).toBe("HIT");
   expect(await browserFetchHit.text()).toBe(browserFetchBody);
 
-  const workerName = new URL(baseURL).hostname.split(".")[0];
   const downstreamOnlyOverride = await request.get(`${baseURL}/api/prewarm-version?downstream=1`, {
     headers: {
       "Cloudflare-Workers-Version-Overrides":
@@ -234,13 +233,28 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
 
   const mismatchedOverride = await request.get(`${baseURL}/api/prewarm-version?mismatch=1`, {
     headers: {
-      "Cloudflare-Workers-Version-Overrides": `${workerName}="00000000-0000-4000-8000-000000000000"`,
+      // The deploy path already exercises a real same-Worker version
+      // override. Keep this request on the current version so vinext can
+      // deterministically reject the deliberately mismatched assertion;
+      // asking Cloudflare to dispatch this Worker to a fabricated version can
+      // fail at the platform routing layer before vinext runs.
+      "Cloudflare-Workers-Version-Overrides":
+        'unrelated-downstream="00000000-0000-4000-8000-000000000000"',
       [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "00000000-0000-4000-8000-000000000000",
     },
   });
-  expect(mismatchedOverride.status()).toBe(503);
-  expect(mismatchedOverride.headers()["cache-control"]).toBe("no-store");
-  expect(await mismatchedOverride.text()).toContain("Cloudflare invoked Worker version");
+  const mismatchedOverrideHeaders = mismatchedOverride.headers();
+  const mismatchedOverrideBody = await mismatchedOverride.text();
+  const mismatchedOverrideTrace = JSON.stringify({
+    body: mismatchedOverrideBody,
+    headers: mismatchedOverrideHeaders,
+    status: mismatchedOverride.status(),
+  });
+  expect(mismatchedOverride.status(), mismatchedOverrideTrace).toBe(503);
+  expect(mismatchedOverrideHeaders["cache-control"], mismatchedOverrideTrace).toBe("no-store");
+  expect(mismatchedOverrideBody, mismatchedOverrideTrace).toContain(
+    "Cloudflare invoked Worker version",
+  );
 
   const pagesResponse = await getResponseAfterPromotion(
     request,
