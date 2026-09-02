@@ -95,8 +95,15 @@ async function handleRequest(
 
   ctx = createWorkerPrerenderDiscoveryContext(ctx, request, __prerenderSecret);
   const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
+  let didValidateCdnRequest = false;
   if (readinessResponse) {
-    return (await validateCdnRequest(request)) ?? readinessResponse;
+    const validationResponse = await validateCdnRequest(request);
+    if (validationResponse) return validationResponse;
+    didValidateCdnRequest = true;
+    // An authenticated readiness request must continue through the response
+    // dispatcher so independently hosted stages are proven ready as a unit.
+    // Failed capability checks stay inside the framework-owned namespace.
+    if (readinessResponse.status !== 204) return readinessResponse;
   }
 
   let probeMode: VinextCacheabilityProbeMode | null = null;
@@ -110,8 +117,10 @@ async function handleRequest(
     }
   }
 
-  const cdnValidationResponse = await validateCdnRequest(request);
-  if (cdnValidationResponse) return cdnValidationResponse;
+  if (!didValidateCdnRequest) {
+    const cdnValidationResponse = await validateCdnRequest(request);
+    if (cdnValidationResponse) return cdnValidationResponse;
+  }
 
   const url = new URL(request.url);
   if (isImageOptimizationPath(url.pathname) && assets && getImageOptimizer()) {

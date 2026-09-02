@@ -35,7 +35,11 @@ export const __assetPrefix = "";
 export const __basePath = "";
 export const __imageAllowedWidths = [];
 export const __imageConfig = {};
-export default async function rscHandler(request) {
+export const __prerenderSecret = "worker-prerender-secret";
+export default async function rscHandler(request, _ctx, dispatchResponseStage) {
+  if (new URL(request.url).pathname === "/__vinext/prerender/readiness") {
+    return dispatchResponseStage(request, { kind: "readiness-test" }, { cache: "bypass" });
+  }
   globalThis.${CAPTURE_RSC_REQUEST}(request);
   return new Response("ok");
 }
@@ -136,14 +140,38 @@ describe("App Router Production server worker entry compatibility", () => {
         undefined,
         async () => new Response("unused"),
       );
+      const readinessDispatch = vi.fn(
+        async () =>
+          new Response(null, {
+            status: 204,
+            headers: { "Cache-Control": "no-store", "X-Vinext-Prerender-Readiness": "1" },
+          }),
+      );
+      const readiness = await entry.handleRequestStage(
+        new Request("https://example.com/__vinext/prerender/readiness?attempt=request-stage", {
+          headers: {
+            "X-Vinext-Expected-Worker-Version": "version-a",
+            "X-Vinext-Prerender-Secret": "worker-prerender-secret",
+          },
+        }),
+        env,
+        undefined,
+        readinessDispatch,
+      );
 
       expect(rejected.status).toBe(503);
       expect(await rejected.text()).toBe("retry");
       expect(rejected.headers.get("X-Test-Build-Identity")).toBe("build-a");
       expect(await accepted.text()).toBe("ok");
       expect(accepted.headers.get("X-Test-Build-Identity")).toBe("build-a");
+      expect(readiness.status).toBe(204);
+      expect(readinessDispatch).toHaveBeenCalledWith(
+        expect.any(Request),
+        { kind: "readiness-test" },
+        { cache: "bypass" },
+      );
       expect(capturedRequests).toHaveLength(1);
-      expect(capturedEnvs).toEqual([env, env]);
+      expect(capturedEnvs).toEqual([env, env, env]);
     } finally {
       await server?.close();
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());

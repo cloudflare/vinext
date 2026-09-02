@@ -236,8 +236,14 @@ async function handleRequest(
   try {
     ctx = createWorkerPrerenderDiscoveryContext(ctx, request, pagesEntry.prerenderSecret);
     const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
+    let didValidateCdnRequest = false;
     if (readinessResponse) {
-      return (await validateCdnRequest(request)) ?? readinessResponse;
+      const validationResponse = await validateCdnRequest(request);
+      if (validationResponse) return validationResponse;
+      didValidateCdnRequest = true;
+      // Keep authenticated readiness on the response-stage transport so a
+      // multi-stage host proves both halves of the deployment are available.
+      if (readinessResponse.status !== 204) return readinessResponse;
     }
 
     let probeMode: VinextCacheabilityProbeMode | null = null;
@@ -251,8 +257,10 @@ async function handleRequest(
       }
     }
 
-    const cdnValidationResponse = await validateCdnRequest(request);
-    if (cdnValidationResponse) return cdnValidationResponse;
+    if (!didValidateCdnRequest) {
+      const cdnValidationResponse = await validateCdnRequest(request);
+      if (cdnValidationResponse) return cdnValidationResponse;
+    }
 
     const url = new URL(request.url);
     let pathname = url.pathname;

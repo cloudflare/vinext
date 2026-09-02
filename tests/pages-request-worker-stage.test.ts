@@ -5,6 +5,10 @@ import {
   PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER,
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
 } from "../packages/vinext/src/server/worker-stages.js";
+import {
+  VINEXT_EXPECTED_WORKER_VERSION_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import type { DispatchWorkerResponseStage } from "../packages/vinext/src/server/worker-stages.js";
 import type { MiddlewareResult } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import {
@@ -137,6 +141,47 @@ describe("Pages Worker request stage", () => {
       { cache: "shared" },
     );
     expect(mocks.renderResponse).not.toHaveBeenCalled();
+  });
+
+  it("dispatches authenticated readiness through the response stage", async () => {
+    // No Next.js test port applies: independently hosted response stages are
+    // a vinext deployment contract.
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(
+      async () =>
+        new Response(null, {
+          status: 204,
+          headers: { "Cache-Control": "no-store", "X-Vinext-Prerender-Readiness": "1" },
+        }),
+    );
+    const response = await handleRequestStage(
+      new Request("https://example.com/__vinext/prerender/readiness?attempt=one", {
+        headers: {
+          [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-a",
+          [VINEXT_PRERENDER_SECRET_HEADER]: "prerender-secret",
+        },
+      }),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(response.status).toBe(204);
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith(
+      expect.any(Request),
+      {
+        buildId: "request-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/__vinext/prerender/readiness",
+        },
+        kind: "pages-prerender-discovery",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        stagedHeaders: null,
+      },
+      { cache: "bypass" },
+    );
   });
 
   it("keeps pathname-eligible middleware outside shared-stage classification", async () => {

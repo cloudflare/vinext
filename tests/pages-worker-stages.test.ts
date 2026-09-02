@@ -13,6 +13,10 @@ import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
+import {
+  VINEXT_EXPECTED_WORKER_VERSION_HEADER,
+  VINEXT_PRERENDER_READINESS_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 
 const stages = vi.hoisted(() => ({
   api: vi.fn(),
@@ -100,6 +104,54 @@ describe("Pages Worker response stage", () => {
 
     expect(response.status).toBe(400);
     expect(stages.api).not.toHaveBeenCalled();
+    expect(stages.renderPage).not.toHaveBeenCalled();
+  });
+
+  it("validates readiness from inside the response stage", async () => {
+    const validateRequest = vi.fn(() => null);
+    const adapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders() {
+        return {};
+      },
+      validateRequest,
+      async revalidateTag() {},
+    };
+    stages.registerCacheAdapters.mockImplementation(() => setCdnCacheAdapter(adapter));
+    const request = new Request(
+      "https://example.com/__vinext/prerender/readiness?attempt=response-stage",
+      { headers: { [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-a" } },
+    );
+
+    const response = await handleResponseStage(
+      request,
+      { binding: "value" },
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/__vinext/prerender/readiness",
+        },
+        kind: "pages-prerender-discovery",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get(VINEXT_PRERENDER_READINESS_HEADER)).toBe("1");
+    expect(stages.registerCacheAdapters).toHaveBeenCalledWith({ binding: "value" });
+    expect(validateRequest).toHaveBeenCalledWith(request);
     expect(stages.renderPage).not.toHaveBeenCalled();
   });
 
