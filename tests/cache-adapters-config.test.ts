@@ -16,6 +16,7 @@ import {
   findVinextCacheConfigInPlugins,
   generateCdnCacheAdapterModule,
   loadVinextCacheConfigFromViteConfig,
+  mergeMultiStageBuildInputs,
   generateCacheAdaptersModule,
   getConfiguredCdnResponsePolicyHeaderNames,
   hasBuildIdentityResponseHeader,
@@ -155,6 +156,40 @@ describe("generateCacheAdaptersModule", () => {
     const code = generateCacheAdaptersModule({ data: { adapter: weird } });
     expect(code).toContain(`import __vinextDataAdapterFactory from ${JSON.stringify(weird)};`);
   });
+});
+
+describe("multi-stage build inputs", () => {
+  const entries = {
+    request: "/adapter/request-entry.js",
+    response: "/adapter/response-entry.js",
+  };
+
+  it("adds independently deployable request and response entries", () => {
+    expect(mergeMultiStageBuildInputs({ index: "virtual:main" }, entries)).toEqual({
+      index: "virtual:main",
+      "vinext-request-stage": entries.request,
+      "vinext-response-stage": entries.response,
+    });
+  });
+
+  it("preserves string and array host inputs", () => {
+    expect(mergeMultiStageBuildInputs("virtual:main", entries)).toMatchObject({
+      index: "virtual:main",
+    });
+    expect(mergeMultiStageBuildInputs(["virtual:first", "virtual:second"], entries)).toMatchObject({
+      "entry-0": "virtual:first",
+      "entry-1": "virtual:second",
+    });
+  });
+
+  it.each(["vinext-request-stage", "vinext-response-stage"])(
+    "rejects a host input that already uses the reserved %s name",
+    (name) => {
+      expect(() => mergeMultiStageBuildInputs({ [name]: "virtual:host" }, entries)).toThrow(
+        `reserved build input "${name}"`,
+      );
+    },
+  );
 });
 
 describe("findVinextCacheConfigInPlugins", () => {

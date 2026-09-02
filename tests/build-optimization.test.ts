@@ -8,7 +8,7 @@
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import { createBuilder, parseAst } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
@@ -3981,21 +3981,107 @@ describe("createMultiStageChunkFileNames", () => {
     expect(calls).toBe(2);
   });
 
+  it("emits independent stages without renaming resolved host inputs", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+
+    for (const hostInput of ["virtual:host-main", ["virtual:host-main", "virtual:host-admin"]]) {
+      const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-http-stage-inputs-"));
+      try {
+        await fsp.symlink(
+          path.resolve(import.meta.dirname, "../node_modules"),
+          path.join(root, "node_modules"),
+          "junction",
+        );
+        await fsp.mkdir(path.join(root, "src"), { recursive: true });
+        const files = {
+          "virtual:host-admin": path.join(root, "src/admin.ts"),
+          "virtual:host-main": path.join(root, "src/worker.ts"),
+        };
+        await Promise.all([
+          fsp.writeFile(files["virtual:host-main"], 'export const host = "main";\n'),
+          fsp.writeFile(files["virtual:host-admin"], 'export const host = "admin";\n'),
+          fsp.writeFile(path.join(root, "src/request-stage.ts"), "export default {};\n"),
+          fsp.writeFile(path.join(root, "src/response-stage.ts"), "export default {};\n"),
+        ]);
+        const entries = {
+          request: path.join(root, "src/request-stage.ts"),
+          response: path.join(root, "src/response-stage.ts"),
+        };
+        const builder = await createBuilder({
+          root,
+          configFile: false,
+          plugins: [
+            {
+              name: "resolve-host-inputs",
+              enforce: "pre",
+              resolveId(id) {
+                return files[id as keyof typeof files];
+              },
+            },
+            vinext({
+              disableAppRouter: true,
+              cache: {
+                cdn: {
+                  adapter: "/adapter/cache.js",
+                  output: { entries, entry: entries.request, type: "multi-stage" },
+                },
+              },
+            }),
+          ],
+          build: {
+            outDir: "dist",
+            rolldownOptions: {
+              input: hostInput,
+              output: { entryFileNames: "[name].js" },
+            },
+            ssr: true,
+          },
+          logLevel: "silent",
+        });
+
+        await builder.buildApp();
+
+        const outputFiles = await fsp.readdir(path.join(root, "dist"), { recursive: true });
+        const outputBasenames = outputFiles.map((file) => path.basename(file));
+        expect(outputBasenames).toContain("worker.js");
+        expect(outputBasenames.includes("admin.js")).toBe(Array.isArray(hostInput));
+        expect(
+          outputBasenames.some((file) => /^vinext-request-stage-.+\.[cm]?js$/.test(file)),
+          outputBasenames.join("\n"),
+        ).toBe(true);
+        expect(
+          outputBasenames.some((file) => /^vinext-response-stage-.+\.[cm]?js$/.test(file)),
+        ).toBe(true);
+      } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+      }
+    }
+  }, 30_000);
+
   it("applies stage isolation to every server output but not the App SSR renderer", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-output-hooks-"));
     try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(root, "node_modules"),
+        "junction",
+      );
       await fsp.mkdir(path.join(root, "app"), { recursive: true });
       await fsp.writeFile(
         path.join(root, "app/page.tsx"),
         "export default function Page() { return <main>page</main>; }\n",
       );
+      const entries = {
+        request: path.join(root, "request-stage.ts"),
+        response: path.join(root, "response-stage.ts"),
+      };
       const plugins = vinext({
         appDir: root,
         cache: {
           cdn: {
             adapter: "/adapter/cache.js",
-            output: { entry: path.join(root, "adapter-entry.ts"), type: "multi-stage" },
+            output: { entries, entry: entries.request, type: "multi-stage" },
           },
         },
       });
@@ -4012,30 +4098,43 @@ describe("createMultiStageChunkFileNames", () => {
         { command: "build", mode: "production" },
       );
 
+      const ssrEmit = vi.fn();
       const ssrContext = {
+        emitFile: ssrEmit,
         environment: { config: { build: { ssr: true } }, name: "ssr" },
       };
+      await (outputPlugin as any).buildStart.call(ssrContext);
       expect(
         await (outputPlugin as any).outputOptions.call(ssrContext, {
           chunkFileNames: "ssr/[name].js",
         }),
       ).toBeUndefined();
+      expect(ssrEmit).not.toHaveBeenCalled();
 
+      const customClientEmit = vi.fn();
       const customClientContext = {
+        emitFile: customClientEmit,
         environment: {
           config: { build: { ssr: true }, consumer: "client" },
           name: "browser-extension",
         },
       };
+      await (outputPlugin as any).buildStart.call(customClientContext);
       expect(
         await (outputPlugin as any).outputOptions.call(customClientContext, {
           chunkFileNames: "browser/[name].js",
         }),
       ).toBeUndefined();
+      expect(customClientEmit).not.toHaveBeenCalled();
 
+      const rscEmit = vi.fn();
       const rscContext = {
+        emitFile: rscEmit,
         environment: { config: { build: { ssr: true } }, name: "rsc" },
       };
+      await (outputPlugin as any).buildStart.call(rscContext);
+      expect(rscEmit).toHaveBeenCalledTimes(2);
+
       for (const directory of ["esm", "cjs"]) {
         const hostGroup = { name: `${directory}-host`, test: /host/ };
         const output = await (outputPlugin as any).outputOptions.call(rscContext, {
