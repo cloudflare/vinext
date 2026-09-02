@@ -92,6 +92,7 @@ export default {
         "src/server/app-page-element-builder.ts",
         "src/server/app-hook-warning-suppression.ts",
         "src/server/app-post-middleware-context.ts",
+        "src/server/app-route-handler-middleware-context.ts",
         "src/server/app-request-stage-context.ts",
         "src/server/app-request-stage-independent-entry.ts",
         "src/server/app-request-context.ts",
