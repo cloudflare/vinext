@@ -370,6 +370,27 @@ describe("generic HTTP multi-stage transport", () => {
     });
   });
 
+  it("bypasses host storage for an application-defined Vary field", async () => {
+    const url = `${requestServer.origin}/api/custom-vary`;
+    const first = await fetch(url, { headers: { "x-http-variant": "a" } });
+    const firstBody = await first.text();
+    const second = await fetch(url, { headers: { "x-http-variant": "b" } });
+    const secondBody = await second.text();
+
+    for (const response of [first, second]) {
+      expect(response.status).toBe(200);
+      expect(
+        response.headers.get("x-http-stage-cache"),
+        JSON.stringify(Object.fromEntries(response.headers)),
+      ).toBe("BYPASS");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      expect(response.headers.get("cache-tag")).toBeNull();
+      expect(response.headers.get("vary")?.toLowerCase()).toContain("x-http-variant");
+    }
+    expect(renderToken(secondBody)).not.toBe(renderToken(firstBody));
+  });
+
   it("preserves pregenerated-path guards in an independent response process", async () => {
     const prerenderManifest = JSON.parse(
       fs.readFileSync(path.join(FIXTURE_ROOT, "dist/server/vinext-prerender.json"), "utf8"),
