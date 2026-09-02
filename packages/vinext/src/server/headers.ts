@@ -239,6 +239,15 @@ export const VINEXT_RSC_VARY_HEADER = [
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_STATE_FINGERPRINT_HEADER,
 ].join(", ");
+const VINEXT_RSC_VARY_FIELDS = new Set(
+  VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
+);
+
+/** Whether a normalized response `Vary` field is a framework RSC selector. */
+export function isVinextRscVaryField(name: string): boolean {
+  return VINEXT_RSC_VARY_FIELDS.has(name.trim().toLowerCase());
+}
+
 export const NEXT_REQUEST_ID_HEADER = "x-nextjs-request-id";
 export const NEXT_HTML_REQUEST_ID_HEADER = "x-nextjs-html-request-id";
 
