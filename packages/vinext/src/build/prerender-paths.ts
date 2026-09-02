@@ -131,6 +131,7 @@ type EmitPrerenderPathManifestOptions = {
   buildIdentity?: CdnCacheAdapterCapabilities["buildIdentity"];
   responseVary?: CdnCacheAdapterCapabilities["responseVary"];
   requestRouting?: CdnCacheAdapterCapabilities["requestRouting"];
+  responsePolicyHeaderNames?: CdnCacheAdapterCapabilities["responsePolicyHeaderNames"];
   /** Execute dynamic path hooks against an already-uploaded Worker. */
   pathDiscoveryTarget?: {
     baseUrl: string;
@@ -1016,7 +1017,6 @@ async function resolveAppWarmPaths(options: {
   };
 }
 
-const CACHEABILITY_POLICY_HEADER_NAMES = new Set<string>(CACHEABILITY_POLICY_HEADERS);
 function cachePolicyRuleMatchesWarmPath(
   pathname: string,
   rule: ResolvedNextConfig["headers"][number],
@@ -1100,9 +1100,14 @@ function annotateCacheabilityProbeSafety(
   config: Pick<ResolvedNextConfig, "basePath" | "headers" | "i18n" | "trailingSlash">,
   routeMayResolve: ReadonlySet<string>,
   requestStageMayTerminate: ReadonlySet<string>,
+  responsePolicyHeaderNames: readonly string[],
 ): Record<string, PrerenderRoutePattern> {
+  const cacheabilityPolicyHeaderNames = new Set([
+    ...CACHEABILITY_POLICY_HEADERS,
+    ...responsePolicyHeaderNames.map((name) => name.trim().toLowerCase()).filter(Boolean),
+  ]);
   const cachePolicyRules = config.headers.filter((rule) =>
-    rule.headers.some((header) => CACHEABILITY_POLICY_HEADER_NAMES.has(header.key.toLowerCase())),
+    rule.headers.some((header) => cacheabilityPolicyHeaderNames.has(header.key.toLowerCase())),
   );
   const matchingPolicyRules = new Map(
     Object.keys(routePatterns).map((pathname) => [
@@ -1494,6 +1499,7 @@ export async function emitPrerenderPathManifest(
     config,
     routeMayResolveWarmPathSet,
     requestStageMayTerminateWarmPathSet,
+    options.responsePolicyHeaderNames ?? [],
   );
   for (let index = 0; index < resolvedPagesDataWarmPaths.length; index++) {
     const route = routePatterns[resolvedPagesDataWarmPaths[index]];

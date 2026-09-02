@@ -253,6 +253,46 @@ describe("prerender path manifest", () => {
     });
   });
 
+  it("does not prune a pattern whose adapter cache policy varies by pathname", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/policy/[slug]/page.tsx",
+      [
+        "export const dynamic = 'force-dynamic';",
+        "export function generateStaticParams() { return [{ slug: 'ordinary' }, { slug: 'special' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "next.config.mjs",
+      [
+        "export default {",
+        "  headers: async () => [{",
+        "    source: '/policy/special',",
+        "    headers: [{ key: 'CDN-Cache-Control', value: 'public, s-maxage=60' }],",
+        "  }],",
+        "};",
+      ].join("\n"),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      buildIdentity: "response-header",
+      responsePolicyHeaderNames: ["CDN-Cache-Control"],
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.routePatterns).toMatchObject({
+      "/policy/ordinary": { cacheabilityProbe: { canPrunePattern: false } },
+      "/policy/special": { cacheabilityProbe: { canPrunePattern: false } },
+    });
+  });
+
   it("discovers only Next.js-static Route Handler GET identities", async () => {
     // Ported from Next.js static eligibility and dynamic Route Handler params:
     // packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts

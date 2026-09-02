@@ -64,6 +64,7 @@ import {
 } from "./config/prerender.js";
 import {
   findVinextCacheConfigInPlugins,
+  getConfiguredCdnResponsePolicyHeaderNames,
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
@@ -748,6 +749,9 @@ async function buildApp() {
       requestRouting: hasUncachedRequestRouting(buildConfigMetadata.cacheConfig)
         ? "uncached-stage"
         : undefined,
+      responsePolicyHeaderNames: getConfiguredCdnResponsePolicyHeaderNames(
+        buildConfigMetadata.cacheConfig,
+      ),
       routeRootConfig: buildConfigMetadata.routeRootConfig,
     });
   }

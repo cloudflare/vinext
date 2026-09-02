@@ -17,6 +17,7 @@ import {
   generateCdnCacheAdapterModule,
   loadVinextCacheConfigFromViteConfig,
   generateCacheAdaptersModule,
+  getConfiguredCdnResponsePolicyHeaderNames,
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
@@ -318,6 +319,7 @@ describe("cdnAdapter builder + factory", () => {
     expect(descriptor.options).toBeUndefined();
     expect(descriptor.capabilities).toEqual({
       buildIdentity: "response-header",
+      responsePolicyHeaderNames: ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"],
       responseVary: "verbatim",
       routeCacheability: "probe-manifest",
     });
@@ -334,6 +336,16 @@ describe("cdnAdapter builder + factory", () => {
     expect(hasBuildIdentityResponseHeader({ cdn: { adapter: "custom-cache" } })).toBe(false);
     expect(hasUncachedRequestRouting({ cdn: { adapter: "url-only-cache" } })).toBe(false);
     expect(hasVerbatimResponseVary({ cdn: { adapter: "url-only-cache" } })).toBe(false);
+    expect(
+      getConfiguredCdnResponsePolicyHeaderNames({
+        cdn: {
+          adapter: "custom-cache",
+          capabilities: {
+            responsePolicyHeaderNames: [" X-Example-Policy ", "CACHE-CONTROL", ""],
+          },
+        },
+      }),
+    ).toEqual(["cache-control", "x-example-policy"]);
   });
 
   it("factory returns a CloudflareCdnCacheAdapter", () => {

@@ -35,6 +35,7 @@ import {
   findVinextPrerenderConfigInPlugins,
   findVinextRouteRootConfigInPlugins,
   formatVinextPrerenderLabel,
+  getConfiguredCdnResponsePolicyHeaderNames,
   hasBuildIdentityResponseHeader,
   hasVerbatimResponseVary,
   requiresRouteCacheabilityProbeManifest,
@@ -1921,6 +1922,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
       nextConfig,
       buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
       responseVary: hasStrictResponseVary ? "verbatim" : undefined,
+      responsePolicyHeaderNames: getConfiguredCdnResponsePolicyHeaderNames(
+        viteConfigMetadata.cacheConfig,
+      ),
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
   }
@@ -1993,6 +1997,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
           nextConfig,
           buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
           responseVary: hasStrictResponseVary ? "verbatim" : undefined,
+          responsePolicyHeaderNames: getConfiguredCdnResponsePolicyHeaderNames(
+            viteConfigMetadata.cacheConfig,
+          ),
           routeRootConfig: viteConfigMetadata.routeRootConfig,
           pathDiscoveryTarget: {
             baseUrl: targetUrl,

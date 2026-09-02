@@ -56,6 +56,16 @@ export type CdnCacheAdapterCapabilities = {
    * carries that manifest as a module in a second Worker version.
    */
   routeCacheability?: "probe-manifest";
+  /**
+   * Response headers whose values can opt a response into or out of the
+   * adapter's shared cache, in addition to the framework-owned Cache-Control
+   * header.
+   *
+   * Prerender discovery uses these names to avoid collapsing a dynamic route
+   * pattern when next.config assigns different cache policy to its concrete
+   * pathnames.
+   */
+  responsePolicyHeaderNames?: readonly string[];
 };
 
 export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
@@ -93,6 +103,20 @@ export function hasBuildIdentityResponseHeader(cache?: VinextCacheConfig | null)
 
 export function requiresRouteCacheabilityProbeManifest(cache?: VinextCacheConfig | null): boolean {
   return cache?.cdn?.capabilities?.routeCacheability === "probe-manifest";
+}
+
+/** Lowercase response-policy names owned by core and the configured adapter. */
+export function getConfiguredCdnResponsePolicyHeaderNames(
+  cache?: VinextCacheConfig | null,
+): readonly string[] {
+  return [
+    ...new Set([
+      "cache-control",
+      ...(cache?.cdn?.capabilities?.responsePolicyHeaderNames ?? [])
+        .map((name) => name.trim().toLowerCase())
+        .filter(Boolean),
+    ]),
+  ];
 }
 
 /**
