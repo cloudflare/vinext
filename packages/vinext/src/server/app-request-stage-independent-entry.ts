@@ -10,10 +10,7 @@ import requestRscHandler, {
 } from "virtual:vinext-app-request-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 // @ts-expect-error -- virtual module resolved by vinext
-import {
-  hasConfiguredDataCache,
-  registerConfiguredCacheAdapters,
-} from "virtual:vinext-cdn-cache-adapter";
+import * as configuredCdnCacheAdapters from "virtual:vinext-cdn-cache-adapter";
 import { registerLazyDataCacheHandler } from "vinext/shims/cache-handler";
 import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
 // @ts-expect-error -- virtual module resolved by vinext
@@ -92,8 +89,8 @@ async function handleRequest(
         "node",
       );
 
-  registerConfiguredCacheAdapters(env);
-  if (hasConfiguredDataCache) {
+  configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);
+  if (configuredCdnCacheAdapters.hasConfiguredDataCache) {
     registerLazyDataCacheHandler(async () => {
       // @ts-expect-error -- virtual module resolved by vinext
       const adapters = await import("virtual:vinext-cache-adapters");
