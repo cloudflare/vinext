@@ -14,10 +14,12 @@ import {
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { serializeWorkerCacheabilityProbeRoute } from "../packages/vinext/src/server/cacheability-request.js";
+import { registerDataCacheHandler } from "../packages/vinext/src/shims/cache-handler.js";
 
 const CAPTURE_RSC_REQUEST = "__vinextCaptureWorkerRscRequest";
 const CAPTURE_PRERENDER_STATE = "__vinextCaptureWorkerPrerenderState";
 const REGISTER_CDN_ADAPTER = "__vinextRegisterWorkerCdnAdapter";
+const REGISTER_ALL_CACHE_ADAPTERS = "__vinextRegisterAllWorkerCacheAdapters";
 
 function workerEntryVirtualModules(): Plugin {
   const modules = new Map([
@@ -52,6 +54,11 @@ export default async function rscHandler(request, _ctx, dispatchResponseStage, _
     globalThis.${CAPTURE_RSC_REQUEST}(request);
     return Response.redirect("https://example.com/login", 307);
   }
+  if (new URL(request.url).pathname === "/middleware-data-cache") {
+    const { getDataCacheHandler } = await import("vinext/shims/cache-handler");
+    await getDataCacheHandler().get("middleware-key");
+    return new Response("terminal middleware");
+  }
   globalThis.${CAPTURE_RSC_REQUEST}(request);
   return new Response("ok");
 }
@@ -60,12 +67,15 @@ export default async function rscHandler(request, _ctx, dispatchResponseStage, _
     [
       "virtual:vinext-cache-adapters",
       `export function registerConfiguredCacheAdapters(env) {
-  globalThis.${REGISTER_CDN_ADAPTER}?.(env);
+  globalThis.${REGISTER_ALL_CACHE_ADAPTERS}?.(env);
 }`,
     ],
     [
       "virtual:vinext-cdn-cache-adapter",
-      `export { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";`,
+      `export const hasConfiguredDataCache = true;
+export function registerConfiguredCacheAdapters(env) {
+  globalThis.${REGISTER_CDN_ADAPTER}?.(env);
+}`,
     ],
     ["virtual:vinext-image-adapters", "export function registerConfiguredImageOptimizer() {}"],
   ]);
@@ -82,6 +92,63 @@ export default async function rscHandler(request, _ctx, dispatchResponseStage, _
 }
 
 describe("App Router Production server worker entry compatibility", () => {
+  it("loads the configured data adapter only when request-stage middleware uses it", async () => {
+    const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+    for (const key of [
+      Symbol.for("vinext.cacheHandler"),
+      Symbol.for("vinext.configuredCacheHandler"),
+      Symbol.for("vinext.explicitCacheHandler"),
+      Symbol.for("vinext.lazyCacheHandler"),
+    ]) {
+      delete globals[key];
+    }
+    const get = vi.fn(async () => null);
+    Reflect.set(globalThis, REGISTER_ALL_CACHE_ADAPTERS, () =>
+      registerDataCacheHandler(() => ({ get, async set() {}, async revalidateTag() {} })),
+    );
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [workerEntryVirtualModules()],
+        resolve: {
+          alias: {
+            "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+          },
+        },
+        server: { middlewareMode: true },
+      });
+      const entry = (await server.ssrLoadModule(
+        path.resolve(
+          import.meta.dirname,
+          "../packages/vinext/src/server/app-request-stage-independent-entry.ts",
+        ),
+      )) as {
+        handleRequestStage(
+          request: Request,
+          env: unknown,
+          ctx: undefined,
+          dispatchResponseStage: () => Promise<Response>,
+        ): Promise<Response>;
+      };
+
+      const response = await entry.handleRequestStage(
+        new Request("https://example.com/middleware-data-cache"),
+        undefined,
+        undefined,
+        async () => new Response("unused"),
+      );
+
+      expect(await response.text()).toBe("terminal middleware");
+      expect(get).toHaveBeenCalledWith("middleware-key", undefined);
+    } finally {
+      await server?.close();
+      Reflect.deleteProperty(globalThis, REGISTER_ALL_CACHE_ADAPTERS);
+    }
+  });
+
   it("authenticates prerender state in a Worker request-stage context", async () => {
     const capturedStates: unknown[] = [];
     Reflect.set(globalThis, CAPTURE_RSC_REQUEST, () => {});
