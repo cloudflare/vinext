@@ -678,20 +678,21 @@ const _renderPage = __createPagesPageHandler({
   DocumentComponent,
 });
 
-export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options) {
+export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options, initialResponseHeaders) {
   __registerConfiguredCacheAdapters();
-  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options));
-  return _renderPage(request, url, manifest, middlewareHeaders, options);
+  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options, initialResponseHeaders));
+  return _renderPage(request, url, manifest, middlewareHeaders, options, initialResponseHeaders);
 }
 
 
 
-export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin, edgeRuntime = "worker") {
+export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin, edgeRuntime = "worker", initialResponseHeaders) {
   __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
     ctx,
     edgeRuntime,
+    initialResponseHeaders,
     match,
     nextConfig: vinextConfig,
     request,

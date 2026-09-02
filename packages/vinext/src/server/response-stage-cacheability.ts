@@ -9,6 +9,8 @@ export type ResponseStageCacheabilityOptions = {
   context: ExecutionContextLike;
   probeMode?: WorkerCacheabilityProbeMode | null;
   policyHeaders?: ReadonlyArray<readonly [string, string]> | null;
+  /** The renderer receives policy before user Pages code and applies it itself. */
+  policyHeadersAppliedBeforeRender?: boolean;
   rawManifest: string | null | undefined;
   /** The trusted route target after request-stage rewrites. */
   resolvedRoutePathname?: string;
@@ -38,11 +40,13 @@ export async function withResponseStageCacheability(
       options.probeMode,
       adapter.responseVary,
     );
-    const response = cacheability.applyResponseStageCachePolicy(
-      await render(context),
-      context,
-      options.policyHeaders,
-    );
+    if (options.policyHeadersAppliedBeforeRender) {
+      cacheability.recordResponseStageCachePolicy(context, options.policyHeaders);
+    }
+    const rendered = await render(context);
+    const response = options.policyHeadersAppliedBeforeRender
+      ? rendered
+      : cacheability.applyResponseStageCachePolicy(rendered, context, options.policyHeaders);
     return cacheability.finalizeWorkerCacheabilityResponse(response, context);
   }
 
@@ -60,11 +64,13 @@ export async function withResponseStageCacheability(
       adapter.responseVary,
       options.resolvedRoutePathname,
     );
-    const response = cacheability.applyResponseStageCachePolicy(
-      await render(context),
-      context,
-      options.policyHeaders,
-    );
+    if (options.policyHeadersAppliedBeforeRender) {
+      cacheability.recordResponseStageCachePolicy(context, options.policyHeaders);
+    }
+    const rendered = await render(context);
+    const response = options.policyHeadersAppliedBeforeRender
+      ? rendered
+      : cacheability.applyResponseStageCachePolicy(rendered, context, options.policyHeaders);
     return cacheability.finalizeWorkerCacheabilityResponse(response, context);
   }
 

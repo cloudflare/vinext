@@ -201,7 +201,10 @@ describe("response-stage cacheability", () => {
         buildId: "build-a",
         cache: "shared",
         context: baseContext(),
-        policyHeaders: [["CDN-Cache-Control", "public, s-maxage=90"]],
+        policyHeaders: [
+          ["CDN-Cache-Control", "public, s-maxage=90"],
+          ["Vary", "x-visitor"],
+        ],
         rawManifest: null,
         registerCacheAdapters: registerAdapter,
         request: new Request("https://example.com/dynamic", {
@@ -213,11 +216,12 @@ describe("response-stage cacheability", () => {
         const state = contextState(context)!;
         state.route = { kind: "app-page", pattern: "/dynamic" };
         state.outcome = { cacheable: false };
-        return new Response("dynamic");
+        return new Response("dynamic", { headers: { Vary: "RSC" } });
       },
     );
 
     expect(response.headers.get("CDN-Cache-Control")).toBe("public, s-maxage=90");
+    expect(response.headers.get("Vary")).toBe("RSC, x-visitor");
     await expect(response.text()).resolves.toBe("dynamic");
   });
 

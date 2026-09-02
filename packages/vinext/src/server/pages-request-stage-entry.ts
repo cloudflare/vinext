@@ -42,6 +42,7 @@ import { requestContextFromRequest } from "../config/request-context.js";
 import { resolveResponseStageCachePolicy } from "./config-headers.js";
 import {
   applyCdnResponseIdentityHeaders,
+  captureCdnResponsePolicyHeaders,
   reconcileCdnResponseHeadersAfterOuterPolicy,
   validateCdnRequest,
 } from "./cache-control.js";
@@ -62,6 +63,7 @@ import {
   createWorkerPrerenderReadinessResponse,
   isWorkerPrerenderDiscoveryPath,
 } from "./worker-prerender-discovery.js";
+import { withResponseStageVary } from "./response-stage-policy.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -350,10 +352,17 @@ async function handleRequest(
           ? wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)
           : null,
       renderPage: (req, resolvedUrl, options, stagedHeaders) => {
+        const matchedPage =
+          typeof matchPageRoute === "function" ? matchPageRoute(resolvedUrl, req) : null;
+        const outerPolicyMustOverrideRenderer = matchedPage?.route.dataKind !== "server";
+        const transportedPolicyHeaders = withResponseStageVary(
+          responseStagePolicyHeaders,
+          stagedHeaders?.get("Vary"),
+        );
         const responseStageProps = (cache: "shared" | "bypass"): WorkerResponseStageProps => ({
           buildId: pagesEntry.buildId,
           cacheability: {
-            policyHeaders: responseStagePolicyHeaders,
+            policyHeaders: transportedPolicyHeaders,
             probeMode,
             resolvedRoutePathname: new URL(resolvedUrl, req.url).pathname,
           },
@@ -388,7 +397,9 @@ async function handleRequest(
           cache === "shared"
             ? dispatched.then((response) => {
                 sharedResponseHeaders = new Headers(response.headers);
-                sharedOuterPolicyHeaders = new Headers(stagedHeaders);
+                sharedOuterPolicyHeaders = outerPolicyMustOverrideRenderer
+                  ? captureCdnResponsePolicyHeaders(new Headers(stagedHeaders))
+                  : null;
                 return response;
               })
             : dispatched;
@@ -403,11 +414,15 @@ async function handleRequest(
         });
       },
       handleApi: (req, apiUrl, _ctx, stagedHeaders) => {
+        const transportedPolicyHeaders = withResponseStageVary(
+          responseStagePolicyHeaders,
+          stagedHeaders.get("Vary"),
+        );
         const responseStageProps = (cache: "shared" | "bypass"): WorkerResponseStageProps => ({
           apiUrl,
           buildId: pagesEntry.buildId,
           cacheability: {
-            policyHeaders: responseStagePolicyHeaders,
+            policyHeaders: transportedPolicyHeaders,
             probeMode,
             resolvedRoutePathname: new URL(apiUrl, req.url).pathname,
           },
@@ -438,7 +453,9 @@ async function handleRequest(
         return cache === "shared"
           ? dispatched.then((response) => {
               sharedResponseHeaders = new Headers(response.headers);
-              sharedOuterPolicyHeaders = new Headers(stagedHeaders);
+              // API response headers are authored entirely by user code. The
+              // ordinary merge already lets that response override config.
+              sharedOuterPolicyHeaders = null;
               return response;
             })
           : dispatched;
@@ -474,12 +491,8 @@ async function handleRequest(
     const result = await runPagesRequest(request, deps);
     if (result.type === "response") {
       const response = finalizeMissingStaticAssetResponse(result.response, missingBuildAsset);
-      if (sharedResponseHeaders) {
-        reconcileCdnResponseHeadersAfterOuterPolicy(
-          response.headers,
-          sharedResponseHeaders,
-          sharedOuterPolicyHeaders ?? response.headers,
-        );
+      if (sharedResponseHeaders && sharedOuterPolicyHeaders) {
+        reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedOuterPolicyHeaders);
       }
       return response;
     }

@@ -3,6 +3,7 @@ import type { RequestContext } from "../config/request-context.js";
 import { isStaticFileSignal } from "./static-file-signal.js";
 import {
   applyCdnResponseHeaders,
+  getCdnResponsePolicyHeaderNames,
   hasExplicitNonCacheableResponsePolicy,
   isNonCacheableCacheControl,
   NO_STORE_CACHE_CONTROL,
@@ -13,10 +14,7 @@ import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { sanitizeMethodNotAllowedHeaders } from "./http-error-responses.js";
 import { hasPostConfigLinkHeaders } from "./app-response-header-provenance.js";
-import {
-  CACHEABILITY_POLICY_HEADERS,
-  captureRouteCacheabilityResponsePolicy,
-} from "vinext/shims/cacheability-classification";
+import { captureRouteCacheabilityResponsePolicy } from "vinext/shims/cacheability-classification";
 
 type FinalizeAppRscResponseOptions = {
   basePath: string;
@@ -45,7 +43,6 @@ type FinalizeAppRscResponseOptions = {
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const configHeadersAlreadyApplied = new WeakSet<Response>();
-const CONFIG_CACHE_POLICY_HEADERS = new Set<string>(CACHEABILITY_POLICY_HEADERS);
 
 function normalizeExplicitNonCacheablePolicy(headers: Headers): void {
   if (!hasExplicitNonCacheableResponsePolicy(headers)) return;
@@ -93,7 +90,7 @@ export async function applyAppRscConfigHeaders(
     // including for force-dynamic App Pages. Other response headers retain
     // the existing merge precedence.
     // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
-    overwriteExisting: options.overwriteExisting ?? CONFIG_CACHE_POLICY_HEADERS,
+    overwriteExisting: options.overwriteExisting ?? getCdnResponsePolicyHeaderNames(),
   });
 }
 

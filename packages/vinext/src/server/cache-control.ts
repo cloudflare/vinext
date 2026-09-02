@@ -39,6 +39,24 @@ export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean
   return Boolean(cacheControl && isNonCacheableCacheControl(cacheControl));
 }
 
+/** Lowercase response-policy names owned by core and the active adapter. */
+export function getCdnResponsePolicyHeaderNames(): ReadonlySet<string> {
+  return new Set([
+    "cache-control",
+    ...(getCdnCacheAdapter().responsePolicyHeaderNames ?? []).map((name) => name.toLowerCase()),
+  ]);
+}
+
+/** Capture only cache-policy provenance from an outer composition stage. */
+export function captureCdnResponsePolicyHeaders(headers: Headers): Headers {
+  const policy = new Headers();
+  for (const name of getCdnResponsePolicyHeaderNames()) {
+    const value = headers.get(name);
+    if (value !== null) policy.set(name, value);
+  }
+  return policy;
+}
+
 /** Delegate provider-specific request routing validation to the CDN adapter. */
 export async function validateCdnRequest(request: Request): Promise<Response | null> {
   return (await getCdnCacheAdapter().validateRequest?.(request)) ?? null;
@@ -80,31 +98,27 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
   }
 }
 
-const CDN_POLICY_HEADERS = [
-  "Cache-Control",
-  "CDN-Cache-Control",
-  "Cloudflare-CDN-Cache-Control",
-] as const;
-
 /**
  * Reconcile request-stage policy composed above a reusable response artifact.
  * A newly applied private policy must clear any cacheable provider headers that
  * belonged to the inner artifact before the final response leaves the gateway.
- * Pass `outerHeaders` when normal response merging gives the artifact precedence
- * but the request stage still owns the final cache policy.
+ * `outerPolicyHeaders` contains only policy set by the uncached request stage,
+ * so an identical inner value cannot hide explicit outer provenance.
  */
 export function reconcileCdnResponseHeadersAfterOuterPolicy(
   headers: Headers,
-  innerHeaders: Headers,
-  outerHeaders: Headers = headers,
+  outerPolicyHeaders: Headers,
 ): void {
-  for (const name of CDN_POLICY_HEADERS) {
-    const value = outerHeaders.get(name);
-    if (value !== null && value !== innerHeaders.get(name) && isNonCacheableCacheControl(value)) {
+  for (const name of getCdnResponsePolicyHeaderNames()) {
+    const value = outerPolicyHeaders.get(name);
+    if (value !== null && isNonCacheableCacheControl(value)) {
       headers.set(name, value);
       applyCdnResponseHeaders(headers, { cacheControl: value });
       return;
     }
+  }
+  if (hasExplicitNonCacheableResponsePolicy(outerPolicyHeaders)) {
+    applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
   }
 }
 

@@ -188,6 +188,39 @@ describe("createPagesPageHandler — after() lifecycle", () => {
   });
 });
 
+describe("createPagesPageHandler — pre-render response headers", () => {
+  it("lets getServerSideProps override config cache policy", async () => {
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              getServerSideProps: async ({
+                res,
+              }: {
+                res: { setHeader(name: string, value: string): void };
+              }) => {
+                res.setHeader("Cache-Control", "private, no-store");
+                return { props: {} };
+              },
+            }),
+          ),
+        ],
+      }),
+    );
+
+    const initialHeaders = new Headers({
+      "Cache-Control": "public, s-maxage=60",
+      Vary: "x-visitor",
+    });
+    const response = await handler(makeRequest(), "/", null, null, null, initialHeaders);
+
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Vary")).toBe("x-visitor");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Route miss → 404 fallback
 // ---------------------------------------------------------------------------

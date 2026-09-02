@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   computeRscCacheBustingSearchParam,
   createRscRequestHeaders,
@@ -202,6 +202,21 @@ function cacheabilityContext(state: RouteCacheabilityState): ExecutionContextLik
   return context;
 }
 
+function useSplitPolicyAdapter(): void {
+  setCdnCacheAdapter({
+    buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+    ownsBackgroundRevalidation: false,
+    responsePolicyHeaderNames: ["CDN-Cache-Control"],
+    async get() {
+      return null;
+    },
+    async revalidateTag() {},
+    async set() {},
+  });
+}
+
+afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
+
 describe("createAppRscHandler", () => {
   it("dispatches a matched GET through the App response stage and composes request-stage headers", async () => {
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async (_request, props) => {
@@ -324,7 +339,8 @@ describe("createAppRscHandler", () => {
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
   });
 
-  it("transports only request-key-safe positive config cache policy", async () => {
+  it("transports matched positive config cache policy in stage identity", async () => {
+    useSplitPolicyAdapter();
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
       Promise.resolve(new Response("stage")),
     );
@@ -332,7 +348,10 @@ describe("createAppRscHandler", () => {
       configHeaders: [
         {
           source: "/about",
-          headers: [{ key: "Cache-Control", value: "public, s-maxage=60" }],
+          headers: [
+            { key: "Cache-Control", value: "public, s-maxage=60" },
+            { key: "Vary", value: "x-visitor" },
+          ],
         },
         {
           source: "/about",
@@ -359,11 +378,14 @@ describe("createAppRscHandler", () => {
 
     expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
       ["Cache-Control", "public, s-maxage=60"],
+      ["CDN-Cache-Control", "public, s-maxage=120"],
+      ["Vary", "x-visitor"],
     ]);
     expect(state.forcedDynamicReason).toBeUndefined();
   });
 
-  it("transports safe config cache policy to a hybrid Pages response stage", async () => {
+  it("transports matched config cache policy to a hybrid Pages response stage", async () => {
+    useSplitPolicyAdapter();
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
       Promise.resolve(new Response("pages-stage")),
     );
@@ -371,7 +393,10 @@ describe("createAppRscHandler", () => {
       configHeaders: [
         {
           source: "/pages",
-          headers: [{ key: "Cache-Control", value: "public, s-maxage=36" }],
+          headers: [
+            { key: "Cache-Control", value: "public, s-maxage=36" },
+            { key: "Vary", value: "x-visitor" },
+          ],
         },
         {
           source: "/pages",
@@ -398,7 +423,11 @@ describe("createAppRscHandler", () => {
     expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
       kind: "hybrid-pages",
       cacheability: {
-        policyHeaders: [["Cache-Control", "public, s-maxage=36"]],
+        policyHeaders: [
+          ["Cache-Control", "public, s-maxage=36"],
+          ["CDN-Cache-Control", "public, s-maxage=120"],
+          ["Vary", "x-visitor"],
+        ],
       },
     });
   });
@@ -406,6 +435,7 @@ describe("createAppRscHandler", () => {
   it("clears shared Pages stage metadata when outer config makes the response private", async () => {
     const adapter: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
+      responsePolicyHeaderNames: ["CDN-Cache-Control"],
       async get() {
         return null;
       },
@@ -459,6 +489,37 @@ describe("createAppRscHandler", () => {
     } finally {
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     }
+  });
+
+  it("lets hybrid getServerSideProps override an earlier private config policy", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(
+        new Response("pages-stage", {
+          headers: { "Cache-Control": "public, s-maxage=30" },
+        }),
+      ),
+    );
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/pages",
+          headers: [{ key: "Cache-Control", value: "private, no-store" }],
+        },
+      ],
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async (options) =>
+        options.dispatchPagesResponseStage?.(options.request, "page", "server") ?? null,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/pages"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=30");
   });
 
   it("bypasses the staged cache for an unverified interception context", async () => {
@@ -715,7 +776,9 @@ describe("createAppRscHandler", () => {
     ["Cloudflare-CDN-Cache-Control", "private"],
   ])("keeps staged App rendering reusable beneath config %s: %s", async (name, value) => {
     const dispatchMatchedPage = vi.fn(async () => new Response("local-page"));
-    const dispatchResponseStage = vi.fn(async () => new Response("shared-stage"));
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("shared-stage")),
+    );
     const handler = createHandler({
       configHeaders: [{ source: "/about", headers: [{ key: name, value }] }],
       dispatchMatchedPage,
@@ -738,7 +801,9 @@ describe("createAppRscHandler", () => {
 
   it("keeps staged App rendering reusable beneath request-dependent middleware Vary", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("local-page"));
-    const dispatchResponseStage = vi.fn(async () => new Response("shared-stage"));
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("shared-stage")),
+    );
     const handler = createHandler({
       configHeaders: [],
       dispatchMatchedPage,
@@ -761,6 +826,9 @@ describe("createAppRscHandler", () => {
 
     expect(dispatchResponseStage).toHaveBeenCalledOnce();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
+      ["Vary", "Cookie"],
+    ]);
     expect(state.forcedDynamicReason).toBeUndefined();
     expect(response.headers.get("Vary")).toContain("Cookie");
     expect(await response.text()).toBe("shared-stage");

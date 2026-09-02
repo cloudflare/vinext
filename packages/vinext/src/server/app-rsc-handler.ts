@@ -101,6 +101,8 @@ import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import {
   applyCdnResponseHeaders,
+  captureCdnResponsePolicyHeaders,
+  getCdnResponsePolicyHeaderNames,
   NEVER_CACHE_CONTROL,
   reconcileCdnResponseHeadersAfterOuterPolicy,
 } from "./cache-control.js";
@@ -138,17 +140,13 @@ import {
   type RenderAppWorkerResponseStageLocally,
 } from "./app-worker-stages.js";
 import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
+import { withResponseStageVary } from "./response-stage-policy.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
 const HAS_CONFIG_REDIRECTS = process.env.__VINEXT_HAS_CONFIG_REDIRECTS !== "false";
 const HAS_CONFIG_REWRITES = process.env.__VINEXT_HAS_CONFIG_REWRITES !== "false";
-const STAGED_CONFIG_HEADER_OVERRIDES = new Set([
-  "cache-control",
-  "cdn-cache-control",
-  "cloudflare-cdn-cache-control",
-]);
 type StaticParamsMap = AppPrerenderStaticParamsMap;
 type RootParamNamesMap = AppPrerenderRootParamNamesMap;
 
@@ -410,6 +408,7 @@ type RenderPagesFallbackOptions = {
   dispatchPagesResponseStage?: (
     request: Request,
     resourceKind: "api" | "page",
+    dataKind?: "none" | "server" | "static",
   ) => Promise<Response>;
   isDataRequest?: boolean;
   isRscRequest: boolean;
@@ -1045,14 +1044,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const loadResponseStagePolicy = () =>
     (responseStagePolicyPromise ??= options.configHeaders.length
       ? import("./config-headers.js").then(({ resolveResponseStageCachePolicy }) =>
-          resolveResponseStageCachePolicy({
-            basePathState,
-            configHeaders: options.configHeaders,
-            pathname: matchPathname(requestCleanPathname),
-            requestContext: preMiddlewareRequestContext,
-          }),
+          withResponseStageVary(
+            resolveResponseStageCachePolicy({
+              basePathState,
+              configHeaders: options.configHeaders,
+              pathname: matchPathname(requestCleanPathname),
+              requestContext: preMiddlewareRequestContext,
+            }),
+            middlewareContext.headers?.get("Vary"),
+          ),
         )
-      : Promise.resolve(null));
+      : Promise.resolve(withResponseStageVary(null, middlewareContext.headers?.get("Vary"))));
   const canUseSharedWorkerResponseStage =
     !hasMiddlewareCookieOverlay &&
     !hasMiddlewareRequestHeaderOverrides(
@@ -1166,7 +1168,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     }
     return options.handleMetadataRouteRequest?.(cleanPathname) ?? null;
   };
-  const applyConfigHeadersToResponseStage = async (response: Response): Promise<Response> => {
+  const applyConfigHeadersToResponseStage = async (
+    response: Response,
+    preserveExistingPolicy = false,
+  ): Promise<Response> => {
     // Responses returned by a transport binding can have immutable headers.
     // Compose config headers on a mutable copy while retaining stream/cache
     // metadata carried by the response-stage result.
@@ -1175,7 +1180,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       basePath: options.basePath,
       configHeaders: options.configHeaders,
       i18nConfig: options.i18nConfig,
-      overwriteExisting: STAGED_CONFIG_HEADER_OVERRIDES,
+      overwriteExisting: preserveExistingPolicy
+        ? new Set<string>()
+        : getCdnResponsePolicyHeaderNames(),
       recordCacheability: dispatchResponseStage === undefined,
       requestContext: preMiddlewareRequestContext,
     });
@@ -1188,11 +1195,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }),
     );
   };
+  let outerResponsePolicyPromise: Promise<Headers> | undefined;
+  const loadOuterResponsePolicy = () =>
+    (outerResponsePolicyPromise ??= (async () => {
+      const headers = new Headers();
+      await applyAppRscConfigHeaders(headers, request, {
+        basePath: options.basePath,
+        configHeaders: options.configHeaders,
+        i18nConfig: options.i18nConfig,
+        overwriteExisting: getCdnResponsePolicyHeaderNames(),
+        recordCacheability: false,
+        requestContext: preMiddlewareRequestContext,
+      });
+      mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+      return captureCdnResponsePolicyHeaders(headers);
+    })());
   const composeResponseStageResponse = async (response: Response): Promise<Response> => {
-    const innerHeaders = new Headers(response.headers);
     response = await applyConfigHeadersToResponseStage(response);
     response = applyMiddlewareContextToResponse(response, middlewareContext);
-    reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, innerHeaders);
+    reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, await loadOuterResponsePolicy());
     return markAppRscResponseConfigHeadersApplied(response);
   };
   const postMiddlewareRequestContext = buildPostMwRequestContext(userlandRequest);
@@ -1700,9 +1721,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     matchKind: "dynamic" | "static",
   ): Promise<Response | null> => {
     if (!filesystemRouteEligible) return null;
-    let sharedResponseHeaders: Headers | null = null;
+    let sharedOuterPolicyNeedsReconciliation = false;
     const dispatchPagesResponseStage = dispatchResponseStage
-      ? async (stageRequest: Request, resourceKind: "api" | "page") => {
+      ? async (
+          stageRequest: Request,
+          resourceKind: "api" | "page",
+          dataKind?: "none" | "server" | "static",
+        ) => {
           const pagesOnDemandRevalidate =
             resourceKind === "page" &&
             isOnDemandRevalidateRequest(stageRequest.headers.get(PRERENDER_REVALIDATE_HEADER));
@@ -1742,8 +1767,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             },
             { cache },
           );
-          if (cache === "shared") sharedResponseHeaders = new Headers(response.headers);
-          return applyConfigHeadersToResponseStage(response);
+          sharedOuterPolicyNeedsReconciliation =
+            cache === "shared" && resourceKind === "page" && dataKind !== "server";
+          return applyConfigHeadersToResponseStage(
+            response,
+            resourceKind === "api" || dataKind === "server",
+          );
         }
       : undefined;
     const response =
@@ -1765,8 +1794,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         : null;
     if (response) preserveRouteCacheabilityResponsePolicy();
     if (!response) return null;
-    if (sharedResponseHeaders) {
-      reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedResponseHeaders);
+    if (sharedOuterPolicyNeedsReconciliation) {
+      reconcileCdnResponseHeadersAfterOuterPolicy(
+        response.headers,
+        await loadOuterResponsePolicy(),
+      );
     }
 
     if (!pagesDataRequest || resolvedUrl === originalResolvedUrl) {

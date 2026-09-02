@@ -8,6 +8,7 @@ import type {
   VinextResponseStageDispatchOptions,
 } from "./multi-stage.js";
 import { withResponseStageCacheability } from "./response-stage-cacheability.js";
+import { applyResponseStagePolicyHeaders } from "./response-stage-policy.js";
 import { beginRouteCacheability } from "vinext/shims/cacheability-classification";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -47,7 +48,10 @@ export async function renderPagesResponse(
   }
 
   registerConfiguredImageOptimizer(env);
-  const renderHeaders = stagedHeaders ?? new Headers(props.stagedHeaders ?? []);
+  const renderHeaders = new Headers(stagedHeaders ?? props.stagedHeaders ?? []);
+  const initialResponseHeaders = new Headers();
+  applyResponseStagePolicyHeaders(initialResponseHeaders, props.cacheability.policyHeaders);
+  applyResponseStagePolicyHeaders(renderHeaders, props.cacheability.policyHeaders);
   let ctx = createWorkerRevalidationContext(
     platformCtx,
     (internalRequest) => {
@@ -86,6 +90,7 @@ export async function renderPagesResponse(
           cacheabilityContext,
           new URL(request.url).origin,
           cacheabilityContext.hostRuntime ?? "node",
+          initialResponseHeaders,
         );
       });
     }
@@ -99,6 +104,7 @@ export async function renderPagesResponse(
       cacheabilityContext,
       renderHeaders,
       props.renderOptions ?? undefined,
+      initialResponseHeaders,
     );
   };
   return withResponseStageCacheability(
@@ -107,6 +113,7 @@ export async function renderPagesResponse(
       cache: props.kind === "pages-prerender-discovery" ? "bypass" : dispatchOptions.cache,
       context: ctx,
       policyHeaders: props.cacheability.policyHeaders,
+      policyHeadersAppliedBeforeRender: true,
       probeMode: props.cacheability.probeMode,
       rawManifest: __cacheabilityManifest,
       registerCacheAdapters: () => registerConfiguredCacheAdapters(env),

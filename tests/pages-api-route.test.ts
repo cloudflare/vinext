@@ -32,6 +32,24 @@ function createMatch(
 }
 
 describe("pages api route", () => {
+  it("lets a handler override response headers installed before user code", async () => {
+    const response = await handlePagesApiRoute({
+      initialResponseHeaders: new Headers({
+        "Cache-Control": "public, s-maxage=60",
+        Vary: "x-visitor",
+      }),
+      match: createMatch((_req, res) => {
+        res.setHeader("Cache-Control", "private, no-store");
+        res.json({ ok: true });
+      }),
+      request: new Request("https://example.com/api/policy"),
+      url: "/api/policy",
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Vary")).toBe("x-visitor");
+  });
+
   it("does not expose process environment variables on the request", async () => {
     const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
     process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";

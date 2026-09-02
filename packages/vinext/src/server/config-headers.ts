@@ -6,22 +6,15 @@ import {
 } from "../config/config-matchers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import {
-  CACHEABILITY_POLICY_HEADERS,
   markRouteCacheabilityDynamic,
   markRouteCacheabilityExplicitConfigPolicy,
   markRouteCacheabilityFinalResponseUncacheable,
 } from "vinext/shims/cacheability-classification";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
+import { getCdnResponsePolicyHeaderNames } from "./cache-control.js";
+import { mergeVaryHeader } from "./middleware-response-headers.js";
 
 const ADDITIVE_CONFIG_HEADER_NAMES = new Set(["set-cookie", "vary"]);
-const CACHEABILITY_POLICY_HEADER_NAMES = new Set<string>(CACHEABILITY_POLICY_HEADERS);
-
-function ruleUsesUnkeyedRequestCondition(rule: NextHeader): boolean {
-  return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
-    (condition) =>
-      condition.type === "header" || condition.type === "cookie" || condition.type === "host",
-  );
-}
 
 export type ResponseStageCachePolicyOptions = {
   basePathState?: BasePathMatchState;
@@ -31,9 +24,10 @@ export type ResponseStageCachePolicyOptions = {
 };
 
 /**
- * Resolve positive config cache policy that may safely accompany an inner artifact.
- * Header/cookie/host conditions stay in the uncached composition stage; query
- * conditions are safe because shared stage transports must key the exact query.
+ * Resolve positive config cache policy that must accompany an inner artifact.
+ * The request stage evaluates every condition. Shared stage transports must key
+ * the complete serialized props, so the matched policy partitions the artifact
+ * without exposing request-only header, cookie, or host values to the renderer.
  */
 export function resolveResponseStageCachePolicy({
   basePathState,
@@ -41,15 +35,15 @@ export function resolveResponseStageCachePolicy({
   pathname,
   requestContext,
 }: ResponseStageCachePolicyOptions): Array<[string, string]> | null {
-  const safeRules = configHeaders.filter((rule) => !ruleUsesUnkeyedRequestCondition(rule));
   const matched = retainLastSingularConfigValues(
-    matchHeaders(pathname, safeRules, requestContext, basePathState),
+    matchHeaders(pathname, configHeaders, requestContext, basePathState),
   );
   const policy = matched
     .filter((header) => {
       const name = header.key.toLowerCase();
       return (
-        CACHEABILITY_POLICY_HEADER_NAMES.has(name) && !isNonCacheableCacheControl(header.value)
+        name === "vary" ||
+        (getCdnResponsePolicyHeaderNames().has(name) && !isNonCacheableCacheControl(header.value))
       );
     })
     .map((header) => [header.key, header.value] as [string, string]);
@@ -63,9 +57,10 @@ function markConditionalConfigHeaderCacheability(rule: NextHeader): void {
         condition.type === "header" || condition.type === "cookie" || condition.type === "host",
     )
   ) {
-    // Query values are part of the shared response-stage identity. Headers,
-    // cookies, and hostnames are not, so a response header selected by any of
-    // them cannot be shared safely under the request path and query.
+    // Legacy single-stage admission keys the public request rather than a
+    // serialized stage envelope, so these conditions still require a veto.
+    // Multi-stage callers set recordCacheability=false and carry the matched
+    // policy in identity-keyed response-stage props instead.
     markRouteCacheabilityDynamic(
       "next.config headers depend on request headers, cookies, or hostnames",
     );
@@ -81,10 +76,10 @@ function markExplicitConfigResponseVeto(
       markRouteCacheabilityFinalResponseUncacheable("next.config headers set a cookie");
       continue;
     }
-    if (CACHEABILITY_POLICY_HEADER_NAMES.has(name)) {
+    if (getCdnResponsePolicyHeaderNames().has(name)) {
       markRouteCacheabilityExplicitConfigPolicy();
     }
-    if (CACHEABILITY_POLICY_HEADER_NAMES.has(name) && isNonCacheableCacheControl(header.value)) {
+    if (getCdnResponsePolicyHeaderNames().has(name) && isNonCacheableCacheControl(header.value)) {
       markRouteCacheabilityFinalResponseUncacheable(
         `next.config headers set a non-cacheable ${header.key} policy`,
       );
@@ -197,6 +192,8 @@ export function applyConfigHeadersToResponse(
       // authoritative even when this config field may replace a renderer-owned
       // default (notably Cache-Control).
       continue;
+    } else if (lowerName === "vary") {
+      mergeVaryHeader(responseHeaders, header.value);
     } else if (ADDITIVE_CONFIG_HEADER_NAMES.has(lowerName)) {
       responseHeaders.append(header.key, header.value);
     } else if (options.overwriteExisting?.has(lowerName) || !responseHeaders.has(lowerName)) {

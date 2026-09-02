@@ -26,6 +26,13 @@ const mocks = vi.hoisted(() => ({
       ? { route: { dataKind: "dynamic", isDynamic: false, pattern: "/api/hello" } }
       : null,
   ),
+  matchPageRoute: vi.fn((url: string) => ({
+    route: {
+      dataKind: url.startsWith("/gssp") ? "server" : "static",
+      isDynamic: false,
+      pattern: url.startsWith("/gssp") ? "/gssp" : "/page",
+    },
+  })),
   registerCacheAdapters: vi.fn(),
   registerImageOptimizer: vi.fn(),
   renderResponse: vi.fn(),
@@ -59,9 +66,7 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
   buildId: "request-build",
   hasMiddleware: false,
   matchApiRoute: mocks.matchApiRoute,
-  matchPageRoute: vi.fn(() => ({
-    route: { dataKind: "static", isDynamic: false, pattern: "/page" },
-  })),
+  matchPageRoute: mocks.matchPageRoute,
   normalizeDataRequest: mocks.normalizeDataRequest,
   prerenderSecret: "prerender-secret",
   publicFiles: new Set(),
@@ -82,6 +87,7 @@ describe("Pages Worker request stage", () => {
     mocks.authorizeOnDemandRevalidate.mockReset();
     mocks.authorizeOnDemandRevalidate.mockReturnValue(false);
     mocks.matchApiRoute.mockReset();
+    mocks.matchPageRoute.mockClear();
     mocks.configHeaders.length = 0;
     mocks.matchApiRoute.mockImplementation((url: string) =>
       url === "/api/hello"
@@ -229,11 +235,24 @@ describe("Pages Worker request stage", () => {
     expect(options).toEqual({ cache: "bypass" });
   });
 
-  it("transports only request-key-safe positive config cache policy using the i18n match path", async () => {
+  it("transports matched positive config cache policy using the i18n match path", async () => {
+    setCdnCacheAdapter({
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      responsePolicyHeaderNames: ["CDN-Cache-Control"],
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    });
     mocks.configHeaders.push(
       {
         source: "/en/page",
-        headers: [{ key: "Cache-Control", value: "public, s-maxage=60" }],
+        headers: [
+          { key: "Cache-Control", value: "public, s-maxage=60" },
+          { key: "Vary", value: "x-visitor" },
+        ],
       },
       {
         source: "/en/page",
@@ -258,13 +277,34 @@ describe("Pages Worker request stage", () => {
 
     expect(dispatch.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
       ["Cache-Control", "public, s-maxage=60"],
+      ["CDN-Cache-Control", "public, s-maxage=120"],
+      ["Vary", "x-visitor"],
     ]);
     expect(state.forcedDynamicReason).toBeUndefined();
+  });
+
+  it("transports middleware Vary into the shared stage cache identity", async () => {
+    mocks.runMiddleware.mockResolvedValue({
+      continue: true,
+      responseHeaders: new Headers({ Vary: "x-visitor" }),
+    });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("page"));
+
+    await handleRequestStage(
+      new Request("https://example.com/page", { headers: { "x-visitor": "one" } }),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(dispatch.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([["Vary", "x-visitor"]]);
+    expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
   });
 
   it("lets an outer private config policy override a shared Pages artifact", async () => {
     const adapter: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
+      responsePolicyHeaderNames: ["CDN-Cache-Control"],
       buildResponseHeaders({ cacheControl }) {
         return {
           "Cache-Control": cacheControl,
@@ -304,6 +344,33 @@ describe("Pages Worker request stage", () => {
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(response.headers.get("cdn-cache-control")).toBeNull();
     await expect(response.text()).resolves.toBe("cached page");
+  });
+
+  // Next.js installs custom-route headers before invoking Pages handlers, so
+  // getServerSideProps remains authoritative when it writes the same header.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-server.ts
+  it("lets getServerSideProps override an earlier private config policy", async () => {
+    mocks.configHeaders.push({
+      source: "/en/gssp",
+      headers: [{ key: "Cache-Control", value: "private, no-store" }],
+    });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () =>
+      Promise.resolve(
+        new Response("gssp", {
+          headers: { "Cache-Control": "public, s-maxage=30" },
+        }),
+      ),
+    );
+
+    const response = await handleRequestStage(
+      new Request("https://example.com/gssp"),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=30");
   });
 
   it("dispatches authenticated revalidation through the uncached response stage", async () => {

@@ -103,6 +103,7 @@ describe("Pages Worker response stage", () => {
       expect.any(Object),
       expect.any(Headers),
       { isDataReq: true },
+      expect.any(Headers),
     );
     const stagedHeaders = stages.renderPage.mock.calls[0]?.[4] as Headers;
     expect([...stagedHeaders]).toEqual([]);
@@ -140,6 +141,7 @@ describe("Pages Worker response stage", () => {
       expect.any(Object),
       expect.any(Headers),
       { isDataReq: true },
+      expect.any(Headers),
     );
   });
 
@@ -177,6 +179,7 @@ describe("Pages Worker response stage", () => {
       expect.any(Object),
       "https://example.com",
       "node",
+      expect.any(Headers),
     );
     expect(stages.renderPage).not.toHaveBeenCalled();
   });
@@ -221,6 +224,52 @@ describe("Pages Worker response stage", () => {
 
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
     await expect(response.text()).resolves.toBe("public api");
+  });
+
+  it("does not let config public policy overwrite a Pages API private response", async () => {
+    const adapter: CdnCacheAdapter = {
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      requiresCompletedResponseAdmission: true,
+      responseVary: "verbatim",
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    };
+    stages.registerCacheAdapters.mockImplementation(() => setCdnCacheAdapter(adapter));
+    stages.api.mockImplementation(async (...args: unknown[]) => {
+      const initialHeaders = args[5] as Headers;
+      expect(initialHeaders.get("Cache-Control")).toBe("public, s-maxage=60");
+      return new Response("private api", {
+        headers: { "Cache-Control": "private, no-store" },
+      });
+    });
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/api/private"),
+      undefined,
+      undefined,
+      {
+        apiUrl: "/api/private",
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: [["Cache-Control", "public, s-maxage=60"]],
+          probeMode: null,
+          resolvedRoutePathname: "/api/private",
+        },
+        kind: "pages-api",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("private api");
   });
 
   it("preserves an adapter-supplied Worker runtime for Pages API responses", async () => {

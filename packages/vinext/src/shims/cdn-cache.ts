@@ -104,6 +104,9 @@ export type CdnCacheAdapter = {
    */
   readonly responseVary?: "verbatim";
 
+  /** Provider-specific response headers whose values control shared caching. */
+  readonly responsePolicyHeaderNames?: readonly string[];
+
   /**
    * Fresh App Page responses must reach clean EOF before this adapter may emit
    * shared-cache headers. Used by edge adapters whose cache sits in front of

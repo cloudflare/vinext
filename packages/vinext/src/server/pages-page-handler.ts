@@ -376,6 +376,7 @@ export function createPagesPageHandler(
   manifest: Record<string, string[]> | null | undefined,
   middlewareHeaders: Headers | null | undefined,
   options: RenderPageOptions | null | undefined,
+  initialResponseHeaders?: Headers,
 ) => Promise<Response> {
   const {
     pageRoutes,
@@ -442,6 +443,7 @@ export function createPagesPageHandler(
     manifest: Record<string, string[]> | null | undefined,
     middlewareHeaders: Headers | null | undefined,
     options: RenderPageOptions | null | undefined,
+    initialResponseHeaders?: Headers,
   ): Promise<Response> {
     let isDataReq = !!(options && options.isDataReq);
     const requestUrl = new URL(request.url);
@@ -608,10 +610,17 @@ export function createPagesPageHandler(
     if (shouldCoalesceOnDemand) {
       const cacheKey = pageIsrCacheKey("pages", routeUrl.split("?")[0]);
       const snapshot = await coalesceOnDemandRevalidation(cacheKey, async () => {
-        const response = await renderPage(request, url, manifest, middlewareHeaders, {
-          ...options,
-          __skipOnDemandCoalesce: true,
-        });
+        const response = await renderPage(
+          request,
+          url,
+          manifest,
+          middlewareHeaders,
+          {
+            ...options,
+            __skipOnDemandCoalesce: true,
+          },
+          initialResponseHeaders,
+        );
         return {
           body:
             request.method === "HEAD" || response.status === 204 || response.status === 304
@@ -816,6 +825,7 @@ export function createPagesPageHandler(
         const createPageReqRes = () => {
           const reqRes = createPagesReqRes({
             body: undefined,
+            initialResponseHeaders,
             query,
             request,
             url: originalRequestPathAndSearch,
@@ -926,16 +936,23 @@ export function createPagesPageHandler(
           const notFoundRoute = findNotFoundRoute();
           let notFoundResponse: Response;
           if (notFoundRoute && routePattern !== "/404" && routePattern !== "/_error") {
-            notFoundResponse = await renderPage(request, url, manifest, middlewareHeaders, {
-              statusCode: 404,
-              asPath: routerAsPath,
-              renderErrorPageOnMiss: false,
-              __forcedRoute: notFoundRoute,
-              __notFoundRevalidateSeconds: pageDataResult.revalidateSeconds,
-              __notFoundExpireSeconds: pageDataResult.expireSeconds,
-              __notFoundCachePathname: isrCachePathname,
-              __notFoundSourceHeaders: pageDataResult.responseHeaders,
-            });
+            notFoundResponse = await renderPage(
+              request,
+              url,
+              manifest,
+              middlewareHeaders,
+              {
+                statusCode: 404,
+                asPath: routerAsPath,
+                renderErrorPageOnMiss: false,
+                __forcedRoute: notFoundRoute,
+                __notFoundRevalidateSeconds: pageDataResult.revalidateSeconds,
+                __notFoundExpireSeconds: pageDataResult.expireSeconds,
+                __notFoundCachePathname: isrCachePathname,
+                __notFoundSourceHeaders: pageDataResult.responseHeaders,
+              },
+              initialResponseHeaders,
+            );
           } else {
             notFoundResponse = mergePagesNotFoundSourceHeaders(
               buildDefaultPagesNotFoundResponse(),
@@ -1189,14 +1206,21 @@ export function createPagesPageHandler(
           }
           if (errorRoute) {
             try {
-              return await renderPage(request, url, manifest, middlewareHeaders, {
-                statusCode: 500,
-                asPath: url,
-                renderErrorPageOnMiss: false,
-                __isInternalErrorRender: true,
-                __forcedRoute: errorRoute,
-                err: e instanceof Error ? e : new Error(String(e)),
-              });
+              return await renderPage(
+                request,
+                url,
+                manifest,
+                middlewareHeaders,
+                {
+                  statusCode: 500,
+                  asPath: url,
+                  renderErrorPageOnMiss: false,
+                  __isInternalErrorRender: true,
+                  __forcedRoute: errorRoute,
+                  err: e instanceof Error ? e : new Error(String(e)),
+                },
+                initialResponseHeaders,
+              );
             } catch (errorPageErr) {
               console.error("[vinext] Error page render failed:", errorPageErr);
             }

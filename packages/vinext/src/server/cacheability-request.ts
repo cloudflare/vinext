@@ -33,6 +33,7 @@ import {
   type CacheabilityManifestRoute,
   type CacheabilityRepresentation,
 } from "./cacheability-manifest.js";
+import { applyResponseStagePolicyHeaders } from "./response-stage-policy.js";
 
 type CacheabilityProbeRouteState =
   | "dynamic"
@@ -206,17 +207,27 @@ export function applyResponseStageCachePolicy(
   if (state) state.explicitConfigCachePolicy = true;
 
   try {
-    for (const [name, value] of policyHeaders) response.headers.set(name, value);
+    applyResponseStagePolicyHeaders(response.headers, policyHeaders);
     return response;
   } catch {
     const headers = new Headers(response.headers);
-    for (const [name, value] of policyHeaders) headers.set(name, value);
+    applyResponseStagePolicyHeaders(headers, policyHeaders);
     return new Response(response.body, {
       headers,
       status: response.status,
       statusText: response.statusText,
     });
   }
+}
+
+/** Record policy that a renderer applied before producing its response. */
+export function recordResponseStageCachePolicy(
+  ctx: ExecutionContextLike,
+  policyHeaders: ReadonlyArray<readonly [string, string]> | null | undefined,
+): void {
+  if (!policyHeaders?.length) return;
+  const state = readState(ctx);
+  if (state) state.explicitConfigCachePolicy = true;
 }
 
 function probeResponse(
