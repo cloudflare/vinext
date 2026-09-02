@@ -17,7 +17,9 @@ import {
   generateCdnCacheAdapterModule,
   loadVinextCacheConfigFromViteConfig,
   generateCacheAdaptersModule,
+  getConfiguredCdnResponsePolicyHeaderNames,
   hasBuildIdentityResponseHeader,
+  hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
@@ -174,20 +176,6 @@ describe("findVinextCacheConfigInPlugins", () => {
     expect(await findVinextCacheConfigInPlugins(plugins)).toBe(cache);
   });
 
-  it("preserves adapter-owned multi-stage output metadata", async () => {
-    const cache = {
-      cdn: {
-        adapter: "adapter",
-        output: { entry: "/adapter/worker.js", type: "multi-stage" as const },
-      },
-    };
-    const plugins = [{ [VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY]: cache }] as unknown as Parameters<
-      typeof findVinextCacheConfigInPlugins
-    >[0];
-
-    expect(await findVinextCacheConfigInPlugins(plugins)).toBe(cache);
-  });
-
   it("preserves promise-aware cache loading through the internal Vite wrapper", async () => {
     const cache = { data: { adapter: "adapter", options: { binding: "MY_KV" } } };
     const vite = {
@@ -340,15 +328,56 @@ describe("cdnAdapter builder + factory", () => {
     expect(path.isAbsolute(descriptor.adapter)).toBe(true);
     expect(descriptor.adapter.endsWith("cdn-adapter.runtime.js")).toBe(true);
     expect(descriptor.options).toBeUndefined();
+    expect(descriptor.output.type).toBe("multi-stage");
+    expect(path.isAbsolute(descriptor.output.entry)).toBe(true);
+    expect(descriptor.output.entry.endsWith("cdn-adapter.worker.js")).toBe(true);
+    expect(
+      descriptor.output.transformHostEntry({
+        code: 'import handler from "vinext/server/fetch-handler";\nexport default handler;',
+        id: "\0virtual:cloudflare/worker-entry",
+      }),
+    ).toContain(`export { VinextCachedResponse } from ${JSON.stringify(descriptor.output.entry)};`);
+    expect(
+      descriptor.output.transformHostEntry({
+        code: "export default { fetch() {} };",
+        id: "/app/unrelated.ts",
+      }),
+    ).toBeNull();
+    expect(
+      descriptor.output.transformHostEntry({
+        code: 'export default function Docs() { return "vinext/server/fetch-handler"; }',
+        id: "/app/page.tsx",
+      }),
+    ).toBeNull();
+    expect(
+      descriptor.output.transformHostEntry({
+        code: '// import handler from "vinext/server/fetch-handler";\nexport default {};',
+        id: "/app/page.ts",
+      }),
+    ).toBeNull();
     expect(descriptor.capabilities).toEqual({
       buildIdentity: "response-header",
+      responsePolicyHeaderNames: ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"],
+      requestRouting: "uncached-stage",
       responseVary: "verbatim",
       routeCacheability: "probe-manifest",
     });
     expect(hasBuildIdentityResponseHeader({ cdn: descriptor })).toBe(true);
+    expect(hasUncachedRequestRouting({ cdn: descriptor })).toBe(true);
     expect(hasVerbatimResponseVary({ cdn: descriptor })).toBe(true);
     expect(hasBuildIdentityResponseHeader({ cdn: { adapter: "custom-cache" } })).toBe(false);
+    expect(hasUncachedRequestRouting({ cdn: { adapter: "url-only-cache" } })).toBe(false);
     expect(hasVerbatimResponseVary({ cdn: { adapter: "url-only-cache" } })).toBe(false);
+    expect(
+      getConfiguredCdnResponsePolicyHeaderNames({
+        cdn: {
+          adapter: "custom-cache",
+          capabilities: {
+            responsePolicyHeaderNames: [" X-Example-Policy ", "CACHE-CONTROL", ""],
+          },
+        },
+      }),
+    ).toEqual(["cache-control", "x-example-policy"]);
   });
 
   it("factory returns a CloudflareCdnCacheAdapter", () => {

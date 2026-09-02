@@ -505,7 +505,7 @@ describe("single-request cacheability admission", () => {
     }
   });
 
-  it("uses an adapter-owned edge policy rather than browser policy for Pages admission", async () => {
+  it("uses the Cloudflare edge policy rather than browser policy for Pages admission", async () => {
     const previousNextDeployPolicy = process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL;
     delete process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL;
     const adapter = new CloudflareCdnCacheAdapter();
@@ -520,11 +520,6 @@ describe("single-request cacheability admission", () => {
       );
       const state = cacheabilityState(context);
       state.route = { kind: "pages-page", pattern: "/page" };
-      state.responsePolicyHeaderNames = [
-        "cache-control",
-        "cdn-cache-control",
-        "cloudflare-cdn-cache-control",
-      ];
 
       const response = await finalizeWorkerCacheabilityResponse(
         new Response("page", {
@@ -537,7 +532,11 @@ describe("single-request cacheability admission", () => {
       );
 
       expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
-      expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=60");
+      expect(
+        adapter.responsePolicyHeaderNames
+          .map((name) => response.headers.get(name))
+          .find((value) => value !== null),
+      ).toBe("public, max-age=60");
     } finally {
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());
       if (previousNextDeployPolicy === undefined) {

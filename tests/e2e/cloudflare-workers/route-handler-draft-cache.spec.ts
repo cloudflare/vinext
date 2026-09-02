@@ -43,6 +43,17 @@ async function readDraftIsrRoute(request: APIRequestContext, scenario: string) {
   };
 }
 
+async function readPersonalized(request: APIRequestContext, pathname: string, visitorId: string) {
+  const response = await request.get(`${BASE_URL}${pathname}`, {
+    headers: { "x-test-visitor-id": visitorId },
+  });
+  expect(response.status()).toBe(200);
+  return {
+    body: await response.text(),
+    visitor: response.headers()["x-cdn-stage-visitor"],
+  };
+}
+
 test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
   test.beforeAll(async () => {
     server = spawn(
@@ -62,12 +73,9 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     });
     expect(forged.status()).toBe(200);
     expect(await forged.json()).toMatchObject({ draftMode: false });
-    // This fixture has pathname-eligible middleware. A CDN HIT would bypass
-    // that boundary, so even an anonymous Route Handler response must remain
-    // private until middleware is isolated into an uncached outer stage.
     expect(forged.headers()["cache-control"]).toContain("no-store");
     expect(forged.headers()["cdn-cache-control"]).toBeUndefined();
-    expect(forged.headers()["x-vinext-cache"]).toBeUndefined();
+    expect(forged.headers()["x-vinext-cache"]).toBe("MISS");
 
     await setDraftMode(request, true);
     const draftFirstScenario = `draft-first-${Date.now()}`;
@@ -84,7 +92,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(anonymousAfterDraft.payload.draftMode).toBe(false);
     expect(anonymousAfterDraft.payload.token).not.toBe(draftFirst.payload.token);
     expect(anonymousAfterDraft.cacheControl).toContain("no-store");
-    expect(anonymousAfterDraft.cacheState).toBeUndefined();
+    expect(anonymousAfterDraft.cacheState).toBe("MISS");
 
     const publicFirstScenario = `public-first-${Date.now()}`;
     const anonymousFirst = await readDraftIsrRoute(request, publicFirstScenario);
@@ -174,8 +182,10 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     });
     expect(dynamicResponse.status()).toBe(200);
     expect(await dynamicResponse.text()).toBe("tenant-a");
-    expect(dynamicResponse.headers()["cache-control"] ?? "").not.toContain("public");
-    expect(dynamicResponse.headers()["cache-control"]).toContain("no-store");
+    // The explicit response policy admits the completed body in the named
+    // entrypoint; the uncached gateway remains private for outer composition.
+    expect(dynamicResponse.headers()["cache-control"]).toContain("private");
+    expect(dynamicResponse.headers()["cache-control"]).toContain("max-age=0");
     expect(dynamicResponse.headers()["cdn-cache-control"]).toBeUndefined();
     expect(dynamicResponse.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
     expect(dynamicResponse.headers()["cache-tag"]).toBeUndefined();
@@ -195,7 +205,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
   }) => {
     const response = await request.get(`${BASE_URL}/api/large-static-stream`);
     expect(response.status()).toBe(200);
-    expect((await response.body()).byteLength).toBe(4 * 1024 * 1024 + 1);
+    expect((await response.body()).byteLength).toBe(16 * 1024 * 1024 + 1);
     expect(response.headers()["cache-control"]).toContain("no-store");
     expect(response.headers()["cdn-cache-control"]).toBeUndefined();
     expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
@@ -215,6 +225,72 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
       expect(response.headers()["cdn-cache-control"], accept ?? "missing Accept").toBeUndefined();
     }
   });
+
+  test("runs middleware above App and Pages response stages", async ({ request }) => {
+    // Local Miniflare executes the named response entrypoint but does not emulate
+    // the deployed Worker-front cache. Deployed HIT reuse is covered by
+    // rsc-prewarm.spec.ts in the workers-cache preview workflow.
+    for (const route of ["cdn-stage-app", "cdn-stage-pages"]) {
+      const slug = `${route}-${Date.now()}`;
+      const first = await readPersonalized(request, `/${route}/${slug}`, "visitor-a");
+      const second = await readPersonalized(request, `/${route}/${slug}`, "visitor-b");
+
+      expect(first.visitor).toBe("visitor-a");
+      expect(second.visitor).toBe("visitor-b");
+      expect(first.body).toContain(
+        `${route === "cdn-stage-app" ? "App" : "Pages"} CDN response stage`,
+      );
+      expect(second.body).toContain(
+        `${route === "cdn-stage-app" ? "App" : "Pages"} CDN response stage`,
+      );
+    }
+  });
+
+  test("routes revalidatePath through the cache-bearing response entrypoint", async ({
+    request,
+  }) => {
+    const slug = `purge-${Date.now()}`;
+    const pathname = `/cdn-stage-app/${slug}`;
+    const purge = await request.post(`${BASE_URL}/api/cdn-stage-revalidate`, {
+      data: { pathname },
+    });
+    expect(purge.status()).toBe(200);
+    expect(await purge.json()).toEqual({ revalidated: pathname });
+  });
+
+  test("bypasses the shared response stage for middleware cookie overlays", async ({ request }) => {
+    const slug = `cookie-${Date.now()}`;
+    const first = await readPersonalized(request, `/cdn-stage-cookie/${slug}`, "visitor-a");
+    const second = await readPersonalized(request, `/cdn-stage-cookie/${slug}`, "visitor-b");
+
+    expect(first.body).toContain("middleware-cookie:visitor-a");
+    expect(second.body).toContain("middleware-cookie:visitor-b");
+  });
+
+  test("bypasses the shared response stage for middleware request-header overrides", async ({
+    request,
+  }) => {
+    const slug = `request-header-${Date.now()}`;
+    for (const visitorId of ["visitor-a", "visitor-b"]) {
+      const response = await request.get(`${BASE_URL}/api/cdn-stage-middleware-header/${slug}`, {
+        headers: { "x-test-visitor-id": visitorId },
+      });
+      expect(response.status()).toBe(200);
+      expect(await response.text()).toBe(visitorId);
+    }
+  });
+
+  test("does not cache late request-dependent App responses", async ({ request }) => {
+    for (const route of ["cdn-stage-late", "api/cdn-stage-late-route"]) {
+      const slug = `${route.replaceAll("/", "-")}-${Date.now()}`;
+      const first = await readPersonalized(request, `/${route}/${slug}`, "visitor-a");
+      const second = await readPersonalized(request, `/${route}/${slug}`, "visitor-b");
+
+      expect(first.body).toContain("visitor-a");
+      expect(second.body).toContain("visitor-b");
+      expect(second.body).not.toBe(first.body);
+    }
+  });
 });
 
 test.describe("Cloudflare Pages-only completed-response admission", () => {
@@ -224,7 +300,7 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
   test.beforeAll(async () => {
     test.setTimeout(90_000);
     pagesServer = spawn(
-      "../../../node_modules/.bin/vp build --config vite.pages-cdn-cache.config.ts && npx wrangler dev --config dist/server/wrangler.json --port 4196",
+      "../../../node_modules/.bin/vp build --config vite.pages-cdn-cache.config.ts && npx wrangler dev --config dist/cf_app_basic/wrangler.json --port 4196",
       { cwd: FIXTURE_DIR, shell: true, stdio: "inherit" },
     );
     for (let attempt = 0; attempt < 240; attempt++) {
@@ -244,9 +320,11 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
     pagesServer.kill();
   });
 
-  test("fails closed without an embedded two-stage manifest", async ({ request }) => {
+  test("clears inner CDN policy when outer config keeps a response private", async ({
+    request,
+  }) => {
     expect(
-      fs.readFileSync(`${FIXTURE_DIR}/dist/server/__vinext_cacheability_manifest.js`, "utf8"),
+      fs.readFileSync(`${FIXTURE_DIR}/dist/cf_app_basic/__vinext_cacheability_manifest.js`, "utf8"),
     ).toBe("export default null;\n");
 
     const response = await request.get(`${pagesBaseUrl}/pages-about`, {
@@ -269,5 +347,28 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
       expect(response.headers()["cache-control"], accept ?? "missing Accept").toContain("no-store");
       expect(response.headers()["cdn-cache-control"], accept ?? "missing Accept").toBeUndefined();
     }
+  });
+
+  test("admits explicitly public Pages API responses", async ({ request }) => {
+    const response = await request.get(`${pagesBaseUrl}/api/cdn-public`);
+
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({ public: true });
+    expect(response.headers()["cache-control"]).toBe("private, max-age=0, must-revalidate");
+    expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+    expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+  });
+
+  test("keeps public Pages Edge API responses private after request.cf access", async ({
+    request,
+  }) => {
+    const response = await request.get(`${pagesBaseUrl}/api/cdn-request-cf`);
+
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({ hasCf: true });
+    expect(response.headers()["cache-control"]).toContain("no-store");
+    expect(response.headers()["cdn-cache-control"]).toBeUndefined();
+    expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+    expect(response.headers()["cache-tag"]).toBeUndefined();
   });
 });
