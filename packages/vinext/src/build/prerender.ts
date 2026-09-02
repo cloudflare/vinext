@@ -275,6 +275,11 @@ type PrerenderAppOptions = {
    * to the RSC entry's directory for compatibility with standalone callers.
    */
   serverDir?: string;
+  /**
+   * Root of the complete production build passed to the local prerender
+   * server. Defaults to the parent of `serverDir` for standalone callers.
+   */
+  buildOutDir?: string;
 } & PrerenderOptions;
 
 // ─── Internal option extensions ───────────────────────────────────────────────
@@ -1076,6 +1081,7 @@ export async function prerenderApp({
   mode,
   rscBundlePath,
   serverDir = path.dirname(rscBundlePath),
+  buildOutDir = path.dirname(serverDir),
   ...options
 }: PrerenderAppOptionsInternal): Promise<PrerenderResult> {
   const manifestDir = options.manifestDir ?? outDir;
@@ -1130,7 +1136,7 @@ export async function prerenderApp({
           const srv = await startProdServer({
             port: 0,
             host: "127.0.0.1",
-            outDir: path.dirname(serverDir),
+            outDir: buildOutDir,
             rscEntryPath: rscBundlePath,
             serverDir,
             noCompression: true,
@@ -1806,7 +1812,7 @@ export async function prerenderApp({
       const poolSize = resolvePrerenderPoolSize(urlsToRender.length, concurrency);
       if (poolSize > 1) {
         renderPool = await startOptionalPrerenderServerPool(
-          path.dirname(serverDir),
+          buildOutDir,
           poolSize,
           rscBundlePath,
           serverDir,
