@@ -5,6 +5,15 @@ import {
   isAppWorkerResponseStageProps,
   type AppWorkerResponseStageProps,
 } from "../packages/vinext/src/server/app-worker-stages.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import {
+  VINEXT_EXPECTED_WORKER_VERSION_HEADER,
+  VINEXT_PRERENDER_READINESS_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 
 const stages = vi.hoisted(() => ({
   registerCacheAdapters: vi.fn(),
@@ -43,9 +52,62 @@ const notFoundStage = {
 
 describe("App Worker response stage", () => {
   beforeEach(() => {
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     stages.registerCacheAdapters.mockReset();
     stages.registerImageOptimizer.mockReset();
     stages.renderResponse.mockReset();
+  });
+
+  it("validates readiness from inside the App response stage", async () => {
+    const validateRequest = vi.fn(() => null);
+    const adapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders() {
+        return {};
+      },
+      validateRequest,
+      async revalidateTag() {},
+    };
+    stages.registerCacheAdapters.mockImplementation(() => setCdnCacheAdapter(adapter));
+    const request = new Request(
+      "https://example.com/__vinext/prerender/readiness?attempt=response-stage",
+      { headers: { [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-a" } },
+    );
+    const props = {
+      buildId: null,
+      cacheability: {
+        policyHeaders: null,
+        probeMode: null,
+        resolvedRoutePathname: "/__vinext/prerender/readiness",
+      },
+      draftModeCookie: null,
+      kind: "app-full-request" as const,
+      middlewareCookieOverlay: null,
+      prerenderDiscovery: true,
+      protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+      scriptNonce: null,
+      staticFileSignalToken: "00000000-0000-4000-8000-000000000000",
+    } satisfies AppWorkerResponseStageProps;
+
+    const response = await handleResponseStage(
+      request,
+      { binding: "value" },
+      undefined,
+      props,
+      async () => new Response("request-stage"),
+      { cache: "bypass" },
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get(VINEXT_PRERENDER_READINESS_HEADER)).toBe("1");
+    expect(stages.registerCacheAdapters).toHaveBeenCalledWith({ binding: "value" });
+    expect(validateRequest).toHaveBeenCalledWith(request);
+    expect(stages.renderResponse).not.toHaveBeenCalled();
   });
 
   it("re-enters the request stage through the adapter-owned reverse transport", async () => {
