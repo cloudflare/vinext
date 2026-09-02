@@ -33,6 +33,7 @@ import {
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
+  VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
@@ -146,6 +147,15 @@ async function handleRequest(
     : filterInternalHeaders(request.headers);
   filteredHeaders.delete(VINEXT_PRERENDER_SECRET_HEADER);
   filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
+  if (readinessResponse?.status === 204) {
+    const expectedWorkerVersion = request.headers.get(VINEXT_EXPECTED_WORKER_VERSION_HEADER);
+    if (expectedWorkerVersion) {
+      // The request stage already authenticated the build capability. Preserve
+      // only the version assertion needed by the independently hosted response
+      // stage; the prerender secret remains confined to this gateway.
+      filteredHeaders.set(VINEXT_EXPECTED_WORKER_VERSION_HEADER, expectedWorkerVersion);
+    }
+  }
   const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
     trustedPrerenderRouteParams,
   );

@@ -122,7 +122,11 @@ describe("App Router Production server worker entry compatibility", () => {
           request: Request,
           env: unknown,
           ctx: undefined,
-          dispatchResponseStage: () => Promise<Response>,
+          dispatchResponseStage: (
+            request: Request,
+            props: unknown,
+            options: unknown,
+          ) => Promise<Response>,
         ): Promise<Response>;
       };
       const env = { binding: "value" };
@@ -140,7 +144,9 @@ describe("App Router Production server worker entry compatibility", () => {
         undefined,
         async () => new Response("unused"),
       );
-      const readinessDispatch = vi.fn(
+      const readinessDispatch = vi.fn<
+        (request: Request, props: unknown, options: unknown) => Promise<Response>
+      >(
         async () =>
           new Response(null, {
             status: 204,
@@ -170,6 +176,11 @@ describe("App Router Production server worker entry compatibility", () => {
         { kind: "readiness-test" },
         { cache: "bypass" },
       );
+      const readinessStageRequest = readinessDispatch.mock.calls[0]![0] as Request;
+      expect(readinessStageRequest.headers.get("X-Vinext-Expected-Worker-Version")).toBe(
+        "version-a",
+      );
+      expect(readinessStageRequest.headers.get("X-Vinext-Prerender-Secret")).toBeNull();
       expect(capturedRequests).toHaveLength(1);
       expect(capturedEnvs).toEqual([env, env, env]);
     } finally {
