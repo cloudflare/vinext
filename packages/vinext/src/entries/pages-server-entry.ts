@@ -14,7 +14,7 @@ import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
-import { defaultExportMayHaveRuntimeMember, hasExportedName } from "../build/report.js";
+import { hasExportedName } from "../build/report.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
@@ -68,9 +68,10 @@ export async function generatePagesRequestEntry(
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const documentPath = findFileWithExts(pagesDir, "_document", fileMatcher);
-  const hasRequestAwareDocument =
-    documentPath !== null &&
-    defaultExportMayHaveRuntimeMember(await readFile(documentPath, "utf8"), "getInitialProps");
+  // A custom Document can attach getInitialProps dynamically or through an
+  // imported base class. Keep the request-independent stage conservative
+  // instead of growing a second JavaScript analyzer for this cache optimization.
+  const hasRequestAwareDocument = documentPath !== null;
   const pageRouteEntries = await Promise.all(
     pageRoutes.map(async (route: Route) => {
       const dataKind = await getPagesDataKind(route.filePath);
