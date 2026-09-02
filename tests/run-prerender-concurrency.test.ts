@@ -105,11 +105,18 @@ describe("runPrerender concurrency", () => {
     fs.mkdirSync(path.join(root, "app"));
     fs.mkdirSync(path.join(root, "dist", "server", ".vite"), { recursive: true });
     fs.writeFileSync(path.join(root, "dist", "server", "index.js"), 'import "host:runtime";\n');
-    fs.writeFileSync(path.join(root, "dist", "server", "application-entry.js"), "export {};\n");
+    fs.mkdirSync(path.join(root, "dist", "server", "entries"));
+    fs.writeFileSync(
+      path.join(root, "dist", "server", "entries", "application-entry.js"),
+      "export {};\n",
+    );
     fs.writeFileSync(
       path.join(root, "dist", "server", ".vite", "manifest.json"),
       JSON.stringify({
-        "virtual:vinext-rsc-entry": { file: "application-entry.js", isDynamicEntry: true },
+        "virtual:vinext-rsc-entry": {
+          file: "entries/application-entry.js",
+          isDynamicEntry: true,
+        },
       }),
     );
 
@@ -120,7 +127,8 @@ describe("runPrerender concurrency", () => {
 
       expect(prerenderAppMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          rscBundlePath: path.join(root, "dist", "server", "application-entry.js"),
+          rscBundlePath: path.join(root, "dist", "server", "entries", "application-entry.js"),
+          serverDir: path.join(root, "dist", "server"),
         }),
       );
     } finally {

@@ -23,8 +23,8 @@ describe("App prerender entry", () => {
   it("starts its owned server with the resolved application entry", async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-prerender-entry-"));
     const serverDir = path.join(root, "dist", "server");
-    const rscBundlePath = path.join(serverDir, "application-entry.js");
-    fs.mkdirSync(serverDir, { recursive: true });
+    const rscBundlePath = path.join(serverDir, "entries", "application-entry.js");
+    fs.mkdirSync(path.dirname(rscBundlePath), { recursive: true });
     fs.writeFileSync(
       path.join(serverDir, "vinext-server.json"),
       JSON.stringify({ prerenderSecret: "test-prerender-secret" }),
@@ -41,10 +41,14 @@ describe("App prerender entry", () => {
       outDir: path.join(serverDir, "prerendered-routes"),
       routes: [],
       rscBundlePath,
+      serverDir,
     });
 
     expect(startProdServer).toHaveBeenCalledWith(
-      expect.objectContaining({ rscEntryPath: rscBundlePath }),
+      expect.objectContaining({
+        outDir: path.join(root, "dist"),
+        rscEntryPath: rscBundlePath,
+      }),
     );
   });
 });
