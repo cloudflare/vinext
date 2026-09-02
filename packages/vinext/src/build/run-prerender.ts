@@ -168,9 +168,14 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // cleaned with the rest of vinext's build output on rebuild and co-located
   // with server artifacts.
   const manifestDir = path.join(root, "dist", "server");
-  const rscBundlePath =
-    options.rscBundlePath ?? resolveBuiltRscEntryPath(path.join(root, "dist", "server"));
-  const serverDir = path.dirname(rscBundlePath);
+  const rscBundlePath = options.rscBundlePath ?? resolveBuiltRscEntryPath(manifestDir);
+  // The emitted entry may live below dist/server (for example entries/app.js).
+  // Build metadata and prerender artifacts remain rooted at dist/server.
+  const relativeEntryPath = path.relative(manifestDir, rscBundlePath);
+  const serverDir =
+    !relativeEntryPath.startsWith("../") && !path.isAbsolute(relativeEntryPath)
+      ? manifestDir
+      : path.dirname(rscBundlePath);
 
   const config = options.nextConfig
     ? { ...options.nextConfig }
@@ -265,6 +270,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         config,
         concurrency: options.concurrency,
         rscBundlePath,
+        serverDir,
         // For hybrid builds pass the shared prod server via internal field.
         // prerenderApp will use it instead of starting its own.
         ...(sharedProdServer ? { _prodServer: sharedProdServer } : {}),
