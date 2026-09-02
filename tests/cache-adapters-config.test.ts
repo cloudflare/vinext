@@ -172,14 +172,33 @@ describe("multi-stage build inputs", () => {
     });
   });
 
-  it("preserves string and array host inputs", () => {
+  it("preserves string inputs and basename-derived array entry filenames", () => {
     expect(mergeMultiStageBuildInputs("virtual:main", entries)).toMatchObject({
       index: "virtual:main",
     });
-    expect(mergeMultiStageBuildInputs(["virtual:first", "virtual:second"], entries)).toMatchObject({
-      "entry-0": "virtual:first",
-      "entry-1": "virtual:second",
+    const merged = mergeMultiStageBuildInputs(
+      ["/host/worker.ts", "/host/queues/consumer.mjs"],
+      entries,
+    );
+    expect(merged).toMatchObject({
+      worker: "/host/worker.ts",
+      consumer: "/host/queues/consumer.mjs",
     });
+    expect(Object.keys(merged).map((name) => `${name}.js`)).toEqual([
+      "worker.js",
+      "consumer.js",
+      "vinext-request-stage.js",
+      "vinext-response-stage.js",
+    ]);
+  });
+
+  it("rejects ambiguous array input names instead of silently renaming host entries", () => {
+    expect(() =>
+      mergeMultiStageBuildInputs(["/host/first/worker.ts", "/host/second/worker.js"], entries),
+    ).toThrow('derived name "worker" conflicts with another entry');
+    expect(() => mergeMultiStageBuildInputs(["/host/vinext-request-stage.ts"], entries)).toThrow(
+      'derived name "vinext-request-stage" conflicts with another entry',
+    );
   });
 
   it.each(["vinext-request-stage", "vinext-response-stage"])(
