@@ -1,13 +1,9 @@
 import type { PagesRenderOptions } from "./pages-request-pipeline.js";
-import type {
-  VinextResponseStageCacheability,
-  VinextResponseStageTransport,
-} from "./multi-stage.js";
+import type { VinextResponseStageCacheability } from "./multi-stage.js";
 
 export const PAGES_RESPONSE_STAGE_PROTOCOL_VERSION = 4;
 export const PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER =
   "x-vinext-pages-response-stage-policy-owner";
-export type PagesResponseStagePolicyOwner = "request-time" | "static";
 
 type PagesResponseStageEnvelope = {
   buildId: string | null;
@@ -42,16 +38,6 @@ export type WorkerResponseStageProps =
   | PagesApiResponseStageProps
   | PagesPageResponseStageProps
   | PagesPrerenderDiscoveryStageProps;
-
-/**
- * Host-owned transport for invoking a response stage.
- *
- * Core request pipelines decide what may be shared and provide the complete
- * serialized render identity here. Response-only middleware/config state is
- * carried in the props so Pages user code observes the same pre-handler
- * response as Next.js.
- */
-export type DispatchWorkerResponseStage = VinextResponseStageTransport<WorkerResponseStageProps>;
 
 function isSerializedHeaders(value: unknown): value is Array<[string, string]> {
   return (
