@@ -29,8 +29,11 @@ afterEach(() => {
 });
 
 describe("injectPregeneratedConcretePaths", () => {
-  it("replaces an earlier injection", () => {
-    writeFile("dist/server/index.js", 'import { handler } from "vinext/server/fetch-handler";\n');
+  it("updates the sidecar without rewriting the built entry or its sourcemap", () => {
+    const entry = 'import { handler } from "vinext/server/fetch-handler";\n';
+    const sourceMap = '{"version":3,"sources":["entry.ts"]}\n';
+    writeFile("dist/server/index-a1b2.js", entry);
+    writeFile("dist/server/index-a1b2.js.map", sourceMap);
     writeFile(
       "dist/server/vinext-prerender.json",
       JSON.stringify({
@@ -38,7 +41,8 @@ describe("injectPregeneratedConcretePaths", () => {
         pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-a"]]],
       }),
     );
-    injectPregeneratedConcretePaths(tmpDir);
+    const entryPath = path.join(tmpDir, "dist/server/index-a1b2.js");
+    injectPregeneratedConcretePaths(tmpDir, entryPath);
 
     writeFile(
       "dist/server/vinext-prerender.json",
@@ -47,31 +51,31 @@ describe("injectPregeneratedConcretePaths", () => {
         pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-b"]]],
       }),
     );
-    injectPregeneratedConcretePaths(tmpDir);
+    injectPregeneratedConcretePaths(tmpDir, entryPath);
 
-    const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    expect(output).toContain("post-b");
-    expect(output).not.toContain("post-a");
-    expect(output).toContain('import { handler } from "vinext/server/fetch-handler"');
+    const runtimeTable = fs.readFileSync(
+      path.join(tmpDir, "dist/server", PREGENERATED_CONCRETE_PATHS_MODULE),
+      "utf-8",
+    );
+    expect(runtimeTable).toContain("post-b");
+    expect(runtimeTable).not.toContain("post-a");
+    expect(fs.readFileSync(entryPath, "utf-8")).toBe(entry);
+    expect(fs.readFileSync(`${entryPath}.map`, "utf-8")).toBe(sourceMap);
   });
 
-  it("strips an earlier injection when the manifest is missing", () => {
-    writeFile(
-      "dist/server/index.js",
-      [
-        "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */",
-        'globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/blog/:slug",["/blog/post-a"]]];',
-        "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */",
-        'import { handler } from "vinext/server/fetch-handler";',
-        "",
-      ].join("\n"),
-    );
+  it("clears the sidecar when the manifest is missing", () => {
+    const entry = 'import { handler } from "vinext/server/fetch-handler";\n';
+    writeFile("dist/server/index.js", entry);
 
     injectPregeneratedConcretePaths(tmpDir);
 
-    const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    expect(output).not.toContain("__VINEXT_PREGENERATED_CONCRETE_PATHS");
-    expect(output).toContain('import { handler } from "vinext/server/fetch-handler"');
+    expect(
+      fs.readFileSync(
+        path.join(tmpDir, "dist/server", PREGENERATED_CONCRETE_PATHS_MODULE),
+        "utf-8",
+      ),
+    ).toBe("delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;\n");
+    expect(fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8")).toBe(entry);
   });
 
   it("uses the concrete-path table stored in the prerender manifest", () => {
@@ -89,7 +93,10 @@ describe("injectPregeneratedConcretePaths", () => {
 
     injectPregeneratedConcretePaths(tmpDir);
 
-    const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
+    const output = fs.readFileSync(
+      path.join(tmpDir, "dist/server", PREGENERATED_CONCRETE_PATHS_MODULE),
+      "utf-8",
+    );
     const match = output.match(/globalThis\.__VINEXT_PREGENERATED_CONCRETE_PATHS = (\[.*?\]);/);
     expect(match).not.toBeNull();
     expect(JSON.parse(match![1])).toEqual([["/blog/:slug", ["/blog/post-a"]]]);
@@ -100,16 +107,6 @@ describe("injectPregeneratedConcretePaths", () => {
 
   it("clears the current-process global when no concrete paths are available", () => {
     globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/old/:slug", ["/old/post"]]];
-    writeFile(
-      "dist/server/index.js",
-      [
-        "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */",
-        'globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/old/:slug",["/old/post"]]];',
-        "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */",
-        'export default { fetch() { return new Response("ok"); } };',
-        "",
-      ].join("\n"),
-    );
 
     injectPregeneratedConcretePaths(tmpDir);
 
@@ -123,6 +120,7 @@ describe("injectPregeneratedConcretePaths", () => {
     writeFile(
       "dist/server/index.js",
       [
+        `import "./${PREGENERATED_CONCRETE_PATHS_MODULE}";`,
         `import { getRenderedConcreteUrlPathsForRoute, initPregeneratedPathsFromGlobals } from ${JSON.stringify(registryModuleUrl)};`,
         "initPregeneratedPathsFromGlobals();",
         'export const renderedPaths = [...(getRenderedConcreteUrlPathsForRoute("/blog/:slug") ?? [])];',
@@ -180,9 +178,10 @@ describe("injectPregeneratedConcretePaths", () => {
     const registryModuleUrl = pathToFileURL(
       path.resolve("packages/vinext/src/server/pregenerated-concrete-paths.ts"),
     ).href;
-    const entryPath = path.join(tmpDir, "dist/custom-rsc/application-entry.js");
+    const rscServerDir = path.join(tmpDir, "dist/custom-rsc");
+    const entryPath = path.join(rscServerDir, "entries/application-entry.js");
     writeFile(
-      "dist/custom-rsc/application-entry.js",
+      "dist/custom-rsc/entries/application-entry.js",
       [
         `import "./${PREGENERATED_CONCRETE_PATHS_MODULE}";`,
         `import { getRenderedConcreteUrlPathsForRoute, initPregeneratedPathsFromGlobals } from ${JSON.stringify(registryModuleUrl)};`,
@@ -199,7 +198,9 @@ describe("injectPregeneratedConcretePaths", () => {
       }),
     );
 
-    injectPregeneratedConcretePaths(tmpDir, entryPath);
+    injectPregeneratedConcretePaths(tmpDir, entryPath, path.join(tmpDir, "dist/server"), [
+      rscServerDir,
+    ]);
 
     expect(
       fs.existsSync(path.join(path.dirname(entryPath), PREGENERATED_CONCRETE_PATHS_MODULE)),
@@ -210,31 +211,30 @@ describe("injectPregeneratedConcretePaths", () => {
         "utf-8",
       ),
     ).toContain("/blog/post-a");
+    expect(
+      fs.readFileSync(path.join(rscServerDir, PREGENERATED_CONCRETE_PATHS_MODULE), "utf-8"),
+    ).toContain("/blog/post-a");
     const applicationEntry: unknown = await import(
       `${pathToFileURL(entryPath).href}?t=${Date.now()}`
     );
     expect(applicationEntry).toMatchObject({ renderedPaths: ["/blog/post-a"] });
   });
 
-  it("strips an earlier injection when the manifest is corrupt", () => {
+  it("clears the sidecar without rewriting the entry when the manifest is corrupt", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    writeFile(
-      "dist/server/index.js",
-      [
-        "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_START__ */",
-        'globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/",["/"]]];',
-        "/* __VINEXT_PREGENERATED_CONCRETE_PATHS_END__ */",
-        'export default { fetch() { return new Response("ok"); } };',
-        "",
-      ].join("\n"),
-    );
+    const entry = 'export default { fetch() { return new Response("ok"); } };\n';
+    writeFile("dist/server/index.js", entry);
     writeFile("dist/server/vinext-prerender.json", "{invalid json}");
 
     injectPregeneratedConcretePaths(tmpDir);
 
-    const output = fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8");
-    expect(output).not.toContain("__VINEXT_PREGENERATED_CONCRETE_PATHS");
-    expect(output).toContain('export default { fetch() { return new Response("ok"); } }');
+    expect(
+      fs.readFileSync(
+        path.join(tmpDir, "dist/server", PREGENERATED_CONCRETE_PATHS_MODULE),
+        "utf-8",
+      ),
+    ).toBe("delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;\n");
+    expect(fs.readFileSync(path.join(tmpDir, "dist/server/index.js"), "utf-8")).toBe(entry);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("[vinext] Failed to read prerender manifest"),
       expect.any(SyntaxError),

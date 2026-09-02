@@ -167,20 +167,24 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
   if (!appDir && !pagesDir) return null;
 
-  // The manifest lands in dist/server/ alongside the server bundle so it's
-  // cleaned with the rest of vinext's build output on rebuild and co-located
-  // with server artifacts.
-  const manifestDir = path.resolve(
+  // Framework manifests and prerendered routes have one canonical location,
+  // independent of where an adapter asks Vite to emit the executable RSC
+  // graph. Consumers such as cache prewarming always resolve these artifacts
+  // from dist/server.
+  const manifestDir = path.resolve(root, "dist", "server");
+  const buildOutDir = path.resolve(root, "dist");
+  const configuredRscServerDir = path.resolve(
     root,
     options.routeRootConfig?.rscOutDir ?? path.join("dist", "server"),
   );
-  const rscBundlePath = options.rscBundlePath ?? resolveBuiltRscEntryPath(manifestDir);
-  // The emitted entry may live below dist/server (for example entries/app.js).
-  // Build metadata and prerender artifacts remain rooted at dist/server.
-  const relativeEntryPath = path.relative(manifestDir, rscBundlePath);
+  const rscBundlePath = options.rscBundlePath ?? resolveBuiltRscEntryPath(configuredRscServerDir);
+  // The emitted entry may live below its server root (for example
+  // entries/app.js). Keep adjacent build metadata rooted at the configured
+  // RSC output while resolving an explicit external entry from its own folder.
+  const relativeEntryPath = path.relative(configuredRscServerDir, rscBundlePath);
   const serverDir =
     !relativeEntryPath.startsWith("../") && !path.isAbsolute(relativeEntryPath)
-      ? manifestDir
+      ? configuredRscServerDir
       : path.dirname(rscBundlePath);
 
   const config = options.nextConfig
@@ -247,7 +251,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       sharedProdServer = await startProdServer({
         port: 0,
         host: "127.0.0.1",
-        outDir: path.dirname(serverDir),
+        outDir: buildOutDir,
         rscEntryPath: rscBundlePath,
         serverDir,
         noCompression: true,
@@ -278,6 +282,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         concurrency: options.concurrency,
         rscBundlePath,
         serverDir,
+        buildOutDir,
         // For hybrid builds pass the shared prod server via internal field.
         // prerenderApp will use it instead of starting its own.
         ...(sharedProdServer ? { _prodServer: sharedProdServer } : {}),
@@ -388,7 +393,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     );
   }
 
-  injectPregeneratedConcretePaths(root, rscBundlePath, manifestDir);
+  injectPregeneratedConcretePaths(root, rscBundlePath, manifestDir, [configuredRscServerDir]);
   if (fs.existsSync(rscBundlePath)) {
     rememberCurrentServerEntryImportMtime(rscBundlePath);
   }
