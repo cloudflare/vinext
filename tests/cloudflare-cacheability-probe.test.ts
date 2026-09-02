@@ -13,6 +13,7 @@ import {
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
+  VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 
@@ -78,6 +79,10 @@ describe("staged Worker cacheability probes", () => {
       urls.push(url);
       const headers = new Headers(init?.headers);
       expect(headers.get(VINEXT_CACHEABILITY_PROBE_HEADER)).toBe("1");
+      expect(JSON.parse(headers.get(VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER)!)).toEqual([
+        "app-page",
+        "/cached/:slug",
+      ]);
       expect(headers.get(VINEXT_PRERENDER_SECRET_HEADER)).toBe("probe-secret");
       expect(headers.get("Cache-Control")).toBeNull();
 

@@ -15,6 +15,7 @@ import type { PrerenderRoutePattern } from "vinext/internal/build/prerender-path
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
+  VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "vinext/internal/server/headers";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "./cache/cdn-build-id.js";
@@ -196,6 +197,12 @@ async function probeTarget(options: {
   const headers = new Headers(options.headers);
   for (const [name, value] of new Headers(options.target.headers)) headers.set(name, value);
   headers.set(VINEXT_CACHEABILITY_PROBE_HEADER, "1");
+  if (options.target.route) {
+    headers.set(
+      VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
+      JSON.stringify([options.target.route.kind, options.target.route.pattern]),
+    );
+  }
   headers.set(VINEXT_PRERENDER_SECRET_HEADER, options.secret);
 
   let reason = "probe failed";
