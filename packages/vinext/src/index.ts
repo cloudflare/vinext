@@ -228,6 +228,7 @@ import {
   takePagesClientAssetsBuildMetadata,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
+import { readPrerenderSecret, readServerRuntimeOutputDirs } from "./build/server-manifest.js";
 import {
   createPreviewBuildCredentials,
   getPreviewBuildCredentials,
@@ -1549,6 +1550,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
   });
   const pagesClientAssetsOutputDirs = new Set<string>();
+  const resolvePagesClientAssetsOutputDir = (environmentName: string, outputDir: string): string =>
+    !hasAppDir && environmentName === "ssr" ? path.dirname(outputDir) : outputDir;
   let pagesClientAssetsModule: string | null = null;
   // Dev-only public route inventory. Vite's watcher keeps this synchronized,
   // so request handling can use O(1) membership checks without filesystem I/O.
@@ -1579,6 +1582,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
+  const serverRuntimeOutputDirs = new Set<string>();
 
   function recordServerEntryLoad(environmentName: string | undefined, id: string): void {
     if (!environmentName) return;
@@ -4553,10 +4557,10 @@ export const loadServerActionClient = ${
 
           const buildRoot = this.environment.config.root ?? process.cwd();
           const environmentOutDir = path.resolve(buildRoot, this.environment.config.build.outDir);
-          const sidecarDir =
-            !hasAppDir && this.environment.name === "ssr"
-              ? path.dirname(environmentOutDir)
-              : environmentOutDir;
+          const sidecarDir = resolvePagesClientAssetsOutputDir(
+            this.environment.name,
+            environmentOutDir,
+          );
           let externalId = path.relative(
             environmentOutDir,
             path.join(sidecarDir, PAGES_CLIENT_ASSETS_MODULE),
@@ -4565,6 +4569,22 @@ export const loadServerActionClient = ${
           pagesClientAssetsOutputDirs.add(sidecarDir);
           return { id: externalId, external: true };
         },
+      },
+
+      outputOptions(output) {
+        const environment = this.environment;
+        if (
+          !selectedMultiStageOutput?.entries ||
+          !environment ||
+          !isMultiStageServerEnvironment(environment)
+        ) {
+          return;
+        }
+        const buildRoot = environment.config.root ?? process.cwd();
+        const outputDir = path.resolve(buildRoot, output.dir ?? environment.config.build.outDir);
+        pagesClientAssetsOutputDirs.add(
+          resolvePagesClientAssetsOutputDir(environment.name, outputDir),
+        );
       },
     },
     // CSS url() asset parity with Next.js. Build-only: dev CSS is untouched.
@@ -7107,15 +7127,35 @@ export const loadServerActionClient = ${
           const outDir = options.dir;
           if (!outDir) return;
 
-          const manifest = { prerenderSecret };
+          // Post-build discovery deliberately reads metadata from the
+          // platform-independent server directory. An adapter may emit either
+          // router's executable graph elsewhere, so retain an adjacent copy
+          // and also publish the canonical copy.
+          const canonicalServerDir = path.join(root, "dist", "server");
+          if (selectedMultiStageOutput?.entries) {
+            if (readPrerenderSecret(canonicalServerDir) === prerenderSecret) {
+              for (const runtimeOutputDir of readServerRuntimeOutputDirs(
+                canonicalServerDir,
+                root,
+              )) {
+                serverRuntimeOutputDirs.add(runtimeOutputDir);
+              }
+            }
+            serverRuntimeOutputDirs.add(path.resolve(outDir));
+          }
+          const manifest = {
+            prerenderSecret,
+            ...(serverRuntimeOutputDirs.size === 0
+              ? {}
+              : {
+                  runtimeOutputDirs: [...serverRuntimeOutputDirs]
+                    .map((runtimeOutputDir) => path.relative(root, runtimeOutputDir) || ".")
+                    .sort(),
+                }),
+          };
           const source = JSON.stringify(manifest);
           fs.writeFileSync(path.join(outDir, "vinext-server.json"), source);
 
-          // Post-build discovery deliberately reads metadata from the
-          // platform-independent server directory. An adapter may emit either
-          // router's executable graph elsewhere, so retain the adjacent copy
-          // above and also publish the canonical copy.
-          const canonicalServerDir = path.join(root, "dist", "server");
           if (path.resolve(outDir) !== canonicalServerDir) {
             fs.mkdirSync(canonicalServerDir, { recursive: true });
             fs.writeFileSync(path.join(canonicalServerDir, "vinext-server.json"), source);
