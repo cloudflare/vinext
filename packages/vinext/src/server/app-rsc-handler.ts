@@ -1222,7 +1222,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       captureCdnResponsePolicyHeaders(new Headers(headers)),
     ));
   const composeResponseStageResponse = async (response: Response): Promise<Response> => {
-    response = await applyConfigHeadersToResponseStage(response);
+    // Positive config cache policy was already transported into the response
+    // stage before admission. Preserve its completed policy here so a late
+    // render failure cannot be made public again by outer header composition.
+    response = await applyConfigHeadersToResponseStage(response, true);
     response = applyMiddlewareContextToResponse(response, middlewareContext);
     reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, await loadOuterResponsePolicy());
     return markAppRscResponseConfigHeadersApplied(response);
