@@ -62,7 +62,7 @@ describe("staged Worker cacheability probes", () => {
     for (const root of roots.splice(0)) fs.rmSync(root, { force: true, recursive: true });
   });
 
-  it("cancels stale Worker bodies before retrying with a hidden request key", async () => {
+  it("retries stale Worker builds until routing reaches the staged version", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cacheability-probe-"));
     roots.push(root);
     fs.mkdirSync(path.join(root, "dist", "server"), { recursive: true });
@@ -115,7 +115,9 @@ describe("staged Worker cacheability probes", () => {
       buildId: "application-build",
       expectedResponseBuildId: "response-build",
       fetchImpl,
-      retries: 2,
+      // A stale build is version-routing propagation, not an application
+      // failure, so it must not consume the ordinary request retry budget.
+      retries: 0,
       retryDelayMs: 0,
       root,
       targetUrl: "https://example.com",
@@ -146,6 +148,30 @@ describe("staged Worker cacheability probes", () => {
       staticPaths: { html: ["/cached/intro"] },
     });
     expect(result.cacheableTargets).toEqual([target]);
+  });
+
+  it("still applies the ordinary retry limit after reaching the staged build", async () => {
+    const root = createProbeRoot();
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response("unavailable", {
+          headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "response-build" },
+          status: 503,
+        }),
+    );
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      expectedResponseBuildId: "response-build",
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [target("/unavailable")],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(result.failures).toEqual(["/unavailable: probe returned HTTP 503"]);
   });
 
   it("aborts when cacheability probing makes no progress", async () => {

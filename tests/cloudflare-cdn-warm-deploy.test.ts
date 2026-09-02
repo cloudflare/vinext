@@ -1439,6 +1439,48 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(uploads).toBe(1);
   });
 
+  it("waits for concrete-route version propagation beyond the ordinary probe retry budget", async () => {
+    writeTwoStageWorkerArtifact();
+    const wrangler = mockTwoStageWrangler();
+    let probeAttempts = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
+        probeAttempts++;
+        if (probeAttempts <= 3) {
+          return new Response("previous Worker build", {
+            headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "previous-build" },
+          });
+        }
+        return appPageProbeResponse();
+      }
+      return isReadinessFetch(input) ? readinessResponse() : cacheableHtml();
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        cacheabilityProbe: true,
+        config: "dist/server/wrangler.json",
+        discoverWarmPlan: async () => ({
+          appPaths: ["/about"],
+          buildId: "app-build-a",
+          buildIdentity: "app-build-a",
+          loadingShellPaths: [],
+          paths: ["/about"],
+          routePatterns: appPageRoutePatterns(["/about"]),
+          rscPaths: [],
+        }),
+        warmCdnConcurrency: 1,
+        warmCdnProbeRetries: 0,
+        warmCdnPromotionDelay: 0,
+        warmCdnReadinessProbes: 1,
+        warmCdnRetries: 0,
+      }),
+    ).resolves.toBe("https://my-worker.example.workers.dev");
+    expect(probeAttempts).toBe(4);
+    expect(wrangler.promoted).toBe(true);
+  });
+
   it("refuses the final upload when deployment traffic changes during probing", async () => {
     writeTwoStageWorkerArtifact();
     let uploads = 0;

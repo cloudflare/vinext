@@ -207,7 +207,8 @@ async function probeTarget(options: {
     state: "probe-failed",
     version: 1,
   });
-  for (let attempt = 0; attempt <= options.retries; attempt++) {
+  let ordinaryFailures = 0;
+  for (let attempt = 0; ; attempt++) {
     if (options.getDeadlineAt() - Date.now() <= 0) return phaseTimeoutPayload();
 
     const controller = new AbortController();
@@ -215,6 +216,7 @@ async function probeTarget(options: {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let timedOutBy: "phase" | "request" | null = null;
     let retryable = true;
+    let retryUntilDeadline = false;
     try {
       const url = new URL(options.target.pathname, options.targetUrl);
       url.searchParams.set(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM, `${probeId}-${attempt}`);
@@ -233,6 +235,7 @@ async function probeTarget(options: {
             kind: "retry" as const,
             reason: "probe reached an unexpected Worker build",
             retryable: true,
+            retryUntilDeadline: true,
           };
         }
         if (!response.ok) {
@@ -241,6 +244,7 @@ async function probeTarget(options: {
             kind: "retry" as const,
             reason: `probe returned HTTP ${response.status}`,
             retryable: response.status === 404 || response.status === 503,
+            retryUntilDeadline: false,
           };
         }
         return { kind: "complete" as const, payload: await readProbeEnvelope(response) };
@@ -268,6 +272,7 @@ async function probeTarget(options: {
       if (result.kind === "complete") return result.payload;
       reason = result.reason;
       retryable = result.retryable;
+      retryUntilDeadline = result.retryUntilDeadline;
     } catch (error) {
       if (timedOutBy === "phase" || Date.now() >= options.getDeadlineAt()) {
         return phaseTimeoutPayload();
@@ -281,7 +286,13 @@ async function probeTarget(options: {
     } finally {
       if (timeout !== undefined) clearTimeout(timeout);
     }
-    if (!retryable || attempt === options.retries) break;
+    // Version overrides can become available at different times for different
+    // cache keys. Readiness on the reserved endpoint therefore cannot prove a
+    // concrete route has reached the staged build. Keep retrying only this
+    // routing mismatch until the no-progress deadline; application/transport
+    // failures retain the caller's bounded retry policy.
+    if (!retryable) break;
+    if (!retryUntilDeadline && ++ordinaryFailures > options.retries) break;
     if (options.retryDelayMs > 0) {
       const delayMs = Math.min(
         options.retryDelayMs,
