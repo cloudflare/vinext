@@ -347,18 +347,12 @@ describe("cdnAdapter builder + factory", () => {
     expect(descriptor.capabilities).toEqual({
       buildIdentity: "response-header",
       responsePolicyHeaderNames: ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"],
+      requestRouting: "uncached-stage",
       responseVary: "verbatim",
       routeCacheability: "probe-manifest",
     });
     expect(hasBuildIdentityResponseHeader({ cdn: descriptor })).toBe(true);
-    expect(
-      hasUncachedRequestRouting({
-        cdn: {
-          adapter: "staged-cache",
-          capabilities: { requestRouting: "uncached-stage" },
-        },
-      }),
-    ).toBe(true);
+    expect(hasUncachedRequestRouting({ cdn: descriptor })).toBe(true);
     expect(hasVerbatimResponseVary({ cdn: descriptor })).toBe(true);
     expect(hasBuildIdentityResponseHeader({ cdn: { adapter: "custom-cache" } })).toBe(false);
     expect(hasUncachedRequestRouting({ cdn: { adapter: "url-only-cache" } })).toBe(false);

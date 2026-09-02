@@ -73,6 +73,7 @@ export function cdnAdapter(options?: CdnAdapterOptions) {
     capabilities: {
       buildIdentity: "response-header" as const,
       responsePolicyHeaderNames: ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"] as const,
+      requestRouting: "uncached-stage" as const,
       responseVary: "verbatim" as const,
       routeCacheability: "probe-manifest" as const,
     },

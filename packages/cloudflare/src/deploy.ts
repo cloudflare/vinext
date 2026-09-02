@@ -37,6 +37,7 @@ import {
   formatVinextPrerenderLabel,
   getConfiguredCdnResponsePolicyHeaderNames,
   hasBuildIdentityResponseHeader,
+  hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   requiresRouteCacheabilityProbeManifest,
   resolveVinextPrerenderDecision,
@@ -1902,6 +1903,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     nextOutput: nextConfig.output,
   });
   const hasStrictResponseVary = hasVerbatimResponseVary(viteConfigMetadata.cacheConfig);
+  const hasStagedRequestRouting = hasUncachedRequestRouting(viteConfigMetadata.cacheConfig);
   const hasBuildIdentityHeader = hasBuildIdentityResponseHeader(viteConfigMetadata.cacheConfig);
   const needsCacheabilityProbeManifest = projectRequiresRouteCacheabilityProbeManifest(
     info,
@@ -1921,6 +1923,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       root: info.root,
       nextConfig,
       buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
+      requestRouting: hasStagedRequestRouting ? "uncached-stage" : undefined,
       responseVary: hasStrictResponseVary ? "verbatim" : undefined,
       responsePolicyHeaderNames: getConfiguredCdnResponsePolicyHeaderNames(
         viteConfigMetadata.cacheConfig,
@@ -1996,6 +1999,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
           root: info.root,
           nextConfig,
           buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
+          requestRouting: hasStagedRequestRouting ? "uncached-stage" : undefined,
           responseVary: hasStrictResponseVary ? "verbatim" : undefined,
           responsePolicyHeaderNames: getConfiguredCdnResponsePolicyHeaderNames(
             viteConfigMetadata.cacheConfig,
