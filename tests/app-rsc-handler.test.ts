@@ -362,6 +362,44 @@ describe("createAppRscHandler", () => {
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
   });
 
+  // Ported from Next.js: test/e2e/app-dir/app-middleware/app-middleware.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-middleware/app-middleware.test.ts
+  it("preserves middleware draft transitions on staged metadata responses", async () => {
+    const responseHandler = createHandler({
+      handleMetadataRouteRequest: async () =>
+        new Response("User-agent: *", {
+          headers: { "Cache-Control": "public, max-age=3600" },
+        }),
+    });
+    const requestHandler = createHandler({
+      configHeaders: [],
+      isMetadataRoute: (pathname) => pathname === "/robots.txt",
+      middlewareModule: {
+        async default() {
+          (await draftMode()).enable();
+          return new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+      (stageRequest: Request, props: AppWorkerResponseStageProps) =>
+        responseHandler.handleResponseStage(stageRequest, null, props),
+    );
+
+    const response = await requestHandler(
+      new Request("https://example.test/docs/robots.txt"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+    expect(response.headers.get("set-cookie")).toContain("__prerender_bypass=test-draft-secret");
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+  });
+
   it("transports authenticated probe intent outside the shared cache", async () => {
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
       Promise.resolve(new Response("probe")),

@@ -1,5 +1,6 @@
 import {
   applyEffectiveRequestCookieHeader,
+  getDraftModeCookieHeader,
   headersContextFromRequest,
   restoreDraftModeTransition,
 } from "vinext/shims/headers";
@@ -13,6 +14,7 @@ import {
   closeAfterResponse,
   closeAfterResponseWithBody,
   createRequestContext,
+  preserveFullyBufferedBodyMetadata,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import type { AppRscHandlerRoute, CreateAppRscHandlerOptions } from "./app-rsc-handler.js";
@@ -249,14 +251,26 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           if (!options.handleMetadataRouteRequest) {
             return new Response("Invalid vinext App response stage", { status: 400 });
           }
-          const response = await options.handleMetadataRouteRequest(props.cleanPathname);
-          return (
-            response ??
+          let response =
+            (await options.handleMetadataRouteRequest(props.cleanPathname)) ??
             new Response(null, {
               status: 204,
               headers: { [APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER]: "1" },
-            })
-          );
+            });
+          const draftCookie = getDraftModeCookieHeader();
+          if (draftCookie) {
+            const headers = new Headers(response.headers);
+            headers.append("Set-Cookie", draftCookie);
+            response = preserveFullyBufferedBodyMetadata(
+              response,
+              new Response(response.body, {
+                headers,
+                status: response.status,
+                statusText: response.statusText,
+              }),
+            );
+          }
+          return response;
         }
         if (props.kind === "app-not-found") {
           options.setNavigationContext({
