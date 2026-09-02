@@ -96,6 +96,17 @@ describe("App request-stage dispatch", () => {
     ).toBe(true);
   });
 
+  it("uses the complete graph for authenticated transported prerender state", () => {
+    expect(
+      appRequestUsesFullResponseGraph(
+        new Request("https://example.test/docs/page"),
+        createOptions({
+          trustedPrerenderState: { routeParams: null, speculative: true },
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it("keeps ordinary GET/HEAD requests in the request-only graph", () => {
     expect(
       appRequestUsesFullResponseGraph(
@@ -163,6 +174,10 @@ describe("App request-stage dispatch", () => {
       handleRequest,
       prerenderDiscovery: true,
       probeMode: "probe",
+      trustedPrerenderState: {
+        routeParams: { params: { slug: "hello" }, routePattern: "/docs/:slug" },
+        speculative: true,
+      },
     });
 
     expect(dispatchResponseStage).toHaveBeenCalledOnce();
@@ -180,8 +195,13 @@ describe("App request-stage dispatch", () => {
         middlewareCookieOverlay: null,
         prerenderDiscovery: true,
         protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestOrigin: "https://example.test",
         scriptNonce: null,
         staticFileSignalToken: expect.any(String),
+        trustedPrerenderState: {
+          routeParams: { params: { slug: "hello" }, routePattern: "/docs/:slug" },
+          speculative: true,
+        },
       },
       { cache: "bypass" },
     );

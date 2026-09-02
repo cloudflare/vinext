@@ -36,7 +36,11 @@ const mocks = vi.hoisted(() => ({
       ? { route: { dataKind: "dynamic", isDynamic: false, pattern: "/api/hello" } }
       : null,
   ),
-  matchPageRoute: vi.fn((url: string) => ({
+  matchPageRoute: vi.fn<
+    (url: string) => {
+      route: { dataKind: string; isDynamic: boolean; pattern: string };
+    } | null
+  >((url: string) => ({
     route: {
       dataKind: url.startsWith("/gssp") ? "server" : "static",
       isDynamic: false,
@@ -144,6 +148,35 @@ describe("Pages Worker request stage", () => {
       { cache: "shared" },
     );
     expect(mocks.renderResponse).not.toHaveBeenCalled();
+  });
+
+  it("replays POST bodies across speculative miss and error-page dispatches", async () => {
+    mocks.matchPageRoute.mockImplementationOnce(() => null);
+    const bodies: string[] = [];
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async (stageRequest, props) => {
+      bodies.push(await stageRequest.text());
+      return new Response(
+        props.kind === "pages-page" && props.renderOptions?.renderErrorPageOnMiss === false
+          ? "miss"
+          : "error page",
+        { status: 404 },
+      );
+    });
+
+    const response = await handleRequestStage(
+      new Request("https://example.com/missing/nested", {
+        body: "payload",
+        method: "POST",
+      }),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe("error page");
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(bodies).toEqual(["payload", "payload"]);
   });
 
   it("dispatches authenticated readiness through the response stage", async () => {

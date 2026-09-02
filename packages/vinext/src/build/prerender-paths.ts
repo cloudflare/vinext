@@ -508,6 +508,7 @@ async function collectPagesPaths(options: {
 }): Promise<{
   dataPaths: string[];
   fallbackRoutePatterns: PrerenderRoutePattern[];
+  nonDynamicPaths: string[];
   paths: string[];
 }> {
   const [pageRoutes, apiRoutes] = await Promise.all([
@@ -520,6 +521,8 @@ async function collectPagesPaths(options: {
   const dataPaths: string[] = [];
   const seenDataPaths = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
+  const nonDynamicPaths: string[] = [];
+  const seenNonDynamicPaths = new Set<string>();
 
   for (const route of pageRoutes) {
     if (apiPatterns.has(route.pattern)) continue;
@@ -536,10 +539,12 @@ async function collectPagesPaths(options: {
         for (const locale of options.i18n.locales) {
           const pathname = localizePagesPath(route.pattern, locale, options.i18n);
           addPath(paths, seen, pathname);
+          addPath(nonDynamicPaths, seenNonDynamicPaths, pathname);
           if (hasStaticProps || hasServerSideProps) addPath(dataPaths, seenDataPaths, pathname);
         }
       } else {
         addPath(paths, seen, route.pattern);
+        addPath(nonDynamicPaths, seenNonDynamicPaths, route.pattern);
         if (hasStaticProps || hasServerSideProps) {
           addPath(dataPaths, seenDataPaths, route.pattern);
         }
@@ -613,7 +618,7 @@ async function collectPagesPaths(options: {
     }
   }
 
-  return { dataPaths, fallbackRoutePatterns, paths };
+  return { dataPaths, fallbackRoutePatterns, nonDynamicPaths, paths };
 }
 
 async function excludePagesApiWarmPaths(options: {
@@ -701,6 +706,7 @@ async function collectAppPaths(options: {
 }): Promise<{
   fallbackRoutePatterns: PrerenderRoutePattern[];
   loadingShellPaths: string[];
+  nonDynamicPaths: string[];
   paths: string[];
   routeHandlerPaths: string[];
 }> {
@@ -712,6 +718,8 @@ async function collectAppPaths(options: {
   const routeHandlerPaths: string[] = [];
   const seenRouteHandlerPaths = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
+  const nonDynamicPaths: string[] = [];
+  const seenNonDynamicPaths = new Set<string>();
   const staticParamsCache = new Map<string, Promise<Record<string, string | string[]>[] | null>>();
   let requireNonEmptyStaticParams = false;
   const staticParamsMap = new Proxy({} as StaticParamsMap, {
@@ -794,6 +802,7 @@ async function collectAppPaths(options: {
 
     if (!route.isDynamic) {
       addDiscoveredPath(route.pattern);
+      addPath(nonDynamicPaths, seenNonDynamicPaths, route.pattern);
       continue;
     }
 
@@ -891,7 +900,13 @@ async function collectAppPaths(options: {
     }
   }
 
-  return { fallbackRoutePatterns, loadingShellPaths, paths, routeHandlerPaths };
+  return {
+    fallbackRoutePatterns,
+    loadingShellPaths,
+    nonDynamicPaths,
+    paths,
+    routeHandlerPaths,
+  };
 }
 
 async function resolveAppWarmPaths(options: {
@@ -1160,6 +1175,25 @@ function configuredRulesAffectWarmPath(
   );
 }
 
+/**
+ * Whether a configured rewrite can replace a route-owned warm response.
+ * Non-dynamic filesystem routes win before `afterFiles`, while every concrete
+ * path discovered here wins dynamic matching before `fallback`.
+ */
+function configuredRewritesCanReplaceWarmPath(
+  pathname: string,
+  rewrites: ResolvedNextConfig["rewrites"],
+  hasNonDynamicRoute: boolean,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
+  include: (rewrite: NextRewrite) => boolean,
+): boolean {
+  const applicableRewrites = [
+    ...rewrites.beforeFiles.filter(include),
+    ...(hasNonDynamicRoute ? [] : rewrites.afterFiles.filter(include)),
+  ];
+  return configuredRulesAffectWarmPath(pathname, applicableRewrites, config);
+}
+
 function hasMiddlewareConventionFile(
   root: string,
   appDir: string | null,
@@ -1235,6 +1269,7 @@ export async function emitPrerenderPathManifest(
   const seenRouteHandlerPaths = new Set<string>();
   const discoveredLoadingShellPaths: string[] = [];
   const seenLoadingShellPaths = new Set<string>();
+  const discoveredNonDynamicPathSet = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
   await withPrerenderEndpoints(async () => {
     let prodServer: { server: HttpServer; port: number } | null = null;
@@ -1311,6 +1346,9 @@ export async function emitPrerenderPathManifest(
         for (const pathname of appPathResult.routeHandlerPaths) {
           addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
         }
+        for (const pathname of appPathResult.nonDynamicPaths) {
+          discoveredNonDynamicPathSet.add(pathname);
+        }
         fallbackRoutePatterns.push(...appPathResult.fallbackRoutePatterns);
       }
 
@@ -1330,6 +1368,9 @@ export async function emitPrerenderPathManifest(
         for (const pathname of pagesPathResult.dataPaths) {
           addPath(discoveredPagesDataPaths, seenPagesDataPaths, pathname);
         }
+        for (const pathname of pagesPathResult.nonDynamicPaths) {
+          discoveredNonDynamicPathSet.add(pathname);
+        }
         fallbackRoutePatterns.push(...pagesPathResult.fallbackRoutePatterns);
       }
     } finally {
@@ -1339,17 +1380,6 @@ export async function emitPrerenderPathManifest(
     }
   });
 
-  const configuredRewrites = [
-    ...config.rewrites.beforeFiles,
-    ...config.rewrites.afterFiles,
-    ...config.rewrites.fallback,
-  ];
-  const internalRewrites = configuredRewrites.filter(
-    (rewrite) => !isExternalUrl(rewrite.destination),
-  );
-  const externalRewrites = configuredRewrites.filter((rewrite) =>
-    isExternalUrl(rewrite.destination),
-  );
   const middlewareMayResolveWarmPaths =
     options.requestRouting === "uncached-stage" &&
     hasMiddlewareConventionFile(root, appDir, pagesDir, config.pageExtensions);
@@ -1358,7 +1388,13 @@ export async function emitPrerenderPathManifest(
       ? [...paths, ...discoveredRouteHandlerPaths].filter(
           (pathname) =>
             middlewareMayResolveWarmPaths ||
-            configuredRulesAffectWarmPath(pathname, internalRewrites, config),
+            configuredRewritesCanReplaceWarmPath(
+              pathname,
+              config.rewrites,
+              discoveredNonDynamicPathSet.has(pathname),
+              config,
+              (rewrite) => !isExternalUrl(rewrite.destination),
+            ),
         )
       : [],
   );
@@ -1367,9 +1403,21 @@ export async function emitPrerenderPathManifest(
       ? [...paths, ...discoveredRouteHandlerPaths].filter(
           (pathname) =>
             configuredRulesAffectWarmPath(pathname, config.redirects, config) ||
-            configuredRulesAffectWarmPath(pathname, externalRewrites, config) ||
+            configuredRewritesCanReplaceWarmPath(
+              pathname,
+              config.rewrites,
+              discoveredNonDynamicPathSet.has(pathname),
+              config,
+              (rewrite) => isExternalUrl(rewrite.destination),
+            ) ||
             (options.requestRouting !== "uncached-stage" &&
-              configuredRulesAffectWarmPath(pathname, internalRewrites, config)),
+              configuredRewritesCanReplaceWarmPath(
+                pathname,
+                config.rewrites,
+                discoveredNonDynamicPathSet.has(pathname),
+                config,
+                (rewrite) => !isExternalUrl(rewrite.destination),
+              )),
         )
       : [],
   );

@@ -202,6 +202,43 @@ describe("Pages Worker response stage", () => {
     expect([...stagedHeaders]).toEqual([]);
   });
 
+  it("strips stale Content-Length before a streamed page crosses the stage transport", async () => {
+    const streamed = new Response("streamed page", {
+      headers: {
+        "Content-Length": "1",
+        "Content-Type": "text/html; charset=utf-8",
+      },
+    }) as Response & { __vinextStreamedHtmlResponse?: boolean };
+    streamed.__vinextStreamedHtmlResponse = true;
+    stages.renderPage.mockResolvedValue(streamed);
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/page",
+        },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: null,
+        resolvedUrl: "/page",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    expect(response.headers.get("Content-Length")).toBeNull();
+    expect(response.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+    await expect(response.text()).resolves.toBe("streamed page");
+  });
+
   it("preserves the dynamic Pages data short-circuit without an HTML render", async () => {
     const response = new Response('{"pageProps":{"dynamic":true}}', {
       headers: { "Content-Type": "application/json" },

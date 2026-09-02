@@ -118,6 +118,7 @@ import {
   matchPrerenderRouteParamsPayload,
   readTrustedPrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
+  type TrustedPrerenderState,
 } from "./prerender-route-params.js";
 import {
   createServerActionNotFoundResponse,
@@ -1162,6 +1163,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         middlewareCookieOverlay,
         mountedSlotsHeader,
         protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestOrigin: url.origin,
         renderMode,
         resolvedUrl,
         scriptNonce: scriptNonce ?? null,
@@ -1791,6 +1793,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
                   ? null
                   : [...(await loadPreHandlerResponseHeaders())],
               protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+              requestOrigin: url.origin,
               resourceKind,
               requestUrl: request.url,
               resolvedUrl,
@@ -2054,6 +2057,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         middlewareCookieOverlay,
         mountedSlotsHeader,
         protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestOrigin: url.origin,
         renderMode,
         resolvedUrl,
         scriptNonce: scriptNonce ?? null,
@@ -2168,6 +2172,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         mountedSlotsHeader,
         params,
         protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestOrigin: url.origin,
         renderMode,
         resolvedUrl,
         routePattern: route.pattern,
@@ -2211,6 +2216,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         mountedSlotsHeader,
         params,
         protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestOrigin: url.origin,
         renderMode,
         resolvedUrl,
         routePattern: route.pattern,
@@ -2321,6 +2327,7 @@ export type AppRscRequestHandler = (
   allowInternalRscDocumentFallback?: boolean,
   dispatchResponseStage?: DispatchAppWorkerResponseStage,
   responseStageProbeMode?: VinextCacheabilityProbeMode | null,
+  trustedPrerenderState?: TrustedPrerenderState | null,
 ) => Promise<Response>;
 
 /** Build the request-only handler without retaining the response renderer graph. */
@@ -2333,6 +2340,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     allowInternalRscDocumentFallback = false,
     dispatchResponseStage?: DispatchAppWorkerResponseStage,
     responseStageProbeMode: VinextCacheabilityProbeMode | null = null,
+    transportedPrerenderState?: TrustedPrerenderState | null,
   ): Promise<Response> {
     // Register config-driven cache adapters before anything touches the cache.
     // On the Cloudflare worker the entry already registered them with `env` (this
@@ -2387,11 +2395,21 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     // internal-header list) lets readTrustedPrerenderRouteParams's
     // VINEXT_PRERENDER gate pass on the reconstructed request. If the secret
     // header is ever added to VINEXT_INTERNAL_HEADERS, that second read breaks.
-    const prerenderRouteParamsPayload = readTrustedPrerenderRouteParams(rawRequest);
-    const isTrustedSpeculativePrerender =
-      process.env.VINEXT_PRERENDER === "1" &&
-      rawRequest.headers.get(VINEXT_PRERENDER_SECRET_HEADER) !== null &&
-      rawRequest.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
+    // A remote response stage receives only the authenticated, serialized
+    // state. Single-stage Node requests retain the existing verified-header
+    // boundary, then recursive renders carry the resolved state explicitly.
+    const trustedPrerenderState: TrustedPrerenderState | null =
+      transportedPrerenderState !== undefined
+        ? transportedPrerenderState
+        : process.env.VINEXT_PRERENDER === "1" &&
+            rawRequest.headers.get(VINEXT_PRERENDER_SECRET_HEADER) !== null
+          ? {
+              routeParams: readTrustedPrerenderRouteParams(rawRequest),
+              speculative: rawRequest.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1",
+            }
+          : null;
+    const prerenderRouteParamsPayload = trustedPrerenderState?.routeParams ?? null;
+    const isTrustedSpeculativePrerender = trustedPrerenderState?.speculative === true;
     const filteredHeaders = executionContext?.isInternalPagesRevalidation
       ? new Headers(rawRequest.headers)
       : filterInternalHeaders(rawRequest.headers);
@@ -2466,6 +2484,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
                   true,
                   dispatchResponseStage,
                   responseStageProbeMode,
+                  trustedPrerenderState,
                 ),
               allowInternalRscDocumentFallback,
               dispatchResponseStage,

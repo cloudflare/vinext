@@ -16,6 +16,7 @@ import {
 } from "../packages/vinext/src/server/headers.js";
 
 const stages = vi.hoisted(() => ({
+  renderFullRequest: vi.fn(),
   registerCacheAdapters: vi.fn(),
   registerImageOptimizer: vi.fn(),
   renderResponse: vi.fn(),
@@ -34,6 +35,10 @@ vi.mock("virtual:vinext-app-response-entry", () => ({
   default: { handleResponseStage: stages.renderResponse },
 }));
 
+vi.mock("virtual:vinext-rsc-entry", () => ({
+  default: stages.renderFullRequest,
+}));
+
 const notFoundStage = {
   buildId: null,
   cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/missing" },
@@ -45,6 +50,7 @@ const notFoundStage = {
   middlewareCookieOverlay: null,
   mountedSlotsHeader: null,
   protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+  requestOrigin: "https://example.com",
   renderMode: "navigation" as const,
   resolvedUrl: "/missing",
   scriptNonce: null,
@@ -55,6 +61,7 @@ describe("App Worker response stage", () => {
     setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     stages.registerCacheAdapters.mockReset();
     stages.registerImageOptimizer.mockReset();
+    stages.renderFullRequest.mockReset();
     stages.renderResponse.mockReset();
   });
 
@@ -89,8 +96,10 @@ describe("App Worker response stage", () => {
       middlewareCookieOverlay: null,
       prerenderDiscovery: true,
       protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+      requestOrigin: "https://example.com",
       scriptNonce: null,
       staticFileSignalToken: "00000000-0000-4000-8000-000000000000",
+      trustedPrerenderState: null,
     } satisfies AppWorkerResponseStageProps;
 
     const response = await handleResponseStage(
@@ -155,6 +164,35 @@ describe("App Worker response stage", () => {
     expect(isAppWorkerResponseStageProps(withoutInterceptionId)).toBe(false);
   });
 
+  it.each([
+    { name: "missing", requestOrigin: undefined },
+    { name: "relative", requestOrigin: "example.com" },
+    { name: "non-HTTP", requestOrigin: "ftp://example.com" },
+    { name: "non-canonical", requestOrigin: "https://example.com/" },
+  ])("rejects a $name request origin", ({ requestOrigin }) => {
+    expect(isAppWorkerResponseStageProps({ ...notFoundStage, requestOrigin })).toBe(false);
+  });
+
+  it.each([
+    "https://second.example/missing",
+    "http://example.com/missing",
+    "https://example.com:8443/missing",
+  ])("rejects a response-stage origin mismatch before rendering: %s", async (requestUrl) => {
+    const response = await handleResponseStage(
+      new Request(requestUrl),
+      { binding: "value" },
+      undefined,
+      notFoundStage,
+      async () => new Response("request-stage"),
+      { cache: "shared" },
+    );
+
+    expect(response.status).toBe(400);
+    expect(stages.registerImageOptimizer).not.toHaveBeenCalled();
+    expect(stages.registerCacheAdapters).not.toHaveBeenCalled();
+    expect(stages.renderResponse).not.toHaveBeenCalled();
+  });
+
   it("requires a transport proof on full-request stage payloads", () => {
     const fullStage = {
       buildId: null,
@@ -164,12 +202,55 @@ describe("App Worker response stage", () => {
       middlewareCookieOverlay: null,
       prerenderDiscovery: false,
       protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+      requestOrigin: "https://example.com",
       scriptNonce: null,
       staticFileSignalToken: "00000000-0000-4000-8000-000000000000",
+      trustedPrerenderState: null,
     } satisfies AppWorkerResponseStageProps;
     const { staticFileSignalToken: _token, ...withoutToken } = fullStage;
 
     expect(isAppWorkerResponseStageProps(fullStage)).toBe(true);
     expect(isAppWorkerResponseStageProps(withoutToken)).toBe(false);
+  });
+
+  it("passes only authenticated prerender state into the full response graph", async () => {
+    stages.renderFullRequest.mockResolvedValue(new Response("rendered"));
+    const trustedPrerenderState = {
+      routeParams: { params: { slug: "hello" }, routePattern: "/post/:slug" },
+      speculative: true,
+    } as const;
+    const props = {
+      buildId: null,
+      cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/post/hello" },
+      draftModeCookie: null,
+      kind: "app-full-request" as const,
+      middlewareCookieOverlay: null,
+      prerenderDiscovery: false,
+      protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+      requestOrigin: "https://example.com",
+      scriptNonce: null,
+      staticFileSignalToken: "00000000-0000-4000-8000-000000000000",
+      trustedPrerenderState,
+    } satisfies AppWorkerResponseStageProps;
+    const request = new Request("https://example.com/post/hello");
+
+    const response = await handleResponseStage(
+      request,
+      undefined,
+      undefined,
+      props,
+      async () => new Response("request-stage"),
+      { cache: "bypass" },
+    );
+
+    await expect(response.text()).resolves.toBe("rendered");
+    expect(stages.renderFullRequest).toHaveBeenCalledWith(
+      request,
+      expect.anything(),
+      false,
+      undefined,
+      null,
+      trustedPrerenderState,
+    );
   });
 });

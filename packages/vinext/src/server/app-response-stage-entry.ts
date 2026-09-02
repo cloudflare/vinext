@@ -33,6 +33,9 @@ export async function handleResponseStage(
   if (!isAppWorkerResponseStageProps(props)) {
     return new Response("Invalid vinext App response stage", { status: 400 });
   }
+  if (props.requestOrigin !== new URL(request.url).origin) {
+    return new Response("Invalid vinext App response stage", { status: 400 });
+  }
   registerConfiguredImageOptimizer(env);
   let ctx = createWorkerRevalidationContext(
     platformCtx,
@@ -71,7 +74,15 @@ export async function handleResponseStage(
           }
         }
         const fullEntry = await import("virtual:vinext-rsc-entry");
-        const render = () => fullEntry.default(request, cacheabilityContext);
+        const render = () =>
+          fullEntry.default(
+            request,
+            cacheabilityContext,
+            false,
+            undefined,
+            null,
+            props.trustedPrerenderState,
+          );
         return serializeStaticFileSignalForTransport(
           await runWithExecutionContext(cacheabilityContext, render),
           props.staticFileSignalToken,

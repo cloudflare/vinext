@@ -34,14 +34,10 @@ import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
-  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "./headers.js";
-import {
-  readTrustedPrerenderRouteParams,
-  serializePrerenderRouteParamsHeader,
-} from "./prerender-route-params.js";
+import { readTrustedPrerenderStateFromHeaders } from "./prerender-route-params.js";
 import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
@@ -144,8 +140,10 @@ async function handleRequest(
   }
 
   const missingBuildAsset = isNextStaticPath(url.pathname, workerBasePath, workerAssetPathPrefix);
-  const trustedPrerenderRouteParams =
-    ctx.hostRuntime === "node" ? readTrustedPrerenderRouteParams(request) : null;
+  const trustedPrerenderState =
+    ctx.hostRuntime === "node"
+      ? readTrustedPrerenderStateFromHeaders(request.headers, __prerenderSecret)
+      : null;
   const filteredHeaders = ctx.isInternalPagesRevalidation
     ? new Headers(request.headers)
     : filterInternalHeaders(request.headers);
@@ -159,12 +157,6 @@ async function handleRequest(
       // stage; the prerender secret remains confined to this gateway.
       filteredHeaders.set(VINEXT_EXPECTED_WORKER_VERSION_HEADER, expectedWorkerVersion);
     }
-  }
-  const prerenderRouteParamsHeader = serializePrerenderRouteParamsHeader(
-    trustedPrerenderRouteParams,
-  );
-  if (prerenderRouteParamsHeader !== null) {
-    filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
   }
   request = cloneRequestWithHeaders(request, filteredHeaders);
 
@@ -185,6 +177,7 @@ async function handleRequest(
       trackedDispatchResponseStage,
       probeMode,
       ctx.isPrerenderPathDiscovery === true,
+      trustedPrerenderState,
     );
   const result = await runWithExecutionContext(ctx, handle);
   let response = result;

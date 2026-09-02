@@ -3,8 +3,9 @@ import type {
   VinextResponseStageCacheability,
   VinextResponseStageTransport,
 } from "./multi-stage.js";
+import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 5;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 7;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -17,6 +18,8 @@ type AppWorkerResponseStageEnvelope = {
   draftModeCookie: string | null;
   middlewareCookieOverlay: string | null;
   protocolVersion: typeof APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION;
+  /** Canonical public request origin used to partition and validate shared renders. */
+  requestOrigin: string;
   scriptNonce: string | null;
 };
 
@@ -24,6 +27,7 @@ type AppFullRequestWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   kind: "app-full-request";
   prerenderDiscovery: boolean;
   staticFileSignalToken: string;
+  trustedPrerenderState: TrustedPrerenderState | null;
 };
 
 export type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
@@ -106,6 +110,16 @@ function isAppPageParams(value: unknown): value is AppPageParams {
   return true;
 }
 
+function isCanonicalHttpOrigin(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && url.origin === value;
+  } catch {
+    return false;
+  }
+}
+
 export function isAppWorkerResponseStageProps(
   value: unknown,
 ): value is AppWorkerResponseStageProps {
@@ -117,6 +131,7 @@ export function isAppWorkerResponseStageProps(
     !isResponseStageCacheability(props.cacheability) ||
     (props.draftModeCookie !== null && typeof props.draftModeCookie !== "string") ||
     (props.middlewareCookieOverlay !== null && typeof props.middlewareCookieOverlay !== "string") ||
+    !isCanonicalHttpOrigin(props.requestOrigin) ||
     (props.scriptNonce !== null && typeof props.scriptNonce !== "string")
   ) {
     return false;
@@ -125,7 +140,8 @@ export function isAppWorkerResponseStageProps(
     return (
       typeof props.prerenderDiscovery === "boolean" &&
       typeof props.staticFileSignalToken === "string" &&
-      STATIC_FILE_SIGNAL_TOKEN_RE.test(props.staticFileSignalToken)
+      STATIC_FILE_SIGNAL_TOKEN_RE.test(props.staticFileSignalToken) &&
+      (props.trustedPrerenderState === null || isTrustedPrerenderState(props.trustedPrerenderState))
     );
   }
   if (props.kind === "hybrid-pages") {

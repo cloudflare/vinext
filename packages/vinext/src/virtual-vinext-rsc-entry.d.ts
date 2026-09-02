@@ -35,6 +35,9 @@ declare module "virtual:vinext-app-request-entry" {
     dispatchResponseStage: DispatchAppWorkerResponseStage,
     probeMode?: import("./server/multi-stage.js").VinextCacheabilityProbeMode | null,
     prerenderDiscovery?: boolean,
+    trustedPrerenderState?:
+      | import("./server/prerender-route-params.js").TrustedPrerenderState
+      | null,
   ) => Promise<Response>;
   export default requestHandler;
   export const __assetPrefix: string;

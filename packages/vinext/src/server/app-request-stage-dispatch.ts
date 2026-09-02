@@ -8,6 +8,7 @@ import {
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER } from "./headers.js";
 import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
+import type { TrustedPrerenderState } from "./prerender-route-params.js";
 import { restoreStaticFileSignalFromTransport } from "./static-file-signal.js";
 
 export type AppRequestStageDispatchOptions = {
@@ -17,6 +18,7 @@ export type AppRequestStageDispatchOptions = {
   handleRequest: AppRscRequestHandler;
   prerenderDiscovery: boolean;
   probeMode: VinextCacheabilityProbeMode | null;
+  trustedPrerenderState?: TrustedPrerenderState | null;
 };
 
 /**
@@ -25,7 +27,10 @@ export type AppRequestStageDispatchOptions = {
  */
 export function appRequestUsesFullResponseGraph(
   request: Request,
-  options: Pick<AppRequestStageDispatchOptions, "basePath" | "draftModeSecret" | "probeMode">,
+  options: Pick<
+    AppRequestStageDispatchOptions,
+    "basePath" | "draftModeSecret" | "probeMode" | "trustedPrerenderState"
+  >,
 ): boolean {
   if (request.method !== "GET" && request.method !== "HEAD") return true;
   if (
@@ -37,6 +42,7 @@ export function appRequestUsesFullResponseGraph(
     return true;
   }
   if (process.env.VINEXT_PRERENDER === "1") return true;
+  if (options.trustedPrerenderState) return true;
   if (isDraftModeRequest(request, options.draftModeSecret)) return true;
   if (request.headers.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)) return true;
 
@@ -91,8 +97,10 @@ export async function dispatchAppRequestStage(
         middlewareCookieOverlay: null,
         prerenderDiscovery: options.prerenderDiscovery,
         protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestOrigin: new URL(request.url).origin,
         scriptNonce: null,
         staticFileSignalToken,
+        trustedPrerenderState: options.trustedPrerenderState ?? null,
       },
       { cache: "bypass" },
     );

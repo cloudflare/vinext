@@ -628,13 +628,17 @@ describe("prerender path manifest", () => {
     ]);
     const nextConfig = await resolveNextConfig(
       {
-        rewrites: () => [
-          {
-            source: "/rewrite-me",
-            destination: "/safe",
-            has: [{ type: "header", key: "x-route-variant", value: "1" }],
-          },
-        ],
+        rewrites: () => ({
+          beforeFiles: [
+            {
+              source: "/rewrite-me",
+              destination: "/safe",
+              has: [{ type: "header", key: "x-route-variant", value: "1" }],
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        }),
       },
       tmpDir,
     );
@@ -675,13 +679,17 @@ describe("prerender path manifest", () => {
     ]);
     const nextConfig = await resolveNextConfig(
       {
-        rewrites: () => [
-          {
-            source: "/rewrite-me",
-            destination: "/safe",
-            has: [{ type: "header", key: "x-route-variant", value: "1" }],
-          },
-        ],
+        rewrites: () => ({
+          beforeFiles: [
+            {
+              source: "/rewrite-me",
+              destination: "/safe",
+              has: [{ type: "header", key: "x-route-variant", value: "1" }],
+            },
+          ],
+          afterFiles: [],
+          fallback: [],
+        }),
       },
       tmpDir,
     );
@@ -747,6 +755,224 @@ describe("prerender path manifest", () => {
     expect(manifest?.paths).toEqual(["/safe"]);
     expect(manifest?.excludedWarmPaths).toEqual(["/external"]);
     expect(manifest?.routePatterns?.["/external"]).toBeUndefined();
+  });
+
+  it.each(["afterFiles", "fallback"] as const)(
+    "keeps non-dynamic App routes ahead of %s rewrites",
+    async (phase) => {
+      // Next.js checks non-dynamic pages before afterFiles and every matched
+      // route before fallback:
+      // https://github.com/vercel/next.js/blob/canary/docs/01-app/03-api-reference/05-config/01-next-config-js/rewrites.mdx
+      writeFile("package.json", JSON.stringify({ type: "module" }));
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+      writeFile("dist/server/index.js", "export default {};\n");
+      writeFile(
+        "app/local/page.tsx",
+        "export const revalidate = 60; export default function Page() {}\n",
+      );
+      writeFile(
+        "app/external/page.tsx",
+        "export const revalidate = 60; export default function Page() {}\n",
+      );
+      writeFile(
+        "app/target/page.tsx",
+        "export const revalidate = 60; export default function Page() {}\n",
+      );
+      writeFile(
+        "app/api/static/route.ts",
+        "export const revalidate = 60; export function GET() { return new Response('ok'); }\n",
+      );
+
+      const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+        import("../packages/vinext/src/build/prerender-paths.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+      ]);
+      const rewrites = [
+        { source: "/local", destination: "/target" },
+        { source: "/external", destination: "https://upstream.example/local" },
+        { source: "/api/static", destination: "https://upstream.example/api" },
+      ];
+      const nextConfig = await resolveNextConfig(
+        {
+          rewrites: () => ({
+            beforeFiles: [],
+            afterFiles: phase === "afterFiles" ? rewrites : [],
+            fallback: phase === "fallback" ? rewrites : [],
+          }),
+        },
+        tmpDir,
+      );
+
+      const manifest = await emitPrerenderPathManifest({
+        nextConfig,
+        requestRouting: "uncached-stage",
+        responseVary: "verbatim",
+        root: tmpDir,
+      });
+
+      expect(manifest?.paths).toHaveLength(3);
+      expect(manifest?.paths).toEqual(expect.arrayContaining(["/external", "/local", "/target"]));
+      expect(manifest?.routeHandlerPaths).toEqual(["/api/static"]);
+      expect(manifest?.excludedWarmPaths).toBeUndefined();
+      expect(manifest?.routePatterns?.["/external"]).toBeDefined();
+      expect(
+        manifest?.routePatterns?.["/local"]?.cacheabilityProbe?.routeMayResolve,
+      ).toBeUndefined();
+    },
+  );
+
+  it("still lets external afterFiles rewrites shadow discovered dynamic App paths", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      [
+        "export const revalidate = 60;",
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() {}",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/target/page.tsx",
+      "export const revalidate = 60; export default function Page() {}\n",
+    );
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        rewrites: () => ({
+          beforeFiles: [],
+          afterFiles: [
+            {
+              source: "/cached/intro",
+              destination: "https://upstream.example/intro",
+            },
+            { source: "/cached/featured", destination: "/target" },
+          ],
+          fallback: [],
+        }),
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      requestRouting: "uncached-stage",
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toHaveLength(2);
+    expect(manifest?.paths).toEqual(expect.arrayContaining(["/cached/featured", "/target"]));
+    expect(manifest?.excludedWarmPaths).toEqual(["/cached/intro"]);
+    expect(manifest?.routePatterns?.["/cached/intro"]).toBeUndefined();
+    expect(manifest?.routePatterns?.["/cached/featured"]?.cacheabilityProbe?.routeMayResolve).toBe(
+      true,
+    );
+  });
+
+  it("keeps a non-dynamic Pages route ahead of an external afterFiles rewrite", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile("pages/about.tsx", "export default function Page() {}\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        rewrites: () => ({
+          beforeFiles: [],
+          afterFiles: [{ source: "/about", destination: "https://upstream.example/about" }],
+          fallback: [],
+        }),
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      requestRouting: "uncached-stage",
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual(["/about"]);
+    expect(manifest?.pagesPaths).toEqual(["/about"]);
+    expect(manifest?.excludedWarmPaths).toBeUndefined();
+  });
+
+  it.each([
+    {
+      destination: "https://upstream.example/first",
+      excludedPaths: ["/first"],
+      expectedPaths: ["/second"],
+      phase: "afterFiles" as const,
+      source: "/first",
+    },
+    {
+      destination: "https://upstream.example/:path*",
+      excludedPaths: undefined,
+      expectedPaths: ["/first", "/second"],
+      phase: "fallback" as const,
+      source: "/:path*",
+    },
+  ])("applies Pages dynamic-route precedence around $phase rewrites", async (testCase) => {
+    // The fallback case is ported from Next.js:
+    // test/e2e/fallback-false-rewrite/fallback-false-rewrite.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/fallback-false-rewrite/fallback-false-rewrite.test.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/entry.js", "export default {};\n");
+    writeFile(
+      "pages/[slug].tsx",
+      [
+        "export function getStaticPaths() { return { paths: [], fallback: false }; }",
+        "export function getStaticProps() { return { props: {}, revalidate: 60 }; }",
+        "export default function Page() {}",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockResolvedValue(
+      Response.json({ fallback: false, paths: ["/first", "/second"] }),
+    );
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const rewrite = {
+      source: testCase.source,
+      destination: testCase.destination,
+    };
+    const nextConfig = await resolveNextConfig(
+      {
+        rewrites: () => ({
+          beforeFiles: [],
+          afterFiles: testCase.phase === "afterFiles" ? [rewrite] : [],
+          fallback: testCase.phase === "fallback" ? [rewrite] : [],
+        }),
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      requestRouting: "uncached-stage",
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual(testCase.expectedPaths);
+    expect(manifest?.pagesPaths).toEqual(testCase.expectedPaths);
+    expect(manifest?.excludedWarmPaths).toEqual(testCase.excludedPaths);
   });
 
   it("allows the uncached middleware stage to resolve warm routes", async () => {
@@ -942,7 +1168,11 @@ describe("prerender path manifest", () => {
     const nextConfig = await resolveNextConfig(
       {
         trailingSlash: true,
-        rewrites: () => [{ source: "/foo/", destination: "/other" }],
+        rewrites: () => ({
+          beforeFiles: [{ source: "/foo/", destination: "/other" }],
+          afterFiles: [],
+          fallback: [],
+        }),
       },
       tmpDir,
     );
@@ -975,7 +1205,11 @@ describe("prerender path manifest", () => {
           locales: ["en", "fr"],
           domains: [{ domain: "example.fr", defaultLocale: "fr" }],
         },
-        rewrites: () => [{ source: "/fr/foo", destination: "/other", locale: false }],
+        rewrites: () => ({
+          beforeFiles: [{ source: "/fr/foo", destination: "/other", locale: false }],
+          afterFiles: [],
+          fallback: [],
+        }),
       },
       tmpDir,
     );
@@ -1908,7 +2142,11 @@ describe("prerender path manifest", () => {
     const nextConfig = await resolveNextConfig(
       {
         i18n: { defaultLocale: "en", locales: ["en", "fr"] },
-        rewrites: () => [{ source: "/fr/about", destination: "/other", locale: false }],
+        rewrites: () => ({
+          beforeFiles: [{ source: "/fr/about", destination: "/other", locale: false }],
+          afterFiles: [],
+          fallback: [],
+        }),
       },
       tmpDir,
     );

@@ -508,6 +508,7 @@ export default async function handleAppRequestStage(
   dispatchResponseStage,
   probeMode = null,
   prerenderDiscovery = false,
+  trustedPrerenderState = null,
 ) {
   return __dispatchAppRequestStage(request, ctx, dispatchResponseStage, {
     basePath: __basePath,
@@ -516,6 +517,7 @@ export default async function handleAppRequestStage(
     handleRequest: __requestHandler,
     prerenderDiscovery,
     probeMode,
+    trustedPrerenderState,
   });
 }
 `;

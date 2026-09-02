@@ -19,6 +19,7 @@ import {
 } from "./image-optimization.js";
 import type { ImageConfig } from "./image-optimization.js";
 import {
+  attachRequestCfMetadata,
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
@@ -373,6 +374,12 @@ async function handleRequest(
       pathname: responseStagePolicyPathname,
       requestContext: requestContextFromRequest(request),
     });
+    // A known route miss is rendered speculatively before fallback rewrites or
+    // the error page are selected. A remote transport may consume the request
+    // body while serializing that first render, so retain the post-middleware
+    // request as a replay source for every render in that retry sequence.
+    // Ordinary matched page renders keep the original streaming request.
+    let speculativeRenderRequest: Request | null = null;
 
     const deps: PagesPipelineDeps = {
       basePath,
@@ -399,6 +406,13 @@ async function handleRequest(
           ? wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)
           : null,
       renderPage: (req, resolvedUrl, options, stagedHeaders) => {
+        if (options?.renderErrorPageOnMiss === false && req.body !== null && !req.bodyUsed) {
+          speculativeRenderRequest = req;
+        }
+        const stageRequest =
+          speculativeRenderRequest === req && req.body !== null && !req.bodyUsed
+            ? attachRequestCfMetadata(req.clone(), req)
+            : req;
         const matchedPage =
           typeof matchPageRoute === "function" ? matchPageRoute(resolvedUrl, req) : null;
         const transportedPolicyHeaders = withResponseStageVary(
@@ -442,7 +456,7 @@ async function handleRequest(
               });
         const isHeadRequest = req.method.toUpperCase() === "HEAD";
         const dispatched = trackedDispatchResponseStage(
-          req,
+          stageRequest,
           responseStageProps(cache),
           { cache },
           env,

@@ -35,6 +35,37 @@ type PagesWorkerExecutionContext = ExecutionContextLike & {
   cache?: unknown;
 };
 
+type PagesStreamedHtmlResponse = Response & {
+  __vinextStreamedHtmlResponse?: boolean;
+};
+
+/** Remove a body length inherited from response staging before transport drops the stream tag. */
+function stripStreamedHtmlContentLength(response: Response): Response {
+  if (
+    (response as PagesStreamedHtmlResponse).__vinextStreamedHtmlResponse !== true ||
+    !response.headers.has("Content-Length")
+  ) {
+    return response;
+  }
+  try {
+    response.headers.delete("Content-Length");
+    return response;
+  } catch {
+    const headers = new Headers(response.headers);
+    headers.delete("Content-Length");
+    const stripped = preserveFullyBufferedBodyMetadata(
+      response,
+      new Response(response.body, {
+        headers,
+        status: response.status,
+        statusText: response.statusText,
+      }),
+    ) as PagesStreamedHtmlResponse;
+    stripped.__vinextStreamedHtmlResponse = true;
+    return stripped;
+  }
+}
+
 export async function renderPagesResponse(
   request: Request,
   env: PagesWorkerEnv | undefined,
@@ -116,14 +147,16 @@ export async function renderPagesResponse(
     if (typeof pagesEntry.renderPage !== "function") {
       return new Response("This page could not be found", { status: 404 });
     }
-    return pagesEntry.renderPage(
-      request,
-      props.resolvedUrl,
-      null,
-      cacheabilityContext,
-      renderHeaders,
-      props.renderOptions ?? undefined,
-      initialResponseHeaders,
+    return stripStreamedHtmlContentLength(
+      await pagesEntry.renderPage(
+        request,
+        props.resolvedUrl,
+        null,
+        cacheabilityContext,
+        renderHeaders,
+        props.renderOptions ?? undefined,
+        initialResponseHeaders,
+      ),
     );
   };
   const response = await withResponseStageCacheability(
