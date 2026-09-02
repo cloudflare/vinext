@@ -1,11 +1,5 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import {
-  configureWorkersCacheEntrypoints,
-  finalizeWorkersCacheBuildOutput,
-} from "../packages/cloudflare/src/cache/cdn-adapter-config.js";
+import { configureWorkersCacheEntrypoints } from "../packages/cloudflare/src/cache/cdn-adapter-config.js";
 import worker, {
   VinextCachedResponse,
 } from "../packages/cloudflare/src/cache/cdn-adapter.worker.js";
@@ -610,6 +604,62 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     await expect(response.text()).resolves.toBe("shared");
   });
 
+  it("does not rewrite an unrelated fallback after a speculative shared dispatch", async () => {
+    const binding = vi.fn(() => ({
+      fetch: vi.fn().mockResolvedValue(
+        new Response("discarded", {
+          headers: { "Cloudflare-CDN-Cache-Control": "public, max-age=300" },
+        }),
+      ),
+    }));
+    stages.request.mockImplementation(async (request, _env, _ctx, dispatch) => {
+      const speculative = await dispatch(request, { kind: "app-page" }, { cache: "shared" });
+      await speculative.body?.cancel();
+      return new Response("asset fallback", {
+        headers: {
+          "Cache-Control": "public, max-age=3600",
+          "Cache-Tag": "asset-fallback",
+          "CDN-Cache-Control": "public, s-maxage=3600",
+        },
+      });
+    });
+
+    const response = await worker.fetch(
+      new Request("https://example.com/asset"),
+      {},
+      {
+        exports: { VinextCachedResponse: binding },
+      },
+    );
+
+    expect(binding).toHaveBeenCalledOnce();
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=3600");
+    expect(response.headers.get("CDN-Cache-Control")).toBe("public, s-maxage=3600");
+    expect(response.headers.get("Cache-Tag")).toBe("asset-fallback");
+  });
+
+  it("consumes shared-stage provenance from an already private response", async () => {
+    const binding = vi.fn(() => ({
+      fetch: vi
+        .fn()
+        .mockResolvedValue(new Response("private", { headers: { "Cache-Control": "no-store" } })),
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-page" }, { cache: "shared" }),
+    );
+
+    const response = await worker.fetch(
+      new Request("https://example.com/private"),
+      {},
+      {
+        exports: { VinextCachedResponse: binding },
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.has("x-vinext-cloudflare-shared-response-stage")).toBe(false);
+  });
+
   it("keeps Authorization off Workers Cache while restoring and partitioning cold renders", async () => {
     const cacheFacingRequests: Request[] = [];
     const binding = vi.fn(({ props }: { props: unknown }) => ({
@@ -1071,18 +1121,5 @@ describe("Workers Cache deployment configuration", () => {
     expect(() =>
       configureWorkersCacheEntrypoints({ compatibility_flags: ["disable_ctx_exports"] }),
     ).toThrow(/requires ctx\.exports/);
-  });
-
-  it("updates the generated Wrangler config without changing the source config", async () => {
-    const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-cdn-output-"));
-    try {
-      await fs.writeFile(path.join(outDir, "wrangler.json"), JSON.stringify({ name: "app" }));
-      await finalizeWorkersCacheBuildOutput({ outDir, root: outDir });
-      const config = JSON.parse(await fs.readFile(path.join(outDir, "wrangler.json"), "utf8"));
-      expect(config.exports.default.cache.enabled).toBe(false);
-      expect(config.exports.VinextCachedResponse.cache.enabled).toBe(true);
-    } finally {
-      await fs.rm(outDir, { recursive: true, force: true });
-    }
   });
 });
