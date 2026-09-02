@@ -8,6 +8,7 @@ import {
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
   type WorkerResponseStageProps,
 } from "../packages/vinext/src/server/worker-stages.js";
+import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
 import { cloneRequestWithUrl } from "../packages/vinext/src/server/request-pipeline.js";
 import { NextRequest } from "../packages/vinext/src/shims/server.js";
 
@@ -935,6 +936,71 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(response.headers.get("Cache-Control")).toBe("private, max-age=0, must-revalidate");
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     await expect(response.text()).resolves.toBe("public");
+  });
+
+  it("keeps tagged responses with custom Vary fields private", async () => {
+    stages.response.mockResolvedValue(
+      new Response("variant", {
+        headers: {
+          "Cache-Control": "public, max-age=0, must-revalidate",
+          "CDN-Cache-Control": "public, max-age=300",
+          "Cache-Tag": "variant-specific-tag",
+          Vary: "RSC, Accept-Language",
+        },
+      }),
+    );
+
+    const response = await createEntrypoint(responseStageInvocation({ kind: "app-page" })).fetch(
+      new Request("https://example.com/page", {
+        headers: { "Accept-Language": "en" },
+      }),
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+    expect(response.headers.get("Vary")).toBe("RSC, Accept-Language");
+    await expect(response.text()).resolves.toBe("variant");
+  });
+
+  it("retains tagged responses with framework-owned RSC variance", async () => {
+    stages.response.mockResolvedValue(
+      new Response("flight", {
+        headers: {
+          "CDN-Cache-Control": "public, max-age=300",
+          "Cache-Tag": "page-tag",
+          Vary: VINEXT_RSC_VARY_HEADER,
+        },
+      }),
+    );
+
+    const response = await createEntrypoint(responseStageInvocation({ kind: "app-page" })).fetch(
+      new Request("https://example.com/page", { headers: { RSC: "1" } }),
+    );
+
+    expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=300");
+    expect(response.headers.get("Cache-Tag")).toBe("page-tag");
+  });
+
+  it("retains untagged responses with application-defined variance", async () => {
+    stages.response.mockResolvedValue(
+      new Response("localized", {
+        headers: {
+          "CDN-Cache-Control": "public, max-age=300",
+          Vary: "Accept-Language",
+        },
+      }),
+    );
+
+    const response = await createEntrypoint(responseStageInvocation({ kind: "app-route" })).fetch(
+      new Request("https://example.com/localized", {
+        headers: { "Accept-Language": "en" },
+      }),
+    );
+
+    expect(response.headers.get("CDN-Cache-Control")).toBe("public, max-age=300");
+    expect(response.headers.get("Vary")).toBe("Accept-Language");
   });
 
   it("strips forged request.cf transport metadata when no platform metadata exists", async () => {
