@@ -187,6 +187,51 @@ describe("createPagesPageHandler — after() lifecycle", () => {
   });
 });
 
+describe("createPagesPageHandler — pre-render response headers", () => {
+  it("lets getServerSideProps override config cache policy", async () => {
+    // Ported from Next.js:
+    // test/e2e/middleware-custom-matchers/app/pages/index.js
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers/app/pages/index.js
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              getServerSideProps: async ({
+                res,
+              }: {
+                res: {
+                  getHeader(name: string): string | string[] | number | undefined;
+                  setHeader(name: string, value: string): void;
+                };
+              }) => {
+                expect(res.getHeader("x-config-variant")).toBe("preview");
+                expect(res.getHeader("x-from-middleware")).toBe("present");
+                res.setHeader("Cache-Control", "private, no-store");
+                return { props: {} };
+              },
+            }),
+          ),
+        ],
+      }),
+    );
+
+    const initialHeaders = new Headers({
+      "Cache-Control": "public, s-maxage=60",
+      Vary: "x-visitor",
+      "x-config-variant": "preview",
+      "x-from-middleware": "present",
+    });
+    const response = await handler(makeRequest(), "/", null, null, null, initialHeaders);
+
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Vary")).toBe("x-visitor");
+    expect(response.headers.get("x-config-variant")).toBe("preview");
+    expect(response.headers.get("x-from-middleware")).toBe("present");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Route miss → 404 fallback
 // ---------------------------------------------------------------------------
@@ -726,6 +771,23 @@ describe("createPagesPageHandler — preview responses", () => {
     expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
     expect(response.headers.get("x-example-edge-policy")).toBe("s-maxage=6000");
     expect(response.headers.get("x-example-cache-tag")).toBe("draft-404");
+  });
+
+  it("keeps invalid preview-cookie cleanup private", () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = finalizePagesPreviewResponse(
+      new Response("stale preview", {
+        headers: {
+          "Cache-Control": "public, max-age=0, must-revalidate",
+          "CDN-Cache-Control": "public, s-maxage=60",
+        },
+      }),
+      { data: false, shouldClear: true },
+    );
+
+    expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.getSetCookie()).toHaveLength(2);
   });
 
   it("does not expose preview notFound responses to shared Cloudflare caching", async () => {
