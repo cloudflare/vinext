@@ -21,6 +21,7 @@ import {
 import {
   applyConfigHeadersToHeaderRecord,
   applyConfigHeadersToResponse,
+  resolveResponseStageCachePolicy,
 } from "../packages/vinext/src/server/config-headers.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
@@ -31,7 +32,11 @@ import {
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "../packages/vinext/src/server/headers.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
+import {
+  buildRequestHeadersFromMiddlewareResponse,
+  hasMiddlewareRequestHeaderOverrides,
+} from "../packages/vinext/src/utils/middleware-request-headers.js";
+import { withResponseStageVary } from "../packages/vinext/src/server/response-stage-policy.js";
 import {
   readStaticFileSignal,
   restoreStaticFileSignalFromTransport,
@@ -252,6 +257,55 @@ describe("applyConfigHeadersToResponse", () => {
     expect(response.headers.get("x-added")).toBe("config");
     expect(response.headers.get("vary")).toBe("RSC, Accept");
     expect(response.headers.get("set-cookie")).toBe("from=config; Path=/");
+  });
+});
+
+describe("response-stage config policy", () => {
+  it("carries only matched positive cache policy and Vary fields", () => {
+    const request = new Request("https://example.com/about", {
+      headers: { "x-enable-cache": "yes" },
+    });
+
+    expect(
+      resolveResponseStageCachePolicy({
+        configHeaders: [
+          {
+            source: "/about",
+            has: [{ type: "header", key: "x-enable-cache", value: "yes" }],
+            headers: [
+              { key: "Cache-Control", value: "s-maxage=60" },
+              { key: "Vary", value: "Accept" },
+              { key: "X-Unrelated", value: "outer-only" },
+            ],
+          },
+        ],
+        pathname: "/about",
+        requestContext: {
+          headers: request.headers,
+          cookies: {},
+          query: new URLSearchParams(),
+          host: "example.com",
+        },
+      }),
+    ).toEqual([
+      ["Cache-Control", "s-maxage=60"],
+      ["Vary", "Accept"],
+    ]);
+  });
+
+  it("replaces transported Vary fields with their merged effective value", () => {
+    expect(
+      withResponseStageVary(
+        [
+          ["Cache-Control", "s-maxage=60"],
+          ["Vary", "Accept"],
+        ],
+        "RSC, Accept",
+      ),
+    ).toEqual([
+      ["Cache-Control", "s-maxage=60"],
+      ["Vary", "Accept, RSC"],
+    ]);
   });
 });
 
@@ -1012,6 +1066,20 @@ describe("filterInternalHeaders", () => {
 });
 
 describe("buildRequestHeadersFromMiddlewareResponse", () => {
+  it("detects both listed overrides and unconsumed forwarded values", () => {
+    expect(hasMiddlewareRequestHeaderOverrides(null)).toBe(false);
+    expect(
+      hasMiddlewareRequestHeaderOverrides(
+        new Headers({ "x-middleware-override-headers": "x-added" }),
+      ),
+    ).toBe(true);
+    expect(
+      hasMiddlewareRequestHeaderOverrides(
+        new Headers({ "x-middleware-request-x-unlisted": "literal" }),
+      ),
+    ).toBe(true);
+  });
+
   it("does not translate stray forwarded values when the override header is empty", () => {
     // Next.js only applies middleware request-header overrides when this
     // protocol header is truthy, so the empty string emitted for `new Headers()`
