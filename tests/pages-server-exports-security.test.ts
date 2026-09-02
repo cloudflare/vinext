@@ -194,6 +194,33 @@ export default function handler() {}
     },
   );
 
+  it.each([
+    ["sitemap", "getStaticProps"],
+    ["robots", "getServerSideProps"],
+    ["manifest", "getStaticProps"],
+    ["icon", "getServerSideProps"],
+    ["opengraph-image", "getStaticProps"],
+    ["twitter-image", "getServerSideProps"],
+  ])("allows %s Pages routes to export %s", async (fileName, dataExport) => {
+    // Ported from Next.js: test/e2e/pages-app-router-filenames/
+    // https://github.com/vercel/next.js/tree/canary/test/e2e/pages-app-router-filenames
+    const pageSource = `
+export async function ${dataExport}() {
+  return { props: { name: "${fileName}" } };
+}
+
+export default function Page({ name }: { name: string }) {
+  return <main>{name}</main>;
+}
+`;
+    const fixtureDir = await buildPagesFixture(
+      pageSource,
+      `vinext-pages-${fileName}-parity-`,
+      path.join("pages", `${fileName}.tsx`),
+    );
+    await fsp.rm(fixtureDir, { recursive: true, force: true });
+  });
+
   it("rejects mixed SSR and SSG exports with the Next.js error", async () => {
     const pageSource = `
 export function getServerSideProps() { return { props: {} }; }
