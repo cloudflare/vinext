@@ -138,22 +138,6 @@ async function writeGeneratedConfig(
   await fs.writeFile(generatedConfigPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
-/** Apply only the Workers Cache entrypoint policy to a generated config. */
-export async function finalizeWorkersCacheBuildOutput({
-  outDir,
-}: {
-  outDir: string;
-  root: string;
-}): Promise<void> {
-  const generatedConfigPath = path.resolve(outDir, "wrangler.json");
-  const generatedConfig = await readGeneratedConfig(generatedConfigPath, true);
-  if (!generatedConfig) return;
-  await writeGeneratedConfig(
-    generatedConfigPath,
-    configureWorkersCacheEntrypoints(generatedConfig),
-  );
-}
-
 /** Apply the complete CDN adapter policy to the primary generated config. */
 export async function finalizeCdnAdapterBuildOutput({
   outDir,
