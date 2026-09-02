@@ -461,6 +461,49 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(ct).toContain("application/json");
   });
 
+  it("uses the HTML path tag for cacheable static-props data responses", async () => {
+    const cacheInputs: Array<{ cacheControl: string; tags?: readonly string[] }> = [];
+    setCdnCacheAdapter({
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      async revalidateTag() {},
+      buildResponseHeaders(input) {
+        cacheInputs.push(input);
+        return {
+          "Cache-Control": "public, max-age=0, must-revalidate",
+          "X-Example-Cache-Tag": input.tags?.join(",") ?? null,
+          "X-Example-Edge-Policy": input.cacheControl,
+        };
+      },
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/about",
+            makePageModule({
+              getStaticProps: async () => ({ props: {}, revalidate: 60 }),
+            }),
+          ),
+        ],
+      }),
+    );
+    const dataUrl = "/_next/data/test-build-id/about.json";
+
+    const response = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+
+    expect(response.status).toBe(200);
+    expect(cacheInputs).toEqual([
+      expect.objectContaining({
+        tags: ["_N_T_/about"],
+      }),
+    ]);
+    expect(response.headers.get("X-Example-Cache-Tag")).toBe("_N_T_/about");
+  });
+
   it("preserves no-middleware trailingSlash data request resolvedUrl and asPath", async () => {
     // Next.js derives Pages data resolvedUrl/asPath from the parsed data
     // pathname. The trailingSlash data-path adjustment is middleware-only.

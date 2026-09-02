@@ -1075,11 +1075,15 @@ export function createPagesPageHandler(
           } else if (isStaticPropsRoute) {
             if (isrRevalidateSeconds !== null) {
               const headers = new Headers(init.headers);
+              const stem = isrCachePathname.endsWith("/")
+                ? isrCachePathname.slice(0, -1)
+                : isrCachePathname;
               applyCdnResponseHeaders(headers, {
                 cacheControl: buildMissIsrCacheControl(
                   isrRevalidateSeconds,
                   vinextConfig.expireTime,
                 ),
+                tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
               });
               for (const [key, value] of headers) {
                 init.headers[key] = value;
