@@ -1172,7 +1172,7 @@ describe("single-request cacheability admission", () => {
     // Ported from Next.js:
     // test/e2e/getserversideprops/test/index.test.ts
     const pagesRequest = new Request("https://example.com/pages-route", {
-      headers: { Accept: "text/html" },
+      headers: { Accept: "*/*" },
     });
     const context = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },

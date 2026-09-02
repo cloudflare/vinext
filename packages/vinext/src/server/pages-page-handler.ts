@@ -61,6 +61,7 @@ import {
   closeAfterResponse,
   closeAfterResponseWithBody,
   createRequestContext,
+  preserveFullyBufferedBodyMetadata,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
@@ -85,21 +86,40 @@ import {
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
 
+type PagesStreamedHtmlResponse = Response & {
+  __vinextStreamedHtmlResponse?: boolean;
+};
+
+function preservePagesBodyMetadata(source: Response, target: Response): Response {
+  const result = preserveFullyBufferedBodyMetadata(source, target) as PagesStreamedHtmlResponse;
+  if ((source as PagesStreamedHtmlResponse).__vinextStreamedHtmlResponse === true) {
+    result.__vinextStreamedHtmlResponse = true;
+  }
+  return result;
+}
+
 export function finalizePagesPreviewResponse(
   response: Response,
   preview: PagesPreviewState,
 ): Response {
   if (preview.data === false && !preview.shouldClear) return response;
   const headers = new Headers(response.headers);
-  if (preview.data !== false) {
+  // Next.js expires stale preview cookies but only applies this policy while
+  // draft mode remains active. Keep the cleanup response private as a stricter
+  // edge-cache safeguard: otherwise a shared cache can replay Set-Cookie and
+  // the ordinary ISR body selected after the invalid cookie was rejected.
+  if (preview.data !== false || preview.shouldClear) {
     applyCdnResponseHeaders(headers, { cacheControl: PAGES_PREVIEW_CACHE_CONTROL });
   }
   if (preview.shouldClear) appendPagesPreviewClearCookies(headers);
-  return new Response(response.body, {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
+  return preservePagesBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+  );
 }
 
 function withPagesCacheState(
@@ -367,6 +387,7 @@ export function createPagesPageHandler(
   manifest: Record<string, string[]> | null | undefined,
   middlewareHeaders: Headers | null | undefined,
   options: RenderPageOptions | null | undefined,
+  initialResponseHeaders?: Headers,
 ) => Promise<Response> {
   const {
     pageRoutes,
@@ -433,6 +454,7 @@ export function createPagesPageHandler(
     manifest: Record<string, string[]> | null | undefined,
     middlewareHeaders: Headers | null | undefined,
     options: RenderPageOptions | null | undefined,
+    initialResponseHeaders?: Headers,
   ): Promise<Response> {
     let isDataReq = !!(options && options.isDataReq);
     const requestUrl = new URL(request.url);
@@ -599,10 +621,17 @@ export function createPagesPageHandler(
     if (shouldCoalesceOnDemand) {
       const cacheKey = pageIsrCacheKey("pages", routeUrl.split("?")[0]);
       const snapshot = await coalesceOnDemandRevalidation(cacheKey, async () => {
-        const response = await renderPage(request, url, manifest, middlewareHeaders, {
-          ...options,
-          __skipOnDemandCoalesce: true,
-        });
+        const response = await renderPage(
+          request,
+          url,
+          manifest,
+          middlewareHeaders,
+          {
+            ...options,
+            __skipOnDemandCoalesce: true,
+          },
+          initialResponseHeaders,
+        );
         return {
           body:
             request.method === "HEAD" || response.status === 204 || response.status === 304
@@ -807,6 +836,7 @@ export function createPagesPageHandler(
         const createPageReqRes = () => {
           const reqRes = createPagesReqRes({
             body: undefined,
+            initialResponseHeaders,
             query,
             request,
             url: originalRequestPathAndSearch,
@@ -917,16 +947,23 @@ export function createPagesPageHandler(
           const notFoundRoute = findNotFoundRoute();
           let notFoundResponse: Response;
           if (notFoundRoute && routePattern !== "/404" && routePattern !== "/_error") {
-            notFoundResponse = await renderPage(request, url, manifest, middlewareHeaders, {
-              statusCode: 404,
-              asPath: routerAsPath,
-              renderErrorPageOnMiss: false,
-              __forcedRoute: notFoundRoute,
-              __notFoundRevalidateSeconds: pageDataResult.revalidateSeconds,
-              __notFoundExpireSeconds: pageDataResult.expireSeconds,
-              __notFoundCachePathname: isrCachePathname,
-              __notFoundSourceHeaders: pageDataResult.responseHeaders,
-            });
+            notFoundResponse = await renderPage(
+              request,
+              url,
+              manifest,
+              middlewareHeaders,
+              {
+                statusCode: 404,
+                asPath: routerAsPath,
+                renderErrorPageOnMiss: false,
+                __forcedRoute: notFoundRoute,
+                __notFoundRevalidateSeconds: pageDataResult.revalidateSeconds,
+                __notFoundExpireSeconds: pageDataResult.expireSeconds,
+                __notFoundCachePathname: isrCachePathname,
+                __notFoundSourceHeaders: pageDataResult.responseHeaders,
+              },
+              initialResponseHeaders,
+            );
           } else {
             notFoundResponse = mergePagesNotFoundSourceHeaders(
               buildDefaultPagesNotFoundResponse(),
@@ -1000,42 +1037,34 @@ export function createPagesPageHandler(
         // and expects the full props envelope (pageProps plus any app-level
         // props like __N_SSP, __N_SSG) as JSON instead of the full HTML page.
         if (isDataReq) {
-          const init: ResponseInit & { headers: Record<string, string> } = { headers: {} };
+          const headers = new Headers();
           if (gsspRes && typeof gsspRes.getHeaders === "function") {
             const gsspHeaders = gsspRes.getHeaders();
             for (const k of Object.keys(gsspHeaders)) {
               const v = gsspHeaders[k];
               if (v === undefined || v === null) continue;
-              init.headers[k] = Array.isArray(v) ? v.join(", ") : String(v);
+              if (k.toLowerCase() === "set-cookie" && Array.isArray(v)) {
+                for (const cookie of v) headers.append(k, String(cookie));
+              } else {
+                headers.set(k, Array.isArray(v) ? v.join(", ") : String(v));
+              }
             }
           }
           if (gsspRes) {
             // Default Cache-Control for gSSP-driven _next/data responses —
             // skip when gSSP already set one via res.setHeader. Fixes #1461.
-            let hasUserCacheControl = false;
-            for (const headerKey of Object.keys(init.headers)) {
-              if (headerKey.toLowerCase() === "cache-control") {
-                hasUserCacheControl = true;
-                break;
-              }
-            }
-            if (!hasUserCacheControl) {
-              init.headers["Cache-Control"] = ISR_NEVER_CACHE_CONTROL;
-            }
+            if (!headers.has("Cache-Control"))
+              headers.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
           } else if (isStaticPropsRoute) {
             if (isrRevalidateSeconds !== null) {
-              const headers = new Headers(init.headers);
               applyCdnResponseHeaders(headers, {
                 cacheControl: buildMissIsrCacheControl(
                   isrRevalidateSeconds,
                   vinextConfig.expireTime,
                 ),
               });
-              for (const [key, value] of headers) {
-                init.headers[key] = value;
-              }
             } else if (shouldUseNextDeployCacheControl()) {
-              init.headers["Cache-Control"] = BROWSER_REVALIDATE_CACHE_CONTROL;
+              headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
             }
           }
           // Mirror Next.js pages-handler.ts: set x-nextjs-deployment-id on
@@ -1047,11 +1076,11 @@ export function createPagesPageHandler(
             const deploymentId =
               process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID;
             if (deploymentId) {
-              init.headers[NEXTJS_DEPLOYMENT_ID_HEADER] = deploymentId;
+              headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);
             }
           }
           return finalizePagesPreviewResponse(
-            buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, init),
+            buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, { headers }),
             preview,
           );
         }
@@ -1176,14 +1205,21 @@ export function createPagesPageHandler(
           }
           if (errorRoute) {
             try {
-              return await renderPage(request, url, manifest, middlewareHeaders, {
-                statusCode: 500,
-                asPath: url,
-                renderErrorPageOnMiss: false,
-                __isInternalErrorRender: true,
-                __forcedRoute: errorRoute,
-                err: e instanceof Error ? e : new Error(String(e)),
-              });
+              return await renderPage(
+                request,
+                url,
+                manifest,
+                middlewareHeaders,
+                {
+                  statusCode: 500,
+                  asPath: url,
+                  renderErrorPageOnMiss: false,
+                  __isInternalErrorRender: true,
+                  __forcedRoute: errorRoute,
+                  err: e instanceof Error ? e : new Error(String(e)),
+                },
+                initialResponseHeaders,
+              );
             } catch (errorPageErr) {
               console.error("[vinext] Error page render failed:", errorPageErr);
             }

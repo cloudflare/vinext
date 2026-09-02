@@ -211,8 +211,14 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
         headers: accept ? { Accept: accept } : undefined,
       });
       expect(response.status(), accept ?? "missing Accept").toBe(200);
-      expect(response.headers()["cache-control"], accept ?? "missing Accept").toContain("no-store");
+      expect(response.headers()["cache-control"], accept ?? "missing Accept").not.toContain(
+        "public",
+      );
       expect(response.headers()["cdn-cache-control"], accept ?? "missing Accept").toBeUndefined();
+      expect(
+        response.headers()["cloudflare-cdn-cache-control"],
+        accept ?? "missing Accept",
+      ).toBeUndefined();
     }
   });
 });
@@ -266,8 +272,14 @@ test.describe("Cloudflare Pages-only completed-response admission", () => {
         headers: accept ? { Accept: accept } : undefined,
       });
       expect(response.status(), accept ?? "missing Accept").toBe(200);
-      expect(response.headers()["cache-control"], accept ?? "missing Accept").toContain("no-store");
+      expect(response.headers()["cache-control"], accept ?? "missing Accept").not.toContain(
+        "public",
+      );
       expect(response.headers()["cdn-cache-control"], accept ?? "missing Accept").toBeUndefined();
+      expect(
+        response.headers()["cloudflare-cdn-cache-control"],
+        accept ?? "missing Accept",
+      ).toBeUndefined();
     }
   });
 });
