@@ -17,6 +17,7 @@ import {
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_READINESS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
+import { finalizePagesPreviewResponse } from "../packages/vinext/src/server/pages-page-handler.js";
 
 const stages = vi.hoisted(() => ({
   api: vi.fn(),
@@ -237,6 +238,43 @@ describe("Pages Worker response stage", () => {
     expect(response.headers.get("Content-Length")).toBeNull();
     expect(response.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
     await expect(response.text()).resolves.toBe("streamed page");
+  });
+
+  it("strips stale Content-Length after preview response finalization", async () => {
+    // Next.js preview renders still flow through its normal HTML sender; applying
+    // the preview no-store policy must not turn a streamed body into a fixed-length one.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/send-payload.ts
+    const streamed = new Response("preview page", {
+      headers: { "Content-Length": "1", "Content-Type": "text/html; charset=utf-8" },
+    }) as Response & { __vinextStreamedHtmlResponse?: boolean };
+    streamed.__vinextStreamedHtmlResponse = true;
+    stages.renderPage.mockResolvedValue(
+      finalizePagesPreviewResponse(streamed, { data: { enabled: true }, shouldClear: false }),
+    );
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/page", {
+        headers: { Cookie: "__prerender_bypass=preview" },
+      }),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/page" },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: null,
+        resolvedUrl: "/page",
+        stagedHeaders: [],
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    expect(response.headers.get("Content-Length")).toBeNull();
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("preview page");
   });
 
   it("preserves the dynamic Pages data short-circuit without an HTML render", async () => {

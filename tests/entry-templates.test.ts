@@ -1143,6 +1143,8 @@ describe("App Router entry templates", () => {
     expect(code).toContain(
       'import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler"',
     );
+    expect(code).toContain('from "virtual:vinext-cdn-cache-adapter"');
+    expect(code).not.toContain('from "virtual:vinext-cache-adapters"');
     expect(code).toContain('dispatchPagesResponseStage(stageRequest, "api")');
     expect(code).toContain('dispatchPagesResponseStage(stageRequest, "page", dataKind)');
     expect(code).toContain("buildId: process.env.__VINEXT_BUILD_ID ?? null");
@@ -1820,11 +1822,19 @@ describe("Pages Router entry template", () => {
       fs.mkdirSync(path.join(pagesDir, "api"), { recursive: true });
       const pagePath = path.join(pagesDir, "index.tsx");
       const apiPath = path.join(pagesDir, "api", "hello.ts");
+      const documentPath = path.join(pagesDir, "_document.tsx");
       fs.writeFileSync(
         pagePath,
         "export function getStaticProps() { return { props: {} }; } export default function Page() { return null; }",
       );
       fs.writeFileSync(apiPath, "export default function handler() {};");
+      // Next.js exposes req/res to custom Document getInitialProps for SSG
+      // renders because getStaticProps pages are not automatic exports.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+      fs.writeFileSync(
+        documentPath,
+        "export default class Document { static async getInitialProps() { return { html: '' }; } }",
+      );
       fs.writeFileSync(middlewarePath, "export function middleware() {};");
       fs.writeFileSync(instrumentationPath, "export function register() {};");
 
@@ -1838,6 +1848,7 @@ describe("Pages Router entry template", () => {
       );
 
       expect(code).toContain('export const buildId = "split-build"');
+      expect(code).toContain("export const hasRequestAwareDocument = true");
       expect(code).toContain('dataKind: "static"');
       expect(code).toContain('pattern: "/api/hello"');
       expect(code).toContain("export function matchApiRoute(url, request)");
@@ -1845,6 +1856,7 @@ describe("Pages Router entry template", () => {
       expect(code).toContain(JSON.stringify(middlewarePath));
       expect(code).not.toContain(JSON.stringify(pagePath));
       expect(code).not.toContain(JSON.stringify(apiPath));
+      expect(code).not.toContain(JSON.stringify(documentPath));
       expect(code).not.toContain("react-dom/server.edge");
       expect(code).not.toContain("createPagesPageHandler");
       expect(code).not.toContain("handlePagesApiRoute");

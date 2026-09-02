@@ -72,7 +72,7 @@ import {
 import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
-import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
+import { registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
 // Request-only generated entry: route metadata, config, and middleware. It
@@ -134,6 +134,7 @@ export type PagesLocalResponseStage = (
 const {
   authorizeOnDemandRevalidate,
   hasMiddleware,
+  hasRequestAwareDocument,
   matchApiRoute,
   matchPageRoute,
   normalizeDataRequest,
@@ -450,8 +451,10 @@ async function handleRequest(
                   typeof authorizeOnDemandRevalidate === "function"
                     ? authorizeOnDemandRevalidate
                     : undefined,
+                hasRequestAwareDocument: hasRequestAwareDocument === true,
                 request: req,
                 requestHeadersChanged: !haveSameHeaders(filteredHeaders, req.headers),
+                routeDataKind: matchedPage?.route.dataKind,
                 stagedHeaders,
               });
         const isHeadRequest = req.method.toUpperCase() === "HEAD";

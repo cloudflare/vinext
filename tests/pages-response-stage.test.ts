@@ -156,4 +156,31 @@ describe("Pages response-stage dispatch", () => {
       }),
     ).toBe(false);
   });
+
+  it("keeps getStaticProps renders with request-aware Documents out of the shared stage", () => {
+    // Next.js passes req/res to `_document.getInitialProps` whenever the page is
+    // not an automatic static export, including getStaticProps/ISR renders.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+    expect(
+      shouldDispatchPagesResponseStage({
+        hasRequestAwareDocument: true,
+        request: new Request("https://example.com/page"),
+        routeDataKind: "static",
+      }),
+    ).toBe(false);
+    expect(
+      shouldDispatchPagesResponseStage({
+        hasRequestAwareDocument: false,
+        request: new Request("https://example.com/page"),
+        routeDataKind: "static",
+      }),
+    ).toBe(true);
+    expect(
+      shouldDispatchPagesResponseStage({
+        hasRequestAwareDocument: true,
+        request: new Request("https://example.com/page"),
+        routeDataKind: "none",
+      }),
+    ).toBe(true);
+  });
 });

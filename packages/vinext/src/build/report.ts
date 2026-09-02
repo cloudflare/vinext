@@ -162,6 +162,174 @@ export function hasExportedName(code: string, name: string): boolean {
   return false;
 }
 
+function astNodeField(value: unknown, field: string): unknown {
+  return value !== null && typeof value === "object" ? Reflect.get(value, field) : undefined;
+}
+
+function astPropertyName(value: unknown): string | null {
+  const type = astNodeField(value, "type");
+  if (type === "Identifier") {
+    const name = astNodeField(value, "name");
+    return typeof name === "string" ? name : null;
+  }
+  if (type === "Literal") {
+    const literal = astNodeField(value, "value");
+    return typeof literal === "string" ? literal : null;
+  }
+  return null;
+}
+
+function classDefinesStaticMember(value: unknown, memberName: string): boolean {
+  const type = astNodeField(value, "type");
+  if (type !== "ClassDeclaration" && type !== "ClassExpression") return false;
+  const elements = astNodeField(astNodeField(value, "body"), "body");
+  return (
+    Array.isArray(elements) &&
+    elements.some((element) => {
+      const elementType = astNodeField(element, "type");
+      return (
+        (elementType === "MethodDefinition" || elementType === "PropertyDefinition") &&
+        astNodeField(element, "static") === true &&
+        astPropertyName(astNodeField(element, "key")) === memberName
+      );
+    })
+  );
+}
+
+function classHasSuperclass(value: unknown): boolean {
+  const type = astNodeField(value, "type");
+  return (
+    (type === "ClassDeclaration" || type === "ClassExpression") &&
+    astNodeField(value, "superClass") !== null
+  );
+}
+
+function memberExpressionMatches(value: unknown, objectName: string, memberName: string): boolean {
+  return (
+    astNodeField(value, "type") === "MemberExpression" &&
+    astPropertyName(astNodeField(value, "object")) === objectName &&
+    astPropertyName(astNodeField(value, "property")) === memberName
+  );
+}
+
+/**
+ * Whether a module's default export defines a named runtime member.
+ *
+ * Pages `_document` uses this to keep a custom `getInitialProps` implementation
+ * out of request-independent response caches. Direct class members, assignments,
+ * `Object.assign`, and `Object.defineProperty` are recognized. Imported or
+ * re-exported defaults are treated conservatively because their implementation
+ * is outside the source file being classified.
+ */
+export function defaultExportMayHaveRuntimeMember(code: string, memberName: string): boolean {
+  const program = parseRouteModule(code);
+  if (!program) return code.includes(memberName);
+
+  let defaultBinding: string | null = null;
+  let unresolvedDefault = false;
+  for (const node of program.body) {
+    if (node.type === "ExportDefaultDeclaration") {
+      const declaration = node.declaration;
+      if (classDefinesStaticMember(declaration, memberName) || classHasSuperclass(declaration)) {
+        return true;
+      }
+      if (
+        declaration.type === "Identifier" ||
+        declaration.type === "ClassDeclaration" ||
+        declaration.type === "FunctionDeclaration"
+      ) {
+        defaultBinding =
+          declaration.type === "Identifier" ? declaration.name : (declaration.id?.name ?? null);
+      } else {
+        unresolvedDefault = true;
+      }
+      continue;
+    }
+    if (node.type !== "ExportNamedDeclaration" || node.exportKind === "type") continue;
+    for (const specifier of node.specifiers) {
+      if (specifier.exportKind === "type") continue;
+      if (moduleExportNameValue(specifier.exported ?? specifier.local) !== "default") continue;
+      if (node.source) return true;
+      defaultBinding = moduleExportNameValue(specifier.local);
+    }
+  }
+
+  if (!defaultBinding) return unresolvedDefault;
+
+  let foundLocalDeclaration = false;
+  for (const node of program.body) {
+    if (node.type === "ImportDeclaration") {
+      if (
+        node.specifiers.some(
+          (specifier) =>
+            specifier.local.type === "Identifier" && specifier.local.name === defaultBinding,
+        )
+      ) {
+        return true;
+      }
+      continue;
+    }
+
+    const declaration =
+      node.type === "ExportDefaultDeclaration" || node.type === "ExportNamedDeclaration"
+        ? node.declaration
+        : node;
+    if (declaration?.type === "ClassDeclaration" && declaration.id?.name === defaultBinding) {
+      foundLocalDeclaration = true;
+      if (classDefinesStaticMember(declaration, memberName) || classHasSuperclass(declaration)) {
+        return true;
+      }
+      continue;
+    }
+    if (declaration?.type === "FunctionDeclaration" && declaration.id?.name === defaultBinding) {
+      foundLocalDeclaration = true;
+      continue;
+    }
+    if (declaration?.type === "VariableDeclaration") {
+      for (const variable of declaration.declarations) {
+        if (bindingName(variable.id) !== defaultBinding) continue;
+        foundLocalDeclaration = true;
+        if (
+          classDefinesStaticMember(variable.init, memberName) ||
+          classHasSuperclass(variable.init)
+        ) {
+          return true;
+        }
+      }
+      continue;
+    }
+    if (node.type !== "ExpressionStatement") continue;
+
+    const expression = node.expression;
+    if (
+      expression.type === "AssignmentExpression" &&
+      memberExpressionMatches(expression.left, defaultBinding, memberName)
+    ) {
+      return true;
+    }
+    if (expression.type !== "CallExpression") continue;
+    const callee = expression.callee;
+    const isObjectAssign = memberExpressionMatches(callee, "Object", "assign");
+    const isObjectDefineProperty = memberExpressionMatches(callee, "Object", "defineProperty");
+    if (!isObjectAssign && !isObjectDefineProperty) continue;
+    if (astPropertyName(expression.arguments[0]) !== defaultBinding) continue;
+    if (isObjectDefineProperty && astPropertyName(expression.arguments[1]) === memberName) {
+      return true;
+    }
+    if (isObjectAssign) {
+      const properties = astNodeField(expression.arguments[1], "properties");
+      if (
+        Array.isArray(properties) &&
+        properties.some((property) => astPropertyName(astNodeField(property, "key")) === memberName)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return !foundLocalDeclaration;
+}
+
 function hasNamedExportInProgram(program: Program, name: string): boolean {
   for (const node of program.body) {
     if (node.type !== "ExportNamedDeclaration") continue;

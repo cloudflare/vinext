@@ -14,7 +14,7 @@ import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { isProxyFile } from "../server/middleware.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
-import { hasExportedName } from "../build/report.js";
+import { defaultExportMayHaveRuntimeMember, hasExportedName } from "../build/report.js";
 
 const _requestContextShimPath = resolveEntryPath("../shims/request-context.js", import.meta.url);
 const _middlewareRuntimePath = resolveEntryPath("../server/middleware-runtime.js", import.meta.url);
@@ -67,6 +67,10 @@ export async function generatePagesRequestEntry(
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
   const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+  const documentPath = findFileWithExts(pagesDir, "_document", fileMatcher);
+  const hasRequestAwareDocument =
+    documentPath !== null &&
+    defaultExportMayHaveRuntimeMember(await readFile(documentPath, "utf8"), "getInitialProps");
   const pageRouteEntries = await Promise.all(
     pageRoutes.map(async (route: Route) => {
       const dataKind = await getPagesDataKind(route.filePath);
@@ -156,6 +160,7 @@ export const buildId = ${JSON.stringify(nextConfig?.buildId ?? null)};
 export const prerenderSecret = ${JSON.stringify(prerenderSecret ?? null)};
 const i18nConfig = ${i18nConfigJson};
 export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
+export const hasRequestAwareDocument = ${JSON.stringify(hasRequestAwareDocument)};
 export const vinextConfig = ${vinextConfigJson};
 export const publicFiles = new Set(${JSON.stringify(publicFiles)});
 

@@ -65,6 +65,10 @@ function cacheabilityContext(state: RouteCacheabilityState): ExecutionContextLik
   return context;
 }
 
+vi.mock("virtual:vinext-cdn-cache-adapter", () => ({
+  registerConfiguredCacheAdapters: mocks.registerCacheAdapters,
+}));
+
 vi.mock("virtual:vinext-cache-adapters", () => ({
   registerConfiguredCacheAdapters: mocks.registerCacheAdapters,
 }));
@@ -79,6 +83,7 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
   authorizeOnDemandRevalidate: mocks.authorizeOnDemandRevalidate,
   buildId: "request-build",
   hasMiddleware: false,
+  hasRequestAwareDocument: false,
   matchApiRoute: mocks.matchApiRoute,
   matchPageRoute: mocks.matchPageRoute,
   normalizeDataRequest: mocks.normalizeDataRequest,

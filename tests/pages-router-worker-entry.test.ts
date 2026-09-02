@@ -17,6 +17,7 @@ export const vinextConfig = {};
 export const authorizeOnDemandRevalidate = () => false;
 export const buildId = "worker-build";
 export const hasMiddleware = false;
+export const hasRequestAwareDocument = false;
 export const matchApiRoute = () => null;
 export const matchPageRoute = () => ({ route: { dataKind: "static", isDynamic: false, pattern: "/page" } });
 export const normalizeDataRequest = (request) => ({ isDataReq: false, normalizedPathname: null, notFoundResponse: null, request });
@@ -61,6 +62,10 @@ export function registerConfiguredCacheAdapters() {
   });
 }
 `,
+    ],
+    [
+      "virtual:vinext-cdn-cache-adapter",
+      `export { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";`,
     ],
     ["virtual:vinext-image-adapters", "export function registerConfiguredImageOptimizer() {}"],
   ]);

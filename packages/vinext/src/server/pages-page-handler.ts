@@ -61,6 +61,7 @@ import {
   closeAfterResponse,
   closeAfterResponseWithBody,
   createRequestContext,
+  preserveFullyBufferedBodyMetadata,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
@@ -86,6 +87,18 @@ import {
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
 
+type PagesStreamedHtmlResponse = Response & {
+  __vinextStreamedHtmlResponse?: boolean;
+};
+
+function preservePagesBodyMetadata(source: Response, target: Response): Response {
+  const result = preserveFullyBufferedBodyMetadata(source, target) as PagesStreamedHtmlResponse;
+  if ((source as PagesStreamedHtmlResponse).__vinextStreamedHtmlResponse === true) {
+    result.__vinextStreamedHtmlResponse = true;
+  }
+  return result;
+}
+
 export function finalizePagesPreviewResponse(
   response: Response,
   preview: PagesPreviewState,
@@ -96,11 +109,14 @@ export function finalizePagesPreviewResponse(
     applyCdnResponseHeaders(headers, { cacheControl: PAGES_PREVIEW_CACHE_CONTROL });
   }
   if (preview.shouldClear) appendPagesPreviewClearCookies(headers);
-  return new Response(response.body, {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
+  return preservePagesBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+  );
 }
 
 function withPagesCacheState(
