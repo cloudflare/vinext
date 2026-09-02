@@ -176,6 +176,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           VINEXT_CDN_WARM_DEBUG: "1"
         run: |
+          set -o pipefail
           warm_log="$RUNNER_TEMP/vinext-cdn-warm.log"
           vp exec vinext-cloudflare deploy \
             --skip-build \
@@ -216,6 +217,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           VINEXT_CDN_WARM_DEBUG: "1"
         run: |
+          set -o pipefail
           warm_log="$RUNNER_TEMP/vinext-cdn-warm-retry.log"
           vp exec vinext-cloudflare deploy \
             --skip-build \
