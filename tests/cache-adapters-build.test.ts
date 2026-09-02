@@ -15,6 +15,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 import vinext from "../packages/vinext/src/index.js";
 
 const tmpDirs: string[] = [];
