@@ -503,6 +503,7 @@ describe("pages api route", () => {
       match: createMatch(
         () => {
           const headers = new Headers();
+          headers.append("Set-Cookie", "middleware=one; Path=/");
           headers.append("Set-Cookie", "handler=one; Path=/");
           headers.append(
             "Set-Cookie",
@@ -518,6 +519,8 @@ describe("pages api route", () => {
     });
 
     expect(response.headers.getSetCookie()).toEqual([
+      "middleware=one; Path=/",
+      "middleware=one; Path=/",
       "handler=one; Path=/",
       "handler=two; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/",
     ]);
